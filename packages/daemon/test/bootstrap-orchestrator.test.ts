@@ -9,7 +9,8 @@ import { migrate } from "../src/db/migrate.js";
 import { BootstrapOrchestrator } from "../src/domain/bootstrap-orchestrator.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { BootstrapRepository } from "../src/domain/bootstrap-repository.js";
-import { HC_PINNED_VERSION, RuntimeVerifier } from "../src/domain/runtime-verifier.js";
+import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
+import { HC_TESTED_VERSION } from "../src/adapters/hc-version.js";
 import { HC_GENERATION, type HcHello } from "../src/adapters/hc-client.js";
 import { RequirementsProbeRegistry } from "../src/domain/requirements-probe.js";
 import { ExternalInstallPlanner } from "../src/domain/external-install-planner.js";
@@ -27,9 +28,9 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 
 /** The seat host bootstrap verifies is hc: `hc --version` on the PATH and a core that answers `hello` (injected, so no
  *  test reaches a real socket). */
-const HC_VERSION_OUTPUT = `hc ${HC_PINNED_VERSION}`;
+const HC_VERSION_OUTPUT = `hc ${HC_TESTED_VERSION}`;
 const hcHello = async (): Promise<HcHello> => ({
-  generation: HC_GENERATION, version: HC_PINNED_VERSION, core: { id: "c", name: "n" }, framed: false, methods: [], features: [],
+  generation: HC_GENERATION, version: HC_TESTED_VERSION, core: { id: "c", name: "n" }, framed: false, methods: [], features: [],
 });
 
 const SIMPLE_SPEC_YAML = `
@@ -976,6 +977,19 @@ requirements:
     for (let i = 1; i < actions.length; i++) {
       expect(actions[i]!.seq).toBeGreaterThan(actions[i - 1]!.seq);
     }
+  });
+
+  // An hc of the tested minor line that is not the tested version is accepted (hc-version.ts) and bootstrap goes on, with the warning.
+  it("an accepted but untested hc does not block bootstrap, and its warning naming both versions reaches the result", async () => {
+    const specPath = writeSpec(SIMPLE_SPEC_YAML);
+    const exec = createMockExec({ "hc --version": "hc 0.1.17", "claude --version": "claude 1.0.0", "codex --version": "codex 0.5.0", "command -v": "/usr/local/bin/tool" });
+    const result = await buildOrchestrator({ exec }).bootstrap({ mode: "apply", sourceRef: specPath, autoApprove: true });
+
+    expect(result.status).not.toBe("failed");
+    const warning = result.warnings.find((w) => w.includes("0.1.17"));
+    expect(warning).toContain(HC_TESTED_VERSION);
+    const tested = await buildOrchestrator().bootstrap({ mode: "apply", sourceRef: writeSpec(SIMPLE_SPEC_YAML), autoApprove: true });
+    expect(tested.warnings.some((w) => w.includes("untested"))).toBe(false);
   });
 
   // T11: --yes auto-approves auto_approvable actions (with real external install)

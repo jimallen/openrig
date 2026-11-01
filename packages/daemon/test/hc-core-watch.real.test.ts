@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { hcTerminalName } from "../src/adapters/hc-host.js";
 import { HcLifecycle } from "../src/adapters/hc-lifecycle.js";
-import { HcCoreWatch, HC_PINNED_VERSION, lossReason, probeCore, startCoreWithCli, type HcNotice, type HcViewTerminal } from "../src/adapters/hc-core-watch.js";
+import { HcCoreWatch, lossReason, probeCore, startCoreWithCli, type HcNotice, type HcViewTerminal } from "../src/adapters/hc-core-watch.js";
+import { judgeHcVersion } from "../src/adapters/hc-version.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
 
 const linux = process.platform === "linux";
@@ -46,7 +47,10 @@ describe.skipIf(!HC)("HcCoreWatch against a private hc core", () => {
   const connected = () => notices.filter((n) => n.kind === "connected").length;
 
   it("pins this build's hc version, and the core answering is that version", async () => {
-    expect((await probeCore(core.socketPath))).toMatchObject({ state: "present", hello: { version: HC_PINNED_VERSION, generation: 1 } });
+    const presence = await probeCore(core.socketPath);
+    expect(presence).toMatchObject({ state: "present", hello: { generation: 1 } });
+    // The real core's own version, read from its real hello, is one the rule accepts (the host's hc may be 0.1.15 or the tested 0.1.16).
+    expect(presence.state === "present" ? judgeHcVersion(presence.hello.version).verdict : "absent").not.toBe("refused");
     await expect(startWatch({ pin: { versions: ["0.0.0"] } })).rejects.toMatchObject({ kind: "unsupported_version" });
     expect(watch!.state()).toBe("refused");
   });

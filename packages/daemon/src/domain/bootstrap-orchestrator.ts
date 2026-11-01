@@ -440,6 +440,10 @@ export class BootstrapOrchestrator {
       if (v.status === "degraded") {
         warnings.push(`${v.runtime} is degraded but not blocking`);
       }
+      // An accepted hc that is not the tested version verifies with its warning in `error` (RuntimeVerifier.verifyHc).
+      if (v.status === "verified" && v.error) {
+        warnings.push(v.error);
+      }
     }
 
     if (runtimeBlocked.length > 0 && mode === "apply") {

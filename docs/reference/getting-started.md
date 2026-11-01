@@ -15,7 +15,7 @@ operator in the OpenRig view.
 
 ## Before you start
 
-You need Node.js 22 or 24 and hc (herdr-core, the terminal host for agent seats), on macOS or Linux; `rig setup` checks for it and, when it is missing, says how to install the pinned version (https://herdr.dev/core/); it does not install it. tmux is no longer required: keep it installed through the soak, for rollback only. On Linux, the
+You need Node.js 22 or 24 and hc (herdr-core, the terminal host for agent seats), on macOS or Linux; `rig setup` checks for it and, when it is missing, says how to install the tested version (https://herdr.dev/core/); it does not install it. OpenRig accepts the tested release's minor line from its oldest accepted release up (tested hc 0.1.16, accepted hc 0.1.x from 0.1.15), because the Herdr app updates hc by itself: an accepted hc that is not 0.1.16 works, and `rig setup`, `rig doctor` and `rig health` warn that it is untested; a new minor or major hc, or one older than 0.1.15, is refused. tmux is no longer required: keep it installed through the soak, for rollback only. On Linux, the
 distribution's own Node.js can be older (Ubuntu 24.04's is 18); install a
 supported version with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`)
 or NodeSource. On a Mac with Apple
@@ -577,7 +577,7 @@ the lifecycle API without booting a new kernel, then stop the remaining rigs.
 | "Startup attention" or "Startup details" names a prompt | Answer the login, trust or bypass prompt in that seat's terminal, then run the `rig seat continue <seat>` it shows. |
 | "Readiness timeout after 30s — harness did not become interactive" | The harness took longer than the readiness window. Raise it for the next launch with `rig config set runtime.readiness_timeout_seconds <1-600>`, then relaunch that seat. |
 | Daemon is healthy, kernel is still starting | Read `rig status` and `rig ps --nodes --rig kernel`; kernel readiness is separate. |
-| Kernel seats fail within a second of the first start, and `rig preflight` fails its hc check | The hc check names a missing hc, a version other than the pinned one, or a core this build can't speak to. Fix that, then start the failed seats again; see the recovery below this table. |
+| Kernel seats fail within a second of the first start, and `rig preflight` fails its hc check | The hc check names a missing hc, a version outside the accepted band (not 0.1.15 or later within 0.1.x), or a core this build can't speak to. Fix that, then start the failed seats again; see the recovery below this table. |
 | Shared terminal is absent | Inspect the existing kernel binding and recovery state; use standalone `rig tui` while resolving it. |
 | Viewing terminal was closed | Open the conversations again with `rig terminal open saved:kernel --window`; `rig tui --shared` is only the dashboard fallback if that window cannot open. Do not relaunch the team. |
 | Daemon restarted but the hc core survived | Re-read `rig status` and the existing queue; a daemon restart is not a fresh project. |
@@ -586,7 +586,7 @@ the lifecycle API without booting a new kernel, then stop the remaining rigs.
 | Work is waiting on a prompt or decision | Read the row, transition and named prompt; preserve the obligation until the missing decision arrives. |
 
 **When the kernel's seats all fail at the first start.** Run `rig preflight` and `rig doctor` first: their hc check
-names a missing hc, a version other than the pinned one, or a core this build can't speak to. Fix that, then stop the
+names a missing hc, a version outside the accepted band (not 0.1.15 or later within 0.1.x), or a core this build can't speak to. Fix that, then stop the
 daemon and start the failed seats again:
 
 ```sh

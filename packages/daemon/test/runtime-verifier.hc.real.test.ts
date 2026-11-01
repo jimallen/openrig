@@ -11,7 +11,8 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
-import { HC_PINNED_VERSION, RuntimeVerifier } from "../src/domain/runtime-verifier.js";
+import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
+import { HC_TESTED_VERSION, judgeHcVersion } from "../src/adapters/hc-version.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const run = promisify(execFile);
@@ -24,6 +25,7 @@ describe.skipIf(!HC)("RuntimeVerifier.verifyHc against a private hc core", () =>
   };
   const socket = resolveHcSocket(env, env.HOME);
   const installed = /(\d+\.\d+\.\d+)/.exec(spawnSync(HC, ["--version"], { encoding: "utf8" }).stdout)?.[1];
+  const accepted = installed !== undefined && judgeHcVersion(installed).verdict !== "refused";
   let db: Database.Database;
   let started = false;
   // hc runs under the private env, as the probe would find it; the hello goes to the private socket.
@@ -46,7 +48,7 @@ describe.skipIf(!HC)("RuntimeVerifier.verifyHc against a private hc core", () =>
 
   it("with no core: degraded, and verifying started none", async () => {
     const result = await verifier().verifyHc();
-    expect(result.status).toBe(installed === HC_PINNED_VERSION ? "degraded" : "error");
+    expect(result.status).toBe(accepted ? "degraded" : "error");
     expect(existsSync(socket)).toBe(false);
   });
 
@@ -54,12 +56,19 @@ describe.skipIf(!HC)("RuntimeVerifier.verifyHc against a private hc core", () =>
     execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
     started = true;
     const result = await verifier().verifyHc();
-    if (installed === HC_PINNED_VERSION) {
+    if (installed === HC_TESTED_VERSION) {
       expect(result.status).toBe("verified");
-      expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: 1, coreVersion: HC_PINNED_VERSION });
+      expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: 1, coreVersion: HC_TESTED_VERSION });
+      expect(result.error).toBeNull();
+    } else if (accepted) {
+      // Accepted by the version rule (same minor, at or above the floor) and not the tested one: verified, with the warning naming both.
+      expect(result.status).toBe("verified");
+      expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: 1, coreVersion: installed, testedVersion: HC_TESTED_VERSION, untested: true });
+      expect(result.error).toContain(installed);
+      expect(result.error).toContain(HC_TESTED_VERSION);
     } else {
-      expect(result.status).toBe("error");  // an hc that is not the pin is refused whatever the core says
-      expect(result.error).toContain(HC_PINNED_VERSION);
+      expect(result.status).toBe("error");  // an hc outside the accepted band is refused whatever the core says
+      expect(result.error).toContain(HC_TESTED_VERSION);
     }
   });
 });

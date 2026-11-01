@@ -3,7 +3,7 @@
 // nowhere else.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { quietPreflightExec } from "../src/system-preflight.js";
-import { HC_PINNED_VERSION, probeHcInstallAsync } from "../src/tmux-health.js";
+import { HC_TESTED_VERSION, probeHcInstallAsync } from "../src/tmux-health.js";
 
 const node = JSON.stringify(process.execPath);
 const failWith = (text: string) => `${node} -e "process.stderr.write(${JSON.stringify(text).replaceAll('"', '\\"')}); process.exit(1)"`;
@@ -22,7 +22,7 @@ describe("quietPreflightExec", () => {
   it("still lets the hc probe tell a missing hc from an hc that answers", async () => {
     const run = (stderr: string) => probeHcInstallAsync(async () => quietPreflightExec(failWith(stderr)));
     expect(await run("hc: command not found")).toMatchObject({ code: "not_installed", installed: false, detail: expect.stringContaining("command not found") });
-    const answers = probeHcInstallAsync(async () => quietPreflightExec(`${node} -e "process.stdout.write('hc ${HC_PINNED_VERSION}')"`));
-    expect(await answers).toMatchObject({ code: "pinned", installed: true, version: HC_PINNED_VERSION });
+    const answers = probeHcInstallAsync(async () => quietPreflightExec(`${node} -e "process.stdout.write('hc ${HC_TESTED_VERSION}')"`));
+    expect(await answers).toMatchObject({ code: "pinned", installed: true, version: HC_TESTED_VERSION });
   });
 });

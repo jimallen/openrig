@@ -50,7 +50,7 @@ rather than treating a newer command as installed.
 Supported platforms are macOS and Linux, and WSL2 on Windows; native Windows isn't supported. OpenRig's automated tests
 don't run on WSL2 yet; one user's [reported working setup](getting-started.md#wsl2-a-reported-working-setup) lists what
 mattered. OpenRig needs
-Node.js 22 or 24 and hc (herdr-core, the pinned version; `rig setup` checks it and points to https://herdr.dev/core/ if it is missing). A Linux distribution's own Node.js can be older; check `node --version`. With npm 11 or
+Node.js 22 or 24 and hc (herdr-core, tested at 0.1.16; later 0.1.x releases from 0.1.15 are accepted with a warning; `rig setup` checks it and points to https://herdr.dev/core/ if it is missing). A Linux distribution's own Node.js can be older; check `node --version`. With npm 11 or
 later, an `npm warn install-scripts` line for `@openrig/cli` means only the postinstall Node.js and SQLite check was
 skipped; `node "$(npm root -g)/@openrig/cli/scripts/check-abi.mjs"` runs it. A WSL error needs its actual versions,
 commands and error text; don't assume a Windows-related pull request fixes it.

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { runSetup, type SetupDeps } from "../src/commands/setup.js";
-import { HC_PINNED_VERSION } from "../src/tmux-health.js";
+import { HC_TESTED_VERSION } from "../src/tmux-health.js";
 
 const originalExitCode = process.exitCode;
 afterEach(() => {
@@ -24,7 +24,7 @@ function fixture(options: {
       throw new Error("CLI unavailable");
     }
     if (options.missingLogin?.includes(command)) throw new Error("Not logged in");
-    if (command === "hc --version") return `hc ${HC_PINNED_VERSION}`;
+    if (command === "hc --version") return `hc ${HC_TESTED_VERSION}`;
     return "available";
   };
   const common = { exec, readFile, exists: () => true, platform: "linux" as const, env: { HOME: "/fixture", CODEX_HOME: "/fixture/codex", ...options.env } };

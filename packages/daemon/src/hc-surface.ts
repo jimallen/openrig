@@ -4,13 +4,15 @@
 //
 // Only pure values and the small socket client are exported. Not the host, the lifecycle, the identity reader, the
 // core watch or the placement driver: those hold daemon state and belong to the daemon. Every module reached from
-// here imports only Node builtins (net, os, path, crypto, child_process, fs) and each other; hc-surface.test.ts pins that.
+// here imports only Node builtins (net, os, path, crypto) and each other; hc-surface.test.ts pins that.
 export { SEAT_LABEL, hcTerminalName } from "./adapters/hc-seat.js";
 export {
   HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, resolveHcSocket,
   type HcHello, type HcTerminal,
 } from "./adapters/hc-client.js";
-export { HC_PINNED_VERSION } from "./adapters/hc-core-watch.js";
+export {
+  HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, judgeHcVersion, parseHcVersionOutput, type HcVersionJudgement,
+} from "./adapters/hc-version.js";
 export {
   KERNEL_RIG, KERNEL_TAB, SPACE_LABEL, TAB_ID_SEPARATOR, TAB_LABEL,
   pickLead, placementLabels, planKernelTabs, planLabels, planRigTabs, rigOfSeat, rigSpaceId, rigTabId,

@@ -1,7 +1,7 @@
 import type { HealthDetectorObservation, HealthObservationSource, HealthSourceCoverage } from "./health-detectors.js";
 
 /**
- * hc cutover (Jim, 2026-11-01): when the core watch refuses a core (a version or generation this build was not written for, or
+ * hc cutover (Jim, 2026-11-01): when the core watch refuses a core (a version outside the accepted band or a generation this build was not written for, or
  * another core than the one the daemon first saw), the daemon's own client fails every later call as an unavailable core
  * (HcClient.refuseCore) and nothing retries, so until the daemon restarts every seat reads "unavailable". That is fail-closed and
  * stays so; this source only makes it visible. In `rig health` one "notice" row says the core is refused, why, and the fix.
@@ -27,8 +27,8 @@ export class HcCoreRefusalHealthSource implements HealthObservationSource {
       status: "notice",
       partial: false,
       reason: `The hc core is refused, so every call to an hc seat fails as an unavailable core until the daemon restarts (a seat is not gone, and nothing is ended): ${why}. `
-        + "Fix: if the core was changed on purpose, move the pin only after the new version is tested, then restart the daemon (`rig daemon stop && rig daemon start`); "
-        + "otherwise put the pinned hc core back and restart the daemon. Seats in the core keep running meanwhile.",
+        + "Fix: if the core was changed on purpose, change the accepted hc versions (hc-version.ts) only after the new version is tested, then restart the daemon (`rig daemon stop && rig daemon start`); "
+        + "otherwise put an accepted hc core back and restart the daemon. Seats in the core keep running meanwhile.",
     }];
   }
 }

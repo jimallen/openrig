@@ -7,13 +7,14 @@ import { join } from "node:path";
 import { HC_GENERATION, HcClient, HcError, checkHcHello, type HcHello } from "../src/adapters/hc-client.js";
 import { HcAttach } from "../src/adapters/hc-attach.js";
 import { CoreSizeSource } from "../src/adapters/hc-viewer.js";
-import { HC_PINNED_VERSION, pinCallsToCore } from "../src/adapters/hc-core-watch.js";
+import { pinCallsToCore } from "../src/adapters/hc-core-watch.js";
+import { HC_TESTED_VERSION } from "../src/adapters/hc-version.js";
 
 // Security review F5: the core pin (version, core id) was a startup gate and a log line. After startup a swapped core was still
 // served. Now every hello this build makes to the pinned socket passes the pin, for calls, attach and the size watch alike.
 
 const hello = (over: Partial<HcHello> = {}, framed = false): HcHello => ({
-  generation: HC_GENERATION, version: HC_PINNED_VERSION, core: { id: "core-1", name: "n" }, framed, methods: [], features: [], ...over,
+  generation: HC_GENERATION, version: HC_TESTED_VERSION, core: { id: "core-1", name: "n" }, framed, methods: [], features: [], ...over,
 });
 
 const scratch: { dir: string; server: Server }[] = [];
@@ -60,7 +61,21 @@ describe("a pinned core, after startup", () => {
   });
 
   it("refuses a call once the core runs another hc version, and sends nothing", async () => {
-    const core = await fakeCore(hello({ version: "0.1.15" }));
+    const core = await fakeCore(hello({ version: "0.1.14" }));
+    lifts.push(pinCallsToCore(core.path, watchOf("core-1")));
+    await expect(new HcClient(core.path).call("terminal.list")).rejects.toMatchObject({ name: "HcError", kind: "unsupported_version" });
+    expect(core.asked).toEqual([]);
+  });
+
+  it.each(["0.1.15", "0.1.17", "0.1.99"])("serves a call to a core that moved to hc %s (accepted, not the tested version): the same version rule as the watch", async (version) => {
+    const core = await fakeCore(hello({ version }));
+    lifts.push(pinCallsToCore(core.path, watchOf("core-1")));
+    await expect(new HcClient(core.path).call("terminal.list")).resolves.toEqual({ ok: true });
+    expect(core.asked).toEqual(["terminal.list"]);
+  });
+
+  it.each(["0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1"])("refuses a call once the core runs hc %s (another minor, another major, malformed)", async (version) => {
+    const core = await fakeCore(hello({ version }));
     lifts.push(pinCallsToCore(core.path, watchOf("core-1")));
     await expect(new HcClient(core.path).call("terminal.list")).rejects.toMatchObject({ name: "HcError", kind: "unsupported_version" });
     expect(core.asked).toEqual([]);
@@ -85,7 +100,7 @@ describe("a pinned core, after startup", () => {
   });
 
   it("refuses an attach and a size watch the same way, before they ask for anything", async () => {
-    const core = await fakeCore(hello({ version: "0.1.15" }, true));
+    const core = await fakeCore(hello({ version: "0.1.14" }, true));
     lifts.push(pinCallsToCore(core.path, watchOf("core-1")));
     const noop = { onData: () => {}, onEnd: () => {} };
     await expect(new HcAttach(core.path).open({ terminal: "s-x", cols: 80, rows: 24, observe: true }, noop)).rejects.toMatchObject({ kind: "unsupported_version" });
@@ -94,14 +109,14 @@ describe("a pinned core, after startup", () => {
   });
 
   it("leaves the core watch's own probes alone, so it can still see and name a refused core", async () => {
-    const core = await fakeCore(hello({ version: "0.1.15" }));
+    const core = await fakeCore(hello({ version: "0.1.14" }));
     lifts.push(pinCallsToCore(core.path, watchOf("core-1")));
-    await expect(new HcClient(core.path, undefined, false).hello()).resolves.toMatchObject({ version: "0.1.15" });
+    await expect(new HcClient(core.path, undefined, false).hello()).resolves.toMatchObject({ version: "0.1.14" });
   });
 
   it("is a pin on that socket only, and can be lifted", async () => {
-    const core = await fakeCore(hello({ version: "0.1.15" }));
-    const other = await fakeCore(hello({ version: "0.1.15" }));
+    const core = await fakeCore(hello({ version: "0.1.14" }));
+    const other = await fakeCore(hello({ version: "0.1.14" }));
     const lift = pinCallsToCore(core.path, watchOf("core-1"));
     await expect(new HcClient(other.path).call("terminal.list")).resolves.toEqual({ ok: true });  // control: no pin for this socket
     await expect(new HcClient(core.path).call("terminal.list")).rejects.toBeInstanceOf(HcError);
@@ -114,6 +129,6 @@ describe("a pinned core, after startup", () => {
 describe("startup", () => {
   it("pins the calls to the core it connected to", () => {
     const source = fs.readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
-    expect(source).toMatch(/const hcCoreWatch = hcClient \? await connectHcCore\(\{ socketPath: hcClient\.socketPath, client: hcClient \}\) : undefined;\s*[^\n]*\n\s*if \(hcClient && hcCoreWatch\) pinCallsToCore\(hcClient\.socketPath, hcCoreWatch\);/);
+    expect(source).toMatch(/const hcCoreWatch = hcClient \? await connectHcCore\(\{ socketPath: hcClient\.socketPath, client: hcClient, onCoreVersion: [^\n]*\}\) : undefined;\s*[^\n]*\n\s*if \(hcClient && hcCoreWatch\) pinCallsToCore\(hcClient\.socketPath, hcCoreWatch\);/);
   });
 });
