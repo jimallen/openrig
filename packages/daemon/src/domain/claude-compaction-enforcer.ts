@@ -1,6 +1,6 @@
 import { DeliveryGuardError } from "./seat-delivery-guard.js";
 import { inertStartupText } from "./packet-text.js";
-import type { SessionTransport } from "./session-transport.js";
+import { HANDED_TO_PUMP, type SessionTransport } from "./session-transport.js";
 import type { ClaudeCompactionPolicy, SettingsStore } from "./user-settings/settings-store.js";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -8,6 +8,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { isUnconfirmedHcSend, SEAT_MESSAGE_ID_PREFIX } from "./outbox-handler.js";
 import type { CompactionStageStore } from "./compaction-stage-store.js";
+import type { MessageHandOff } from "./seat-messaging/hand-off.js";
+import { messageId, type MessageId } from "./seat-messaging/ports.js";
 
 /**
  * Slice 27 — Claude auto-compaction policy enforcer.
@@ -36,6 +38,10 @@ import type { CompactionStageStore } from "./compaction-stage-store.js";
  *   Messaging S1, CompactionStageStore): a restart mid-sequence must not
  *   lose a restore a seat is owed. A restored preparation whose prompt
  *   may have gone out is never resent: it waits for its map or its deadline.
+ * - On a seat the pump serves (Seat Messaging S4e) a prompt is a lifecycle row in lane 1, not a send. The pump carries it, so the attempt
+ *   cap and "never replay uncertainty" do not apply to it, and the next stage is accepted only once the seat's gate has recorded the last.
+ *   The enforcer holds the content lane across the gaps. `/compact` stays here: it has a `beforeWrite` closure a durable row cannot hold.
+ *   An ungated seat keeps the rules below until S5.
  * - Definite pre-write prep failures retry at most three times. Uncertain
  *   delivery never replays. Unfinished preparation stops visibly until an
  *   explicit retry; it cannot arm a delayed compact after its deadline.
@@ -69,6 +75,9 @@ const PREP_SEND_ATTEMPTS_MAX = 3;
 // timeout the send returns not-ok, the stage does NOT advance, and the SAME stage
 // is retried on the next poll tick. No new scheduler.
 export const POST_COMPACT_SEND_WAIT_MS_DEFAULT = 10_000;
+// How long a sequence may leave the content lane held with no row of its own open and no poll advancing it. A stage waits on a usage sample
+// that may never come, and no message waits on that. Three of ContextMonitor's polls: a value chosen, not measured.
+export const STAGE_CONTENT_HOLD_LAPSE_MS_DEFAULT = 90_000;
 
 export interface EnforcerInput {
   sessionName: string;
@@ -126,6 +135,8 @@ export type EnforcerSkipReason =
   | "send_failed"
   | "invalid_policy"
   | "stale_generation"
+  | "stage_in_flight"
+  | "stage_undeliverable"
   | "preparation_pending"
   | "preparation_incomplete"
   | "preparation_stopped"
@@ -142,6 +153,10 @@ export type EnforcerSkipReason =
  */
 function stageSent(result: { ok: boolean; outcome?: string; reason?: string }): boolean {
   return result.outcome !== "retained" && (result.ok || isUnconfirmedHcSend(result));
+}
+
+function compactionMessageId(attemptId: string, stage: string): string {
+  return `${SEAT_MESSAGE_ID_PREFIX}compaction-${attemptId}-${stage}`;
 }
 
 function isValidThresholdPercent(value: unknown): boolean {
@@ -359,6 +374,14 @@ interface PreparationAttempt extends PreparationState {
   policyWasEnabled: boolean;
   controller: AbortController;
 }
+interface ContentLaneHold {
+  release: () => void;
+  lapse: ReturnType<typeof setTimeout> | null;
+}
+
+function preparationRow(attempt: PreparationAttempt): MessageId {
+  return messageId(compactionMessageId(attempt.attemptId, "prep"));
+}
 
 export class ClaudeCompactionEnforcer {
   private readonly settingsStore: SettingsStore;
@@ -387,6 +410,9 @@ export class ClaudeCompactionEnforcer {
   // Seat Messaging: the preparation attempt a post-compact sequence belongs to. Its messages' ids derive from it, so every attempt of
   // one stage carries one id, across a restart too.
   private readonly pendingStageCycle = new Map<string, string>();
+  // Seat Messaging S4e: in memory, as the pump's own hold is: a restart takes it again from the persisted stage.
+  private readonly contentLaneHolds = new Map<string, ContentLaneHold>();
+  private readonly stageContentHoldLapseMs: number;
   private readonly stageStore?: CompactionStageStore;
   private readonly resolveOccupantGeneration?: (sessionName: string) => string | null;
   private readonly onPostRestoreComplete?: (receipt: {
@@ -407,6 +433,7 @@ export class ClaudeCompactionEnforcer {
       now?: () => number;
       sleep?: (ms: number) => Promise<void>;
       postCompactSendWaitMs?: number;
+      stageContentHoldLapseMs?: number;
       resolveOccupantGeneration?: (sessionName: string) => string | null;
       /** Seat Messaging S1: keeps the stages across a restart. Absent: in memory only. */
       stageStore?: CompactionStageStore;
@@ -427,6 +454,7 @@ export class ClaudeCompactionEnforcer {
     this.now = opts?.now ?? (() => Date.now());
     this.sleep = opts?.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
     this.postCompactSendWaitMs = opts?.postCompactSendWaitMs ?? POST_COMPACT_SEND_WAIT_MS_DEFAULT;
+    this.stageContentHoldLapseMs = opts?.stageContentHoldLapseMs ?? STAGE_CONTENT_HOLD_LAPSE_MS_DEFAULT;
     this.resolveOccupantGeneration = opts?.resolveOccupantGeneration;
     this.onPostRestoreComplete = opts?.onPostRestoreComplete;
     this.stageStore = opts?.stageStore;
@@ -442,13 +470,17 @@ export class ClaudeCompactionEnforcer {
         this.pendingPostCompactRestore.set(seat.sessionName, seat.stage);
         this.pendingStageGeneration.set(seat.sessionName, seat.stageGeneration);
         if (seat.stageCycle) this.pendingStageCycle.set(seat.sessionName, seat.stageCycle);
+        const pump = this.pumpFor(seat.sessionName);
+        if (pump) this.holdContentLane(seat.sessionName, pump);
       }
       if (seat.manual) this.manualCompactionState.set(seat.sessionName, seat.manual as ManualCompactionStatus);
       if (seat.preparation) {
         const attempt: PreparationAttempt = { ...seat.preparation, controller: new AbortController() };
-        if (attempt.sends > 0 && attempt.delivery === "pending") attempt.delivery = "uncertain";
+        // The pump's row says where a gated seat's prompt is, so nothing here is uncertain and the clock has not started.
+        const carried = attempt.delivery === "pending" && this.pumpFor(seat.sessionName) !== null;
+        if (attempt.sends > 0 && attempt.delivery === "pending" && !carried) attempt.delivery = "uncertain";
         if (attempt.sends > 0 && attempt.status === "sending") attempt.status = "waiting";
-        if (attempt.deadlineAt === null && attempt.status === "waiting") attempt.deadlineAt = this.now() + AUTO_PREP_WAIT_MS_DEFAULT;
+        if (attempt.deadlineAt === null && attempt.status === "waiting" && !carried) attempt.deadlineAt = this.now() + AUTO_PREP_WAIT_MS_DEFAULT;
         this.pendingPreCompactPrep.set(seat.sessionName, attempt);
       }
     }
@@ -474,8 +506,137 @@ export class ClaudeCompactionEnforcer {
     const messageClass = "lifecycle" as const;
     const cycle = this.pendingStageCycle.get(sessionName);
     if (!cycle) return {};
-    return { deliveryId: `${SEAT_MESSAGE_ID_PREFIX}compaction-${cycle}-${stage}`, freezeBody: true, messageClass, lane: 1 as const,
+    return { deliveryId: compactionMessageId(cycle, stage), freezeBody: true, messageClass, lane: 1 as const,
       occupantGeneration: this.pendingStageGeneration.get(sessionName) ?? null };
+  }
+
+  /** The pump's hand-off when it serves this seat. Null: the seat keeps the direct path until S5. */
+  private pumpFor(sessionName: string): MessageHandOff | null {
+    const handOff = this.sessionTransport.messageHandOff;
+    return handOff?.takes(sessionName) ? handOff : null;
+  }
+
+  /** The row of the stage the seat is owed, when it has an id. */
+  private pendingStageRow(sessionName: string): MessageId | null {
+    const stage = this.pendingPostCompactRestore.get(sessionName);
+    const cycle = this.pendingStageCycle.get(sessionName);
+    return stage && cycle ? messageId(compactionMessageId(cycle, stage)) : null;
+  }
+
+  /** Nothing lands between two stages: lane order covers a stage whose row is open, this covers the gap until the next is accepted. Taking it
+   *  again only restarts the lapse. */
+  private holdContentLane(sessionName: string, pump: MessageHandOff): void {
+    let hold = this.contentLaneHolds.get(sessionName);
+    if (!hold) {
+      hold = { release: pump.holdContentLane(sessionName), lapse: null };
+      this.contentLaneHolds.set(sessionName, hold);
+    }
+    this.scheduleHoldLapse(sessionName, pump, hold);
+  }
+
+  /** An open row of ours keeps the hold; anything else means no poll came to move the sequence on, and it may never come. A later drain takes
+   *  the hold again. */
+  private scheduleHoldLapse(sessionName: string, pump: MessageHandOff, hold: ContentLaneHold): void {
+    if (hold.lapse) clearTimeout(hold.lapse);
+    hold.lapse = setTimeout(() => {
+      void this.pendingStageIsOpen(sessionName, pump).then((open) => {
+        if (this.contentLaneHolds.get(sessionName) !== hold) return;
+        if (open) this.scheduleHoldLapse(sessionName, pump, hold);
+        else this.releaseContentLane(sessionName);
+      });
+    }, this.stageContentHoldLapseMs);
+    hold.lapse.unref?.();
+  }
+
+  private async pendingStageIsOpen(sessionName: string, pump: MessageHandOff): Promise<boolean> {
+    const id = this.pendingStageRow(sessionName);
+    if (!id) return false;
+    try { return await pump.awaitReceived(id, 0) === "open"; }
+    catch { return false; }  // a row that cannot be read proves nothing, and a held lane is the costlier error
+  }
+
+  private releaseContentLane(sessionName: string): void {
+    const hold = this.contentLaneHolds.get(sessionName);
+    if (!hold) return;
+    if (hold.lapse) clearTimeout(hold.lapse);
+    this.contentLaneHolds.delete(sessionName);
+    hold.release();
+  }
+
+  /** Reads the row of the stage owed and moves on when its gate recorded it. Non-null ends this drain; null means the stage now pending needs
+   *  accepting. Never waits: this runs inside the seat's lifecycle lease, which a hop's attempt may need. */
+  private async followPumpedStage(input: EnforcerInput, policy: ClaudeCompactionPolicy, pump: MessageHandOff): Promise<EnforcerOutcome | null> {
+    const sessionName = input.sessionName;
+    const stage = this.pendingPostCompactRestore.get(sessionName);
+    if (!stage) return null;
+    if (!this.pendingStageCycle.has(sessionName)) {  // a stage saved before stages had ids
+      this.pendingStageCycle.set(sessionName, randomUUID());
+      this.persist(sessionName);
+    }
+    const outcome = await pump.awaitReceived(this.pendingStageRow(sessionName)!, 0);
+    if (outcome === "open") return { triggered: false, reason: "stage_in_flight" };
+    if (outcome === "undeliverable") {
+      this.abandonStages(sessionName);
+      return { triggered: false, reason: "stage_undeliverable" };
+    }
+    if (outcome === "received") {
+      if (stage === "compliance_prompt") {
+        await this.finishPostCompactSequence(input, policy);
+        return { triggered: true };
+      }
+      this.pendingPostCompactRestore.set(sessionName, stage === "turn_boundary" ? "restore_prompt" : "compliance_prompt");
+      if (stage === "restore_prompt") this.advanceManualStage(sessionName, "compact-sent", "restore-sent");
+      this.persist(sessionName);
+    }
+    this.holdContentLane(sessionName, pump);
+    return null;
+  }
+
+  /** The pump has the stage. From compliance on the row is the sequence's last, and lane order alone keeps content behind it. */
+  private stageHandedToPump(sessionName: string, stage: PendingPostCompactStage): EnforcerOutcome {
+    if (stage === "compliance_prompt") this.releaseContentLane(sessionName);
+    return { triggered: true };
+  }
+
+  /** A stage row ended without arriving: its occupant is gone or it was cancelled, so no later stage has anywhere to land. */
+  private abandonStages(sessionName: string): void {
+    this.pendingPostCompactRestore.delete(sessionName);
+    this.pendingStageGeneration.delete(sessionName);
+    this.pendingStageCycle.delete(sessionName);
+    this.triggeredAboveThreshold.delete(sessionName);
+    this.releaseContentLane(sessionName);
+    const manual = this.manualCompactionState.get(sessionName)?.stage;
+    if (manual === "compact-sent" || manual === "restore-sent") this.setManualStage(sessionName, "skipped-or-failed", "stage_undeliverable");
+    this.persist(sessionName);
+  }
+
+  private async finishPostCompactSequence(input: EnforcerInput, policy: ClaudeCompactionPolicy): Promise<void> {
+    // The width receipt records post-restore usage. Without a current sample there is none to
+    // record, and a stale pre-compact figure would misreport the restore.
+    if (input.usedPercentage != null) {
+      await this.onPostRestoreComplete?.({
+        sessionName: input.sessionName,
+        occupantGeneration:
+          this.pendingStageGeneration.get(input.sessionName) ??
+          this.resolveOccupantGeneration?.(input.sessionName) ??
+          null,
+        postRestoreUsedPercentage: input.usedPercentage,
+        saturationBoundPercentage: policy.thresholdPercent,
+      });
+    }
+    this.pendingPostCompactRestore.delete(input.sessionName);
+    if (this.pendingPreCompactPrep.get(input.sessionName)?.status === "compact-sent") this.pendingPreCompactPrep.delete(input.sessionName);
+    this.pendingStageGeneration.delete(input.sessionName); // GHOST-STAGE (b): stage completed → drop its gen
+    this.pendingStageCycle.delete(input.sessionName);
+    this.releaseContentLane(input.sessionName);
+    this.persist(input.sessionName);
+    this.postCompactRestoreCooldownUntil.set(
+      input.sessionName,
+      Date.now() + this.postCompactRestoreCooldownMs,
+    );
+    this.triggeredAboveThreshold.delete(input.sessionName);
+    // OPR.0.4.3.14 — terminal manual-trigger stage (no-op for auto seats).
+    this.advanceManualStage(input.sessionName, "restore-sent", "audit-sent");
   }
 
   /**
@@ -573,6 +734,9 @@ export class ClaudeCompactionEnforcer {
         return { triggered: false, reason: "stale_generation" };
       }
     }
+    const pump = this.pumpFor(input.sessionName);
+    const followed = pump ? await this.followPumpedStage(input, policy, pump) : null;
+    if (followed) return followed;
     const pendingStage = this.pendingPostCompactRestore.get(input.sessionName);
     if (pendingStage === "turn_boundary") {
       // OF-169: the boundary prompt is a constant with no operator input, so there is nothing to strip.
@@ -581,6 +745,7 @@ export class ClaudeCompactionEnforcer {
         buildPostCompactTurnBoundaryPrompt(),
         { ...sendOpts, ...this.stageMessage(input.sessionName, "turn_boundary") },
       );
+      if (boundary.reason === HANDED_TO_PUMP) return this.stageHandedToPump(input.sessionName, pendingStage);
       if (!stageSent(boundary)) {
         // Busy/never-idle → no delivery, no advance; the SAME stage retries next tick.
         return { triggered: false, reason: "send_failed" };
@@ -606,6 +771,7 @@ export class ClaudeCompactionEnforcer {
         })),
         { ...sendOpts, ...this.stageMessage(input.sessionName, "restore_prompt") },
       );
+      if (restore.reason === HANDED_TO_PUMP) return this.stageHandedToPump(input.sessionName, pendingStage);
       if (!stageSent(restore)) {
         // Restore is exact-once + operator-authorized: if the seat is still busy
         // (mid-compaction/boundary), do NOT advance to restore-sent on an
@@ -624,36 +790,13 @@ export class ClaudeCompactionEnforcer {
         inertStartupText(buildPostCompactCompliancePrompt(policy.postRestoreAuditInstruction)),
         { ...sendOpts, ...this.stageMessage(input.sessionName, "compliance_prompt") },
       );
+      if (compliance.reason === HANDED_TO_PUMP) return this.stageHandedToPump(input.sessionName, pendingStage);
       if (!stageSent(compliance)) {
         // Audit cannot overtake restore: only advances once the restore turn is
         // idle and this send delivers; a busy tick retries the SAME stage.
         return { triggered: false, reason: "send_failed" };
       }
-      // The width receipt records post-restore usage. Without a current sample there is none to
-      // record, and a stale pre-compact figure would misreport the restore.
-      if (input.usedPercentage != null) {
-        await this.onPostRestoreComplete?.({
-          sessionName: input.sessionName,
-          occupantGeneration:
-            this.pendingStageGeneration.get(input.sessionName) ??
-            this.resolveOccupantGeneration?.(input.sessionName) ??
-            null,
-          postRestoreUsedPercentage: input.usedPercentage,
-          saturationBoundPercentage: policy.thresholdPercent,
-        });
-      }
-      this.pendingPostCompactRestore.delete(input.sessionName);
-      if (this.pendingPreCompactPrep.get(input.sessionName)?.status === "compact-sent") this.pendingPreCompactPrep.delete(input.sessionName);
-      this.pendingStageGeneration.delete(input.sessionName); // GHOST-STAGE (b): stage completed → drop its gen
-      this.pendingStageCycle.delete(input.sessionName);
-      this.persist(input.sessionName);
-      this.postCompactRestoreCooldownUntil.set(
-        input.sessionName,
-        Date.now() + this.postCompactRestoreCooldownMs,
-      );
-      this.triggeredAboveThreshold.delete(input.sessionName);
-      // OPR.0.4.3.14 — terminal manual-trigger stage (no-op for auto seats).
-      this.advanceManualStage(input.sessionName, "restore-sent", "audit-sent");
+      await this.finishPostCompactSequence(input, policy);
       return { triggered: true };
     }
     return null;
@@ -726,9 +869,11 @@ export class ClaudeCompactionEnforcer {
       attempt = this.beginPreparation(input, "automatic");
       if (attempt.status === "stopped") return { triggered: false, reason: "occupant_generation_unavailable" };
     }
+    if (!await this.followPumpedPreparation(input.sessionName, attempt)) return { triggered: false, reason: "preparation_stopped" };
     if (attempt.status === "sending") {
       await this.deliverPreparation(input, attempt);
       const current = this.pendingPreCompactPrep.get(input.sessionName);
+      if (current === attempt && current?.status === "waiting" && current.delivery === "pending") return { triggered: false, reason: "preparation_pending" };
       return current === attempt && current?.status === "waiting" && current.delivery === "delivered"
         ? { triggered: true } : { triggered: false, reason: "send_failed" };
     }
@@ -790,6 +935,7 @@ export class ClaudeCompactionEnforcer {
     };
     this.setManualStage(input.sessionName, "preparing", undefined, opts.operatorInitiated === true);
     await this.deliverPreparation(input, attempt);
+    await this.awaitPumpedPreparation(input.sessionName, attempt);
     while (attempt.status === "waiting" && !opts.skipMap && !this.mapReady(attempt)) {
       this.reconcilePreparations();
       if (attempt.status !== "waiting") break;
@@ -891,7 +1037,8 @@ export class ClaudeCompactionEnforcer {
   }
 
   private async deliverPreparation(input: EnforcerInput, attempt: PreparationAttempt): Promise<void> {
-    if (attempt.sends >= PREP_SEND_ATTEMPTS_MAX) { this.stopPreparation(input.sessionName, "send_failed"); return; }
+    // The cap is for sends this code makes. The pump's attempts are free and the row is one, so a gated seat never reaches it.
+    if (attempt.sends >= PREP_SEND_ATTEMPTS_MAX && !this.pumpFor(input.sessionName)) { this.stopPreparation(input.sessionName, "send_failed"); return; }
     attempt.sends++;
     // Mark waiting BEFORE the await: concurrent polls cannot replay an in-flight delivery.
     attempt.status = "waiting";
@@ -902,8 +1049,9 @@ export class ClaudeCompactionEnforcer {
       prep = await this.sessionTransport.send(input.sessionName, inertStartupText(buildPreCompactPrepPrompt({
         usedPercentage: input.usedPercentage!, thresholdPercent: policy.thresholdPercent,
         preCompactInstruction: policy.preCompactInstruction, preparation: attempt, constructedAt: this.now(),
-      })), { deliveryId: `${SEAT_MESSAGE_ID_PREFIX}compaction-${attempt.attemptId}-prep`, freezeBody: true, messageClass: "lifecycle", lane: 1, occupantGeneration: attempt.occupantGeneration });
+      })), { deliveryId: preparationRow(attempt), freezeBody: true, messageClass: "lifecycle", lane: 1, occupantGeneration: attempt.occupantGeneration });
     } catch { prep = null; }
+    if (prep?.reason === HANDED_TO_PUMP) return;  // accepted: `delivery` stays pending, and the deadline starts when the gate records it
     const notSent = prep?.outcome === "retained"
       || ["target_needs_input", "session_missing", "typing_guard_enabled", "mid_work", "tmux_unavailable"].includes(prep?.reason ?? "")
       || (prep?.sent === false && ["target_runtime_not_running", "target_runtime_unverified", "target_runtime_conflict", "transport_unavailable"].includes(prep.reason ?? ""));
@@ -922,6 +1070,37 @@ export class ClaudeCompactionEnforcer {
     this.persist(input.sessionName);
   }
 
+  /** A gated seat's preparation prompt: the row says where it is. No row means the daemon died before accepting it, so it goes again, free.
+   *  False when the prompt ended without arriving, which stops the attempt. */
+  private async followPumpedPreparation(sessionName: string, attempt: PreparationAttempt): Promise<boolean> {
+    if (attempt.delivery !== "pending" || attempt.status !== "waiting") return true;
+    const pump = this.pumpFor(sessionName);
+    if (!pump) return true;
+    const outcome = await pump.awaitReceived(preparationRow(attempt), 0);
+    if (outcome === "received") this.preparationArrived(sessionName, attempt);
+    else if (outcome === "unknown") { attempt.status = "sending"; this.persist(sessionName); }
+    else if (outcome === "undeliverable") { this.stopPreparation(sessionName, "send_failed", attempt); return false; }
+    return true;
+  }
+
+  /** The manual wait's first leg. A manual request holds no lease, so it can wait, and every step of it shares the one deadline. */
+  private async awaitPumpedPreparation(sessionName: string, attempt: PreparationAttempt): Promise<void> {
+    const pump = this.pumpFor(sessionName);
+    if (!pump) return;
+    while (attempt.status === "waiting" && attempt.delivery === "pending") {
+      const outcome = await pump.awaitReceived(preparationRow(attempt), Math.min(250, Math.max(1, attempt.deadlineAt! - this.now())));
+      if (outcome === "received") this.preparationArrived(sessionName, attempt);
+      else if (outcome !== "open") this.stopPreparation(sessionName, "send_failed", attempt);
+      this.reconcilePreparations();
+    }
+  }
+
+  private preparationArrived(sessionName: string, attempt: PreparationAttempt): void {
+    attempt.delivery = "delivered";
+    if (attempt.mode === "automatic") attempt.deadlineAt = this.now() + AUTO_PREP_WAIT_MS_DEFAULT;
+    this.persist(sessionName);
+  }
+
   private async sendPreparedCompact(input: EnforcerInput, attempt: PreparationAttempt, skipMap: boolean): Promise<{ok: boolean; reason?: string}> {
     const check = () => {
       this.reconcilePreparations();
@@ -937,6 +1116,9 @@ export class ClaudeCompactionEnforcer {
         { beforeWrite: check, deliveryId: `${SEAT_MESSAGE_ID_PREFIX}compaction-${attempt.attemptId}-compact`, freezeBody: true, messageClass: "command", occupantGeneration: attempt.occupantGeneration,
           ...(attempt.mode === "manual" ? { waitForIdleMs: Math.max(1, Math.min(1000, attempt.deadlineAt! - this.now())) } : {}) });
     };
+    // M6: a message racing a slash command can cost the command. The lane stays held from here until the first stage is accepted.
+    const pump = this.pumpFor(input.sessionName);
+    if (pump) this.holdContentLane(input.sessionName, pump);
     let result;
     try {
       const guard = this.sessionTransport.deliveryGuard;
@@ -947,10 +1129,11 @@ export class ClaudeCompactionEnforcer {
     if (!result.ok || result.outcome === "retained") {
       // A compact may have been pasted/submitted despite a lost result. Never replay automatically.
       const reason = attempt.reason ?? result.reason ?? "delivery_uncertain";
+      this.releaseContentLane(input.sessionName);
       this.stopPreparation(input.sessionName, reason, attempt);
       return { ok: false, reason };
     }
-    if (attempt.controller.signal.aborted) return { ok: false, reason: attempt.reason };
+    if (attempt.controller.signal.aborted) { this.releaseContentLane(input.sessionName); return { ok: false, reason: attempt.reason }; }
     attempt.status = "compact-sent";
     this.lastAutoCompactAt.set(input.sessionName, this.now());
     this.triggeredAboveThreshold.add(input.sessionName);
@@ -980,6 +1163,7 @@ export class ClaudeCompactionEnforcer {
     const attempt = this.pendingPreCompactPrep.get(session);
     if ((expected && expected !== attempt) || !attempt || attempt.status === "stopped" || attempt.status === "compact-sent") return;
     attempt.status = "stopped"; attempt.reason = reason; attempt.controller.abort();
+    if (attempt.delivery === "pending" && attempt.sends > 0) this.pumpFor(session)?.cancel(preparationRow(attempt), reason);  // a stopped attempt's prompt never arrives late
     if (attempt.mode === "manual") this.setManualStage(session, "skipped-or-failed", reason);
     this.persist(session);
   }
@@ -1012,6 +1196,9 @@ export class ClaudeCompactionEnforcer {
    */
   invalidateOccupant(sessionName: string): void {
     this.stopPreparation(sessionName, "stale_generation");
+    const stageRow = this.pendingStageRow(sessionName);
+    if (stageRow) this.pumpFor(sessionName)?.cancel(stageRow, "stale_generation");  // lifecycle text never reaches a successor
+    this.releaseContentLane(sessionName);
     this.lastAutoCompactAt.delete(sessionName);
     this.postCompactRestoreCooldownUntil.delete(sessionName);
     this.triggeredAboveThreshold.delete(sessionName);
