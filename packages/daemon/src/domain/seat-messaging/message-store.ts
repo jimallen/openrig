@@ -12,7 +12,7 @@ import type { HeldBinding } from "./pump-ports.js";
  *
  * `delivery_state` stays what old readers expect: an accepted row is `pending`, and a held row that rejoins stays `retained` until
  * it is received, so `rig seat held-messages`, `retire`, the quota and a rolled-back daemon all keep seeing a held message as held.
- * A retired row leaves the pump, because `OPEN` requires `pending` or `retained`.
+ * A retired row leaves the pump, because `OPEN` does not admit it.
  */
 export const MESSAGE_STATES = ["accepted", "attempting", "received", "undeliverable"] as const;
 export type MessageState = (typeof MESSAGE_STATES)[number];
@@ -75,16 +75,17 @@ interface MessageRow {
   body: string;
   ts_dispatched: string;
   message_state: string;
-  lane: number;
-  message_class: string | null;
+  lane: number | null;
+  class: string | null;
   attempts: number;
-  message_next_attempt_ms: number | null;
+  next_attempt_at: string | null;
   message_pause_reason: string | null;
   message_last_refusal: string | null;
   occupant_generation: string | null;
 }
 
-const OPEN = "message_state IN ('accepted', 'attempting') AND delivery_state IN ('pending', 'retained')";
+/** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
+const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
 const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "gate_unavailable"];
 
@@ -93,16 +94,18 @@ function pauseReasonOf(raw: string | null): MessagePauseReason | null {
 }
 
 /** Columns with no CHECK: a value this build does not know reads as the default, the lane and class nothing special happens on. */
-function laneOf(raw: number): SeatMessageLane { return raw === 0 || raw === 1 ? raw : 2; }
+function laneOf(raw: number | null): SeatMessageLane { return raw === 0 || raw === 1 ? raw : 2; }
 function classOf(raw: string | null): SeatMessageClass { return raw === "nudge" || raw === "lifecycle" ? raw : "content"; }
+
+function iso(ms: number | null): string | null { return ms === null ? null : new Date(ms).toISOString(); }
 
 function toMessage(row: MessageRow): StoredMessage {
   return {
     id: messageId(row.outbox_id), seat: row.destination_session, sender: row.sender_session, body: row.body,
     occupantGeneration: row.occupant_generation,
     state: row.message_state === "accepted" ? "accepted" : "attempting",
-    lane: laneOf(row.lane), messageClass: classOf(row.message_class),
-    attempts: row.attempts, nextAttemptAtMs: row.message_next_attempt_ms,
+    lane: laneOf(row.lane), messageClass: classOf(row.class),
+    attempts: row.attempts, nextAttemptAtMs: row.next_attempt_at === null ? null : Date.parse(row.next_attempt_at),
     pauseReason: pauseReasonOf(row.message_pause_reason), lastRefusal: row.message_last_refusal, acceptedAt: row.ts_dispatched,
   };
 }
@@ -128,8 +131,8 @@ export class MessageStore {
         outboxId: input.id, senderSession: input.sender, destinationSession: input.seat, body: input.body,
         urgency: input.urgency, tags: input.tags, auditPointer: input.auditPointer, identityProvenance: input.identityProvenance,
       });
-      this.db.prepare(`UPDATE outbox_entries SET message_state = 'accepted', occupant_generation = ?, lane = ?, message_class = ?, message_next_attempt_ms = ?
-        WHERE outbox_id = ? AND message_state IS NULL`).run(input.occupantGeneration ?? null, input.lane ?? MESSAGE_LANES.content, input.messageClass ?? null, input.firstAttemptAtMs ?? null, input.id);
+      this.db.prepare(`UPDATE outbox_entries SET message_state = 'accepted', message_id = coalesce(message_id, outbox_id), occupant_generation = ?, lane = ?, class = ?, next_attempt_at = ?
+        WHERE outbox_id = ? AND message_state IS NULL`).run(input.occupantGeneration ?? null, input.lane ?? MESSAGE_LANES.content, input.messageClass ?? null, iso(input.firstAttemptAtMs ?? null), input.id);
       return toMessage(this.read(input.id)!);
     })();
   }
@@ -141,7 +144,7 @@ export class MessageStore {
 
   /** The seat's oldest open message: the only one the pump may attempt (invariant 5). */
   headOf(seat: string): StoredMessage | null {
-    const row = this.db.prepare(`SELECT * FROM outbox_entries WHERE destination_session = ? AND ${OPEN} ORDER BY lane, rowid LIMIT 1`).get(seat) as MessageRow | undefined;
+    const row = this.db.prepare(`SELECT * FROM outbox_entries WHERE destination_session = ? AND ${OPEN} ORDER BY coalesce(lane, 2), rowid LIMIT 1`).get(seat) as MessageRow | undefined;
     return row ? toMessage(row) : null;
   }
 
@@ -149,20 +152,20 @@ export class MessageStore {
    *  here on the same schedule. The CAS on `attempts` means one claim per attempt. Leaves `accepted`. */
   claimAttempt(message: StoredMessage, nextAttemptAtMs: number): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', attempts = attempts + 1,
-        message_next_attempt_ms = ?, message_pause_reason = NULL
-      WHERE outbox_id = ? AND attempts = ? AND ${OPEN}`).run(nextAttemptAtMs, message.id, message.attempts).changes === 1;
+        next_attempt_at = ?, message_pause_reason = NULL
+      WHERE outbox_id = ? AND attempts = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), message.id, message.attempts).changes === 1;
   }
 
   /** The hop did not send, so the claim gives its attempt back: a pause spends no step of the backoff. */
   recordHopPause(id: MessageId, reason: HopPause, nextAttemptAtMs: number): void {
-    this.db.prepare(`UPDATE outbox_entries SET attempts = max(attempts - 1, 0), message_next_attempt_ms = ?, message_pause_reason = ?
-      WHERE outbox_id = ? AND ${OPEN}`).run(nextAttemptAtMs, reason, id);
+    this.db.prepare(`UPDATE outbox_entries SET attempts = max(attempts - 1, 0), next_attempt_at = ?, message_pause_reason = ?
+      WHERE outbox_id = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), reason, id);
   }
 
   /** The gate cannot be read: no attempt was claimed, so there is none to give back. */
   recordGateUnavailable(id: MessageId, nextAttemptAtMs: number): void {
-    this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', message_next_attempt_ms = max(coalesce(message_next_attempt_ms, 0), ?), message_pause_reason = 'gate_unavailable'
-      WHERE outbox_id = ? AND ${OPEN}`).run(nextAttemptAtMs, id);
+    this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', next_attempt_at = max(coalesce(next_attempt_at, ''), ?), message_pause_reason = 'gate_unavailable'
+      WHERE outbox_id = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), id);
   }
 
   recordRefusal(id: MessageId, reason: string): void {
@@ -175,15 +178,15 @@ export class MessageStore {
 
   /** The only way to `received` (invariant 3). A row that is no longer open is left as it is. */
   recordReceived(record: GateRecord, gateVersion: number): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'received', message_received_at = ?, message_gate_version = ?, message_gate_nonce = ?,
-        message_next_attempt_ms = NULL, message_pause_reason = NULL, delivery_state = 'delivered', delivered_at = ?,
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'received', gate_recorded_at = ?, message_gate_version = ?, gate_nonce = ?,
+        next_attempt_at = NULL, message_pause_reason = NULL, delivery_state = 'delivered', delivered_at = ?,
         delivery_path = NULL, ack_evidence = 'gate_seen', ack_detail = NULL
       WHERE outbox_id = ? AND ${OPEN}`).run(record.recordedAt, gateVersion, record.nonce, record.recordedAt, record.id).changes === 1;
   }
 
   /** Terminal. `returnQitem` is the sender's queue item, when one could be made. */
   recordUndeliverable(id: MessageId, reason: string, returnQitem: string | null, atIso: string): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'undeliverable', message_closed_reason = ?, message_closed_at = ?, message_next_attempt_ms = NULL,
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'undeliverable', message_closed_reason = ?, message_closed_at = ?, next_attempt_at = NULL,
         message_pause_reason = NULL, delivery_state = 'failed', delivery_path = NULL, ack_evidence = 'seat_gone', ack_detail = ?
       WHERE outbox_id = ? AND ${OPEN}`).run(reason, atIso, returnQitem, id).changes === 1;
   }
@@ -191,7 +194,7 @@ export class MessageStore {
   /** S4: ends a row nobody should still deliver (an unwound handover, a superseded reminder), with no notice to the sender. A record
    *  that arrives later changes nothing. */
   cancel(id: MessageId, reason: string, atIso: string): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'undeliverable', message_closed_reason = ?, message_closed_at = ?, message_next_attempt_ms = NULL,
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'undeliverable', message_closed_reason = ?, message_closed_at = ?, next_attempt_at = NULL,
         message_pause_reason = NULL, delivery_state = 'failed', delivery_path = 'none', ack_evidence = 'superseded', ack_detail = NULL
       WHERE outbox_id = ? AND ${OPEN}`).run(reason, atIso, id).changes === 1;
   }
@@ -207,22 +210,23 @@ export class MessageStore {
 
   /** Decision 1: the same id and body, now for the successor. Attempt history stays with the message. */
   moveToSuccessor(id: MessageId, successor: string): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET destination_session = ?, message_next_attempt_ms = NULL, message_pause_reason = NULL
+    return this.db.prepare(`UPDATE outbox_entries SET destination_session = ?, next_attempt_at = NULL, message_pause_reason = NULL
       WHERE outbox_id = ? AND ${OPEN}`).run(successor, id).changes === 1;
   }
 
-  /** Held rows the pump has not taken yet, oldest first. A binding that is not JSON names no seat, so such a row stays with `retire`. */
+  /** Held rows still the guard's, oldest first. A binding that is not JSON names no seat, so such a row stays with `retire`. */
   listHeld(): Array<{ id: MessageId; seat: string; binding: HeldBinding }> {
     const rows = this.db.prepare(`SELECT outbox_id AS id, destination_session AS seat, guard_binding AS binding FROM outbox_entries
-      WHERE delivery_state = 'retained' AND message_state IS NULL AND guard_binding IS NOT NULL AND json_valid(guard_binding) ORDER BY rowid`)
+      WHERE delivery_state = 'retained' AND message_hold_released_at IS NULL AND guard_binding IS NOT NULL AND json_valid(guard_binding) ORDER BY rowid`)
       .all() as Array<{ id: string; seat: string; binding: string }>;
     return rows.map((r) => ({ id: messageId(r.id), seat: r.seat, binding: JSON.parse(r.binding) as HeldBinding }));
   }
 
   /** Decision 4: a held message rejoins its seat's queue when the guard lifts. It keeps its rowid, so it stays ahead of anything
    *  newer, and stays `retained` until received (see the class note). */
-  adoptHeld(id: MessageId): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'accepted' WHERE outbox_id = ? AND delivery_state = 'retained' AND message_state IS NULL`).run(id).changes === 1;
+  adoptHeld(id: MessageId, atIso: string): boolean {
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = coalesce(message_state, 'accepted'), message_id = coalesce(message_id, outbox_id), message_hold_released_at = ?
+      WHERE outbox_id = ? AND delivery_state = 'retained' AND message_hold_released_at IS NULL`).run(atIso, id).changes === 1;
   }
 
   /** One line per seat with an open message: how many, and the oldest. SELECT only. */
@@ -240,7 +244,7 @@ export class MessageStore {
   endedSince(sinceIso: string): { received: number; undeliverable: number } {
     const count = (state: MessageState, column: string) => (this.db.prepare(`SELECT count(*) AS n FROM outbox_entries WHERE message_state = ? AND ${column} >= ?`)
       .get(state, sinceIso) as { n: number }).n;
-    return { received: count("received", "message_received_at"), undeliverable: count("undeliverable", "message_closed_at") };
+    return { received: count("received", "gate_recorded_at"), undeliverable: count("undeliverable", "message_closed_at") };
   }
 
   private read(id: string): MessageRow | undefined {

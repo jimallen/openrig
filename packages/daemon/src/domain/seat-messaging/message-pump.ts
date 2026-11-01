@@ -102,7 +102,7 @@ export class MessagePump {
 
   private rejoinHeld(): void {
     for (const held of this.deps.store.listHeld()) {
-      if (this.deps.ports.gateFor(held.seat) && this.deps.held.status(held.binding) === "lifted") this.deps.store.adoptHeld(held.id);
+      if (this.deps.ports.gateFor(held.seat) && this.deps.held.status(held.binding) === "lifted") this.deps.store.adoptHeld(held.id, new Date(this.clock()).toISOString());
     }
   }
 
@@ -122,9 +122,11 @@ export class MessagePump {
 
   private async visit(message: StoredMessage): Promise<Visit> {
     const gate = this.deps.ports.gateFor(message.seat);
-    const lookup = gate ? await this.readGate(gate, message) : null;
+    // A seat with no gate is not the pump's, in any fate: nothing here can know what reached it. It stays as it is, and shows on health.
+    if (!gate) return "stop";
+    const lookup = await this.readGate(gate, message);
     // First, ahead of the seat's fate: a record means the message arrived, whatever became of the seat since.
-    if (gate && lookup?.kind === "seen") {
+    if (lookup.kind === "seen") {
       return this.deps.store.recordReceived(lookup.record, gate.version) ? "next" : "stop";
     }
     const fate = this.deps.directory.fate(message.seat);
@@ -140,7 +142,6 @@ export class MessagePump {
     } else if (fate.kind === "gone") {
       return this.end(message, fate.reason);
     }
-    if (!lookup) return "stop";  // no gate: the seat stays as it is, and shows on health
     if (lookup.kind === "unavailable") {
       this.deps.store.recordGateUnavailable(message.id, this.clock() + this.timing.pauseRecheckMs);
       return "stop";

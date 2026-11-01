@@ -35,7 +35,7 @@ export class OutboxUnsettledSource extends RsiFindingSource {
   protected query({ db, now, limit }: SourceContext): SourceResult {
     const stale = hoursBefore(now, OUTBOX_UNSETTLED_MIN_AGE_HOURS).toISOString();
     const lookback = hoursBefore(now, OUTBOX_UNSETTLED_LOOKBACK_HOURS).toISOString();
-    // A row the pump owns is `pending` for as long as its seat is busy: being open is its job, so it is not "never settles" (S4 design, N7).
+    // A row the pump may still carry is not "never settles": it is `pending` for as long as a busy seat keeps it (design-delivery-s4 N7).
     const known = OUTBOX_DELIVERY_STATES.map((state) => `'${state}'`).join(", ");
     const rows = db.prepare(`SELECT coalesce(identity_provenance, '(unattributed)') AS prov,
         CASE WHEN delivery_state IN (${known}) THEN delivery_state ELSE 'other' END AS state,

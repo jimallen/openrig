@@ -124,6 +124,7 @@ import { nativeNameEnvelopeSchema } from "./migrations/119_native_name_envelope.
 import { nodeEnvPassthroughSchema } from "./migrations/120_node_env_passthrough.js";
 import { seatMessageStateSchema } from "./migrations/123_seat_message_state.js";
 import { bindingTerminalAddressSchema } from "./migrations/121_binding_terminal_address.js";
+import { seatMessageSchema } from "./migrations/122_seat_message.js";
 
 /** Numbers held for changes that have not landed, with the exact name each must land under. pda L0
  *  (pda-runtime-design-9l Rev 2): L2b added 115 (`nodes.pda_binding`) and L2c added 116
@@ -255,5 +256,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   nativeNameEnvelopeSchema,
   nodeEnvPassthroughSchema,
   bindingTerminalAddressSchema,
+  seatMessageSchema,
   seatMessageStateSchema,
 ];

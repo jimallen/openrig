@@ -99,17 +99,19 @@ describe("the message pump", () => {
 
       w.gate.record(messageId("m1"), "nonce-1");
       await pump.tick();
-      expect(row(db, "m1")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "gate_seen", message_gate_version: 3, message_gate_nonce: "nonce-1" });
+      expect(row(db, "m1")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "gate_seen", message_gate_version: 3, gate_nonce: "nonce-1" });
       expect(row(db, "m1").delivered_at).toBe("1970-01-01T02:00:00.000Z");
       expect(w.hop.calls).toHaveLength(1);
     });
 
-    it("a record that names another id is not this message's record", async () => {
+    it("a record that names another id is not this message's record, and settles neither row", async () => {
       accept("m1");
+      accept("m2");
       await pump.tick();
-      w.gate.answer = { kind: "seen", record: { id: messageId("other"), recordedAt: "1970-01-01T02:00:00.000Z", nonce: null } };
+      w.gate.answer = { kind: "seen", record: { id: messageId("m2"), recordedAt: "1970-01-01T02:00:00.000Z", nonce: null } };
       await pump.tick();
       expect(row(db, "m1").message_state).toBe("attempting");
+      expect(row(db, "m2").message_state).toBe("accepted");
     });
 
     it("a repeat carries the same id and body", async () => {
@@ -178,7 +180,7 @@ describe("the message pump", () => {
       await pump.tick();
       expect(w.hop.calls).toEqual([]);
       expect(row(db, "plain").message_state).toBeNull();
-      expect(row(db, "u1")).toMatchObject({ message_state: "accepted", attempts: 0, message_next_attempt_ms: null });
+      expect(row(db, "u1")).toMatchObject({ message_state: "accepted", attempts: 0, next_attempt_at: null });
     });
   });
 
@@ -302,7 +304,7 @@ describe("the message pump", () => {
         w.hop.result = { kind: "sent" };
         await pump.tick();
         expect(w.hop.calls).toHaveLength(2);
-        expect(row(db, "m1")).toMatchObject({ message_state: "attempting", message_pause_reason: null, attempts: 1, message_next_attempt_ms: w.now + 2 * MIN });
+        expect(row(db, "m1")).toMatchObject({ message_state: "attempting", message_pause_reason: null, attempts: 1, next_attempt_at: new Date(w.now + 2 * MIN).toISOString() });
       });
     }
 
@@ -360,7 +362,7 @@ describe("the message pump", () => {
         const restarted = new MessagePump(w.deps(second));
         await restarted.tick();
         expect(w.hop.calls).toEqual([]);  // the row's own time, not an in-memory one, says when
-        expect(row(b, "m1")).toMatchObject({ message_state: "attempting", attempts: 1, message_next_attempt_ms: T0 + 2 * MIN });
+        expect(row(b, "m1")).toMatchObject({ message_state: "attempting", attempts: 1, next_attempt_at: new Date(T0 + 2 * MIN).toISOString() });
         w.now += 2 * MIN;
         await restarted.tick();
         expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m1"]);
@@ -426,6 +428,19 @@ describe("the message pump", () => {
       await pump.tick();
       expect(row(db, "h1")).toMatchObject({ delivery_state: "delivered", message_state: "received" });
       expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m2", "h1", "m3"]);
+    });
+
+    it("a row the send path left attempting when the guard held it is still the guard's", async () => {
+      hold("h1");
+      db.prepare("UPDATE outbox_entries SET message_state = 'attempting', attempts = 1 WHERE outbox_id = 'h1'").run();
+      await pump.tick();
+      expect(w.hop.calls).toEqual([]);
+      w.holds.set("n1", "occupant_changed");
+      await pump.tick();
+      expect(w.hop.calls).toEqual([]);
+      w.holds.set("n1", "lifted");
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["h1"]);
     });
 
     it("are not replayed to an occupant that did not hold them", async () => {
@@ -526,12 +541,13 @@ describe("the message pump", () => {
       expect(w.returned).toEqual([]);
     });
 
-    it("a gone seat that never declared a gate still ends: it has no gate to wait on", async () => {
+    it("a seat with no gate is not the pump's in any fate: nothing here can know what reached it", async () => {
       w.ungated.add(SEAT);
       accept("m1");
       w.fates.set(SEAT, { kind: "gone", reason: "archived" });
       await pump.tick();
-      expect(row(db, "m1").message_state).toBe("undeliverable");
+      expect(row(db, "m1").message_state).toBe("accepted");
+      expect(w.returned).toEqual([]);
     });
 
     it("an unknown fate proves nothing", async () => {

@@ -18,7 +18,8 @@ describe("an hc send with no confirmation", () => {
     expect(route).toContain("delivery_outcome_unknown: 202,");
   });
   it("is recorded as indeterminate in a broadcast, never failed", () => {
-    expect(route.indexOf("isUnconfirmedHcSend(r)")).toBeLessThan(route.indexOf("else outbox.markFailed(entry.outboxId, labelForTmuxSend(r))"));
-    expect(route).toContain("outbox.markIndeterminate(entry.outboxId, labelForTmuxSend(r))");
+    // The row moved inside transport.send (Seat Messaging S1), and the route settles nothing: hc-session-transport pins the row.
+    expect(route).not.toContain("markFailed");
+    expect(route).not.toContain("markDelivered");
   });
 });

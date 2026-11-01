@@ -150,6 +150,11 @@ function printTransportFailure(err: DaemonConnectionError, opts?: { json?: boole
 }
 
 /** Reject content that cannot communicate anything, before a transport call. */
+/** The envelope's stamp: a message under a caller's id has none, because a repeat under the id must be the same bytes. */
+function stampMeta(id: string | undefined): { stampISO?: string } {
+  return id === undefined ? { stampISO: new Date().toISOString() } : {};
+}
+
 export function refuseEmptyMessage(body: string, verb: "send" | "broadcast", json = false): boolean {
   if (body.trim().length > 0) return false;
   const fact = `rig ${verb}: message is empty or whitespace-only.`;
@@ -263,6 +268,7 @@ export function sendCommand(depsOverride?: SendDeps): Command {
     .option("--from <session>", "DEPRECATED + IGNORED (P21 I4). The rendered From:/actor now DERIVES from the transport identity ($OPENRIG_SESSION_NAME, stamped as X-OpenRig-Session) — never a caller-supplied string, which was specimen-5's forgeable surface. Cross-host origin is carried by the relay re-stamping from its authenticated context.")
     .option("--context <ref>", "Deliver a context pack by its path-like ref (e.g. packs/compaction-restore). The resolved content is sent; an oversized ref is flagged as 'walk-sized'.")
     .option("--file <path>", "Read the message text from a file (UTF-8; '-' reads stdin) instead of a positional argument. Bytes are sent exactly, never shell-interpreted: use it with a quoted heredoc for any text containing $(...), backticks, or a leading '---'.")
+    .option("--id <id>", "Name this message's id. A repeat under the same id is the same message: one row, one more attempt. It must be the same text, and it carries no Sent stamp, so every attempt is the same bytes. Until the seat has a gate, a repeat is typed again.")
     .option("--json", "JSON output for agents")
     .addHelpText("after", `
 Examples:
@@ -327,7 +333,7 @@ result and verify verdict are the REMOTE's, verbatim. A target of the form
 agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
 (explicit --host > target sugar > persisted selection; a conflict between
 --host and the sugar is an error).`)
-    .action(async (session: string | undefined, text: string | undefined, opts: { to?: string[]; pod?: string; rig?: string; verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; host?: string; from?: string; context?: string; file?: string; json?: boolean }) => {
+    .action(async (session: string | undefined, text: string | undefined, opts: { to?: string[]; pod?: string; rig?: string; verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; host?: string; from?: string; context?: string; file?: string; id?: string; json?: boolean }) => {
       // OPR.0.4.6.MH1 FR-2: selected-host routing — explicit --host wins;
       // else the persisted selection feeds the SHIPPED --host path; no
       // selection = today exactly. OPR.0.4.6.MH4 §4: the raw flag is kept
@@ -538,11 +544,11 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
       if (refuseEmptyMessage(payload, "send", Boolean(opts.json))) return;
       // Send/broadcast header (ruling 03c35295): a directed `rig send` is a DM — stamp it at send-time
       // (Sent: MM-DD HH:MMZ) so transcripts are timestamped; the To line stays the single recipient.
-      const outboundText = raw ? payload : wrapSendBody(senderSession, session, payload, { stampISO: new Date().toISOString() });
+      const outboundText = raw ? payload : wrapSendBody(senderSession, session, payload, stampMeta(opts.id));
       let res: { status: number; data: Record<string, unknown> };
       try {
         res = await client.post<Record<string, unknown>>("/api/transport/send", {
-          session, text: outboundText, deliveryId: randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
+          session, text: outboundText, deliveryId: opts.id ?? randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
           dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
         }, transportRequestOptions(waitForIdleMs));
       } catch (err) {
@@ -791,7 +797,7 @@ async function runCrossHostSend(
   hostId: string,
   session: string,
   text: string,
-  opts: { verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; from?: string; json?: boolean },
+  opts: { verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; from?: string; id?: string; json?: boolean },
   deps: SendDeps,
   waitForIdleMs?: number,
   hint?: string,
@@ -834,6 +840,7 @@ async function runCrossHostSend(
   if (opts.raw) argv.push("--raw");
   if (opts.dangerouslyInteract) argv.push("--dangerously-interact");
   if (opts.reason !== undefined) argv.push("--reason", opts.reason);
+  if (opts.id !== undefined) argv.push("--id", opts.id);
   // Sender provenance: the ssh relay re-runs `rig send` on the remote, which
   // would otherwise resolve ITS OWN session and degrade the envelope sender
   // to "unknown". Carry the origin so the remote envelope names the originating
@@ -904,7 +911,7 @@ async function runHttpHostSend(
   host: HttpHostEntry,
   session: string,
   text: string,
-  opts: { verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; from?: string; json?: boolean },
+  opts: { verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; from?: string; id?: string; json?: boolean },
   deps: SendDeps,
   waitForIdleMs?: number,
   hint?: string,
@@ -921,10 +928,10 @@ async function runHttpHostSend(
       ? `${senderSession}@${selfHostId}`
       : senderSession;
   const raw = Boolean(opts.raw || opts.dangerouslyInteract);
-  const outboundText = raw ? text : wrapSendBody(originSender, session, text, { stampISO: new Date().toISOString() });
+  const outboundText = raw ? text : wrapSendBody(originSender, session, text, stampMeta(opts.id));
 
   const result = await runRemoteHttpOp(host.id, "POST", "/api/transport/send", {
-    session, text: outboundText, deliveryId: randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
+    session, text: outboundText, deliveryId: opts.id ?? randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
     dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
   }, deps, { timeoutMs: transportSendBudgetMs(waitForIdleMs) });
 
@@ -1004,7 +1011,7 @@ async function runFanOutSend(params: {
   // ba41fea2 — `from` was omitted here while the caller already forwarded it
   // at runtime, so an explicit --from was silently dropped on fan-out only
   // (single-seat + both cross-host paths always honored it).
-  opts: { verify?: boolean; force?: boolean; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; from?: string; json?: boolean };
+  opts: { verify?: boolean; force?: boolean; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; from?: string; id?: string; json?: boolean };
   deps: SendDeps;
   /** P18: the seat identity resolved from the seat env, or `undefined` when unresolvable (env-less send
    *  DELIVERS with the `<unknown sender>` marker + null actorSession — no refusal). */
@@ -1031,6 +1038,7 @@ async function runFanOutSend(params: {
     reason: opts.reason,
     actorSession: senderSession ?? null,
   };
+  if (opts.id !== undefined) body.deliveryId = opts.id;
   if (toList) body.sessions = toList;
   else if (pod) body.pod = pod;
   else if (rig) body.rig = rig;

@@ -20,6 +20,7 @@ import type {
 // production (no runtime import cost from this line).
 import type { CodexProfileProbeResult } from "../domain/codex-profile-preflight.js";
 import { resolveConcreteHint } from "../domain/runtime-adapter.js";
+import type { DirectTextCarrier } from "../domain/seat-messaging/message-ledger.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { observeCodexSandbox, type AppliedLaunchObservation } from "../domain/permission-drift.js";
 import {
@@ -97,6 +98,7 @@ export interface CodexAdapterFsOps {
 export class CodexRuntimeAdapter implements RuntimeAdapter {
   readonly runtime = "codex";
   private tmux: TmuxAdapter;
+  private directText?: DirectTextCarrier;
   private seatLaunchEnvironment?: SeatLaunchEnvironment;
   private fs: CodexAdapterFsOps;
   private listProcesses: () => CodexProcess[] | Promise<CodexProcess[]>;
@@ -142,6 +144,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
   constructor(deps: {
     tmux: TmuxAdapter;
+    /** Seat Messaging: commits a row before startup text is typed. */
+    directText?: DirectTextCarrier;
     seatLaunchEnvironment?: SeatLaunchEnvironment;
     fsOps: CodexAdapterFsOps;
     listProcesses?: () => CodexProcess[] | Promise<CodexProcess[]>;
@@ -166,6 +170,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     configWritePolicy?: CodexConfigWritePolicy;
   }) {
     this.tmux = deps.tmux;
+    this.directText = deps.directText;
     this.configWritePolicy = deps.configWritePolicy ?? unrestrictedCodexConfigWrites;
     this.prepareTeamWorkspace = deps.prepareTeamWorkspace;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
@@ -384,11 +389,16 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
               }
               // OF-160 (z5): startup-file content is operator-authored prose pasted bracketed;
               // strip the paste-end marker so it can never close the paste early here.
-              const textResult = await this.tmux.sendText(binding.tmuxSession, inertStartupText(content));
-              if (!textResult.ok) throw new Error(textResult.message);
-              await this.sleep(200);
-              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
-              if (!submitResult.ok) throw new Error(submitResult.message);
+              const seat = binding.tmuxSession;
+              const body = inertStartupText(content);
+              const write = async (): Promise<{ ok: boolean; message?: string }> => {
+                const textResult = await this.tmux.sendText(seat, body);
+                if (!textResult.ok) return textResult;
+                await this.sleep(200);
+                return this.tmux.sendKeys(seat, ["Enter"]);
+              };
+              const written = await (this.directText?.carryDirect({ kind: "startup", seat, body, messageClass: "lifecycle" }, write) ?? write());
+              if (!written.ok) throw new Error(written.message);
             }
             break;
           }

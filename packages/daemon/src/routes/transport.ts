@@ -2,7 +2,8 @@ import { Hono } from "hono";
 import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
-import { isUnconfirmedHcSend, labelForTmuxSend, OutboxHandlerError, type OutboxHandler } from "../domain/outbox-handler.js";
+import { DAEMON_OUTBOX_ID_PREFIXES, OutboxHandlerError, type OutboxHandler } from "../domain/outbox-handler.js";
+import { mintMessageId } from "../domain/seat-messaging/message-ledger.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
 // S2 (OPR.0.5.4.3) — the sender-side half of two-ended honesty: appended to any
@@ -18,6 +19,18 @@ const UNKNOWN_SENDER_NOTICE =
 // one source of truth with no third definition. wrapPaneEnvelope with an absent
 // sender renders "From: <marker>" as its first line.
 const UNKNOWN_SENDER_MARKER = wrapPaneEnvelope(undefined, "", "").split("\n")[0]!.replace(/^From: /, "");
+
+/** A caller's message id reaches a native marker (`[openrig-msg <id>:<nonce>]`), so it is held to that marker's alphabet. */
+const CALLER_MESSAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** Why a caller may not name this id, or null. A daemon prefix is refused because the row now commits before the send: a caller's
+ *  `wake-intent-x` left pending would be executed by the boot drain. */
+function refusedMessageId(id: unknown): string | null {
+  if (id === undefined) return null;
+  if (typeof id !== "string" || !CALLER_MESSAGE_ID.test(id)) return "deliveryId must be 1-128 characters of letters, digits, '.', '_', ':' or '-', starting with a letter or digit. No text was sent.";
+  if (DAEMON_OUTBOX_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return `deliveryId may not start with a daemon-reserved prefix (${DAEMON_OUTBOX_ID_PREFIXES.join(", ")}). No text was sent.`;
+  return null;
+}
 
 /** Recorded as `retired_by` when the close came from a shell with no seat identity (no X-OpenRig-Session header). */
 export const UNATTRIBUTED_OPERATOR = "operator (no seat identity)";
@@ -50,6 +63,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     if (!body.session || (!body.text && !body.submitOnly)) {
       return c.json({ error: "Missing required fields: session, text" }, 400);
     }
+    const idRefusal = refusedMessageId(body.deliveryId);
+    if (idRefusal) return c.json({ ok: false, reason: "invalid_delivery_id", error: idRefusal }, 400);
     // OPR.0.4.1.10 — the danger override and wait mode are contradictory; reject before transport.
     if (body.dangerouslyInteract && body.waitForIdleMs !== undefined) {
       return c.json({
@@ -100,9 +115,11 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       return c.json({ ok: false, error: resolved.error }, status);
     }
 
+    // The row commits inside transport.send, before any write, and every send from here is settled there. The id is the answer's:
+    // a repeat under it is the same message.
+    const messageId = body.submitOnly ? undefined : body.deliveryId ?? mintMessageId();
     const result = await transport.send(body.session, body.text ?? "", {
-      ownsOutboxRow: true,  // this route records the row below
-      deliveryId: body.deliveryId,
+      deliveryId: messageId,
       verify: body.verify,
       force: body.force,
       waitForIdleMs: body.waitForIdleMs,
@@ -116,7 +133,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       expectedStagedLineCount: body.expectedStagedLineCount,
     });
 
-    if (result.outcome === "retained") return c.json(result);
+    const answer = messageId ? { ...result, messageId } : result;
+    if (result.outcome === "retained") return c.json(answer);
 
     if (!result.ok) {
       const statusMap: Record<string, number> = {
@@ -124,6 +142,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         guard_target_unknown: 409,
         guard_target_changed: 409,
         delivery_identity_conflict: 409,
+        message_not_recorded: 500,
         retained_quota_full: 409,
         session_missing: 404,
         tmux_unavailable: 503,
@@ -154,64 +173,17 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         delivery_outcome_unknown: 202,
       };
       const status = (statusMap[result.reason ?? ""] ?? 500) as 202 | 400 | 404 | 409 | 500 | 502 | 503;
-      // A send to an hc seat the core may still deliver (or whose reply was lost) is accepted, not failed, and not settled: it is
-      // recorded `indeterminate` with its pending record, exactly as /broadcast records it, so the sweep can settle it and `rig
-      // health` can name it. Without the row it left no trace anywhere once this response was read (the one rule, at its other site).
-      // An unattributed send is recorded too (sender unknown, origin-unknown provenance): its sender was told 202 "not failed", and
-      // without a row `rig health` could never name it. The success path still records only an attributed send.
-      if (!body.submitOnly && isUnconfirmedHcSend(result)) {
-        const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
-        if (outbox) {
-          try {
-            const entry = outbox.record({ senderSession: derivedActor ?? UNKNOWN_SENDER_MARKER, destinationSession: body.session, body: body.text, identityProvenance: derivedActor ? "transport:v1" : "origin-unknown:v1" });
-            outbox.markIndeterminate(entry.outboxId, labelForTmuxSend(result));
-          } catch (err) {
-            console.warn(`[transport/send] outbox auto-record of an unconfirmed hc send failed: ${(err as Error).message}`);
-          }
-        }
-      }
-      return c.json(result, status);
-    }
-
-    // A3 (P22): auto-record the DISPATCHED send into the sender-side outbox, so a derived send cannot
-    // accept-and-drop at the audit layer (the specimen-5 window: no outbox row, attribution survived only
-    // via provider JSONL). STRICTLY DOWNSTREAM of the certified header-derivation (line 65): it consumes
-    // the already-derived `derivedActor`, never re-derives or alters it. Records only a DERIVED send —
-    // `derivedActor` present — with the era-stamp `transport:v1` (the sole mode this header-derived route
-    // produces; a cross-host relay's header IS the origin triple, so the recorded sender is the ORIGIN,
-    // never the relay). A null-actor send has no derived sender to attribute (no fabricated row). The
-    // send is already committed, so a rare audit-write failure is LOGGED, never a false-negative on a
-    // delivered send.
-    // Native comms step 3: a native send created and claimed its own row before the write; it is settled by the seat's
-    // ack or the deadline sweeper, never here.
-    if (derivedActor && !body.submitOnly && result.path !== "native") { // submitOnly types no text — nothing to outbox-record
-      const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
-      if (outbox) {
-        try {
-          const entry = outbox.record({
-            senderSession: derivedActor,
-            destinationSession: body.session,
-            body: body.text,
-            identityProvenance: "transport:v1",
-          });
-          // OF-74: settle the row exactly as /broadcast does for a landed recipient. This point is
-          // reached only for result.ok (failures and retained sends returned above), so the send
-          // is delivered; leaving the row `pending` stranded one row per send forever.
-          outbox.markDelivered(entry.outboxId, labelForTmuxSend(result));
-        } catch (err) {
-          console.warn(`[transport/send] outbox auto-record failed (send already delivered): ${(err as Error).message}`);
-        }
-      }
+      return c.json(answer, status);
     }
 
     // S2 (OPR.0.5.4.3) sender-side honesty: an unattributed delivery tells the sender, on the
     // success payload the CLI renderers surface, that the recipient cannot know who sent it.
     // Composes with any existing transport warning; attributed sends see no change and no nag.
     if (!derivedActor) {
-      result.warning = result.warning ? `${result.warning} ${UNKNOWN_SENDER_NOTICE}` : UNKNOWN_SENDER_NOTICE;
+      answer.warning = result.warning ? `${result.warning} ${UNKNOWN_SENDER_NOTICE}` : UNKNOWN_SENDER_NOTICE;
     }
 
-    return c.json(result);
+    return c.json(answer);
   });
 
   // The operator's close of an unsettled hc send (rig seat retire-unsettled-send): the person has looked at the seat. Audited with
@@ -288,6 +260,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       pod?: string;
       // OPR.0.4.3.30 — explicit multi-recipient list (`rig send --to a,b`).
       sessions?: string[];
+      /** The fan-out's id: each recipient's message is `<id>:<seat>`. */
+      deliveryId?: string;
       text: string;
       verify?: boolean;
       force?: boolean;
@@ -306,6 +280,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     if (!body.text) {
       return c.json({ error: "Missing required field: text" }, 400);
     }
+    const idRefusal = refusedMessageId(body.deliveryId);
+    if (idRefusal) return c.json({ ok: false, reason: "invalid_delivery_id", error: idRefusal }, 400);
 
     // P21 I4 + S2 (OPR.0.5.4.3): the --dangerously-interact override AUDIT actor is DERIVED from the
     // transport header (see /send). An absent header no longer refuses — the send proceeds and the
@@ -336,7 +312,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
             : { global: true };
 
     const result = await transport.broadcast(target, body.text, {
-      ownsOutboxRow: true,  // this route records a row per recipient below
+      deliveryId: body.deliveryId,
       verify: body.verify,
       force: body.force,
       waitForIdleMs: body.waitForIdleMs,
@@ -346,34 +322,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       envelopeSender, // the From: is the DERIVED identity (never the body value) — orch ruling (a)
     });
 
-    // A3b (P22 follow-on, planner-ruled IN scope): auto-record the fan-out — N rows, ONE per RESOLVED
-    // recipient. The schema is a per-recipient design (destination_session is typed + indexed; per-row
-    // delivery_state), so a partial fan-out records the TRUTH per recipient, never a lossy aggregate.
-    // STRICTLY DOWNSTREAM of the certified derivation (derivedActor above): each row's sender is the
-    // already-derived actor; destination = the RESOLVED session, NEVER the TargetSpec (which would poison
-    // the typed session column). Best-effort per row: the fan-out is already dispatched, so a rare
-    // audit-write failure is logged, never a false-negative on delivery.
-    if (derivedActor) {
-      const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
-      if (outbox) {
-        for (const r of result.results) {
-          if (!r.sessionName || r.outcome === "retained" || r.path === "native") continue;
-          try {
-            const entry = outbox.record({
-              senderSession: derivedActor,
-              destinationSession: r.sessionName,
-              body: body.text,
-              identityProvenance: "transport:v1",
-            });
-            if (r.ok) outbox.markDelivered(entry.outboxId, labelForTmuxSend(r));
-            else if (isUnconfirmedHcSend(r)) outbox.markIndeterminate(entry.outboxId, labelForTmuxSend(r));
-            else outbox.markFailed(entry.outboxId, labelForTmuxSend(r));
-          } catch (err) {
-            console.warn(`[transport/broadcast] outbox auto-record failed for ${r.sessionName} (fan-out already dispatched): ${(err as Error).message}`);
-          }
-        }
-      }
-    }
+    // A3b (P22): one row per RESOLVED recipient, committed and settled inside transport.send, so a partial fan-out records the truth per
+    // recipient.
 
     // S2 (OPR.0.5.4.3) sender-side honesty: an unattributed fan-out's response carries the
     // sign-it notice for the CLI renderers to surface. Attributed fan-outs are unchanged.

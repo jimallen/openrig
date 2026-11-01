@@ -1,6 +1,5 @@
 // hc cutover: the two route-level behaviours around a send to an hc seat that nobody has settled.
-//   1. /send records the unconfirmed send as an `indeterminate` row with its pending record, as /broadcast does, so the sweep can
-//      settle it and `rig health` can name it. Before this the 202 left no row at all.
+//   1. /send answers 202 with the message's id. The row is transport.send's (Seat Messaging S1).
 //   2. The operator's close (rig seat retire-unsettled-send): audited, refuses a settled row, another seat's row and a row not
 //      yet escalated, and never sends.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,12 +19,12 @@ const sqliteStamp = (ms: number) => new Date(ms).toISOString().replace("T", " ")
 
 type SendResult = Awaited<ReturnType<SessionTransport["send"]>>;
 
-function app(outbox: OutboxHandler, send: (session: string) => SendResult) {
+function app(outbox: OutboxHandler, send: (session: string) => SendResult, ids: Array<string | undefined> = []) {
   const calls: string[] = [];
   // The route reads two methods of the transport; the stub is typed as exactly those.
   const transport: Pick<SessionTransport, "resolveSessions" | "send"> = {
     resolveSessions: async () => ({ ok: true, sessions: [] }),
-    send: async (session) => { calls.push(session); return send(session); },
+    send: async (session, _text, opts) => { calls.push(session); ids.push(opts?.deliveryId); return send(session); },
   };
   const hono = new Hono();
   hono.use("*", async (c, next) => {
@@ -48,24 +47,23 @@ describe("/send records a send to an hc seat that is not confirmed", () => {
 
   const unconfirmed = (reason: "waiting_on_person" | "delivery_outcome_unknown"): SendResult => ({ ok: false, sessionName: "dev@rig", path: "hc", reason, error: "not confirmed", hcPending: PENDING });
 
-  it.each([["waiting_on_person", "waiting_on_person"], ["delivery_outcome_unknown", "outcome_unknown"]] as const)("%s: 202, and one indeterminate row carrying the pending record", async (reason, evidence) => {
-    const { hono } = app(outbox, () => unconfirmed(reason));
-    const res = await post(hono, "/api/transport/send", { session: "dev@rig", text: "hello" });
+  // The row commits inside transport.send (Seat Messaging S1): hc-session-transport pins it. The route's part is the id and the 202.
+  it.each(["waiting_on_person", "delivery_outcome_unknown"] as const)("%s: 202, carrying the id the transport was given", async (reason) => {
+    const given: Array<string | undefined> = [];
+    const { hono } = app(outbox, () => unconfirmed(reason), given);
+    const res = await post(hono, "/api/transport/send", { session: "dev@rig", text: "hello", deliveryId: "caller-1" });
     expect(res.status).toBe(202);
-    const rows = outbox.listHcUnsettled();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ senderSession: "planner@rig", destinationSession: "dev@rig", deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: evidence });
-    expect(JSON.parse(rows[0]!.ackDetail!)).toEqual(PENDING);
+    expect(given).toEqual(["caller-1"]);
+    expect(await res.json()).toMatchObject({ messageId: "caller-1", reason });
   });
 
-  it("records an unattributed unconfirmed send too: its sender was told 202, and without a row health could never name it (QA F7)", async () => {
-    const anon = app(outbox, () => unconfirmed("waiting_on_person"));
-    expect((await post(anon.hono, "/api/transport/send", { session: "dev@rig", text: "hello" }, null)).status).toBe(202);
-    const rows = outbox.listHcUnsettled();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ destinationSession: "dev@rig", deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: "waiting_on_person" });
-    expect(rows[0]!.senderSession).not.toBe("planner@rig");
-    expect(db.prepare("SELECT identity_provenance AS p FROM outbox_entries").get()).toEqual({ p: "origin-unknown:v1" });
+  it("an unattributed send gets a minted id too: its sender was told 202", async () => {
+    const given: Array<string | undefined> = [];
+    const anon = app(outbox, () => unconfirmed("waiting_on_person"), given);
+    const res = await post(anon.hono, "/api/transport/send", { session: "dev@rig", text: "hello" }, null);
+    expect(res.status).toBe(202);
+    expect(given[0]).toMatch(/^seat-msg-/);
+    expect((await res.json() as { messageId: string }).messageId).toBe(given[0]);
   });
 
   it("records nothing for a definite refusal, or for submit-only (nothing was typed)", async () => {
