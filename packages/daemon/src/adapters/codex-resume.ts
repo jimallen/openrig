@@ -13,6 +13,7 @@ import { prepareSeatMcpLaunchArgs, type PathJudgeIo, type SeatMcpSelection, type
 import { codexPostureArg } from "./yolo-mode.js";
 import { observeCodexSandbox } from "../domain/permission-drift.js";
 import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
+import { codexHcPreflight, type CodexVersionDetector } from "./hc-runtime-requirements.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 
 const CODEX_TYPES = new Set(["codex_id", "codex_last"]);
@@ -35,6 +36,8 @@ interface CodexResumeOptions {
   exec?: (cmd: string) => Promise<string>;
   /** #69: whether the installed Codex supports --no-daemon; absent keeps the existing invocation. */
   detectDaemonSupport?: CodexDaemonSupportDetector;
+  /** hc host only: the Codex version a seat would run, checked against the floor (hc-runtime-requirements.ts). */
+  detectVersion?: CodexVersionDetector;
   /** #275: Codex's own answer on the plain floor's network default; absent keeps the existing invocation. */
   readNetworkDefault?: CodexNetworkDefaultReader;
   /** Server names other Codex config layers define for this launch; asked only for a seat with a switched-on server. */
@@ -105,6 +108,11 @@ export class CodexResumeAdapter {
 
     // #69: detect for the Codex the restored pane runs (its cwd, the launch PATH).
     const daemonSupport = this.options.detectDaemonSupport ? await this.options.detectDaemonSupport(cwd) : undefined;
+    // Under hc the version floor and the --no-daemon requirement are enforced (design section 15). On tmux nothing changes.
+    if (this.tmux.hostKind === "hc") {
+      const refusal = await codexHcPreflight(cwd, this.options.detectVersion, daemonSupport);
+      if (refusal) return { ok: false, code: "resume_failed", message: refusal };
+    }
     if (daemonSupport?.kind === "unknown") {
       return { ok: false, code: "resume_failed", message: unknownDaemonSupportMessage(daemonSupport.detail) };
     }
