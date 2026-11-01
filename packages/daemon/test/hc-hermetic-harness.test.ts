@@ -69,6 +69,15 @@ describe("hc seat poison: the setup neutralises a seat's ambient core env", () =
   }, 180_000);
 });
 
+describe("the real-Codex opt-in still scrubs the core's socket (security review F8)", () => {
+  it("OPENRIG_E2E_REAL_CODEX=1 with HC_* and XDG_RUNTIME_DIR naming a core passes the same hygiene rows, with the real HOME kept", () => {
+    const child = childVitest("hc env hygiene", { ...POISON_ENV, OPENRIG_E2E_REAL_CODEX: "1" });
+    const output = `${child.stdout}\n${child.stderr}`;
+    expect(output).toMatch(/3 passed/);
+    expect(child.status, output).toBe(0);
+  }, 180_000);
+});
+
 const processes = (argsText: string, parents: Array<[number, number]> = []): ProcessTable => ({ parents: new Map(parents), argsText });
 
 describe("hc scratch tripwire: attribution (unit)", () => {
