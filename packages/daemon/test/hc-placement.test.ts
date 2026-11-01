@@ -351,6 +351,8 @@ describe("showing a plan again (the premise of a repeat `rig terminal open`: reo
 
     await placement.showTabs(plan);
 
+    // Restated, not read back from a first show: a show that labels the tab alone would agree with itself.
+    expect(parked.labels).toEqual({ "openrig.seat": "dev-a@r", "herdr.space": "rig:r", "herdr.tab": "rig:r/team" });
     expect(snapshot(core)).toBe(before);
   });
 });
