@@ -127,44 +127,16 @@ describe("the hops", () => {
     it("a person's draft holds: nothing is added or submitted", async () => {
       eligible = false;
       screen = "❯ one line draft\n──────────────\n";
-      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "draft" });
       expect(calls).toEqual([]);
     });
-    it("a collapsed paste with no paste of ours behind it holds: no Enter, no clear, no paste on top", async () => {
+    it("a collapsed paste is a draft, whatever its size: no Enter, no clear, no paste on top", async () => {
       eligible = false;
-      screen = "❯ [Pasted text #1 +2 lines]\n──────────────\n";
-      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+      for (const lines of [2, 3]) {
+        screen = `❯ [Pasted text #1 +${lines} lines]\n──────────────\n`;
+        await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "draft" });
+      }
       expect(calls).toEqual([]);
-    });
-    it("our collapsed copy, its Enter lost: cleared with ctrl+c, checked empty, pasted again under the same id", async () => {
-      eligible = false;
-      store.markPasted(ID, "1970-01-01T00:00:00.000Z");
-      screen = "❯ [Pasted text #1 +2 lines]\n──────────────\n";
-      const inputCleared = { ...input, sendKeys: async (_s: string, keys: string[]) => { calls.push(`keys:${keys.join("+")}`); screen = "❯ \n──────────────\n"; return { ok: true as const }; } };
-      const hop = new ClaudeSeatHop({ rows: store, guard, client, input: inputCleared, now: () => now, eligibility: async () => ({ ok: false, reason: "no" }), writeToSeat: async () => "none" });
-      await expect(hop.attempt(message)).resolves.toEqual({ kind: "sent" });
-      expect(calls).toEqual(["keys:C-c", `paste:${text()}`]);
-    });
-    it("a clear that did not empty the composer pastes nothing", async () => {
-      eligible = false;
-      store.markPasted(ID, "1970-01-01T00:00:00.000Z");
-      screen = "❯ [Pasted text #1 +2 lines]\n──────────────\n";
-      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
-      expect(calls).toEqual(["keys:C-c"]);
-    });
-    it("a copy of another size is not ours, whatever the row says", async () => {
-      eligible = false;
-      store.markPasted(ID, "1970-01-01T00:00:00.000Z");
-      screen = "❯ [Pasted text #1 +3 lines]\n──────────────\n";
-      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
-      expect(calls).toEqual([]);
-    });
-    it("marks the paste before it writes, so a crash in the write still knows", async () => {
-      eligible = false;
-      let during = false;
-      const marking = { ...input, submitText: async () => { during = store.hasPasted(ID); return { ok: true as const }; } };
-      await new ClaudeSeatHop({ rows: store, guard, client, input: marking, now: () => now, eligibility: async () => ({ ok: false, reason: "no" }), writeToSeat: async () => "none" }).attempt(message);
-      expect(during).toBe(true);
     });
     it("no composer on the screen proves nothing", async () => {
       eligible = false;
@@ -222,45 +194,17 @@ describe("the hops", () => {
       await expect(codex().attempt(message)).resolves.toEqual({ kind: "sent" });
       expect(calls).toEqual(["keys:Enter"]);
     });
-    const collapsed = () => `› [Pasted Content ${text().length} chars]\n${FOOTER}`;
-    const clearing = () => ({ ...input, sendKeys: async (_s: string, keys: string[]) => { calls.push(`keys:${keys.join("+")}`); screen = `› Ask Codex to do anything\n${FOOTER}`; return { ok: true as const }; } });
-    it("a collapsed paste of exactly this length with no paste of ours behind it holds: it could be a person's", async () => {
-      screen = collapsed();
-      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+    it("a collapsed paste of exactly this length is a draft: a size cannot tell ours from a person's, so nothing touches it", async () => {
+      screen = `› [Pasted Content ${text().length} chars]\n${FOOTER}`;
+      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "draft" });
       expect(calls).toEqual([]);
     });
-    it("our collapsed copy, its Enter lost: cleared with ctrl+u, checked empty, pasted again under the same id", async () => {
-      store.markPasted(ID, "1970-01-01T00:00:00.000Z");
-      screen = collapsed();
-      await expect(new CodexSeatHop({ rows: store, guard, client, input: clearing() }).attempt(message)).resolves.toEqual({ kind: "sent" });
-      expect(calls).toEqual(["keys:C-u", `paste:${text()}`]);
-    });
-    it("a clear that did not empty the composer pastes nothing", async () => {
-      store.markPasted(ID, "1970-01-01T00:00:00.000Z");
-      screen = collapsed();
-      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
-      expect(calls).toEqual(["keys:C-u"]);
-    });
-    it("a copy of another size, or two pastes, is not ours, whatever the row says", async () => {
-      store.markPasted(ID, "1970-01-01T00:00:00.000Z");
-      screen = `› [Pasted Content ${text().length + 1} chars]\n${FOOTER}`;
-      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
-      screen = `› [Pasted Content ${text().length} chars]\n  [Pasted Content ${text().length} chars]\n${FOOTER}`;
-      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
-      expect(calls).toEqual([]);
-    });
-    it("a seat at work is never cleared", async () => {
-      store.markPasted(ID, "1970-01-01T00:00:00.000Z");
-      screen = collapsed();
-      status = "working";
-      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
-      expect(calls).toEqual([]);
-    });
-    it("marks the paste before it writes", async () => {
+    it("the message goes the moment the composer clears", async () => {
+      screen = `› half a thought\n${FOOTER}`;
+      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "draft" });
       screen = `› Ask Codex to do anything\n${FOOTER}`;
-      let during = false;
-      await new CodexSeatHop({ rows: store, guard, client, input: { ...input, submitText: async () => { during = store.hasPasted(ID); return { ok: true as const }; } } }).attempt(message);
-      expect(during).toBe(true);
+      await expect(codex().attempt(message)).resolves.toEqual({ kind: "sent" });
+      expect(calls).toEqual([`paste:${text()}`]);
     });
     it("a held seat pauses", async () => {
       held = true;
@@ -296,7 +240,7 @@ describe("the hops", () => {
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "sent" });
       expect(calls).toEqual(["keys:Enter"]);
       screen = "> someone's words\n";
-      await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+      await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "draft" });
       expect(calls).toEqual(["keys:Enter"]);
     });
   });

@@ -116,20 +116,32 @@ export class HookSeenStore {
   }
 }
 
+/** Claude stamps a message from another session `origin.kind: "peer"` and adds one paragraph of its own after the prompt's text, past the
+ *  wrapper when there is one (362 of 362 real records, Mac and Sparky, Claude 2.1.310 to 2.1.316; the hook's `prompt` has no such paragraph).
+ *  So a peer record is read again without its last paragraph, whatever that paragraph says. A person's prompt has no such leeway: text after
+ *  a marker means the marker was quoted. */
+function promptMarkers(text: string, peer: boolean): SeatMarker[] {
+  const markers = trailingMarkers(text);
+  if (markers.length > 0 || !peer) return markers;
+  const cut = text.lastIndexOf("\n\n");
+  return cut < 0 ? [] : trailingMarkers(text.slice(0, cut));
+}
+
 /** The markers of the prompts Claude took. Only two records mean that (key census of real transcripts, Claude 2.1.310 to 2.1.316): a `user`
  *  record, and an `attachment` of type `queued_command`, which is how a message taken mid-turn lands. `queue-operation`, `api-request-blob`
  *  and the rest hold the same text and prove nothing: an enqueue line is written when a message is queued, before the hook, while it is
  *  only in Claude's memory. A tool result quoting a marker is not a prompt either. */
 function claudeRecordMarkers(line: string): SeatMarker[] {
-  let record: { type?: unknown; isSidechain?: unknown; message?: { role?: unknown; content?: unknown }; attachment?: { type?: unknown; prompt?: unknown } };
+  let record: { type?: unknown; isSidechain?: unknown; origin?: { kind?: unknown } | null; message?: { role?: unknown; content?: unknown }; attachment?: { type?: unknown; prompt?: unknown } };
   try { record = JSON.parse(line) as typeof record; } catch { return []; }
   if (record.isSidechain === true) return [];
   if (record.type === "attachment") return record.attachment?.type === "queued_command" && typeof record.attachment.prompt === "string" ? trailingMarkers(record.attachment.prompt) : [];
   if (record.type !== "user" || record.message?.role !== "user") return [];
   const { content } = record.message;
-  if (typeof content === "string") return trailingMarkers(content);
+  const peer = record.origin?.kind === "peer";
+  if (typeof content === "string") return promptMarkers(content, peer);
   if (!Array.isArray(content)) return [];
-  return (content as Array<{ type?: unknown; text?: unknown } | null>).flatMap((part) => (part?.type === "text" && typeof part.text === "string" ? trailingMarkers(part.text) : []));
+  return (content as Array<{ type?: unknown; text?: unknown } | null>).flatMap((part) => (part?.type === "text" && typeof part.text === "string" ? promptMarkers(part.text, peer) : []));
 }
 
 /** Every prompt's marker in a Claude transcript, read in chunks, whole lines only: a torn last line is a prompt not yet durable. An empty set

@@ -274,12 +274,11 @@ describe("a seat message's row", () => {
       outbox.retain({ outboxId: "h", senderSession: "lead@rig", destinationSession: SEAT, body: "held" }, { nodeId: "n", session: SEAT, occupant: "g1", pane: null });
       expect(store.adoptHeld(messageId("h"), "1970-01-01T00:00:00.000Z", "g1")).toBe(true);
       store.claimAttempt(store.headOf(SEAT)!, 5_000);
-      store.markPasted(messageId("h"), "1970-01-01T00:00:00.000Z");
       store.recordSocketWrite(messageId("h"), 1);
       db.exec(`BEGIN; ${SEAT_MESSAGE_STATE_ROLLBACK_SQL} ${SEAT_MESSAGE_ROLLBACK_SQL} COMMIT;`);
       expect(outbox.heldForNode("n").items.map((e) => e.outboxId)).toEqual(["h"]);  // what the old build lists
-      expect(db.prepare("SELECT message_state, message_hold_released_at, message_previous_occupant, next_attempt_at, message_pasted_at, message_socket_written_ms, delivery_state FROM outbox_entries WHERE outbox_id = 'h'").get())
-        .toEqual({ message_state: null, message_hold_released_at: null, message_previous_occupant: null, next_attempt_at: null, message_pasted_at: null, message_socket_written_ms: null, delivery_state: "retained" });
+      expect(db.prepare("SELECT message_state, message_hold_released_at, message_previous_occupant, next_attempt_at, message_socket_written_ms, delivery_state FROM outbox_entries WHERE outbox_id = 'h'").get())
+        .toEqual({ message_state: null, message_hold_released_at: null, message_previous_occupant: null, next_attempt_at: null, message_socket_written_ms: null, delivery_state: "retained" });
       expect(store.listHeld().map((r) => r.id)).toEqual(["h"]);  // at the second forward the pump sees it again
       expect(store.headOf(SEAT)).toBeNull();
     });

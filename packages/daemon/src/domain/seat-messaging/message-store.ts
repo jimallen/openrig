@@ -94,7 +94,7 @@ interface MessageRow {
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
 const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
-const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "gate_unavailable"];
+const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "gate_unavailable"];
 
 function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;
@@ -176,15 +176,6 @@ export class MessageStore {
   /** Recorded before the write, so a crash after it still waits (M1). */
   recordSocketWrite(id: MessageId, atMs: number): void {
     this.db.prepare("UPDATE outbox_entries SET message_socket_written_ms = ? WHERE outbox_id = ?").run(atMs, id);
-  }
-
-  /** Committed before the paste: from here a collapsed copy of this message's size can be this message's own. */
-  markPasted(id: MessageId, atIso: string): void {
-    this.db.prepare("UPDATE outbox_entries SET message_pasted_at = ? WHERE outbox_id = ?").run(atIso, id);
-  }
-
-  hasPasted(id: MessageId): boolean {
-    return (this.db.prepare("SELECT message_pasted_at AS at FROM outbox_entries WHERE outbox_id = ?").get(id) as { at: string | null } | undefined)?.at != null;
   }
 
   lastSocketWriteMs(id: MessageId): number | null {

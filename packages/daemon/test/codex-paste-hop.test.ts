@@ -55,8 +55,8 @@ describe("what is staged", () => {
   it("decides paste on empty, Enter only on this message, hold on a draft or an unreadable screen", () => {
     expect(decideStagedAttempt({ kind: "empty" }, SHORT)).toBe("paste");
     expect(decideStagedAttempt({ kind: "text", lines: ["Reply with TWO", MARKER], below: ["Reply with TWO", MARKER] }, SHORT)).toBe("enter_only");
-    expect(decideStagedAttempt({ kind: "text", lines: ["my draft"], below: ["my draft"] }, SHORT)).toBe("hold");
-    expect(decideStagedAttempt({ kind: "unreadable" }, SHORT)).toBe("hold");
+    expect(decideStagedAttempt({ kind: "text", lines: ["my draft"], below: ["my draft"] }, SHORT)).toBe("draft");
+    expect(decideStagedAttempt({ kind: "unreadable" }, SHORT)).toBe("unreadable");
   });
 });
 
@@ -88,12 +88,12 @@ describe("one attempt", () => {
     await expect(shown.hop.attempt(message(SHORT))).resolves.toEqual({ kind: "sent" });
     expect(shown.calls).toEqual(["keys:Enter"]);
     const collapsed = hop({ composer: "› [Pasted Content 1610 chars]", status: "done" });
-    await expect(collapsed.hop.attempt(message(LONG))).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+    await expect(collapsed.hop.attempt(message(LONG))).resolves.toEqual({ kind: "paused", reason: "draft" });
     expect(collapsed.calls).toEqual([]);
   });
   it("a draft holds: nothing typed, nothing pressed", async () => {
     const h = hop({ composer: "› half a thought" });
-    await expect(h.hop.attempt(message(SHORT))).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+    await expect(h.hop.attempt(message(SHORT))).resolves.toEqual({ kind: "paused", reason: "draft" });
     expect(h.calls).toEqual([]);
   });
   it.each([["blocked", "blocked"], ["working", "busy"], [null, "busy"]])("status %s pauses as %s, before any input", async (status, reason) => {

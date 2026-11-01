@@ -1,6 +1,6 @@
 // S2: the daemon's reading of a hook gate's seen store, the file search reconcile rests on, and the `SeatGate` port over them.
 import { describe, it, expect, afterEach } from "vitest";
-import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HookSeenStore, seatGateFolder, seatGateRoot, transcriptMarkers } from "../src/adapters/hook-seen-store.js";
@@ -89,6 +89,50 @@ describe("transcriptMarkers", () => {
     const text = marker("m-1");
     writeFileSync(path, `${userRecord(`${"x".repeat(90)}\n${text}`)}\n`);
     expect([...transcriptMarkers(path, 64)!.values()]).toEqual([{ id: "m-1", nonce: NONCE }]);
+  });
+
+  // A real record, scrubbed: Sparky's s0 transcript (2.1.316). What matters is that the text goes on past the marker: `</cross-session-message>`,
+  // then a paragraph of Claude's own. 362 of 362 real marked prompts have that paragraph, and 18 of them have no wrapper.
+  const peerRecord = readFileSync(new URL("./fixtures/claude-peer-record.json", import.meta.url), "utf8");
+  const real = (body: (text: string) => string = (t) => t, mark = marker("m-1")) => {
+    const record = JSON.parse(peerRecord) as { message: { content: string }; origin: { kind: string } };
+    record.message.content = body(record.message.content.replace("@@MARKER@@", mark));
+    return record;
+  };
+
+  it("finds a real peer record: the marker, the close tag, then Claude's paragraph", () => {
+    const path = join(seat().home, "t.jsonl");
+    writeFileSync(path, `${JSON.stringify(real())}\n`);
+    expect([...transcriptMarkers(path)!.values()]).toEqual([{ id: "m-1", nonce: NONCE }]);
+  });
+
+  it("finds a real peer record with no wrapper: the marker, then Claude's paragraph", () => {
+    const path = join(seat().home, "t.jsonl");
+    const plain = real((text) => text.replace(/^<cross-session-message[^>]*>\n/, "").replace("\n</cross-session-message>", ""));
+    expect(plain.message.content).not.toContain("cross-session-message");
+    writeFileSync(path, `${JSON.stringify(plain)}\n`);
+    expect([...transcriptMarkers(path)!.values()]).toEqual([{ id: "m-1", nonce: NONCE }]);
+  });
+
+  it("whatever Claude's paragraph says: the rule is the record's origin, not its wording", () => {
+    const path = join(seat().home, "t.jsonl");
+    writeFileSync(path, `${JSON.stringify(real((text) => text.replace(/This came from[^]*$/, "Different words in a later Claude.")))}\n`);
+    expect(transcriptMarkers(path)!.size).toBe(1);
+  });
+
+  it("the same text is no prompt without the peer origin: a person's text after a marker quotes it", () => {
+    const path = join(seat().home, "t.jsonl");
+    const person = real();
+    person.origin.kind = "user";
+    writeFileSync(path, `${JSON.stringify(person)}\n`);
+    expect(transcriptMarkers(path)!.size).toBe(0);
+  });
+
+  it("a peer quoting a marker earlier in its text confirms nothing: only its last lines count", () => {
+    const path = join(seat().home, "t.jsonl");
+    const quoting = real((text) => text.replace(marker("m-1"), `${marker("m-1")}\n\nand then more of the peer's own words`));
+    writeFileSync(path, `${JSON.stringify(quoting)}\n`);
+    expect(transcriptMarkers(path)!.size).toBe(0);
   });
 
   // Real record shapes: a key census of live transcripts, Claude 2.1.310 to 2.1.316.

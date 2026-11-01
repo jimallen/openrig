@@ -167,6 +167,17 @@ describe("the fleet, as the pump reads it", () => {
       expect(row[0]).toContain("2 message(s) to dev@r not received (oldest old, 16 min, 2 attempt(s), last refused: no)");
     });
 
+    it("names a draft at once: only a person can clear it, and they may not know a message waits behind it", () => {
+      const store = new MessageStore(db);
+      accept("d1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("d1"), "draft", 2);
+      const row = reasons();
+      expect(row).toHaveLength(1);
+      expect(row[0]).toContain("wait behind a draft");
+      expect(row[0]).toContain("d1");
+    });
+
     it("says a stuck seat has no gate, so nobody thinks the pump is on it", () => {
       accept("u1", "ungated@r");
       age("u1", MESSAGE_STUCK_AFTER_MS + 60_000);

@@ -174,7 +174,7 @@ describe("SessionTransport and the pump", () => {
     });
 
     it("what is not a message stays direct: a submit-only Enter, and a person's answer to a prompt", async () => {
-      expect((await transport.send(SEAT, "", { submitOnly: true })).reason).not.toBe("handed_to_pump");
+      expect((await transport.send(SEAT, "", { submitOnly: true })).reason).not.toMatch(/handed_to_pump|empty_message/);
       expect((await transport.send(SEAT, "1", { dangerouslyInteract: true, reason: "answer", actorSession: "jim@hr" })).reason).not.toBe("handed_to_pump");
     });
 

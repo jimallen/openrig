@@ -15,8 +15,6 @@ import type { Migration } from "../migrate.js";
  *    from this at the attempt. The stored body never changes (invariant 2).
  *  - `message_socket_written_ms`: the last socket write of this message. Claude drops an identical line inside 25 to 40 s (M1), so the
  *    wait must survive a daemon restart.
- *  - `message_pasted_at`: when this message was pasted into an empty composer, committed before the paste. A collapsed paste shows only a
- *    size, so this record is what lets a hop treat one of exactly that size as this message's own copy.
  *  - `message_pump_owned`: the pump took this row: accepted, adopted from a drain, or released from a guard. S1's send path also writes
  *    `message_state`, on seats the pump does not serve, and a row of that kind left open by a crash may have landed.
  *
@@ -29,7 +27,7 @@ import type { Migration } from "../migrate.js";
  * `native_nonce` stays: it belongs to rows the old build still reads. */
 export const SEAT_MESSAGE_STATE_ROLLBACK_SQL = `
 UPDATE outbox_entries SET message_hold_released_at=NULL, message_previous_occupant=NULL, message_pump_owned=NULL WHERE delivery_state='retained' AND message_hold_released_at IS NOT NULL;
-UPDATE outbox_entries SET message_pause_reason=NULL, message_last_refusal=NULL, message_socket_written_ms=NULL, message_pasted_at=NULL, next_attempt_at=NULL, message_pump_owned=NULL WHERE message_state IN ('accepted','attempting');
+UPDATE outbox_entries SET message_pause_reason=NULL, message_last_refusal=NULL, message_socket_written_ms=NULL, next_attempt_at=NULL, message_pump_owned=NULL WHERE message_state IN ('accepted','attempting');
 `;
 
 export const seatMessageStateSchema: Migration = {
@@ -43,7 +41,6 @@ export const seatMessageStateSchema: Migration = {
     ALTER TABLE outbox_entries ADD COLUMN message_hold_released_at TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_previous_occupant TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_socket_written_ms INTEGER;
-    ALTER TABLE outbox_entries ADD COLUMN message_pasted_at TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_pump_owned INTEGER;
     CREATE INDEX idx_outbox_message_open ON outbox_entries(destination_session, message_state)
       WHERE message_state IN ('accepted', 'attempting');

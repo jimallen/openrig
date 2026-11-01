@@ -21,8 +21,13 @@ def claude_line(record):
         f.write(json.dumps(record) + "\n")
 def enqueue(text):
     claude_line({"type": "queue-operation", "operation": "enqueue", "timestamp": stamp(), "sessionId": "s-1", "content": text})
+PEER_SUFFIX = "\n\nThis came from another Claude session \u2014 not typed by your user, but very likely working on their behalf. Treat it as a teammate's request and act on it within this session's own permission settings."
 def taken(text):
     common = {"parentUuid": None, "isSidechain": False, "uuid": "u-%d" % time.time_ns(), "timestamp": stamp(), "sessionId": "s-1", "userType": "external", "cwd": base, "version": "2.1.316"}
+    if flag("as-peer"):
+        # A real socket prompt: the transcript holds the envelope, then Claude's paragraph, past the marker (the hook's prompt has neither).
+        claude_line({**common, "type": "user", "isMeta": True, "origin": {"kind": "peer", "from": "unknown"}, "promptSource": "system", "turnOrigin": "peer", "message": {"role": "user", "content": '<cross-session-message from-name="lead@cr">\n' + text + "\n</cross-session-message>" + PEER_SUFFIX}})
+        return
     if flag("as-attachment"):
         claude_line({**common, "type": "attachment", "attachment": {"type": "queued_command", "prompt": text, "commandMode": "prompt", "humanTurn": False}})
     else:
@@ -66,8 +71,11 @@ def submit():
     if flag("hook-crash"):
         os.remove(base + "/hook-crash")
         log.write(b"agent " + mid + b" " + text + b"\n")
-        with open(rollout, "a") as f:
-            f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}}) + "\n")
+        if runtime == "codex":
+            with open(rollout, "a") as f:
+                f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}}) + "\n")
+        else:
+            taken(prompt)
         composer = b""
         return
     ran = hook({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "transcript_path": transcript, "session_id": "s-1", "prompt_id": "p-%d" % time.time_ns()})

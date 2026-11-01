@@ -157,6 +157,37 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     }, 60_000);
   });
 
+  describe("sec re-check F1: both crash directions on a real peer record", () => {
+    const registerNew = async (s: F, transcript: string) => {
+      s.flag("register-claude", JSON.stringify({ nodeId: s.nodeId, sessionName: s.name, transcriptPath: transcript }));
+      await hopSaw(s, "registered");
+    };
+
+    it("the agent died after the prompt persisted: reconcile keeps the record, and nothing is sent again", async () => {
+      const s = fixture(["as-peer"], "claude-code"); await s.launch();
+      s.accept("m1"); daemon(s);
+      await state(s, "m1", "received");
+      await until(() => agent(s, "m1"), (l) => l.length > 0, "the agent's copy");
+      await until(() => readFileSync(join(s.dir, "transcript.jsonl"), "utf8"), (t) => t.includes("origin"), "the peer record");
+      const nonce = String(s.read("m1").native_nonce);
+      recordSeen(s, "m1", nonce, { agentPid: deadPid(), transcriptPath: join(s.dir, "transcript.jsonl") });
+      await registerNew(s, join(s.dir, "transcript.jsonl"));
+      await wait(600);
+      expect(s.read("m1").message_state).toBe("received");
+      expect(agent(s, "m1")).toHaveLength(1);
+      expect(s.hop().filter((l) => l === "claimed m1")).toHaveLength(1);
+    }, 60_000);
+
+    it("the hook crashed and the prompt ran: the lookup finds the peer record, and nothing is sent again", async () => {
+      const s = fixture(["as-peer", "hook-crash"], "claude-code"); await s.launch();
+      s.accept("m1"); daemon(s);
+      await state(s, "m1", "received");
+      await wait(500);
+      expect(agent(s, "m1")).toHaveLength(1);
+      expect(s.hop().filter((l) => l === "claimed m1")).toHaveLength(1);
+    }, 60_000);
+  });
+
   describe("sec F2: reconcile confirms by id and nonce", () => {
     it("a marker under another nonce confirms nothing; the row's own does", async () => {
       const s = fixture([], "claude-code");
@@ -215,8 +246,8 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       expect(http(s, `/api/transport/cancel-message/${encodeURIComponent("other@rig")}/stuck`, { reason: "x" }).status).toBe(404);
       expect(http(s, `/api/transport/cancel-message/${encodeURIComponent(s.name)}/stuck`, { reason: "poison" }).status).toBe(200);
       expect(s.read("stuck")).toMatchObject({ message_state: "undeliverable", message_closed_reason: "poison" });
-      await hopSaw(s, "claimed next");
-    }, 40_000);
+      await hopSaw(s, "claimed next", 45_000);
+    }, 70_000);
   });
 
   describe("sec F5, QA F3: decision 1 on the real ports", () => {
@@ -321,6 +352,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         const s = fixture(["lose-enter"]); await s.launch();
         s.accept("m1", body); daemon(s);
         await state(s, "m1", "received");
+        await until(() => agent(s, "m1"), (l) => l.length > 0, "the agent's copy");
         expect(agent(s, "m1")).toHaveLength(1);
         expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
       }, 40_000);

@@ -220,7 +220,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       expect(lines(s, "dropped")).toEqual([]);  // Enter alone: no second copy was typed
     }, 90_000);
 
-    it("P1, staged and collapsed with its Enter lost: the row knows it pasted, so the restart clears it and resends under the same id, once", async () => {
+    it("P1, staged and collapsed with its Enter lost: it cannot be told from a person's paste, so it holds as a draft, shows on health, and goes the moment it clears", async () => {
       const s = await seatFixture(["lose-enter"]);
       s.acceptBody("long", "x".repeat(1500));
       const first = daemon(s, "after_bytes");
@@ -228,10 +228,12 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[Pasted Content"), "the collapsed copy");
       await kill(first);
       daemon(s);
+      await hopSaw(s, "paused:draft long");
+      expect(s.read("long")).toMatchObject({ message_pause_reason: "draft", message_state: "attempting" });
+      expect(lines(s, "ctrl-u")).toEqual([]);
+      await core.client.call("terminal.keys", { terminal: hcTerminalName(s.name), keys: ["ctrl+u"] });  // the person clears it
       await received(s, "long");
-      expect(lines(s, "ctrl-u")).toHaveLength(1);
       agentOnce(s, "long");
-      expect(lines(s, "dropped")).toEqual([]);
     }, 90_000);
 
     it("a person's collapsed paste of exactly that size, with no paste of ours behind it, is left alone", async () => {
@@ -241,7 +243,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[Pasted Content"), "their paste");
       s.acceptBody("long", "x".repeat(1500));
       daemon(s);
-      await hopSaw(s, "paused:guard_held long");
+      await hopSaw(s, "paused:draft long");
       await settleLook();
       expect(s.log()).toEqual([]);
       expect((await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text).toContain("[Pasted Content");
@@ -392,10 +394,10 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("half a thought"), "the draft");
     s.accept("m1");
     const first = daemon(s);
-    await hopSaw(s, "paused:guard_held m1");
+    await hopSaw(s, "paused:draft m1");
     await kill(first);
     daemon(s);
-    await until(() => s.hop().filter((l) => l === "paused:guard_held m1"), (l) => l.length >= 2, "the restarted pump holding it too", 30_000);
+    await until(() => s.hop().filter((l) => l === "paused:draft m1"), (l) => l.length >= 2, "the restarted pump holding it too", 30_000);
     expect(s.read("m1").message_state).toBe("attempting");
     expect(s.log()).toEqual([]);
     const screen = (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text;

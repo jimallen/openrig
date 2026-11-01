@@ -78,13 +78,13 @@ describe.skipIf(!HC)("the Codex hop on a real core, stub Codex", () => {
     expect(JSON.parse(s.prompts()[0]!).payload.content[0].text).toBe(body);
   }, 40_000);
 
-  it("a staged long paste, collapsed with its marker hidden, holds: its length could be a person's", async () => {
+  it("a staged long paste, collapsed with its marker hidden, is a draft: its length could be a person's", async () => {
     const s = await seat();
     const body = `${"x".repeat(1500)}\n${marker("a")}`;
     await input.sendText(s.name, body);
     const shown = await waitUntil(() => screen(s.name), (t) => t.includes("[Pasted Content"), "collapsed");
     expect(shown).not.toContain("openrig-msg");
-    await expect(attempt(s.name, "a", body)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+    await expect(attempt(s.name, "a", body)).resolves.toEqual({ kind: "paused", reason: "draft" });
     expect(s.prompts()).toEqual([]);
   }, 40_000);
 
@@ -92,7 +92,7 @@ describe.skipIf(!HC)("the Codex hop on a real core, stub Codex", () => {
     const s = await seat();
     await input.sendText(s.name, "half a thought", undefined, { bracketed: false });
     await waitUntil(() => screen(s.name), (t) => t.includes("half a thought"), "draft");
-    await expect(attempt(s.name, "a", `one\n${marker("a")}`)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+    await expect(attempt(s.name, "a", `one\n${marker("a")}`)).resolves.toEqual({ kind: "paused", reason: "draft" });
     await new Promise((r) => setTimeout(r, 300));
     expect(s.prompts()).toEqual([]);
     expect(await screen(s.name)).toContain("› half a thought");

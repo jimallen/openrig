@@ -32,6 +32,11 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
     }
     for (const seat of this.store.openBySeat()) {
       const ageMs = now.getTime() - parseSqliteUtcMs(seat.oldestAcceptedAt);
+      // A draft is named at once: a person is the only one who can clear it, and they may not know a message waits behind it.
+      if (seat.pauseReason === "draft") {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait behind a draft in its composer (oldest ${seat.oldestId}). The draft is never touched; they go the moment it is sent or cleared.`));
+        continue;
+      }
       if (!(ageMs > MESSAGE_STUCK_AFTER_MS)) continue;
       const age = `${seat.open} message(s) to ${seat.seat} not received (oldest ${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min`;
       if (!this.ports.gateFor(seat.seat)) { rows.push(notice(`${age}): the seat declares no gate, so the pump does not serve it.`)); continue; }
