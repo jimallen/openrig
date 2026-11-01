@@ -17,13 +17,13 @@ import {
   stripComposerPromptGlyph,
 } from "./composer-prompts.js";
 export { inspectStartupStagedText } from "./startup-submission-evidence.js";
-import { OutboxHandler } from "./outbox-handler.js";
+import { OutboxHandler, isUnconfirmedHcSend, labelForTmuxSend } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import type { HcDeliveryOutcome, HcPendingSend } from "../adapters/hc-delivery.js";
+import { PASTE_ECHOING_RUNTIMES, type HcDeliveryOutcome, type HcPendingSend } from "../adapters/hc-delivery.js";
 import { probePresence } from "./session-liveness.js";
 import { carriesDeliveryToken, deliveryKeyOf, deliveryTokenFor, withDeliveryToken } from "../adapters/hc-delivery-token.js";
 import type { DialogInput } from "../adapters/hc-dialog-input.js";
@@ -1000,6 +1000,10 @@ export interface SendOpts {
   auditPointer?: string;
   /** Internal queue seam: already committed original members, never client-supplied. */
   committedOutboxIds?: string[];
+  /** Internal: the caller writes this send's outbox row itself (the /send and /broadcast routes, the deadline sweeper's fallback),
+   *  so the transport does not record an unconfirmed hc send for it. Every other send that ends unconfirmed on an hc seat is recorded
+   *  here, `indeterminate` with its pending record, so a sweep can settle it and `rig health` can name it. Never client-supplied. */
+  ownsOutboxRow?: boolean;
   verify?: boolean;
   force?: boolean;
   waitForIdleMs?: number;
@@ -1592,6 +1596,34 @@ export class SessionTransport {
   /** Deliver text and Enter to the resolved recipient under the send guards.
    * With verification requested, compare rendered message counts, excluding
    * agent input; a confirmed render does not prove agent consumption. */
+  /**
+   * A send to an hc seat the core may still deliver (or whose reply was lost) is neither delivered nor failed, and the caller that
+   * got it back moves on: the compaction enforcer advances its stage, the watchdog banks its receipt. If the core then restarts while
+   * it holds the text, the text is gone and nothing says so. So every such send leaves an `indeterminate` row carrying the pending
+   * record (the same row /send and /broadcast write), which the sweep settles and `rig health` lists.
+   *
+   * Not written when the caller owns the row: the queue's wake (committed ids, or a delivery id whose row exists), the routes and
+   * the native fallback (`ownsOutboxRow`). A stable delivery id makes the row idempotent (a send repeated under it finds it).
+   * A failed write never changes the send's result: the send happened.
+   */
+  private recordUnconfirmedHcSend(sessionName: string, text: string, refused: SendResult, opts?: SendOpts): void {
+    if (!isUnconfirmedHcSend(refused) || opts?.submitOnly || opts?.ownsOutboxRow || (opts?.committedOutboxIds && opts.committedOutboxIds.length > 0)) return;
+    try {
+      const outbox = new OutboxHandler(this.db);
+      const id = opts?.deliveryId ?? `hc-unconfirmed-${randomUUID()}`;
+      if (outbox.getById(id)) return;
+      outbox.record({
+        outboxId: id, senderSession: opts?.actorSession ?? "unattributed@transport", destinationSession: sessionName, body: text,
+        ...(opts?.auditPointer ? { auditPointer: opts.auditPointer } : {}),
+        identityProvenance: opts?.actorSession ? "transport:v1" : "origin-unknown:v1",
+      });
+      outbox.markIndeterminate(id, labelForTmuxSend(refused));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/no such table/i.test(message)) console.warn(`[session-transport] could not record an unconfirmed hc send to ${sessionName}: ${message}`);
+    }
+  }
+
   async send(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
     // OF-148: before any wait, hold or retention. `--dangerously-interact` is exempt here only because it may turn out to
     // send unbracketed key input; sendUnguarded refuses again at the bracketed delivery if it did not.
@@ -2325,11 +2357,14 @@ export class SessionTransport {
       if (observed) observed.sentHash = hashSentText(hcText);
       const hcOutcome = await this.runStage(
         "session_transport.hc_submit",
-        () => { opts?.beforeWrite?.(); return this.hcDelivery!.deliver(sessionName, hcText, { ...(hcToken ? { token: hcToken } : {}), ...(opts?.beforeWrite ? { beforeInput: opts.beforeWrite } : {}) }); },
+        () => { opts?.beforeWrite?.(); return this.hcDelivery!.deliver(sessionName, hcText, { ...(hcToken ? { token: hcToken } : {}), ...(runtime && PASTE_ECHOING_RUNTIMES.has(runtime) ? { pasteEchoes: true } : {}), ...(opts?.beforeWrite ? { beforeInput: opts.beforeWrite } : {}) }); },
         (result) => result.state === "delivered" ? "ok" : "failed",
       );
       const refused = hcRefusal(sessionName, hcOutcome, waitMode ? waitEvidence : {});
-      if (refused) return observe(refused);
+      if (refused) {
+        this.recordUnconfirmedHcSend(sessionName, text, refused, opts);
+        return observe(refused);
+      }
       hcVerified = hcOutcome.state === "delivered" && hcOutcome.verified;
     }
 

@@ -9,15 +9,17 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { SessionTransport, type HcSeatDelivery, type SendResult } from "../src/domain/session-transport.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { labelForTmuxSend } from "../src/domain/outbox-handler.js";
+import { OutboxHandler, labelForTmuxSend } from "../src/domain/outbox-handler.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
 import type { HcDeliveryOutcome, HcPendingSend } from "../src/adapters/hc-delivery.js";
-import { createFullTestDb } from "./helpers/test-app.js";
+import { createDb } from "../src/db/connection.js";
+import { migrate } from "../src/db/migrate.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { CaptureObserver, hashSentText, type Observation } from "../src/domain/capture-observer.js";
 
 const SEAT = "dev-impl@my-rig";
-const PENDING: HcPendingSend = { version: 1, seat: SEAT, address: "t4", token: null, sendStartedAtMs: 4_100_000_000_000, preTurn: 3, preStatus: "idle", preReported: true, commandLed: false, preScreen: null };
+const PENDING: HcPendingSend = { version: 1, seat: SEAT, address: "t4", token: null, sendStartedAtMs: 4_100_000_000_000, preTurn: 3, preStatus: "idle", preReported: true, commandLed: false, preScreen: null, pasteEchoes: false };
 
 type TmuxCalls = { sendText: ReturnType<typeof vi.fn>; sendKeys: ReturnType<typeof vi.fn>; capture: ReturnType<typeof vi.fn> };
 
@@ -58,7 +60,8 @@ describe("SessionTransport.send to an hc seat", () => {
 
   beforeEach(() => {
     sleeps.length = 0;
-    db = createFullTestDb();
+    db = createDb();
+    migrate(db, ALL_MIGRATIONS);  // the outbox tables are not in the core fixture
     rigRepo = new RigRepository(db);
     sessionRegistry = new SessionRegistry(db);
     eventBus = new EventBus(db);
@@ -185,6 +188,78 @@ describe("SessionTransport.send to an hc seat", () => {
       const hc = hcDelivery(delivered());
       await transport(mockTmux().tmux, hc).send(SEAT, "hello <tok>", { deliveryToken: "tok", deliveryId: "wake-7" });
       expect(lastCall(hc).slice(1)).toEqual(["hello <tok>", { token: "tok" }]);
+    });
+  });
+
+  describe("every automated send that ends unconfirmed leaves an indeterminate row (security re-review F3)", () => {
+    const waiting: HcDeliveryOutcome = { state: "waiting", reason: "waiting_on_person", cause: "queued_in_core", pending: PENDING, message: "queued; do not resend" };
+    const rows = () => new OutboxHandler(db).listHcUnsettled();
+    const count = () => (db.prepare("SELECT count(*) AS n FROM outbox_entries").get() as { n: number }).n;
+
+    it.each([
+      ["waiting_on_person", waiting, "waiting_on_person"],
+      ["delivery_outcome_unknown", { state: "unknown", reason: "core_unreachable", pending: PENDING, message: "cannot be asked" } satisfies HcDeliveryOutcome, "outcome_unknown"],
+    ] as const)("%s: one row, indeterminate, hc, with the pending record, whoever called", async (_reason, outcome, evidence) => {
+      bindAs("hc");
+      const result = await transport(mockTmux().tmux, hcDelivery(outcome)).send(SEAT, "restore prompt", { actorSession: "compaction@system" });
+      expect(result).toMatchObject({ ok: false, path: "hc" });
+      expect(rows()).toHaveLength(1);
+      expect(rows()[0]).toMatchObject({ senderSession: "compaction@system", destinationSession: SEAT, body: "restore prompt", deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: evidence });
+      expect(JSON.parse(rows()[0]!.ackDetail!)).toEqual(PENDING);
+    });
+
+    it("a caller with no identity is recorded as unattributed, not skipped (the enforcer's stage sends carry none)", async () => {
+      bindAs("hc");
+      await transport(mockTmux().tmux, hcDelivery(waiting)).send(SEAT, "audit prompt");
+      expect(rows()).toHaveLength(1);
+      expect(rows()[0]!.senderSession).toBe("unattributed@transport");
+      expect(db.prepare("SELECT identity_provenance AS p FROM outbox_entries").get()).toEqual({ p: "origin-unknown:v1" });
+    });
+
+    it("a stable delivery id makes the row idempotent: the same wake sent twice leaves one row", async () => {
+      bindAs("hc");
+      const t = transport(mockTmux().tmux, hcDelivery(waiting));
+      await t.send(SEAT, "wake", { deliveryId: "guard-watchdog-abc", actorSession: "watchdog@system" });
+      await t.send(SEAT, "wake", { deliveryId: "guard-watchdog-abc", actorSession: "watchdog@system" });
+      expect(rows().map((r) => r.outboxId)).toEqual(["guard-watchdog-abc"]);
+    });
+
+    it("writes nothing when the caller owns the row: a route or the native fallback says so (ownsOutboxRow)", async () => {
+      bindAs("hc");
+      await transport(mockTmux().tmux, hcDelivery(waiting)).send(SEAT, "from a route", { ownsOutboxRow: true, actorSession: "planner@my-rig" });
+      expect(count()).toBe(0);
+    });
+
+    it("writes nothing when a row already exists under the delivery id: the queue's wake owns it and finalizes it", async () => {
+      bindAs("hc");
+      const outbox = new OutboxHandler(db);
+      outbox.record({ outboxId: "wake-intent-q1", senderSession: "planner@my-rig", destinationSession: SEAT, body: "wake", identityProvenance: "transport:v1" });
+      await transport(mockTmux().tmux, hcDelivery(waiting)).send(SEAT, "wake", { deliveryId: "wake-intent-q1", actorSession: "planner@my-rig" });
+      expect(db.prepare("SELECT delivery_state AS s FROM outbox_entries WHERE outbox_id = 'wake-intent-q1'").get()).toEqual({ s: "pending" });  // untouched
+      expect(count()).toBe(1);
+    });
+
+    it("writes nothing for a committed queue wake (committedOutboxIds): its rows exist before the send", async () => {
+      bindAs("hc");
+      const outbox = new OutboxHandler(db);
+      outbox.record({ outboxId: "wake-intent-q2", senderSession: "planner@my-rig", destinationSession: SEAT, body: "wake", identityProvenance: "transport:v1" });
+      await transport(mockTmux().tmux, hcDelivery(waiting)).send(SEAT, "wake", { committedOutboxIds: ["wake-intent-q2"], actorSession: "planner@my-rig" });
+      expect(count()).toBe(1);
+      expect(rows()).toEqual([]);
+    });
+
+    it("writes nothing for a delivered send, a definite refusal, or a tmux seat", async () => {
+      bindAs("hc");
+      await transport(mockTmux().tmux, hcDelivery(delivered())).send(SEAT, "hello");
+      await transport(mockTmux().tmux, hcDelivery({ state: "not_delivered", reason: "blocked", code: "seat_blocked", message: "blocked" })).send(SEAT, "hello");
+      expect(count()).toBe(0);
+    });
+
+    it("a row that cannot be written never changes the send's result", async () => {
+      bindAs("hc");
+      db.exec("DROP TABLE outbox_entries");
+      const result = await transport(mockTmux().tmux, hcDelivery(waiting)).send(SEAT, "hello");
+      expect(result).toMatchObject({ ok: false, path: "hc", reason: "waiting_on_person", hcPending: PENDING });
     });
   });
 

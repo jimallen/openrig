@@ -14,7 +14,7 @@ import { transportRoutes, UNATTRIBUTED_OPERATOR } from "../src/routes/transport.
 import type { SessionTransport } from "../src/domain/session-transport.js";
 import type { HcPendingSend } from "../src/adapters/hc-delivery.js";
 
-const PENDING: HcPendingSend = { version: 1, seat: "dev@rig", address: "t4", token: null, sendStartedAtMs: 1_600_000_000_000, preTurn: 0, preStatus: null, preReported: false, commandLed: false, preScreen: null };
+const PENDING: HcPendingSend = { version: 1, seat: "dev@rig", address: "t4", token: null, sendStartedAtMs: 1_600_000_000_000, preTurn: 0, preStatus: null, preReported: false, commandLed: false, preScreen: null, pasteEchoes: false };
 const MIN = 60_000;
 const sqliteStamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
 

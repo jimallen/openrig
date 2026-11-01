@@ -543,6 +543,16 @@ export class OutboxHandler {
     return rows.map((r) => this.rowToEntry(r, "mark"));
   }
 
+  /** The rows the sweep can settle by reading (`waiting_on_person`, `outcome_unknown`), oldest first, a window of `limit` after `offset`.
+   *  Not the rows nothing can settle (`crash_reconciled`, `send_gone`): they would sit at the head of a plain oldest-first list and
+   *  starve every newer row. The sweep walks the window along the list pass by pass, so rows that never settle cannot hide a new one. */
+  listHcSweepable(limit = 200, offset = 0): OutboxEntry[] {
+    if (!this.hasOutcomeLabelColumns) return [];
+    const rows = this.db.prepare(`SELECT * FROM outbox_entries WHERE delivery_state = 'indeterminate' AND delivery_path = 'hc'
+      AND ack_evidence IN ('waiting_on_person', 'outcome_unknown') ORDER BY ts_dispatched, rowid LIMIT ? OFFSET ?`).all(limit, offset) as OutboxEntryRow[];
+    return rows.map((r) => this.rowToEntry(r, "mark"));
+  }
+
   /**
    * The operator's close of an unsettled hc send, for a seat with no token to settle it by (a plain terminal), or any row the
    * evidence cannot settle: the person has looked at the seat (rig capture) and decided. The row leaves the unsettled list as
