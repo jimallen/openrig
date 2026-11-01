@@ -19,6 +19,7 @@ import { HC, PrivateCore, until } from "./hc-private-core.js";
  *  (what a TUI does for its own commands); the core's record afterwards is the one of a send that never arrived.
  *  `marker`: the end of a paste writes a file, so a test can restart the core in the 200 ms before the Enter.
  *  `busy`: reports `working` from the start and never leaves it (a seat in the middle of a turn).
+ *  `noecho`: the program draws nothing for what it is typed or pasted (a paste leaves the screen byte-identical).
  *  `collapse`: a paste is shown as a placeholder, not its text (a composer that folds a large paste), so the token is not rendered. */
 const STUB = `
 import os, sys, time, tty
@@ -29,6 +30,7 @@ busy = "busy" in mode.split(",")
 turns = "turns" in mode.split(",") or busy
 slash = "slash" in mode.split(",")
 collapse = "collapse" in mode.split(",")
+noecho = "noecho" in mode.split(",")
 buf = b""
 os.write(1, b"\\x1b[?2004h")
 if turns:
@@ -48,6 +50,8 @@ while True:
     shown = b.replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"").replace(b"\\r", b"\\r\\n")
     if collapse and b"\\x1b[200~" in b:
         shown = b"[Pasted text #1]"
+    if noecho:
+        shown = b""
     os.write(1, shown)
     buf += b
     if b"\\r" in b:
@@ -112,7 +116,7 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
       tsDispatched: "2031-03-04 05:00:00", deliveryState: "indeterminate", deliveredAt: null, auditPointer: null, ackDetail: JSON.stringify(outcome.pending),
     };
     await sweepHcUnsettled({
-      outbox: { listHcUnsettled: () => [row], settleHcUnsettled: (_id, state, label) => { settled.push({ state, detail: label.detail }); return true; }, markHcSendGone: () => { settled.push({ state: "send_gone", detail: null }); return true; } },
+      outbox: { listHcSweepable: () => [row], settleHcUnsettled: (_id, state, label) => { settled.push({ state, detail: label.detail }); return true; }, markHcSendGone: () => { settled.push({ state: "send_gone", detail: null }); return true; } },
       verify: (p) => d.verify(p), recordNudgeAttempt: () => undefined,
     });
     return settled;
@@ -142,17 +146,17 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
     expect(occurrences(stub.stdin(), "\r")).toBe(1);
   }, 40_000);
 
-  it("settles a send by the turn alone for a program that reports status, with no token", async () => {
+  it("settles a send by a turn that carries its token, for a program that reports status", async () => {
     const stub = await launch("turns");
     const typing = await person(stub.address);
     const d = delivery(1_500);
-    const first = await d.deliver(stub.seat, "work please");
+    const first = await d.deliver(stub.seat, "work please <tok-w1>", { token: "tok-w1" });
     expect(first).toMatchObject({ state: "waiting" });
     expect(pending(first)).toMatchObject({ preStatus: "idle", preReported: true, preTurn: 0 });
     await typing.stop();
     const settled = await until(() => d.verify(pending(first)), (o) => o.state !== "waiting", "the turn to advance", 20_000);
-    expect(settled).toMatchObject({ state: "delivered", evidence: "turn_advanced" });
-    expect(occurrences(stub.stdin(), "\x1b[200~work please\x1b[201~")).toBe(1);
+    expect(settled).toMatchObject({ state: "delivered", evidence: "turn_with_token" });
+    expect(occurrences(stub.stdin(), "\x1b[200~work please <tok-w1>\x1b[201~")).toBe(1);
   }, 45_000);
 
   it("takes the core's own acknowledgement when there is no one at the keyboard", async () => {
@@ -172,7 +176,7 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
     await viewer.detach();
     await new Promise((resolve) => setTimeout(resolve, 100));
     const d = delivery(12_000);
-    const racing = d.deliver(stub.seat, "survive this", {});
+    const racing = d.deliver(stub.seat, "survive this", { pasteEchoes: true });  // the stub shows a paste: declared, as a runtime would be
     // The restart must come after the send was issued by more than the margin (2 s) and inside the 3 s hold, or it proves nothing.
     await new Promise((resolve) => setTimeout(resolve, 2_300));
     core.restart();
@@ -221,7 +225,7 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
       expect(await d.verify(pending(first))).toMatchObject({ state: "waiting" });
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    expect(first.state === "waiting" && first.message).toMatch(/delivered before the restart or lost with it/);
+    expect(first.state === "waiting" && first.message).toMatch(/lost with it/);
   }, 60_000);
 
   describe("the double-delivery window: the text was delivered, the reply was lost, the core then restarted", () => {
@@ -250,7 +254,7 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
       };
       for (let i = 0; i < 3; i++) {
         await sweepHcUnsettled({
-          outbox: { listHcUnsettled: () => [row], settleHcUnsettled: (_id, state, label) => { settled.push({ state, detail: label.detail }); return true; }, markHcSendGone: () => { settled.push({ state: "send_gone", detail: null }); return true; } },
+          outbox: { listHcSweepable: () => [row], settleHcUnsettled: (_id, state, label) => { settled.push({ state, detail: label.detail }); return true; }, markHcSendGone: () => { settled.push({ state: "send_gone", detail: null }); return true; } },
           verify: (p) => d.verify(p), recordNudgeAttempt: () => undefined,
         });
       }
@@ -274,8 +278,9 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
     it("a seat that reports status and took the text: the turn it started settles it delivered", async () => {
       const stub = await launch("turns");
       const d = new HcDelivery(core.client, lossyThenRestart());
-      const outcome = await d.deliver(stub.seat, "hello window");
-      expect(outcome).toMatchObject({ state: "delivered", evidence: "turn_advanced" });
+      const token = deliveryTokenFor("delivery:window-2");
+      const outcome = await d.deliver(stub.seat, withDeliveryToken("hello window", token), { token });
+      expect(outcome).toMatchObject({ state: "delivered", evidence: "turn_with_token" });
       expect(occurrences(stub.stdin(), "hello window")).toBe(1);
     }, 60_000);
 
@@ -410,6 +415,15 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
       expect(verdict).toMatchObject({ state: "waiting", cause: "restart_unsettled" });
     }, 60_000);
 
+    it("N2: a program that draws nothing on a paste leaves the screen as it was: not gone by default, it waits for a person", async () => {
+      const { stub, first } = await restartBetween("graceful", "turns,marker,noecho", true, false);
+      expect(stub.stdin()).toContain("\x1b[200~hello between");  // the paste landed ...
+      expect(stub.stdin()).not.toContain("\r");                // ... the Enter did not ...
+      const verdict = await new HcDelivery(core.client, new HcInput(core.client, attach, { deliveryTimeoutMs: 8_000 })).verify(pending(first));
+      expect(verdict).toMatchObject({ state: "waiting", cause: "restart_unsettled" });  // ... and the screen alone could not say so
+      expect(isBlindRetrySafe(verdict)).toBe(false);
+    }, 60_000);
+
     it("a retry that typed again would put the text in twice and submit it once (the reason nobody resends)", async () => {
       const { stub } = await restartBetween("graceful", "turns,marker");
       const sent = await core.client.call<{ turn: number }>("terminal.send", { terminal: stub.address, text: "hello between" }, { timeoutMs: 20_000 });
@@ -419,6 +433,31 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
       expect(occurrences(stub.stdin(), "\r")).toBe(1);
     }, 60_000);
   });
+
+  it("N1: a send lost in a core restart, then a person presses Enter on their own text: a turn, not this send's: waiting, never delivered", async () => {
+    const stub = await launch("turns");
+    const viewer = await attach.open({ terminal: stub.address, cols: 200, rows: 120 }, { onData: () => {}, onEnd: () => {} });
+    viewer.write("p");
+    await viewer.detach();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const token = deliveryTokenFor("delivery:n1");
+    const d = delivery(1_000);
+    const first = await d.deliver(stub.seat, withDeliveryToken("hello n1", token), { token });
+    expect(first).toMatchObject({ state: "waiting" });
+    await new Promise((resolve) => setTimeout(resolve, 1_300));
+    core.restart();  // inside the 3 s hold, more than the margin after the send: the queued text is lost with the core
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(stub.stdin()).not.toContain("hello n1");
+    // The person types their own line and presses Enter: the program starts a turn that is not this send's.
+    const person2 = await attach.open({ terminal: stub.address, cols: 200, rows: 120 }, { onData: () => {}, onEnd: () => {} });
+    person2.write("my own line\r");
+    await until(async () => (await core.client.call<HcTerminal>("terminal.get", { terminal: stub.address })).turn, (turn) => (turn ?? 0) >= 1, "the person's turn", 10_000);
+    await person2.detach();
+    const verdict = await d.verify(pending(first));
+    expect(verdict).toMatchObject({ state: "waiting", cause: "turn_without_token" });
+    expect(isBlindRetrySafe(verdict)).toBe(false);
+    expect(stub.stdin()).not.toContain("hello n1");  // the message never arrived, and nothing says it was delivered
+  }, 60_000);
 
   it("the daemon dies between the paste and the Enter: the core still presses the Enter, once, and the turn settles it", async () => {
     // Not a restart of the core: only the client goes (here a 100 ms timeout, the socket is destroyed). Measured: a queued send

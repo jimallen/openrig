@@ -101,6 +101,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     }
 
     const result = await transport.send(body.session, body.text ?? "", {
+      ownsOutboxRow: true,  // this route records the row below
       deliveryId: body.deliveryId,
       verify: body.verify,
       force: body.force,
@@ -335,6 +336,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
             : { global: true };
 
     const result = await transport.broadcast(target, body.text, {
+      ownsOutboxRow: true,  // this route records a row per recipient below
       verify: body.verify,
       force: body.force,
       waitForIdleMs: body.waitForIdleMs,

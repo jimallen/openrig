@@ -16,7 +16,7 @@ import type { HcPendingSend } from "../src/adapters/hc-delivery.js";
 const T0 = Date.parse("2031-03-04T05:00:00.000Z");
 const MIN = 60_000;
 const sqliteStamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
-const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: null, sendStartedAtMs: T0, preTurn: 0, preStatus: null, preReported: false, commandLed: false, preScreen: null };
+const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: null, sendStartedAtMs: T0, preTurn: 0, preStatus: null, preReported: false, commandLed: false, preScreen: null, pasteEchoes: false };
 
 describe("HcUnsettledHealthSource", () => {
   let db: Database.Database;

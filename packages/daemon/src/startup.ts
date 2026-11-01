@@ -2168,7 +2168,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         const { fallbacks } = claudeNativeInbox.sweep();
         // OF-180 N7: a wake group goes out once, as the one text it was written as; every row of it settles on the result.
         await failOverToTmux(nativeSettlementDeps, {
-          send: (f) => sessionTransport.send(f.sessionName, f.body, { forceTmux: true, verify: true, actorSession: f.senderSession, auditPointer: f.auditPointer ?? undefined }),
+          send: (f) => sessionTransport.send(f.sessionName, f.body, { forceTmux: true, ownsOutboxRow: true, verify: true, actorSession: f.senderSession, auditPointer: f.auditPointer ?? undefined }),
           labelFor: labelForTmuxSend,
           settleFallback: (id, state, label) => outboxHandlerInstance.settleFallback(id, state, label),
           getById: (id) => outboxHandlerInstance.getById(id),
@@ -2184,10 +2184,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const nativeSweepTimer = setInterval(() => { void nativeSweep(); }, 15_000);
     // hc: sends with no confirmation yet settle only on evidence, at boot and on this timer. Nothing here sends.
     if (hcDelivery) {
+      const hcSweepCursor = { offset: 0 };  // walks the window along the list, so rows that never settle cannot starve newer ones
       const hcSweep = () => sweepHcUnsettled({
         outbox: outboxHandlerInstance, verify: (pending) => hcDelivery.verify(pending),
         recordNudgeAttempt: (qitemId, result) => queueRepoInstance.recordNudgeAttempt(qitemId, result),
-      }).catch((err: unknown) => { console.warn(`[hc-delivery] sweep failed: ${(err as Error).message}`); });
+      }, 200, hcSweepCursor).catch((err: unknown) => { console.warn(`[hc-delivery] sweep failed: ${(err as Error).message}`); });
       void hcSweep();
       setInterval(() => { void hcSweep(); }, 15_000).unref();
     }

@@ -15,20 +15,43 @@ import type { SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
  *   - it was delivered (the reply was lost): a retry puts the text in twice;
  *   - it is gone (the core that held it restarted): a retry is the only way it arrives.
  *
- * `delivery_outcome_unknown` therefore means VERIFY, never resend. This module is the one place that decides. It reads
- * the terminal before the send (state, status, turn, and the core's start time), sends, and on silence reads again and
- * settles by evidence in this order: a token already or now on the screen, the turn advanced, then proof that the text
- * never reached the program. Silence the evidence does not settle is `waiting`: the send may still be the core's, or may
- * have landed, and nobody resends. The `pending` record it returns is everything a later check needs, so a daemon
- * restart loses nothing.
+ * `delivery_outcome_unknown` therefore means VERIFY, never resend. This module is the one place that decides, and it decides by
+ * the table below and nothing else (`classifyEvidence`). Three rounds of review found a hole in this state machine each time, every
+ * one a case the prose rules had not named. So the rule is the converse: the table lists the ONLY evidence that settles a send, and
+ * every case not in it reads `waiting`, which the daemon surfaces to a person after a while (hc-unsettled-health). A message a
+ * person sends again costs one nudge; a message delivered twice cannot be taken back, and one lost silently cannot be found.
  *
- * A core restart alone is NOT proof that a send is gone. A queued send does not survive a restart, but a send that was
- * delivered and then lost its reply does, and "the core started after the send was issued" is true of both. So the
- * restart only says "gone" when the program also shows it never took the text (`neverReachedProgram`): it reports
- * status, it was at rest before the send, it is at rest now, its turn did not move and the text was not a command a
- * program can run without a turn. Anything else is `waiting`, which
- * the daemon surfaces to a person after a while (hc-unsettled-health): a lost message a person resends costs one nudge, a
- * message delivered twice cannot be taken back.
+ *   evidence seen (first row that matches)                                                    ->  state
+ *   ------------------------------------------------------------------------------------------------------------------------
+ *   1. the core's own reply to `terminal.send`                                                ->  delivered (reply)
+ *   2. the screen could not be read                                                           ->  waiting   (screen_unreadable)
+ *   3. a turn started AND this send's token is on the screen                                  ->  delivered (turn_with_token)
+ *   4. this send's token is on the screen, no turn                                            ->  waiting   (text_present_no_turn)
+ *   5. a turn started, the token is not on the screen (or the send has no token)              ->  waiting   (turn_without_token)
+ *   6. the core restarted after the send, the program is at rest with no turn, the text was not a command, the screen is
+ *      byte-identical to its state before the send, AND the program is declared to show a paste on its screen   ->  gone
+ *   7. the core restarted after the send, anything else                                       ->  waiting   (restart_unsettled)
+ *   8. nothing else                                                                           ->  waiting   (queued_in_core)
+ *
+ * Why each row is the size it is (all measured on a private core, hc 0.1.15, unless marked):
+ *   - Row 3 needs the token. A turn alone is any turn: a person pressing Enter on their own text, a background event. Measured:
+ *     a send lost in a restart, then a person's Enter, moved the turn counter with the text never having arrived.
+ *   - Row 4: the token on the screen proves the paste, never the Enter. With the Enter lost the text sits typed and unsubmitted,
+ *     token included, status idle, turn unchanged. A resend then types it a second time (the composer held it twice).
+ *   - Row 3 can still be wrong in one way hc does not let us exclude: the text staged and unsubmitted (token in the INPUT) while a
+ *     turn from another source starts. Telling the input from the transcript needs the cursor row, which only an attach stream
+ *     gives; not used. Unverified on a real agent.
+ *   - Row 5: a turn the token cannot be tied to. Includes every token-free seat: with no token nothing ties a turn to this send.
+ *   - Row 6 is `gone`, the one state a retry may follow, so it asks for everything: a screen that did not change is only evidence
+ *     if the program would have shown the paste. A program that renders nothing on a paste leaves the same screen whether the paste
+ *     arrived or not (a stub measured so), so `pasteEchoes` is declared by the caller and defaults to false. No runtime is declared
+ *     yet: whether Claude, Codex and Pi show a paste on the screen is for the real-agent test to measure. Until then `gone` does not
+ *     happen in production, and every send lost in a restart waits for a person.
+ *   - A slash command is a turn-less input (measured: the core's record is the same as for a send that never arrived), so it can
+ *     never be `gone`, and its token does not tie a turn.
+ *   - A restart is not proof by itself: a send delivered before the restart lost its reply, and "the core started after the send"
+ *     is true of both.
+ *   The pending record is everything a later check needs, so a daemon restart loses nothing.
  */
 
 /** Shorter than the core's own start-up and a connect, so a restart that merely overlaps the send is never read as
@@ -36,6 +59,11 @@ import type { SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 export const CORE_RESTART_MARGIN_MS = 2_000;
 /** How much history a token is looked for in. */
 export const TOKEN_HISTORY_LINES = 200;
+
+/** Runtimes declared to show a pasted text on their screen (the table, row 6: the only thing that lets an unchanged screen mean "the
+ *  text never arrived"). EMPTY on purpose: none has been measured on a real agent yet, so `gone` is unavailable and a send lost in a
+ *  restart waits for a person. A runtime is added here only with that measurement behind it. */
+export const PASTE_ECHOING_RUNTIMES: ReadonlySet<string> = new Set<string>();
 
 /** What a later check needs to settle a send whose reply never came. Plain JSON; kept in the outbox row. */
 export interface HcPendingSend {
@@ -59,6 +87,9 @@ export interface HcPendingSend {
    *  same afterwards is the only way, for a seat with no token, to say the text never arrived. Absent on a record saved before the
    *  field existed: read as null, the side that never claims "gone". */
   preScreen: string | null;
+  /** The caller declares this program shows a paste on its screen. Without it an unchanged screen proves nothing (a program that
+   *  renders nothing on a paste looks the same), so `gone` is not available. Absent on a record saved before the field: false. */
+  pasteEchoes: boolean;
 }
 
 export type HcNotDelivered =
@@ -67,10 +98,10 @@ export type HcNotDelivered =
 /** Why a send is `waiting`, for whoever reads it: the core may still hold the text; the core restarted and the text was
  *  either delivered first or lost; or the text is on the screen and nothing started (typed but not submitted, or taken by a
  *  command: not told apart); or the screen could not be read, so whether the text is on it is not known. */
-export type HcWaitingCause = "queued_in_core" | "restart_unsettled" | "text_present_no_turn" | "screen_unreadable";
+export type HcWaitingCause = "queued_in_core" | "restart_unsettled" | "text_present_no_turn" | "screen_unreadable" | "turn_without_token";
 
 export type HcDeliveryOutcome =
-  | { state: "delivered"; evidence: "reply" | "turn_advanced"; verified: boolean; started: boolean | null; status: string | null; turn: number | null }
+  | { state: "delivered"; evidence: "reply" | "turn_with_token"; verified: boolean; started: boolean | null; status: string | null; turn: number | null }
   /** Nothing was typed, or the send is proved gone. The only state a blind retry is allowed to follow. */
   | { state: "not_delivered"; reason: HcNotDelivered; message: string; code: string }
   /** The core still holds the send and nothing says it was delivered: a person is typing, or the program is slow. Not a failure. */
@@ -96,6 +127,8 @@ export interface HcDeliveryOptions {
 }
 
 export interface HcDeliverOptions {
+  /** The program is known to show a paste on its screen (see the table, row 6). Default false: nothing is declared yet. */
+  pasteEchoes?: boolean;
   /** A string that appears in the delivered text and nowhere else: found on the screen, it proves a landing. */
   token?: string;
   /** Type even if the program is blocked (a caller that answers a dialog). */
@@ -140,7 +173,7 @@ export class HcDelivery {
     const pending: HcPendingSend = {
       version: 1, seat, address: pre.facts.terminal.address, token: options.token ?? null, sendStartedAtMs: this.now(),
       preTurn: pre.facts.terminal.turn ?? 0, preStatus: status, preReported: pre.facts.terminal.reported === true,
-      commandLed: startsLikeCommand(text), preScreen: screen === null ? null : hashScreen(screen),
+      commandLed: startsLikeCommand(text), preScreen: screen === null ? null : hashScreen(screen), pasteEchoes: options.pasteEchoes === true,
     };
     if (options.token) {
       // A token already on the screen means an earlier attempt's paste is there. That is not "delivered": the paste is all the
@@ -160,8 +193,14 @@ export class HcDelivery {
     }
     const refused = definiteRefusal(sent.code, sent.message);
     if (refused) return refused;
-    // Silence (or a failure this module cannot classify): the send may be queued. Verify; never resend.
-    return this.verify(pending);
+    // Silence (or a failure this module cannot classify): the send may be queued. Verify; never resend. One path for a send proved
+    // gone: the caller gets `waiting` and the row it leaves is what the sweep, on its own read, marks `send_gone` (a `not_delivered`
+    // here would have been recorded as a plain failure, outside the unsettled list that `rig health` reads).
+    const verdict = await this.verify(pending);
+    if (verdict.state === "not_delivered" && verdict.reason === "core_restarted_send_gone") {
+      return { state: "waiting", reason: "waiting_on_person", cause: "restart_unsettled", pending, message: `${verdict.message} It is listed as lost for a person; nothing sends it again.` };
+    }
+    return verdict;
   }
 
   /** Settle a send whose reply never came, now or on a later sweep. Reads only; sends nothing. */
@@ -177,32 +216,25 @@ export class HcDelivery {
     if (terminal.address !== pending.address) {
       return { state: "unknown", reason: "terminal_replaced", pending, message: `${pending.seat} is a different terminal now (${pending.address} became ${terminal.address}); the old send's fate is not known. Do not resend.` };
     }
-    // Delivered needs the Enter to have reached the program, and only a turn shows that: the paste alone (the token on the screen)
-    // also looks like this when the Enter was lost, when the program was busy, and when it reports no status (measured: the text
-    // sits typed and unsubmitted with the token on the screen and the status unchanged). So a token is never delivery.
-    if (turnAdvanced(pending, terminal)) {
-      return { state: "delivered", evidence: "turn_advanced", verified: false, started: null, status: terminal.status?.state ?? null, turn: terminal.turn ?? null };
-    }
     const screen = await this.readScreen(pending.seat);
-    if (screen === null) {
-      // The screen could not be read, so the text may be on it. Not delivered (no turn) and not gone (an absence never observed).
-      return { state: "waiting", reason: "waiting_on_person", cause: "screen_unreadable", pending, message: `the screen of ${pending.seat} could not be read to look for this message, so whether the text is there is not known. Do not resend: look at the seat (rig capture) when it can be read, and close this row once it is dealt with.` };
-    }
-    if (pending.token !== null && screen.includes(pending.token)) {
-      return { state: "waiting", reason: "waiting_on_person", cause: "text_present_no_turn", pending, message: textPresentMessage(pending.seat, false) };
-    }
     const restarted = coreStartedAtMs !== null && coreStartedAtMs >= pending.sendStartedAtMs + CORE_RESTART_MARGIN_MS;
-    if (restarted && neverReachedProgram(pending, terminal) && pending.preScreen !== null && hashScreen(screen) === pending.preScreen) {
-      // A newer core began after the send was issued, so a send still queued in the old one is gone (spike 1+2, 2.2). That alone
-      // does not say the text never landed (it may have been delivered first or pasted with its Enter lost), so the program must show
-      // it never took the text (at rest, no turn, not a command) and the screen must be exactly as it was before the send.
+    const verdict = classifyEvidence({
+      screenRead: screen !== null,
+      tokenOnScreen: screen !== null && pending.token !== null && screen.includes(pending.token),
+      turnStarted: turnAdvanced(pending, terminal),
+      restarted,
+      atRestNoTurn: noTurnSince(pending, terminal),
+      commandLed: pending.commandLed,
+      screenUnchanged: screen !== null && pending.preScreen !== null && hashScreen(screen) === pending.preScreen,
+      pasteEchoes: pending.pasteEchoes,
+    });
+    if (verdict.state === "delivered") {
+      return { state: "delivered", evidence: "turn_with_token", verified: false, started: null, status: terminal.status?.state ?? null, turn: terminal.turn ?? null };
+    }
+    if (verdict.state === "gone") {
       return { state: "not_delivered", reason: "core_restarted_send_gone", code: "send_gone", message: `the hc core restarted after the send to ${pending.seat} was issued, ${pending.seat} reports no turn started since, and its screen is as it was before the send: the queued send did not survive the restart. Nothing was delivered. It is not sent again for you: send it again by hand.` };
     }
-    if (restarted) {
-      // Restarted, and nothing shows the text never took: delivered before the restart, typed and unsubmitted, or lost with it.
-      return { state: "waiting", reason: "waiting_on_person", cause: "restart_unsettled", pending, message: `the hc core restarted after the send to ${pending.seat} was issued, and the text was either delivered before the restart or lost with it; ${pending.seat} reports nothing that tells which. Do not resend: check the seat (rig capture) and send again only if the text is not there.` };
-    }
-    return { state: "waiting", reason: "waiting_on_person", cause: "queued_in_core", pending, message: `the text for ${pending.seat} is queued in the hc core and not delivered yet (a person may be typing there). It will arrive; do not resend.` };
+    return { state: "waiting", reason: "waiting_on_person", cause: verdict.cause, pending, message: waitingMessage(verdict.cause, pending.seat) };
   }
 
   /** The screen and its recent history as one string, or null when it could not be read. */
@@ -253,19 +285,47 @@ export class HcDelivery {
 /** Statuses of a program at rest: not mid-turn, not on a dialog, not failed. */
 const AT_REST = new Set(["idle", "done"]);
 
-/**
- * The one way, short of a token, to tell a send that never reached the program from one that did and lost its reply: a
- * program that reports status and takes a prompt starts a turn. At rest before the send, at rest now, and the same turn
- * counter, it did not take the text. Needs all three: a program that reports nothing says nothing (null status), one that
- * was working or on a dialog would have changed state for other reasons, and a counter that differs (or went back, as it
- * would if a core forgot it; measured: it survives `hc server restart`) is not a measure of this send. A command-led text is
- * excluded outright: a program runs a slash command with no turn, and on a private core the core's record of that (status,
- * turn, status_ms) was identical to the record of a send that never arrived; only what the program chose to print differed. So
- * for such a text "no turn" is no evidence at all, and it stays `waiting`.
- */
-export function neverReachedProgram(pending: HcPendingSend, now: HcTerminal): boolean {
-  // A command takes no turn, so for a command-led text "no turn" is what both a lost send and a consumed one look like.
-  return !pending.commandLed && noTurnSince(pending, now);
+/** Everything verify reads about a send, as facts. The table at the top of this file is `classifyEvidence`. */
+export interface HcEvidence {
+  /** The screen (with history) was read. */
+  screenRead: boolean;
+  /** This send's token is on it. False when there is no token, and when the screen was not read. */
+  tokenOnScreen: boolean;
+  /** The turn counter moved past the send's baseline, for a program that reports status and was not mid-turn at the send. */
+  turnStarted: boolean;
+  /** The core now answering started more than the margin after the send was issued. */
+  restarted: boolean;
+  /** Reports status, at rest before and now, same turn. */
+  atRestNoTurn: boolean;
+  /** The text began like a slash command. */
+  commandLed: boolean;
+  /** The screen is byte-identical to the one read before the send (false when either was not read). */
+  screenUnchanged: boolean;
+  /** The caller declared that this program shows a paste on its screen. */
+  pasteEchoes: boolean;
+}
+
+export type HcVerdict = { state: "delivered" } | { state: "gone" } | { state: "waiting"; cause: HcWaitingCause };
+
+/** The table at the top of this file, row for row. Pure: no read, no clock. Anything not matched by a delivered or gone row waits. */
+export function classifyEvidence(e: HcEvidence): HcVerdict {
+  if (!e.screenRead) return { state: "waiting", cause: "screen_unreadable" };                                  // row 2
+  if (e.turnStarted && e.tokenOnScreen) return { state: "delivered" };                                         // row 3
+  if (e.tokenOnScreen) return { state: "waiting", cause: "text_present_no_turn" };                             // row 4
+  if (e.turnStarted) return { state: "waiting", cause: "turn_without_token" };                                 // row 5
+  if (e.restarted && e.atRestNoTurn && !e.commandLed && e.screenUnchanged && e.pasteEchoes) return { state: "gone" };  // row 6
+  if (e.restarted) return { state: "waiting", cause: "restart_unsettled" };                                    // row 7
+  return { state: "waiting", cause: "queued_in_core" };                                                         // row 8
+}
+
+function waitingMessage(cause: HcWaitingCause, seat: string): string {
+  switch (cause) {
+    case "screen_unreadable": return `the screen of ${seat} could not be read to look for this message, so whether the text is there is not known. Do not resend: look at the seat (rig capture) when it can be read, and close this row once it is dealt with.`;
+    case "text_present_no_turn": return textPresentMessage(seat, false);
+    case "turn_without_token": return `a turn started on ${seat} after this send, but this message's token is not on its screen (or it carries none), so the turn cannot be tied to it: a person may have pressed Enter on their own text, or the message was delivered and has scrolled away. Not told apart. Do not resend: look at the seat (rig capture), send again only if the text is not there, and close this row once it is dealt with.`;
+    case "restart_unsettled": return `the hc core restarted after the send to ${seat} was issued, and the text was either delivered before the restart, typed and unsubmitted, or lost with it; nothing the seat shows tells which. Do not resend: check the seat (rig capture) and send again only if the text is not there.`;
+    case "queued_in_core": return `the text for ${seat} is queued in the hc core and not delivered yet (a person may be typing there). It will arrive; do not resend.`;
+  }
 }
 
 function hashScreen(text: string): string {
