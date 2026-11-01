@@ -604,8 +604,12 @@ describe.runIf(findHc() !== null)("pda seat end to end: real daemon, real hc (pr
     const seatDir = paths().seatRoot;
     for (const name of readdirSync(seatDir)) surfaces.push([`seat state: ${name}`, readFileSync(join(seatDir, name), "utf8")]);
 
-    // The environment of every process that belongs to this scaffold (the daemon, the runner, the shells).
+    // The environment of every process that belongs to this scaffold (the daemon, the runner, the shells). Linux reads
+    // /proc/<pid>/environ. macOS has no /proc: `ps -axEwwo` appends the environment to the command of a same-user process whose
+    // program is unprotected (the daemon and the runner are node, the shells are bash; measured on macOS 27), so a process is the
+    // scaffold's by the same two entries, as whole words of that line.
     const owned: number[] = [];
+    const ownedBy = (text: string, delimiter: string) => text.includes(`OPENRIG_HOME=${scaffold.openrigHome}${delimiter}`) || text.includes(`HOME=${scaffold.home}${delimiter}`);
     if (existsSync("/proc/self/environ")) {
       for (const pid of readdirSync("/proc").filter((n) => /^\d+$/.test(n))) {
         try {
@@ -613,6 +617,14 @@ describe.runIf(findHc() !== null)("pda seat end to end: real daemon, real hc (pr
           if (env.includes(`OPENRIG_HOME=${scaffold.openrigHome}`) || env.includes(`HOME=${scaffold.home}\0`)) { owned.push(Number(pid)); surfaces.push([`environ of pid ${pid}`, env]); }
         } catch { /* not ours, or gone */ }
       }
+    } else if (process.platform === "darwin") {
+      const listing = await new Promise<string>((res, rej) => execFile("ps", ["-axEwwo", "pid=,command="], { maxBuffer: 64 * 1024 * 1024 }, (e, o) => e ? rej(e) : res(o)));
+      for (const line of listing.split("\n")) {
+        const m = /^\s*(\d+)\s(.*)$/.exec(line);
+        if (m && (ownedBy(m[2]!, " ") || ownedBy(m[2]!, ""))) { owned.push(Number(m[1])); surfaces.push([`argv and environment of pid ${m[1]}`, m[2]!]); }
+      }
+    }
+    if (existsSync("/proc/self/environ") || process.platform === "darwin") {
       const runner = (await runnerPids())[0]!;
       expect(owned, "the runner's environment must be among the scanned ones").toContain(runner);
       expect(owned.length).toBeGreaterThanOrEqual(3);
