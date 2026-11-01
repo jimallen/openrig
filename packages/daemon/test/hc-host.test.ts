@@ -80,6 +80,29 @@ describe("seatEnvironment", () => {
     expect(unset).toEqual(expect.arrayContaining(["CLAUDE_CODE_SESSION_ID", "HERDR_ENV", "TMUX", "TMUX_PANE", "CLAUDE_EFFORT"]));
     expect(unset).not.toContain("CLAUDECODE");
   });
+  describe("operator credentials", () => {
+    const operator = { OPENRIG_AUTH_BEARER_TOKEN: "op-a", OPENRIG_TERMINAL_BEARER_TOKEN: "op-t", SLACK_BOT_TOKEN: "xoxb", SLACK_APP_TOKEN: "xapp" };
+    it("never inherits them from the daemon", () => {
+      const { env } = seatEnvironment({}, { ...operator, KEEP: "k" });
+      for (const name of Object.keys(operator)) expect(env).not.toHaveProperty(name);
+      expect(env.KEEP).toBe("k");
+    });
+    it("unsets all of them, so a core started with them does not pass them on", () => {
+      expect(seatEnvironment({}, operator).unset).toEqual(expect.arrayContaining(Object.keys(operator)));
+      expect(seatEnvironment({}, {}).unset).toEqual(expect.arrayContaining(Object.keys(operator)));
+    });
+    it("keeps one the seat states itself, and does not unset it", () => {
+      const { env, unset } = seatEnvironment({ OPENRIG_TERMINAL_BEARER_TOKEN: "mine" }, operator);
+      expect(env.OPENRIG_TERMINAL_BEARER_TOKEN).toBe("mine");
+      expect(unset).not.toContain("OPENRIG_TERMINAL_BEARER_TOKEN");
+      expect(unset).toContain("OPENRIG_AUTH_BEARER_TOKEN");
+    });
+    it("still delivers the seat's own activity hook token and provider keys", () => {
+      const { env, unset } = seatEnvironment({ OPENRIG_ACTIVITY_HOOK_TOKEN: "seat-hook" }, { ANTHROPIC_API_KEY: "prov" });
+      expect(env).toMatchObject({ OPENRIG_ACTIVITY_HOOK_TOKEN: "seat-hook", ANTHROPIC_API_KEY: "prov" });
+      expect(unset).not.toContain("OPENRIG_ACTIVITY_HOOK_TOKEN");
+    });
+  });
   it("refuses a name hc would take silently, and never prints a value", () => {
     expect(() => seatEnvironment({ "A=B": "x" }, {})).toThrow(/invalid environment name/);
     expect(() => seatEnvironment({ "": "x" }, {})).toThrow(/invalid environment name/);
@@ -107,6 +130,15 @@ describe("HcHost.createSession", () => {
     expect(argv.join(" ")).toContain("-u CLAUDECODE");
     expect(argv.join(" ")).not.toContain("s3cret");
     expect(params!.env).toMatchObject({ API_KEY: "s3cret" });
+  });
+  it("does not state the daemon's operator bearer to the seat, in env or argv, and unsets it for the core's side", async () => {
+    const client = new FakeClient(() => terminal("live"));
+    const host = new HcHost(client, { daemonEnv: { SHELL: "/bin/zsh", OPENRIG_AUTH_BEARER_TOKEN: "op-secret", OPENRIG_TERMINAL_BEARER_TOKEN: "t-secret" } });
+    await host.createSession("qa@rig", "/w", seatEnv);
+    const params = client.calls[0]![1]!;
+    expect(JSON.stringify(params)).not.toContain("-secret");
+    expect((params.argv as string[]).join(" ")).toContain("-u OPENRIG_AUTH_BEARER_TOKEN");
+    expect((params.argv as string[]).join(" ")).toContain("-u OPENRIG_TERMINAL_BEARER_TOKEN");
   });
   it("refuses a managed launch without its lease and runs nothing", async () => {
     const client = new FakeClient(() => terminal("live"));

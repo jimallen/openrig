@@ -13,6 +13,15 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Set by a host the daemon may sit inside; hc sets its own for the seat. */
 const HOST_ENV_KEYS = ["TMUX", "TMUX_PANE"];
 
+/** The daemon's own operator credentials, read from its env (census at add4c5e: index.ts and startup.ts read the two
+ *  bearer tokens; the Slack gateway reads the two bot tokens through resolveSecret). A seat has no use for them: the
+ *  operator bearer is the write gate, the terminal bearer opens the terminal WebSocket. Never inherited from the daemon
+ *  and always unset in the launch wrapper, so a core started with them does not pass them on either. A seat that must
+ *  hold one states it in its own env. Provider keys are not here: they keep the allowlisted channel. */
+export const OPERATOR_SECRET_ENV_NAMES: readonly string[] = [
+  "OPENRIG_AUTH_BEARER_TOKEN", "OPENRIG_TERMINAL_BEARER_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
+];
+
 export interface SeatEnvironment {
   /** Sent in `terminal.run.env`, which merges over the core's env: values cross the socket, never an argv. */
   env: Record<string, string>;
@@ -26,7 +35,7 @@ export function seatEnvironment(seat: Readonly<Record<string, string>> = {}, dae
   const inherited: Record<string, string | undefined> = { ...daemon };
   removeParentSessionEnv(inherited);
   for (const key of Object.keys(inherited)) {
-    if (key.startsWith("HC_") || HOST_ENV_KEYS.includes(key)) delete inherited[key];
+    if (key.startsWith("HC_") || HOST_ENV_KEYS.includes(key) || OPERATOR_SECRET_ENV_NAMES.includes(key)) delete inherited[key];
   }
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(inherited)) if (value !== undefined) env[key] = value;
@@ -36,6 +45,6 @@ export function seatEnvironment(seat: Readonly<Record<string, string>> = {}, dae
     if (!ENV_NAME.test(key)) throw new Error(`invalid environment name ${JSON.stringify(key)}`);  // hc accepts "A=B" and ""
     if (value.includes("\0")) throw new Error(`environment value of ${key} holds a NUL`);
   }
-  const candidates = [...PARENT_SESSION_ENV_KEYS, "CLAUDE_EFFORT", ...HOST_ENV_KEYS];
+  const candidates = [...PARENT_SESSION_ENV_KEYS, "CLAUDE_EFFORT", ...HOST_ENV_KEYS, ...OPERATOR_SECRET_ENV_NAMES];
   return { env, unset: candidates.filter((key) => !(key in env)) };
 }

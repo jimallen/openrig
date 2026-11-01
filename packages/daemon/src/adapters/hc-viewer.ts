@@ -4,7 +4,8 @@ import { HC_GENERATION, HcClient, HcError, HcUnavailableError, resolveHcSocket, 
 import { HC_HEARTBEAT_TIMEOUT_MS } from "./hc-core-watch.js";
 import { HcCapture } from "./hc-capture.js";
 import { ModeTracker, type TerminalModes } from "./hc-modes.js";
-import { hcTerminalRef, isAbsentFailure, isHcFailure } from "./hc-identity.js";
+import { hcSeatName, isAbsentFailure, isHcFailure } from "./hc-identity.js";
+import { SEAT_LABEL, hcTerminalName } from "./hc-seat.js";
 import type { TmuxClient, TmuxCursorPosition, TmuxResult } from "./tmux.js";
 
 /**
@@ -280,10 +281,32 @@ export class HcViewer {
 
   // ---- what the terminal session broker drives ----
 
-  /** Watch a terminal as an observer, following its size and surviving a core restart. The target is a seat's canonical
-   *  name, a tmux exact form of it, or an hc address (hcTerminalRef). */
+  /** The hc name of the seat a target names, only if that terminal is a seat of this daemon: the target spells a canonical seat
+   *  name (never an address) and the terminal under its hc name carries the `openrig.seat` label with that very name. Null otherwise,
+   *  with nothing read or attached: the core is shared with a person's own terminals (security review F2). An unreachable core throws. */
+  private async seatRef(target: string): Promise<string | null> {
+    const seat = hcSeatName(target);
+    if (seat === null) return null;
+    const ref = hcTerminalName(seat);
+    try {
+      const found = await this.client.call<HcTerminal>("terminal.get", { terminal: ref });
+      return found.labels?.[SEAT_LABEL] === seat ? ref : null;
+    } catch (err) {
+      if (isAbsentFailure(err)) return null;
+      throw err;
+    }
+  }
+
+  /** Watch a seat's terminal as an observer, following its size and surviving a core restart. The target is a seat's canonical
+   *  name or a tmux exact form of it; an hc address, or a terminal without the seat's label, is refused as absent. */
   async view(target: string, handlers: ViewHandlers): Promise<ViewOpen> {
-    const ref = hcTerminalRef(target);
+    let ref: string | null;
+    try {
+      ref = await this.seatRef(target);
+    } catch (err) {
+      if (isHcFailure(err)) return { ok: false, end: { reason: "unavailable", cause: err.message } };
+      throw err;
+    }
     if (ref === null) return { ok: false, end: { reason: "absent" } };
     const following = new Following({ opener: this.opener, sizes: this.sizes, client: this.client, delays: this.delays, sleep: this.sleep }, ref, handlers);
     const first = await following.start();
@@ -292,7 +315,13 @@ export class HcViewer {
 
   /** The last `lines` of history and the screen as plain text (`terminal.read`). Callers decide whether the read is safe:
    *  see `fullScreenHistoryReadIsUnsafe`. */
-  readHistory(target: string, lines: number): Promise<string | null> {
+  async readHistory(target: string, lines: number): Promise<string | null> {
+    try {
+      if (await this.seatRef(target) === null) return null;
+    } catch (err) {
+      if (isHcFailure(err)) return null;
+      throw err;
+    }
     return this.capture.capturePaneContent(target, lines);
   }
 
@@ -310,7 +339,13 @@ export class HcViewer {
 
   /** The terminal's first paint as an observer sees it, and its size. Null when it is not there or cannot be reached. */
   async snapshot(target: string): Promise<{ paint: Buffer; cols: number; rows: number } | null> {
-    const ref = hcTerminalRef(target);
+    let ref: string | null;
+    try {
+      ref = await this.seatRef(target);
+    } catch (err) {
+      if (isHcFailure(err)) return null;
+      throw err;
+    }
     if (ref === null) return null;
     const painted = new PaintCollector(this.paint);
     let attachment: HcAttachment;
