@@ -108,12 +108,12 @@ describe("the wired flag: a real SettingsStore, a real file", () => {
     writeFileSync(p, '{"transport":{"nativeClaude":true}}'); utimesSync(p, 2_000, 2_000);
     expect([w.flag(), w.flag(), w.reads()]).toEqual([true, true, 2]);
   });
-  it("a missing file is the default (off); creating it turns the flag on at the next send", () => {
+  it("a missing file is the default (on); writing it off turns the flag off at the next send", () => {
     const p = join(scratch(), "config.json");
     const w = wired(p);
-    expect([w.flag(), w.flag(), w.reads()]).toEqual([false, false, 1]);
-    writeFileSync(p, '{"transport":{"nativeClaude":true}}');
-    expect(w.flag()).toBe(true);
+    expect([w.flag(), w.flag(), w.reads()]).toEqual([true, true, 1]);
+    writeFileSync(p, '{"transport":{"nativeClaude":false}}');
+    expect(w.flag()).toBe(false);
   });
   it("the env override decides ahead of the file and is picked up without a file change", () => {
     const p = join(scratch(), "config.json");

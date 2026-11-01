@@ -164,7 +164,7 @@ describe("routes: /api/activity/native-endpoint and /native-ack", () => {
     let content = "";
     const { inbox, outbox } = inboxFor(d, { onWrite: (c) => { content = c; } });
     await registered(d, inbox);
-    const e = await inbox.eligibility(SEAT, SENDER);
+    const e = await inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     const sent = await inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hi", endpoint: e.endpoint });
     const markers = relay.buildNativeAckPayload({ hook_event_name: "UserPromptSubmit", prompt: content }, { OPENRIG_RUNTIME: "claude-code", OPENRIG_SESSION_NAME: SEAT })!.markers;
@@ -179,7 +179,7 @@ describe("routes: /api/activity/native-endpoint and /native-ack", () => {
     let content = "";
     const { inbox } = inboxFor(d, { onWrite: (c) => { content = c; } });
     await registered(d, inbox);
-    const e = await inbox.eligibility(SEAT, SENDER);
+    const e = await inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     const sent = await inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hi", endpoint: e.endpoint });
     const markers = relay.buildNativeAckPayload({ hook_event_name: "UserPromptSubmit", prompt: content }, { OPENRIG_RUNTIME: "claude-code", OPENRIG_SESSION_NAME: SEAT })!.markers;
@@ -239,11 +239,31 @@ describe("transport: the native branch", () => {
     expect(r.path).toBeUndefined();
   });
 
-  it("a human sender stays on tmux (criterion 5)", async () => {
+  it("a person's rig send takes the socket (Jim's decision 5): nothing is typed over a draft", async () => {
     const d = db(); const { inbox } = inboxFor(d); await registered(d, inbox);
-    const { t } = transport(d, inbox);
+    const { t, typed } = transport(d, inbox);
     const r = await t.send(SEAT, "hello", { actorSession: "human@kernel" });
-    expect(r.path).toBeUndefined();
+    expect(r.path).toBe("native");
+    expect(typed()).toEqual([]);
+  });
+
+  it("an unsigned send takes the socket too, and its row says the sender is unknown", async () => {
+    const d = db(); const { inbox, outbox } = inboxFor(d); await registered(d, inbox);
+    const { t } = transport(d, inbox);
+    const r = await t.send(SEAT, "hello");
+    expect(r.path).toBe("native");
+    expect(outbox.getById(r.outboxIds![0]!)?.senderSession).toBe("unknown");
+    expect(d.prepare("SELECT identity_provenance AS p FROM outbox_entries WHERE outbox_id = ?").get(r.outboxIds![0]!)).toEqual({ p: "origin-unknown:v1" });
+  });
+
+  it.each(["/compact", "  /clear", "/compact focus on the tests"])("a slash command is never sent by socket, where it would be plain text (M10): %s", async (text) => {
+    for (const actorSession of ["human@kernel", SENDER]) {
+      const d = db(); let written = 0; const { inbox } = inboxFor(d, { onWrite: () => { written += 1; } }); await registered(d, inbox);
+      const { t } = transport(d, inbox);
+      const r = await t.send(SEAT, text, { actorSession });
+      expect(r.path).toBeUndefined();
+      expect(written).toBe(0);
+    }
   });
 
   it("nothing written falls through to tmux in the same send", async () => {
@@ -557,7 +577,7 @@ describe("ncomms-3b G1: a late native copy after a tmux fallback that may have l
     const d = db();
     const { inbox, outbox } = inboxFor(d);
     await registered(d, inbox);
-    const e = await inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const e = await inbox.eligibility(SEAT); if (!e.ok) throw new Error(e.reason);
     const sent = await inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hi", endpoint: e.endpoint });
     const id = sent.outboxIds[0]!;
     const nonce = (d.prepare("SELECT native_nonce AS n FROM outbox_entries WHERE outbox_id = ?").get(id) as { n: string }).n;

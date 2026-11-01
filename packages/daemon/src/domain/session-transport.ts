@@ -27,7 +27,7 @@ import type { RigRepository } from "./rig-repository.js";
 import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import { PASTE_ECHOING_RUNTIMES, type HcDeliveryOutcome, type HcPendingSend } from "../adapters/hc-delivery.js";
+import { PASTE_ECHOING_RUNTIMES, startsLikeCommand, type HcDeliveryOutcome, type HcPendingSend } from "../adapters/hc-delivery.js";
 import { probePresence } from "./session-liveness.js";
 import { carriesDeliveryToken, deliveryKeyOf, deliveryTokenFor, withDeliveryToken } from "../adapters/hc-delivery-token.js";
 import type { DialogInput } from "../adapters/hc-dialog-input.js";
@@ -1699,10 +1699,11 @@ export class SessionTransport {
 
   /** One attempt: the guards, the native inbox or the typing guard, then the write. */
   private async attempt(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
-    // Native comms step 3: a daemon or agent message to an eligible Claude seat goes to its inbox socket. It types nothing
+        // Native comms step 3: a message to an eligible Claude seat, from anyone, goes to its inbox socket. It types nothing
     // into the pane, so the typing guard and the prompt refusal do not apply (a queued message cannot approve a prompt and
     // waits for it, measured). Any doubt, or nothing written, falls through to the tmux path below.
-    if (this.nativeInbox && !opts?.forceTmux && !opts?.dangerouslyInteract && !opts?.submitOnly) {
+    // A slash command on the socket is plain text (M10): it reaches the model as a prompt and runs nothing, so it goes by paste.
+    if (this.nativeInbox && !opts?.forceTmux && !opts?.dangerouslyInteract && !opts?.submitOnly && !startsLikeCommand(text)) {
       const native = await this.sendNative(sessionName, text, opts);
       if (native) return native;
     }
@@ -1937,12 +1938,13 @@ export class SessionTransport {
   /** Native comms step 3: the native attempt, or null to use tmux. */
   private async sendNative(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult | null> {
     const inbox = this.nativeInbox!;
-    const eligible = await inbox.eligibility(sessionName, opts?.actorSession).catch(() => ({ ok: false as const, reason: "eligibility_error" }));
+    const eligible = await inbox.eligibility(sessionName).catch(() => ({ ok: false as const, reason: "eligibility_error" }));
     if (!eligible.ok) return null;
     let delivered;
     try {
-      delivered = await inbox.deliver({ sessionName, senderSession: opts!.actorSession!, text, endpoint: eligible.endpoint,
-        committedOutboxIds: opts?.committedOutboxIds, deliveryId: opts?.deliveryId, auditPointer: opts?.auditPointer ?? null, identityProvenance: "transport:v1" });
+      delivered = await inbox.deliver({ sessionName, senderSession: opts?.actorSession ?? "unknown", text, endpoint: eligible.endpoint,
+        committedOutboxIds: opts?.committedOutboxIds, deliveryId: opts?.deliveryId, auditPointer: opts?.auditPointer ?? null,
+        identityProvenance: opts?.actorSession ? "transport:v1" : "origin-unknown:v1" });
     } catch {
       return null; // a row that cannot be claimed (held, retired, already settled) keeps today's path
     }

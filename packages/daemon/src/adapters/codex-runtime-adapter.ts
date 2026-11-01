@@ -135,6 +135,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // (FR-A) to write config-layer [hooks] command entries that are cwd-independent and
   // version-matched to the running daemon (NOT ${PLUGIN_ROOT}, NOT a per-cwd copy).
   private activityRelayPath?: string;
+  // S2: settle the seat's seen store against its rollout. Called only with the old process gone, before the resume is typed.
+  private reconcileSeatGate?: (sessionName: string, threadId: string) => void;
   // OF-183: whether this daemon may change a given Codex config.toml. Startup always injects the real policy; absent
   // (unit tests, other embedders) keeps every write as it was.
   private configWritePolicy: CodexConfigWritePolicy;
@@ -149,6 +151,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     resolveHomeDirByPid?: ResolveHomeDirByPid;
     sleep?: (ms: number) => Promise<void>;
     activityRelayPath?: string;
+    reconcileSeatGate?: (sessionName: string, threadId: string) => void;
     /** Explicit CODEX_HOME; absent preserves the legacy OS/PID home behavior. */
     codexHome?: string;
     /** Match the daemon's prerequisite probe even if the pane's login shell rewrites PATH. */
@@ -180,6 +183,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.existingMcpServerNames = deps.existingMcpServerNames;
     this.resolveGitAddDirs = deps.resolveGitAddDirs ?? resolveCodexGitAddDirs;
     this.activityRelayPath = deps.activityRelayPath;
+    this.reconcileSeatGate = deps.reconcileSeatGate;
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
     this.readThreadIdByPid = deps.readThreadIdByPid ?? ((pid) => this.readThreadIdFromLogs(pid));
     this.resolveHomeDirByPid = deps.resolveHomeDirByPid ?? defaultResolveHomeDirByPid;
@@ -474,6 +478,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       ? this.resumeCore(prepared, opts.resumeToken, binding)
       : `codex${daemonArg}${postureArg}${networkArg}${mcpArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}${effortArg}`;
 
+    if (opts.resumeToken) this.settleSeatGate(binding.tmuxSession, opts.resumeToken);
     const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
@@ -513,9 +518,19 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   /** Type a command buildResumeCommand built into the pane's shell, then verify the resume as launchHarness
    *  does. Nothing is prepared again, so the command runs exactly as it was built and checked. */
   async sendResumeCommand(tmuxSession: string, command: string, resumeToken: string): Promise<HarnessLaunchResult> {
+    this.settleSeatGate(tmuxSession, resumeToken);
     const textResult = await this.tmux.sendShellCommand(tmuxSession, command);
     if (!textResult.ok) return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
     return this.verifyResumeInPane(tmuxSession, resumeToken);
+  }
+
+  /** A store that cannot be settled must not stop the resume: its records stay, and the next restart settles them. */
+  private settleSeatGate(sessionName: string, threadId: string): void {
+    try {
+      this.reconcileSeatGate?.(sessionName, threadId);
+    } catch (err) {
+      console.error(`[openrig] ${sessionName}: seat gate not reconciled: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** launchHarness's resume verification for a resume the caller started itself: dismiss a skippable update

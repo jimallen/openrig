@@ -44,6 +44,8 @@ interface CodexResumeOptions {
   /** The MCP trust rule's file-system reads; production never sets it. */
   mcpTrustIo?: PathJudgeIo;
   existingMcpServerNames?: (launch: { cwd: string; sessionName: string; profile: string | null }) => ReturnType<typeof codexConfigServerNames>;
+  /** S2: settle the seat's seen store against its rollout, with the old process gone and before the resume is typed. */
+  reconcileSeatGate?: (sessionName: string, threadId: string | null) => void;
 }
 
 export class CodexResumeAdapter {
@@ -143,6 +145,12 @@ export class CodexResumeAdapter {
       effort,
     );
 
+    try {
+      this.options.reconcileSeatGate?.(tmuxSessionName, resumeToken);
+    } catch (err) {
+      // Its records stay, and the next restart settles them.
+      console.error(`[openrig] ${tmuxSessionName}: seat gate not reconciled: ${err instanceof Error ? err.message : String(err)}`);
+    }
     const launchEnv = [this.options.launchPath ? `PATH=${shellQuote(this.options.launchPath)}` : "", this.options.codexHome ? `CODEX_HOME=${shellQuote(this.options.codexHome)}` : ""].filter(Boolean);
     const textResult = await this.tmux.sendShellCommand(tmuxSessionName, this.options.seatLaunchEnvironment
       ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { codexCwd: cwd, runtime: "codex" })

@@ -10,6 +10,7 @@ const path = require("node:path");
 // Reads a hook event payload from stdin, normalizes it, and POSTs to the
 // OpenRig daemon's /api/activity/hooks endpoint for real-time UI seat-status.
 // Best-effort only: 1.5s timeout, errors swallowed, never blocks the agent loop.
+// The one exception is the seat gate below, which runs first and needs no daemon.
 //
 // Required environment (injected by the OpenRig daemon when launching the agent):
 //   OPENRIG_SESSION_NAME or RIGGED_SESSION_NAME  - tmux session id
@@ -222,6 +223,88 @@ function buildNativeAckPayload(providerPayload, env = process.env) {
   };
 }
 
+// Seat Messaging, stage S2: the seat gate. A marked prompt is recorded here, on disk, before the agent sees it, and a repeat of the same
+// (id, nonce) is blocked, so a resend is safe with the daemon down (M1). One file per message, made complete and then linked into place:
+// the link is the atomic create, and it fails if the record exists. The id and nonce together name it, so a forged nonce neither blocks
+// the real message nor stands in for it. adapters/hook-seen-store.ts is the daemon's side of this layout.
+//
+// Keep this small and first. A hook that crashes or times out fails OPEN: the prompt runs with no record (M4). What this code can catch
+// fails closed; what it cannot, the daemon's reconcile finds in the transcript.
+const SEAT_GATE_VERSION = 1;
+const SEAT_GATE_RUNTIMES = new Set(["claude-code", "codex"]);
+const SEAT_GATE_UNAVAILABLE_REASON =
+  "OpenRig: this message could not record its delivery, so it was not shown to the agent; OpenRig will send it again.";
+
+function seatGateDir(env, dirname = __dirname) {
+  const seat = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
+  if (!seat || !SEAT_GATE_RUNTIMES.has(firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME))) return null;
+  // The installed copy sits in `<home>/state/<folder>/`, which names the instance even for a restored seat with a frozen env.
+  const root = path.basename(path.dirname(dirname)) === "state"
+    ? path.resolve(dirname, "..", "seat-gates")
+    : path.join(firstString(env.OPENRIG_HOME, env.RIGGED_HOME) || path.join(os.homedir(), ".openrig"), "state", "seat-gates");
+  return path.join(root, encodeURIComponent(seat).replace(/\./g, "%2E"));
+}
+
+function writeDurable(file, text) {
+  const fd = fs.openSync(file, "wx", 0o600);
+  try { fs.writeSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+function recordSeen(seenDir, marker, record) {
+  const name = crypto.createHash("sha256").update(`${marker.id}:${marker.nonce}`).digest("hex");
+  const tmp = path.join(seenDir, `.${name}.${process.pid}.tmp`);
+  writeDurable(tmp, JSON.stringify(record));
+  try {
+    fs.linkSync(tmp, path.join(seenDir, name));
+    return name;
+  } catch (err) {
+    if (err.code === "EEXIST") return null;
+    throw err;
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+// `pass`: the agent may see it. `repeat`: every marker was seen before. `unrecorded`: the store failed, so the prompt must not run and
+// must not be acked: a resend has to find this message unrecorded.
+function runSeatGate(providerPayload, env = process.env, now = () => new Date()) {
+  if (hookEventOf(providerPayload) !== "UserPromptSubmit" || typeof providerPayload.prompt !== "string") return "pass";
+  const markers = [...providerPayload.prompt.matchAll(NATIVE_MARKER_RE)].map((m) => ({ id: m[1], nonce: m[2] }));
+  const dir = markers.length > 0 ? seatGateDir(env) : null;
+  if (!dir) return "pass";
+  const seenDir = path.join(dir, "seen");
+  const made = [];
+  try {
+    fs.mkdirSync(seenDir, { recursive: true, mode: 0o700 });
+    const agentPid = Number(firstString(env.CLAUDE_PID));
+    for (const marker of markers) {
+      const name = recordSeen(seenDir, marker, {
+        ...marker, recordedAt: now().toISOString(), via: "hook", durable: false,
+        agentPid: Number.isInteger(agentPid) && agentPid > 0 ? agentPid : null,
+        transcriptPath: firstString(providerPayload.transcript_path),
+      });
+      if (name) made.push(name);
+    }
+    const dirFd = fs.openSync(seenDir, "r");
+    try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+    return made.length > 0 ? "pass" : "repeat";
+  } catch {
+    for (const name of made) { try { fs.rmSync(path.join(seenDir, name), { force: true }); } catch { /* a record stays: a resend is then refused, never doubled */ } }
+    return "unrecorded";
+  }
+}
+
+// SessionStart: this seat carries the gate. A seat on an older relay never writes this, so the daemon knows it has none.
+function declareSeatGate(providerPayload, env = process.env) {
+  if (hookEventOf(providerPayload) !== "SessionStart") return;
+  const dir = seatGateDir(env);
+  if (!dir) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(dir, "gate.json"), JSON.stringify({ version: SEAT_GATE_VERSION }), { mode: 0o600 });
+  } catch { /* no declaration: the daemon treats the seat as ungated */ }
+}
+
 function buildSessionIdentityPayload(providerPayload, env = process.env, now = () => new Date()) {
   if (!providerPayload || typeof providerPayload !== "object") return null;
   const hookEvent = firstString(
@@ -284,26 +367,32 @@ function uid() {
 
 async function main() {
   const providerPayload = parseJson(await readStdin());
+  const gate = runSeatGate(providerPayload);
+  if (gate !== "pass") writeBlock(gate === "repeat" ? NATIVE_DUPLICATE_BLOCK_REASON : SEAT_GATE_UNAVAILABLE_REASON);
+  declareSeatGate(providerPayload);
   const payload = buildOpenRigPayload(providerPayload);
   const identityPayload = buildSessionIdentityPayload(providerPayload, process.env);
   if (identityPayload && identityPayload.resumeLaunch) {
     identityPayload.resumeLaunchFirst = claimFirstLaunchHook(identityPayload.resumeLaunch, identityPayload.generation);
   }
-  await postHookPayload(payload);
+  // A blocked prompt starts no turn and is followed by no Stop (M1, M4), so it must not tell the daemon one began.
+  if (gate === "pass") await postHookPayload(payload);
   if (identityPayload) {
     await postHookPayload(identityPayload);
   }
   const endpoint = buildNativeEndpointPayload(providerPayload);
   if (endpoint) await postNativeJson("/api/activity/native-endpoint", endpoint);
-  const ack = buildNativeAckPayload(providerPayload);
+  const ack = gate === "unrecorded" ? null : buildNativeAckPayload(providerPayload);
   if (ack) {
     // A late duplicate of a message already delivered another way is suppressed (measured: a UserPromptSubmit block
-    // stops a socket-injected copy cleanly). No reply, or any doubt, lets the prompt through.
+    // stops a socket-injected copy cleanly). No reply lets the prompt through: the gate above has already decided.
     const reply = await postNativeJson("/api/activity/native-ack", ack);
-    if (reply && reply.block === true) {
-      process.stdout.write(JSON.stringify({ decision: "block", reason: NATIVE_DUPLICATE_BLOCK_REASON }) + "\n");
-    }
+    if (reply && reply.block === true && gate === "pass") writeBlock(NATIVE_DUPLICATE_BLOCK_REASON);
   }
+}
+
+function writeBlock(reason) {
+  process.stdout.write(JSON.stringify({ decision: "block", reason }) + "\n");
 }
 
 if (require.main === module) {
@@ -318,5 +407,7 @@ module.exports = {
   buildSessionIdentityPayload,
   parseJson,
   postHookPayload,
+  runSeatGate,
+  seatGateDir,
   resolveEndpoint,
 };

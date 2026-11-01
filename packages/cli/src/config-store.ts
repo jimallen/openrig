@@ -289,8 +289,8 @@ const DEFAULTS = {
     postRestartPrompt: true,
   },
   transport: {
-    nativeClaude: false,
-    messagePump: false,
+    nativeClaude: true,
+    messagePump: true,
   },
   // V1 Phase 4 — Advisor default per universal-shell.md L83;
   // Operator default empty per L84 ("not configured").

@@ -57,6 +57,11 @@ export async function listProcesses(): Promise<ProcessRow[]> {
 
 /** Whether `path` contains `needle`, read in chunks with an overlap so a match across a chunk edge is found. False when
  *  the file cannot be read. A plain byte search: it does not depend on the file's format. */
+/** Whether a process with this pid exists. EPERM means it does, under another user. */
+export function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
 export function fileIncludes(path: string, needle: string, chunkBytes = 4 * 1024 * 1024): boolean {
   const target = Buffer.from(needle, "utf8");
   let fd: number;
