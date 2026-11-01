@@ -156,6 +156,12 @@ describe("Send CLI", () => {
           if (parsed.session === "dev-impl@my-rig") {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true, sessionName: "dev-impl@my-rig" }));
+          } else if (parsed.session === "slow-hc-session") {
+            // hc holds a send ~5 s to see whether the program goes working; the client's 5 s read default must not give up first.
+            setTimeout(() => {
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: true, sessionName: "slow-hc-session" }));
+            }, 5_800);
           } else if (parsed.session === "verified-session") {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true, sessionName: "verified-session", verified: true, outcome: "delivered" }));
@@ -260,6 +266,15 @@ describe("Send CLI", () => {
     expect((lastSendBody as Record<string, unknown>).text).toContain("From: <unknown sender>");
     expect((lastSendBody as Record<string, unknown>).actorSession).toBeNull();
   });
+
+  it("hc-w41: a plain send waits out an answer that takes longer than the client's 5 s read default (hc's started-window), not 'UNCONFIRMED'", async () => {
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "slow-hc-session", "hello"]);
+    });
+    expect(exitCode).toBeFalsy();
+    expect(logs.join("\n")).not.toContain("UNCONFIRMED");
+    expect(logs.join("\n")).toContain("Sent to slow-hc-session");
+  }, 20_000);
 
   it("P18: a resolvable seat SENDS with its attributed identity — actorSession derived from the seat env, never forged", async () => {
     vi.stubEnv("OPENRIG_SESSION_NAME", "driver@my-rig");
@@ -462,7 +477,7 @@ describe("Send CLI", () => {
     expect(sentText?.text).toContain('↩ Reply: rig send');
   });
 
-  it("send without wait-for-idle uses default client timeout path", async () => {
+  it("send without wait-for-idle waits 45 s, not the client's 5 s read default (hc holds a send ~5 s; hc-w41)", async () => {
     const postFn = vi.fn(async () => ({
       status: 200,
       data: { ok: true, sessionName: "dev-impl@my-rig" },
@@ -471,7 +486,7 @@ describe("Send CLI", () => {
     await captureLogs(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]);
     });
-    expect(postFn.mock.calls[0]?.[2]).toBeUndefined();
+    expect(postFn.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 45_000 });
   });
 
   // Slice-03 Atom 6b — --context delivery flag.

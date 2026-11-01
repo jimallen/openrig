@@ -17,6 +17,11 @@ import { COMPOSER_PROMPT_CLASS } from "@openrig/daemon/composer-prompts";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
 
 const WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS = 5_000;
+/** A plain send is not a read: on an hc seat that reports its status, herdr-core holds the send for about 5 s to see whether the
+ *  program goes `working`, longer while a person is typing, and the daemon answers `waiting` after about 30 s. The client's 5 s read
+ *  default gave up first and called a delivered message "UNCONFIRMED" (hc-w41: every Pi and pda runner send that did not start a run
+ *  within 5 s, once the runners reported status). Longer than the daemon's own bound, so its outcome is what the person reads. */
+const SEND_REQUEST_TIMEOUT_MS = 45_000;
 // A cross-host send waits for the remote to deliver, and the remote has no fixed deadline of its own (its tmux
 // calls run without a timeout), so no client budget is exact. This one sits well above a normal send, and above
 // fetch's 10 s connect timeout, so a host that never accepts the connection still reads as unreachable. A send
@@ -1153,8 +1158,8 @@ function parseWaitForIdleMs(value: string | undefined): number | undefined | nul
   return Math.ceil(seconds * 1000);
 }
 
-function waitForIdleRequestOptions(waitForIdleMs: number | undefined): { timeoutMs: number } | undefined {
-  if (waitForIdleMs === undefined) return undefined;
+function waitForIdleRequestOptions(waitForIdleMs: number | undefined): { timeoutMs: number } {
+  if (waitForIdleMs === undefined) return { timeoutMs: SEND_REQUEST_TIMEOUT_MS };
   return { timeoutMs: waitForIdleMs + WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS };
 }
 
@@ -1162,9 +1167,8 @@ function transportRequestOptions(waitForIdleMs?: number): { timeoutMs?: number; 
   const waitOptions = waitForIdleRequestOptions(waitForIdleMs);
   const headers = terminalAuthHeaders();
   const hasHeaders = Object.keys(headers).length > 0;
-  if (!waitOptions && !hasHeaders) return undefined;
   return {
-    ...(waitOptions ?? {}),
+    ...waitOptions,
     ...(hasHeaders ? { headers } : {}),
   };
 }

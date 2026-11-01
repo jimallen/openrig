@@ -11,6 +11,7 @@
 // {compaction, slow_output, mid_turn_death, restore} and the ctx% context sidecar are
 // later increments (A5 items 5-8) — deliberately NOT simulated here yet.
 
+import { installPaneGuard } from "./runner-pane-guard.js";
 import nodeFs from "node:fs";
 import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
@@ -409,6 +410,7 @@ const invokedDirectly =
   import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
+  installPaneGuard();
   runStubRunner(parseStubRunnerArgs(process.argv.slice(2))).catch((err) => {
     // eslint-disable-next-line no-console
     console.error(`${STUB_RUNNER_ERROR_MARKER} ${(err as Error).message}`);

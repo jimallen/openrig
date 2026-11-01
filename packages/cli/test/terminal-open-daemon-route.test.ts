@@ -12,7 +12,7 @@ vi.mock("../src/daemon-lifecycle.js", async () => ({
   getDaemonUrl: vi.fn(() => "http://localhost:7433"),
 }));
 
-type Call = { method: string; path: string; body?: unknown };
+type Call = { method: string; path: string; body?: unknown; headers?: Record<string, string> };
 function fixture(columns?: number | undefined, answer: { status: number; data: unknown } = { status: 200, data: { provider: "herdr", ok: true, opened: ["a@r"], absent: [], degraded: [], pages: 1 } }) {
   const calls: Call[] = [];
   const deps: TerminalDeps = {
@@ -21,7 +21,7 @@ function fixture(columns?: number | undefined, answer: { status: number; data: u
     clientFactory: () => ({
       baseUrl: "http://localhost:7433",
       get: vi.fn(async (path: string) => { calls.push({ method: "GET", path }); return { status: 200, data: {} }; }),
-      post: vi.fn(async (path: string, body: unknown) => { calls.push({ method: "POST", path, body }); return answer; }),
+      post: vi.fn(async (path: string, body: unknown, options?: { headers?: Record<string, string> }) => { calls.push({ method: "POST", path, body, ...(options?.headers && Object.keys(options.headers).length > 0 ? { headers: options.headers } : {}) }); return answer; }),
     }) as unknown as ReturnType<TerminalDeps["clientFactory"]>,
   };
   const program = createProgram({ terminalDeps: deps });
@@ -46,6 +46,25 @@ describe("rig terminal open without --provider goes through the daemon", () => {
     expect(f.calls).toEqual([{ method: "POST", path: "/api/terminal/open", body: { view: "saved:kernel", viewportColumns: 140 } }]);
     expect(JSON.parse(logs[0]!)).toMatchObject({ ok: true, opened: ["a@r"] });
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it("sends the terminal bearer the daemon's guard needs (security F5), and none when none is configured", async () => {
+    const saved = process.env.OPENRIG_TERMINAL_BEARER_TOKEN;
+    const savedHome = process.env.OPENRIG_HOME;
+    try {
+      process.env.OPENRIG_TERMINAL_BEARER_TOKEN = "cli-token-for-open";
+      const withToken = fixture(100);
+      await withToken.run(["--json", "--", "acme"]);
+      expect(withToken.calls[0]!.headers).toEqual({ Authorization: "Bearer cli-token-for-open" });
+      process.env.OPENRIG_TERMINAL_BEARER_TOKEN = "";
+      process.env.OPENRIG_HOME = "/nonexistent-w41-home";
+      const without = fixture(100);
+      await without.run(["--json", "--", "acme"]);
+      expect(without.calls[0]!.headers).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env.OPENRIG_TERMINAL_BEARER_TOKEN; else process.env.OPENRIG_TERMINAL_BEARER_TOKEN = saved;
+      if (savedHome === undefined) delete process.env.OPENRIG_HOME; else process.env.OPENRIG_HOME = savedHome;
+    }
   });
 
   it("carries --expected-plan, and --provider when named, in the same POST", async () => {

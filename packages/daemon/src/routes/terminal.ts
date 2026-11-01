@@ -13,13 +13,13 @@
 // view → 404; a provider-unavailable or honest-partial is a 200 whose BODY
 // tells the truth (ok / opened / degraded), never an error status.
 //
-// No new auth/trust surface (PRD "no new auth surface v1"): these routes mirror
-// the shipped view routes' posture (which do not gate on the terminal
-// bearer token) — composing a view reads inventory and returns attach commands
-// the provider runs client-side; it mutates no daemon state.
+// Auth: `open` (both routes) is behind `terminalAuthGuard` (hc cutover W41, security F5): it acts on the running Herdr app
+// (new spaces and writable viewer panes), which the old inert provider never did. `views`, `preview` and `status` only read
+// inventory and stay open, as the shipped view routes were.
 
 import { Hono } from "hono";
 import type { TerminalService } from "../domain/terminal/terminal-service.js";
+import { terminalAuthGuard } from "../middleware/terminal-auth-guard.js";
 
 function getService(c: { get(key: string): unknown }): TerminalService | null {
   return (c.get("terminalService" as never) as TerminalService | undefined) ?? null;
@@ -50,7 +50,7 @@ function readOpenBody(raw: unknown): { provider?: string; view?: string; expecte
 export function terminalRoutes(): Hono {
   const app = new Hono();
 
-  app.post("/open", async (c) => {
+  app.post("/open", terminalAuthGuard(), async (c) => {
     const svc = getService(c);
     if (!svc) return c.json({ error: "terminal_service_unavailable" }, 503);
     let raw: unknown;
@@ -96,7 +96,7 @@ export function terminalRoutes(): Hono {
  */
 export const rigTerminalRoutes = new Hono();
 
-rigTerminalRoutes.post("/open", async (c) => {
+rigTerminalRoutes.post("/open", terminalAuthGuard(), async (c) => {
   const svc = getService(c);
   if (!svc) return c.json({ error: "terminal_service_unavailable" }, 503);
   const rigId = c.req.param("rigId");
