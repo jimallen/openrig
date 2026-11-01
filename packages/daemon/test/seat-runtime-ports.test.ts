@@ -14,6 +14,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { RuntimeSeatPorts } from "../src/domain/seat-messaging/runtime-ports.js";
 
 describe("the seats the pump serves", () => {
@@ -72,6 +73,14 @@ describe("the seats the pump serves", () => {
       expect(ports.gateFor(name)?.version).toBe(1);
       expect(ports.hopFor(name)).toBeInstanceOf(PiSeatHop);
     }
+  });
+
+  it("every gate it hands out can actually be read: a message with no attempt yet is not_seen, never unavailable", async () => {
+    const claude = seat("claude-code").name; declareHook(claude);
+    const codex = seat("codex").name; declareHook(codex);
+    const pi = seat("pi").name; sidecar(roots().pi, pi, { seatGate: 1 });
+    writeFileSync(join(piSeatPaths(roots().pi, pi).seatRoot, "seat-gate.log"), "");
+    for (const name of [claude, codex, pi]) await expect(ports.gateFor(name)!.lookup(name, messageId("m1")), name).resolves.toEqual({ kind: "not_seen" });
   });
 
   it("pda, terminal and stub seats are never gated, whatever files say", () => {

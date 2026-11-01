@@ -10,7 +10,6 @@
 //   - M10: a slash command on the socket is text, so a command goes by paste and carries no marker.
 
 export const CLAUDE_SOCKET_REPEAT_WINDOW_MS = 40_000;
-const PLACEHOLDER = /^\[Pasted text #\d+(?: \+(\d+) lines)?\]$/;
 
 export type ClaudeRetryStep =
   | { readonly kind: "socket" }
@@ -40,7 +39,7 @@ export interface ClaudeRetryInput {
 /** Only the exact text proves it is this message. A collapsed paste shows a line count, which a person's paste can match, and Enter would
  *  send their words while `ctrl+c` would lose them: so a placeholder is never ours to touch. */
 function holdsThisMessage(composer: string, text: string): boolean {
-  return !PLACEHOLDER.test(composer) && composer === text;
+  return composer === text;
 }
 
 export function decideClaudeRetry(input: ClaudeRetryInput): ClaudeRetryStep {

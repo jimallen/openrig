@@ -9,6 +9,8 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HcAttach } from "../src/adapters/hc-attach.js";
+import { HcInput } from "../src/adapters/hc-input.js";
 import { hcTerminalName } from "../src/adapters/hc-seat.js";
 import { seatGateFolder, seatGateRoot } from "../src/adapters/hook-seen-store.js";
 import { createDb } from "../src/db/connection.js";
@@ -156,7 +158,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     };
     const stderr: string[] = [];
     const child = spawn(process.execPath, ["--import", "tsx", CHILD], { cwd: resolve(here, ".."), env, stdio: ["ignore", "ignore", "pipe"] });
-    child.stderr?.on("data", (b: Buffer) => { stderr.push(b.toString()); if (stderr.length > 40) stderr.shift(); });
+    child.stderr?.on("data", (b: Buffer) => { stderr.push(b.toString()); if (stderr.length > 40) stderr.shift(); writeFileSync(join(s.dir, "stderr.log"), stderr.join("")); });
     child.on("exit", (code) => { if (code) writeFileSync(join(s.dir, "child-failed"), stderr.join("")); });
     children.push(child);
     return child;
@@ -169,7 +171,10 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     expect(child.signalCode).toBe("SIGKILL");
   };
   const failed = (s: Seat) => { if (existsSync(join(s.dir, "child-failed"))) throw new Error(`daemon died: ${readFileSync(join(s.dir, "child-failed"), "utf8").slice(0, 900)}`); };
-  const hopSaw = async (s: Seat, line: string) => { await until(() => { failed(s); return s.hop(); }, (l) => l.includes(line), `hop line "${line}"`, 40_000); };
+  const hopSaw = async (s: Seat, line: string) => {
+    try { await until(() => { failed(s); return s.hop(); }, (l) => l.includes(line), `hop line "${line}"`, 12_000); }
+    catch (e) { const r = s.read("m1"); throw new Error(`${(e as Error).message}\nROW ${JSON.stringify(r ? { st: r.message_state, ds: r.delivery_state, p: r.message_pause_reason, a: r.attempts, n: r.message_next_attempt_ms, next: r.next_attempt_at } : null)}\nSTDERR ${existsSync(join(s.dir, "stderr.log")) ? readFileSync(join(s.dir, "stderr.log"), "utf8").slice(-1500) : ""}`); }
+  };
   const received = async (s: Seat, id: string) => { await until(() => { failed(s); return s.read(id); }, (r) => r.message_state === "received", `${id} received`, 40_000); };
   const settleLook = () => new Promise((r) => setTimeout(r, 700));
   const lines = (s: Seat, prefix: string) => s.log().filter((l) => l.startsWith(prefix));
@@ -289,7 +294,9 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       s.accept("m1");
       daemon(s);
       await hopSaw(s, "sent m1");
-      await core.client.call("terminal.stop", { terminal: hcTerminalName(s.name) }).catch(() => undefined);
+      await core.client.call("terminal.kill", { terminal: hcTerminalName(s.name) });
+      await core.client.call("terminal.rm", { terminal: hcTerminalName(s.name) });
+      expect(s.log()).toEqual([]);
       s.flag("go");
       await s.launch();
       await received(s, "m1");
@@ -322,14 +329,21 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     }, 90_000);
   });
 
-  it("a person's draft holds the attempt across a daemon crash: nothing is added or submitted", async () => {
+  it("a person's draft holds the attempt, across a daemon crash too: nothing is added or submitted", async () => {
     const s = await seatFixture();
-    await core.client.call("terminal.send", { terminal: hcTerminalName(s.name), text: "half a thought", no_enter: true }).catch(() => undefined);
+    const input = new HcInput(core.client, new HcAttach(core.socketPath));
+    expect(await input.sendText(s.name, "half a thought", undefined, { bracketed: false })).toMatchObject({ ok: true });
+    await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("half a thought"), "the draft");
     s.accept("m1");
     const first = daemon(s);
-    await hopSaw(s, "booted");
-    await settleLook();
+    await hopSaw(s, "paused:guard_held m1");
     await kill(first);
-    expect(s.read("m1").message_state).not.toBe("received");
+    daemon(s);
+    await settleLook();
+    expect(s.read("m1")).toMatchObject({ message_state: "attempting", attempts: 0, message_pause_reason: "guard_held" });
+    expect(s.log()).toEqual([]);
+    const screen = (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text;
+    expect(screen).toContain("half a thought");
+    expect(screen).not.toContain("openrig-msg");
   }, 60_000);
 });

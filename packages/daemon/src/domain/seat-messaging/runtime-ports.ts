@@ -61,8 +61,8 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
 
   gateFor(seat: string): SeatGate | null {
     const runtime = this.runtimeOf(seat);
-    const { hookStore: store, rows: { nonceOf } } = this.deps;
-    const nonce = (id: MessageId) => nonceOf(id);
+    const { hookStore: store, rows } = this.deps;
+    const nonce = (id: MessageId) => rows.nonceOf(id);
     if (runtime === "claude-code") {
       if (store.declaredVersion(seat) === null) return null;
       return hookSeatGate({

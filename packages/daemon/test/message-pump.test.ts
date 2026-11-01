@@ -481,6 +481,18 @@ describe("the message pump", () => {
       expect(w.hop.calls).toHaveLength(1);
     });
 
+    it("a daemon that closed its database stops the pump, with no noise after", async () => {
+      const lines: string[] = [];
+      pump = new MessagePump({ ...w.deps(store), log: (line) => lines.push(line), timing: { tickMs: 3_600_000 } });
+      pump.start();
+      await new Promise((r) => setImmediate(r));
+      db.close();
+      await pump.tick();
+      await pump.tick();
+      expect(lines).toEqual([]);
+      db = createDb(); migrate(db, ALL_MIGRATIONS); store = new MessageStore(db);
+    });
+
     it("the timer keeps it going, and stop ends the timer and any pass", async () => {
       accept("m1");
       pump = new MessagePump({ ...w.deps(store), timing: { tickMs: 5 } });
