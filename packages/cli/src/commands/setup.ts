@@ -182,7 +182,7 @@ function installHc(deps: SetupDeps, platform: NodeJS.Platform): SetupStep {
   const fallback = `${shellQuote(existing)} --version`;
   let probe = probeHcInstall((cmd) => deps.exec(cmd));
   let viaPath = true;
-  if (probe.code === "not_installed") {
+  if (probe.code === "not_installed" && deps.exists(existing)) {
     probe = probeHcInstall(() => deps.exec(fallback));
     viaPath = false;
   }

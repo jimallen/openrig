@@ -56,6 +56,15 @@ describe("setup installs the pinned hc when it is absent", () => {
     expect(result.ready).toBe(false);
   });
 
+  it("reads the version from where the installer puts it when hc is not yet on PATH, and says to add the directory", async () => {
+    const f = fixture({ hc: null, onInstall: () => undefined });
+    f.deps.exists = vi.fn((p: string) => p === "/fixture/.local/bin/herdr-core" && f.exec.mock.calls.some(([cmd]) => cmd === INSTALL));
+    const original = f.deps.exec;
+    f.deps.exec = vi.fn((cmd, opts) => (cmd === "'/fixture/.local/bin/herdr-core' --version" || cmd === "/fixture/.local/bin/herdr-core --version" ? `hc ${PIN}\n` : original(cmd, opts)));
+    const result = await runSetup(f.deps, {});
+    expect(hcStep(result.steps)).toMatchObject({ status: "applied", fixHint: expect.stringContaining("/fixture/.local/bin") });
+  });
+
   it("fails, not applied, when what the installer left is another version than the pin (a foreign hc earlier on PATH)", async () => {
     const f = fixture({ hc: null, onInstall: (set) => set("hc 0.1.14\n") });
     const result = await runSetup(f.deps, {});

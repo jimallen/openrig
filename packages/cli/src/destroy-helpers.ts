@@ -206,7 +206,7 @@ export function buildDestroyPlan(
     if (seatEnumerationFailures.length > 0) {
       warnings.push(
         `Could not list the seats in ${config.dbPath} (${seatEnumerationFailures.join("; ")}). Without that list the state cannot be deleted without orphaning running terminals. `
-        + "Nothing was stopped, ended or deleted. Fix: repair or restore the database and repeat, or use --state to leave seats alone."
+        + "Nothing was stopped or ended. State was left untouched. Fix: repair or restore the database and repeat, or use --state to leave seats alone."
       );
     }
   }

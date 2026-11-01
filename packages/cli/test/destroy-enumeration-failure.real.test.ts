@@ -73,6 +73,7 @@ describe.skipIf(!HC)("rig destroy --all with an unreadable database, against a p
       INSERT INTO nodes VALUES ('n1');
       INSERT INTO bindings (id, node_id, tmux_session, attachment_type) VALUES ('b1','n1','gone@proj','hc');`);
     db.close();
+    mkdirSync(join(root, "state"), { recursive: true });
     const removed: string[] = [];
     const d = depsFor(removed);
     const result = await executeDestroy(buildDestroyPlan("all", false, cfg(dbPath), d), d);

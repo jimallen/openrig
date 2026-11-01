@@ -11,6 +11,7 @@ import {
   hcCallOverSocket,
   killHcSeat,
   listManagedHcSeatsFromDb,
+  listManagedTmuxSessionsFromDb,
   type DestroyDeps,
   type HcCall,
 } from "../src/destroy-helpers.js";
@@ -82,7 +83,7 @@ describe.skipIf(!HC)("rig destroy --all against a private hc core", () => {
     const deps: DestroyDeps = {
       stopDaemon: async () => {}, inspectListener: async () => ({ kind: "unreachable" }), findListeningPid: () => null, killProcess: () => {},
       exists: () => true, renamePath: () => {}, removePath: (p) => { removed.push(p); }, mkdirp: () => {},
-      listManagedTmuxSessions: () => { throw new Error("tmux must not be consulted for hc-bound seats"); },
+      listManagedTmuxSessions: listManagedTmuxSessionsFromDb,  // real: hc-bound seats are not tmux-bound, so it lists none (a throwing stub here was swallowed as a warning until a failed list stopped the run)
       killTmuxSession: () => { throw new Error("tmux must not be run"); },
       listManagedHcSeats: listManagedHcSeatsFromDb, killHcSeat: (seat) => killHcSeat(seat, call),
       sleep: async () => {}, now: () => new Date("2026-04-10T08:10:11Z"),
