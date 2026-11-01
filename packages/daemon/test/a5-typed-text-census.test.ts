@@ -30,7 +30,9 @@ const CLASSIFIED: Record<string, Row> = {
   "domain/session-transport.ts": { sendText: 3, send: 0, cls: "impl" },
   // HcAdapter (the hc seat host, behind tmux's method names): `sendText` delegates to HcInput.sendText, the one sender, which
   // is `impl`. Its text arrives already stripped or classified by the caller of the adapter, as it does for TmuxAdapter.
-  "adapters/hc-adapter.ts": { sendText: 1, send: 0, cls: "impl" },
+  // The second is the viewer's `paste` (a text frame a person types at a live view, sent with blocked: allow like
+  // terminal-ws.ts's): that one is `person`, through the same HcInput.sendText.
+  "adapters/hc-adapter.ts": { sendText: 2, send: 0, cls: "impl (delegation) + person (the viewer's paste, blocked: allow)" },
   "domain/startup-orchestrator.ts": { sendText: 1, send: 1, cls: "stripped (typed text) + constant (guarded retry sends no text)" },
   "routes/terminal-ws.ts": { sendText: 1, send: 0, cls: "person (a text frame typed at the live terminal, sent with blocked: allow: someone at the broker may answer a dialog)" },
   "routes/transport.ts": { sendText: 0, send: 1, cls: "person" },

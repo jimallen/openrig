@@ -13,7 +13,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describeLeak, findLeakedHcScratch, pidAlive, readProcessTable } from "./hc-scratch-tripwire.js";
+import {
+  createHcScratchRegistry, describeLeak, findLeakedHcScratch, HC_SCRATCH_REGISTRY_ENV, HC_SCRATCH_REGISTRY_OWNER_ENV, ownsHcScratchRegistry,
+} from "./hc-scratch-tripwire.js";
 
 export const FIXTURE_REGISTRY_ENV = "OPENRIG_TEST_FIXTURE_REGISTRY";
 // The pid of the main process that created the registry. A vitest started from inside a test
@@ -23,20 +25,42 @@ export const FIXTURE_HOME_PREFIX = ".openrig-test-fixture-home-";
 const OWNER_ENV = "OPENRIG_TEST_FIXTURE_REGISTRY_OWNER";
 const ownsRegistry = () => process.env[OWNER_ENV] === String(process.pid);
 
-// hc cutover W8: the run's private hc cores. `setup` stamps the start; `teardown` fails the run when a root made by
-// packages/daemon/test/helpers/hc-scratch.ts since then is still on disk (see test/hc-scratch-tripwire.ts for what that
-// does and does not catch). The scan base is /tmp, where hc-scratch makes its roots; the override is for the self-test.
-export const HC_SCAN_BASE_ENV = "OPENRIG_TEST_HC_SCAN_BASE";
-const RUN_STARTED_ENV = "OPENRIG_TEST_RUN_STARTED_MS";
+// hc cutover W8/W20: the run's private hc cores. `setup` makes a registry of them (test/hc-scratch-tripwire.ts); every
+// `startHcScratch` of this run registers its root there; `teardown` fails the run when a registered root is still on disk.
+// Only the process that made the registry reads it: a worker that calls `teardown()` in process (fixture-home-cleanup.test.ts)
+// inherits the variables with the main process's pid as owner, so it neither scans nor removes the run's live roots.
 
 export function setup(): void {
-  if (ownsRegistry() && process.env[FIXTURE_REGISTRY_ENV] && fs.existsSync(process.env[FIXTURE_REGISTRY_ENV]!)) return;
-  process.env[FIXTURE_REGISTRY_ENV] = fs.mkdtempSync(path.join(os.tmpdir(), ".openrig-test-fixture-registry-"));
-  process.env[OWNER_ENV] = String(process.pid);
-  process.env[RUN_STARTED_ENV] = String(Date.now());
+  if (!(ownsRegistry() && process.env[FIXTURE_REGISTRY_ENV] && fs.existsSync(process.env[FIXTURE_REGISTRY_ENV]!))) {
+    process.env[FIXTURE_REGISTRY_ENV] = fs.mkdtempSync(path.join(os.tmpdir(), ".openrig-test-fixture-registry-"));
+    process.env[OWNER_ENV] = String(process.pid);
+  }
+  createHcScratchRegistry(process.env, os.tmpdir());
 }
 
 export function teardown(): void {
+  // Read what the hc part needs first: the fixture part below may return early or clear the shared variables.
+  const hcRegistry = ownsHcScratchRegistry() ? process.env[HC_SCRATCH_REGISTRY_ENV]! : null;
+  try {
+    removeFixtureHomes();
+  } finally {
+    // Last, after the fixture homes are gone, so a failing tripwire never leaves them behind.
+    if (hcRegistry) {
+      delete process.env[HC_SCRATCH_REGISTRY_ENV];
+      delete process.env[HC_SCRATCH_REGISTRY_OWNER_ENV];
+    }
+  }
+  if (!hcRegistry) return;
+  let leaked;
+  try {
+    leaked = findLeakedHcScratch(hcRegistry);
+  } finally {
+    try { fs.rmSync(hcRegistry, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+  if (leaked.length > 0) throw new Error(describeLeak(leaked));
+}
+
+function removeFixtureHomes(): void {
   const registry = process.env[FIXTURE_REGISTRY_ENV];
   if (!ownsRegistry() || !registry || !fs.existsSync(registry)) return;
   for (const entry of fs.readdirSync(registry)) {
@@ -49,21 +73,6 @@ export function teardown(): void {
     }
   }
   try { fs.rmSync(registry, { recursive: true, force: true }); } catch { /* best effort */ }
-  const runStartedMs = Number(process.env[RUN_STARTED_ENV]);
   delete process.env[FIXTURE_REGISTRY_ENV];
   delete process.env[OWNER_ENV];
-  delete process.env[RUN_STARTED_ENV];
-  // Last, after the fixture homes are gone, so a failing tripwire never leaves them behind.
-  if (!Number.isFinite(runStartedMs)) throw new Error("hc scratch tripwire: the run start was not recorded by setup()");
-  const findings = findLeakedHcScratch({
-    scanBase: process.env[HC_SCAN_BASE_ENV] ?? "/tmp",
-    runStartedMs,
-    mainPid: process.pid,
-    processes: readProcessTable(),
-    alive: pidAlive,
-  });
-  if (findings.unattributed.length > 0) {
-    console.warn(`hc scratch tripwire: not attributable to this run (another run's live guard exists): ${findings.unattributed.join(", ")}`);
-  }
-  if (findings.leaked.length > 0) throw new Error(describeLeak(findings));
 }

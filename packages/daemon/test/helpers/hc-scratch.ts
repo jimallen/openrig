@@ -21,6 +21,9 @@
  *    session is too long here", usage error, exit 2, measured at 0.1.15 on Linux: 107 allowed), and the root is short
  *    (`/tmp/hcs-xxxxxx`) so a deep CI workdir cannot trip it. A too-long `baseDir` is `HcSocketTooLongError`.
  *
+ * The root is registered for the end-of-run tripwire (hermetic-env.global.ts) the moment it is created: a root still on disk
+ * when the run ends is a failure naming the test file that asked for it.
+ *
  * Cleanup. `cleanup()` stops the core with `hc server stop`, then VERIFIES: the recorded core and holder processes are gone
  * (and, on Linux, no process anywhere still carries this scratch session's `HC_SESSION=` entry; terminal programs inherit
  * the core's env), killing only a process whose identity (pid, start time, command line) still matches. It removes the
@@ -36,6 +39,7 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, join, relative, isAbsolute } from "node:path";
+import { registerHcScratchRoot } from "../../../../test/hc-scratch-tripwire.js";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import {
   hasProcFs, identityOf, pidsWithEnv, reapWhenOwnerDies, sameProcess, type ProcessIdentity,
@@ -165,6 +169,16 @@ export interface StartHcScratchOptions {
   ownerPid?: number;
 }
 
+/**
+ * The test file that asked for the root, for the tripwire's report: the first `*.test.*` frame of the call stack, or undefined.
+ * It reads the stack, not vitest's state, because this module is also loaded outside vitest (scripts/run-scenarios.mjs builds a
+ * hermetic scaffold, which starts scratch cores), where importing vitest throws.
+ */
+function askingTestFile(): string | undefined {
+  const frame = /\(?(?:file:\/\/)?(\/[^\s():]+\.test\.[cm]?[jt]s):\d+:\d+/.exec(new Error().stack ?? "");
+  return frame?.[1];
+}
+
 /** The `hc` on PATH, or null (a suite skips on null). */
 export function findHc(env: EnvLike = process.env): string | null {
   const out = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8", env: { PATH: env.PATH ?? process.env.PATH ?? "" } });
@@ -208,6 +222,8 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
   if (!hcBin) throw new Error("hc scratch: no hc binary on PATH");
 
   const root = mkdtempSync(join(options.baseDir ?? "/tmp", "hcs-"));
+  // On the run's list before anything else can fail: the end-of-run tripwire (test/hc-scratch-tripwire.ts) looks at exactly these roots.
+  registerHcScratchRoot(root, askingTestFile());
   const session = `s${basename(root).slice(-6).toLowerCase().replace(/[^a-z0-9]/g, "0")}`;
   const fail = (error: unknown): never => { rmSync(root, { recursive: true, force: true }); throw error; };
 

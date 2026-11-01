@@ -1,5 +1,5 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
-import { hcTerminalRef } from "./hc-identity.js";
+import { hcExactTerminalRef } from "./hc-identity.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-seat.js";
 import type { TmuxResult } from "./tmux.js";
 
@@ -229,11 +229,13 @@ export class HcLifecycle {
   }
 
   /** The terminal a target names: a seat's canonical name (the live terminal, else the latest finished one) or the address that
-   *  replaces a pane id (`t7`: that very terminal, live or finished). The same reading as every other adapter method
-   *  (`hcTerminalRef`), because callers hold the pane id their binding registered and pass it here: an address read as a seat
-   *  name found nothing, so a cutover judged the live retiree "dead" without signalling it. Null when it positively is not there. */
+   *  replaces a pane id (`t7`: that very terminal, live or finished). Callers hold the pane id their binding registered and pass it
+   *  here: an address read as a seat name found nothing, so a cutover judged the live retiree "dead" without signalling it.
+   *  Only an address is read specially. A name is hashed exactly as given, as probeSession, createSession and the launch do: this
+   *  is where a seat is killed, and a leading `=` (tmux's exact marker, which `hcTerminalRef` strips for the readers) must not
+   *  turn the kill of a seat called `=worker` into the kill of `worker` (exact-session-probe.test.ts). Null when it positively is not there. */
   private async find(target: string): Promise<HcTerminal | null> {
-    const ref = hcTerminalRef(target);
+    const ref = hcExactTerminalRef(target);
     if (ref === null) return null;
     try {
       return await this.client.call<HcTerminal>("terminal.get", { terminal: ref });
