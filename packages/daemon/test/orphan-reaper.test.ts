@@ -466,22 +466,28 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("./fixtures/scenario-daemon-orphan-child.ts", import.meta.url)), bin],
       { stdio: ["ignore", "pipe", "inherit"] });
     cleanups.push(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } });
-    let root = "";
+    let root = "", hcRoot = "", hcPid = 0;
     await new Promise<void>((resolve, reject) => {
       let out = "";
       child.stdout!.on("data", (chunk: Buffer) => {
         out += chunk.toString();
-        const m = /READY (\S+)/.exec(out);
-        if (m) { root = m[1]!; resolve(); }
+        const m = /READY (\S+) (\S+) (\d+)/.exec(out);
+        if (m) { root = m[1]!; hcRoot = m[2]!; hcPid = Number(m[3]); resolve(); }
       });
       child.once("exit", (code) => reject(new Error(`fixture exited ${code} before READY`)));
     });
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    // The killed runner's hc core is stopped by the guard, which keeps its root as evidence (hc-scratch.ts): this test is the one
+    // that killed the runner on purpose, so it removes the root once the core is verified gone. Left on disk, the run's tripwire
+    // (test/hermetic-env.global.ts) fails the whole run, which is how W20 found this test.
+    cleanups.push(() => fs.rmSync(hcRoot, { recursive: true, force: true }));
     const pid = Number(fs.readFileSync(pidFile, "utf8"));
     killGroup(pid);
     expect(processAlive(pid), "positive control: the daemon runs while its runner lives").toBe(true);
+    expect(processAlive(hcPid), "positive control: the scaffold's hc core runs while its runner lives").toBe(true);
     child.kill("SIGKILL");
     expect(await waitGone(pid, 60_000), "daemon stopped after its runner was killed").toBe(true);
+    expect(await waitGone(hcPid, 60_000), "the scaffold's hc core is stopped after its runner was killed").toBe(true);
   }, 120_000);
 
   for (const ignoreTerm of [false, true]) {
