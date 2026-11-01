@@ -194,8 +194,7 @@ describe("TerminalService — view resolution + one-shape result", () => {
     const { deps, herdr } = makeDeps();
     const res = await new TerminalService(deps).openView({ view: "acme-build", provider: "cmux" });
     expect(res).toMatchObject({ provider: "cmux", ok: false, code: "unknown_provider", opened: [] });
-    expect(res.error).toContain("expected herdr");
-    expect(res.error).not.toContain("cmux or");
+    expect(res.error).toBe("unknown provider 'cmux' — expected herdr");
     expect(herdr.lastView).toBeNull();
   });
 
