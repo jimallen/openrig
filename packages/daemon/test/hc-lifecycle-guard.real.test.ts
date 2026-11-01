@@ -77,6 +77,19 @@ describe.skipIf(!HC)("HcAdapter's lifecycle through the delivery guard, on a pri
     expect((await get(name)).state).toBe("finished");
   });
 
+  it("ends a launch's exception when its binding commits: the adapter hands that on", async () => {
+    const id = `n${++next}`;
+    const name = "committed-launch";
+    db.prepare("INSERT INTO nodes(id,rig_id,logical_id) VALUES (?,'r',?)").run(id, `other${next}`);
+    await guard.lifecycle([id], async () => {
+      await adapter.createSession(name, core.root, { OPENRIG_NODE_ID: id });
+      adapter.finishLaunchBinding(name);
+      await expect(adapter.killSession(name)).resolves.toMatchObject({ ok: false, code: "guard_target_unknown" });
+    });
+    expect((await get(name)).state).toBe("live");
+    await core.client.call("terminal.kill", { terminal: (await get(name)).address });
+  });
+
   it("runs the in-place cutover by address under a lease: signal, respawn of the finished terminal, kill by name after the address moved", async () => {
     const { id, seat, address } = await launched();
     await guard.lifecycle([id], async () => {
