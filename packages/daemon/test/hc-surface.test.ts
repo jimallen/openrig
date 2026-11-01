@@ -64,10 +64,10 @@ describe("the hc surface pulls in nothing heavy", () => {
     return { files: [...seen].map((f) => relative(SRC, f)).sort(), external: [...external].sort() };
   }
 
-  it("reaches six small files and only Node built-ins", () => {
+  it("reaches seven small files and only Node built-ins", () => {
     const { files, external } = closure(join(SRC, "hc-surface.ts"));
     expect(files).toEqual([
-      "adapters/hc-client.ts", "adapters/hc-core-watch.ts", "adapters/hc-placement.ts", "adapters/hc-seat.ts",
+      "adapters/hc-client.ts", "adapters/hc-core-watch.ts", "adapters/hc-placement.ts", "adapters/hc-remote-control-env.ts", "adapters/hc-seat.ts",
       "domain/parent-session-env.ts", "hc-surface.ts",
     ]);
     expect(external).toEqual(["node:child_process", "node:crypto", "node:fs", "node:net", "node:os", "node:path"]);
