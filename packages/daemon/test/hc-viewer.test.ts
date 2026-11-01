@@ -4,6 +4,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcError, HcUnavailableError, HC_GENERATION, type HcClient, type HcTerminal } from "../src/adapters/hc-client.js";
+import { FakeHc } from "./helpers/hc-fake-client.js";
 import type { HcAttachEnd, HcAttachHandlers, HcAttachOpener, HcAttachParams, HcAttachment } from "../src/adapters/hc-attach.js";
 import {
   CoreSizeSource, HcViewer, HcViewerUnsupportedError, ModeTracker, cursorOfPaint, fullScreenHistoryReadIsUnsafe,
@@ -80,12 +81,12 @@ function recorder(): { log: Log; handlers: ViewHandlers } {
   };
 }
 
-function rig(options: { delays?: number[]; client?: Partial<HcClient> } = {}) {
+function rig(options: { delays?: number[]; client?: HcClient } = {}) {
   const opener = new FakeOpener();
   const sizes = new FakeSizes();
   const slept: number[] = [];
   const viewer = new HcViewer({
-    opener, sizes, client: (options.client ?? {}) as HcClient, reconnectDelaysMs: options.delays ?? [10, 20],
+    opener, sizes, client: options.client ?? new FakeHc({}), reconnectDelaysMs: options.delays ?? [10, 20],
     sleep: async (ms) => { slept.push(ms); },
     paintSettleMs: 5, paintMaxMs: 30, paintFirstMs: 40,
   });
@@ -409,15 +410,15 @@ describe("HcViewer.view", () => {
     });
 
     it("reports a terminal that had finished with the facts it left", async () => {
-      const calls: unknown[] = [];
-      const { opener, viewer } = rig({ client: { call: (async (method: string, params: unknown) => { calls.push([method, params]); return { ...TERMINAL, state: "finished", exit_code: 3, reason: "exited", finished_ms: 99, signal: null }; }) as unknown as HcClient["call"] } });
+      const client = new FakeHc({ "terminal.get": () => ({ ...TERMINAL, state: "finished", exit_code: 3, reason: "exited", finished_ms: 99, signal: null }) });
+      const { opener, viewer } = rig({ client });
       opener.queue.push({ reject: new HcError("finished", "finished", -32000, "read what it left") });
       expect(await viewer.view("t4", recorder().handlers)).toEqual({ ok: false, end: { reason: "program_ended", exitCode: 3, signal: null, endReason: "exited", finishedMs: 99 } });
-      expect(calls).toEqual([["terminal.get", { terminal: "t4" }]]);
+      expect(client.calls).toEqual([{ method: "terminal.get", params: { terminal: "t4" } }]);
     });
 
     it("reports a finished terminal whose facts cannot be read as ended, with no facts", async () => {
-      const { opener, viewer } = rig({ client: { call: (async () => { throw new HcUnavailableError("gone"); }) as unknown as HcClient["call"] } });
+      const { opener, viewer } = rig({ client: new FakeHc({ "terminal.get": () => { throw new HcUnavailableError("gone"); } }) });
       opener.queue.push({ reject: new HcError("finished", "finished", -32000) });
       expect(await viewer.view("t4", recorder().handlers)).toEqual({ ok: false, end: { reason: "program_ended", exitCode: null, signal: null, endReason: null, finishedMs: null } });
     });
@@ -528,7 +529,7 @@ describe("HcViewer.view", () => {
       gone.opener.attachments[0]!.end({ reason: "core_lost" });
       await expect.poll(() => goneLog.log.ends).toEqual([{ reason: "absent" }]);
 
-      const lost = rig({ client: { call: (async () => ({ ...TERMINAL, state: "finished", reason: "holder_lost", exit_code: null, finished_ms: 5 })) as unknown as HcClient["call"] } });
+      const lost = rig({ client: new FakeHc({ "terminal.get": () => ({ ...TERMINAL, state: "finished", reason: "holder_lost", exit_code: null, finished_ms: 5 }) }) });
       const lostLog = recorder();
       await lost.viewer.view("dev@rig", lostLog.handlers);
       lost.opener.queue.push({ reject: new HcError("fin", "finished", -32000) });

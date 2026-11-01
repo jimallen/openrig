@@ -1792,7 +1792,7 @@ export class SessionTransport {
           ok: false,
           sessionName,
           reason: "tmux_unavailable",
-          error: `The tmux server could not be reached (${probe.cause}). Whether session '${sessionName}' exists was not determined. No text was sent.`,
+          error: `The terminal host (the hc core) could not be reached (${probe.cause}). Whether session '${sessionName}' exists was not determined. No text was sent.`,
         } };
       }
     } catch (err) {
@@ -1969,7 +1969,7 @@ export class SessionTransport {
           ok: false,
           sessionName,
           reason: "tmux_unavailable",
-          error: `The tmux server could not be reached (${probe.cause}). Whether session '${sessionName}' exists was not determined. No text was sent.`,
+          error: `The terminal host (the hc core) could not be reached (${probe.cause}). Whether session '${sessionName}' exists was not determined. No text was sent.`,
         };
       }
     } catch (err) {
@@ -2945,7 +2945,7 @@ export class SessionTransport {
           ok: false,
           sessionName,
           reason: "tmux_unavailable",
-          error: `The tmux server could not be reached (${probe.cause}). Whether session '${sessionName}' exists was not determined. Nothing was captured.`,
+          error: `The terminal host (the hc core) could not be reached (${probe.cause}). Whether session '${sessionName}' exists was not determined. Nothing was captured.`,
         };
       }
     } catch (err) {

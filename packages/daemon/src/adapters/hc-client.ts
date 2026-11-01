@@ -62,6 +62,8 @@ export interface HcTerminal {
   reported?: boolean;
   exit_code?: number | null;
   turn?: number;
+  /** The title the program set (schema `Terminal.title`, default ""). */
+  title?: string;
   status?: { state: string; kind?: string | null } | null;
   foreground?: { pid: number; name: string; argv: string[]; cwd: string } | null;
 }

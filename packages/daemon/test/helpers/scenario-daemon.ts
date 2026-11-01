@@ -141,6 +141,12 @@ export async function spawnScenarioDaemon(
   // against a foreign target.
   assertNoForeignDaemon(scaffold.env);
 
+  // The seat host is hc, so the daemon needs a core: a private one of the scaffold's, started before the daemon and given to
+  // it through the scaffold env (`HC_SESSION` plus the XDG paths that locate the socket). Never the host's default core.
+  // The scaffold itself never carries an HC_SOCKET (it drops every inherited HC_ name), so one present here was put there by
+  // the test, after `prepareHermeticEnv`, to point the daemon at a core the test started with hc-scratch.ts: that core is
+  // the daemon's, and a second one is not started beside it.
+  const hcCore = scaffold.env.HC_SOCKET ? null : scaffold.startHcCore();
   const port = opts.port ?? (await findFreePort());
   const db = join(scaffold.stateDir, "scenario.db");
 
@@ -220,6 +226,7 @@ export async function spawnScenarioDaemon(
     try {
       await startProc();
       current = discover(false);
+      hcCore?.refreshOrphanGuard();
       if (current.length === 0) throw new Error(`the daemon started on port ${port} but cannot be identified (no live process in daemon.json or listening there); refusing to continue without a reapable identity`);
     } catch (error) {
       // The CLI may have detached the daemon before failing or timing out: stop whatever it left, then say so.

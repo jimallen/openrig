@@ -116,8 +116,8 @@ describe("TerminalService — view resolution + one-shape result", () => {
     expect(notes).toContain("Can you see the team?");
     expect(notes).toContain("does not confirm");
     if (unavailable) {
-      expect(result.notes).toContain(`dev.driver: env -u TMUX '/opt/tools/hc' attach -- '${hcName("dev-driver@acme-build")}'`);
-      expect(result.notes).toContain(`rev.r1: env -u TMUX '/opt/tools/hc' attach -- '${hcName("rev-r1@acme-build")}'`);
+      expect(result.notes).toContain(`dev.driver: '/opt/tools/hc' attach -- '${hcName("dev-driver@acme-build")}'`);
+      expect(result.notes).toContain(`rev.r1: '/opt/tools/hc' attach -- '${hcName("rev-r1@acme-build")}'`);
       expect(notes).toContain("include every command in full, unchanged");
     } else {
       expect(notes).not.toContain("attach");
@@ -356,7 +356,7 @@ describe("default saved kernel conversations", () => {
     expect(result.opened).toEqual(unavailable ? [] : ["operator-bound", "tui-bound", "advisor-bound"]);
     expect(result.notes?.join("\n")).toContain("Default kernel view:");
     expect(result.notes?.join("\n")).not.toMatch(/lead pane|Can you see the team/);
-    if (unavailable) expect(result.notes).toContain(`operator: env -u TMUX hc attach -- '${hcName("operator-bound")}'`);
+    if (unavailable) expect(result.notes).toContain(`operator: hc attach -- '${hcName("operator-bound")}'`);
   });
 
   it.each(["herdr", "cmux"])("offers existing conversation attachments when %s is unavailable", async providerName => {
@@ -371,8 +371,8 @@ describe("default saved kernel conversations", () => {
     const result = await new TerminalService(deps).openView({ view: "saved:kernel", provider: providerName });
     expect(result).toMatchObject({ ok: false, opened: [], code: `${providerName}_unavailable` });
     expect(result.absent.map(member => member.seat)).toContain("advisor-bound");
-    expect(result.notes).toContain(`operator: env -u TMUX hc attach -- '${hcName("operator-bound")}'`);
-    expect(result.notes).toContain(`dashboard: env -u TMUX hc attach -- '${hcName("actual-tui")}'`);
+    expect(result.notes).toContain(`operator: hc attach -- '${hcName("operator-bound")}'`);
+    expect(result.notes).toContain(`dashboard: hc attach -- '${hcName("actual-tui")}'`);
     expect(result.notes).toContain("Original provider detail");
     expect(result.notes!.join("\n")).not.toContain(hcName("advisor-bound"));
     expect(result.notes!.join("\n")).not.toContain(hcName("queue-bound"));
@@ -640,7 +640,8 @@ describe("TerminalService — an omitted provider falls back from herdr to cmux 
     const r = await new TerminalService(deps).openView({ view: "acme-build" });
     expect(r).toMatchObject({ provider: "herdr", ok: false, code: "herdr_unavailable" });
     expect(r.notes?.join("\n")).toContain("attach directly using one of these commands");
-    expect(r.notes?.join("\n")).toContain("env -u TMUX");
+    expect(r.notes?.join("\n")).toContain("hc attach -- ");
+    expect(r.notes?.join("\n")).not.toMatch(/tmux/i);
     expect(cmux.lastView).toBeNull();
   });
 

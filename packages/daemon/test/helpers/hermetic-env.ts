@@ -25,6 +25,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { resolveHcSocket } from "../../src/adapters/hc-client.js";
+import { startHcScratch, type HcScratch } from "./hc-scratch.js";
 import { hasProcFs, reapWhenOwnerDies, stopOwnedTmuxServerSync } from "./orphan-reaper.js";
 
 /**
@@ -280,6 +282,21 @@ export interface HermeticScaffold {
    */
   env: Record<string, string | undefined>;
   /**
+   * The scaffold's PRIVATE herdr-core, or null until `startHcCore()` is called. The seat host is `hc`: a daemon the scaffold
+   * spawns must reach a core of the scaffold's own, never the host's default one (the one Jim's app shows).
+   */
+  readonly hcCore: HcScratch | null;
+  /**
+   * Start the scaffold's private core (helpers/hc-scratch.ts) and point `env` at it: `HC_SESSION` and the two XDG paths that
+   * locate its socket (`XDG_RUNTIME_DIR` on Linux, `XDG_STATE_HOME` on macOS). Idempotent. FAIL-CLOSED: it refuses an ambient
+   * `HC_SOCKET`, and throws (stopping the core it started) unless `resolveHcSocket(env)` is exactly the private core's
+   * socket, so a daemon spawned with this env cannot reach any other core. `OPENRIG_HC_NO_START_CORE=1` is set: the core is
+   * already up, and a daemon that finds it gone (a teardown stopping it, a test killing it) must not start another one with
+   * this env, which nothing would stop. A test that relies on the daemon starting the core passes `daemonMayStartCore`.
+   * `cleanup()` stops the core and verifies it gone, before the root is removed.
+   */
+  startHcCore(options?: { daemonMayStartCore?: boolean }): HcScratch;
+  /**
    * Stop the scaffold's own tmux server (the scenario daemon starts one on `tmuxSocketPath`) and VERIFY it is gone, then
    * remove the scaffold root. Idempotent. Throws, keeping the root, when the server cannot be verified stopped.
    */
@@ -371,6 +388,12 @@ process.exit(result.status ?? 1);
   // Scrub any injected-clock var (defense in depth behind the fail-closed guard) so
   // only an explicit injectClockNow can set it below — never an inherited value.
   for (const name of TEST_CLOCK_ENV_VARS) delete env[name];
+  // Every `HC_`-prefixed name selects a core or acts as a terminal of one (a positional predicate, not a list: a selector a
+  // later hc release adds is covered too). The scaffold's own selectors are set by `startHcCore()`, never inherited.
+  for (const name of Object.keys(env)) if (name.startsWith("HC_")) delete env[name];
+  // hc finds its socket under XDG_RUNTIME_DIR before any state dir, so an inherited one would send a scaffold with no private
+  // core of its own to the host's `default` core. Without it the socket falls under the scaffold's own XDG_STATE_HOME.
+  delete env.XDG_RUNTIME_DIR;
   env.HOME = home;
   // Host-neutral shell: a login shell of zsh with no startup files in the scratch HOME runs
   // the zsh-newuser-install wizard, which eats the first keystroke typed into a seat pane
@@ -411,7 +434,33 @@ process.exit(result.status ?? 1);
   const tmuxEnv: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) tmuxEnv[name] = value;
   tmuxEnv.PATH = originalPath;
+  let hcCore: HcScratch | null = null;
+  const startHcCore = (options: { daemonMayStartCore?: boolean } = {}): HcScratch => {
+    if (hcCore) return hcCore;
+    // Refuses an ambient HC_SOCKET before anything is created; the core's own env is BUILT (PATH only from the caller).
+    const core = startHcScratch({ baseEnv });
+    try {
+      env.HC_SESSION = core.env.HC_SESSION;
+      env.XDG_RUNTIME_DIR = core.env.XDG_RUNTIME_DIR;
+      env.XDG_STATE_HOME = core.env.XDG_STATE_HOME;
+      if (options.daemonMayStartCore) delete env.OPENRIG_HC_NO_START_CORE; else env.OPENRIG_HC_NO_START_CORE = "1";
+      const resolved = resolveHcSocket(env as NodeJS.ProcessEnv, home);
+      if (resolved !== core.socketPath) {
+        throw new Error(`hermetic env refused: the daemon env resolves the hc socket to ${resolved}, not the private core's ${core.socketPath}`);
+      }
+    } catch (error) {
+      delete env.HC_SESSION; delete env.XDG_RUNTIME_DIR; delete env.OPENRIG_HC_NO_START_CORE;
+      env.XDG_STATE_HOME = join(home, ".local", "state");
+      try { core.cleanup(); } catch { /* the original refusal is the one to report; the core's guard stays armed if it could not verify */ }
+      throw error;
+    }
+    hcCore = core;
+    return core;
+  };
   const cleanup = () => {
+    // The core goes first and is verified gone (it throws, keeping this root and its own, when it cannot be): seats are
+    // processes of the core, and the daemon that owned them is stopped by its helper before this runs.
+    if (hcCore) hcCore.cleanup();
     if (!existsSync(root)) { reaper.disarm(); return; }
     // The server the scaffold's daemon started here (its empty `tmux -D` at boot, then the seats) is stopped and VERIFIED
     // gone before the socket's directory goes; a failed `list-sessions` once read as "no server" deleted the directory
@@ -430,6 +479,8 @@ process.exit(result.status ?? 1);
     tmuxSocketPath,
     tmuxEnv,
     env,
+    get hcCore() { return hcCore; },
+    startHcCore,
     cleanup,
   };
 }

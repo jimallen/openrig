@@ -15,6 +15,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { SessionReconciler } from "../src/domain/session-reconciler.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { tmuxStub } from "./helpers/tmux-stub.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 
 
@@ -45,7 +46,7 @@ describe("SessionReconciler FR-3 — adoption-boundary resume-token capture", ()
     rigRepo = new RigRepository(db);
     sessionRegistry = new SessionRegistry(db);
     eventBus = new EventBus(db);
-    mockTmux = {
+    mockTmux = tmuxStub({
       setSessionOption: vi.fn(async () => ({ ok: true as const })),
       getSessionOption: vi.fn(async () => null),
       sendText: vi.fn(async () => ({ ok: true as const })),
@@ -54,7 +55,7 @@ describe("SessionReconciler FR-3 — adoption-boundary resume-token capture", ()
       hasSession: vi.fn(async () => true),
       getPaneCommand: vi.fn(async () => "zsh"),
       getPanePid: vi.fn(async () => 4242),
-    } as unknown as TmuxAdapter;
+    });
     readSidecar = vi.fn((): SidecarResult => ({ ok: false, reason: "missing_sidecar" }));
     captureCodexThreadId = vi.fn(async (): Promise<string | undefined> => undefined);
   });
@@ -64,8 +65,8 @@ describe("SessionReconciler FR-3 — adoption-boundary resume-token capture", ()
   function buildService(): SessionReconciler {
     return new SessionReconciler({
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: mockTmux,
-      contextUsageStore: { readSidecar: readSidecar as unknown as (n: string) => SidecarResult },
-      resumeTokenCapturer: { captureCodexThreadId: captureCodexThreadId as unknown as (n: string) => Promise<string | undefined> },
+      contextUsageStore: { readSidecar },
+      resumeTokenCapturer: { captureCodexThreadId },
       ...(claudeProcessStartedAt ? { claudeProcessStartedAt } : {}),
     });
   }

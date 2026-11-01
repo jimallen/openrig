@@ -163,7 +163,7 @@ class FakeCore {
         for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
           const message: unknown = JSON.parse(buffer.slice(0, end));
           buffer = buffer.slice(end + 1);
-          if (this.silent || typeof message !== "object" || message === null || !("id" in message) || !("method" in message)) continue;
+          if (this.silent || typeof message !== "object" || message === null || !("id" in message) || !("method" in message) || typeof message.method !== "string") continue;
           if (message.method === "hello") {
             socket.write(`${JSON.stringify(this.helloError ? { jsonrpc: "2.0", id: message.id, error: this.helloError } : { jsonrpc: "2.0", id: message.id, result: this.helloReply() })}\n`);
           } else if (message.method in this.methodsAnswered) {

@@ -1,9 +1,7 @@
 import { HcAttach, type HcAttachOpener, type HcAttachment } from "./hc-attach.js";
 import { HcClient, HcError, HcUnavailableError } from "./hc-client.js";
 import { hcTerminalRef, isAbsentFailure, isHcFailure } from "./hc-identity.js";
-// hc-viewer.ts imports this module too (its default history reader). Both sides use the other's export only inside a function,
-// never while their module evaluates, so either import order works.
-import { ModeTracker, fullScreenHistoryReadIsUnsafe, type TerminalModes } from "./hc-viewer.js";
+import { ModeTracker, fullScreenHistoryReadIsUnsafe, type TerminalModes } from "./hc-modes.js";
 import type { PaneCapture } from "./tmux.js";
 
 export type { PaneCapture };

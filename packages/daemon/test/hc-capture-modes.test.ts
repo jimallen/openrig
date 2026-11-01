@@ -15,6 +15,8 @@ const MOUSE: TerminalModes = { altScreen: true, mouse: true };
 const ALT_ONLY: TerminalModes = { altScreen: true, mouse: false };
 const MOUSE_ONLY: TerminalModes = { altScreen: false, mouse: true };
 
+const isModes = (value: Record<string, TerminalModes | null> | TerminalModes): value is TerminalModes => typeof value.altScreen === "boolean";
+
 /** A mode source that answers from a table, counts its questions, and can be changed between them. */
 function modes(answers: Record<string, TerminalModes | null> | TerminalModes | null) {
   const asked: string[] = [];
@@ -24,7 +26,7 @@ function modes(answers: Record<string, TerminalModes | null> | TerminalModes | n
       asked.push(ref);
       const a = source.answers;
       if (a === null) return null;
-      return "altScreen" in a ? a : (a[ref] ?? null);
+      return isModes(a) ? a : (a[ref] ?? null);
     },
   };
   return { source, asked };
@@ -195,7 +197,7 @@ function opener(frames: (string | Buffer)[] | Error, record: { opened: HcAttachP
         write: () => { throw new Error("an observer does not type"); }, resize: () => { throw new Error("an observer does not resize"); },
         detach: async () => { record.detached += 1; return { reason: "detached" }; },
       };
-      queueMicrotask(() => { for (const frame of frames) handlers.onData(Buffer.from(frame, "latin1")); });
+      queueMicrotask(() => { for (const frame of frames) handlers.onData(typeof frame === "string" ? Buffer.from(frame, "latin1") : frame); });
       return attachment;
     },
   };

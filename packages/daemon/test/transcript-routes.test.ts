@@ -21,6 +21,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { transcriptRoutes } from "../src/routes/transcripts.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { tmuxStub } from "./helpers/tmux-stub.js";
 import { vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 
@@ -118,7 +119,7 @@ describe("transcript routes", () => {
       rigRepo,
       sessionRegistry,
       transcriptStore: store,
-      tmuxAdapter: { capturePaneContent } as unknown as TmuxAdapter,
+      tmuxAdapter: tmuxStub({ capturePaneContent }),
     });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/tail?lines=10");
@@ -184,7 +185,7 @@ describe("transcript routes", () => {
       rigRepo,
       sessionRegistry,
       transcriptStore: store,
-      tmuxAdapter: { capturePaneContent: capturePaneSpy } as unknown as TmuxAdapter,
+      tmuxAdapter: tmuxStub({ capturePaneContent: capturePaneSpy }),
     });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/tail");
@@ -214,7 +215,7 @@ describe("transcript routes", () => {
       rigRepo,
       sessionRegistry,
       transcriptStore: store,
-      tmuxAdapter: { capturePaneContent: capturePaneSpy } as unknown as TmuxAdapter,
+      tmuxAdapter: tmuxStub({ capturePaneContent: capturePaneSpy }),
     });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/tail");
@@ -237,7 +238,7 @@ describe("transcript routes", () => {
     const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
     vi.spyOn(store, "ensureTranscriptDir").mockReturnValue(true);
     const capturePaneSpy = vi.fn(async () => "READY\n");
-    const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store, tmuxAdapter: { capturePaneContent: capturePaneSpy } as unknown as TmuxAdapter });
+    const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store, tmuxAdapter: tmuxStub({ capturePaneContent: capturePaneSpy }) });
 
     const hc = await app.request("/api/transcripts/dev-hc@my-rig/tail");
     expect(hc.status).toBe(200);
