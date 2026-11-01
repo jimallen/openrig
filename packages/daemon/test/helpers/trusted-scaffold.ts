@@ -15,7 +15,30 @@ export class TrustedBaseRefusedError extends Error {
   }
 }
 
+/** The name of the one folder an uncontained run makes for its scaffolds (see `defaultTrustedRunRoot`). */
+export const TRUSTED_RUN_ROOT_PREFIX = ".openrig-test-run-";
+
 type EnvLike = Record<string, string | undefined>;
+type OnExit = (cleanup: () => void) => void;
+const removeOnProcessExit: OnExit = (cleanup) => { process.once("exit", cleanup); };
+const runRoots = new Map<string, string>();
+
+/**
+ * The default trusted base of a run that names none and whose HOME is a temp fixture. The trust check refuses every temp location, so it
+ * is outside temp, in the account's home: ONE folder (`<home>/.openrig-test-run-XXXXXX`, 0700), made on first use and removed, with every
+ * scaffold inside it, when the process exits. Scaffolds were made straight in the account's home before, and a run left them there.
+ */
+function defaultTrustedRunRoot(accountHome: () => string, onExit: OnExit): string {
+  const home = accountHome();
+  const known = runRoots.get(home);
+  if (known && existsSync(known)) return known;
+  if (!isAbsolute(home) || underTempRoot(home, process.env)) throw new TrustedBaseRefusedError("the account home is not an absolute folder outside temp");
+  const root = mkdtempSync(join(home, TRUSTED_RUN_ROOT_PREFIX));
+  chmodSync(root, 0o700);
+  runRoots.set(home, root);
+  onExit(() => { runRoots.delete(home); rmSync(root, { recursive: true, force: true }); });
+  return root;
+}
 
 /** realpath of the nearest existing ancestor, then the rest as written (macOS links /tmp into /private, and the path may not exist yet). */
 const real = (p: string): string => {
@@ -33,10 +56,10 @@ const underTempRoot = (path: string, env: EnvLike): boolean =>
 /**
  * The folder a trusted scaffold is made in. In order: `OPENRIG_TEST_TRUSTED_BASE` when the run names one; the run's own HOME when
  * it is outside every temp location; else, when the run declares itself contained (`OPENRIG_TEST_SCRATCH_ROOT` is set), a refusal,
- * because the only other answer is the account's real home, which a contained run must never reach; else the account's home as
- * before (an uncontained run's HOME is a temp fixture, which the trust check refuses). `accountHome` is a seam for the test.
+ * because the only other answer is the account's real home, which a contained run must never reach; else the run root `defaultTrustedRunRoot` makes in the account's home
+ * (an uncontained run's HOME is a temp fixture, which the trust check refuses). `accountHome` is a seam for the test.
  */
-export function trustedBaseFolder(env: EnvLike = process.env, accountHome: () => string = () => userInfo().homedir): string {
+export function trustedBaseFolder(env: EnvLike = process.env, accountHome: () => string = () => userInfo().homedir, onExit: OnExit = removeOnProcessExit): string {
   const named = env[TRUSTED_BASE_ENV];
   if (named) {
     if (!isAbsolute(named) || !existsSync(named)) throw new TrustedBaseRefusedError(`${TRUSTED_BASE_ENV} is not an existing absolute folder`);
@@ -46,7 +69,7 @@ export function trustedBaseFolder(env: EnvLike = process.env, accountHome: () =>
   const home = env.HOME;
   if (home && isAbsolute(home) && !underTempRoot(home, env)) return home;
   if (env[HC_SCRATCH_ROOT_ENV]) throw new TrustedBaseRefusedError("this run is contained and its HOME is in temp");
-  return accountHome();
+  return defaultTrustedRunRoot(accountHome, onExit);
 }
 
 /** A new folder `<prefix>XXXXXX` inside `trustedBaseFolder()`. */
