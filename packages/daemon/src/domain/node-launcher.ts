@@ -275,7 +275,7 @@ export class NodeLauncher {
         this.sessionRegistry.updateStatus(session.id, "running");
         this.sessionRegistry.updateBinding(node.id, {
           tmuxSession: sessionName,
-          ...(paneObservation.ok ? paneBindingFields(this.tmuxAdapter.hostKind, paneObservation.pane) : {}),
+          ...paneBindingFields(this.tmuxAdapter.hostKind, paneObservation.ok ? paneObservation.pane : null),
         });
         if (!paneObservation.ok) {
           new SeatIdentityStore(this.db).upsert(paneObservationVerdict({

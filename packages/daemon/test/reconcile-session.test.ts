@@ -201,12 +201,14 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
     localDb.close();
   });
 
-  it("node_not_found for a session name the daemon never managed (points at discover/bind)", async () => {
+  it("node_not_found for a session name the daemon never managed (names no removed command)", async () => {
     const result = await setup.sessionReconciler.reconcileSession({ sessionName: "stranger@nowhere" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("node_not_found");
-    expect(result.message).toContain("rig discover");
+    // `rig discover` and `rig bind` were removed with adoption (hc cutover decision 13): advice must not name them.
+    expect(result.message).not.toMatch(/rig (discover|bind)/);
+    expect(result.message).toContain("rig seat launch");
   });
 
   it("IDENTITY BOUNDARY: explicit --rig/--node cannot bind an arbitrary never-managed session (re-key bypass)", async () => {
@@ -228,7 +230,8 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
     if (result.ok) return;
     expect(result.code).toBe("node_mismatch");
     expect(result.message).toContain("dev-impl@bypass-rig"); // points at the canonical name
-    expect(result.message).toContain("rig discover");
+    expect(result.message).not.toMatch(/rig (discover|bind)/);
+    expect(result.message).toContain("rig seat launch");
     // NOTHING mutated: no binding, no session row, no event.
     expect(setup.sessionRegistry.getBindingForNode(node.id)).toBeNull();
     expect(db.prepare("SELECT 1 FROM sessions WHERE node_id = ?").all(node.id)).toHaveLength(0);
