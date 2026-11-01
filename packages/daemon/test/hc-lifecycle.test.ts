@@ -17,7 +17,7 @@ class FakeClient extends HcClient {
 }
 
 const term = (over: Partial<HcTerminal> = {}): HcTerminal => ({
-  address: "t7", labels: { [SEAT_LABEL]: "qa@rig" }, argv: [], cwd: "/work/qa", state: "live", created_ms: 0, screen: "exact", cols: 200, rows: 120, pid: 4242, ...over,
+  address: "t7", name: hcTerminalName(over.labels?.[SEAT_LABEL] ?? "qa@rig"), labels: { [SEAT_LABEL]: "qa@rig" }, argv: [], cwd: "/work/qa", state: "live", created_ms: 0, screen: "exact", cols: 200, rows: 120, pid: 4242, ...over,
 });
 const notFound = () => new HcError("no terminal", "not_found", -32000);
 const methods = (client: FakeClient) => client.calls.map(([m]) => m);
