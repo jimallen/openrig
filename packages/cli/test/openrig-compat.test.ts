@@ -55,7 +55,8 @@ describe("OPR.0.4.3.12 — isFixtureScopedHome (path-only predicate)", () => {
     const { isFixtureScopedHome, FIXTURE_HOME_MARKER } = await import("../src/openrig-compat.js");
     // A marker in an ARBITRARY (non-temp-convention) dir still counts — the
     // explicit sentinel is the most-honest signal and is location-independent.
-    const dir = mkdtempSync(join(homedir(), ".openrig-compat-test-"));
+    // Beside this file, not in the account home: a run that names no HOME must not write the real home.
+    const dir = mkdtempSync(join(import.meta.dirname, ".openrig-compat-test-"));
     created.push(dir);
     writeFileSync(join(dir, FIXTURE_HOME_MARKER), "");
     expect(isFixtureScopedHome(dir)).toBe(true);

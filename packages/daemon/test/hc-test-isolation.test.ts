@@ -3,13 +3,13 @@
 // made outside the run root, or a scaffold in the account's real home, is a machine-level leak the end-of-run tripwire cannot see.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveHcSocket } from "../src/adapters/hc-client.js";
 import { HC_SCRATCH_ROOT_ENV, HC_SOCKET_PATH_LIMIT, HcSocketTooLongError, hcScratchBase, startHcScratch } from "./helpers/hc-scratch.js";
 import { PrivateCore as RootPrivateCore } from "./hc-private-core.js";
 import { PrivateCore as HelperPrivateCore } from "./helpers/hc-private-core.js";
-import { TRUSTED_BASE_ENV, TrustedBaseRefusedError, trustedBaseFolder } from "./helpers/trusted-scaffold.js";
+import { TRUSTED_BASE_ENV, TRUSTED_RUN_ROOT_PREFIX, TrustedBaseRefusedError, trustedBaseFolder } from "./helpers/trusted-scaffold.js";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 
@@ -78,8 +78,46 @@ describe("where a trusted scaffold is made", () => {
     expect(() => trustedBaseFolder({ [TRUSTED_BASE_ENV]: "/no/such/folder", HOME: "/home/run" }, account)).toThrow(/not an existing absolute folder/);
   });
 
-  it("an uncontained run whose HOME is a temp fixture keeps asking the account, as before", () => {
-    expect(trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => "/home/account")).toBe("/home/account");
+  // The production trust check refuses every temp location, so a run that names no base and whose HOME is a temp fixture has to put its
+  // scaffolds outside temp. They used to be made straight in the account's real home (~/.of103-e2e-XXXXXX, ~/.of102-e2e-XXXXXX): a
+  // test run left them there. The default is now ONE run root, made on first use and removed when the process exits, holding every scaffold.
+  const withFakeAccount = (run: (home: string, exitHooks: Array<() => void>) => void) => {
+    // Outside every temp location (the run root refuses a temp account home), and not the real home: beside this file.
+    const home = realpathSync(mkdtempSync(join(import.meta.dirname, ".iso-acct-")));
+    const hooks: Array<() => void> = [];
+    try { run(home, hooks); } finally { rmSync(home, { recursive: true, force: true }); }
+  };
+
+  it("an uncontained run whose HOME is a temp fixture gets one contained run root under the account home, not the account home itself", () => {
+    withFakeAccount((home, hooks) => {
+      const base = trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); });
+      expect(base).not.toBe(home);
+      expect(dirname(base)).toBe(home);
+      expect(basename(base).startsWith(TRUSTED_RUN_ROOT_PREFIX)).toBe(true);
+      expect(statSync(base).mode & 0o077).toBe(0);
+      expect(readdirSync(home)).toEqual([basename(base)]);
+      // One root per run: a second scaffold reuses it, and only one removal is registered.
+      expect(trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); })).toBe(base);
+      expect(hooks).toHaveLength(1);
+    });
+  });
+
+  it("the default run root, and every scaffold inside it, is removed when the process exits; nothing is left in the account home", () => {
+    withFakeAccount((home, hooks) => {
+      const base = trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); });
+      mkdirSync(join(base, ".of103-e2e-AbCdEf"), { recursive: true });
+      expect(hooks).toHaveLength(1);
+      const [cleanup] = hooks;
+      if (!cleanup) throw new Error("no removal was registered");
+      cleanup();
+      expect(existsSync(base)).toBe(false);
+      expect(readdirSync(home)).toEqual([]);
+    });
+  });
+
+  it("the default run root is outside every temp location, which the production trust check requires", () => {
+    // The location is the account's to decide; an account home inside temp is refused, and nothing is made there.
+    expect(() => trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => tmpdir(), () => undefined)).toThrow(TrustedBaseRefusedError);
   });
 });
 
@@ -119,6 +157,19 @@ describe("census: no test reaches the account's real home or a hard-coded scratc
       ["packages/daemon/test/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), `hc-\$\{tag\}-`\)\)/],
     ];
     for (const [f, line] of makers) expect(text(join(repoRoot, f)), f).toMatch(line);
+  });
+
+  // Census (instrument: a text scan of every .ts under the test trees). A folder made straight in the account's real home is a machine-level
+  // leak a contained run cannot see. The account's home is asked in one place (trusted-scaffold.ts), and there only to place the run root.
+  it("no file makes a folder directly in the account home, and trusted-scaffold.ts never returns the account home itself", () => {
+    const IN_ACCOUNT_HOME = /mkdtempSync\(\s*(?:join\(\s*)?(?:homedir\(\)|userInfo\(\)\.homedir|accountHome\(\)|process\.env\.HOME\b)/;
+    expect(files.filter((f) => rel(f) !== self && IN_ACCOUNT_HOME.test(text(f))).map(rel)).toEqual([]);
+    const scaffold = text(join(repoRoot, "packages/daemon/test/helpers/trusted-scaffold.ts"));
+    expect(scaffold).not.toMatch(/return\s+accountHome\(\)/);
+    expect(scaffold.match(/accountHome\(\)/g) ?? []).toHaveLength(1);
+    expect(scaffold).toMatch(/const home = accountHome\(\);[\s\S]*mkdtempSync\(join\(home, TRUSTED_RUN_ROOT_PREFIX\)\)/);
+    // Positive control: the scan reached the file that makes the run root.
+    expect(files.map(rel)).toContain("packages/daemon/test/helpers/trusted-scaffold.ts");
   });
 
   // Census (instrument: a text scan of every .ts under the test trees for a mkdtempSync whose name argument starts a private-core root).
