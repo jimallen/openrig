@@ -12,6 +12,7 @@ import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 const RIG = "first-project";
 const SEAT = `crew-lead@${RIG}`;
@@ -50,7 +51,7 @@ describe("#141 shrinking an archived generation's pod vs the live replacement's 
     lifecycle = new RigLifecycleService({
       db, rigRepo, sessionRegistry, discoveryRepo: new DiscoveryRepository(db), eventBus, queueRepo,
       // hasSession answers only the --fallback destination check; the fallback seat is the one "live" session.
-      tmuxAdapter: { killSession, hasSession: vi.fn(async (name: string) => name === FALLBACK) } as unknown as TmuxAdapter,
+      tmuxAdapter: { killSession, probeSession: probeSessionFromHasSession, hasSession: vi.fn(async (name: string) => name === FALLBACK) } as unknown as TmuxAdapter,
     });
     // The P1 shape: the stopped generation was archived and the replacement re-created the same seat.
     stale = generation("exited");
@@ -129,7 +130,7 @@ describe("#141 shrink target members sharing a session name", () => {
     killSession = vi.fn(async () => ({ ok: true as const }));
     lifecycle = new RigLifecycleService({
       db, rigRepo, sessionRegistry, discoveryRepo: new DiscoveryRepository(db), eventBus, queueRepo,
-      tmuxAdapter: { killSession, hasSession: vi.fn(async (name: string) => name === FALLBACK) } as unknown as TmuxAdapter,
+      tmuxAdapter: { killSession, probeSession: probeSessionFromHasSession, hasSession: vi.fn(async (name: string) => name === FALLBACK) } as unknown as TmuxAdapter,
     });
     const rig = rigRepo.createRig("shared-rig");
     const pod = new PodRepository(db).createPod(rig.id, "crew", "Crew");

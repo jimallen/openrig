@@ -15,6 +15,7 @@ import { RigSpecPreflight } from "../src/domain/rigspec-preflight.js";
 import type { LegacyRigSpec as RigSpec } from "../src/domain/types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 function setupDb(): Database.Database {
   const db = createDb();
@@ -24,7 +25,7 @@ function setupDb(): Database.Database {
 
 function mockTmux(sessionExists: Record<string, boolean> = {}): TmuxAdapter {
   return {
-    hasSession: vi.fn(async (name: string) => sessionExists[name] ?? false),
+    probeSession: probeSessionFromHasSession, hasSession: vi.fn(async (name: string) => sessionExists[name] ?? false),
     listSessions: async () => [],
     listWindows: async () => [],
     listPanes: async () => [],
@@ -99,6 +100,20 @@ describe("RigSpecPreflight", () => {
     const result = await pf.check(validSpec());
     expect(result.ready).toBe(false);
     expect(result.errors.some((e) => e.includes("r99-worker"))).toBe(true);
+  });
+
+  it("a seat host that does not answer is NOT 'no such session': preflight refuses to say the name is free (OF-177)", async () => {
+    const dark = Object.assign(mockTmux(), { hostKind: "hc" as const, probeSession: async () => ({ state: "transport_unavailable" as const, cause: "hc core not reachable" }) });
+    const result = await createPreflight({ tmux: dark }).check(validSpec());
+    expect(result.ready).toBe(false);
+    expect(result.errors.some((e) => e.includes("r99-worker") && e.includes("did not answer"))).toBe(true);
+    expect(result.errors.some((e) => /^tmux session '.*' already exists for node/.test(e))).toBe(false);
+  });
+
+  it("control: the same host answering 'absent' lets the name through", async () => {
+    const live = Object.assign(mockTmux(), { hostKind: "hc" as const, probeSession: async () => ({ state: "absent" as const }) });
+    const result = await createPreflight({ tmux: live }).check(validSpec());
+    expect(result.errors).toEqual([]);
   });
 
   it("derived session name is normalized for ordinary rig names", async () => {

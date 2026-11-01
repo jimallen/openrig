@@ -20,6 +20,7 @@ import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-obse
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DefaultOccupantInvalidator, type OccupantInvalidator } from "../src/domain/occupant-invalidator.js";
 import type { SeatCwdFault } from "../src/domain/cwd-resolution.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 describe("SeatHandoverService", () => {
   let db: Database.Database;
@@ -94,7 +95,7 @@ describe("SeatHandoverService", () => {
   });
 
   function tmux(): TmuxAdapter {
-    return { hasSession, createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+    return { hasSession, probeSession: probeSessionFromHasSession, createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
   }
 
   function codexAdapter(): RuntimeAdapter {
@@ -178,7 +179,7 @@ describe("SeatHandoverService", () => {
   });
 
   describe("on an hc host the binding follows the terminal the successor launch observed", () => {
-    const hcTmux = (): TmuxAdapter => Object.assign(tmux(), { hostKind: "hc" as const, hasSession: hasSession }) as TmuxAdapter;
+    const hcTmux = (): TmuxAdapter => Object.assign(tmux(), { hostKind: "hc" as const, probeSession: probeSessionFromHasSession, hasSession: hasSession }) as TmuxAdapter;
     const paneOf = (id: string) => [{ id, index: 0, cwd: "/project", width: 200, height: 120, active: true }];
 
     it("a fresh handover writes an hc row at the NEW address (the respawn minted it), with no tmux pane", async () => {
@@ -1290,6 +1291,19 @@ describe("SeatHandoverService", () => {
     expect(sessionRegistry.getBindingForNode(node.id)?.tmuxSession).toBe("dev-impl@seat-rig");
   });
 
+  it("a seat host that does not answer is a probe failure, not an absent successor (OF-177), and the preserved seat is not killed", async () => {
+    const { node } = seedSeat();
+    // hasSession (collapsed) would say true here and the handover would go on: only the classified probe sees the outage.
+    const dark = Object.assign(tmux(), { hostKind: "hc" as const, probeSession: async () => ({ state: "transport_unavailable" as const, cause: "hc core not reachable" }) });
+
+    const result = await newService(dark).handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+
+    expect(result).toMatchObject({ ok: false, code: "tmux_probe_failed" });
+    expect((result as { message: string }).message).toContain("did not answer");
+    expect(killSession).not.toHaveBeenCalled();
+    expect(sessionRegistry.getBindingForNode(node.id)?.tmuxSession).toBe("dev-impl@seat-rig");
+  });
+
   it("fails before mutation when discovered id is missing", async () => {
     seedSeat();
     const before = durableRows();
@@ -1507,7 +1521,7 @@ describe("SeatHandoverService", () => {
   });
 
   it("wires the daemon route for discovered live mutation", async () => {
-    const routeTmux = { hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+    const routeTmux = { probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
     const setup = createTestApp(db, { tmux: routeTmux });
     const rig = setup.rigRepo.createRig("seat-rig");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "codex" });

@@ -135,7 +135,7 @@ describe("occupant fencing through payload preparation", () => {
   });
   it("rejects observation made stale by another reconciliation without superseding again", async () => {
     const f = fixture(), entered = signal(), finish = signal(); let first = true;
-    f.tmux.hasSession = async () => { if (first) { first = false; entered.release(); await finish.ready; } return true; };
+    f.tmux.probeSession = async () => { if (first) { first = false; entered.release(); await finish.ready; } return { state: "present" as const }; };
     const pending = f.claim.reconcileSession({ sessionName: "worker@fixture" }); await entered.ready;
     expect((await f.claim.reconcileSession({ sessionName: "worker@fixture" })).ok).toBe(true);
     const current = f.guard.target("a"); finish.release();

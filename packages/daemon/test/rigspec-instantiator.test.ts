@@ -20,6 +20,7 @@ import type { ExecFn } from "../src/adapters/tmux.js";
 import type { LegacyRigSpec as RigSpec, PersistedEvent } from "../src/domain/types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { createFullTestDb } from "./helpers/test-app.js";
 import { expectCode } from "./helpers/expect-code.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -34,7 +35,7 @@ function mockTmux(): TmuxAdapter {
     listSessions: async () => [],
     listWindows: async () => [],
     listPanes: async () => [],
-    hasSession: vi.fn(async () => false),
+    probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
   } as unknown as TmuxAdapter;
 }
 

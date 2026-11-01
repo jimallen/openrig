@@ -462,7 +462,9 @@ seatRoutes.post("/switch-client/:seatRef", async (c) => {
     result.code === "missing_canonical_session" ||
     result.code === "session_not_found" ||
     result.code === "no_client" ||
-    result.code === "ambiguous_client") {
+    result.code === "ambiguous_client" ||
+    // hc has no attached clients: the host cannot do this. A refusal the operator can read (the CLI exits 1 on a 4xx), never the 502 of a tmux-layer failure.
+    result.code === "not_supported_on_host") {
     return c.json(result, 409);
   }
   // switch_failed / tmux_probe_failed — a tmux-layer failure, not a client error.

@@ -39,6 +39,7 @@ import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-obse
 import { observeClaudePermission, observeCodexSandbox, observePiResourceTrust, observeOmpApprovalMode, type AppliedLaunchObservation } from "../src/domain/permission-drift.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORK_DIR = existingRigRoot("work");
 
@@ -64,7 +65,7 @@ function mockTmux(): TmuxAdapter {
     listSessions: async () => [],
     listWindows: async () => [],
     listPanes: async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }],
-    hasSession: async () => false,
+    probeSession: probeSessionFromHasSession, hasSession: async () => false,
   } as unknown as TmuxAdapter);
 }
 
@@ -727,7 +728,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
     // tmux session IS alive — restore should block
-    const tmux = { ...mockTmux(), hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
     const orch = createOrchestrator({ tmux });
     const result = await orch.restore(snap.id);
 
@@ -746,7 +747,7 @@ describe("RestoreOrchestrator", () => {
     const session = sessionRegistry.registerSession(node.id, "dev-worker@wedged");
     sessionRegistry.updateStatus(session.id, "running");
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
-    const tmux = { ...mockTmux(), hasSession: vi.fn(() => new Promise<boolean>(() => { /* never settles */ })) } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(() => new Promise<boolean>(() => { /* never settles */ })) } as unknown as TmuxAdapter;
     const orch = createOrchestrator({ tmux });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
@@ -898,7 +899,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "pre-crash");
 
     // Simulate post-crash: tmux sessions are gone
-    const tmux = { ...mockTmux(), hasSession: vi.fn(async () => false) } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) } as unknown as TmuxAdapter;
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -919,7 +920,7 @@ describe("RestoreOrchestrator", () => {
     sessionRegistry.updateStatus(sess.id, "running");
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
-    const tmux = { ...mockTmux(), hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -936,7 +937,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
     // tmux session is dead (post-crash) — restore should proceed
-    const tmux = { ...mockTmux(), hasSession: vi.fn(async () => false) } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) } as unknown as TmuxAdapter;
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -965,7 +966,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
     // tmux says the OLD session name IS alive
-    const tmux = { ...mockTmux(), hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -984,7 +985,7 @@ describe("RestoreOrchestrator", () => {
 
     // tmux check throws unexpected error (permission denied / socket failure)
     // — NOT a known-absence error, so hasSession rethrows instead of returning false
-    const tmux = { ...mockTmux(), hasSession: vi.fn(async () => { throw new Error("error connecting to /tmp/tmux-501/default (Permission denied)"); }) } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => { throw new Error("error connecting to /tmp/tmux-501/default (Permission denied)"); }) } as unknown as TmuxAdapter;
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -2167,7 +2168,7 @@ describe("RestoreOrchestrator", () => {
     const tmux = {
       ...mockTmux(),
       createSession: vi.fn(async () => { launched = true; return { ok: true as const }; }),
-      hasSession: vi.fn(async () => launched),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => launched),
       sendShellCommand: vi.fn(async () => ({ ok: true as const })),
       getPanePid: vi.fn(async () => 3001),
       getPaneCommand: vi.fn(async () => "bash"),
@@ -2282,7 +2283,7 @@ describe("RestoreOrchestrator", () => {
       const tmux = {
         ...mockTmux(),
         createSession: vi.fn(async () => { launched = true; return { ok: true as const }; }),
-        hasSession: vi.fn(async () => launched),
+        probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => launched),
         getPaneCommand: vi.fn(async (target: string) => {
           if (mode.startsWith("join-") && target === "%1" && !joinSessionId) {
             const current = db.prepare("SELECT id FROM sessions WHERE node_id = ? ORDER BY created_at DESC, id DESC LIMIT 1").get(node.id) as { id: string };
@@ -3142,7 +3143,7 @@ describe("RestoreOrchestrator", () => {
     const live = sessionRegistry.registerSession(newNode.id, sessionName);
     sessionRegistry.updateStatus(live.id, "running");
     const ownsLifecycle = vi.fn(() => true);
-    const tmux = { ...mockTmux(), hasSession: async () => true, deliveryGuard: { ownsLifecycle, lifecycle: async (_ids: string[], fn: () => unknown) => fn(), rebindLifecycle: vi.fn() } } as unknown as TmuxAdapter;
+    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: async () => true, deliveryGuard: { ownsLifecycle, lifecycle: async (_ids: string[], fn: () => unknown) => fn(), rebindLifecycle: vi.fn() } } as unknown as TmuxAdapter;
     const claude = mockClaudeResume();
 
     const result = await createOrchestrator({ tmux, claude }).launchSingleNode(rig.id, "dev.impl", { snapshotId: snap.id });
@@ -4678,7 +4679,7 @@ describe("RestoreOrchestrator", () => {
         getPaneCommand: vi.fn(async () => "claude"),
         getPanePid: vi.fn(async () => 1234),
         capturePaneContent: vi.fn(async () => ""),
-        hasSession: vi.fn(async () => false),
+        probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
         listSessions: async () => [],
         listWindows: async () => [],
         listPanes: async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }],
@@ -4969,6 +4970,23 @@ describe("RestoreOrchestrator", () => {
       expect(completed).toHaveLength(1);
       const parsed = JSON.parse(completed[0]!.payload) as { result: { nodes: Array<{ status: string }> } };
       expect(parsed.result.nodes[0]!.status).toBe("failed");
+    });
+
+    it("no-op, and it says the host did not answer, when the seat host is unreachable (OF-177: not 'not currently alive')", async () => {
+      const tmux = mockTmuxForReconciler();
+      (tmux.hasSession as ReturnType<typeof vi.fn>).mockResolvedValue(true);  // the collapsed view would let it through
+      const dark = Object.assign(tmux, { hostKind: "hc" as const, probeSession: async () => ({ state: "transport_unavailable" as const, cause: "hc core not reachable" }) });
+      const orch = createOrchestrator({ tmux: dark });
+      const seeded = seedFailedAttempt({ restoreOutcome: "failed", withResumeToken: true });
+
+      const result = await orch.reconcileNodeRuntimeTruth(seeded.rig.id, seeded.nodeId);
+
+      expect(result).toMatchObject({ ok: false, code: "tmux_session_missing" });
+      if (!result.ok) {
+        expect(result.detail).toContain("did not answer");
+        expect(result.detail).not.toContain("not currently alive");
+      }
+      expect(db.prepare("SELECT * FROM events WHERE type = 'restore.outcome_reconciled'").all()).toHaveLength(0);
     });
 
     it("no-op when tmux session is missing (precondition #1 fails)", async () => {

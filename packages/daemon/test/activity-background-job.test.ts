@@ -12,6 +12,7 @@ import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import { SeatStructuralActivityService } from "../src/domain/seat-structural-activity-service.js";
 import { classifyPaneActivity, detectBackgroundJobs } from "../src/domain/session-transport.js";
 import type { AgentActivity } from "../src/domain/types.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 const RULE = "─".repeat(40);
 const STATUS_ONE = "✻ Churned for 9s · done 4:22 PM · 1 shell still running";
@@ -174,7 +175,7 @@ function harness(initialPane: string) {
     const out = (await attachAgentActivity(
       [{ canonicalSessionName: "dev-impl@rig", runtime: "claude-code", attachmentType: "tmux", logicalId: "dev.impl" }] as never,
       {
-        tmuxAdapter: { hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } } as never,
+        tmuxAdapter: { probeSession: probeSessionFromHasSession, hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } } as never,
         activityStore: { getLatestForNode: () => hook } as never,
         structuralActivity: service,
         // The REQUEST clock is deliberately 2s past the service clock (and both are far from wall
@@ -294,7 +295,7 @@ function arbitratedHarness(initialPane: string) {
   // Both enrichers exactly as the routes compose them.
   const enrich = async (hookRow: AgentActivity | null) => {
     const withA = (await attachAgentActivity([entry] as never, {
-      tmuxAdapter: { hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } } as never,
+      tmuxAdapter: { probeSession: probeSessionFromHasSession, hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } } as never,
       activityStore: { getLatestForNode: () => hookRow } as never,
       structuralActivity: structural,
       now: new Date(state.clock),
@@ -383,7 +384,7 @@ describe("OF-34 F1: activityState (rig ps ACTIVITY, rig down, TUI) agrees with a
 describe("OF-34 node detail: backgroundJobActivity", () => {
   const detailEntries = [{ canonicalSessionName: SESSION, runtime: "claude-code", attachmentType: "tmux", logicalId: "dev.impl" }] as never;
   const probeTmux = (pane: string, counter: { captures: number }) => ({
-    hasSession: async () => true,
+    probeSession: probeSessionFromHasSession, hasSession: async () => true,
     getPaneCommand: async () => "claude",
     capturePaneContent: async () => { counter.captures++; return pane; },
   }) as never;

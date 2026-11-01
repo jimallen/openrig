@@ -34,7 +34,7 @@ import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
-import { connectHcCore, pinCallsToCore } from "./adapters/hc-core-watch.js";
+import { connectHcCore, pinCallsToCore, type HcCoreWatch } from "./adapters/hc-core-watch.js";
 import { HcDelivery } from "./adapters/hc-delivery.js";
 import { TmuxAdapter } from "./adapters/tmux.js";
 import { setDaemonTmuxServer, tmuxServerArgs } from "./adapters/tmux-server.js";
@@ -246,6 +246,8 @@ interface DaemonResult {
   contextMonitor: import("./domain/context-monitor.js").ContextMonitor;
   // OPR.0.4.3.21 — returned so index.ts can stop() it on graceful shutdown.
   eventLoopMonitor: import("./domain/event-loop-monitor.js").EventLoopMonitor;
+  /** The watch on the hc core (absent when an injected tmux exec keeps the tmux host); index.ts stops it on shutdown. */
+  hcCoreWatch?: HcCoreWatch;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   injectWebSocket: (server: any) => void;
 }
@@ -519,11 +521,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const hcClient = opts?.tmuxExec || opts?.argvExec ? undefined : new HcClient();
   const hcAdapter = hcClient ? new HcAdapter(hcClient) : undefined;
   // A wrong generation or version throws here: the daemon must not start against a core it can't speak to.
-  if (hcClient) {
-    const hcWatch = await connectHcCore({ socketPath: hcClient.socketPath });
-    // Not a startup gate only: every later call, attach and size watch to this core passes the same pin.
-    pinCallsToCore(hcClient.socketPath, hcWatch);
-  }
+  // Kept, not discarded: stopped at shutdown (index.ts), and a refusal after the first attempt refuses the client's calls.
+  const hcCoreWatch = hcClient ? await connectHcCore({ socketPath: hcClient.socketPath, client: hcClient }) : undefined;
+  // Not a startup gate only: every later call, attach and size watch to this core passes the same pin.
+  if (hcClient && hcCoreWatch) pinCallsToCore(hcClient.socketPath, hcCoreWatch);
   const hcDelivery = hcAdapter ? new HcDelivery(hcAdapter.client, hcAdapter) : undefined;
   const tmuxAdapter: TmuxAdapter = hcAdapter ?? new TmuxAdapter(opts?.tmuxExec ?? execCommand, undefined, argvExec);
   // The real tmux runs with this process's environment, so its server is the one $TMUX names.
@@ -1259,7 +1260,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Coverage-only, read-only: says so in `rig health` when an item addressed to human@kernel has waited over 24 h.
   const humanInboxWaiting = await import("./domain/rsi/human-inbox-waiting-health.js");
   const humanInboxWaitingHealth = new humanInboxWaiting.HumanInboxWaitingHealthSource(humanInboxWaiting.sqliteInboxWaitingRows(db));
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // Coverage-only, read-only: says so in `rig health` when a send to an hc seat has stayed unsettled for over 15 minutes (it is never resent).
+  const { HcUnsettledHealthSource, outboxHcUnsettledRows } = await import("./domain/hc-unsettled-health.js");
+  const hcUnsettledHealth = new HcUnsettledHealthSource(outboxHcUnsettledRows(outboxHandlerInstance));
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
@@ -2771,5 +2775,5 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   if (hcAdapter) deps.hcTerminal = { client: hcAdapter.client, ...(deliveryGuard ? { guard: deliveryGuard } : {}) };
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  return { app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket };
+  return { app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket, ...(hcCoreWatch ? { hcCoreWatch } : {}) };
 }

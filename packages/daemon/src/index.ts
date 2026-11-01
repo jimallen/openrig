@@ -306,7 +306,7 @@ export async function startServer(port?: number) {
     bindHosts = bindPlan.hosts;
   }
 
-  const { app, contextMonitor, deps, eventLoopMonitor, injectWebSocket } = await createDaemon({
+  const { app, contextMonitor, deps, eventLoopMonitor, hcCoreWatch, injectWebSocket } = await createDaemon({
     dbPath,
     bearerToken,
     terminalBearerToken,
@@ -399,6 +399,8 @@ export async function startServer(port?: number) {
       ["gateway", () => deps.gatewaySubsystem?.stop()],
       ["wake-ladder", () => wakeLadderScheduler?.stop()],
       ["event-loop-monitor", () => eventLoopMonitor.stop()],
+      // The watch holds a socket and reconnect timers; stopping it is not a statement about the core or its seats.
+      ["hc-core-watch", () => hcCoreWatch?.stop()],
       ["connections", () => Promise.all(servers.map((srv) => closeHttpServer(srv)))],
       ["recorder", async () => {
         deps.requestPhaseObserver?.close();

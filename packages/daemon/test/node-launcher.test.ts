@@ -253,6 +253,32 @@ describe("NodeLauncher", () => {
     expect(sessionRegistry.currentOccupantTenure(node.id)?.kind).toBe("fresh");
   });
 
+  describe("binding writes follow the host (hc cutover B1)", () => {
+    const bindingRow = (nodeId: string) => db.prepare(
+      "SELECT attachment_type, tmux_pane, terminal_address FROM bindings WHERE node_id = ?",
+    ).get(nodeId) as { attachment_type: string; tmux_pane: string | null; terminal_address: string | null };
+    const hcHost = (listPanes: () => Promise<Array<{ id: string }>>): TmuxAdapter => Object.assign(mockTmuxAdapter({ listPanes }), { hostKind: "hc" as const });
+
+    it("an hc launch files the terminal address, not a tmux pane", async () => {
+      const { rig, node } = seedRigWithNode();
+      expect((await createLauncher(hcHost(async () => [{ id: "t7" }])).launchNode(rig.id, "dev1-impl")).ok).toBe(true);
+      expect(bindingRow(node.id)).toEqual({ attachment_type: "hc", tmux_pane: null, terminal_address: "t7" });
+    });
+
+    it("an hc launch whose FIRST pane observation fails still files the binding as hc, so delivery takes the hc path", async () => {
+      const { rig, node } = seedRigWithNode();
+      const failing = hcHost(async () => { throw new Error("core unreachable"); });
+      expect((await createLauncher(failing).launchNode(rig.id, "dev1-impl")).ok).toBe(true);
+      expect(bindingRow(node.id)).toEqual({ attachment_type: "hc", tmux_pane: null, terminal_address: null });
+    });
+
+    it("a tmux launch whose pane observation fails files a tmux binding with no pane (control)", async () => {
+      const { rig, node } = seedRigWithNode();
+      expect((await createLauncher(mockTmuxAdapter({ listPanes: async () => { throw new Error("no server"); } })).launchNode(rig.id, "dev1-impl")).ok).toBe(true);
+      expect(bindingRow(node.id)).toEqual({ attachment_type: "tmux", tmux_pane: null, terminal_address: null });
+    });
+  });
+
   it("derived session name is correct (rig.name + '-' + logicalId)", async () => {
     const { rig } = seedRigWithNode();
     const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>()

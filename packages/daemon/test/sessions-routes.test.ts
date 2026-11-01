@@ -6,6 +6,7 @@ import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
 import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 function unavailableCmux() {
   const factory: CmuxTransportFactory = async () => {
@@ -109,7 +110,7 @@ describe("Session routes", () => {
   it("POST clear-attention re-scopes a legacy attempt-zero reconciliation to the real restore attempt", async () => {
     const tmux = {
       ...mockTmuxAdapter(),
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       listPanes: vi.fn(async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }]),
       getPanePid: vi.fn(async () => 1234),
       getPaneCommand: vi.fn(async () => "claude"),
@@ -289,7 +290,7 @@ describe("Session routes", () => {
   it("POST .../launch does NOT 503 on tmux-probe-fail — launches with a liveness warning (OPR.0.4.3.28 inversion)", async () => {
     const tmuxMock = {
       createSession: vi.fn(async () => true),
-      hasSession: vi.fn(async () => { throw new Error("tmux unavailable"); }),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => { throw new Error("tmux unavailable"); }),
       sendKeys: vi.fn(async () => {}),
       capturePaneContent: vi.fn(async () => ""),
       getPaneCommand: vi.fn(async () => null),
@@ -778,7 +779,7 @@ describe("Session routes", () => {
 
   it("GET /api/rigs/:rigId/nodes includes read-only agent activity evidence", async () => {
     const tmux = {
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       capturePaneContent: vi.fn(async () => "Working on task...\n⠋ Processing files\nesc to interrupt"),
     } as unknown as TmuxAdapter;
     const { app, rigRepo, sessionRegistry } = createTestApp(db, { tmux });
@@ -805,7 +806,7 @@ describe("Session routes", () => {
 
   it("GET /api/rigs/:rigId/nodes prefers fresh hook activity over pane fallback", async () => {
     const tmux = {
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       capturePaneContent: vi.fn(async () => "› idle\n\ngpt-5.5 xhigh fast · Context [████ ]"),
     } as unknown as TmuxAdapter;
     const { app, rigRepo, sessionRegistry, agentActivityStore } = createTestApp(db, {
@@ -845,7 +846,7 @@ describe("Session routes", () => {
 
   it("GET /api/rigs/:rigId/nodes reports stale hook evidence as unknown without pane fallback", async () => {
     const tmux = {
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       capturePaneContent: vi.fn(async () => "Working on task...\n⠋ Processing files\nesc to interrupt"),
     } as unknown as TmuxAdapter;
     const { app, rigRepo, sessionRegistry, agentActivityStore } = createTestApp(db, {
@@ -905,7 +906,7 @@ describe("Session routes", () => {
 
   it("GET /api/rigs/:rigId/nodes is CHEAP by default (OPR.0.4.3 healthz-wedge) — a hook-less seat gets the unknown/no_runtime_hook placeholder and NO per-node tmux capture", async () => {
     const tmux = {
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       capturePaneContent: vi.fn(async () => "Working on task...\nesc to interrupt"),
     } as unknown as TmuxAdapter;
     const { app, rigRepo, sessionRegistry } = createTestApp(db, { tmux });

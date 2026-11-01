@@ -1,7 +1,7 @@
 import type { RigRepository } from "./rig-repository.js";
 import type { TmuxAdapter, TmuxWindow, TmuxClient } from "../adapters/tmux.js";
 import { SeatStatusService } from "./seat-status-service.js";
-import { tmuxAttachCommand } from "../adapters/tmux-server.js";
+import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
 
 /**
  * OPR.0.4.3.26 — seat-recovery switch-client VIEW retarget.
@@ -62,7 +62,8 @@ export type SeatSwitchClientResult =
         | "ambiguous_client"
         | "client_not_found"
         | "switch_failed"
-        | "tmux_probe_failed";
+        | "tmux_probe_failed"
+        | "not_supported_on_host";
       message: string;
       guidance?: string;
       /** Attached clients, surfaced on the ambiguous / not-found paths so the
@@ -117,6 +118,17 @@ export class SeatSwitchClientService {
       };
     }
 
+    // hc has no attached clients to retarget: the Herdr app shows a seat by its label, and a viewer is opened, not switched
+    // (`HcViewer.listClients` and `switchClient` say so by design). That is a property of the host, so it is answered before
+    // anything is probed: not a tmux probe failure, and nothing for `rig reconcile-session` to repair.
+    if (this.tmuxAdapter.hostKind === "hc") {
+      return {
+        ok: false,
+        code: "not_supported_on_host",
+        message: "switch-client retargets an attached tmux client, and seats run on hc, which has no attached clients to retarget.",
+        guidance: `Open the seat instead: ${hcAttachCommand(session)}, or find it by its label in the Herdr app.`,
+      };
+    }
     // 2. Probe the canonical session (read-only). A genuine probe failure
     //    (permission, etc.) is surfaced honestly rather than swallowed.
     let sessionLive: boolean;

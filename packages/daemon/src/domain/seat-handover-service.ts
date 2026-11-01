@@ -23,6 +23,7 @@ import type { PersistedEvent } from "./types.js";
 import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { findOtherSessionOwner } from "./session-owner.js";
+import { probePresence } from "./session-liveness.js";
 import { getSeatCwdFault, handoverCwdRefusalMessage, HANDOVER_CWD_REFUSAL_GUIDANCE, type SeatCwdFault } from "./cwd-resolution.js";
 import { inertPacketText } from "./packet-text.js";
 
@@ -678,7 +679,10 @@ export class SeatHandoverService {
 
     let tmuxPresent: boolean;
     try {
-      tmuxPresent = await this.tmuxAdapter.hasSession(discovered.tmuxSession);
+      const presence = await probePresence(this.tmuxAdapter, discovered.tmuxSession);
+      // A host that does not answer is a probe failure, not an absent successor (OF-177).
+      if (presence === "unknown") throw new Error("the seat host did not answer");
+      tmuxPresent = presence === "present";
     } catch (err) {
       return fail({
         ok: false,

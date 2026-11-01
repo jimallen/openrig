@@ -13,6 +13,8 @@ import {
   type PaneBindingObservation,
 } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
+import { paneBindingFields } from "./binding-pane.js";
+import { probePresence, type SessionPresence } from "./session-liveness.js";
 
 /**
  * OPR.0.3.4.3 — outcome of the no-launch reconcile (adopt a hand-resumed
@@ -133,7 +135,8 @@ export class SessionReconciler {
     this.sessionRegistry.updateBinding(nodeId, {
       tmuxSession: sessionName,
       ...(tmuxWindow ? { tmuxWindow } : {}),
-      ...(observation.ok ? { tmuxPane: observation.pane } : {}),
+      // hc registers the terminal's address, never a tmux pane; the attachment type follows the host even when the observation failed.
+      ...paneBindingFields(this.tmuxAdapter?.hostKind, observation.ok ? observation.pane : null),
     });
     if (!observation.ok) {
       new SeatIdentityStore(this.db).upsert(paneObservationVerdict({
@@ -289,15 +292,15 @@ export class SessionReconciler {
       // IDENTITY BOUNDARY (guard re-review): with NO daemon-history mapping,
       // explicit --rig/--node may only adopt the node's OWN canonical/managed
       // session name. Binding an arbitrary never-managed name to a node would
-      // be an adopt/re-key path, not a reconcile — those go through
-      // rig discover + rig bind.
+      // be an adopt/re-key path, not a reconcile — and adopting an
+      // unmanaged session was removed with the hc cutover (decision 13).
       if (!mapped) {
         const expected = await this.expectedManagedSessionName(node.logicalId, node.podId ?? null, rig.rig.name);
         if (sessionName !== expected) {
           return {
             ok: false,
             code: "node_mismatch",
-            message: `Session "${sessionName}" is not ${opts.logicalId}'s managed session name (expected "${expected}") and the daemon has no history mapping it to this node. Reconcile only re-adopts a node's own canonical session; to manage a new/unmanaged session, use rig discover + rig bind.`,
+            message: `Session "${sessionName}" is not ${opts.logicalId}'s managed session name (expected "${expected}") and the daemon has no history mapping it to this node. Reconcile only re-adopts a node's own canonical session; adopting an unmanaged session is not supported; launch the seat with rig seat launch.`,
           };
         }
       }
@@ -307,7 +310,7 @@ export class SessionReconciler {
         return {
           ok: false,
           code: "node_not_found",
-          message: `No persisted node maps to session "${sessionName}". If this seat was never managed, use rig discover + rig bind; reconcile only re-adopts a previously managed seat. You can disambiguate with --rig <rig> --node <logicalId>.`,
+          message: `No persisted node maps to session "${sessionName}". If this seat was never managed, adopting it is not supported (launch it with rig seat launch); reconcile only re-adopts a previously managed seat. You can disambiguate with --rig <rig> --node <logicalId>.`,
         };
       }
       const row = this.db
@@ -330,8 +333,17 @@ export class SessionReconciler {
     }
     const guard = this.tmuxAdapter.deliveryGuard;
     const observedTarget = guard?.target(nodeRow.id);
-    const alive = await this.tmuxAdapter.hasSession(sessionName);
-    if (!alive) {
+    // The classified probe: a host that does not answer is not a session that is gone (OF-177).
+    let presence: SessionPresence;
+    try {
+      presence = await probePresence(this.tmuxAdapter, sessionName);
+    } catch (err) {
+      return { ok: false, code: "reconcile_error", message: `Could not probe the seat host for "${sessionName}": ${err instanceof Error ? err.message : String(err)}. Nothing was changed.` };
+    }
+    if (presence === "unknown") {
+      return { ok: false, code: "reconcile_error", message: `The seat host did not answer, so whether "${sessionName}" is running is not known. It is not read as gone: nothing was changed. Retry once the host is reachable.` };
+    }
+    if (presence === "absent") {
       return {
         ok: false,
         code: "session_not_found",

@@ -58,6 +58,17 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
     expect(tmux().switchClient).toHaveBeenCalledWith("/dev/ttys003", "=dev-impl@seat-rig:0");
   });
 
+  it("409 not_supported_on_host on an hc host (never the 502 of a tmux probe failure), with nothing probed", async () => {
+    seedLiveSeat();
+    Object.defineProperty(setup.tmuxAdapter, "hostKind", { value: "hc", configurable: true });
+    const res = await post("dev-impl@seat-rig");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ ok: false, code: "not_supported_on_host" });
+    expect(tmux().hasSession).not.toHaveBeenCalled();
+    expect(tmux().listClients).not.toHaveBeenCalled();
+    expect(tmux().switchClient).not.toHaveBeenCalled();
+  });
+
   it("404 for an unknown seat", async () => {
     const res = await post("ghost@seat-rig");
     expect(res.status).toBe(404);

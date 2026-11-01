@@ -54,7 +54,14 @@ export function isTerminalAttachment(attachmentType: string | null | undefined):
   return (attachmentType ?? "tmux") === "tmux" || attachmentType === "hc";
 }
 
-/** What a launch writes for the pane it observed: an hc pane id is the terminal's address, and `tmux_pane` stays NULL. */
-export function paneBindingFields(hostKind: "tmux" | "hc" | undefined, pane: string): { attachmentType: "hc"; terminalAddress: string } | { tmuxPane: string } {
-  return hostKind === "hc" ? { attachmentType: "hc", terminalAddress: pane } : { tmuxPane: pane };
+/**
+ * What a launch or a repair writes for a seat's binding on this host. The attachment type follows the HOST every time, whether or not
+ * the pane observation succeeded: a first observation that fails must not leave the column DEFAULT ('tmux') on a seat that lives in hc,
+ * because delivery picks the idempotent hc path by that column. The pane, when one was observed, goes where the host registers it:
+ * an hc pane id is the terminal's address and `tmux_pane` stays NULL.
+ */
+export function paneBindingFields(hostKind: "tmux" | "hc" | undefined, pane: string | null):
+  { attachmentType: "hc"; terminalAddress?: string } | { attachmentType: "tmux"; tmuxPane?: string } {
+  if (hostKind === "hc") return pane === null ? { attachmentType: "hc" } : { attachmentType: "hc", terminalAddress: pane };
+  return pane === null ? { attachmentType: "tmux" } : { attachmentType: "tmux", tmuxPane: pane };
 }

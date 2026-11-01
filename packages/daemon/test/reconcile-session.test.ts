@@ -14,6 +14,7 @@ import type { ExpansionRequest } from "../src/domain/types.js";
 import { convergeOp, SUPPORTED_OP_KINDS, isSupportedOpKind } from "../src/domain/topology-converge.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 /** Fully-instrumented tmux adapter: records every call by method name. */
 function spyTmux(overrides?: Partial<Record<string, unknown>>) {
@@ -24,7 +25,7 @@ function spyTmux(overrides?: Partial<Record<string, unknown>>) {
       return impl(...args);
     });
   const adapter = {
-    hasSession: record("hasSession", async () => true),
+    probeSession: probeSessionFromHasSession, hasSession: record("hasSession", async () => true),
     createSession: record("createSession", async () => ({ ok: true as const })),
     killSession: record("killSession", async () => ({ ok: true as const })),
     sendText: record("sendText", async () => ({ ok: true as const })),
@@ -187,7 +188,7 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
   });
 
   it("session_not_found when no live tmux session has the canonical name (never adopts a ghost)", async () => {
-    const spy = spyTmux({ hasSession: vi.fn(async () => false) });
+    const spy = spyTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) });
     const localDb = createFullTestDb();
     const local = createTestApp(localDb, { tmux: spy.adapter });
     const rig = local.rigRepo.createRig("ghost-rig");
@@ -201,12 +202,14 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
     localDb.close();
   });
 
-  it("node_not_found for a session name the daemon never managed (points at discover/bind)", async () => {
+  it("node_not_found for a session name the daemon never managed (names no removed command)", async () => {
     const result = await setup.sessionReconciler.reconcileSession({ sessionName: "stranger@nowhere" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("node_not_found");
-    expect(result.message).toContain("rig discover");
+    // `rig discover` and `rig bind` were removed with adoption (hc cutover decision 13): advice must not name them.
+    expect(result.message).not.toMatch(/rig (discover|bind)/);
+    expect(result.message).toContain("rig seat launch");
   });
 
   it("IDENTITY BOUNDARY: explicit --rig/--node cannot bind an arbitrary never-managed session (re-key bypass)", async () => {
@@ -228,7 +231,8 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
     if (result.ok) return;
     expect(result.code).toBe("node_mismatch");
     expect(result.message).toContain("dev-impl@bypass-rig"); // points at the canonical name
-    expect(result.message).toContain("rig discover");
+    expect(result.message).not.toMatch(/rig (discover|bind)/);
+    expect(result.message).toContain("rig seat launch");
     // NOTHING mutated: no binding, no session row, no event.
     expect(setup.sessionRegistry.getBindingForNode(node.id)).toBeNull();
     expect(db.prepare("SELECT 1 FROM sessions WHERE node_id = ?").all(node.id)).toHaveLength(0);

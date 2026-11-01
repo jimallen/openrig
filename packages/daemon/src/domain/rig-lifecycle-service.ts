@@ -7,6 +7,7 @@ import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { QueueRepository } from "./queue-repository.js";
 import { findOtherSessionOwner } from "./session-owner.js";
+import { probePresence, type SessionPresence } from "./session-liveness.js";
 
 type ClaimedSessionRow = {
   session_id: string;
@@ -791,7 +792,20 @@ export class RigLifecycleService {
         error: `Fallback destination '${fallbackDestination}' belongs to '${row.logical_id}', which is part of the removal target. No queue or topology changes were made.`,
       };
     }
-    if (!this.tmuxAdapter || !(await this.tmuxAdapter.hasSession(fallbackDestination))) {
+    // The classified probe: a host that does not answer is not a seat that is not running (OF-177). Both refuse (nothing is
+    // changed), but each says what it knows.
+    let presence: SessionPresence = "absent";
+    if (this.tmuxAdapter) {
+      try { presence = await probePresence(this.tmuxAdapter, fallbackDestination); } catch { presence = "unknown"; }
+    }
+    if (presence === "unknown") {
+      return {
+        ok: false,
+        code: "fallback_not_running",
+        error: `Fallback destination '${fallbackDestination}' could not be checked: the seat host did not answer, so whether it is running is not known. No queue or topology changes were made. Retry once the host is reachable.`,
+      };
+    }
+    if (presence === "absent") {
       return {
         ok: false,
         code: "fallback_not_running",

@@ -330,6 +330,56 @@ describe("Rig lifecycle routes", () => {
     });
   });
 
+
+  it("DELETE /api/rigs/:rigId/nodes/:nodeRef refuses, saying it could not check, a fallback on a seat host that does not answer (OF-177)", async () => {
+    const rig = setup.rigRepo.createRig("remove-dark-fallback-rig");
+    const expanded = await setup.rigExpansionService.expand({
+      rigId: rig.id,
+      pod: {
+        id: "infra",
+        label: "Infrastructure",
+        members: [
+          { id: "server", runtime: "terminal", agentRef: "builtin:terminal", profile: "none", cwd: "/tmp" },
+          { id: "fallback", runtime: "terminal", agentRef: "builtin:terminal", profile: "none", cwd: "/tmp" },
+        ],
+        edges: [],
+      },
+    });
+    expect(expanded.ok).toBe(true);
+    if (!expanded.ok) return;
+    const targetSession = expanded.nodes.find((node) => node.logicalId === "infra.server")?.sessionName;
+    const fallbackSession = expanded.nodes.find((node) => node.logicalId === "infra.fallback")?.sessionName;
+    expect(targetSession).toBeTruthy();
+    expect(fallbackSession).toBeTruthy();
+    if (!targetSession || !fallbackSession) return;
+
+    const queueRepo = new QueueRepository(db, setup.eventBus);
+    const qitem = await queueRepo.create({
+      sourceSession: "source@remove-dark-fallback-rig",
+      destinationSession: targetSession,
+      body: "must stay with the target when fallback is absent",
+      nudge: false,
+    });
+    // The collapsed hasSession of this double says "false": only the classified probe tells an outage from absence.
+    Object.assign(setup.tmuxAdapter, { hostKind: "hc" as const, probeSession: async () => ({ state: "transport_unavailable" as const, cause: "hc core not reachable" }) });
+
+    const res = await setup.app.request(
+      `/api/rigs/${rig.id}/nodes/infra.server?fallback=${encodeURIComponent(fallbackSession)}`,
+      { method: "DELETE" },
+    );
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { ok: boolean; code: string; error: string };
+    expect(body).toMatchObject({ ok: false, code: "fallback_not_running" });
+    expect(body.error).toContain("did not answer");
+    expect(body.error).not.toContain("is not a currently running seat");
+    expect(setup.rigRepo.getRig(rig.id)?.nodes.map((node) => node.logicalId).sort()).toEqual(["infra.fallback", "infra.server"]);
+    expect(db.prepare("SELECT destination_session, state FROM queue_items WHERE qitem_id = ?").get(qitem.qitemId)).toEqual({
+      destination_session: targetSession,
+      state: "pending",
+    });
+  });
+
   it("DELETE /api/rigs/:rigId/nodes/:nodeRef refuses the removed seat as its own fallback", async () => {
     const rig = setup.rigRepo.createRig("remove-self-fallback-rig");
     const expanded = await setup.rigExpansionService.expand({
