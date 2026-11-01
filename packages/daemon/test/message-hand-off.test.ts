@@ -119,9 +119,21 @@ describe("SessionTransport and the pump", () => {
     });
 
     it("the pump's own attempt goes through: it is not handed back to itself", async () => {
-      const result = await transport.send(SEAT, "hello", { deliveryId: "m1", pumpAttempt: true, ownsOutboxRow: true });
+      const result = await transport.send(SEAT, "hello", { deliveryId: "m1", pumpAttempt: true });
       expect(result.reason).not.toBe("handed_to_pump");
       expect(writes.join("")).toContain("hello");
+    });
+
+    it("a row its caller settles stays with that caller", async () => {
+      const result = await transport.send(SEAT, "hello", { deliveryId: "m1", ownsOutboxRow: true });
+      expect(result.reason).not.toBe("handed_to_pump");
+      expect(writes.join("")).toContain("hello");
+    });
+
+    it("a seat with a gate and no hop is not the pump's: nothing could carry it", () => {
+      const { store, pump } = built;
+      const gate: SeatGate = { version: 1, lookup: async () => ({ kind: "not_seen" }) };
+      expect(new PumpHandOff(store, pump, { gateFor: () => gate, hopFor: () => null }).takes(SEAT)).toBe(false);
     });
 
     it("what is not a message stays direct: a submit-only Enter, and a person's answer to a prompt", async () => {
