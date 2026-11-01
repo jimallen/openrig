@@ -26,6 +26,21 @@ import { findOtherSessionOwner } from "./session-owner.js";
 import { probePresence } from "./session-liveness.js";
 import { getSeatCwdFault, handoverCwdRefusalMessage, HANDOVER_CWD_REFUSAL_GUIDANCE, type SeatCwdFault } from "./cwd-resolution.js";
 import { inertPacketText } from "./packet-text.js";
+import { SEAT_MESSAGE_ID_PREFIX } from "./outbox-handler.js";
+import { PUMP_PAUSE_RECHECK_MS } from "./seat-messaging/message-pump.js";
+import { messageId } from "./seat-messaging/ports.js";
+
+/**
+ * How long a handover waits for the gate to record its packet. Under the pump's pause recheck on purpose: a typed attempt from the pump's
+ * timer waits for the handover's lifecycle lease, so one that started during the wait would hold the seat's pass until the lease ends, and
+ * then type a packet the handover has already cancelled. So a gated seat gets the one attempt `accept` starts, under this lease.
+ */
+export const HANDOVER_PACKET_WAIT_MS = PUMP_PAUSE_RECHECK_MS - 3_000;
+const HANDOVER_PACKET_SENDER = "handover@system";
+
+type PacketKind = "restore" | "rebuild";
+/** `successor` names the message; `current` is what the pump may check it against. See `deliverThroughPump`. */
+interface PacketOccupants { successor: string | null; current: string | null }
 
 /** A bounded labeled-from-record recap of the predecessor's last exchanges + the record path,
  *  resolved from the predecessor's provider transcript (claude transcript_path / codex rollout_path).
@@ -162,6 +177,8 @@ interface SeatHandoverServiceDeps {
   readinessTimeoutMs?: number;
   /** Injectable sleep for the successor readiness backoff (tests). */
   sleep?: (ms: number) => Promise<void>;
+  /** How long a packet may take to reach the seat's gate (tests shorten it). */
+  packetWaitMs?: number;
   /**
    * OPR.0.4.6.02 S1 — the SHARED tmux option-defaults applier, threaded into
    * the successor launcher so a FRESH handover successor gets the same
@@ -234,6 +251,7 @@ export class SeatHandoverService {
   private rebuildArtifactExists: (path: string) => boolean;
   /** Injectable sleep (tests): also carries the shared paste-then-submit settle in deliverRestorePacket. */
   private sleep: (ms: number) => Promise<void>;
+  private packetWaitMs: number;
   private appliedLaunchObservations: AppliedLaunchObservationStore;
   private now: () => Date;
   private runtimeAdapters: Record<string, RuntimeAdapter | undefined>;
@@ -256,6 +274,7 @@ export class SeatHandoverService {
     this.rebuildPrimingResolver = deps.rebuildPrimingResolver ?? null;
     this.rebuildArtifactExists = deps.rebuildArtifactExists ?? existsSync;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.packetWaitMs = deps.packetWaitMs ?? HANDOVER_PACKET_WAIT_MS;
     this.appliedLaunchObservations = new AppliedLaunchObservationStore(deps.db);
     this.now = deps.now ?? (() => new Date());
     this.runtimeAdapters = deps.runtimeAdapters ?? {};
@@ -358,7 +377,15 @@ export class SeatHandoverService {
     const { status: statusResult, node, latestSession, forkSource } = occupant;
     const guard = this.tmuxAdapter.deliveryGuard;
     if (guard && !guard.ownsLifecycle(node.id)) {
-      return guard.lifecycle([node.id], () => this.handover(input));
+      // Taken before the lease: nothing queued reaches the seat ahead of its packet, and no pump pass of a queued message sits waiting for this lease
+      // with the seat's pass in flight, which would keep the packet from going at all.
+      const carriesPacket = parsed.source.mode === "fresh" || parsed.source.mode === "rebuild";
+      const release = carriesPacket ? this.tmuxAdapter.messageHandOff?.holdContentLane(latestSession.session_name) : undefined;
+      try {
+        return await guard.lifecycle([node.id], () => this.handover(input));
+      } finally {
+        release?.();
+      }
     }
 
     const operator = input.operator?.trim() || null;
@@ -474,7 +501,7 @@ export class SeatHandoverService {
       // B16 — the recap was resolved at step 1b (pre-launch); an unavailable verdict rides the
       // packet as a NAMED line, never a silent omission.
       const resolved = "recap" in predecessorRecapResolution ? predecessorRecapResolution : null;
-      const delivered = await this.deliverRestorePacket(launch.tmuxSession, {
+      const delivered = await this.deliverRestorePacket(launch.tmuxSession, { successor: occupantGeneration, current: predecessorGeneration ?? null }, {
         seatRef: input.seatRef,
         reason,
         departingSession: latestSession.session_name,
@@ -545,7 +572,7 @@ export class SeatHandoverService {
         emptyChainReason = "artifacts" in chain ? "the durable chain resolved to zero artifacts" : chain.emptyReason;
       }
       sourceOutcome = { mode: "rebuild", primedArtifacts, gaps, ...(emptyChainReason ? { emptyChainReason } : {}) };
-      const delivered = await this.deliverRebuildPrimingPacket(launch.tmuxSession, {
+      const delivered = await this.deliverRebuildPrimingPacket(launch.tmuxSession, { successor: occupantGeneration, current: predecessorGeneration ?? null }, {
         seatRef: input.seatRef,
         reason,
         departingSession: latestSession.session_name,
@@ -808,6 +835,7 @@ export class SeatHandoverService {
    *  gap and an empty chain out loud — never a silent partial priming. */
   private async deliverRebuildPrimingPacket(
     successorSession: string,
+    occupants: PacketOccupants,
     info: {
       seatRef: string;
       reason: string;
@@ -832,17 +860,7 @@ export class SeatHandoverService {
     if (info.emptyChainReason) {
       lines.push("", `The durable chain is EMPTY: ${info.emptyChainReason}. You start from seat identity alone — say so in your first status report.`);
     }
-    const sent = await this.tmuxAdapter.sendText(successorSession, inertPacketText(lines.join("\n")));
-    if (!sent.ok) {
-      return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
-    }
-    // Same spike-proven 200ms settle as the restore packet (staged-not-consumed class).
-    await this.sleep(200);
-    const submit = await this.tmuxAdapter.sendKeys(successorSession, ["Enter"]);
-    if (!submit.ok) {
-      return { ok: false, message: (submit as { message?: string }).message ?? "submit failed" };
-    }
-    return { ok: true };
+    return this.deliverPacket(successorSession, inertPacketText(lines.join("\n")), "rebuild", occupants);
   }
 
   /** Deliver the captured restore packet to a fresh successor via the shipped
@@ -850,6 +868,7 @@ export class SeatHandoverService {
    *  orchestrator's initial-prompt delivery. */
   private async deliverRestorePacket(
     successorSession: string,
+    occupants: PacketOccupants,
     info: {
       seatRef: string;
       reason: string;
@@ -865,7 +884,41 @@ export class SeatHandoverService {
     },
   ): Promise<{ ok: true } | { ok: false; message: string }> {
     const packet = buildRestorePacket({ ...info, handoverAt: this.now().toISOString() });
-    const sent = await this.tmuxAdapter.sendText(successorSession, inertPacketText(packet));
+    return this.deliverPacket(successorSession, inertPacketText(packet), "restore", occupants);
+  }
+
+  /** A seat the pump serves takes its packet through the pump; any other keeps the paste until S5. */
+  private deliverPacket(seat: string, text: string, kind: PacketKind, occupants: PacketOccupants): Promise<{ ok: true } | { ok: false; message: string }> {
+    return this.tmuxAdapter.messageHandOff?.takes(seat) && occupants.successor !== null
+      ? this.deliverThroughPump(seat, text, kind, occupants.successor, occupants.current)
+      : this.pasteAndSubmit(seat, text);
+  }
+
+  /**
+   * The handover goes on only once the seat's gate has recorded the packet, so `ok` never means Enter was accepted. Anything else unwinds the
+   * candidate, and the row ends here with it, so no later attempt reaches the unwound seat.
+   *
+   * The id names the successor's generation, so this packet can never be another occupant's. The row's own generation is the retiring tenure's:
+   * the successor has no tenure until commit, and the pump ends lifecycle text at once when a row's generation is not the seat's latest. So a row
+   * still open after commit, which no live path leaves, ends there too. A daemon that dies during the wait leaves the row open, and the pump
+   * delivers it to the process in the pane, which is the successor the packet was written for, unless a later tenure ended it first.
+   */
+  private async deliverThroughPump(seat: string, text: string, kind: PacketKind, successor: string, current: string | null): Promise<{ ok: true } | { ok: false; message: string }> {
+    const handOff = this.tmuxAdapter.messageHandOff!;
+    const id = messageId(`${SEAT_MESSAGE_ID_PREFIX}handover-${successor}-${kind}`);
+    const accepted = handOff.accept({
+      id, seat, sender: HANDOVER_PACKET_SENDER, body: text, messageClass: "lifecycle", occupantGeneration: current, identityProvenance: "transport:v1",
+    });
+    if (accepted.kind === "conflict") return { ok: false, message: `message ${id} already names other text` };
+    if (accepted.kind === "ended") return accepted.received ? { ok: true } : { ok: false, message: `message ${id} ended without arriving` };
+    const waited = await handOff.awaitReceived(id, this.packetWaitMs);
+    // A record can land between the wait's last read and this cancel; a cancel that finds the row closed asks again.
+    const outcome = waited === "open" && !handOff.cancel(id, "the handover stopped waiting for this packet") ? await handOff.awaitReceived(id, 0) : waited;
+    return outcome === "received" ? { ok: true } : { ok: false, message: `the seat's gate did not record the packet within ${this.packetWaitMs} ms` };
+  }
+
+  private async pasteAndSubmit(successorSession: string, text: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const sent = await this.tmuxAdapter.sendText(successorSession, text);
     if (!sent.ok) {
       return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
     }
