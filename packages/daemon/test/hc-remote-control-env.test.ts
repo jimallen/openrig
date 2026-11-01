@@ -97,8 +97,49 @@ describe("warning about a name the seat kept", () => {
   it("has nothing to say about a value that does not turn Remote Control off", () => {
     expect(seatEnvironment({ ANTHROPIC_BASE_URL: "https://api.anthropic.com", DISABLE_GROWTHBOOK: "" }, {}, REMOTE_CONTROL).warnings).toEqual([]);
   });
-  it("never warns a daemon name the wrapper removed", () => {
-    expect(seatEnvironment({}, ALL_SET, REMOTE_CONTROL).warnings).toEqual([]);
+  it("never warns about the three daemon names the wrapper removes that do not depend on a policy", () => {
+    const { warnings } = seatEnvironment({}, { ...ALL_SET, DO_NOT_TRACK: "", DISABLE_TELEMETRY: "" }, REMOTE_CONTROL);
+    expect(warnings).toEqual([]);
+  });
+});
+
+// Jim, 2026-11-01: the wrapper keeps clearing DO_NOT_TRACK and DISABLE_TELEMETRY for a Remote Control seat, but a person who set one
+// in the environment the seat would have inherited is told by name that the seat no longer has it. A value is never repeated.
+describe("warning about a name the wrapper cleared", () => {
+  const cleared = (daemon: Record<string, string>, seat: Record<string, string> = {}, hints: { remoteControl?: boolean } = REMOTE_CONTROL) =>
+    seatEnvironment(seat, daemon, hints).warnings;
+  it("names DO_NOT_TRACK when the daemon had it, and still removes it", () => {
+    const result = seatEnvironment({}, { DO_NOT_TRACK: "tok-needle" }, REMOTE_CONTROL);
+    expect(result.env).not.toHaveProperty("DO_NOT_TRACK");
+    expect(result.unset).toContain("DO_NOT_TRACK");
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("DO_NOT_TRACK");
+    expect(result.warnings[0]).not.toContain("DISABLE_TELEMETRY");
+    expect(JSON.stringify(result.warnings)).not.toContain("needle");
+  });
+  it("names DISABLE_TELEMETRY alone, and both together in one warning", () => {
+    const one = cleared({ DISABLE_TELEMETRY: "1" });
+    expect(one).toHaveLength(1);
+    expect(one[0]).toContain("DISABLE_TELEMETRY");
+    expect(one[0]).not.toContain("DO_NOT_TRACK");
+    const both = cleared({ DISABLE_TELEMETRY: "1", DO_NOT_TRACK: "1" });
+    expect(both).toHaveLength(1);
+    expect(both[0]).toContain("DISABLE_TELEMETRY");
+    expect(both[0]).toContain("DO_NOT_TRACK");
+  });
+  it("says nothing of the three names that block Remote Control outright (the daemon's CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK, ANTHROPIC_BASE_URL)", () => {
+    expect(cleared({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_GROWTHBOOK: "1", ANTHROPIC_BASE_URL: "https://needle-host.example" })).toEqual([]);
+  });
+  it("says nothing when the name was empty, or the seat set it itself (the kept-name warning speaks then, once)", () => {
+    expect(cleared({ DO_NOT_TRACK: "", DISABLE_TELEMETRY: "" })).toEqual([]);
+    const kept = cleared({ DO_NOT_TRACK: "daemon" }, { DO_NOT_TRACK: "1" });
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toContain("Trusted Devices");
+    expect(kept[0]).toContain("itself");
+  });
+  it("says nothing for a seat that did not declare Remote Control, which keeps the names", () => {
+    expect(cleared({ DO_NOT_TRACK: "1", DISABLE_TELEMETRY: "1" }, {}, {})).toEqual([]);
+    expect(cleared({ DO_NOT_TRACK: "1", DISABLE_TELEMETRY: "1" }, {}, { remoteControl: false })).toEqual([]);
   });
 });
 
@@ -110,7 +151,9 @@ describe("HcHost.createSession", () => {
   };
   it("removes the names for a Remote Control seat, stated env included", async () => {
     const { result, run } = await launch(REMOTE_CONTROL);
-    expect(result).toEqual({ ok: true });
+    expect(result.ok).toBe(true);
+    expect(warningsOf(result)).toHaveLength(1);  // the daemon's DISABLE_TELEMETRY was cleared, and says so
+    expect(warningsOf(result)[0]).toContain("DISABLE_TELEMETRY");
     expect(unsetIn(run)).toEqual(expect.arrayContaining([...REMOTE_CONTROL_ENV_NAMES]));
     expect(run.env).not.toHaveProperty("DISABLE_TELEMETRY");
   });
@@ -122,8 +165,8 @@ describe("HcHost.createSession", () => {
   it("launches, and warns, when the seat kept a blocking name", async () => {
     const { result } = await launch(REMOTE_CONTROL, { DISABLE_GROWTHBOOK: "1" });
     expect(result.ok).toBe(true);
-    expect(warningsOf(result)).toHaveLength(1);
-    expect(warningsOf(result)[0]).toContain("DISABLE_GROWTHBOOK");
+    expect(warningsOf(result)).toHaveLength(2);  // the kept name, and the daemon's cleared DISABLE_TELEMETRY
+    expect(warningsOf(result).some((w) => w.includes("DISABLE_GROWTHBOOK"))).toBe(true);
   });
 });
 
@@ -131,7 +174,7 @@ describe("HcLifecycle.respawnPane", () => {
   const daemonEnv = { SHELL: "/bin/sh", DISABLE_TELEMETRY: "1" };
   it("removes the names for a Remote Control successor, stated env included", async () => {
     const client = new FakeClient();
-    await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("qa@rig", "/bin/sh", { cwd: "/w", env: {}, remoteControl: true })).resolves.toEqual({ ok: true });
+    await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("qa@rig", "/bin/sh", { cwd: "/w", env: {}, remoteControl: true })).resolves.toMatchObject({ ok: true, warnings: [expect.stringContaining("DISABLE_TELEMETRY")] });
     expect(unsetIn(client.runs[0]!)).toEqual(expect.arrayContaining([...REMOTE_CONTROL_ENV_NAMES]));
     expect(client.runs[0]!.env).not.toHaveProperty("DISABLE_TELEMETRY");
   });
@@ -144,13 +187,14 @@ describe("HcLifecycle.respawnPane", () => {
   it("warns by name for what the seat kept, alongside a prune warning", async () => {
     const result = await new HcLifecycle(new FakeClient(true), { daemonEnv }).respawnPane("qa@rig", "/bin/sh", { env: { DISABLE_GROWTHBOOK: "1" }, remoteControl: true });
     expect(result.ok).toBe(true);
-    expect(warningsOf(result)).toHaveLength(2);
+    expect(warningsOf(result)).toHaveLength(3);
     expect(warningsOf(result).some((w) => w.includes("DISABLE_GROWTHBOOK"))).toBe(true);
+    expect(warningsOf(result).some((w) => w.includes("DISABLE_TELEMETRY"))).toBe(true);
     expect(warningsOf(result).some((w) => w.includes("older finished terminals"))).toBe(true);
   });
   it("warns with nothing to prune, too", async () => {
     const result = await new HcLifecycle(new FakeClient(), { daemonEnv }).respawnPane("qa@rig", "/bin/sh", { env: { DISABLE_GROWTHBOOK: "1" }, remoteControl: true });
-    expect(warningsOf(result)).toHaveLength(1);
+    expect(warningsOf(result)).toHaveLength(2);
   });
 });
 

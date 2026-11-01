@@ -284,7 +284,7 @@ describe("rig setup", () => {
     expect(result.ready).toBe(false);
   });
 
-  it("fails setup when hc is missing, with no install attempted and no tmux command run", async () => {
+  it("fails setup when hc is missing and the pinned install does not leave it, with no tmux command run", async () => {
     const seen: string[] = [];
     const base = makeDeps();
     const result = await runSetup(makeDeps({ exec: (cmd: string) => {
@@ -295,10 +295,10 @@ describe("rig setup", () => {
 
     const hc = result.steps.find((s) => s.id === "hc_install");
     expect(hc?.status).toBe("fail");
-    expect(hc?.message).toBe("hc not found.");
+    expect(hc?.message).toContain("could not be verified");
     expect(hc?.fixHint).toContain(HC_PINNED_VERSION);
     expect(result.ready).toBe(false);
-    expect(seen.some((cmd) => /install hc|brew install/.test(cmd))).toBe(false);
+    expect(seen.some((cmd) => /brew install/.test(cmd))).toBe(false);
     expect(seen.some((cmd) => cmd.startsWith("tmux"))).toBe(false);
   });
 

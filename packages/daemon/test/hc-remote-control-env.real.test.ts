@@ -27,7 +27,7 @@ describe.skipIf(!HC)("the Remote Control names on a private hc core", () => {
   }
 
   it("a plain seat is unchanged: it gets the core's names and the daemon's", async () => {
-    await expect(host.createSession("plain@rig", core.root, {})).resolves.toEqual({ ok: true });
+    await expect(host.createSession("plain@rig", core.root, {})).resolves.toEqual({ ok: true });  // no warning for a seat that did not declare it
     const env = await seen("plain@rig");
     expect(env.get("DISABLE_GROWTHBOOK")).toBe("core");
     expect(env.get("DO_NOT_TRACK")).toBe("core");
@@ -36,7 +36,14 @@ describe.skipIf(!HC)("the Remote Control names on a private hc core", () => {
   });
 
   it("a Remote Control seat sees none of them, and keeps everything else the core gives", async () => {
-    await expect(host.createSession("rc@rig", core.root, {}, { remoteControl: true })).resolves.toEqual({ ok: true });
+    const result = await host.createSession("rc@rig", core.root, {}, { remoteControl: true });
+    if (!result.ok) throw new Error(result.code);
+    // The daemon's own DISABLE_TELEMETRY was cleared, and the person is told by name (never the value). The core's DO_NOT_TRACK is
+    // cleared too, but the daemon cannot read a core's env, so it cannot be named: only what the daemon itself holds is warned about.
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings?.[0]).toContain("DISABLE_TELEMETRY");
+    expect(result.warnings?.[0]).not.toContain("DO_NOT_TRACK");
+    expect(JSON.stringify(result.warnings)).not.toContain('"daemon"');
     const env = await seen("rc@rig");
     for (const name of ["DISABLE_GROWTHBOOK", "DO_NOT_TRACK", "ANTHROPIC_BASE_URL", "DISABLE_TELEMETRY"]) expect(env.has(name), name).toBe(false);
     expect(env.get("CORE_ONLY")).toBe("core");
@@ -46,9 +53,10 @@ describe.skipIf(!HC)("the Remote Control names on a private hc core", () => {
   it("a Remote Control seat that set one keeps its own value, and is warned by name", async () => {
     const result = await host.createSession("own@rig", core.root, { DISABLE_GROWTHBOOK: "seat-value" }, { remoteControl: true });
     if (!result.ok) throw new Error(result.code);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings?.[0]).toContain("DISABLE_GROWTHBOOK");
-    expect(result.warnings?.[0]).not.toContain("seat-value");
+    expect(result.warnings).toHaveLength(2);  // the name it kept, and the daemon's DISABLE_TELEMETRY that was cleared
+    expect(result.warnings?.some((w) => w.includes("DISABLE_GROWTHBOOK"))).toBe(true);
+    expect(result.warnings?.some((w) => w.includes("DISABLE_TELEMETRY"))).toBe(true);
+    expect(JSON.stringify(result.warnings)).not.toContain("seat-value");
     const env = await seen("own@rig");
     expect(env.get("DISABLE_GROWTHBOOK")).toBe("seat-value");
     expect(env.has("DO_NOT_TRACK")).toBe(false);
