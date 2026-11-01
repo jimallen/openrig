@@ -144,6 +144,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "recovery.post_restart_prompt",
       // Native comms step 3: inbox-socket delivery to Claude seats (default off).
       "transport.native_claude",
+      "transport.message_pump",
       // V1 attempt-3 Phase 4 — Advisor/Operator placeholders.
       "agents.advisor_session", "agents.operator_session",
       // V0.3.1 slice 05 kernel-rig-as-default — operator seat name
