@@ -45,7 +45,7 @@ export interface PostRestartDeps {
   sessionOf: (nodeId: string) => PostRestartSession | null;
   /** The rig's name, for the prompt. */
   rigNameOf: (rigId: string) => string | null;
-  send: (sessionName: string, text: string, opts: { deliveryId: string; actorSession: string; auditPointer: string; waitForIdleMs: number }) => Promise<PostRestartSendResult>;
+  send: (sessionName: string, text: string, opts: { deliveryId: string; actorSession: string; auditPointer: string; waitForIdleMs: number; keepRowOpenOnRefusal: boolean; freezeBody: boolean }) => Promise<PostRestartSendResult>;
   outbox: {
     getById: (outboxId: string) => OutboxEntry | null;
     record: (input: OutboxRecordInput) => OutboxEntry;
@@ -123,9 +123,16 @@ export class PostRestartNotifier {
     return Promise.all(nodes.map((node) => this.deliverOne(event.seq, node.nodeId, rigName, restoredAtMs)));
   }
 
+  /** The row commits before the first attempt, so a row alone no longer means the prompt was sent: an open one (a refused attempt
+   *  this loop retries, or one a crash left) is still to be delivered. */
+  private settled(deliveryId: string): boolean {
+    const row = this.deps.outbox.getById(deliveryId);
+    return row !== null && row.deliveryState !== "pending";
+  }
+
   private async deliverOne(restoreSeq: number, nodeId: string, rigName: string, restoredAtMs: number | null): Promise<PostRestartOutcome> {
     const deliveryId = postRestartDeliveryId(restoreSeq, nodeId);
-    if (this.inFlight.has(deliveryId) || this.deps.outbox.getById(deliveryId)) {
+    if (this.inFlight.has(deliveryId) || this.settled(deliveryId)) {
       return { nodeId, sessionName: null, outcome: "already_sent", attempts: 0 };
     }
     this.inFlight.add(deliveryId);
@@ -138,7 +145,7 @@ export class PostRestartNotifier {
       let text = "";
       let lastLogged: string | null = null;
       while (this.now().getTime() - started < this.windowMs) {
-        if (this.deps.outbox.getById(deliveryId)) return { nodeId, sessionName, outcome: "already_sent", attempts };
+        if (this.settled(deliveryId)) return { nodeId, sessionName, outcome: "already_sent", attempts };
         const session = this.deps.sessionOf(nodeId);
         sessionName = session?.name ?? null;
         if (session && restoredAtMs !== null && Date.parse(session.startedAt) > restoredAtMs) {
@@ -149,7 +156,7 @@ export class PostRestartNotifier {
         if (session) {
           text = postRestartText({ rigName, restartedAt: session.startedAt });
           attempts++;
-          last = await this.deps.send(session.name, text, { deliveryId, actorSession: POST_RESTART_SENDER, auditPointer: deliveryId, waitForIdleMs: this.waitForIdleMs });
+          last = await this.deps.send(session.name, text, { deliveryId, actorSession: POST_RESTART_SENDER, auditPointer: deliveryId, waitForIdleMs: this.waitForIdleMs, keepRowOpenOnRefusal: true, freezeBody: true });
           if (last.path === "native") return { nodeId, sessionName, outcome: "native_written", attempts };
           if (last.outcome === "retained") return { nodeId, sessionName, outcome: "retained", attempts };
           if (last.ok) {

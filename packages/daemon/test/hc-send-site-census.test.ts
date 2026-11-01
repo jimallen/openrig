@@ -1,7 +1,6 @@
-// hc cutover: every place the daemon sends text to a seat through SessionTransport, and what each does when the send ends
-// unconfirmed on an hc seat (`waiting_on_person`, `delivery_outcome_unknown`: the core may still type it, and a core restart while it
-// holds it loses it). The rule: every such send leaves an `indeterminate` row, the same one /send writes, which the sweep settles and
-// `rig health` lists. A site not in this table fails the test until it is classified: a new sender must say how it meets the rule.
+// Seat Messaging S1: every place the daemon sends text to a seat, how its row commits before the write (invariant 1) and what id each
+// attempt carries (invariant 2). An unconfirmed send on an hc seat settles its row `indeterminate`, which the sweep settles and `rig
+// health` lists. A site not in these tables fails the test until it is classified: a new sender must say how it meets the rules.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,20 +11,30 @@ const SRC = new URL("../src/", import.meta.url).pathname;
 const SEND_CALL = /\b(?:session)?[tT]ransport!?\.(?:send|broadcast)\(|this\.deps\.send\(session\.name|this\.send\(session\.sessionName/g;
 
 type Class =
-  | "route-owns-row"          // the route writes the row after the send (ownsOutboxRow: true)
-  | "transport-writes-row"    // no row of its own: SessionTransport records the unconfirmed send (recordUnconfirmedHcSend)
-  | "row-exists-first"        // a row exists before the send (queue wake, committed ids) or under the delivery id
-  | "caller-owns-row"         // the caller records the row itself (post-restart prompt, native fallback)
-  | "typed-nothing";          // no text is typed (an Enter-only retry), so nothing can be lost
+  | "transport-commits-row"   // SessionTransport.send commits the row before the attempt and settles it after
+  | "row-exists-first"        // a row exists before the send (queue wake, the native fallback's failed-over rows)
+  | "typed-nothing";          // no text is typed (an Enter-only retry), so there is no message
 
-const SITES: Array<{ file: string; calls: number; class: Class; note: string }> = [
-  { file: "routes/transport.ts", calls: 2, class: "route-owns-row", note: "/send and /broadcast record `indeterminate` themselves, as before" },
-  { file: "startup.ts", calls: 6, class: "transport-writes-row", note: "sendVerify probe, post-restart wiring (its own row, idempotent under the delivery id), native fallback (ownsOutboxRow), native notice, watchdog (stable delivery id), model monitor (stable delivery id)" },
-  { file: "domain/startup-orchestrator.ts", calls: 1, class: "typed-nothing", note: "submit-only Enter, empty text" },
-  { file: "domain/claude-compaction-enforcer.ts", calls: 5, class: "transport-writes-row", note: "turn boundary, restore, compliance (the stages that advance on an unconfirmed send), prep, /compact" },
-  { file: "domain/session-transport.ts", calls: 1, class: "transport-writes-row", note: "broadcast's per-recipient send; its route passes ownsOutboxRow" },
-  { file: "domain/post-restart-notifier.ts", calls: 1, class: "caller-owns-row", note: "records the row under its fixed delivery id (the transport's write finds it)" },
-  { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", note: "wake intents: committed ids, or a delivery id whose row exists" },
+const SITES: Array<{ file: string; calls: number; class: Class; id: string; note: string }> = [
+  { file: "routes/transport.ts", calls: 2, class: "transport-commits-row", id: "caller's (`rig send --id`), else minted once per request; a fan-out's is `<id>:<seat>`", note: "/send and /broadcast" },
+  { file: "startup.ts", calls: 6, class: "transport-commits-row", id: "sendVerify probe, native notice: minted, one attempt. post-restart: post-restart-<seq>-<node>. watchdog: guard-watchdog-<occurrence>. model monitor: guard-model-<occurrence>-<target>. native fallback: row-exists-first, its rows' ids", note: "sendVerify probe, post-restart wiring, native fallback (ownsOutboxRow), native notice, watchdog, model monitor" },
+  { file: "domain/startup-orchestrator.ts", calls: 1, class: "typed-nothing", id: "none: submit-only, the text's row is the carried one", note: "submit-only Enter, empty text" },
+  { file: "domain/claude-compaction-enforcer.ts", calls: 5, class: "transport-commits-row", id: "seat-msg-compaction-<attempt>-<prep|compact|turn_boundary|restore_prompt|compliance_prompt>", note: "the three post-compact stages, prep, /compact (a Command: no message state, the enforcer keeps its retry)" },
+  { file: "domain/session-transport.ts", calls: 1, class: "transport-commits-row", id: "<id>:<seat>, or minted per recipient", note: "broadcast's per-recipient send" },
+  { file: "domain/post-restart-notifier.ts", calls: 1, class: "transport-commits-row", id: "post-restart-<seq>-<node>; the row stays open between its own retries", note: "the wiring in startup.ts" },
+  { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id" },
+];
+
+/** Text written past SessionTransport. Not S1's (Jim, via the lead, 2026-11-01): these 8 paths move in S4 and keep their own loops until
+ *  then, with no row and no stable id. Census counts `.sendText(` in the file. */
+const DIRECT_TEXT: Array<{ file: string; kinds: string[]; sendText: number; stage: "S4" }> = [
+  { file: "domain/seat-handover-service.ts", kinds: ["handover-rebuild", "handover-restore"], sendText: 2, stage: "S4" },
+  { file: "domain/startup-orchestrator.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "domain/resume-metadata-refresher.ts", kinds: ["resume-probe"], sendText: 1, stage: "S4" },
+  { file: "adapters/claude-code-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "adapters/codex-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "adapters/pi-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "adapters/stub-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
 ];
 
 function sourceFiles(dir: string): string[] {
@@ -54,19 +63,46 @@ describe("every daemon send into SessionTransport is classified", () => {
 
   it("every class is one the rule names", () => {
     const classes = new Set(SITES.map((s) => s.class));
-    expect([...classes].sort()).toEqual(["caller-owns-row", "route-owns-row", "row-exists-first", "transport-writes-row", "typed-nothing"]);
+    expect([...classes].sort()).toEqual(["row-exists-first", "transport-commits-row", "typed-nothing"]);
   });
 
-  it("only the sites that really record a row themselves say ownsOutboxRow: the two routes and the native fallback, and no other sender", () => {
+  it("only the native fallback says ownsOutboxRow: its rows exist, and the sweeper settles them", () => {
     const owns = new Map<string, number>();
     for (const file of sourceFiles(SRC)) {
       const n = (readFileSync(file, "utf8").match(/ownsOutboxRow: true/g) ?? []).length;
       if (n > 0) owns.set(relative(SRC, file), n);
     }
-    // The enforcer, watchdog, model monitor, sendVerify and the rest must NOT: their unconfirmed sends are the transport's to record.
-    expect([...owns.entries()].sort()).toEqual([["routes/transport.ts", 2], ["startup.ts", 1]]);
+    expect([...owns.entries()].sort()).toEqual([["startup.ts", 1]]);
     const startup = readFileSync(join(SRC, "startup.ts"), "utf8");
     expect(startup).toMatch(/send: \(f\) => sessionTransport\.send\(f\.sessionName, f\.body, \{ forceTmux: true, ownsOutboxRow: true/);
+  });
+
+  it("the 8 direct text paths are the classified ones, each stays S4's, and none has taken a row yet", () => {
+    expect(DIRECT_TEXT.reduce((a, d) => a + d.kinds.length, 0)).toBe(8); // handover 2, orchestrator 1, adapters 4, probe 1
+    for (const site of DIRECT_TEXT) {
+      const source = readFileSync(join(SRC, site.file), "utf8");
+      expect((source.match(/\.sendText\(/g) ?? []).length, site.file).toBe(site.sendText);
+      expect(site.stage).toBe("S4");
+      expect(source, site.file).not.toContain("seat-messaging/message-ledger");
+    }
+  });
+
+  it("no other daemon file writes text to a seat past the transport (positive control: the population is the S4 sites plus the implementations)", () => {
+    const implementations = new Set(["adapters/tmux.ts", "adapters/hc-adapter.ts", "adapters/hc-input.ts", "domain/session-transport.ts", "routes/terminal-ws.ts", "terminal/TerminalSessionBroker.ts"]);
+    const writers = sourceFiles(SRC).map((f) => relative(SRC, f)).filter((f) => /\.sendText\(/.test(readFileSync(join(SRC, f), "utf8")));
+    expect(writers.filter((f) => !implementations.has(f)).sort()).toEqual(DIRECT_TEXT.map((d) => d.file).sort());
+  });
+
+  it("startup persists the enforcer's stages and binds a watchdog fire to its occupant", () => {
+    const startup = readFileSync(join(SRC, "startup.ts"), "utf8");
+    expect(startup).toContain("stageStore: new CompactionStageStore(db)");
+    // A watchdog fire is bound to its occupant, so the generation gate can hold at attempt time, later than fire (design-delivery-s4 N5).
+    expect(startup).toMatch(/actorSession: "watchdog@system"[^\n]*occupantGeneration: sessionRegistry\.currentOccupantGenerationForSession\(targetSession\)/);
+  });
+
+  it("every retrying caller freezes its body, so a rebuilt stamp is not an identity conflict", () => {
+    const files: Array<[string, number]> = [["startup.ts", 2], ["domain/queue-repository.ts", 1], ["domain/post-restart-notifier.ts", 1], ["domain/claude-compaction-enforcer.ts", 3]];
+    for (const [file, n] of files) expect((readFileSync(join(SRC, file), "utf8").match(/freezeBody: true/g) ?? []).length, file).toBe(n);
   });
 
   it("the daemon's sweep timer gives the sweep its cursor, so rows that never settle cannot starve newer ones (QA N5)", () => {

@@ -231,7 +231,7 @@ describe("transport routes", () => {
   // The failed single send never reaches the auto-record (the route returns on !result.ok first), so
   // it leaves NO row. Broadcast records a `failed` row for a failed recipient; the single path does
   // not, and OF-74 deliberately does not change that (see PR scope note). Pinned so a change is seen.
-  it("OF-74 — a FAILED single send (session missing) records no outbox row and never a delivered one", async () => {
+  it("OF-74 — a FAILED single send (session missing) leaves its row failed, never a delivered one", async () => {
     seedRig();
     const transport = new SessionTransport({
       db, rigRepo, sessionRegistry,
@@ -248,7 +248,7 @@ describe("transport routes", () => {
       body: JSON.stringify({ session: "dev-impl@my-rig", text: "nobody home" }),
     });
     expect(res.status).toBe(404);
-    expect(outboxRows()).toHaveLength(0);
+    expect(outboxRows().map((row) => row.delivery_state)).toEqual(["failed"]);
   });
 
   // OF-74 N2 — a submit-only send types no text (it presses Enter onto already-staged text), so the
@@ -358,7 +358,7 @@ describe("transport routes", () => {
     expect(rows[0]!["sender_session"]).not.toContain("mallory"); // body DISCARDED, not recorded
   });
 
-  it("A3 — a header-LESS send (no derived actor) auto-records NO row (nothing to attribute; no fabricated sender)", async () => {
+  it("A3 — a header-LESS send (no derived actor) has its row too, marked unattributed (never a fabricated sender)", async () => {
     seedRig();
     const res = await sendApp().request("/api/transport/send", {
       method: "POST",
@@ -366,7 +366,7 @@ describe("transport routes", () => {
       body: JSON.stringify({ session: "dev-impl@my-rig", text: "hi" }),
     });
     expect(res.status).toBe(200); // delivers (non-interactive send tolerates a null actor)
-    expect(outboxRows()).toHaveLength(0); // but no derived sender ⇒ no auto-record, never a null-sender row
+    expect(outboxRows().map((row) => row.sender_session)).toEqual(["unknown"]); // the row commits before the write, whoever sent it
   });
 
   // ── A3b (P22 follow-on, planner-ruled IN scope) — the /broadcast fan-out auto-records N rows, ONE per
@@ -458,7 +458,7 @@ describe("transport routes", () => {
     }
   });
 
-  it("A3b — a header-LESS broadcast auto-records NO rows (no derived sender to attribute)", async () => {
+  it("A3b — a header-LESS broadcast has a row per recipient, marked unattributed", async () => {
     seedRig();
     const res = await sendApp().request("/api/transport/broadcast", {
       method: "POST",
@@ -466,7 +466,8 @@ describe("transport routes", () => {
       body: JSON.stringify({ rig: "my-rig", text: "hi" }),
     });
     expect(res.status).toBe(200);
-    expect(outboxRows()).toHaveLength(0);
+    expect(outboxRows().length).toBeGreaterThan(0);
+    expect(new Set(outboxRows().map((row) => row.sender_session))).toEqual(new Set(["unknown"]));
   });
 
   // OPR.99.0.6.3 — the additive outcome field auto-surfaces through the

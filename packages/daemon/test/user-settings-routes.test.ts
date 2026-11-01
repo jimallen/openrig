@@ -118,9 +118,11 @@ describe("config routes (User Settings v0)", () => {
     // + 1 usage.pda_cost_facts (pda L0, review D2; default off).
     // + 1 transport.native_claude (native comms step 3; default off).
     // + 1 recovery.post_restart_prompt (OF-182; default on).
-    expect(Object.keys(body.settings).length).toBe(82);
+    // + 1 transport.message_pump (Seat Messaging S3; default off).
+    expect(Object.keys(body.settings).length).toBe(83);
     expect(body.settings["recovery.post_restart_prompt"]).toMatchObject({ value: true, source: "default" });
     expect(body.settings["transport.native_claude"]?.value).toBe(false);
+    expect(body.settings["transport.message_pump"]).toMatchObject({ value: false, source: "default" });
     expect(body.settings["rsi.steward_session"]).toMatchObject({ value: "", source: "default" });
     expect(body.settings["launch.non_interruptive"]).toMatchObject({ value: false, source: "default" });
     expect(body.settings["runtime.readiness_timeout_seconds"]).toMatchObject({ value: 30, source: "default" });

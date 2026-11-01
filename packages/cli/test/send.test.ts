@@ -496,6 +496,45 @@ describe("Send CLI", () => {
     expect(sentText?.text).toContain('↩ Reply: rig send');
   });
 
+  // Seat Messaging S1: `--id` names the message. A repeat must be the same bytes, or the daemon refuses it as a different message.
+  it("send --id names the message: the id goes to the daemon, and two runs post the same bytes (no Sent stamp)", async () => {
+    const postFn = vi.fn(async () => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
+    const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
+    vi.useFakeTimers({ now: new Date("2031-05-06T07:08:00Z"), toFake: ["Date"] });
+    try {
+      await captureLogs(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--id", "job-1", "--json"]); });
+      vi.setSystemTime(new Date("2031-05-06T09:09:00Z"));
+      await captureLogs(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--id", "job-1", "--json"]); });
+    } finally { vi.useRealTimers(); }
+    const bodies = postFn.mock.calls.map((c) => (c as unknown as [string, { deliveryId: string; text: string }])[1]);
+    expect(bodies.map((b) => b.deliveryId)).toEqual(["job-1", "job-1"]);
+    expect(bodies[0]!.text).toBe(bodies[1]!.text);
+    expect(bodies[0]!.text).not.toContain("Sent:");
+  });
+
+  it("send without --id keeps its Sent stamp and a fresh id per run", async () => {
+    const postFn = vi.fn(async () => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
+    const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
+    for (let i = 0; i < 2; i++) await captureLogs(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--json"]); });
+    const bodies = postFn.mock.calls.map((c) => (c as unknown as [string, { deliveryId: string; text: string }])[1]);
+    expect(bodies[0]!.text).toContain("Sent:");
+    expect(bodies[0]!.deliveryId).not.toBe(bodies[1]!.deliveryId);
+  });
+
+  it("send --id reaches a fan-out, and the ssh relay's remote argv", async () => {
+    const postFn = vi.fn(async () => ({ status: 200, data: { total: 0, sent: 0, failed: 0, results: [] } }));
+    await captureLogs(async () => { await makeCmd(runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient))).parseAsync(["node", "rig", "send", "--to", "a@r,b@r", "hello", "--id", "fan-1", "--json"]); });
+    expect((postFn.mock.calls[0] as unknown as [string, { deliveryId?: string }])[1].deliveryId).toBe("fan-1");
+    let captured: readonly string[] = [];
+    const deps: SendDeps = {
+      ...runningDeps(port),
+      hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
+      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "remote ok", stderr: "" }; },
+    };
+    await captureLogs(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--host", "vm-test", "--id", "job-2"]); });
+    expect(captured[captured.indexOf("--id") + 1]).toBe("job-2");
+  });
+
   it("send without wait-for-idle waits 45 s, not the client's 5 s read default (hc holds a send ~5 s; hc-w41)", async () => {
     const postFn = vi.fn(async () => ({
       status: 200,

@@ -7,7 +7,7 @@ import { loadHumanRegistry, resolveRegisteredHumanAddress, type LoadResult } fro
 import { resolveExternal } from "./gateway/external-admission.js";
 import type { PersistedEvent } from "./types.js";
 import { QueueTransitionLog, type OwnerNotificationLevel, type QueueTransition, type RecentQueueTransitionScope } from "./queue-transition-log.js";
-import { WAKE_INTENT_PREFIX, labelForTmuxSend, type OutboxHandler, type OutboxOutcomeLabel } from "./outbox-handler.js";
+import { WAKE_INTENT_PREFIX, labelForTmuxSend, type OutboxHandler, type OutboxOutcomeLabel, type SeatMessageClass } from "./outbox-handler.js";
 import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
@@ -292,7 +292,7 @@ export interface QueueNudgeTransport {
     // (h): stampISO threads the nudge's compose time so the transport's delivered-latency calc can
     // measure the wait for a handoff nudge too (the real impl is SessionTransport, which accepts it).
     text: string,
-    opts?: { verify?: boolean; stampISO?: string; actorSession?: string; committedOutboxIds?: string[]; deliveryId?: string; auditPointer?: string }
+    opts?: { verify?: boolean; stampISO?: string; actorSession?: string; committedOutboxIds?: string[]; deliveryId?: string; auditPointer?: string; messageClass?: SeatMessageClass; freezeBody?: boolean }
   ): Promise<{ ok: boolean; verified?: boolean; error?: string; reason?: string; outcome?: string; path?: "native" | "hc"; hcPending?: unknown }>;
 }
 
@@ -480,6 +480,11 @@ export class QueueRepositoryError extends Error {
  *  (one item, tagged in its own create — never a second item, never a
  *  post-create tag rewrite). The queue still mints ids for every caller
  *  that does not preallocate. */
+/** What a wake's `last_nudge_result` says when no write happened: a durable row holds it, either the typing guard's or the pump's. */
+export function retainedNudgeResult(reason: string | undefined): string {
+  return reason === "handed_to_pump" ? "retained:pump" : "retained:typing_guard";
+}
+
 export function newQitemId(): string {
   const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
   const hex = Math.floor(Math.random() * 0xffffffff)
@@ -1036,6 +1041,7 @@ export class QueueRepository {
     const record = {
       outboxId: input.outboxId, senderSession: input.fromSession, destinationSession: input.toSession,
       body: frozenEnvelope, tags: input.tags, auditPointer: input.auditPointer, identityProvenance: input.identityProvenance,
+      messageClass: "nudge" as const,
     };
     const target = this.transport?.retentionTarget?.(input.toSession);
     if (target) this.outbox.retain(record, target);
@@ -1496,7 +1502,7 @@ export class QueueRepository {
       text = held.body;
     }
     try {
-      const res = await this.transport!.send(destinationSession, text, { verify: true, stampISO, actorSession: sourceSession, committedOutboxIds, deliveryId: committedOutboxIds ? undefined : deliveryId, auditPointer: qitemId });
+      const res = await this.transport!.send(destinationSession, text, { verify: true, stampISO, actorSession: sourceSession, committedOutboxIds, deliveryId: committedOutboxIds ? undefined : deliveryId, auditPointer: qitemId, messageClass: "nudge", freezeBody: true });
       // OPR.0.3.2.21.FR-4(c) — wording rename: the prior literal
       // "sent-unverified" read as a failure even in the common case
       // (delivery confirmed but the synchronous ack window expired,
@@ -1514,7 +1520,7 @@ export class QueueRepository {
           : { classified: "native-pending", nudgeResult: "native-ack-pending", label: { path: "native", evidence: "native_written" } };
       }
       const label = labelForTmuxSend(res);
-      if (res.outcome === "retained") return { classified: "retained", nudgeResult: "retained:typing_guard", label };
+      if (res.outcome === "retained") return { classified: "retained", nudgeResult: retainedNudgeResult(res.reason), label };
       if (res.ok && label.evidence !== "send_failed") {
         return res.verified
           ? { classified: "verified", nudgeResult: "verified", label }

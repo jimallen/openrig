@@ -316,8 +316,9 @@ export class ClaudeNativeInbox {
           if (input.committedOutboxIds || !["delivered", "failed", "indeterminate"].includes(prior)) throw new Error(`native: row ${given} is not claimable`);
           // Review F2: a repeat of an id that already settled is a new attempt, with its own row.
           const attempt = this.deps.outbox.nextAttemptId(given);
+          // The attempt has its own row until the marker is unified (S2), and the message keeps its id: `messageId` names it.
           const entry = this.deps.outbox.record({ outboxId: attempt, senderSession: input.senderSession, destinationSession: input.sessionName,
-            body: input.text, auditPointer: input.auditPointer ?? undefined, identityProvenance: input.identityProvenance ?? null });
+            body: input.text, auditPointer: input.auditPointer ?? undefined, identityProvenance: input.identityProvenance ?? null, messageId: given });
           if (!this.deps.outbox.claimNative(entry.outboxId, nonce, writtenAt, transcript)) throw new Error(`native: new row ${entry.outboxId} not claimable`);
           claimed.push({ id: entry.outboxId, nonce, created: true });
         } else {

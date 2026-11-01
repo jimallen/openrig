@@ -30,6 +30,12 @@ import { NodeLauncher } from "./domain/node-launcher.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
+import { MessagePump } from "./domain/seat-messaging/message-pump.js";
+import { MessageStore } from "./domain/seat-messaging/message-store.js";
+import { SeatMessagingHealthSource } from "./domain/seat-messaging/message-health.js";
+import { PumpHandOff } from "./domain/seat-messaging/hand-off.js";
+import { NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
+import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
 import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
@@ -116,6 +122,7 @@ import { RequestPhaseObserver } from "./domain/request-phase-observer.js";
 import { QueueRepository, isBlockerLive } from "./domain/queue-repository.js";
 import { createWorkflowFrontierPredicate } from "./domain/workflow-frontier-guard.js";
 import { InboxHandler } from "./domain/inbox-handler.js";
+import { CompactionStageStore } from "./domain/compaction-stage-store.js";
 import { OutboxHandler, labelForTmuxSend } from "./domain/outbox-handler.js";
 import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
 import { nativeClaudeFlag } from "./domain/native-claude-setting.js";
@@ -201,6 +208,10 @@ import {
 
 interface DaemonOptions {
   dbPath?: string;
+  /** Seat Messaging S3: the seats the pump may serve. Default: none. S2 and S4 wire real gates; a test passes a stub. */
+  seatMessagingPorts?: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
+  /** Seat Messaging S3: a test's shorter schedule. */
+  messagePumpTiming?: Partial<import("./domain/seat-messaging/message-pump.js").MessagePumpTiming>;
   /** S20 — the effective bind plan (mode/hosts/tailscaleDetected/ignoredRoutingHost),
    *  computed once in index.ts and exposed on /healthz so adoption gates verify
    *  listeners by binding evidence. Absent (tests/legacy) = healthz body unchanged. */
@@ -1256,7 +1267,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const hcLaunchBlockedHealth = new HcLaunchBlockedHealthSource(() => hcClient?.launchBlockedBecause ?? null);
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
   const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // Seat Messaging S3: one setting, read at boot, default off. Off, no pump and no health source exist, and every path is as it was.
+  const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
+  const seatMessagingPorts = opts?.seatMessagingPorts ?? NO_SEAT_MESSAGING_PORTS;
+  const heldMessages = new GuardHeldMessages(deliveryGuard);
+  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(new MessageStore(db), seatMessagingPorts)] : [];
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, ...seatMessagingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
@@ -2193,6 +2209,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       setInterval(() => { void hcSweep(); }, 15_000).unref();
     }
     nativeSweepTimer.unref?.();
+    // Started at boot and driven by the database. It serves seats with a gate; SessionTransport hands it their messages.
+    if (messagePumpEnabled) {
+      const messageStore = new MessageStore(db);
+      const messagePump = new MessagePump({
+        store: messageStore, ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
+        senders: new QueueSenderReturn(queueRepoInstance), timing: opts?.messagePumpTiming,
+      });
+      // Before the first pass and before any route: from here no SessionTransport sends a message to a gated seat itself.
+      tmuxAdapter.messageHandOff = new PumpHandOff(messageStore, messagePump, seatMessagingPorts);
+      messagePump.start();
+    }
     queueRepoInstance.attachActivityReader((session) => {
       const nodeId = resolveSessionNodeId(db, session);
       return nodeId ? seatActivityService.getSeatState(nodeId) : null;
@@ -2212,7 +2239,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           const previous = outboxHandlerInstance.getById(deliveryId);
           const payload = previous?.guardBinding ? previous.body : formatWatchdogDeliveryMessage(source, message);
           const result = await sessionTransport.send(targetSession, payload,
-            { deliveryId, actorSession: "watchdog@system", auditPointer: source.jobId });
+            { deliveryId, actorSession: "watchdog@system", auditPointer: source.jobId, freezeBody: true, occupantGeneration: sessionRegistry.currentOccupantGenerationForSession(targetSession) });
           return watchdogDeliveryOutcome(result, continuityActionCompleted);
         } catch (err) {
           return {
@@ -2530,7 +2557,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           try {
             const previous = deliveryId ? outboxHandlerInstance.getById(deliveryId) : null;
             const payload = previous?.guardBinding ? previous.body : message;
-            const result = await sessionTransport.send(target, payload, { deliveryId, actorSession: "model-monitor@system", auditPointer: deliveryId });
+            const result = await sessionTransport.send(target, payload, { deliveryId, actorSession: "model-monitor@system", auditPointer: deliveryId, freezeBody: true });
             return result.ok ? { ok: true, outcome: result.outcome } : { ok: false, error: result.error };
           } catch (err) {
             return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -2633,6 +2660,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         {
           resolveOccupantGeneration: (sessionName) =>
             sessionRegistry.currentOccupantGenerationForSession(sessionName),
+          stageStore: new CompactionStageStore(db),
           onPostRestoreComplete: (receipt) => {
             recordManagedWidthReceipt(
               receipt,

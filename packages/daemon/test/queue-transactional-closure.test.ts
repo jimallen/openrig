@@ -282,6 +282,8 @@ describe("W1 transactional closure — W1-b: the drain, with indeterminate-outco
     const { created } = await doHandoff();
     const row = h.outbox.getById(`wake-intent-${created.qitemId}`);
     expect(row!.deliveryState).toBe("delivered");
+    expect(row!.messageClass).toBe("nudge");
+    expect(row!.messageState).toBeNull(); // the drain owns a wake row, so it carries no message state
     expect(h.calls).toHaveLength(1);
   });
 
