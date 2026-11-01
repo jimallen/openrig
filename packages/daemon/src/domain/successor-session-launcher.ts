@@ -286,18 +286,45 @@ export class SuccessorSessionLauncher {
       };
     }
 
+    // The respawn can change the pane's address (hc: kill, then run again mints a new terminal; the seat's name and label are
+    // what follow), so everything after it addresses the pane as the session now reports it, never by the retiree's id. On
+    // tmux the id is the same one. A pane that cannot be found again is a refusal here, before any launch.
+    let successorPane: { id: string } | undefined;
+    try {
+      const after = await this.tmuxAdapter.listPanes(departingSession);
+      successorPane = after.find((p) => p.active) ?? after[0];
+    } catch (err) {
+      return {
+        ok: false,
+        code: "pane_probe_failed",
+        step: "create_successor",
+        replacementStarted: true,
+        message: `The successor was respawned into "${departingSession}" but its pane could not be probed afterwards: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (!successorPane) {
+      return {
+        ok: false,
+        code: "pane_unresolved",
+        step: "create_successor",
+        replacementStarted: true,
+        message: `The successor was respawned into "${departingSession}" but no pane could be resolved for it afterwards.`,
+      };
+    }
+    const livePane = successorPane;
+
     // KI-14: VERIFY the blank slate before any launch. The fresh contract is a verified blank shell
     // or a loud refusal — never a launch driven into a resumed harness that then gets committed as a
     // fresh successor. One bounded retry absorbs the shell's spawn latency. On failure the seat is
     // preserved (unwind invariant: never killSession) and no discovery candidate exists yet.
-    const blank = await this.verifyPaneIsBlankShell(pane.id, blankShell);
+    const blank = await this.verifyPaneIsBlankShell(livePane.id, blankShell);
     if (!blank.ok) {
       return {
         ok: false,
         code: "successor_pane_not_blank",
         step: "create_successor",
         replacementStarted: true,
-        message: `Fresh successor pane "${pane.id}" of "${departingSession}" is running "${blank.observed ?? "unknown"}" instead of a blank shell — refusing to launch into a non-blank pane. The pane's start command likely bakes in a harness invocation; recreate the pane (or hand over with --source discovered:<id>) and retry.`,
+        message: `Fresh successor pane "${livePane.id}" of "${departingSession}" is running "${blank.observed ?? "unknown"}" instead of a blank shell — refusing to launch into a non-blank pane. The pane's start command likely bakes in a harness invocation; recreate the pane (or hand over with --source discovered:<id>) and retry.`,
       };
     }
 
@@ -311,14 +338,14 @@ export class SuccessorSessionLauncher {
     //    on ANY launch/readiness failure we do NOT killSession the preserved seat — that would destroy
     //    the retiree's recoverable state. We return the structured failure and leave the re-wakeable
     //    shell in the pane; commit never runs, so the binding is not repointed.
-    const started = await this.startAgent(input.node, departingSession, pane.id, cwd, input.forkSource, input.occupantGeneration);
+    const started = await this.startAgent(input.node, departingSession, livePane.id, cwd, input.forkSource, input.occupantGeneration);
     if (!started.ok) {
       return { ok: false, code: started.code, step: "start_agent", message: started.message, replacementStarted: true };
     }
 
     const discovered = this.discoveryRepo.upsertDiscoveredSession({
       tmuxSession: departingSession,
-      tmuxPane: pane.id,
+      tmuxPane: livePane.id,
       // The hint equals the node's own runtime, so the commit-path runtime check always matches; null
       // runtime records as "unknown" (which the check skips).
       runtimeHint: (input.node.runtime ?? "unknown") as RuntimeHint,
@@ -330,7 +357,7 @@ export class SuccessorSessionLauncher {
       ok: true,
       discoveredId: discovered.id,
       tmuxSession: departingSession,
-      tmuxPane: pane.id,
+      tmuxPane: livePane.id,
       resumeToken: started.resumeToken,
       resumeType: started.resumeType,
       appliedLaunch: started.appliedLaunch,
@@ -492,6 +519,17 @@ export class SuccessorSessionLauncher {
     await this.sleep(this.exitPollMs);
     observed = await this.tmuxAdapter.getPaneCommand(paneId);
     if (observed && isShellForeground(observed, expectedShell)) return { ok: true };
+    // A foreground that is not reported YET is not a foreground that is not a shell: hc names a terminal's foreground
+    // process only after its first hundreds of milliseconds (measured on a private core: 150 to 300 ms after a respawn,
+    // longer for a first start), so one retry reads "unknown" for a healthy blank shell. Keep asking, within the same
+    // bound the retiree's exit gets. A process that IS reported and is not a shell is refused after the one retry, as
+    // before; so is a foreground that never appears.
+    const polls = Math.ceil(this.exitTimeoutMs / this.exitPollMs);
+    for (let i = 0; i < polls && observed === null; i++) {
+      await this.sleep(this.exitPollMs);
+      observed = await this.tmuxAdapter.getPaneCommand(paneId);
+      if (observed && isShellForeground(observed, expectedShell)) return { ok: true };
+    }
     return { ok: false, observed };
   }
 

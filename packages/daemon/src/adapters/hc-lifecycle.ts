@@ -1,4 +1,5 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
+import { hcTerminalRef } from "./hc-identity.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-seat.js";
 import type { TmuxResult } from "./tmux.js";
 
@@ -58,7 +59,7 @@ export class HcLifecycle {
    *  creation command to re-run (tmux's KI-14 hazard cannot happen). The predecessor's scrollback stays readable at
    *  its old address, as a finished terminal, until someone removes it; it is no longer above the new program's output.
    *  Unlike `respawn-pane` without `-k`, a live program is ended here, not refused. */
-  async respawnPane(seat: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<TmuxResult> {
+  async respawnPane(target: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<TmuxResult> {
     const daemon = this.options.daemonEnv ?? process.env;
     let launch: ReturnType<typeof seatEnvironment>;
     try {
@@ -68,11 +69,15 @@ export class HcLifecycle {
     }
     let before: HcTerminal | null;
     try {
-      before = await this.find(seat);
+      before = await this.find(target);
     } catch (err) {
-      return failure(err, seat);
+      return failure(err, target);
     }
-    if (before === null) return { ok: false, code: "session_not_found", message: `${seat}: no terminal to respawn` };
+    if (before === null) return { ok: false, code: "session_not_found", message: `${target}: no terminal to respawn` };
+    // The seat is named by its label, never by the target: a caller holding a pane id (`t1`) must not get a terminal called
+    // after the address. A terminal that is not a seat's (a probe) is not respawned here.
+    const seat = before.labels[SEAT_LABEL];
+    if (!seat) return { ok: false, code: "not_a_seat", message: `${target}: the terminal carries no seat label, so it is not respawned as a seat` };
     if (before.state === "live") {
       try {
         const killed = await this.kill(seat, before);
@@ -84,18 +89,51 @@ export class HcLifecycle {
     const shell = daemon.SHELL || "/bin/sh";
     const argv = ["env", ...launch.unset.flatMap((key) => ["-u", key]), ...(command != null && command.length > 0 ? ["/bin/sh", "-c", command] : [shell, "-l"])];
     const cwd = opts?.cwd ?? before.cwd;
+    let started: { address: string };
     try {
-      await this.client.call("terminal.run", {
+      started = await this.client.call<{ address: string }>("terminal.run", {
         argv, env: launch.env, name: hcTerminalName(seat), cwd,
         // Everything that placed the old terminal (the app's space and tab labels) follows to the new one.
         labels: { ...before.labels, [SEAT_LABEL]: seat },
         no_parent: true, no_notify: true, outlive_parent: true,
       });
-      return { ok: true };
     } catch (err) {
+      // A finished record named by its old address while a newer terminal already holds the seat's name: nothing is started.
+      if (err instanceof HcError && err.kind === "name_taken") return { ok: false, code: "pane_superseded", message: `${seat}: ${target} is no longer the seat's terminal (the name is held by a live one)` };
       const result = failure(err, seat);
       // The old program is already gone: say so, so the caller does not read "nothing happened".
       return result.ok ? result : { ...result, message: `${result.message} (the previous program had already ended)` };
+    }
+    const warnings = await this.prunePredecessors(seat, [before.address, started.address]);
+    return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
+  }
+
+  /** A respawn leaves its predecessor as a finished record, readable at its old address (the cutover keeps it for the person
+   *  who wants to see what the retiree printed). Nothing removes it but `terminal.rm`, so every restart would add one, each
+   *  holding up to 1,000 rows in the core's memory. Measured on a private core (hc 0.1.15): finished records keep their name
+   *  and labels, `terminal.list` omits them unless asked with `all`, `terminal.get <name>` answers the live terminal, else the
+   *  latest finished one, and removing an older record by address leaves the others and the name's answer untouched. So a
+   *  respawn keeps exactly ONE predecessor, the one it just replaced, and removes the seat's older finished records. The
+   *  `keep` addresses are never touched, whatever their state: the new terminal can itself be finished by now. A failed
+   *  removal is a warning, never a failed respawn: the seat is already running. */
+  private async prunePredecessors(seat: string, keep: string[]): Promise<string[]> {
+    try {
+      const listed = (await this.client.call<{ terminals: HcTerminal[] }>("terminal.list", { all: true })).terminals;
+      const old = listed.filter((t) => t.state === "finished" && t.name === hcTerminalName(seat) && t.labels[SEAT_LABEL] === seat && !keep.includes(t.address));
+      const warnings: string[] = [];
+      for (const terminal of old) {
+        try {
+          await this.client.call("terminal.rm", { terminal: terminal.address });
+        } catch (err) {
+          warnings.push(`${seat}: an older finished terminal (${terminal.address}) could not be removed: ${err instanceof HcError ? err.kind : "core unavailable"}`);
+        }
+      }
+      return warnings;
+    } catch (err) {
+      if (err instanceof HcError || err instanceof HcUnavailableError || err instanceof HcOutcomeUnknownError) {
+        return [`${seat}: older finished terminals could not be listed, so none were removed`];
+      }
+      throw err;
     }
   }
 
@@ -141,6 +179,19 @@ export class HcLifecycle {
     return on ? { ok: true } : { ok: true, warnings: [`${seat}: hc keeps a finished terminal readable until it is removed; remain-on-exit cannot be turned off`] };
   }
 
+  /** A pane-local option as a cutover reads it back. The one that has a meaning on hc is `remain-on-exit`: it reads `on` for a
+   *  terminal that exists, because a finished hc terminal stays readable until `terminal.rm` (see setRemainOnExit), and
+   *  null for any other option. `undefined` (could not be read) when the core cannot be asked, and null when the terminal is
+   *  not there, so the cutover's check that the pane is held still refuses a pane that is gone. */
+  async paneLocalOption(target: string, option: string): Promise<string | null | undefined> {
+    if (option !== "remain-on-exit") return null;
+    try {
+      return (await this.find(target)) === null ? null : "on";
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Has the seat's program ended? Also true when the terminal is gone (a known-missing pane proves the cutover). An
    *  unreachable core is not dead. */
   async isPaneDead(seat: string): Promise<boolean> {
@@ -177,10 +228,15 @@ export class HcLifecycle {
     }
   }
 
-  /** The terminal answering to this seat's name: the live one if there is one, else the latest finished record. */
-  private async find(name: string): Promise<HcTerminal | null> {
+  /** The terminal a target names: a seat's canonical name (the live terminal, else the latest finished one) or the address that
+   *  replaces a pane id (`t7`: that very terminal, live or finished). The same reading as every other adapter method
+   *  (`hcTerminalRef`), because callers hold the pane id their binding registered and pass it here: an address read as a seat
+   *  name found nothing, so a cutover judged the live retiree "dead" without signalling it. Null when it positively is not there. */
+  private async find(target: string): Promise<HcTerminal | null> {
+    const ref = hcTerminalRef(target);
+    if (ref === null) return null;
     try {
-      return await this.client.call<HcTerminal>("terminal.get", { terminal: hcTerminalName(name) });
+      return await this.client.call<HcTerminal>("terminal.get", { terminal: ref });
     } catch (err) {
       if (err instanceof HcError && err.kind === "not_found") return null;
       throw err;

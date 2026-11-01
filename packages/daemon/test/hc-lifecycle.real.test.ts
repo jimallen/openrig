@@ -65,9 +65,78 @@ describe.skipIf(!HC)("HcLifecycle against a private hc core", () => {
     expect(new Set(addresses).size).toBe(3);
     const labelled = await core.client.call<{ terminals: HcTerminal[] }>("terminal.list", { all: true, labels: { [SEAT_LABEL]: "many@rig" } });
     expect(labelled.terminals.filter((t) => t.state === "live")).toHaveLength(1);
-    expect(labelled.terminals).toHaveLength(3);
+    // Three terminals were started, and a respawn keeps one predecessor, so the oldest record is gone (it was 3 before the
+    // lifecycle pruned: every restart left a finished record in the core until someone ran terminal.rm).
+    expect(labelled.terminals.map((t) => t.address).sort()).toEqual([addresses[1], addresses[2]].sort());
     await lifecycle.killSession("many@rig");
     expect((await get("many@rig")).state).toBe("finished");
+  });
+
+  it("respawns by the pane id a binding holds: the terminal keeps the seat's name and label, never the address's", async () => {
+    await host.createSession("byaddr@rig", core.root);
+    const before = await get("byaddr@rig");
+    await expect(lifecycle.respawnPane(before.address, "exec sleep 120")).resolves.toEqual({ ok: true });
+    const after = await get("byaddr@rig");
+    expect(after).toMatchObject({ state: "live", labels: { [SEAT_LABEL]: "byaddr@rig" } });
+    expect(after.address).not.toBe(before.address);
+    expect(await core.client.call<HcTerminal>("terminal.get", { terminal: before.address })).toMatchObject({ state: "finished" });
+    // The address is stale now: it names a finished record while a live terminal holds the seat's name. Nothing is started or killed.
+    await expect(lifecycle.respawnPane(before.address, "exec sleep 120")).resolves.toMatchObject({ ok: false, code: "pane_superseded" });
+    expect(await get("byaddr@rig")).toMatchObject({ state: "live", address: after.address, pid: after.pid });
+  });
+
+  it("reads and signals a seat by its address as it does by its name", async () => {
+    await host.createSession("addr@rig", core.root);
+    const live = await get("addr@rig");
+    await expect(lifecycle.isPaneDead(live.address)).resolves.toBe(false);
+    await expect(lifecycle.paneLocalOption(live.address, "remain-on-exit")).resolves.toBe("on");
+    await expect(lifecycle.signalPaneProcess(live.address, "KILL")).resolves.toEqual({ ok: true });
+    await until(() => lifecycle.isPaneDead(live.address), (dead) => dead, "KILL to end the shell, named by its address");
+    await expect(lifecycle.paneLocalOption(live.address, "remain-on-exit")).resolves.toBe("on");
+    await expect(lifecycle.paneLocalOption("t99999", "remain-on-exit")).resolves.toBeNull();
+  });
+
+  it("reaches a terminal by an address with a letter in it (the 20th terminal of a core is t1b, in base 30)", async () => {
+    // Taken as decimal only, `t1b` was read as a seat's name: isPaneDead said "dead" for a live terminal, nothing was signalled
+    // and a cutover respawned over a retiree it never stopped. 25 fillers push the seat past t19.
+    for (let i = 0; i < 25; i++) await core.client.call("terminal.run", { argv: ["sleep", "300"], name: `filler-${i}`, no_parent: true, no_notify: true, outlive_parent: true });
+    await host.createSession("late@rig", core.root);
+    const live = await get("late@rig");
+    expect(live.address, "the seat's address has a letter in it").toMatch(/^t[0-9]*[b-z][0-9a-z]*$/);
+    await expect(lifecycle.isPaneDead(live.address)).resolves.toBe(false);
+    await expect(lifecycle.paneLocalOption(live.address, "remain-on-exit")).resolves.toBe("on");
+    await expect(lifecycle.respawnPane(live.address, "exec sleep 120")).resolves.toEqual({ ok: true });
+    const after = await get("late@rig");
+    expect(after).toMatchObject({ state: "live", labels: { [SEAT_LABEL]: "late@rig" } });
+    expect(await core.client.call<HcTerminal>("terminal.get", { terminal: live.address })).toMatchObject({ state: "finished" });
+    await expect(lifecycle.signalPaneProcess(after.address, "KILL")).resolves.toEqual({ ok: true });
+    await until(() => lifecycle.isPaneDead(after.address), (dead) => dead, "KILL to end the program, named by an address with a letter");
+  });
+
+  it("removes only the seat's own older finished records, and a terminal.list that is not asked for them never shows one", async () => {
+    await host.createSession("prune@rig", core.root);
+    await host.createSession("bystander@rig", core.root);
+    await lifecycle.killSession("bystander@rig");  // another seat's finished record: not this seat's to remove
+    const first = (await get("prune@rig")).address;
+    for (let i = 0; i < 3; i++) await lifecycle.respawnPane("prune@rig", "exec sleep 120");
+    const all = await core.client.call<{ terminals: HcTerminal[] }>("terminal.list", { all: true, labels: { [SEAT_LABEL]: "prune@rig" } });
+    expect(all.terminals.filter((t) => t.state === "finished")).toHaveLength(1);
+    expect(all.terminals.map((t) => t.address)).not.toContain(first);
+    const live = await core.client.call<{ terminals: HcTerminal[] }>("terminal.list", { labels: { [SEAT_LABEL]: "prune@rig" } });
+    expect(live.terminals).toHaveLength(1);
+    expect(await get("prune@rig")).toMatchObject({ state: "live", address: live.terminals[0]!.address });
+    expect(await get("bystander@rig")).toMatchObject({ state: "finished" });
+  });
+
+  it("keeps a new terminal that has already finished, and the predecessor it replaced", async () => {
+    await host.createSession("quick@rig", core.root);
+    await lifecycle.respawnPane("quick@rig", "exec sleep 120");
+    const predecessor = await get("quick@rig");
+    await expect(lifecycle.respawnPane("quick@rig", "exit 0")).resolves.toEqual({ ok: true });
+    await until(() => get("quick@rig"), (t) => t.state === "finished", "the new program's own exit");
+    const all = await core.client.call<{ terminals: HcTerminal[] }>("terminal.list", { all: true, labels: { [SEAT_LABEL]: "quick@rig" } });
+    expect(all.terminals.map((t) => t.address)).toContain(predecessor.address);
+    expect(all.terminals.length).toBe(2);
   });
 
   it("respawns a seat that already ended on its own, and starts a blank login shell without a command", async () => {

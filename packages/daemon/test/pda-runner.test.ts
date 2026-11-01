@@ -708,6 +708,28 @@ describe("pda-runner: exact-value redaction (T31)", () => {
     }
     expect(new PdaRedactor(() => [{ value: "", marker: "[M]" }]).redact("anything")).toBe("anything");
   });
+
+  it("breakLine ends an open streamed row without releasing the held tail, so a secret across the break is still caught", () => {
+    const out: string[] = [];
+    const pane = new PdaPane((t) => out.push(t), () => [{ value: "SECRETVALUE0123456", marker: "[M]" }]);
+    pane.breakLine();
+    expect(out, "no open row: nothing is written").toEqual([]);
+    pane.append("reply SECRETVAL");
+    expect(pane.inLine).toBe(true);
+    const shownBefore = out.join("");
+    expect(shownBefore).not.toContain("SECRETVAL");  // the tail that could start the secret is held back
+    pane.breakLine();
+    expect(out.join("")).toBe(`${shownBefore}\n`);
+    expect(pane.inLine).toBe(false);
+    pane.breakLine();
+    expect(out.join(""), "a second break on a closed row writes nothing").toBe(`${shownBefore}\n`);
+    pane.append("UE0123456 done");
+    pane.closeLine();
+    const all = out.join("");
+    expect(all).not.toContain("SECRETVALUE0123456");
+    expect(all).not.toContain("SECRETVAL");
+    expect(all).toContain("[M]");
+  });
 });
 
 // ── T32: where tool output never goes ────────────────────────────────────────
@@ -779,6 +801,21 @@ describe("pda-runner: input (T1, T2, T5, T5b wiring)", () => {
     const pane = noReassert(rig.pane());
     expect(pane).toContain(`you ▸ ${"y".repeat(4000)} … (1003 more characters)\n`);
     expect(pane).not.toContain("END");
+  });
+
+  it("input leaves a streamed row before the editor draws: a paste during a reply does not erase the reply's row", () => {
+    // The editor's redraw clears from column 0 of the cursor's row; on a 200-column terminal a whole streamed row is that row.
+    const calls: string[] = [];
+    const stub = { submit: () => calls.push("submit"), interrupted: () => undefined, breakStreamedLine: () => calls.push("break") };
+    const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode: vi.fn() });
+    const output = Object.assign(new PassThrough(), { isTTY: true, columns: 200 });
+    const editor = wirePdaRunnerInput(stub, input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
+    try {
+      input.write(START + "pasted" + END);
+      expect(calls).toEqual(["break"]);
+      input.write("\r");
+      expect(calls).toEqual(["break", "break", "submit"]);
+    } finally { editor.close(); }
   });
 
   it("T5: Ctrl-C clears the line, posts nothing, and says Ctrl-C never stops the agent", async () => {

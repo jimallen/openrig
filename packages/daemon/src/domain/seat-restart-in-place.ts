@@ -22,7 +22,7 @@ import { emittedEffortFromArgv } from "./seat-effort.js";
 import { CODEX_NETWORK_DEFAULT_OVERRIDE } from "./codex-network-default.js";
 import { readStoredJsonObject } from "./stored-json.js";
 import { getSeatCwdFault, seatCwdFaultReason, seatCwdFixAdvice, type SeatCwdFault } from "./cwd-resolution.js";
-import { registeredPaneSql } from "./binding-pane.js";
+import { registeredPaneOf, registeredPaneSql } from "./binding-pane.js";
 
 /**
  * OPR.0.7.0.5 — restart ONE Codex seat in place so it reads its Codex home's current account: the same
@@ -351,13 +351,16 @@ export class CodexInPlaceRestart {
     if (finished.outcome !== "restarted_account_unverified") {
       return { ok: false, code: "restart_not_completed", message: `The latest in-place restart ended ${finished.outcome}; there is nothing to verify.` };
     }
-    const current = await this.observeCodex(target.binding.tmuxPane!, null);
+    // The seat's registered pane: a tmux pane id, or the terminal address of an hc seat (`tmux_pane` is NULL on an hc row).
+    const registeredPane = registeredPaneOf(target.binding);
+    if (!registeredPane) return { ok: false, code: "seat_restarted_since", message: "The seat has no registered pane to verify against; verify the current occupant another way." };
+    const current = await this.observeCodex(registeredPane, null);
     if (!current || current.process.pid !== finished.newPid || (current.process.startedAt ?? null) !== finished.newStartedAt) {
       return { ok: false, code: "seat_restarted_since", message: "The seat's Codex is no longer the process the restart started; verify the current occupant another way." };
     }
     const conversationId = readResumeToken(this.deps.db, target.sessionId);
     const toolTurn = this.readToolTurn(finished.codexHome, conversationId, finished.finishedAt);
-    const accountEvidence = await this.readAccountLine(target.binding.tmuxPane!, finished.accountLinesAtRestart ?? null, input.expectAccount ?? null);
+    const accountEvidence = await this.readAccountLine(registeredPane, finished.accountLinesAtRestart ?? null, input.expectAccount ?? null);
     const moved = toolTurn.state === "observed" && toolTurn.completed > 0 && toolTurn.errors === 0 && accountEvidence.state === "matched";
     return {
       ok: true, seat: target.seat, outcome: moved ? "moved" : "restarted_account_unverified", toolTurn, accountEvidence,
@@ -374,7 +377,7 @@ export class CodexInPlaceRestart {
     const history = this.restartHistory(seat.nodeId, seenStartedSeq);
     if ("code" in history) return history;
 
-    const pane = binding.tmuxPane;
+    const pane = registeredPaneOf(binding);
     let panes: Awaited<ReturnType<InPlaceRestartTmux["listPanes"]>>;
     try { panes = await this.deps.tmux.listPanes(sessionName); } catch (error) {
       return { ok: false, code: "tmux_probe_failed", message: `tmux pane lookup failed: ${(error as Error).message}; nothing was stopped.` };
@@ -574,7 +577,10 @@ export class CodexInPlaceRestart {
       nodeId: target.seat.nodeId, sessionName: target.sessionName, runtime: "codex",
       expectedResumeToken: report.conversationId, requireExactResumeLineage: true, listProcesses: this.listProcesses,
     });
-    const now = await this.observeCodex(report.pane, report.conversationId);
+    // The pane as the identity check just observed it: a respawn on hc mints a new terminal address, and the check has already
+    // rebound the seat's binding to it. Reading the retiree's address here would observe its finished terminal.
+    const currentPane = identity.ok ? identity.pane : report.pane;
+    const now = await this.observeCodex(currentPane, report.conversationId);
     if (!identity.ok || !now) {
       return { ...report, outcome: "native_unknown", couldNotSee: [`the replacement Codex's identity: ${identity.ok ? "process not observed" : identity.detail}`],
         message: "Codex reported a resumed conversation, but the process in the pane could not be proven to be that conversation." };
@@ -583,7 +589,7 @@ export class CodexInPlaceRestart {
     const before = report.oldProcess;
     const startedAt = now.process.startedAt ?? null;
     return {
-      ...report, outcome: "restarted_account_unverified",
+      ...report, pane: currentPane, outcome: "restarted_account_unverified",
       newProcess: { pid: now.process.pid, startedAt, sameExecutable: after?.exe && oldExe ? after.exe === oldExe : null },
       account: this.accountEvidence(report.codexHome, before.startedAt, startedAt),
       message: "Restarted in place on the same conversation and pane. The account is not verified: run --verify after a real tool-using turn.",

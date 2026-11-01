@@ -2,9 +2,13 @@ import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTe
 import { SEAT_LABEL, hcTerminalName } from "./hc-seat.js";
 import type { SessionWindowSnapshot, TmuxPane, TmuxResult, TmuxSession, TmuxWindow } from "./tmux.js";
 
-/** hc addresses (`t7`, or `machine/t7` for a terminal on another machine). A seat is never named like one: a seat's hc name
- *  is `s-<digest>` and hc refuses a name shaped like an address. */
-const ADDRESS = /^(?:[A-Za-z0-9_.-]+\/)?t\d+$/;
+/** hc addresses (`t7`, or `machine/t7` for a terminal on another machine). The number after `t` is written in base 30: the digits
+ *  and the letters `bcdfghjkmnpqrstvwxyz` (no vowels, no `l`), so the 20th terminal of a core is `t1b` and the 1,000th `t1t0`
+ *  (measured on a private core, hc 0.1.15: 1,000 addresses, every character inside that alphabet, 801 of them with a letter). Read
+ *  as decimal only, every address past `t19` was taken for a seat's name and hashed into a terminal that does not exist.
+ *  A seat is never named like one: a seat's hc name is `s-<digest>` and hc refuses a name shaped like an address; a seat's
+ *  canonical name (`dev-impl@rig`) has an `@`, and a bare word made only of this alphabet (`tmp`) would be read as an address. */
+const ADDRESS = /^(?:[A-Za-z0-9_.-]+\/)?t[0-9bcdfghjkmnpqrstvwxyz]+$/;
 const TMUX_ID = /^[%@$]\d+$/;
 
 /**

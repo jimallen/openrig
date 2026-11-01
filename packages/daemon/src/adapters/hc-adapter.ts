@@ -107,15 +107,15 @@ export class HcAdapter extends TmuxAdapter {
   override signalPaneProcess(...a: Parameters<HcLifecycle["signalPaneProcess"]>): ReturnType<HcLifecycle["signalPaneProcess"]> { return this.parts().lifecycle.signalPaneProcess(...a) as ReturnType<HcLifecycle["signalPaneProcess"]>; }
   override setRemainOnExit(...a: Parameters<HcLifecycle["setRemainOnExit"]>): ReturnType<HcLifecycle["setRemainOnExit"]> { return this.parts().lifecycle.setRemainOnExit(...a) as ReturnType<HcLifecycle["setRemainOnExit"]>; }
   override isPaneDead(...a: Parameters<HcLifecycle["isPaneDead"]>): ReturnType<HcLifecycle["isPaneDead"]> { return this.parts().lifecycle.isPaneDead(...a) as ReturnType<HcLifecycle["isPaneDead"]>; }
+  override getPaneLocalOption(...a: Parameters<HcLifecycle["paneLocalOption"]>): ReturnType<HcLifecycle["paneLocalOption"]> { return this.parts().lifecycle.paneLocalOption(...a); }
   override createProbeSession(...a: Parameters<HcLifecycle["createProbeSession"]>): ReturnType<HcLifecycle["createProbeSession"]> { return this.parts().lifecycle.createProbeSession(...a) as ReturnType<HcLifecycle["createProbeSession"]>; }
 
-  // No meaning on hc: there is no server to start, no server or window options, no pane-local options, and a launch
+  // No meaning on hc: there is no server to start, no server or window options, no pane-local options other than `remain-on-exit` (above), and a launch
   // binding has no fresh-pane proof to clear.
   override async startServer(): Promise<TmuxResult> { return { ok: true }; }
   override async setServerOption(_option: string, _value: string): Promise<TmuxResult> { return { ok: true }; }
   override async showServerOption(_option: string): Promise<string | null> { return null; }
   override async setWindowOption(_target: string, _option: string, _value: string): Promise<TmuxResult> { return { ok: true }; }
-  override async getPaneLocalOption(_pane: string, _option: string): Promise<string | null | undefined> { return null; }
   override async restorePaneOption(_pane: string, _option: string, _value: string | null): Promise<TmuxResult> { return { ok: true }; }
   override finishLaunchBinding(_session: string): void {}
   /** The tmux adapter's cached listing; no poll loop shares one here, so a caller reads it fresh. */

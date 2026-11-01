@@ -577,6 +577,65 @@ describe("SuccessorSessionLauncher", () => {
     expect(discoveryRepo.getDiscoveredSession(res.discoveredId)?.status).toBe("vanished");
   });
 
+  describe("hc cutover: a respawn can change the pane's address, and everything after it follows the new one", () => {
+    const pane = (id: string) => [{ id, index: 0, cwd: "/w", width: 200, height: 120, active: true }];
+
+    it("probes, launches into and reports the pane the session names AFTER the respawn, never the retiree's id", async () => {
+      listPanes.mockResolvedValueOnce(pane("t5")).mockResolvedValue(pane("t6"));
+      const res = await launcher().createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "dev-impl@rig" });
+      expect(res).toMatchObject({ ok: true, tmuxPane: "t6", tmuxSession: "dev-impl@rig" });
+      expect(respawnPane.mock.calls[0]![0], "the respawn is aimed at the retiree's pane").toBe("t5");
+      expect(setRemainOnExit.mock.calls.map((c) => c[0]), "the retiree is held and stopped by its own id").toEqual(["t5"]);
+      expect(getPaneCommand.mock.calls.map((c) => c[0]), "the blank-shell check reads the new pane").toEqual(["t6"]);
+      const binding = launchHarness.mock.calls[0]![0] as { tmuxPane?: string | null };
+      expect(binding.tmuxPane).toBe("t6");
+      expect(discoveryRepo.listDiscovered()[0]).toMatchObject({ tmuxSession: "dev-impl@rig", tmuxPane: "t6" });
+    });
+
+    it("a session that has no pane after the respawn is refused before any launch, as a respawn already happened", async () => {
+      listPanes.mockResolvedValueOnce(pane("t5")).mockResolvedValue([]);
+      const res = await launcher().createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "dev-impl@rig" });
+      expect(res).toMatchObject({ ok: false, code: "pane_unresolved", step: "create_successor", replacementStarted: true });
+      expect(launchHarness).not.toHaveBeenCalled();
+      expect(killSession).not.toHaveBeenCalled();
+      expect(discoveryRepo.listDiscovered()).toHaveLength(0);
+    });
+
+    it("a probe that throws after the respawn is the same structured refusal", async () => {
+      listPanes.mockResolvedValueOnce(pane("t5")).mockRejectedValue(new Error("core went away"));
+      const res = await launcher().createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "dev-impl@rig" });
+      expect(res).toMatchObject({ ok: false, code: "pane_probe_failed", step: "create_successor", replacementStarted: true });
+      expect((res as { message: string }).message).toContain("core went away");
+      expect(launchHarness).not.toHaveBeenCalled();
+    });
+
+    it("a foreground hc has not named yet is waited for, within the exit bound, and then accepted when it is a shell", async () => {
+      // Measured on a private hc core: a respawned terminal names no foreground for 150 to 300 ms.
+      let asked = 0;
+      getPaneCommand.mockImplementation(async () => (++asked <= 4 ? null : "zsh"));
+      const res = await launcher(undefined, "/daemon-codex", { exitPollMs: 1, exitTimeoutMs: 20 }).createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "dev-impl@rig" });
+      expect(res.ok).toBe(true);
+      expect(getPaneCommand).toHaveBeenCalledTimes(5);
+      expect(launchHarness).toHaveBeenCalledTimes(1);
+    });
+
+    it("a foreground that never appears is refused after the bound, not waited for forever", async () => {
+      getPaneCommand.mockResolvedValue(null);
+      const res = await launcher(undefined, "/daemon-codex", { exitPollMs: 1, exitTimeoutMs: 10 }).createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "dev-impl@rig" });
+      expect(res).toMatchObject({ ok: false, code: "successor_pane_not_blank" });
+      expect(getPaneCommand.mock.calls.length).toBeGreaterThan(2);
+      expect(getPaneCommand.mock.calls.length).toBeLessThanOrEqual(14);
+      expect(launchHarness).not.toHaveBeenCalled();
+    });
+
+    it("a foreground that IS named and is not a shell is refused after one retry, as before", async () => {
+      getPaneCommand.mockResolvedValue("node");
+      const res = await launcher(undefined, "/daemon-codex", { exitPollMs: 1, exitTimeoutMs: 50 }).createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "dev-impl@rig" });
+      expect(res).toMatchObject({ ok: false, code: "successor_pane_not_blank" });
+      expect(getPaneCommand).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("KI-14 (5.3 wave-1): fresh must produce a VERIFIED blank shell, never the pane's baked-in command", () => {
     // The live defect (2026-08-22 reinstall wave, four Codex seats): tmux `respawn-pane` WITHOUT a
     // command re-runs the pane's CREATION (or last-respawn) command — and adopted/hand-recovered

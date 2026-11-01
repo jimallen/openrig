@@ -56,6 +56,10 @@ interface WorldOptions {
   paneVanishes?: boolean;
   /** What the (fake) folder check says about the cwd the relaunch would be handed; default: a usable directory. */
   cwdFault?: (cwd: string) => SeatCwdFault | null;
+  /** An hc seat: the binding registers the terminal's address (`t1`) and `tmux_pane` is NULL. A respawn mints a new address (`t2`),
+   *  and an address that is not the live terminal's reads as no process, as hc's finished record does. `registered: null` is an hc
+   *  row not yet launched. */
+  hc?: { registered?: string | null };
 }
 
 const dbs: Database.Database[] = [];
@@ -84,8 +88,15 @@ function world(options: WorldOptions = {}) {
   if (options.savedEffort?.choice) rigRepo.setNodeEffortChoice(node.id, options.savedEffort.choice);
   const session = sessionRegistry.registerSession(node.id, SEAT);
   sessionRegistry.updateStatus(session.id, "running");
-  sessionRegistry.updateBinding(node.id, { attachmentType: "tmux", tmuxSession: SEAT, tmuxPane: "%1" });
+  let livePane = options.hc ? "t1" : "%1";
+  if (options.hc) {
+    const registered = options.hc.registered === undefined ? "t1" : options.hc.registered;
+    sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: SEAT, ...(registered ? { terminalAddress: registered } : {}) });
+  } else {
+    sessionRegistry.updateBinding(node.id, { attachmentType: "tmux", tmuxSession: SEAT, tmuxPane: "%1" });
+  }
   sessionRegistry.updateResumeToken(session.id, "codex_id", TOKEN, "scrape");
+  const paneAsked: string[] = [];
 
   const runningArgs = options.runningArgs ?? `-m gpt-5.5 -s workspace-write resume ${TOKEN}`;
   let rows: NativeProcessRow[] = shape === "shell_backed"
@@ -119,8 +130,12 @@ function world(options: WorldOptions = {}) {
 
   const tmux = {
     probeSession: async () => ({ state: "present" as const }),
-    listPanes: async () => (paneGone ? [] : [{ id: "%1", index: 0, cwd: "/work", width: 80, height: 24, active: true }]),
-    getPanePid: async () => (shape === "shell_backed" ? 100 : rows[0]?.pid ?? null),
+    listPanes: async () => (paneGone ? [] : [{ id: livePane, index: 0, cwd: "/work", width: 80, height: 24, active: true }]),
+    getPanePid: async (pane: string) => {
+      paneAsked.push(pane);
+      if (options.hc && pane !== livePane) return null;  // a finished terminal's address names no live process
+      return shape === "shell_backed" ? 100 : rows[0]?.pid ?? null;
+    },
     getPaneCommand: async () => paneCommand,
     getSessionEnv: async (_s: string, key: string) => (key === "CODEX_HOME" ? HOME : undefined),
     signalPid: async (pid: number, signal: string): Promise<TmuxResult> => {
@@ -151,7 +166,7 @@ function world(options: WorldOptions = {}) {
     restorePaneOption: async (_pane: string, _option: string, value: string | null): Promise<TmuxResult> => {
       calls.push(`restore remain-on-exit ${value}`); maybeThrow("restorePaneOption"); remainOnExit = value; return { ok: true };
     },
-    respawnPane: async (_pane: string, command?: string, respawnOptions?: { cwd?: string }): Promise<TmuxResult> => { calls.push(`respawn ${command}`); respawnCwds.push(respawnOptions?.cwd ?? "(none)"); maybeThrow("respawnPane"); relaunch(); return { ok: true }; },
+    respawnPane: async (_pane: string, command?: string, respawnOptions?: { cwd?: string }): Promise<TmuxResult> => { calls.push(`respawn ${command}`); respawnCwds.push(respawnOptions?.cwd ?? "(none)"); maybeThrow("respawnPane"); relaunch(); if (options.hc) livePane = "t2"; return { ok: true }; },
     capturePaneHistory: async () => paneLines.join("\n"),
   } as unknown as TmuxAdapter;
 
@@ -206,7 +221,7 @@ function world(options: WorldOptions = {}) {
   });
   const events = () => (db.prepare("SELECT type, payload FROM events WHERE type LIKE 'seat.restart_in_place%' ORDER BY seq").all() as Array<{ type: string; payload: string }>)
     .map((row) => ({ type: row.type, ...JSON.parse(row.payload) }));
-  return { db, service, node, session, calls, respawnCwds, launches, builds, events, sessionRegistry,
+  return { db, service, node, session, calls, respawnCwds, launches, builds, events, sessionRegistry, paneAsked,
     setRows: (next: NativeProcessRow[]) => { rows = next; },
     print: (text: string) => { paneLines.push(...text.split("\n").filter(Boolean)); } };
 }
@@ -470,6 +485,47 @@ describe("rig seat restart --keep-conversation: outcomes", () => {
     rigRepo.addNode(rigRepo.findRigsByName("r")[0]!.id, "dev.peer", { runtime: "codex", cwd: "/work" });
     const result = await w.service.restartInPlace({ seatRef: SEAT, plan: true });
     expect(result).toMatchObject({ peers: [{ logicalId: "dev.peer", home: "unknown", effect: expect.stringContaining("Not restarted; account unverified") }] });
+  });
+});
+
+describe("hc cutover: the seat's pane is the terminal address its binding registers", () => {
+  const bindingOf = (w: ReturnType<typeof world>) => w.sessionRegistry.getBindingForNode(w.node.id);
+
+  it("shell-backed on hc: plans and restarts in the same terminal (tmux_pane is NULL on the row)", async () => {
+    const w = world({ hc: {} });
+    expect(bindingOf(w)).toMatchObject({ attachmentType: "hc", tmuxPane: null, terminalAddress: "t1" });
+    expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: true, planOnly: true, pane: "t1", paneShape: "shell_backed" });
+    const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });
+    expect(result).toMatchObject({ ok: true, outcome: "restarted_account_unverified", pane: "t1", paneShape: "shell_backed" });
+    expect(bindingOf(w)).toMatchObject({ attachmentType: "hc", tmuxPane: null, terminalAddress: "t1" });
+  });
+
+  it("direct-native on hc: the replacement is observed at the NEW address, and the binding, the report and the verify follow it", async () => {
+    const w = world({ shape: "direct_native", hc: {} });
+    const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });
+    expect(result).toMatchObject({ ok: true, outcome: "restarted_account_unverified", paneShape: "direct_native", pane: "t2", newProcess: { pid: 300 } });
+    // The retiree's address is only asked about before the respawn: after it, it names a finished terminal.
+    const respawnedAt = w.calls.findIndex((call) => call.startsWith("respawn"));
+    expect(respawnedAt).toBeGreaterThan(0);
+    expect(w.paneAsked.slice(-3).every((pane) => pane === "t2"), JSON.stringify(w.paneAsked)).toBe(true);
+    expect(bindingOf(w)).toMatchObject({ attachmentType: "hc", tmuxPane: null, terminalAddress: "t2" });
+    const started = w.events()[0]!;
+    expect(started.pane, "the started event names the address the restart began on").toBe("t1");
+    expect(await w.service.verifyRestartInPlace({ seatRef: SEAT })).toMatchObject({ ok: true, outcome: "restarted_account_unverified" });
+  });
+
+  it("an hc row with no address registered is refused by the service gate as having no pane, and nothing is stopped", async () => {
+    const w = world({ hc: { registered: null } });
+    const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });
+    expect(result).toMatchObject({ ok: false, code: "session_not_live", message: expect.stringContaining("no bound tmux pane") });
+    expect(w.calls).toEqual([]);
+  });
+
+  it("an address that is not the session's live terminal is refused, and nothing is stopped", async () => {
+    const w = world({ hc: { registered: "t9" } });
+    const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });
+    expect(result).toMatchObject({ ok: false, code: "pane_unverified", message: expect.stringContaining("t9") });
+    expect(w.calls).toEqual([]);
   });
 });
 

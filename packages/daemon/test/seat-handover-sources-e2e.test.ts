@@ -298,7 +298,10 @@ describe("seat-handover source execution e2e (private hc core)", () => {
         const w = await forkSeat(seat, launch, ready);
         expect(w.result.ok, `${seat}: ${JSON.stringify(w.result)}`).toBe(false);
         // The failure is the induced one: a seat that cannot be respawned fails the same way and would pass this row for the wrong reason.
-        expect(JSON.stringify(w.result), `${seat}: the failure is not the respawn's`).not.toMatch(/respawn/i);
+        // Read the failure's own message: the result's fixed `guidance` text says "in-place respawn" on every failure of this step, so a
+        // match over the whole result would be about that sentence and not about what failed.
+        expect(w.result.message, `${seat}: the failure is not the respawn's`).not.toMatch(/respawn/i);
+        expect(w.result.message, `${seat}: it failed after the respawn, at the launch of the agent`).toContain('step "start_agent"');
         const rows = w.rows();
         expect(rows, `${seat}: no successor row committed`).toHaveLength(1);
         expect(rows[0]).toMatchObject({ id: w.session.id, resume_token: "parent-thread-0001" });

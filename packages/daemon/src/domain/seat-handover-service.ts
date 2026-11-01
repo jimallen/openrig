@@ -1050,14 +1050,20 @@ export class SeatHandoverService {
         ).run(...previousSessionIdsSuperseded);
       }
 
-      // A discovery record names a tmux session and pane and carries no terminal address, so this path binds tmux until the
-      // successor launch hands the record one (hc-lifecycle). writeSeatBinding already writes hc rows correctly.
-      this.upsertBinding(input.node.id, {
-        attachmentType: "tmux",
-        tmuxSession: input.discovered.tmuxSession,
-        tmuxWindow: input.discovered.tmuxWindow,
-        tmuxPane: input.discovered.tmuxPane,
-      });
+      // The discovery record's pane is what the successor launch observed: on hc that is the address of the terminal the
+      // respawn minted (the record's `tmuxPane` field holds it), and the binding follows it, as a binding follows the seat's
+      // label. A record with no pane has no terminal to bind: refused inside the transaction, nothing is written.
+      if (this.tmuxAdapter.hostKind === "hc") {
+        if (!input.discovered.tmuxPane) throw new Error(`The successor record for "${input.discovered.tmuxSession}" names no terminal, so the seat's binding cannot follow it.`);
+        this.upsertBinding(input.node.id, { attachmentType: "hc", tmuxSession: input.discovered.tmuxSession, terminalAddress: input.discovered.tmuxPane });
+      } else {
+        this.upsertBinding(input.node.id, {
+          attachmentType: "tmux",
+          tmuxSession: input.discovered.tmuxSession,
+          tmuxWindow: input.discovered.tmuxWindow,
+          tmuxPane: input.discovered.tmuxPane,
+        });
+      }
       // (e/Class-B): capture the RETIRING occupant's generation BEFORE registerClaimedSession mints the
       // successor's tenure below — after that mint the node's "current" generation IS the successor's
       // (the name is reused), so this is the only point the retiree's generation is resolvable.

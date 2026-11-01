@@ -20,7 +20,7 @@ function terminal(options?: RunnerInputOptions) {
   output.on("data", (chunk) => { screen += chunk.toString(); });
   const editor = createRunnerInput(input as unknown as NodeJS.ReadStream,
     output as unknown as NodeJS.WriteStream, (s) => blocks.push(s), options);
-  return { input, editor, blocks, screen: () => screen };
+  return { input, output, editor, blocks, screen: () => screen };
 }
 
 const PDA: RunnerInputOptions = { label: "pda-runner", interruptInsidePaste: "content" };
@@ -29,6 +29,33 @@ describe("runner-pane-io: createRunnerInput options (pda L0)", () => {
   it("pi-runner re-exports the shared editor and endpoint lookup, not a copy", () => {
     expect(piRunner.createRunnerInput).toBe(createRunnerInput);
     expect(piRunner.MAX_PI_INPUT_BYTES).toBe(1024 * 1024);
+  });
+
+  it("a runner's unfinished row is left before the editor redraws: the redraw starts at column 0 of the cursor's row and clears below", () => {
+    // A streamed reply sits on the row the cursor is on. The editor's refresh (CHA 1, then ED 0) lands on that row and erases it.
+    // The hook runs before the first byte of the paste is handled, so the row is ended first and the refresh finds a fresh row.
+    const holder: { out?: PassThrough } = {};
+    const t = terminal({ ...PDA, onInterrupt: () => undefined, beforeInput: () => { holder.out!.write("<row-break>"); } });
+    holder.out = t.output;
+    try {
+      t.input.write(START + "pasted" + END);
+      expect(t.blocks).toEqual([]);
+      // Past the editor's own bracketed-paste switch-on, written when it starts: the break comes first, the draw after it.
+      const drawn = t.screen().replace("\u001b[?2004h", "");
+      expect(drawn.startsWith("<row-break>"), "the row is ended before anything of the editor's is drawn").toBe(true);
+      expect(drawn, "the editor still draws the pasted text").toContain("pasted");
+    } finally { t.editor.close(); }
+  });
+
+  it("the hook runs before the editor sees each chunk, and a throwing hook does not break the editor", () => {
+    const order: string[] = [];
+    const t = terminal({ ...PDA, onInterrupt: () => undefined, beforeInput: () => { order.push("hook"); throw new Error("pane bookkeeping"); } });
+    try {
+      t.input.write("a");
+      t.input.write("b\r");
+      expect(order).toEqual(["hook", "hook"]);
+      expect(t.blocks).toEqual(["ab"]);
+    } finally { t.editor.close(); }
   });
 
   it("T5: with onInterrupt, Ctrl-C clears the line and submits nothing", () => {

@@ -92,6 +92,13 @@ export class PdaPane {
   /** True while streamed text sits on an unfinished line. */
   get inLine(): boolean { return this.lineOpen; }
 
+  /** Move to a fresh row WITHOUT releasing the held tail. The editor redraws its line from column 0 of the cursor's row and clears
+   *  the rest of the screen, so a streamed line still open under it is erased (a paste during a streamed reply wiped the reply's
+   *  first row). The tail stays held: a secret that straddles this break is still caught, and `closeLine` releases it later. */
+  breakLine(): void {
+    if (this.lineOpen) { this.emit("\n"); this.lineOpen = false; }
+  }
+
   /** Finish a streamed line: release the held tail and end the line. */
   closeLine(): void {
     const rest = this.redactor.flush();

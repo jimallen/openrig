@@ -55,6 +55,9 @@ export interface RunnerInputOptions {
    *  closing (false). Edge-only. Ordinary typing and a paste that closed in time never report: only a recovered lost
    *  paste does. The runner records it in its sidecar so `rig send` refuses instead of appending to the stale text. */
   onPasteLeftoverChange?: (held: boolean) => void;
+  /** Called before the editor handles bytes that arrived. The editor's redraw starts at column 0 of the cursor's row and
+   *  clears everything below, so a runner that leaves its own text on an unfinished row (a streamed reply) moves off it here. */
+  beforeInput?: () => void;
 }
 
 export function createRunnerInput(
@@ -200,7 +203,11 @@ export function createRunnerInput(
   const end = () => editor.close();
   input.setRawMode(true);
   output.write("\u001b[?2004h");
-  const onData = (chunk: Buffer) => { receive(chunk); settleLeftover(); };
+  const onData = (chunk: Buffer) => {
+    try { options.beforeInput?.(); } catch { /* the pane's own bookkeeping must not break the editor */ }
+    receive(chunk);
+    settleLeftover();
+  };
   input.on("data", onData);
   input.once("end", end);
   editor.on("line", submit);

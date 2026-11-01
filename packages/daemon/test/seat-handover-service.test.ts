@@ -177,6 +177,34 @@ describe("SeatHandoverService", () => {
     });
   });
 
+  describe("on an hc host the binding follows the terminal the successor launch observed", () => {
+    const hcTmux = (): TmuxAdapter => Object.assign(tmux(), { hostKind: "hc" as const, hasSession: hasSession }) as TmuxAdapter;
+    const paneOf = (id: string) => [{ id, index: 0, cwd: "/project", width: 200, height: 120, active: true }];
+
+    it("a fresh handover writes an hc row at the NEW address (the respawn minted it), with no tmux pane", async () => {
+      const { node } = seedSeat();
+      db.prepare("UPDATE bindings SET attachment_type = 'hc', tmux_pane = NULL, terminal_address = 't5' WHERE node_id = ?").run(node.id);
+      listPanes.mockResolvedValueOnce(paneOf("t5")).mockResolvedValue(paneOf("t6"));
+      const result = await newService(hcTmux()).handover({ seatRef: "dev-impl@seat-rig", reason: "hc", source: "fresh", operator: "orch-lead@seat-rig" });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(respawnPane.mock.calls[0]![0]).toBe("t5");
+      expect(db.prepare("SELECT attachment_type, tmux_session, tmux_pane, terminal_address FROM bindings WHERE node_id = ?").get(node.id)).toEqual({
+        attachment_type: "hc", tmux_session: "dev-impl@seat-rig", tmux_pane: null, terminal_address: "t6",
+      });
+    });
+
+    it("a successor record that names no terminal cannot be bound: refused, and the seat's row is left as it was", async () => {
+      const { node } = seedSeat();
+      db.prepare("UPDATE bindings SET attachment_type = 'hc', tmux_pane = NULL, terminal_address = 't5' WHERE node_id = ?").run(node.id);
+      const discovered = seedDiscovery({ tmuxSession: "successor-session" });
+      db.prepare("UPDATE discovered_sessions SET tmux_pane = NULL WHERE id = ?").run(discovered.id);
+      const before = db.prepare("SELECT * FROM bindings WHERE node_id = ?").get(node.id);
+      const outcome = await newService(hcTmux()).handover({ seatRef: "dev-impl@seat-rig", reason: "hc", source: `discovered:${discovered.id}`, operator: "orch-lead@seat-rig" });
+      expect(outcome).toMatchObject({ ok: false, code: "handover_commit_failed", message: expect.stringContaining("names no terminal") });
+      expect(db.prepare("SELECT * FROM bindings WHERE node_id = ?").get(node.id)).toEqual(before);
+    });
+  });
+
   it("binds an active seat to an already-created discovered successor", async () => {
     const { rig, node, sessionId } = seedSeat();
     const discovered = seedDiscovery();

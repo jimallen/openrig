@@ -25,12 +25,20 @@ describe("hcTerminalRef: what a tmux-style target means", () => {
     expect(hcTerminalRef("t7")).toBe("t7");
     expect(hcTerminalRef("spk/t12")).toBe("spk/t12");
   });
+  it("keeps every address hc mints, which are base 30 (digits and bcdfghjkmnpqrstvwxyz): the 20th terminal is t1b", () => {
+    // Measured on a private core: addresses run t1..t19, t1b, t1c, t1d, t1f ... t1t0 across 1,000 terminals. Taken as decimal
+    // only, each of these named a seat that does not exist, and a seat past its 19th terminal could not be found by address.
+    for (const address of ["t19", "t1b", "t1c", "t1d", "t1f", "t1g", "t1h", "t1j", "t1k", "t1m", "t1n", "t1p", "t1q", "t1r", "t1s", "t1t", "t1v", "t1w", "t1x", "t1y", "t1z", "t7x", "t10p", "t1t0", "spk/t1b"]) {
+      expect(hcTerminalRef(address), address).toBe(address);
+    }
+  });
   it("names nothing for a tmux id, a window or pane that cannot exist, or no name", () => {
     for (const none of ["%3", "@1", "$2", "dev-impl@my-rig:1", "dev-impl@my-rig:0.1", "", "=", ":"]) expect(hcTerminalRef(none), none).toBeNull();
   });
   it("does not take a seat named like a word starting with t for an address", () => {
-    expect(hcTerminalRef("t7x")).toBe(hcTerminalName("t7x"));
-    expect(hcTerminalRef("tt7")).toBe(hcTerminalName("tt7"));
+    // A letter outside hc's alphabet (a vowel, or l) cannot be part of an address. (A bare word made only of the alphabet, such as
+    // `tmp`, reads as one: canonical seat names have an `@`.)
+    for (const word of ["t7a", "tester", "tools", "task1", "t7e", "tl", "t-7", "T7"]) expect(hcTerminalRef(word), word).toBe(hcTerminalName(word));
   });
 });
 

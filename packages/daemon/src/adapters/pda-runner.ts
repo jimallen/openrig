@@ -270,6 +270,11 @@ export class PdaRunner {
 
   // ── Public surface ──
 
+  /** The editor is about to redraw its line: leave the row a streamed reply is still on (see PdaPane.breakLine). */
+  breakStreamedLine(): void {
+    if (!this.finished) this.pane.breakLine();
+  }
+
   /** An Enter after a paste: one block, one message. Durable before anything is posted. */
   submit(block: string): void {
     if (this.finished) return;
@@ -1105,10 +1110,12 @@ export function installPdaRunnerFatalHandlers(proc: FatalProcess, onFatal: (labe
 
 /** The shared editor in pda mode: a paste is content (ETX included), Ctrl-C clears the line, Enter after a
  *  paste is one message. There is no slash command and no prefix handler. */
-export function wirePdaRunnerInput(runner: Pick<PdaRunner, "submit" | "interrupted"> & Partial<Pick<PdaRunner, "setPasteOpen" | "setPasteLeftover">>, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
+export function wirePdaRunnerInput(runner: Pick<PdaRunner, "submit" | "interrupted"> & Partial<Pick<PdaRunner, "setPasteOpen" | "setPasteLeftover" | "breakStreamedLine">>, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
   return createRunnerInput(input, output, (block) => runner.submit(block), {
     label: PDA_RUNNER_LABEL,
     interruptInsidePaste: "content",
+    // A paste that lands while a reply is streaming must not redraw over the reply's open row.
+    beforeInput: () => runner.breakStreamedLine?.(),
     onInterrupt: () => runner.interrupted(),
     // OF-148: `rig send` refuses while this is true (PdaRuntimeAdapter.sendReadiness).
     onPasteOpenChange: (open) => runner.setPasteOpen?.(open),

@@ -113,7 +113,14 @@ describe("seat-handover cutover money-proof (private hc core, both retiree-exit 
         expect(predLines, "predecessor deep history PRESERVED, readable at its old address").toBeGreaterThan(100);
         expect(cap, "successor booted in the seat's new terminal").toContain("SUCCESSOR v2");
         expect(cap, "stopgap from-record recap fired").toContain("from record");
-        expect(cap, "the predecessor's lines are not in the successor's terminal").not.toContain("v1_line_");
+        // The terminal carries no scrollback of the predecessor's. What the successor was DELIVERED is another matter: the restore
+        // packet quotes the retiree's visible screen on purpose ("Predecessor terminal (captured)"), so the packet's own text is
+        // set aside and what the new terminal held before it arrived is what must be clean. The history above the captured
+        // screen (line 1 of 150 on a 120-row terminal) must be in neither.
+        const packetAt = cap.indexOf("=== OpenRig seat handover");
+        expect(packetAt, "the restore packet reached the successor's terminal").toBeGreaterThan(0);
+        expect(cap.slice(0, packetAt), "the predecessor's lines are not in the successor's terminal before the packet").not.toContain("v1_line_");
+        expect(cap, "the predecessor's history above the captured screen was not carried over").not.toContain("v1_line_1_atom_A5");
 
         // (i-a) THE CLASS-CLOSING PIN: the retiree process is DEAD post-handover, so its
         // session-local memory-only automations (crons/timers registered in-process — the

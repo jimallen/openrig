@@ -53,12 +53,12 @@ describe("HcLifecycle.killSession", () => {
 
 describe("HcLifecycle.respawnPane", () => {
   const daemonEnv = { PATH: "/bin", SHELL: "/bin/zsh", CLAUDECODE: "1" };
-  const fresh = (before: HcTerminal) => new FakeClient((m) => (m === "terminal.get" ? before : m === "terminal.kill" ? { ...before, state: "finished" } : term({ address: "t8" })));
+  const fresh = (before: HcTerminal, older: HcTerminal[] = []) => new FakeClient((m) => (m === "terminal.get" ? before : m === "terminal.kill" ? { ...before, state: "finished" } : m === "terminal.list" ? { terminals: [before, ...older] } : m === "terminal.rm" ? { removed: "x" } : term({ address: "t8" })));
 
   it("kills the live program, then runs again under the same name, following the label", async () => {
     const client = fresh(term({ labels: { [SEAT_LABEL]: "qa@rig", "herdr.space": "rig:eztrack", "herdr.tab": "rig:eztrack/team" } }));
     await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("qa@rig", "claude --resume abc", { env: { API_KEY: "k-needle" } })).resolves.toEqual({ ok: true });
-    expect(methods(client)).toEqual(["terminal.get", "terminal.kill", "terminal.run"]);
+    expect(methods(client)).toEqual(["terminal.get", "terminal.kill", "terminal.run", "terminal.list"]);
     const run = client.calls[2]![1]!;
     expect(run.name).toBe(hcTerminalName("qa@rig"));
     expect(run.labels).toEqual({ [SEAT_LABEL]: "qa@rig", "herdr.space": "rig:eztrack", "herdr.tab": "rig:eztrack/team" });
@@ -84,7 +84,7 @@ describe("HcLifecycle.respawnPane", () => {
   it("does not kill a terminal that already finished", async () => {
     const client = fresh(term({ state: "finished" }));
     await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("qa@rig")).resolves.toEqual({ ok: true });
-    expect(methods(client)).toEqual(["terminal.get", "terminal.run"]);
+    expect(methods(client)).toEqual(["terminal.get", "terminal.run", "terminal.list"]);
   });
   it("runs nothing when the kill did not end the program", async () => {
     const client = new FakeClient((m) => (m === "terminal.get" ? term() : term()));
@@ -105,6 +105,89 @@ describe("HcLifecycle.respawnPane", () => {
   it("refuses an invalid env name before touching the seat", async () => {
     const client = fresh(term());
     await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("qa@rig", undefined, { env: { "A=B": "x" } })).resolves.toMatchObject({ ok: false, code: "invalid_env" });
+    expect(client.calls).toEqual([]);
+  });
+});
+
+describe("HcLifecycle.respawnPane, named by a pane id", () => {
+  const daemonEnv = { PATH: "/bin", SHELL: "/bin/zsh" };
+  const FINISHED = (address: string, over: Partial<HcTerminal> = {}) => term({ address, state: "finished", name: hcTerminalName("qa@rig"), ...over });
+  const answerer = (before: HcTerminal, older: HcTerminal[] = [], rm: () => unknown = () => ({ removed: "x" })) =>
+    new FakeClient((m, p) => (m === "terminal.get" ? before : m === "terminal.kill" ? { ...before, state: "finished" } : m === "terminal.list" ? { terminals: [before, ...older] } : m === "terminal.rm" ? rm() : { address: "t9", ...(p ?? {}) }));
+
+  it("names the new terminal after the seat's label, never after the address the caller held", async () => {
+    // A launch passes the pane id its binding registered (`t7`); the terminal must not be called `t7`, nor hashed from it.
+    const client = answerer(term());
+    await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("t7", "claude --resume abc")).resolves.toEqual({ ok: true });
+    expect(client.calls[0]).toEqual(["terminal.get", { terminal: "t7" }]);
+    expect(client.calls[1]).toEqual(["terminal.kill", { terminal: "t7" }]);
+    const run = client.calls.find(([m]) => m === "terminal.run")![1]!;
+    expect(run.name).toBe(hcTerminalName("qa@rig"));
+    expect(run.name).not.toBe(hcTerminalName("t7"));
+    expect(run.labels).toMatchObject({ [SEAT_LABEL]: "qa@rig" });
+  });
+  it("refuses a terminal that carries no seat label (a probe) without killing it", async () => {
+    const client = answerer(term({ labels: { [PROBE_LABEL]: "probe" } }));
+    await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("t7")).resolves.toMatchObject({ ok: false, code: "not_a_seat" });
+    expect(methods(client)).toEqual(["terminal.get"]);
+  });
+  it("refuses an old finished address when a live terminal already holds the seat's name, and starts nothing else", async () => {
+    const client = new FakeClient((m) => (m === "terminal.get" ? FINISHED("t3") : new HcError("taken", "name_taken", -32000)));
+    await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("t3")).resolves.toMatchObject({ ok: false, code: "pane_superseded" });
+    expect(methods(client)).toEqual(["terminal.get", "terminal.run"]);
+  });
+  it("removes the seat's finished records older than the predecessor, and only those", async () => {
+    const older = [FINISHED("t1"), FINISHED("t2"),
+      FINISHED("t4", { name: hcTerminalName("other@rig"), labels: { [SEAT_LABEL]: "other@rig" } }),  // another seat's record
+      FINISHED("t5", { labels: { [PROBE_LABEL]: "x" } }),  // same name, no seat label
+      term({ address: "t6", name: hcTerminalName("qa@rig") })];  // live: never removed
+    const client = answerer(term({ name: hcTerminalName("qa@rig") }), older);
+    await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("t7")).resolves.toEqual({ ok: true });
+    expect(client.calls.filter(([m]) => m === "terminal.list")).toEqual([["terminal.list", { all: true }]]);
+    expect(client.calls.filter(([m]) => m === "terminal.rm").map(([, p]) => p)).toEqual([{ terminal: "t1" }, { terminal: "t2" }]);
+  });
+  it("never removes the predecessor it just replaced or the terminal it just started, even one already finished", async () => {
+    const client = answerer(term({ name: hcTerminalName("qa@rig") }), [FINISHED("t9"), FINISHED("t1")]);
+    await expect(new HcLifecycle(client, { daemonEnv }).respawnPane("t7", "exit 0")).resolves.toEqual({ ok: true });
+    expect(client.calls.filter(([m]) => m === "terminal.rm").map(([, p]) => p)).toEqual([{ terminal: "t1" }]);
+  });
+  it("warns, and still succeeds, when an older record cannot be removed or the list cannot be read", async () => {
+    const stuck = answerer(term({ name: hcTerminalName("qa@rig") }), [FINISHED("t1")], () => new HcError("busy", "busy", -32000));
+    await expect(new HcLifecycle(stuck, { daemonEnv }).respawnPane("t7")).resolves.toMatchObject({ ok: true, warnings: [expect.stringContaining("t1")] });
+    const deaf = new FakeClient((m) => (m === "terminal.get" ? term() : m === "terminal.kill" ? term({ state: "finished" }) : m === "terminal.list" ? new HcUnavailableError("down") : { address: "t9" }));
+    await expect(new HcLifecycle(deaf, { daemonEnv }).respawnPane("t7")).resolves.toMatchObject({ ok: true, warnings: [expect.stringContaining("could not be listed")] });
+  });
+});
+
+describe("HcLifecycle: every method reads a pane id the way it reads a seat name", () => {
+  it("signalPaneProcess, isPaneDead and setRemainOnExit ask hc for the address, not for a name hashed from it", async () => {
+    // Read as a seat name, `t7` was a missing terminal: isPaneDead answered "dead" for a live retiree and nothing was signalled.
+    const sent: number[] = [];
+    const client = new FakeClient(() => term());
+    const lifecycle = new HcLifecycle(client, { kill: (pid) => { sent.push(pid); } });
+    await expect(lifecycle.isPaneDead("t7")).resolves.toBe(false);
+    await expect(lifecycle.signalPaneProcess("t7", "TERM")).resolves.toEqual({ ok: true });
+    await expect(lifecycle.setRemainOnExit("t7", true)).resolves.toEqual({ ok: true });
+    expect(sent).toEqual([4242]);
+    expect(client.calls.map(([, p]) => p)).toEqual([{ terminal: "t7" }, { terminal: "t7" }, { terminal: "t7" }]);
+  });
+  it("does not ask hc about a tmux pane id, which names nothing there", async () => {
+    const client = new FakeClient(() => term());
+    await expect(new HcLifecycle(client).signalPaneProcess("%3", "TERM")).resolves.toMatchObject({ ok: false, code: "pane_pid_unavailable" });
+    expect(client.calls).toEqual([]);
+  });
+});
+
+describe("HcLifecycle.paneLocalOption", () => {
+  it("reads remain-on-exit as on for a terminal that exists, live or finished, and null for one that does not", async () => {
+    await expect(new HcLifecycle(new FakeClient(() => term())).paneLocalOption("t7", "remain-on-exit")).resolves.toBe("on");
+    await expect(new HcLifecycle(new FakeClient(() => term({ state: "finished" }))).paneLocalOption("t7", "remain-on-exit")).resolves.toBe("on");
+    await expect(new HcLifecycle(new FakeClient(() => notFound())).paneLocalOption("t7", "remain-on-exit")).resolves.toBeNull();
+  });
+  it("says it could not be read when the core cannot be asked, and has no value for any other option", async () => {
+    await expect(new HcLifecycle(new FakeClient(() => new HcUnavailableError("down"))).paneLocalOption("t7", "remain-on-exit")).resolves.toBeUndefined();
+    const client = new FakeClient(() => term());
+    await expect(new HcLifecycle(client).paneLocalOption("t7", "mouse")).resolves.toBeNull();
     expect(client.calls).toEqual([]);
   });
 });
