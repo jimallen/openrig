@@ -115,6 +115,6 @@ describe("a pinned core, after startup", () => {
 describe("startup", () => {
   it("pins the calls to the core it connected to", () => {
     const source = fs.readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
-    expect(source).toMatch(/const hcWatch = await connectHcCore\(\{ socketPath: hcClient\.socketPath \}\);\s*[^\n]*\n\s*pinCallsToCore\(hcClient\.socketPath, hcWatch\);/);
+    expect(source).toMatch(/const hcCoreWatch = hcClient \? await connectHcCore\(\{ socketPath: hcClient\.socketPath, client: hcClient \}\) : undefined;\s*[^\n]*\n\s*if \(hcClient && hcCoreWatch\) pinCallsToCore\(hcClient\.socketPath, hcCoreWatch\);/);
   });
 });
