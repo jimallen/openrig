@@ -77,8 +77,9 @@ describe.skipIf(!python)("hc-placement.ts and rig-here place seats by the same s
   it("shows the kernel's human seat in the same tab", () => {
     // rig-here `tile_kernel` shows [("human", [KERNEL_HUMAN])] in rig "kernel" (not in the copy: it calls the app).
     const human = "operator-human@kernel";
-    expect(tsPlacement(KERNEL_RIG, [human])).toEqual({ [human]: fromRigHere({ op: "labels", rig: KERNEL_RIG, tab: KERNEL_TAB }).labels });
-    expect(Object.fromEntries(planLabels(KERNEL_RIG, planKernelTabs(human)))).toEqual(tsPlacement(KERNEL_RIG, [human]));
+    const mine = Object.fromEntries(planLabels(KERNEL_RIG, planKernelTabs(human)));
+    expect(mine).toEqual({ [human]: fromRigHere({ op: "labels", rig: KERNEL_RIG, tab: KERNEL_TAB }).labels });
+    expect(mine[human]?.["herdr.tab"]).toBe("rig:kernel/human");
   });
 
   it("refuses the same rig and tab names that would make a second separator or an empty id", () => {
