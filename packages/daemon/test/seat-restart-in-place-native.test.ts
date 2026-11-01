@@ -30,7 +30,9 @@ import { SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-host.js";
 import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
-import { seatDeliveryGuardSchema } from "../src/db/migrations/087_seat_delivery_guard.js";
+import Database from "better-sqlite3";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { migrate } from "../src/db/migrate.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
@@ -121,12 +123,11 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     expect(home).not.toBe(nodePath.join(os.homedir(), ".codex"));
     const seat = `dev-codex@${shape === "shell_backed" ? "shell" : "native"}-rig`;
     sessions.push(seat);
-    const db = createFullTestDb();
+    // The shared fixture leaves out the guard's tables, so a guarded seat runs on the whole schema.
+    const db = opts.guarded ? new Database(":memory:") : createFullTestDb();
+    if (opts.guarded) migrate(db, ALL_MIGRATIONS);
     const realTmux = host();
-    if (opts.guarded) {
-      db.exec(seatDeliveryGuardSchema.sql);  // the shared fixture leaves this subsystem's table out
-      realTmux.deliveryGuard = new SeatDeliveryGuard(db, (target) => resolveGuardTarget(db, target));
-    }
+    if (opts.guarded) realTmux.deliveryGuard = new SeatDeliveryGuard(db, (target) => resolveGuardTarget(db, target));
     const adapter = new CodexRuntimeAdapter({
       tmux: realTmux, launchPath, detectDaemonSupport: async () => ({ kind: "supported" }),
       fsOps: { readFile: (p) => fs.readFileSync(p, "utf8"), writeFile: () => {}, exists: (p) => fs.existsSync(p), mkdirp: () => {}, homedir: root },
