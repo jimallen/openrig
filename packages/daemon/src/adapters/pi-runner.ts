@@ -25,6 +25,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
+import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
@@ -233,6 +234,8 @@ export interface RunnerIo {
   readFirstLine?(path: string): string | null;
   /** The entry ids of a complete, valid Pi session file (a fork's parent); null when it isn't one. Never blocks. */
   readSessionEntryIds?(path: string): Promise<ReadonlySet<string> | null>;
+  /** hc cutover W37: tell herdr-core what the seat is doing (OSC 7501 on the pane). Absent outside an hc terminal. */
+  reportHcStatus?(state: RunnerHcState): void;
   now(): string;
 }
 
@@ -499,6 +502,8 @@ export class RunnerCore {
       }
       this.writeSidecar({});
       this.io.mirrorLine(`${this.runtime === "omp" ? "[omp-runner] READY" : PI_RUNNER_READY_MARKER} session=${this.sessionFile ?? "unknown"}`);
+      // Ready and not mid-run: a seat that has said nothing yet is `silent` to hc, which no send can be tied to.
+      if (!this.streaming) this.io.reportHcStatus?.("idle");
       this.postSessionIdentity();
       return;
     }
@@ -737,6 +742,9 @@ export class RunnerCore {
       if (this.runtime === "omp") this.raiseAttention("runtime_error");
     }
     if (!mapped.activity) return;
+    // hc status follows the run, not the attention: a Stop dropped below for an operator-action notice still ends the run.
+    const hcState = hcStateForActivity(mapped.activity.hookEvent);
+    if (hcState !== null) this.io.reportHcStatus?.(hcState);
     if (mapped.activity.hookEvent === "Stop" && this.attention) {
       // The turn ended, but the operator still has to act. Drop the Stop; if
       // later activity replaced the attention, restore it as the final state.
@@ -1197,6 +1205,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     },
     mirrorLine: (line) => process.stdout.write(`${line}\n`),
     mirrorAppend: (text) => process.stdout.write(text),
+    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { process.stdout.write(text); }, runtime === "omp" ? "omp-runner" : "pi-runner"),
     postActivity: (payload) => {
       if (!endpoint || typeof fetch !== "function") return;
       const controller = new AbortController();

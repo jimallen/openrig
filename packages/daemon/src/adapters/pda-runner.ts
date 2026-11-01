@@ -32,6 +32,7 @@
 import fs from "node:fs";
 import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
 import {
   PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_LABEL, PDA_RUNNER_READY_MARKER, PDA_RUNTIME,
   isPdaLoopbackBaseUrl, parsePdaRunnerLock, parsePdaRunnerState, pdaAgentNameProblem, pdaRunnerLockLive, pdaSeatPaths, processPidAlive, sanitizeForPane,
@@ -150,6 +151,8 @@ export interface PdaRunnerDeps {
   write: (text: string) => void;
   /** Best-effort POST to the daemon's activity endpoint. Must not throw, must not block. */
   postActivity: (payload: Record<string, unknown>) => void;
+  /** hc cutover W37: tell herdr-core what the seat is doing (OSC 7501 on the pane). Absent outside an hc terminal. */
+  reportHcStatus?: (state: RunnerHcState) => void;
   fs: PdaRunnerFs;
   now?: () => Date;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -1026,6 +1029,8 @@ export class PdaRunner {
   private postActivity(hookEvent: string, subtype: string | null): void {
     if (this.heldReported !== null && subtype !== this.heldReported.code) this.heldReportOverwritten = true;
     const safeSubtype = subtype === null ? null : sanitizeForPane(subtype).slice(0, 64);
+    const hcState = hcStateForActivity(hookEvent);
+    if (hcState !== null) this.deps.reportHcStatus?.(hcState);
     try {
       this.deps.postActivity({
         sessionName: this.deps.args.sessionName,
@@ -1325,6 +1330,7 @@ async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths): Promise<void
     readToken: trackedSource, secrets,
     write: (text) => { process.stdout.write(text); },
     postActivity: createActivityPoster(endpoint),
+    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { process.stdout.write(text); }, "pda-runner"),
     fs: nodeRunnerFs,
     usage,
     onStop: () => stopCalls.abort(),

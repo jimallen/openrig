@@ -127,6 +127,8 @@ export interface RigOptions {
   defaultHold?: boolean;
   /** The runner's clock (default real time). A test moves it to cross a freshness window without waiting. */
   now?: () => Date;
+  /** hc cutover W37: where the runner reports idle and working to herdr-core (OSC 7501); absent = not an hc terminal. */
+  reportHcStatus?: PdaRunnerDeps["reportHcStatus"];
 }
 
 export interface Rig {
@@ -226,6 +228,7 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
     backoffStartMs: 5,
     backoffCapMs: 20,
     usage: options.usage,
+    ...(options.reportHcStatus ? { reportHcStatus: options.reportHcStatus } : {}),
   };
   const runner = new PdaRunner(deps);
   const rig: Rig = {
