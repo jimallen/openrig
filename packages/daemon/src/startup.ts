@@ -216,6 +216,8 @@ interface DaemonOptions {
   seatMessagingPorts?: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
   /** Seat Messaging: a crash test's hold on the real ports, so it can hang an attempt at a named point. */
   wrapSeatMessagingPorts?: (ports: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts) => import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
+  /** Seat Messaging: gives a crash test the closure a Codex seat's restart runs, so the test runs that very closure. */
+  onCodexReconcileReady?: (reconcile: (sessionName: string, threadId: string | null) => void) => void;
   /** Seat Messaging S3: a test's shorter schedule. */
   messagePumpTiming?: Partial<import("./domain/seat-messaging/message-pump.js").MessagePumpTiming>;
   /** S20 — the effective bind plan (mode/hosts/tailscaleDetected/ignoredRoutingHost),
@@ -251,8 +253,6 @@ interface DaemonOptions {
 }
 
 interface DaemonResult {
-  /** A Codex seat's restart settling its gate: what the runtime adapters call. Exposed so a crash test runs this very closure. */
-  reconcileCodexSeat: (sessionName: string, threadId: string | null) => void;
   app: Hono;
   db: Database.Database;
   deps: AppDeps;
@@ -701,6 +701,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // Rows in `cleared` did not arrive: the pump resends them.
     if (messagePumpEnabled) for (const marker of cleared) seatMessages.reopenCleared(messageId(marker.id), marker.nonce);
   };
+  opts?.onCodexReconcileReady?.(reconcileCodexSeat);
   const codexResume = new CodexResumeAdapter(tmuxAdapter, { reconcileSeatGate: reconcileCodexSeat, prepareTeamWorkspace, seatLaunchEnvironment, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), detectVersion: codexVersionProbe(process.env.PATH, undefined, configuredCodexHome), readNetworkDefault: readCodexNetworkDefault, existingMcpServerNames });
   // OPR.0.4.6.PI1 — the Pi seat-state root + the compiled runner entry (daemon
   // dist). Shared by the Pi runtime adapter, the resume adapter, and the
@@ -2810,5 +2811,5 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   if (hcAdapter) deps.hcTerminal = { client: hcAdapter.client, ...(deliveryGuard ? { guard: deliveryGuard } : {}) };
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  return { reconcileCodexSeat, app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket, ...(hcCoreWatch ? { hcCoreWatch } : {}) };
+  return { app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket, ...(hcCoreWatch ? { hcCoreWatch } : {}) };
 }

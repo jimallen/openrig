@@ -46,7 +46,7 @@ note("booted");
 // A send through the daemon's real SessionTransport, as every sender makes one.
 if (process.env.MPD_SEND) {
   const { seat, id, body } = JSON.parse(process.env.MPD_SEND) as { seat: string; id: string; body: string };
-  const result = await daemon.deps.sessionTransport.send(seat, body, { deliveryId: id, actorSession: "lead@pump-rig" });
+  const result = await daemon.deps.sessionTransport!.send(seat, body, { deliveryId: id, actorSession: "lead@pump-rig" });
   note(`transport ${id} ${result.reason ?? ""} sent=${String(result.sent)}`);
 }
 setInterval(() => undefined, 60_000);

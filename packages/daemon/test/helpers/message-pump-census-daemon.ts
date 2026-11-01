@@ -22,15 +22,17 @@ const noted = (hop: LastHop): LastHop => ({
   },
 });
 
+let reconcileSeat: ((sessionName: string, threadId: string | null) => void) | undefined;
 const daemon = await createDaemon({
   dbPath: db,
+  onCodexReconcileReady: (reconcile) => { reconcileSeat = reconcile; },
   wrapSeatMessagingPorts: (ports) => ({ gateFor: (seat) => ports.gateFor(seat), hopFor: (seat) => { const hop = ports.hopFor(seat); return hop ? noted(hop) : null; } }),
   messagePumpTiming: { tickMs: 40, pauseRecheckMs: 80, backoffMs: [300, 300, 300] },
 });
 note("booted");
 if (process.env.MPD_SEND) {
   const { seat, id, body } = JSON.parse(process.env.MPD_SEND) as { seat: string; id: string; body: string };
-  const result = await daemon.deps.sessionTransport.send(seat, body, { deliveryId: id, actorSession: "lead@cr" });
+  const result = await daemon.deps.sessionTransport!.send(seat, body, { deliveryId: id, actorSession: "lead@cr" });
   note(`transport ${id} ${result.reason ?? ""} sent=${String(result.sent)}`);
 }
 // A seat restart's reconcile: startup's own closure. The parent asks by making this file.
@@ -38,7 +40,7 @@ const reconcile = join(dir, "reconcile");
 const seat = process.env.MPD_SEAT;
 setInterval(() => {
   if (!seat || !existsSync(reconcile)) return;
-  daemon.reconcileCodexSeat(seat, null);
+  reconcileSeat?.(seat, null);
   note("reconciled");
   appendFileSync(reconcile + ".done", "x");
 }, 50).unref();

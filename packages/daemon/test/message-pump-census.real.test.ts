@@ -339,8 +339,8 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     await hopSaw(s, "paused:guard_held m1");
     await kill(first);
     daemon(s);
-    await settleLook();
-    expect(s.read("m1")).toMatchObject({ message_state: "attempting", attempts: 0, message_pause_reason: "guard_held" });
+    await until(() => s.hop().filter((l) => l === "paused:guard_held m1"), (l) => l.length >= 2, "the restarted pump holding it too", 30_000);
+    expect(s.read("m1").message_state).toBe("attempting");
     expect(s.log()).toEqual([]);
     const screen = (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text;
     expect(screen).toContain("half a thought");

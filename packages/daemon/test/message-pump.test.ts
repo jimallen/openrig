@@ -291,7 +291,7 @@ describe("the message pump", () => {
       expect(() => accept2({ messageClass: "command" })).toThrow(/stays with its owner/);
       expect(store.seatsWithOpenMessages()).toEqual([]);
     });
-    const accept2 = (extra: { messageClass: string }) => store.accept({ id: messageId("cmd"), seat: SEAT, sender: "lead@r", body: "/compact", ...extra });
+    const accept2 = (extra: { messageClass: "command" }) => store.accept({ id: messageId("cmd"), seat: SEAT, sender: "lead@r", body: "/compact", ...extra });
 
     it("a lifecycle message waits when the seat's occupant cannot be read: it never guesses it is the same one", async () => {
       accept("m1", SEAT, { occupantGeneration: "g1" });

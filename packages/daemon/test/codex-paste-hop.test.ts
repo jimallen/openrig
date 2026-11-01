@@ -73,7 +73,7 @@ function hop(opts: { status?: string | null; state?: string; composer?: string; 
     sendKeys: async (_seat, keys) => { calls.push(`keys:${keys.join("+")}`); return sent; },
   }) };
 }
-const message = (body: string): SeatMessage => ({ id: messageId("m-1"), seat: "dev@rig", body });
+const message = (body: string): SeatMessage => ({ ids: [messageId("m-1")], seat: "dev@rig", body, messageClass: "content", lane: 2 });
 
 describe("one attempt", () => {
   it("an empty composer gets the paste and the Enter, one call", async () => {

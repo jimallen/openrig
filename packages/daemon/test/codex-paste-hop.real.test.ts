@@ -53,7 +53,7 @@ describe.skipIf(!HC)("the Codex hop on a real core, stub Codex", () => {
     return { name, rollout, prompts: () => existsSync(rollout) ? readFileSync(rollout, "utf8").trim().split("\n") : [] };
   }
   const screen = async (name: string) => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(name), lines: 200 })).text;
-  const attempt = (name: string, id: string, body: string) => hop.attempt({ id: messageId(id), seat: name, body } satisfies SeatMessage);
+  const attempt = (name: string, id: string, body: string) => hop.attempt({ ids: [messageId(id)], seat: name, body, messageClass: "content", lane: 2 } satisfies SeatMessage);
   const count = async (read: () => string[], n: number) => waitUntil(async () => read().length, (c) => c === n, `${n} rollout records`);
 
   it("sends a message, and the repeat is dropped by the gate", async () => {
