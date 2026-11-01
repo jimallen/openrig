@@ -2,14 +2,11 @@
 // layout. The only additions are a short schedule, and MPD_CRASH, which hangs one attempt at a named point so the parent can SIGKILL there.
 import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { HookSeenStore, seatGateRoot } from "../../src/adapters/hook-seen-store.js";
-import { reconcileCodexSeatGate } from "../../src/adapters/codex-seat-gate.js";
-import { MessageStore } from "../../src/domain/seat-messaging/message-store.js";
-import { messageId, type LastHop } from "../../src/domain/seat-messaging/ports.js";
+import type { LastHop } from "../../src/domain/seat-messaging/ports.js";
 import { createDaemon } from "../../src/startup.js";
 
-const { MPD_DB: db, MPD_DIR: dir, MPD_CRASH: crash = "none", OPENRIG_HOME: home } = process.env;
-if (!db || !dir || !home) throw new Error("MPD_DB, MPD_DIR and OPENRIG_HOME are required");
+const { MPD_DB: db, MPD_DIR: dir, MPD_CRASH: crash = "none" } = process.env;
+if (!db || !dir) throw new Error("MPD_DB and MPD_DIR are required");
 const note = (line: string) => appendFileSync(join(dir, "hop.log"), `${line}\n`);
 const hang = () => new Promise<never>(() => undefined);
 
@@ -36,14 +33,13 @@ if (process.env.MPD_SEND) {
   const result = await daemon.deps.sessionTransport.send(seat, body, { deliveryId: id, actorSession: "lead@cr" });
   note(`transport ${id} ${result.reason ?? ""} sent=${String(result.sent)}`);
 }
-// A seat restart's reconcile, as startup's Codex closure runs it; the parent asks by making this file.
+// A seat restart's reconcile: startup's own closure. The parent asks by making this file.
 const reconcile = join(dir, "reconcile");
 const seat = process.env.MPD_SEAT;
 setInterval(() => {
   if (!seat || !existsSync(reconcile)) return;
-  const { cleared } = reconcileCodexSeatGate(new HookSeenStore(seatGateRoot(home)), seat, join(dir, "rollout.jsonl"));
-  for (const marker of cleared) new MessageStore(daemon.db).reopenCleared(messageId(marker.id), marker.nonce);
-  note(`reconciled ${cleared.length}`);
+  daemon.reconcileCodexSeat(seat, null);
+  note("reconciled");
   appendFileSync(reconcile + ".done", "x");
 }, 50).unref();
 setInterval(() => undefined, 60_000);

@@ -369,6 +369,20 @@ describe("the message pump", () => {
       expect(row(db, "m1").message_state).toBe("received");
     });
 
+    it("a tidying failure does not hold up the seat: the next message goes in the same pass", async () => {
+      const sent: string[] = [];
+      const hop: LastHop = { attempt: async (m) => { sent.push(m.ids[0]); return { kind: "sent" }; }, afterReceived: async () => { throw new Error("no"); } };
+      pump = new MessagePump({ ...w.deps(store), ports: { gateFor: () => w.gate, hopFor: () => hop } });
+      accept("m1");
+      await pump.tick();
+      w.now += 2 * MIN;
+      await pump.tick();
+      accept("m2");
+      w.gate.record(messageId("m1"), store.nonceOf(messageId("m1")));
+      await pump.tick();
+      expect(sent).toEqual(["m1", "m1", "m2"]);
+    });
+
     it("does not run after one attempt: no repeat can be sitting anywhere", async () => {
       const tidied: string[] = [];
       const hop: LastHop = { attempt: async () => ({ kind: "sent" }), afterReceived: async (m) => { tidied.push(m.ids[0]); } };

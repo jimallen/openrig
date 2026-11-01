@@ -251,6 +251,8 @@ interface DaemonOptions {
 }
 
 interface DaemonResult {
+  /** A Codex seat's restart settling its gate: what the runtime adapters call. Exposed so a crash test runs this very closure. */
+  reconcileCodexSeat: (sessionName: string, threadId: string | null) => void;
   app: Hono;
   db: Database.Database;
   deps: AppDeps;
@@ -2808,5 +2810,5 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   if (hcAdapter) deps.hcTerminal = { client: hcAdapter.client, ...(deliveryGuard ? { guard: deliveryGuard } : {}) };
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  return { app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket, ...(hcCoreWatch ? { hcCoreWatch } : {}) };
+  return { reconcileCodexSeat, app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket, ...(hcCoreWatch ? { hcCoreWatch } : {}) };
 }

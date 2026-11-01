@@ -63,7 +63,7 @@ def submit():
     os.makedirs(seen, exist_ok=True)
     try:
         fd = os.open(seen + "/" + name, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, json.dumps({"id": mid.decode(), "nonce": nonce.decode(), "recordedAt": "1999-01-01T00:00:00.000Z", "via": "hook", "agentPid": None, "transcriptPath": None, "durable": False}).encode())
+        os.write(fd, json.dumps({"id": mid.decode(), "nonce": nonce.decode(), "recordedAt": "1999-01-01T00:00:00.000Z", "via": "hook", "agentPid": None, "transcriptPath": rollout, "durable": False}).encode())
         os.close(fd)
     except FileExistsError:
         log.write(b"dropped " + mid + b"\\n")
