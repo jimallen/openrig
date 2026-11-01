@@ -31,6 +31,7 @@ import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
+import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
@@ -98,7 +99,11 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
 
   async function setup(shape: "shell_backed" | "direct_native", opts: { running?: { networkOverride: boolean; daemonOptOut: boolean; addDirs: string[] }; quiet?: boolean; prelude?: string;
     /** Shell-backed: type the launch the way OpenRig does (the host adapter's staged `/bin/sh <script>`). */
-    staged?: boolean } = {}) {
+    staged?: boolean;
+    /** Start the Codex by hand, without the flag a managed launch carries. */
+    withoutDaemonFlag?: boolean;
+    /** The daemon's delivery guard on this adapter, as startup.ts sets it. */
+    guarded?: boolean } = {}) {
     // One seat at a time: end the previous test's session and wait for its stub to exit.
     for (const name of sessions) await host().killSession(name).catch(() => {});
     for (let i = 0; i < 50 && stubPids().length > 0; i++) await sleep(100);
@@ -117,8 +122,9 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     sessions.push(seat);
     const db = createFullTestDb();
     const realTmux = host();
+    if (opts.guarded) realTmux.deliveryGuard = new SeatDeliveryGuard(db, (target) => resolveGuardTarget(db, target));
     const adapter = new CodexRuntimeAdapter({
-      tmux: realTmux, launchPath,
+      tmux: realTmux, launchPath, detectDaemonSupport: async () => ({ kind: "supported" }),
       fsOps: { readFile: (p) => fs.readFileSync(p, "utf8"), writeFile: () => {}, exists: (p) => fs.existsSync(p), mkdirp: () => {}, homedir: root },
     });
     const setupApp = createTestApp(db, { tmux: realTmux, adapters: { codex: adapter },
@@ -151,7 +157,8 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     if (shape === "shell_backed") {
       await startTerminal(cleanStart);
       await sleep(200);
-      const launch = `${opts.prelude ?? ""}${preflight} && ${built.command} || echo PREFLIGHT-REFUSED`;
+      const command = opts.withoutDaemonFlag ? built.command.replace(" --no-daemon", "") : built.command;
+      const launch = `${opts.prelude ?? ""}${preflight} && ${command} || echo PREFLIGHT-REFUSED`;
       if (opts.staged) {
         const sent = await realTmux.sendShellCommand(seat, launch);
         if (!sent.ok) throw new Error(sent.message);
@@ -174,7 +181,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       return { status: res.status, body: await res.json() as Record<string, any> };
     };
-    return { seat, pane, post };
+    return { seat, pane, post, seatHost: realTmux };
   }
 
   it("shell-backed: the same conversation resumes in the same terminal under the same shell, with the running choices", async () => {
@@ -230,6 +237,41 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
       expect(stubPids(), `round ${round}: only the replacement stub runs`).toEqual([result.body.newProcess.pid]);
       expect(await panePid(pane), "same terminal shell").toBe(shell);
     }
+  }, 90_000);
+
+  it("security review N1: a Codex running without --no-daemon is not restarted in place on hc, and nothing is stopped", async () => {
+    const { pane, post } = await setup("shell_backed", { withoutDaemonFlag: true });
+    const [oldStub] = stubPids();
+    expect(fs.readFileSync(`/proc/${oldStub}/cmdline`, "utf8").split("\0"), "the fixture really started it without the flag").not.toContain("--no-daemon");
+    const result = await post("restart", { reason: "native harness N1" });
+    expect(result.status, JSON.stringify(result.body)).toBe(409);
+    expect(result.body).toMatchObject({ ok: false, code: "relaunch_unavailable" });
+    expect(String(result.body.message)).toMatch(/running without --no-daemon.*Nothing was stopped/s);
+    expect(stubPids(), "the same Codex still runs").toEqual([oldStub]);
+    expect((await terminalOf(`dev-codex@shell-rig`)).address).toBe(pane);
+  }, 60_000);
+
+  it("security review N3: with the delivery guard on, the route's lease carries the signal and the respawn through both pane shapes", async () => {
+    const shell = await setup("shell_backed", { guarded: true });
+    const [oldShellStub] = stubPids();
+    const restarted = await shell.post("restart", { reason: "native harness guarded" });
+    expect(restarted.status, JSON.stringify(restarted.body)).toBe(200);
+    expect(restarted.body).toMatchObject({ outcome: "restarted_account_unverified", pane: shell.pane });
+    for (const pid of stubPids()) pids.add(pid);
+    expect(stubPids()).toEqual([restarted.body.newProcess.pid]);
+    expect(restarted.body.newProcess.pid).not.toBe(oldShellStub);
+
+    const native = await setup("direct_native", { guarded: true });
+    const before = await panePid(native.pane);
+    const direct = await native.post("restart", { reason: "native harness guarded" });
+    expect(direct.status, JSON.stringify(direct.body)).toBe(200);
+    expect(direct.body).toMatchObject({ outcome: "restarted_account_unverified", paneShape: "direct_native" });
+    for (const pid of stubPids()) pids.add(pid);
+    expect(stubPids()).toEqual([direct.body.newProcess.pid]);
+    expect(direct.body.newProcess.pid).not.toBe(before);
+    expect((await terminalOf(native.seat)).address, "a direct-native restart moves the address").not.toBe(native.pane);
+    // Whatever the binding says now, the next ordinary stop through the guard must still end the seat.
+    await expect(native.seatHost.killSession(native.seat)).resolves.toEqual({ ok: true });
   }, 90_000);
 
   it("direct-native: killed and run again under the same name; the original's output stays readable at its old address", async () => {
