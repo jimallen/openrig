@@ -1,7 +1,58 @@
-import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { userInfo } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { HC_SCRATCH_ROOT_ENV } from "./hc-scratch.js";
 import { prepareHermeticEnv, type HermeticScaffold, type PrepareHermeticEnvOptions } from "./hermetic-env.js";
+
+/** A folder a run names (absolute, outside every temp location) for scaffolds the production trust check must accept. */
+export const TRUSTED_BASE_ENV = "OPENRIG_TEST_TRUSTED_BASE";
+
+export class TrustedBaseRefusedError extends Error {
+  constructor(reason: string) {
+    super(`trusted scaffold refused: ${reason}. The production trust check refuses every temp location, so this scaffold cannot live in a ` +
+      `contained run's temp root; set ${TRUSTED_BASE_ENV} to an absolute folder outside temp that the run owns. Nothing was created.`);
+    this.name = "TrustedBaseRefusedError";
+  }
+}
+
+type EnvLike = Record<string, string | undefined>;
+
+/** realpath of the nearest existing ancestor, then the rest as written (macOS links /tmp into /private, and the path may not exist yet). */
+const real = (p: string): string => {
+  for (let head = p, tail = ""; ; tail = join(basename(head), tail), head = dirname(head)) {
+    try { return join(realpathSync(head), tail); } catch { /* try the parent */ }
+    if (dirname(head) === head) return p;
+  }
+};
+const underTempRoot = (path: string, env: EnvLike): boolean =>
+  ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", tmpdir(), env.TMPDIR ?? ""].filter(Boolean).some((root) => {
+    const rel = relative(real(root), real(path));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  });
+
+/**
+ * The folder a trusted scaffold is made in. In order: `OPENRIG_TEST_TRUSTED_BASE` when the run names one; the run's own HOME when
+ * it is outside every temp location; else, when the run declares itself contained (`OPENRIG_TEST_SCRATCH_ROOT` is set), a refusal,
+ * because the only other answer is the account's real home, which a contained run must never reach; else the account's home as
+ * before (an uncontained run's HOME is a temp fixture, which the trust check refuses). `accountHome` is a seam for the test.
+ */
+export function trustedBaseFolder(env: EnvLike = process.env, accountHome: () => string = () => userInfo().homedir): string {
+  const named = env[TRUSTED_BASE_ENV];
+  if (named) {
+    if (!isAbsolute(named) || !existsSync(named)) throw new TrustedBaseRefusedError(`${TRUSTED_BASE_ENV} is not an existing absolute folder`);
+    if (underTempRoot(named, env)) throw new TrustedBaseRefusedError(`${TRUSTED_BASE_ENV} is inside a temp location`);
+    return named;
+  }
+  const home = env.HOME;
+  if (home && isAbsolute(home) && !underTempRoot(home, env)) return home;
+  if (env[HC_SCRATCH_ROOT_ENV]) throw new TrustedBaseRefusedError("this run is contained and its HOME is in temp");
+  return accountHome();
+}
+
+/** A new folder `<prefix>XXXXXX` inside `trustedBaseFolder()`. */
+export function makeTrustedBase(prefix: string, env: EnvLike = process.env): string {
+  return mkdtempSync(join(trustedBaseFolder(env), prefix));
+}
 
 /**
  * OF-103. A real daemon judges a rig's recorded spec source again at every fresh launch and restore (the production trust
@@ -11,12 +62,12 @@ import { prepareHermeticEnv, type HermeticScaffold, type PrepareHermeticEnvOptio
  * startup_source_untrusted. Such a test builds its scaffold with this helper and brings its spec in with
  * `installTrustedScenario`; the daemon itself gets no test-only bypass.
  *
- * The scaffold root is made under the account's real home folder (the runner points HOME at a temp fixture, so the account
- * database is asked), because the production rule refuses every temp location; the daemon's own HOME is the scaffold's
+ * The scaffold root is made by `trustedBaseFolder()`: the run's trusted base, its HOME when that is outside temp, else the account's
+ * home folder (the runner points HOME at a temp fixture, so the account database is asked; a contained run refuses instead), because the production rule refuses every temp location; the daemon's own HOME is the scaffold's
  * `home`, whose `.agents-release` is a trusted root. The scaffold is removed with its base by `cleanup()`.
  */
 export function prepareTrustedHermeticEnv(opts: PrepareHermeticEnvOptions = {}): HermeticScaffold {
-  const base = mkdtempSync(join(userInfo().homedir, ".of103-e2e-"));
+  const base = makeTrustedBase(".of103-e2e-");
   const savedTmp = process.env.TMPDIR;
   process.env.TMPDIR = base;
   let scaffold: HermeticScaffold;

@@ -97,7 +97,7 @@ describe("control-socket adapter (spike-adopted; arch boundary constraint)", () 
     const prevUserHome = process.env["HOME"];
     try {
       delete process.env["OPENRIG_HOME"];
-      process.env["HOME"] = os.userInfo().homedir;
+      process.env["HOME"] = "/home/fixture-user"; // a fixed path: this row only measures a path, so it never asks the account database
       const p = defaultSocketPath("tui-1");
       expect(p).toMatch(/[/\\]run[/\\]tui-tui-1\.sock$/);
       expect(Buffer.byteLength(p)).toBeLessThanOrEqual(MAX_SOCKET_PATH_BYTES);

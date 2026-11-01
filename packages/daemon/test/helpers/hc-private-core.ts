@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../../src/adapters/hc-host.js";
+import { hcScratchBase, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
 
 /** The `hc` on PATH, or "" when there is none (the real-core suites skip). */
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
 /** A core of its own: private HOME, XDG paths and HC_SESSION under a temp root, never the default core or the app. */
 export class PrivateCore {
-  readonly root = realpathSync(mkdtempSync(join(tmpdir(), "hcp-")));
+  readonly root = realpathSync(mkdtempSync(join(hcScratchBase(process.env, tmpdir()), "hcp-")));
   readonly env: NodeJS.ProcessEnv;
   client!: HcClient;
 
@@ -24,8 +25,10 @@ export class PrivateCore {
 
   start(): void {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(this.root, d), { recursive: true, mode: 0o700 });
+    const socket = resolveHcSocket(this.env, this.env.HOME);
+    if (Buffer.byteLength(socket) > HC_SOCKET_PATH_LIMIT) throw new Error(`hc private core: the socket path would be ${Buffer.byteLength(socket)} bytes (limit ${HC_SOCKET_PATH_LIMIT}): ${socket}`);
     execFileSync(HC, ["server", "start"], { env: this.env, stdio: "ignore" });
-    this.client = new HcClient(resolveHcSocket(this.env, this.env.HOME));
+    this.client = new HcClient(socket);
   }
 
   stop(): void {

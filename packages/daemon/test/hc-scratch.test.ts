@@ -7,7 +7,7 @@ import {
   assertNoForeignHcCore, assertPrivateHcEnv, detectForeignHcCore, findHc, HcForeignCoreError, HcNotPrivateError,
   HcSocketTooLongError, HC_SOCKET_PATH_LIMIT, longestSocketPath, startHcScratch, type HcScratch,
 } from "./helpers/hc-scratch.js";
-import { hasProcFs, identityOf, pidsWithEnv, sameProcess, waitGone } from "./helpers/orphan-reaper.js";
+import { canSweepEnviron, hasProcFs, identityOf, pidsWithEnv, sameProcess, waitGone } from "./helpers/orphan-reaper.js";
 
 const HC = findHc();
 const PATH = process.env.PATH ?? "";
@@ -18,10 +18,15 @@ afterEach(() => {
   for (const s of scratches.splice(0)) s.cleanup();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
+/** Direct children of `parent`. */
+const childrenOf = (parent: number): number[] => spawnSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" }).stdout.split("\n")
+  .map((l) => l.trim().split(/\s+/).map(Number)).filter(([, ppid]) => ppid === parent).map(([pid]) => pid!);
+/** A terminal program that ignores hangups (and so outlives its holder's death, as a nohup-style program does): `sleep`, with SIGHUP ignored. */
+const HUP_IGNORING_PROGRAM = ["sh", "-c", "trap '' HUP; exec sleep 300"];
 const tmpBase = (): string => { const d = mkdtempSync(join(tmpdir(), "hcsb-")); dirs.push(d); return d; };
 
 // A private env that is valid under a root, for the refusal rows. Each row breaks exactly one thing.
-const ROOT = "/tmp/hcs-fixture";
+const ROOT = "/run/hcs-fixture";
 const valid = (): Record<string, string | undefined> => ({
   PATH, HOME: `${ROOT}/h`, HC_SESSION: "sfixture", XDG_CONFIG_HOME: `${ROOT}/c`, XDG_DATA_HOME: `${ROOT}/d`,
   XDG_STATE_HOME: `${ROOT}/s`, XDG_RUNTIME_DIR: `${ROOT}/r`,
@@ -79,9 +84,9 @@ describe("hc scratch refuses to reach a core it did not start (no hc needed)", (
   });
 
   it("the default layout is well inside the limit on both platform layouts, with room to spare", () => {
-    const longest = longestSocketPath("/tmp/hcs-abc123", "sabc123");
+    const longest = longestSocketPath("/run/hcs-abc123", "sabc123");
     expect(Buffer.byteLength(longest)).toBeLessThan(HC_SOCKET_PATH_LIMIT - 30);
-    expect(longest).toBe("/tmp/hcs-abc123/s/herdr-core/sabc123/sabc123.sock");
+    expect(longest).toBe("/run/hcs-abc123/s/herdr-core/sabc123/sabc123.sock");
   });
 });
 
@@ -141,23 +146,25 @@ describe.skipIf(!HC)("hc scratch against a real private core", () => {
   it("cleanup stops the core and a terminal program, removes the root, and is idempotent", async () => {
     const s = startHcScratch();
     scratches.push(s);
-    const started = JSON.parse(s.run(["run", "--bg", "--json", "sleep", "300"]).stdout) as { address: string };
+    const started = JSON.parse(s.run(["run", "--bg", "--json", ...HUP_IGNORING_PROGRAM]).stdout) as { address: string };
     expect(started.address).toMatch(/^t\d+$/);
     s.refreshOrphanGuard();
     const status = JSON.parse(s.run(["server", "status", "--json"]).stdout) as { pid: number; holders: Array<{ pid: number }> };
-    const pids = [status.pid, ...status.holders.map((h) => h.pid)];
+    const program = status.holders.flatMap((h) => childrenOf(h.pid));
+    expect(program.length, "positive control: the holder has a program under it").toBeGreaterThan(0);
+    const pids = [status.pid, ...status.holders.map((h) => h.pid), ...program];
     expect(pids.length).toBeGreaterThanOrEqual(2);  // positive control: the core and a holder were found
     const ids = pids.map((p) => identityOf(p));
     expect(ids.every((i) => i !== null)).toBe(true);
     s.cleanup();
     expect(existsSync(s.root)).toBe(false);
     for (const id of ids) expect(id !== null && sameProcess(id)).toBe(false);
-    if (hasProcFs()) expect(pidsWithEnv(`HC_SESSION=${s.session}`)).toEqual([]);
+    if (canSweepEnviron()) expect(pidsWithEnv(`HC_SESSION=${s.session}`)).toEqual([]);
     expect(() => s.cleanup()).not.toThrow();
     scratches.pop();
   });
 
-  it.skipIf(!hasProcFs())("cleanup disarms the orphan guard it armed (positive control: it is visible while armed)", () => {
+  it.skipIf(!canSweepEnviron())("cleanup disarms the orphan guard it armed (positive control: it is visible while armed)", () => {
     const watchdogs = (session: string): number => spawnSync("ps", ["-eo", "args="], { encoding: "utf8" }).stdout
       .split("\n").filter((l) => l.includes("reaper:hc-scratch") && l.includes(`HC_SESSION=${session}`)).length;
     const s = startHcScratch();
@@ -175,19 +182,56 @@ describe.skipIf(!HC)("hc scratch against a real private core", () => {
     const s = startHcScratch({ ownerPid });
     scratches.push(s);
     // A terminal started AFTER the guard was armed and never re-recorded: only the session sweep can know its holder.
-    s.run(["run", "--bg", "--json", "sleep", "300"]);
+    s.run(["run", "--bg", "--json", ...HUP_IGNORING_PROGRAM]);
     const status = JSON.parse(s.run(["server", "status", "--json"]).stdout) as { pid: number; holders: Array<{ pid: number }> };
     expect(status.holders.length).toBe(1);  // positive control: there is a holder to lose
-    const targets = [status.pid, ...status.holders.map((h) => h.pid)].map((pid) => identityOf(pid));
+    // The terminal's own program, a child of its holder: on macOS it shows no environment, so only its parent leads to it.
+    const program = childrenOf(status.holders[0]!.pid).map((pid) => identityOf(pid)).filter((id) => id !== null);
+    expect(program.length, "positive control: the holder has a program under it").toBeGreaterThan(0);
+    const targets = [status.pid, ...status.holders.map((h) => h.pid), ...program.map((id) => id.pid)].map((pid) => identityOf(pid));
     expect(targets.every((t) => t !== null && sameProcess(t))).toBe(true);
     process.kill(ownerPid, "SIGKILL");
     await waitGone(ownerPid, 5_000);
     // The watchdog polls once a second, TERMs, waits 3 s, then KILLs.
     const until = Date.now() + 15_000;
     while (targets.some((t) => t !== null && sameProcess(t)) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
-    expect(targets.map((t) => t !== null && sameProcess(t))).toEqual([false, false]);
+    expect(targets.map((t) => t !== null && sameProcess(t))).toEqual(targets.map(() => false));
     s.cleanup();  // a dead core: no hc call may restart it, and the root still goes
     expect(existsSync(s.root)).toBe(false);
     scratches.pop();
   }, 40_000);
+});
+
+describe("pidsWithEnv finds a session's processes", () => {
+  it.skipIf(!canSweepEnviron())("by their environment and not their arguments; on macOS also the descendants of one (a protected program shows no environment)", async () => {
+    const session = `sunit${process.pid}`;
+    const entry = `HC_SESSION=${session}`;
+    // The carrier is an unprotected program with the entry in its environment; its child runs with no environment at all.
+    const carrier = spawn(process.execPath, ["-e", "require('child_process').spawn('env',['-i','sleep','300'],{stdio:'ignore'}); setTimeout(()=>{},300000)"],
+      { env: { PATH: process.env.PATH, HC_SESSION: session }, stdio: "ignore" });
+    // The decoy names the entry only in its argument list, as a watchdog does.
+    const decoy = spawn(process.execPath, ["-e", "setTimeout(()=>{},300000)", entry], { env: { PATH: process.env.PATH }, stdio: "ignore" });
+    const mine: number[] = [];
+    try {
+      const carrierPid = carrier.pid!;
+      const found = await (async () => {
+        const until = Date.now() + 10_000;
+        for (;;) {
+          const pids = pidsWithEnv(entry);
+          if (pids.includes(carrierPid) && childrenOf(carrierPid).length > 0 || Date.now() > until) return pids;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      })();
+      const grandchildren = childrenOf(carrierPid);
+      mine.push(...grandchildren);
+      expect(grandchildren.length, "positive control: the carrier has a child without the entry").toBeGreaterThan(0);
+      expect(found, "the process that carries the entry").toContain(carrierPid);
+      expect(found, "a process that only names the entry in its arguments is not a holder").not.toContain(decoy.pid!);
+      for (const child of grandchildren) {
+        expect(found.includes(child), `child ${child}: swept as a descendant on macOS only, since /proc shows its (empty) environment on Linux`).toBe(process.platform === "darwin");
+      }
+    } finally {
+      for (const pid of [...mine, carrier.pid!, decoy.pid!]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
+  });
 });

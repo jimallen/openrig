@@ -13,6 +13,9 @@ import {
 import { teardown as globalTeardown } from "../../../test/hermetic-env.global.js";
 import { startHcScratch } from "./helpers/hc-scratch.js";
 
+/** A program that exits non-zero: `false` lives in /usr/bin on macOS (no /bin/false there) and in both on Linux. */
+const FALSE_BIN = ["/usr/bin/false", "/bin/false"].find((p) => existsSync(p)) ?? "/usr/bin/false";
+
 // hc cutover W8: the harness consumers of the hc cutover.
 //
 //  A. test/hermetic-env.setup.ts scrubs HC_* and XDG_RUNTIME_DIR. Inside a seat the env names the seat's own core, and a
@@ -156,13 +159,19 @@ describe("hc scratch tripwire: the run's registry (unit)", () => {
     expect(() => findLeakedHcScratch(registry)).toThrow(/names no root/);
   });
 
+  it("an hc that cannot be run at all is reported as such, not as a crash on its missing stderr (the root is gone)", () => {
+    const base = fresh("tripwire-base-");
+    expect(() => startHcScratch({ baseDir: base, hcBin: join(base, "no-such-hc"), baseEnv: { PATH: process.env.PATH } })).toThrow(/could not run \(.*ENOENT/);
+    expect(readdirSync(base)).toEqual([]);
+  });
+
   it("startHcScratch registers its root before anything can fail (hc absent: the start fails, the root is gone, the entry stays)", () => {
     const { env, registry } = registryEnv();
     const base = fresh("tripwire-base-");
     const saved = process.env[HC_SCRATCH_REGISTRY_ENV];
     process.env[HC_SCRATCH_REGISTRY_ENV] = env[HC_SCRATCH_REGISTRY_ENV];
     try {
-      expect(() => startHcScratch({ baseDir: base, hcBin: "/bin/false", baseEnv: { PATH: process.env.PATH } })).toThrow(/exited/);
+      expect(() => startHcScratch({ baseDir: base, hcBin: FALSE_BIN, baseEnv: { PATH: process.env.PATH } })).toThrow(/exited/);
     } finally {
       if (saved === undefined) delete process.env[HC_SCRATCH_REGISTRY_ENV]; else process.env[HC_SCRATCH_REGISTRY_ENV] = saved;
     }

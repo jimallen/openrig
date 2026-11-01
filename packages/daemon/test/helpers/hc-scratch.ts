@@ -42,7 +42,7 @@ import { basename, join, relative, isAbsolute } from "node:path";
 import { registerHcScratchRoot } from "../../../../test/hc-scratch-tripwire.js";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import {
-  hasProcFs, identityOf, pidsWithEnv, reapWhenOwnerDies, sameProcess, type ProcessIdentity,
+  canSweepEnviron, hasProcFs, identityOf, pidsWithEnv, reapWhenOwnerDies, sameProcess, type ProcessIdentity,
 } from "./orphan-reaper.js";
 
 type EnvLike = Record<string, string | undefined>;
@@ -55,6 +55,19 @@ export const FOREIGN_HC_CORE_ENV_VARS = ["HC_SOCKET"] as const;
  * here passes there.
  */
 export const HC_SOCKET_PATH_LIMIT = 103;
+
+/** The env var a run sets to say where scratch cores are made (a run root, for a run that must contain everything it starts). */
+export const HC_SCRATCH_ROOT_ENV = "OPENRIG_TEST_SCRATCH_ROOT";
+
+/**
+ * Where a scratch core's short root is made: the folder `OPENRIG_TEST_SCRATCH_ROOT` names when a run sets it (an absolute
+ * path), else `fallback` (`/tmp`, as before). The socket is measured against the limit under whatever this returns, so a
+ * run root that is too deep is refused (`HcSocketTooLongError`), never silently shortened.
+ */
+export function hcScratchBase(env: EnvLike = process.env, fallback = "/tmp"): string {
+  const named = env[HC_SCRATCH_ROOT_ENV];
+  return typeof named === "string" && isAbsolute(named) ? named : fallback;
+}
 
 export class HcForeignCoreError extends Error {
   constructor(readonly varName: string, readonly value: string) {
@@ -159,7 +172,7 @@ export interface HcScratch {
 }
 
 export interface StartHcScratchOptions {
-  /** Where the short root is made. Default `/tmp`. */
+  /** Where the short root is made. Default: `hcScratchBase()` (`OPENRIG_TEST_SCRATCH_ROOT` when set, else `/tmp`). */
   baseDir?: string;
   /** The `hc` binary. Default: `command -v hc`. */
   hcBin?: string;
@@ -221,7 +234,7 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
   const hcBin = options.hcBin ?? findHc(baseEnv);
   if (!hcBin) throw new Error("hc scratch: no hc binary on PATH");
 
-  const root = mkdtempSync(join(options.baseDir ?? "/tmp", "hcs-"));
+  const root = mkdtempSync(join(options.baseDir ?? hcScratchBase(baseEnv), "hcs-"));
   // On the run's list before anything else can fail: the end-of-run tripwire (test/hc-scratch-tripwire.ts) looks at exactly these roots.
   registerHcScratchRoot(root, askingTestFile());
   const session = `s${basename(root).slice(-6).toLowerCase().replace(/[^a-z0-9]/g, "0")}`;
@@ -263,7 +276,7 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
   let reaper: { disarm: () => void } = { disarm: () => {} };
   const arm = () => {
     reaper.disarm();
-    reaper = reapWhenOwnerDies({ environ: hasProcFs() ? [sessionEntry] : [], identities, label: "hc-scratch", ownerPid: options.ownerPid });
+    reaper = reapWhenOwnerDies({ environ: canSweepEnviron() ? [sessionEntry] : [], identities, label: "hc-scratch", ownerPid: options.ownerPid });
   };
   const record = (): void => {
     const pids = statusPids(run) ?? [];
@@ -277,7 +290,7 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
 
   let cleaned = false;
   const survivors = (): ProcessIdentity[] => identities.filter(sameProcess);
-  const envHolders = (): number[] => (hasProcFs() ? pidsWithEnv(sessionEntry) : []);
+  const envHolders = (): number[] => (canSweepEnviron() ? pidsWithEnv(sessionEntry) : []);
 
   const cleanup = (): void => {
     if (cleaned || !existsSync(root)) { reaper.disarm(); cleaned = true; return; }
@@ -306,7 +319,11 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
   try {
     arm();
     const started = run(["server", "start"], { timeoutMs: 30_000 });
-    if (started.status !== 0) throw new Error(`hc scratch: \`hc server start\` exited ${started.status}: ${started.stderr.trim().slice(0, 300)}`);
+    // A binary that cannot be run at all (spawn error) has a null status and no stderr; say so instead of throwing on the missing text.
+    if (started.status !== 0) {
+      const what = started.error ? `could not run (${started.error.message})` : `exited ${started.status}`;
+      throw new Error(`hc scratch: \`hc server start\` ${what}: ${(started.stderr ?? "").trim().slice(0, 300)}`);
+    }
     if (!existsSync(socketPath)) throw new Error(`hc scratch: core started but ${socketPath} does not exist`);
     record();
     arm();

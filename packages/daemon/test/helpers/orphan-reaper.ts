@@ -9,7 +9,8 @@ import { dirname, isAbsolute, join } from "node:path";
  * then runs for days after its temp home is deleted.
  *
  * IDENTITY. A pid alone is not an identity (it can be stale or reused), and another process's environment cannot be read on
- * every platform (macOS `ps -E` shows none for a same-user process). So a process the test means to stop is RECORDED when
+ * every platform (on macOS `ps -Ewwo` shows a same-user process's environment only for an unprotected program such as `hc`;
+ * measured at macOS 27: `hc hold` and `hc serve` showed theirs, a `sleep` under them showed none). So a process the test means to stop is RECORDED when
  * it is found: its pid, its start time and its command line (`ps -o lstart=`, `ps -o command=`: the same on Linux and macOS).
  * Every signal is preceded by a check that all three still match; a pid that now belongs to something else is left alone.
  * tmux servers are found through an explicit `-S` socket in a directory the test created (never tmux's shared per-user
@@ -27,8 +28,10 @@ export interface OrphanReaperTargets {
   /** Processes recorded with `identityOf`; stopped only while pid, start time and command all still match. */
   identities?: ProcessIdentity[];
   /**
-   * Linux only (it reads /proc/<pid>/environ): exact `NAME=value` entries that only this test's processes carry. Covers a
-   * window in which no identity is known yet (a `rig daemon start` still running). Refused loudly where /proc is absent.
+   * Linux (it reads /proc/<pid>/environ) and macOS (`ps -Ewwo`): exact `NAME=value` entries that only this test's processes
+   * carry. Covers a window in which no identity is known yet (a `rig daemon start` still running), and a process started after
+   * the guard was armed (a terminal's holder). On macOS only an unprotected program shows its environment, so the sweep also
+   * takes every DESCENDANT of a process that does (a terminal's program under its holder). Refused loudly elsewhere.
    */
   environ?: string[];
   /** The process whose death triggers the reaping; default: this process. */
@@ -38,6 +41,9 @@ export interface OrphanReaperTargets {
 }
 
 export const hasProcFs = (): boolean => existsSync("/proc/self/environ");
+
+/** Whether an environment entry can be swept on this platform: /proc on Linux, `ps -Ewwo` on macOS. */
+export const canSweepEnviron = (): boolean => hasProcFs() || process.platform === "darwin";
 
 /** The recorded identity of a live process, or null when there is none (gone, or ps cannot say). */
 export function identityOf(pid: number): ProcessIdentity | null {
@@ -81,23 +87,50 @@ const WATCHDOG = `owner=$1; shift
 while kill -0 "$owner" 2>/dev/null; do sleep 1; done
 same() { [ "$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$2" ] && [ "$(ps -o command= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$3" ]; }
 holders() {
-  for e in /proc/[0-9]*/environ; do
-    p=\${e#/proc/}; p=\${p%/environ}
-    [ "$p" = "$$" ] && continue
-    tr '\\0' '\\n' < "$e" 2>/dev/null | grep -qxF -- "$1" && echo "$p"
-  done
+  if [ -r /proc/self/environ ]; then
+    for e in /proc/[0-9]*/environ; do
+      p=\${e#/proc/}; p=\${p%/environ}
+      [ "$p" = "$$" ] && continue
+      tr '\\0' '\\n' < "$e" 2>/dev/null | grep -qxF -- "$1" && echo "$p"
+    done
+  else
+    ps -axEwwo pid=,command= 2>/dev/null | while read -r p rest; do
+      [ "$p" = "$$" ] && continue
+      case " $rest " in *" $1 "*) ;; *) continue ;; esac
+      case " $(ps -o command= -p "$p" 2>/dev/null) " in *" $1 "*) continue ;; esac
+      echo "$p"
+    done
+  fi
+}
+family() {
+  [ -r /proc/self/environ ] && return 0
+  seeds=$(holders "$1" | tr '\\n' ' ')
+  [ -n "$seeds" ] || return 0
+  ps -axo pid=,ppid= 2>/dev/null | awk -v seeds="$seeds" 'BEGIN { n = split(seeds, a, " "); for (i = 1; i <= n; i++) mark[a[i]] = 1 }
+    { pp[$1] = $2; order[NR] = $1 }
+    END { do { ch = 0; for (i = 1; i <= NR; i++) { p = order[i]; if (!(p in mark) && (pp[p] in mark)) { mark[p] = 1; ch = 1 } } } while (ch); for (p in mark) print p }' |
+  while read -r p; do echo "$p|$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//;s/ *$//')"; done
 }
 sweep() {
   sig=$1; shift
   while [ $# -gt 0 ]; do
     case "$1" in
       tmux) if [ "$sig" = TERM ]; then tmux -S "$2" kill-server >/dev/null 2>&1 & fi; shift 2 ;;
-      env) for p in $(holders "$2"); do kill -$sig "$p" 2>/dev/null; done; shift 2 ;;
+      env)
+        # Off Linux a terminal's program shows no environment: record the family while its holder is still alive, kill it by pid and start time.
+        if [ "$sig" = TERM ]; then fam="$fam
+$(family "$2")"; fi
+        for p in $(holders "$2"); do kill -$sig "$p" 2>/dev/null; done
+        printf '%s\n' "$fam" | while IFS='|' read -r p st; do
+          [ -n "$p" ] && [ "$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$st" ] && kill -$sig "$p" 2>/dev/null
+        done
+        shift 2 ;;
       pid) if same "$2" "$3" "$4"; then kill -$sig "$2" 2>/dev/null; fi; shift 4 ;;
       *) shift ;;
     esac
   done
 }
+fam=
 sweep TERM "$@"
 sleep 3
 sweep KILL "$@"
@@ -106,8 +139,8 @@ kill -KILL 0
 
 export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () => void; pid: number } {
   for (const socket of targets.tmuxSockets ?? []) assertOwnedTmuxSocket(socket);
-  if ((targets.environ?.length ?? 0) > 0 && !hasProcFs()) {
-    throw new Error("environ-based reaping needs /proc (Linux); on this platform record process identities instead");
+  if ((targets.environ?.length ?? 0) > 0 && !canSweepEnviron()) {
+    throw new Error("environ-based reaping needs /proc (Linux) or `ps -E` (macOS); on this platform record process identities instead");
   }
   const args = [
     ...(targets.tmuxSockets ?? []).flatMap((socket) => ["tmux", socket]),
@@ -133,9 +166,14 @@ export function hasEnvEntry(pid: number, entry: string): boolean {
   try { return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(entry); } catch { return false; }
 }
 
-/** Linux only: processes whose environment holds exactly `entry`. */
+/**
+ * Processes whose environment holds exactly `entry`. On Linux, read from /proc. On macOS, from `ps -Ewwo` (the entry as a whole
+ * space-delimited word after the command; a process whose own argument list carries the entry, such as a watchdog, is not a
+ * holder), widened by every descendant of such a process, because a protected program (a terminal's `sleep`) shows no environment.
+ */
 export function pidsWithEnv(entry: string): number[] {
-  if (!hasProcFs()) throw new Error("pidsWithEnv needs /proc (Linux)");
+  if (!canSweepEnviron()) throw new Error("pidsWithEnv needs /proc (Linux) or `ps -E` (macOS)");
+  if (!hasProcFs()) return pidsWithEnvDarwin(entry);
   const found: number[] = [];
   for (const name of readdirSync("/proc")) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
@@ -144,6 +182,36 @@ export function pidsWithEnv(entry: string): number[] {
     } catch { /* gone, or not ours to read */ }
   }
   return found;
+}
+
+function pidsWithEnvDarwin(entry: string): number[] {
+  const listing = spawnSync("ps", ["-axEwwo", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).stdout ?? "";
+  const argv = new Map<number, string>();
+  for (const line of spawnSync("ps", ["-axwwo", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).stdout.split("\n")) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (m) argv.set(Number(m[1]), m[2]!);
+  }
+  const seeds = new Set<number>();
+  for (const line of listing.split("\n")) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (pid === process.pid || !` ${m[2]} `.includes(` ${entry} `)) continue;
+    if (` ${argv.get(pid) ?? ""} `.includes(` ${entry} `)) continue; // the entry is in its arguments, not its environment
+    seeds.add(pid);
+  }
+  if (seeds.size === 0) return [];
+  const parent = new Map<number, number>();
+  for (const line of spawnSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" }).stdout.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (m) parent.set(Number(m[1]), Number(m[2]));
+  }
+  const found = new Set(seeds);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [pid, ppid] of parent) if (!found.has(pid) && found.has(ppid) && pid !== process.pid) { found.add(pid); grew = true; }
+  }
+  return [...found];
 }
 
 export async function waitGone(pid: number, withinMs: number): Promise<boolean> {

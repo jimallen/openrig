@@ -438,15 +438,18 @@ describe("placement: deny checks hold under any spelling of the path (re-check R
   it.runIf(process.platform === "darwin")("darwin: the seat's cwd through the /System/Volumes/Data firmlink is still the seat's cwd", async () => {
     expect(await judge(`/System/Volumes/Data${join(seatDir, "bin", "mcpls")}`, { seatCwd: seatDir })).toContain("lies inside the seat's working directory");
   });
-  it.runIf(process.platform === "darwin")("darwin: $TMPDIR spelled /VAR/FOLDERS/... or through the firmlink is still a temp root (real reads)", async () => {
+  it.runIf(process.platform === "darwin")("darwin: $TMPDIR in another letter case (e.g. /VAR/FOLDERS/...) or through the firmlink is still a temp root (real reads)", async () => {
     const { DEFAULT_PATH_JUDGE_IO } = await import("../src/domain/codex-mcp-servers.js");
     const d = realpathSync(mkdtempSync(join(tmpdir(), "mcp-r2-")));
     try {
       const bin = join(d, "mcpls");
       writeFileSync(bin, "#!/bin/sh\nexit 0\n");
       chmodSync(bin, 0o755);
-      expect(bin.startsWith("/private/var/folders/")).toBe(true);
-      for (const spelling of [bin.replace("/private/var/folders/", "/VAR/FOLDERS/"), `/System/Volumes/Data${bin}`]) {
+      // The temp root as this run has it: macOS's default is /private/var/folders/..., but a contained run points TMPDIR elsewhere
+      // (e.g. /private/tmp/<run>/t), and the spellings are of whatever root it is.
+      const tempRoot = realpathSync(tmpdir());
+      expect(bin.startsWith(`${tempRoot}/`)).toBe(true);
+      for (const spelling of [`${tempRoot.toUpperCase()}${bin.slice(tempRoot.length)}`, `/System/Volumes/Data${bin}`]) {
         expect(await judge(spelling, {}, DEFAULT_PATH_JUDGE_IO)).toMatch(/lies inside the temporary directory .*, which a sandboxed seat can write$/);
       }
     } finally { rmSync(d, { recursive: true, force: true }); }
