@@ -72,7 +72,9 @@ describe("where a trusted scaffold is made", () => {
     expect(trustedBaseFolder({ [TRUSTED_BASE_ENV]: "/usr", HOME: "/home/run" }, account)).toBe("/usr");
     expect(trustedBaseFolder({ HOME: "/home/run" }, account)).toBe("/home/run");
     expect(() => trustedBaseFolder({ HOME: "/private/tmp/orr.x/h", [HC_SCRATCH_ROOT_ENV]: "/private/tmp/orr.x/scr" }, account)).toThrow(TrustedBaseRefusedError);
-    expect(() => trustedBaseFolder({ [TRUSTED_BASE_ENV]: "/private/tmp", HOME: "/home/run" }, account)).toThrow(TrustedBaseRefusedError);
+    // A folder that exists and is a temp location on every platform (this process's own temp dir): the refusal must be for being temp.
+    expect(() => trustedBaseFolder({ [TRUSTED_BASE_ENV]: tmpdir(), HOME: "/home/run" }, account)).toThrow(/is inside a temp location/);
+    expect(() => trustedBaseFolder({ [TRUSTED_BASE_ENV]: "/no/such/folder", HOME: "/home/run" }, account)).toThrow(/not an existing absolute folder/);
   });
 
   it("an uncontained run whose HOME is a temp fixture keeps asking the account, as before", () => {
