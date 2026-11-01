@@ -41,7 +41,7 @@ describe("the hc surface exports", () => {
     expect(surface.hcTerminalName("a@b")).not.toBe(surface.hcTerminalName("a@c"));
     expect(surface.SEAT_LABEL).toBe("openrig.seat");
     expect(surface.HC_GENERATION).toBe(1);
-    expect(surface.HC_PINNED_VERSION).toBe("0.1.15");
+    expect(surface.HC_PINNED_VERSION).toBe("0.1.16");
   });
 });
 

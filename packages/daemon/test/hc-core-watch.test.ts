@@ -127,8 +127,8 @@ describe("verifyHello", () => {
     expect(() => verifyHello(hello({ generation: 0 }))).toThrow(HcCoreRefusedError);
   });
   it("refuses a version that is not pinned, and accepts a listed one", () => {
-    expect(() => verifyHello(hello({ version: "0.1.16" }))).toThrow(expect.objectContaining({ kind: "unsupported_version" }));
-    expect(() => verifyHello(hello({ version: "0.1.16" }), { versions: ["0.1.16"] })).not.toThrow();
+    expect(() => verifyHello(hello({ version: "0.1.15" }))).toThrow(expect.objectContaining({ kind: "unsupported_version" }));
+    expect(() => verifyHello(hello({ version: "0.1.15" }), { versions: ["0.1.15"] })).not.toThrow();
   });
   it("refuses a core that is not the one first seen", () => {
     expect(() => verifyHello(hello({ core: { id: "core-b", name: "n" } }), { coreId: "core-a" })).toThrow(expect.objectContaining({ kind: "core_changed" }));

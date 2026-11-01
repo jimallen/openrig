@@ -83,7 +83,7 @@ export function readHcHello(socketPath: string = resolveHcSocket(), timeoutMs: n
   });
 }
 
-/** `hc --version` prints `hc 0.1.15`. */
+/** `hc --version` prints `hc 0.1.16`. */
 export function parseHcVersion(output: string): string | null {
   return /(\d+\.\d+\.\d+)/.exec(output)?.[1] ?? null;
 }

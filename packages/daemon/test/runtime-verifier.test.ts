@@ -21,7 +21,7 @@ function createMockExec(responses: Record<string, string | Error>): ExecFn {
   });
 }
 
-const PIN = "0.1.15";
+const PIN = "0.1.16";
 /** A core's `hello`, with the fields a test varies. */
 const hello = (over: Partial<HcHello> = {}): HcHello => ({
   generation: HC_GENERATION, version: PIN, core: { id: "c", name: "n" }, framed: false, methods: [], features: [], ...over,
@@ -44,18 +44,18 @@ describe("RuntimeVerifier", () => {
 
   // T1: hc present at the pin, core on this generation -> verified
   it("hc at the pinned version with a core on this generation -> verified, recording both", async () => {
-    const exec = createMockExec({ "hc --version": "hc 0.1.15\n" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.16\n" });
     const result = await withCore(db, exec, async () => hello()).verifyHc();
 
     expect(result.status).toBe("verified");
-    expect(result.version).toBe("0.1.15");
+    expect(result.version).toBe("0.1.16");
     expect(result.runtime).toBe("hc");
-    expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: HC_GENERATION, coreVersion: "0.1.15" });
+    expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: HC_GENERATION, coreVersion: "0.1.16" });
     expect(result.error).toBeNull();
   });
 
-  it("the pin is hc 0.1.15 and the generation 1 (restated, so a change must be deliberate)", () => {
-    expect(HC_PINNED_VERSION).toBe("0.1.15");
+  it("the pin is hc 0.1.16 and the generation 1 (restated, so a change must be deliberate)", () => {
+    expect(HC_PINNED_VERSION).toBe("0.1.16");
     expect(HC_GENERATION).toBe(1);
   });
 
@@ -69,7 +69,7 @@ describe("RuntimeVerifier", () => {
     expect(asked).toBe(0);
   });
 
-  it.each(["0.1.14", "0.1.16", "0.2.0"])("hc %s is not the pin -> error naming both, and the core is not asked", async (installed) => {
+  it.each(["0.1.14", "0.1.15", "0.2.0"])("hc %s is not the pin -> error naming both, and the core is not asked", async (installed) => {
     let asked = 0;
     const exec = createMockExec({ "hc --version": `hc ${installed}` });
     const result = await withCore(db, exec, async () => { asked++; return hello(); }).verifyHc();
@@ -82,7 +82,7 @@ describe("RuntimeVerifier", () => {
   });
 
   it("a running core on another generation -> error, however it says so", async () => {
-    const exec = createMockExec({ "hc --version": "hc 0.1.15" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.16" });
     const answers: Array<[() => Promise<HcHello>, string]> = [
       [async () => hello({ generation: HC_GENERATION + 1 }), "the hc core speaks generation 2, this build 1"],
       [async () => { throw new HcError("this core speaks generation 2", "unsupported_generation", -32000); }, "the hc core refused generation 1"],
@@ -95,22 +95,22 @@ describe("RuntimeVerifier", () => {
   });
 
   it("a running core of another version than the pin -> error", async () => {
-    const exec = createMockExec({ "hc --version": "hc 0.1.15" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.16" });
     const result = await withCore(db, exec, async () => hello({ version: "0.1.14" })).verifyHc();
     expect(result.status).toBe("error");
     expect(result.error).toContain("0.1.14");
   });
 
   it("no core running -> degraded, not an error: the check starts none", async () => {
-    const exec = createMockExec({ "hc --version": "hc 0.1.15" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.16" });
     const result = await withCore(db, exec, async () => { throw new HcUnavailableError("hc core not reachable at /x"); }).verifyHc();
     expect(result.status).toBe("degraded");
     expect(result.error).toBe("no hc core is running");
-    expect(result.version).toBe("0.1.15");
+    expect(result.version).toBe("0.1.16");
   });
 
   it("a core that cannot be read -> error, not degraded", async () => {
-    const exec = createMockExec({ "hc --version": "hc 0.1.15" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.16" });
     for (const err of [new HcError("boom", "internal", -32603), new HcOutcomeUnknownError("hello: no reply", "hello")]) {
       const result = await withCore(db, exec, async () => { throw err; }).verifyHc();
       expect(result.status, err.name).toBe("error");
@@ -120,7 +120,7 @@ describe("RuntimeVerifier", () => {
 
   it("runs only `hc --version` for hc and for its old name tmux", async () => {
     const seen: string[] = [];
-    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.15"; });
+    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.16"; });
     await withCore(db, exec, async () => hello()).verifyAll(["hc", "tmux"]);
     expect(seen).toEqual(["hc --version", "hc --version"]);
   });
@@ -151,7 +151,7 @@ describe("RuntimeVerifier", () => {
 
   // T7: verifyHc auto-persists to DB
   it("verification auto-persists to runtime_verifications table", async () => {
-    const exec = createMockExec({ "hc --version": "hc 0.1.15" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.16" });
     const verifier = withCore(db, exec, async () => hello());
 
     const result = await verifier.verifyHc();
@@ -161,14 +161,14 @@ describe("RuntimeVerifier", () => {
 
     expect(row).toBeDefined();
     expect(row!.runtime).toBe("hc");
-    expect(row!.version).toBe("0.1.15");
+    expect(row!.version).toBe("0.1.16");
     expect(row!.status).toBe("verified");
     expect(row!.id).toBe(result.id);
   });
 
   // T8: Re-verify hc twice -> only 1 row
   it("re-verification updates existing record (1 row per runtime)", async () => {
-    const exec = createMockExec({ "hc --version": "hc 0.1.15" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.16" });
     const verifier = withCore(db, exec, async () => hello());
 
     await verifier.verifyHc();
@@ -253,7 +253,7 @@ describe("RuntimeVerifier", () => {
     const exec = createMockExec({
       "codex --version": "codex 0.5.0",
       "claude --version": "claude 1.2.3",
-      "hc --version": "hc 0.1.15",
+      "hc --version": "hc 0.1.16",
     });
     const verifier = withCore(db, exec, async () => hello());
 
@@ -274,7 +274,7 @@ describe("RuntimeVerifier", () => {
 
   it('verifyAll(["tmux"]) is the seat-host check under its old name: it records "hc" and runs no tmux', async () => {
     const seen: string[] = [];
-    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.15"; });
+    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.16"; });
     const results = await withCore(db, exec, async () => hello()).verifyAll(["tmux"]);
 
     expect(results.map((r) => [r.runtime, r.status])).toEqual([["hc", "verified"]]);

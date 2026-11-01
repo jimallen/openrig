@@ -7,7 +7,7 @@ import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableE
 
 type Handler = (method: string, params: Record<string, unknown>, id: number, socket: Socket) => void;
 
-const HELLO = { generation: HC_GENERATION, version: "0.1.15", core: { id: "c", name: "n" }, framed: false, methods: [], features: [] };
+const HELLO = { generation: HC_GENERATION, version: "0.1.16", core: { id: "c", name: "n" }, framed: false, methods: [], features: [] };
 const scratch: { dir: string; server: Server }[] = [];
 
 function reply(socket: Socket, id: number, result: unknown): void {

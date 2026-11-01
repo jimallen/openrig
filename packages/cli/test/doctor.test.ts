@@ -16,7 +16,7 @@ function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
     baseDir: "/install/cli/dist",
     readFile: () => null,
     exec: (cmd: string) => {
-      if (cmd === "hc --version") return "hc 0.1.15\n";
+      if (cmd === "hc --version") return "hc 0.1.16\n";
       return "";
     },
     checkPort: async () => true,
@@ -171,7 +171,7 @@ describe("runDoctorChecks", () => {
     const seen: string[] = [];
     const urls: string[] = [];
     const deps = makeDeps({
-      exec: (cmd: string) => { seen.push(cmd); return cmd === "hc --version" ? "hc 0.1.15\n" : ""; },
+      exec: (cmd: string) => { seen.push(cmd); return cmd === "hc --version" ? "hc 0.1.16\n" : ""; },
       checkPort: async () => false,
       fetch: async (url: string) => { urls.push(url); return { ok: true, json: async () => ({}) } as Response; },
     });

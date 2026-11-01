@@ -7,7 +7,7 @@ import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableE
 
 /** The hc release this build is tested against. A core upgrade is a tested release step, so the pin is exact. The CLI
  *  keeps its own copy (cli/src/tmux-health.ts), which it cannot import from here. */
-export const HC_PINNED_VERSION = "0.1.15";
+export const HC_PINNED_VERSION = "0.1.16";
 
 interface RuntimeVerifierDeps {
   exec: ExecFn;
@@ -248,7 +248,7 @@ export class RuntimeVerifier {
     };
   }
 
-  /** Parse a semver-like version from output (e.g. "hc 0.1.15" -> "0.1.15"). */
+  /** Parse a semver-like version from output (e.g. "hc 0.1.16" -> "0.1.16"). */
   private parseVersion(output: string): string | undefined {
     const match = output.match(/(\d+\.\d+(?:\.\d+)?(?:[a-z])?)/);
     return match?.[1];

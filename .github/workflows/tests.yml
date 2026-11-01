@@ -97,9 +97,9 @@ jobs:
       # herdr-core (hc), pinned. The installer script is pinned by sha256 and verifies the release tarball against the
       # version's manifest checksum itself; it installs into a job-local directory that later steps put on PATH. Bumping hc
       # is a deliberate edit of both values here (and of HC_VERSION in docker/testbed/Dockerfile).
-      - name: Install hc (herdr-core) 0.1.15
+      - name: Install hc (herdr-core) 0.1.16
         env:
-          HC_VERSION: "0.1.15"
+          HC_VERSION: "0.1.16"
           HC_INSTALLER_SHA256: "4d052d135b76140a6e1ea998985fe9a92b639a8551a8f6d970fcf2226de09f90"
         run: |
           set -euo pipefail
