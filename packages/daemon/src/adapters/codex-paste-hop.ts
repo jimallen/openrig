@@ -3,8 +3,8 @@
 //
 // A core restart between the paste and the Enter leaves the text staged, and a second paste would put a second copy behind it. s0 M8
 // measured the window (0.2 to 0.4 s) and that Enter alone completes it with one turn. So a staged copy of THIS message gets Enter
-// only. Whether it is this message cannot rest on the marker: a paste over about 1000 characters collapses to
-// `› [Pasted Content 1610 chars]`, marker hidden (s0 M4). That placeholder is matched by the message's length instead.
+// only, when its marker shows. A paste over about 1000 characters collapses to `› [Pasted Content 1610 chars]`, marker hidden (s0 M4):
+// that placeholder could be a person's paste of the same length, so it is held, and shows on health.
 //
 // Anything else in the composer is a person's draft, or something unknown. Enter would submit it and a paste would join it, so the
 // attempt pauses. An attempt never clears the composer.
@@ -16,7 +16,6 @@ import type { LastHop, LastHopResult, SeatMessage } from "../domain/seat-messagi
 const PROMPT_LINE = /^\s*› ?(.*)$/;
 /** Codex's empty composer (0.166.0, s0 M4). */
 const EMPTY_COMPOSER = "Ask Codex to do anything";
-const COLLAPSED_PASTE = /^\[Pasted Content (\d+) chars\]$/;
 const AT_REST = new Set(["idle", "done"]);
 
 export type ComposerRead =
@@ -46,16 +45,11 @@ function lastMarkerLine(body: string): string | null {
   return line.startsWith("[openrig-msg ") ? line : null;
 }
 
-/** Is what is staged this message? A visible copy shows its marker, a collapsed one its length. Codex's count of a non-ASCII paste
- *  is unmeasured, so each count the text has is accepted. */
+/** Is what is staged this message? Only its visible marker says so. A collapsed paste shows a length, which a person's paste can match,
+ *  and Enter would send their words, so it is held. */
 export function composerHoldsMessage(lines: readonly string[], body: string): boolean {
   const marker = lastMarkerLine(body);
-  if (marker !== null && lines.some((line) => line.trim() === marker)) return true;
-  if (lines.length !== 1) return false;
-  const collapsed = COLLAPSED_PASTE.exec(lines[0]!);
-  if (!collapsed) return false;
-  const shown = Number(collapsed[1]);
-  return shown === body.length || shown === [...body].length || shown === Buffer.byteLength(body);
+  return marker !== null && lines.some((line) => line.trim() === marker);
 }
 
 export type StagedDecision = "paste" | "enter_only" | "hold";

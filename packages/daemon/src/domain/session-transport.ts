@@ -998,10 +998,16 @@ function promptAnswerStaged(pane: string | null, answer: string, runtime: string
 
 export const HANDED_TO_PUMP = "handed_to_pump";
 
-/** What the pump carries. Not: an Enter with no text, a person's answer to a prompt, a Command, a row the caller settles itself, and a
- *  send with a closure on it (`/compact`'s lease check, startup's submit check), since a closure cannot sit on a durable row. */
-function isPumpMessage(opts?: SendOpts): boolean {
-  return !opts?.submitOnly && !opts?.dangerouslyInteract && !opts?.ownsOutboxRow && opts?.messageClass !== "command" && !opts?.beforeWrite && !opts?.onStartupMismatch;
+/** Ids a gate marker can carry (`NATIVE_MARKER_RE`). */
+const MARKABLE_ID = /^[A-Za-z0-9._:-]+$/;
+
+/** What the pump carries. Not: an Enter with no text, a person's answer to a prompt, a Command, a row the caller settles itself, an id no
+ *  marker can carry, and a send with a closure on it (`/compact`'s lease check, startup's submit check), since a closure cannot sit on a
+ *  durable row. Slash text is a Command by its text, whatever class it came with: it fires no hook, so no gate can ever record it, and it
+ *  is confirmed by its effect (M10). */
+function isPumpMessage(text: string, opts?: SendOpts): boolean {
+  return !opts?.submitOnly && !opts?.dangerouslyInteract && !opts?.ownsOutboxRow && opts?.messageClass !== "command" && !opts?.beforeWrite && !opts?.onStartupMismatch
+    && !startsLikeCommand(text) && (opts?.deliveryId === undefined || MARKABLE_ID.test(opts.deliveryId));
 }
 
 export interface SendOpts {
@@ -1637,7 +1643,7 @@ export class SessionTransport {
     if (!opts?.dangerouslyInteract && containsPasteTerminator(text)) return pasteTerminatorRefusal(sessionName);
     if (opts?.pumpAttempt) return this.attempt(sessionName, text, opts);
     const handOff = this.tmuxAdapter.messageHandOff?.takes(sessionName) ? this.tmuxAdapter.messageHandOff : null;
-    if (handOff && isPumpMessage(opts)) return this.handToPump(handOff, sessionName, text, opts);
+    if (handOff && isPumpMessage(text, opts)) return this.handToPump(handOff, sessionName, text, opts);
     if (opts?.submitOnly || opts?.ownsOutboxRow || opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX)) return this.attempt(sessionName, text, opts);
     if (opts?.committedOutboxIds && opts.committedOutboxIds.length > 0) {
       for (const id of opts.committedOutboxIds) new OutboxHandler(this.db).countAttempt(id);

@@ -78,15 +78,14 @@ describe.skipIf(!HC)("the Codex hop on a real core, stub Codex", () => {
     expect(JSON.parse(s.prompts()[0]!).payload.content[0].text).toBe(body);
   }, 40_000);
 
-  it("a staged long paste, collapsed with its marker hidden, gets Enter only", async () => {
+  it("a staged long paste, collapsed with its marker hidden, holds: its length could be a person's", async () => {
     const s = await seat();
     const body = `${"x".repeat(1500)}\n${marker("a")}`;
     await input.sendText(s.name, body);
     const shown = await waitUntil(() => screen(s.name), (t) => t.includes("[Pasted Content"), "collapsed");
     expect(shown).not.toContain("openrig-msg");
-    await expect(attempt(s.name, "a", body)).resolves.toEqual({ kind: "sent" });
-    await count(s.prompts, 1);
-    expect(JSON.parse(s.prompts()[0]!).payload.content[0].text).toBe(body);
+    await expect(attempt(s.name, "a", body)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+    expect(s.prompts()).toEqual([]);
   }, 40_000);
 
   it("a person's draft holds the attempt: nothing is added or submitted", async () => {

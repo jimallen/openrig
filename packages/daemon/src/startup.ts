@@ -34,6 +34,8 @@ import { MessagePump } from "./domain/seat-messaging/message-pump.js";
 import { MessageStore } from "./domain/seat-messaging/message-store.js";
 import { SeatMessagingHealthSource } from "./domain/seat-messaging/message-health.js";
 import { PumpHandOff } from "./domain/seat-messaging/hand-off.js";
+import { messageId } from "./domain/seat-messaging/ports.js";
+import { RuntimeSeatPorts } from "./domain/seat-messaging/runtime-ports.js";
 import { NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
 import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
 import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
@@ -212,6 +214,8 @@ interface DaemonOptions {
   dbPath?: string;
   /** Seat Messaging S3: the seats the pump may serve. Default: none. S2 and S4 wire real gates; a test passes a stub. */
   seatMessagingPorts?: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
+  /** Seat Messaging: a crash test's hold on the real ports, so it can hang an attempt at a named point. */
+  wrapSeatMessagingPorts?: (ports: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts) => import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
   /** Seat Messaging S3: a test's shorter schedule. */
   messagePumpTiming?: Partial<import("./domain/seat-messaging/message-pump.js").MessagePumpTiming>;
   /** S20 — the effective bind plan (mode/hosts/tailscaleDetected/ignoredRoutingHost),
@@ -688,8 +692,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     new ContextPackSettingsStore().resolveConfig().workspaceRoot,
     process.env.OPENRIG_SHARED_DOCS_ROOT?.trim() || nodePath.join(daemonHome, ".openrig", "shared-docs"), daemonHome);
   // S2: a Codex seat's restart settles its seen store against the thread's rollout. `contextUsageStore` is read at the restart, not here.
+  const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
+  const seatMessages = new MessageStore(db);
   const reconcileCodexSeat = (sessionName: string, threadId: string | null) => {
-    reconcileCodexSeatGate(new HookSeenStore(seatGateRoot(OPENRIG_HOME)), sessionName, threadId === null ? null : contextUsageStore.readCodexTranscriptPath(threadId));
+    const { cleared } = reconcileCodexSeatGate(new HookSeenStore(seatGateRoot(OPENRIG_HOME)), sessionName, threadId === null ? null : contextUsageStore.readCodexTranscriptPath(threadId));
+    // Rows in `cleared` did not arrive: the pump resends them.
+    if (messagePumpEnabled) for (const marker of cleared) seatMessages.reopenCleared(messageId(marker.id), marker.nonce);
   };
   const codexResume = new CodexResumeAdapter(tmuxAdapter, { reconcileSeatGate: reconcileCodexSeat, prepareTeamWorkspace, seatLaunchEnvironment, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), detectVersion: codexVersionProbe(process.env.PATH, undefined, configuredCodexHome), readNetworkDefault: readCodexNetworkDefault, existingMcpServerNames });
   // OPR.0.4.6.PI1 — the Pi seat-state root + the compiled runner entry (daemon
@@ -1274,10 +1282,27 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
   const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
   // Seat Messaging S3: one setting, read at boot, default off. Off, no pump and no health source exist, and every path is as it was.
-  const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
-  const seatMessagingPorts = opts?.seatMessagingPorts ?? NO_SEAT_MESSAGING_PORTS;
+  const realSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
+    db, rows: seatMessages, hookStore: new HookSeenStore(seatGateRoot(OPENRIG_HOME)), stateRoots: { pi: piStateRoot, omp: ompStateRoot },
+    client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: (path, needle) => { try { return fileIncludes(path, needle); } catch { return null; } },
+    rolloutOf: (seat) => {
+      const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? AND resume_token IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string } | undefined;
+      return row ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
+    },
+    input: {
+      submitText: async (seat, text) => {
+        const sent = await hcAdapter.submitText(seat, text);
+        return sent.ok ? { ok: true } : { ok: false, code: sent.code, message: sent.message };
+      },
+      sendKeys: async (seat, keys) => {
+        const sent = await hcAdapter.sendKeys(seat, keys);
+        return sent.ok ? { ok: true } : { ok: false, code: sent.code, message: sent.message };
+      },
+    },
+  }) : NO_SEAT_MESSAGING_PORTS);
+  const seatMessagingPorts = opts?.wrapSeatMessagingPorts?.(realSeatMessagingPorts) ?? realSeatMessagingPorts;
   const heldMessages = new GuardHeldMessages(deliveryGuard);
-  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(new MessageStore(db), seatMessagingPorts)] : [];
+  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(seatMessages, seatMessagingPorts)] : [];
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, ...seatMessagingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
@@ -1377,6 +1402,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const claudeNativeInbox: ClaudeNativeInbox = new ClaudeNativeInbox({
     db,
     gate: nativeSeatGate(new HookSeenStore(seatGateRoot(OPENRIG_HOME)), processIsAlive),
+    onGateCleared: (_seat, marker) => { if (messagePumpEnabled) seatMessages.reopenCleared(messageId(marker.id), marker.nonce); },
     onSettled: createNativeSettlementHandler(nativeSettlementDeps),
     // OF-180 N2: a row unacked past the deadline with no prompt boundary since is named in the daemon log, once.
     onStalled: (row, ageMs) => console.warn(`[native-inbox] ${row.outboxId} to ${row.destinationSession} was written natively ${Math.round(ageMs / 1000)}s ago and the seat has had no prompt boundary since. The seat may be busy, or it may be holding the message behind a prompt (for example a managed or policy setting that overrides crossSessionInbound; not measured).`),
@@ -2218,13 +2244,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     nativeSweepTimer.unref?.();
     // Started at boot and driven by the database. It serves seats with a gate; SessionTransport hands it their messages.
     if (messagePumpEnabled) {
-      const messageStore = new MessageStore(db);
       const messagePump = new MessagePump({
-        store: messageStore, ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
+        store: seatMessages, ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
         senders: new QueueSenderReturn(queueRepoInstance), timing: opts?.messagePumpTiming,
       });
       // Before the first pass and before any route: from here no SessionTransport sends a message to a gated seat itself.
-      tmuxAdapter.messageHandOff = new PumpHandOff(messageStore, messagePump, seatMessagingPorts);
+      tmuxAdapter.messageHandOff = new PumpHandOff(seatMessages, messagePump, seatMessagingPorts);
       messagePump.start();
     }
     queueRepoInstance.attachActivityReader((session) => {

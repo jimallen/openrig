@@ -3,8 +3,8 @@
 //   - M1: Claude drops a socket line identical to the one before it, inside a window of 25 to 40 s, before any hook, and a write returns
 //     the same either way. So a completed write proves nothing, and only the gate confirms. A retry inside the window would be swallowed
 //     with no trace, so it waits.
-//   - M3: a multi-line paste shows as `[Pasted text #N +L lines]`, which carries no id, so a staged Claude paste is recognised by the
-//     composer and the line count, never by the marker. A paste is appended to a person's draft, and a blocked paste comes back to the
+//   - M3: a multi-line paste shows as `[Pasted text #N +L lines]`, which carries no id, so a staged multi-line paste cannot be told from a
+//     person's: it holds, and shows on health. A paste is appended to a person's draft, and a blocked paste comes back to the
 //     composer. Only `ctrl+c` clears it, only at rest, and only when the composer holds exactly that text. `esc esc` on an empty
 //     composer opens the rewind picker, so it is never used.
 //   - M10: a slash command on the socket is text, so a command goes by paste and carries no marker.
@@ -37,10 +37,10 @@ export interface ClaudeRetryInput {
   readonly composer: string | null;
 }
 
+/** Only the exact text proves it is this message. A collapsed paste shows a line count, which a person's paste can match, and Enter would
+ *  send their words while `ctrl+c` would lose them: so a placeholder is never ours to touch. */
 function holdsThisMessage(composer: string, text: string): boolean {
-  const placeholder = PLACEHOLDER.exec(composer);
-  if (!placeholder) return composer === text;
-  return placeholder[1] !== undefined && Number(placeholder[1]) === text.split("\n").length;
+  return !PLACEHOLDER.test(composer) && composer === text;
 }
 
 export function decideClaudeRetry(input: ClaudeRetryInput): ClaudeRetryStep {

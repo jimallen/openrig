@@ -23,10 +23,10 @@ describe("the paste hop, where a seat is ineligible", () => {
   it("an empty composer takes a paste", () => {
     expect(decideClaudeRetry(paste)).toEqual({ kind: "paste" });
   });
-  it("Enter only for a staged multi-line paste, known by its line count: no marker is on the screen", () => {
+  it("a staged multi-line paste shows only a line count, which a person's paste could match: it holds, with no Enter", () => {
     const composer = "[Pasted text #1 +7 lines]";
     expect(composer).not.toContain("openrig-msg");
-    expect(decideClaudeRetry({ ...paste, composer })).toEqual({ kind: "enter_only" });
+    expect(decideClaudeRetry({ ...paste, composer })).toEqual({ kind: "paused", reason: "guard_held" });
   });
   it("Enter only for staged text shown in full", () => {
     expect(decideClaudeRetry({ ...paste, text: `hi\n\n${MARKER}`, composer: `hi\n\n${MARKER}` })).toEqual({ kind: "enter_only" });
@@ -40,8 +40,9 @@ describe("the paste hop, where a seat is ineligible", () => {
     expect(decideClaudeRetry({ ...paste, composer: "my draft", gateSeen: true })).toEqual({ kind: "paused", reason: "guard_held" });
   });
   it("a blocked copy is cleared with ctrl+c, the only tested key (M3), and only at rest", () => {
-    expect(decideClaudeRetry({ ...paste, composer: "[Pasted text #2 +7 lines]", gateSeen: true })).toEqual({ kind: "clear_composer", key: "ctrl+c" });
-    expect(decideClaudeRetry({ ...paste, composer: "[Pasted text #2 +7 lines]", gateSeen: true, atRest: false })).toEqual({ kind: "paused", reason: "busy" });
+    expect(decideClaudeRetry({ ...paste, composer: paste.text, gateSeen: true })).toEqual({ kind: "clear_composer", key: "ctrl+c" });
+    expect(decideClaudeRetry({ ...paste, composer: paste.text, gateSeen: true, atRest: false })).toEqual({ kind: "paused", reason: "busy" });
+    expect(decideClaudeRetry({ ...paste, composer: "[Pasted text #2 +7 lines]", gateSeen: true })).toEqual({ kind: "paused", reason: "guard_held" });
   });
   it("an unreadable composer proves nothing, so nothing is typed", () => {
     expect(decideClaudeRetry({ ...paste, composer: null })).toEqual({ kind: "paused", reason: "guard_held" });

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import { OutboxHandler, OutboxHandlerError, type OutboxRecordInput } from "../outbox-handler.js";
 import { messageId, type GateRecord, type LastHopResult, type MessageId, type SeatMessageClass, type SeatMessageLane } from "./ports.js";
@@ -155,8 +156,35 @@ export class MessageStore {
    *  here on the same schedule. The CAS on `attempts` means one claim per attempt. Leaves `accepted`. */
   claimAttempt(message: StoredMessage, nextAttemptAtMs: number): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', attempts = attempts + 1,
-        next_attempt_at = ?, message_pause_reason = NULL
-      WHERE outbox_id = ? AND attempts = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), message.id, message.attempts).changes === 1;
+        next_attempt_at = ?, message_pause_reason = NULL, native_nonce = coalesce(native_nonce, ?)
+      WHERE outbox_id = ? AND attempts = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), randomBytes(16).toString("hex"), message.id, message.attempts).changes === 1;
+  }
+
+  /** The nonce every attempt of this message carries, or null before its first. A gate's record is this message's only under it. */
+  nonceOf(id: MessageId): string | null {
+    return (this.db.prepare("SELECT native_nonce AS nonce FROM outbox_entries WHERE outbox_id = ?").get(id) as { nonce: string | null } | undefined)?.nonce ?? null;
+  }
+
+  senderOf(id: MessageId): string | null {
+    return (this.db.prepare("SELECT sender_session AS sender FROM outbox_entries WHERE outbox_id = ?").get(id) as { sender: string } | undefined)?.sender ?? null;
+  }
+
+  /** Recorded before the write, so a crash after it still waits (M1). */
+  recordSocketWrite(id: MessageId, atMs: number): void {
+    this.db.prepare("UPDATE outbox_entries SET message_socket_written_ms = ? WHERE outbox_id = ?").run(atMs, id);
+  }
+
+  lastSocketWriteMs(id: MessageId): number | null {
+    return (this.db.prepare("SELECT message_socket_written_ms AS at FROM outbox_entries WHERE outbox_id = ?").get(id) as { at: number | null } | undefined)?.at ?? null;
+  }
+
+  /** Reconcile cleared this (id, nonce): the hook recorded it and the agent died before persisting it (M5), so the message did not
+   *  arrive, whatever the row says. It opens again, keeping its id, nonce, body and place in the queue. The one way out of `received`, and
+   *  only for the nonce the gate cleared. A row that is still open needs nothing: its next attempt now passes the gate. */
+  reopenCleared(id: MessageId, nonce: string): boolean {
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', delivery_state = 'pending', delivered_at = NULL, gate_recorded_at = NULL,
+        gate_nonce = NULL, message_gate_version = NULL, delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, next_attempt_at = NULL, message_id = coalesce(message_id, outbox_id)
+      WHERE outbox_id = ? AND native_nonce = ? AND delivery_state = 'delivered'`).run(id, nonce).changes === 1;
   }
 
   /** The hop did not send, so the claim gives its attempt back: a pause spends no step of the backoff. */
@@ -178,6 +206,8 @@ export class MessageStore {
   recordSent(id: MessageId): void {
     this.db.prepare(`UPDATE outbox_entries SET message_last_refusal = NULL WHERE outbox_id = ? AND ${OPEN}`).run(id);
   }
+
+  get isOpen(): boolean { return this.db.open; }
 
   /** The only way to `received` (invariant 3). A row that is no longer open is left as it is. */
   recordReceived(record: GateRecord, gateVersion: number): boolean {

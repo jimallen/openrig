@@ -98,9 +98,10 @@ describe("the message pump", () => {
       expect(w.hop.calls.map((c) => [c.ids, c.seat, c.body, c.messageClass, c.lane])).toEqual([[["m1"], SEAT, "body of m1", "content", 2]]);
       expect(row(db, "m1")).toMatchObject({ message_state: "attempting", attempts: 1, delivery_state: "pending" });
 
-      w.gate.record(messageId("m1"), "nonce-1");
+      const nonce = store.nonceOf(messageId("m1"))!;
+      w.gate.record(messageId("m1"), nonce);
       await pump.tick();
-      expect(row(db, "m1")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "gate_seen", message_gate_version: 3, gate_nonce: "nonce-1" });
+      expect(row(db, "m1")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "gate_seen", message_gate_version: 3, gate_nonce: nonce });
       expect(row(db, "m1").delivered_at).toBe("1970-01-01T02:00:00.000Z");
       expect(w.hop.calls).toHaveLength(1);
     });
@@ -113,6 +114,25 @@ describe("the message pump", () => {
       await pump.tick();
       expect(row(db, "m1").message_state).toBe("attempting");
       expect(row(db, "m2").message_state).toBe("accepted");
+    });
+
+    it("a record under another nonce is forged: the real message has not arrived, and the pump keeps going", async () => {
+      accept("m1");
+      await pump.tick();
+      w.gate.record(messageId("m1"), "f".repeat(32));
+      w.now += 2 * MIN;
+      await pump.tick();
+      expect(row(db, "m1")).toMatchObject({ message_state: "attempting", attempts: 2 });
+    });
+
+    it("looks up before every attempt: a record a live recovery found costs no resend", async () => {
+      accept("m1");
+      await pump.tick();
+      w.now += 2 * MIN;
+      w.gate.record(messageId("m1"), store.nonceOf(messageId("m1")));
+      await pump.tick();
+      expect(w.hop.calls).toHaveLength(1);
+      expect(row(db, "m1").message_state).toBe("received");
     });
 
     it("a repeat carries the same id and body", async () => {
@@ -288,6 +308,76 @@ describe("the message pump", () => {
       outbox.record({ outboxId: "wake-intent-legacy", senderSession: "a@r", destinationSession: SEAT, body: "x" });
       accept("wake-intent-pumped");
       expect(outbox.listPending("wake-intent-").map((e) => e.outboxId)).toEqual(["wake-intent-legacy"]);
+    });
+  });
+
+  describe("a record reconcile cleared (M5)", () => {
+    const received = async (id: string) => {
+      accept(id);
+      await pump.tick();
+      w.gate.record(messageId(id), store.nonceOf(messageId(id)));
+      await pump.tick();
+      expect(row(db, id).message_state).toBe("received");
+    };
+
+    it("opens the row again under its id, nonce and body, in the seat's order, and the pump resends it", async () => {
+      await received("m1");
+      const nonce = store.nonceOf(messageId("m1"))!;
+      accept("m2");
+      await pump.tick();
+      w.gate.seen.delete("m1");
+      expect(store.reopenCleared(messageId("m1"), nonce)).toBe(true);
+      expect(row(db, "m1")).toMatchObject({ message_state: "attempting", delivery_state: "pending", delivered_at: null, gate_recorded_at: null, ack_evidence: null, body: "body of m1", native_nonce: nonce });
+      w.hop.calls.length = 0;
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m1"]);
+    });
+
+    it("the same goes for a row the old ack path delivered", () => {
+      const outbox = new OutboxHandler(db);
+      outbox.record({ outboxId: "n1", senderSession: "a@r", destinationSession: SEAT, body: "x" });
+      outbox.claimNative("n1", "a".repeat(32), "1970-01-01T00:00:00.000Z");
+      outbox.ackNative("n1", "a".repeat(32), SEAT);
+      expect(store.reopenCleared(messageId("n1"), "a".repeat(32))).toBe(true);
+      expect(row(db, "n1")).toMatchObject({ message_state: "attempting", delivery_state: "pending" });
+    });
+
+    it("a clear under another nonce opens nothing: it was a forged record", async () => {
+      await received("m1");
+      expect(store.reopenCleared(messageId("m1"), "f".repeat(32))).toBe(false);
+      expect(row(db, "m1").message_state).toBe("received");
+    });
+
+    it("a row that never arrived has nothing to open", () => {
+      accept("m1");
+      expect(store.reopenCleared(messageId("m1"), "f".repeat(32))).toBe(false);
+    });
+  });
+
+  describe("a hop's tidying after the record", () => {
+    it("runs when more than one attempt went out, and a failure in it changes nothing", async () => {
+      const tidied: string[] = [];
+      const hop: LastHop = { attempt: async () => ({ kind: "sent" }), afterReceived: async (m) => { tidied.push(m.ids[0]); throw new Error("no"); } };
+      pump = new MessagePump({ ...w.deps(store), ports: { gateFor: () => w.gate, hopFor: () => hop } });
+      accept("m1");
+      await pump.tick();
+      w.now += 2 * MIN;
+      await pump.tick();
+      w.gate.record(messageId("m1"), store.nonceOf(messageId("m1")));
+      await pump.tick();
+      expect(tidied).toEqual(["m1"]);
+      expect(row(db, "m1").message_state).toBe("received");
+    });
+
+    it("does not run after one attempt: no repeat can be sitting anywhere", async () => {
+      const tidied: string[] = [];
+      const hop: LastHop = { attempt: async () => ({ kind: "sent" }), afterReceived: async (m) => { tidied.push(m.ids[0]); } };
+      pump = new MessagePump({ ...w.deps(store), ports: { gateFor: () => w.gate, hopFor: () => hop } });
+      accept("m1");
+      await pump.tick();
+      w.gate.record(messageId("m1"), store.nonceOf(messageId("m1")));
+      await pump.tick();
+      expect(tidied).toEqual([]);
     });
   });
 

@@ -13,6 +13,10 @@ import type { Migration } from "../migrate.js";
  *    its `message_state`: the send path leaves a held row `attempting`, so `message_state` cannot say who holds it.
  *  - `message_previous_occupant`: set when a held row goes to a new occupant (Jim's decision): every attempt carries the label, built
  *    from this at the attempt. The stored body never changes (invariant 2).
+ *  - `message_socket_written_ms`: the last socket write of this message. Claude drops an identical line inside 25 to 40 s (M1), so the
+ *    wait must survive a daemon restart.
+ *
+ * The row's nonce is `native_nonce` (migration 118), minted at the first attempt and never changed: (id, nonce) is the gate's identity.
  */
 export const seatMessageStateSchema: Migration = {
   name: "123_seat_message_state.sql",
@@ -24,6 +28,7 @@ export const seatMessageStateSchema: Migration = {
     ALTER TABLE outbox_entries ADD COLUMN message_closed_at TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_hold_released_at TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_previous_occupant TEXT;
+    ALTER TABLE outbox_entries ADD COLUMN message_socket_written_ms INTEGER;
     CREATE INDEX idx_outbox_message_open ON outbox_entries(destination_session, message_state)
       WHERE message_state IN ('accepted', 'attempting');
   `,

@@ -1,4 +1,4 @@
-import { messageId, type GateLookup, type LastHopResult, type MessageId, type SeatGate } from "./ports.js";
+import { messageId, type GateLookup, type LastHopResult, type MessageId, type SeatGate, type SeatMessage } from "./ports.js";
 import type { MessageAcceptInput, MessageOutcome, MessageStore, StoredMessage } from "./message-store.js";
 import type { HeldMessages, SeatDirectory, SeatMessagingPorts, SenderReturn } from "./pump-ports.js";
 
@@ -98,6 +98,7 @@ export class MessagePump {
       const seats = this.deps.store.seatsWithOpenMessages().filter((seat) => !this.inFlight.has(seat));
       await Promise.all(seats.map((seat) => this.driveSeat(seat)));
     } catch (error) {
+      if (!this.deps.store.isOpen) { this.stop(); return; }  // the daemon closed its database: nothing here can run again
       this.log(`pass failed: ${(error as Error).message}`);
     }
   }
@@ -135,7 +136,9 @@ export class MessagePump {
     const lookup = await this.readGate(gate, message);
     // First, ahead of the seat's fate: a record means the message arrived, whatever became of the seat since.
     if (lookup.kind === "seen") {
-      return this.deps.store.recordReceived(lookup.record, gate.version) ? "next" : "stop";
+      if (!this.deps.store.recordReceived(lookup.record, gate.version)) return "stop";
+      if (message.attempts > 1) await this.tidyAfterReceived(message);
+      return "next";
     }
     const fate = this.deps.directory.fate(message.seat);
     const bound = message.occupantGeneration;
@@ -170,6 +173,8 @@ export class MessagePump {
       return { kind: "unavailable", cause: (error as Error).message };
     }
     if (lookup.kind === "seen" && lookup.record.id !== message.id) return { kind: "unavailable", cause: `the gate answered with a record of ${lookup.record.id}` };
+    // A marker with another nonce is forged: the real message has not arrived.
+    if (lookup.kind === "seen" && lookup.record.nonce !== null && lookup.record.nonce !== this.deps.store.nonceOf(message.id)) return { kind: "not_seen" };
     return lookup;
   }
 
@@ -181,7 +186,7 @@ export class MessagePump {
     if (!this.deps.store.claimAttempt(message, now + nextAttemptDelayMs(message.attempts + 1, this.timing.backoffMs))) return "stop";
     let result: LastHopResult;
     try {
-      result = await hop.attempt({ ids: [message.id], seat: message.seat, body: message.previousOccupant === null ? message.body : `${PREVIOUS_OCCUPANT_LABEL} ${message.body}`, occupantGeneration: message.occupantGeneration, messageClass: message.messageClass, lane: message.lane });
+      result = await hop.attempt(this.seatMessage(message));
     } catch (error) {
       result = { kind: "refused", reason: `the hop threw: ${(error as Error).message}` };
     }
@@ -189,6 +194,21 @@ export class MessagePump {
     else if (result.kind === "refused") this.deps.store.recordRefusal(message.id, result.reason);
     else this.deps.store.recordHopPause(message.id, result.reason, this.clock() + this.timing.pauseRecheckMs);
     return "stop";
+  }
+
+  private seatMessage(message: StoredMessage): SeatMessage {
+    return {
+      ids: [message.id], seat: message.seat, body: message.previousOccupant === null ? message.body : `${PREVIOUS_OCCUPANT_LABEL} ${message.body}`,
+      occupantGeneration: message.occupantGeneration, messageClass: message.messageClass, lane: message.lane,
+    };
+  }
+
+  private async tidyAfterReceived(message: StoredMessage): Promise<void> {
+    try {
+      await this.deps.ports.hopFor(message.seat)?.afterReceived?.(this.seatMessage(message));
+    } catch (error) {
+      this.log(`message ${message.id}: tidying the seat after it arrived failed: ${(error as Error).message}`);
+    }
   }
 
   private async end(message: StoredMessage, reason: string): Promise<Visit> {

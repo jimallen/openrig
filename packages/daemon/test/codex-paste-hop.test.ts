@@ -31,9 +31,9 @@ describe("reading the composer", () => {
 });
 
 describe("what is staged", () => {
-  it("a long paste matches by its length: no marker is visible", () => {
+  it("a long paste shows only a length, which a person's paste could match: it is not proof", () => {
     expect(LONG.length).toBe(1610);
-    expect(composerHoldsMessage(["[Pasted Content 1610 chars]"], LONG)).toBe(true);
+    expect(composerHoldsMessage(["[Pasted Content 1610 chars]"], LONG)).toBe(false);
   });
   it("another paste of another length is not this message", () => {
     expect(composerHoldsMessage(["[Pasted Content 1611 chars]"], LONG)).toBe(false);
@@ -81,13 +81,13 @@ describe("one attempt", () => {
     await expect(h.hop.attempt(message(SHORT))).resolves.toEqual({ kind: "sent" });
     expect(h.calls).toEqual([`paste:${SHORT.length}`]);
   });
-  it("a staged copy gets Enter only, short and collapsed", async () => {
+  it("a staged copy showing its marker gets Enter only, and a collapsed one holds", async () => {
     const shown = hop({ composer: `› Reply with TWO\n  ${MARKER}` });
     await expect(shown.hop.attempt(message(SHORT))).resolves.toEqual({ kind: "sent" });
     expect(shown.calls).toEqual(["keys:Enter"]);
     const collapsed = hop({ composer: "› [Pasted Content 1610 chars]", status: "done" });
-    await expect(collapsed.hop.attempt(message(LONG))).resolves.toEqual({ kind: "sent" });
-    expect(collapsed.calls).toEqual(["keys:Enter"]);
+    await expect(collapsed.hop.attempt(message(LONG))).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+    expect(collapsed.calls).toEqual([]);
   });
   it("a draft holds: nothing typed, nothing pressed", async () => {
     const h = hop({ composer: "› half a thought" });

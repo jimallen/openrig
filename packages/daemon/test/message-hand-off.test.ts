@@ -144,6 +144,19 @@ describe("SessionTransport and the pump", () => {
       expect(new PumpHandOff(store, pump, { gateFor: () => gate, hopFor: () => null }).takes(SEAT)).toBe(false);
     });
 
+    it("slash text stays direct whatever its class: it fires no hook, so no gate could ever record it (M10)", async () => {
+      const result = await transport.send(SEAT, "/status", { deliveryId: "s1", actorSession: "lead@hr" });
+      expect(result.reason).not.toBe("handed_to_pump");
+      expect(writes.join("")).toContain("/status");
+      expect(row("s1")?.message_state ?? null).toBeNull();
+      expect(hopCalls).toEqual([]);
+    });
+
+    it("an id no marker can carry stays direct", async () => {
+      expect((await transport.send(SEAT, "text", { deliveryId: "has space" })).reason).not.toBe("handed_to_pump");
+      expect(writes.join("")).toContain("text");
+    });
+
     it("what is not a message stays direct: a submit-only Enter, and a person's answer to a prompt", async () => {
       expect((await transport.send(SEAT, "", { submitOnly: true })).reason).not.toBe("handed_to_pump");
       expect((await transport.send(SEAT, "1", { dangerouslyInteract: true, reason: "answer", actorSession: "jim@hr" })).reason).not.toBe("handed_to_pump");

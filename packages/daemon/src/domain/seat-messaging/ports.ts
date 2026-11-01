@@ -67,4 +67,6 @@ export type LastHopResult =
 /** How bytes reach a seat: the socket, a paste, a runner. Safe to repeat, because the gate drops a repeat. */
 export interface LastHop {
   attempt(message: SeatMessage): Promise<LastHopResult>;
+  /** The gate recorded the id after more than one attempt: a blocked repeat may sit in a composer. Best effort, and it changes no row. */
+  afterReceived?(message: SeatMessage): Promise<void>;
 }

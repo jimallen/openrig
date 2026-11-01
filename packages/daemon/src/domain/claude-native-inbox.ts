@@ -66,6 +66,8 @@ export interface NativeInboxDeps {
   db: Database.Database;
   outbox: OutboxHandler;
   gate?: NativeSeatGate;
+  /** Seat Messaging: reconcile cleared this record, so the message did not arrive and only the pump can resend it. */
+  onGateCleared?: (sessionName: string, marker: { id: string; nonce: string }) => void;
   /** `transport.native_claude`; read at each decision, so the setting takes effect without a restart. */
   enabled: () => boolean;
   /** The pid of the seat's pane process (its shell or claude), or null. */
@@ -238,7 +240,8 @@ export class ClaudeNativeInbox {
         }
       }
       for (const marker of cleared) {
-        if (this.deps.outbox.getById(marker.id)?.deliveryState === "delivered") console.warn(`[native-inbox] ${marker.id} to ${sessionName} was acked, but the seat died before persisting it.`);
+        this.deps.onGateCleared?.(sessionName, marker);
+        if (!this.deps.onGateCleared && this.deps.outbox.getById(marker.id)?.deliveryState === "delivered") console.warn(`[native-inbox] ${marker.id} to ${sessionName} was acked, but the seat died before persisting it.`);
       }
     } catch (err) {
       console.warn(`[native-inbox] gate reconcile for ${sessionName} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -386,6 +389,19 @@ export class ClaudeNativeInbox {
     const acked = await Promise.race([all, this.sleep(this.ackWindowMs).then(() => false)]);
     for (const c of claimed) this.waiters.delete(c.id);
     return { kind: "written", write: "all", outboxIds: claimed.map((c) => c.id), acked };
+  }
+
+  /** The pump's write: one line, its marker already in the text. No row moves here: only the gate says it arrived, and a completed write
+   *  proves nothing (M1). */
+  async writeToSeat(endpoint: NativeEndpointRow, sender: string, text: string): Promise<"none" | "all" | "partial"> {
+    const content = (endpoint.name_envelope === 1 ? nameEnvelope(sender, text) : null) ?? text;
+    return this.deps.write(endpoint.socket_path!, [{ type: "user", message: { role: "user", content } }]);
+  }
+
+  /** The file a seat's prompts land in, when its endpoint is known. */
+  transcriptOf(sessionName: string): string | null {
+    const seat = this.seatOf(sessionName);
+    return seat ? this.endpointFor(seat.nodeId)?.transcript_path ?? null : null;
   }
 
   /** UserPromptSubmit with markers (R2, R4): each marker whose id and nonce match a native row in `sending`, addressed
