@@ -1,4 +1,3 @@
-import type { DirectTextCarrier } from "./seat-messaging/message-ledger.js";
 import os from "node:os";
 import fs from "node:fs";
 import nodePath from "node:path";
@@ -34,8 +33,6 @@ export interface ResumeRefreshSession {
 }
 
 interface ResumeMetadataRefresherDeps {
-  /** Seat Messaging: commits a row before the probe command is typed. */
-  directText?: DirectTextCarrier;
   sessionRegistry: SessionRegistry;
   tmuxAdapter: TmuxAdapter;
   listProcesses?: () => Array<{ pid: number; ppid: number; command: string }> | Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -62,7 +59,6 @@ interface ResumeMetadataRefresherDeps {
 export class ResumeMetadataRefresher {
   private sessionRegistry: SessionRegistry;
   private tmuxAdapter: TmuxAdapter;
-  private directText?: DirectTextCarrier;
   private listProcesses: () => Array<{ pid: number; ppid: number; command: string }> | Promise<Array<{ pid: number; ppid: number; command: string }>>;
   private readCodexThreadIdByPid: (pid: number, identity?: string) => Promise<string | undefined> | string | undefined;
   private probeClaudeResume: (sessionName: string, resumeToken: string, cwd?: string | null) => Promise<"resumable" | "not_resumable" | "inconclusive">;
@@ -77,7 +73,6 @@ export class ResumeMetadataRefresher {
   constructor(deps: ResumeMetadataRefresherDeps) {
     this.sessionRegistry = deps.sessionRegistry;
     this.tmuxAdapter = deps.tmuxAdapter;
-    this.directText = deps.directText;
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
     this.resolveHomeDirByPid = deps.resolveHomeDirByPid ?? defaultResolveHomeDirByPid;
     // OPR.0.5.3.10 (addendum): the default thread-id read goes default-home-first
@@ -332,12 +327,12 @@ export class ResumeMetadataRefresher {
       // sourced subshell keeps the pane shell in front of claude, so every resumable session would
       // read as "returned to shell". The line holds only shell-quoted words, which an autopair
       // widget overtypes (OF-64 review, real zsh-autopair).
-      const write = async (): Promise<{ ok: boolean; message?: string }> => {
-        const send = await this.tmuxAdapter.sendText(probeSession, command);
-        return send.ok ? this.tmuxAdapter.sendKeys(probeSession, ["Enter"]) : send;
-      };
-      const written = await (this.directText?.carryDirect({ kind: "resume-probe", seat: probeSession, body: command, messageClass: "command" }, write) ?? write());
-      if (!written.ok) {
+      const send = await this.tmuxAdapter.sendText(probeSession, command);
+      if (!send.ok) {
+        return "inconclusive";
+      }
+      const enter = await this.tmuxAdapter.sendKeys(probeSession, ["Enter"]);
+      if (!enter.ok) {
         return "inconclusive";
       }
 

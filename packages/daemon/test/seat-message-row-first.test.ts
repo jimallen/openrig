@@ -11,7 +11,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { MessageLedger, lifecycleMessageId } from "../src/domain/seat-messaging/message-ledger.js";
+import { MessageLedger } from "../src/domain/seat-messaging/message-ledger.js";
 import { SEAT_MESSAGE_ROLLBACK_SQL } from "../src/db/migrations/122_seat_message.js";
 import { transportRoutes } from "../src/routes/transport.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -150,9 +150,9 @@ describe("a seat message's row", () => {
       expect(rows()[0]).toMatchObject({ delivery_state: "sending", attempts: 1, message_state: null });
     });
 
-    it("a lifecycle id follows its occupant: the same text to a successor is a different message", () => {
-      expect(lifecycleMessageId("startup", SEAT, "gen-1", "boot")).toBe(lifecycleMessageId("startup", SEAT, "gen-1", "boot"));
-      expect(lifecycleMessageId("startup", SEAT, "gen-1", "boot")).not.toBe(lifecycleMessageId("startup", SEAT, "gen-2", "boot"));
+    it("a Command through the transport keeps no message state, and its class", async () => {
+      await transport().send(SEAT, "/compact", { deliveryId: "c1", messageClass: "command", keepRowOpenOnRefusal: true });
+      expect(atWrite[0]![0]).toMatchObject({ class: "command", message_state: null, lane: null, attempts: 1 });
     });
   });
 
@@ -184,32 +184,6 @@ describe("a seat message's row", () => {
       } });
       await t.send(SEAT, "hello", { deliveryId: "m1", actorSession: "a@rig" });
       expect(rows()[0]).toMatchObject({ delivery_state: "sending", message_state: null, delivery_path: "native" });
-    });
-  });
-
-  describe("direct text (startup, handover, the resume probe)", () => {
-    const ledger = () => new MessageLedger(db, { resolveOccupantGeneration: () => "gen-1" });
-
-    it("commits before the write, and settles on the write's result", async () => {
-      let during: Row | undefined;
-      await ledger().carryDirect({ kind: "startup", seat: SEAT, body: "boot", messageClass: "lifecycle" }, async () => { during = rows()[0]; return { ok: true }; });
-      expect(during).toMatchObject({ delivery_state: "pending", message_state: "attempting", attempts: 1, class: "lifecycle", lane: 0, occupant_generation: "gen-1" });
-      expect(rows()[0]).toMatchObject({ delivery_state: "delivered", message_state: null });
-    });
-
-    it("a failed write settles failed; a repeat for this occupant is the same row", async () => {
-      const input = { kind: "startup", seat: SEAT, body: "boot", messageClass: "lifecycle" as const };
-      await ledger().carryDirect(input, async () => ({ ok: false, message: "no" }));
-      expect(rows()[0]).toMatchObject({ delivery_state: "failed", ack_detail: "no" });
-      await ledger().carryDirect(input, async () => ({ ok: true }));
-      expect(rows()).toHaveLength(1);
-      expect(rows()[0]).toMatchObject({ delivery_state: "delivered", attempts: 2 });
-    });
-
-    it("a Command is never the pump's: its row has no message state at any point", async () => {
-      let during: Row | undefined;
-      await ledger().carryDirect({ kind: "resume-probe", seat: "probe", body: "cmd", messageClass: "command" }, async () => { during = rows()[0]; return { ok: true }; });
-      expect(during).toMatchObject({ class: "command", message_state: null, lane: null, attempts: 1 });
     });
   });
 

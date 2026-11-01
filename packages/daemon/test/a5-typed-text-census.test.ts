@@ -24,7 +24,7 @@ const CLASSIFIED: Record<string, Row> = {
   "domain/claude-compaction-enforcer.ts": { sendText: 0, send: 5, cls: "stripped (4 prompts) + constant (turn boundary)" },
   "domain/queue-repository.ts": { sendText: 0, send: 1, cls: "stripped envelope + person body" },
   "domain/resume-metadata-refresher.ts": { sendText: 1, send: 0, cls: "gated" },
-  "domain/seat-handover-service.ts": { sendText: 1, send: 0, cls: "handover (one packet writer, two packets)" },
+  "domain/seat-handover-service.ts": { sendText: 2, send: 0, cls: "handover" },
   "domain/session-transport.ts": { sendText: 3, send: 0, cls: "impl" },
   // HcAdapter (the hc seat host, behind tmux's method names): `sendText` delegates to HcInput.sendText, the one sender, which
   // is `impl`. Its text arrives already stripped or classified by the caller of the adapter, as it does for TmuxAdapter.

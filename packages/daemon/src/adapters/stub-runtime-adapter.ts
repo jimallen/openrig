@@ -25,7 +25,6 @@ import type {
   HarnessLaunchResult, ForkSource,
 } from "../domain/runtime-adapter.js";
 import { resolveConcreteHint } from "../domain/runtime-adapter.js";
-import type { DirectTextCarrier } from "../domain/seat-messaging/message-ledger.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import {
@@ -45,8 +44,6 @@ export interface StubAdapterFsOps {
 
 export interface StubRuntimeAdapterDeps {
   tmux: TmuxAdapter;
-  /** Seat Messaging: commits a row before startup text is typed. */
-  directText?: DirectTextCarrier;
   /** Real filesystem operations. Absent in minimal/hermetic test constructions —
    *  the adapter then falls back to an in-memory launch record for readiness and
    *  performs NO real filesystem writes (so a `cwd: "."` binding never pollutes
@@ -74,7 +71,6 @@ interface StubLaunchRecord {
 export class StubRuntimeAdapter implements RuntimeAdapter {
   readonly runtime: string;
   private tmux: TmuxAdapter;
-  private directText?: DirectTextCarrier;
   private fsOps?: StubAdapterFsOps;
   private runnerEntryPath?: string;
   private sleep: (ms: number) => Promise<void>;
@@ -83,7 +79,6 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
 
   constructor(deps: StubRuntimeAdapterDeps) {
     this.tmux = deps.tmux;
-    this.directText = deps.directText;
     this.fsOps = deps.fsOps;
     this.runtime = deps.runtime ?? "stub";
     this.runnerEntryPath = deps.runnerEntryPath;
@@ -146,16 +141,11 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
             if (binding.tmuxSession) {
               // OF-160 (z5): operator-authored file content pasted bracketed — strip the
               // paste-end marker so it can never close the paste early into the stub seat.
-              const seat = binding.tmuxSession;
-              const body = inertStartupText(content);
-              const write = async (): Promise<{ ok: boolean; message?: string }> => {
-                const textResult = await this.tmux.sendText(seat, body);
-                if (!textResult.ok) return textResult;
-                await this.sleep(200);
-                return this.tmux.sendKeys(seat, ["Enter"]);
-              };
-              const written = await (this.directText?.carryDirect({ kind: "startup", seat, body, messageClass: "lifecycle" }, write) ?? write());
-              if (!written.ok) throw new Error(written.message);
+              const textResult = await this.tmux.sendText(binding.tmuxSession, inertStartupText(content));
+              if (!textResult.ok) throw new Error(textResult.message);
+              await this.sleep(200);
+              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
+              if (!submitResult.ok) throw new Error(submitResult.message);
             }
             break;
           }

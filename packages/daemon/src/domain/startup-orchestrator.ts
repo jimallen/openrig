@@ -1,7 +1,6 @@
 import { nonInterruptiveNotice } from "../adapters/non-interruptive.js";
 import { readGuardedStartupFile } from "./culture-file-guard.js";
 import { inertStartupText } from "./packet-text.js";
-import { MessageLedger } from "./seat-messaging/message-ledger.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { SessionRegistry } from "./session-registry.js";
@@ -1008,16 +1007,16 @@ export class StartupOrchestrator {
     }
     const sendOrder = ++input.sendOrder;
     input.lastSubmissionConfirmed = false;
-    const written = await new MessageLedger(this.db, { resolveOccupantGeneration: (seat) => this.sessionRegistry.currentOccupantGenerationForSession?.(seat) ?? null })
-      .carryDirect({ kind: "startup", seat: tmuxSession, body: text, messageClass: "lifecycle" }, async (): Promise<{ ok: boolean; message?: string }> => {
-        const textResult = await this.tmuxAdapter.sendText(tmuxSession, text);
-        if (!textResult.ok) return { ok: false, message: (textResult as { message?: string }).message ?? "unknown" };
-        await this.sleep(200);
-        const submitResult = await this.tmuxAdapter.sendKeys(tmuxSession, ["Enter"]);
-        if (!submitResult.ok) return { ok: false, message: (submitResult as { message?: string }).message ?? "unknown" };
-        return { ok: true };
-      });
-    if (!written.ok) return { error: written.message ?? "unknown" };
+    const textResult = await this.tmuxAdapter.sendText(tmuxSession, text);
+    if (!textResult.ok) {
+      return { error: (textResult as { message?: string }).message ?? "unknown" };
+    }
+
+    await this.sleep(200);
+    const submitResult = await this.tmuxAdapter.sendKeys(tmuxSession, ["Enter"]);
+    if (!submitResult.ok) {
+      return { error: (submitResult as { message?: string }).message ?? "unknown" };
+    }
 
     if (input.adapter.runtime !== "claude-code") return null;
 
