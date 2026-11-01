@@ -8,6 +8,7 @@
 //   - the core restarted after the send      -> `failed` (`send_failed`, `core_restarted_send_gone`): the queued send did
 //     not survive the restart, so the queue's own retry of a `failed:` wake is now safe and is the only way it arrives
 //   - anything else                          -> left as it is, to be looked at again
+// A row a crashed daemon left (`crash_reconciled`) has no pending record, so it is counted and left; the health notice names it.
 // Kept apart from startup so it is tested without a daemon; startup runs it on a timer and once at boot.
 import type { HcDeliveryOutcome, HcPendingSend } from "../adapters/hc-delivery.js";
 import type { OutboxEntry, OutboxHandler } from "./outbox-handler.js";
@@ -28,6 +29,9 @@ export interface HcSweepTally {
   open: number;
   /** Rows whose saved pending record is not readable; left alone and named. */
   unreadable: string[];
+  /** Rows a crashed daemon left (`crash_reconciled`): there is no pending record to verify, so the sweep cannot settle them.
+   *  They stay in the unsettled list for the health notice and an operator's close (see hc-unsettled-health). */
+  noRecord: number;
 }
 
 /** The pending record in a row's `ack_detail`, or null when it is not one. Validated, not cast: the column is text. */
@@ -40,13 +44,16 @@ export function parsePending(detail: string | null | undefined): HcPendingSend |
   const isString = (x: unknown): x is string => typeof x === "string" && x.length > 0;
   const isNumber = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
   if (v.version !== 1 || !isString(v.seat) || !isString(v.address) || !isNumber(v.sendStartedAtMs) || !isNumber(v.preTurn)) return null;
+  // `commandLed` came after the first records were saved: absent reads as true, the side that never settles a row "gone".
+  if (v.commandLed !== undefined && typeof v.commandLed !== "boolean") return null;
   if (!(v.token === null || isString(v.token)) || !(v.preStatus === null || typeof v.preStatus === "string") || typeof v.preReported !== "boolean") return null;
-  return { version: 1, seat: v.seat, address: v.address, token: v.token, sendStartedAtMs: v.sendStartedAtMs, preTurn: v.preTurn, preStatus: v.preStatus, preReported: v.preReported };
+  return { version: 1, seat: v.seat, address: v.address, token: v.token, sendStartedAtMs: v.sendStartedAtMs, preTurn: v.preTurn, preStatus: v.preStatus, preReported: v.preReported, commandLed: v.commandLed ?? true };
 }
 
 export async function sweepHcUnsettled(deps: HcSweepDeps, limit = 200): Promise<HcSweepTally> {
-  const tally: HcSweepTally = { delivered: 0, gone: 0, open: 0, unreadable: [] };
+  const tally: HcSweepTally = { delivered: 0, gone: 0, open: 0, unreadable: [], noRecord: 0 };
   for (const row of deps.outbox.listHcUnsettled(limit)) {
+    if (row.ackEvidence === "crash_reconciled") { tally.noRecord++; continue; }
     const pending = parsePending(row.ackDetail);
     if (!pending) { tally.unreadable.push(row.outboxId); continue; }
     let outcome: HcDeliveryOutcome;

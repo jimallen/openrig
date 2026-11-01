@@ -359,6 +359,19 @@ process writing directly to the terminal. Disable deliberately before lifecycle 
     .action(async (seat: string, id: string, opts: {reason: string; json?: boolean}) => {
       await guardRequest("POST", `/api/seat/retire-held-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}`, { reason: opts.reason }, opts.json);
     });
+  cmd.command("retire-unsettled-send").argument("<seat>").argument("<id>").requiredOption("--reason <text>").option("--json")
+    .description("Close a send to an hc seat that was never confirmed delivered or lost, after looking at the seat; sends nothing")
+    .addHelpText("after", `
+\`rig health\` names a message to an hc seat that is still unsettled after 15 minutes (its id and seat). Such a message is never
+resent for you: the text may already be there. Look at the seat (rig capture <seat>), send again only if the text is not there
+(or press Enter there if it is waiting in the input), then close the row with this command. The close is recorded with who,
+when and why; the row's label and pending record stay as evidence. It asserts nothing about delivery.
+Refused, changing nothing: a row already delivered, failed or retired by another verb, a row for another seat, or one not yet
+15 minutes old (the sweep may still settle it).
+`)
+    .action(async (seat: string, id: string, opts: {reason: string; json?: boolean}) => {
+      await guardRequest("POST", `/api/transport/retire-unsettled/${encodeURIComponent(seat)}/${encodeURIComponent(id)}`, { reason: opts.reason }, opts.json);
+    });
 
 
   cmd

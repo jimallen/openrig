@@ -1325,9 +1325,9 @@ export class QueueRepository {
    * an overlapping drain can never reconcile another drain's in-flight claim.
    * Returns the count reconciled.
    */
-  reconcileAbandonedWakeIntents(): number {
+  reconcileAbandonedWakeIntents(path: "tmux" | "hc" = "tmux"): number {
     if (!this.outbox) return 0;
-    return this.outbox.reconcileAbandonedSending(WAKE_INTENT_PREFIX);
+    return this.outbox.reconcileAbandonedSending(WAKE_INTENT_PREFIX, path);
   }
 
   async drainPendingWakeIntents(): Promise<{ delivered: number; indeterminate: number; failed: number; retained: number; unreadable?: string[] }> {

@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { RowColumnReader } from "./unreadable-row.js";
 import { namedRows } from "./named-rows.js";
+import { parseSqliteUtcMs } from "./sqlite-time.js";
+import { HC_UNSETTLED_ESCALATE_AFTER_MS } from "./hc-unsettled-health.js";
 
 /**
  * The EXECUTABLE wake-intent namespace. A durable wake intent is written by the
@@ -83,6 +85,10 @@ export const OUTBOX_ACK_EVIDENCE = [
   "waiting_on_person", "outcome_unknown", "verified_after_wait",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
+
+/** The labels of an hc send nobody has settled: the core may hold it, its reply was lost, or a crash left the claim. */
+const HC_UNSETTLED_EVIDENCE = ["waiting_on_person", "outcome_unknown", "crash_reconciled"] as const;
+const HC_UNSETTLED_EVIDENCE_SQL = HC_UNSETTLED_EVIDENCE.map((e) => `'${e}'`).join(", ");
 
 /** How a row was settled. `detail` is the transport's own reason code, when it gave one. */
 export interface OutboxOutcomeLabel {
@@ -522,12 +528,46 @@ export class OutboxHandler {
   private nativeColumns: boolean | undefined;
 
   /** hc cutover: rows left `indeterminate` because the core may still deliver them (`waiting_on_person`) or the reply was
-   *  lost (`outcome_unknown`), oldest first. Their `ackDetail` is the pending record. Empty before migration 117. */
+   *  lost (`outcome_unknown`), oldest first. Their `ackDetail` is the pending record. Also the claims a crashed daemon left
+   *  on an hc host (`crash_reconciled`, labelled `hc` by reconcileAbandonedSending), which carry no record: the text may
+   *  or may not have landed, nothing can verify it, and without them here the crash left no trace in `rig health`.
+   *  Empty before migration 117. */
   listHcUnsettled(limit = 200): OutboxEntry[] {
     if (!this.hasOutcomeLabelColumns) return [];
     const rows = this.db.prepare(`SELECT * FROM outbox_entries WHERE delivery_state = 'indeterminate' AND delivery_path = 'hc'
-      AND ack_evidence IN ('waiting_on_person', 'outcome_unknown') ORDER BY ts_dispatched, rowid LIMIT ?`).all(limit) as OutboxEntryRow[];
+      AND ack_evidence IN (${HC_UNSETTLED_EVIDENCE_SQL}) ORDER BY ts_dispatched, rowid LIMIT ?`).all(limit) as OutboxEntryRow[];
     return rows.map((r) => this.rowToEntry(r, "mark"));
+  }
+
+  /**
+   * The operator's close of an unsettled hc send, for a seat with no token to settle it by (a plain terminal), or any row the
+   * evidence cannot settle: the person has looked at the seat (rig capture) and decided. The row leaves the unsettled list as
+   * `retired`, with who, when and why recorded in the retired_* columns and its label and pending record kept as evidence.
+   * It asserts nothing about delivery and never sends or queues a resend.
+   *
+   * Refused, with the row untouched: a row that is not an unsettled hc send (already delivered, failed, retired by another
+   * verb, or another transport's), a row that names another seat than the one given, and a row not yet past the escalation
+   * age (the sweep may still settle it, and the health notice has not named it yet). Closing a row twice is the same answer.
+   */
+  retireHcUnsettled(outboxId: string, seat: string, actor: string, reason: string, nowMs: number = Date.now()): OutboxEntry {
+    if (!actor.trim() || !reason.trim()) throw new OutboxHandlerError("retirement_reason_required", "Actor and reason are required.");
+    const raw = this.hasOutcomeLabelColumns ? this.getByIdRaw(outboxId) : undefined;
+    if (!raw) throw new OutboxHandlerError("outbox_not_found", `outbox ${outboxId} not found`);
+    if (raw.destination_session !== seat) throw new OutboxHandlerError("wrong_seat", `outbox ${outboxId} is for ${raw.destination_session}, not ${seat}`);
+    const unsettledLabel = raw.delivery_path === "hc" && (HC_UNSETTLED_EVIDENCE as readonly string[]).includes(raw.ack_evidence ?? "");
+    if (raw.delivery_state === "retired" && unsettledLabel) return this.rowToEntry(raw, "mark");
+    if (raw.delivery_state !== "indeterminate" || !unsettledLabel) {
+      throw new OutboxHandlerError("not_unsettled", `outbox ${outboxId} is ${raw.delivery_state}${raw.ack_evidence ? ` (${raw.ack_evidence})` : ""}, not an unsettled send to an hc seat; nothing was changed.`);
+    }
+    const sinceMs = parseSqliteUtcMs(raw.ts_dispatched);
+    if (!Number.isFinite(sinceMs) || nowMs - sinceMs <= HC_UNSETTLED_ESCALATE_AFTER_MS) {
+      throw new OutboxHandlerError("not_escalated", `outbox ${outboxId} has not waited past ${Math.floor(HC_UNSETTLED_ESCALATE_AFTER_MS / 60_000)} min; the sweep may still settle it. Nothing was changed.`);
+    }
+    const changed = this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'retired', retired_at = ?, retired_by = ?, retirement_reason = ?
+      WHERE outbox_id = ? AND delivery_state = 'indeterminate' AND delivery_path = 'hc' AND ack_evidence IN (${HC_UNSETTLED_EVIDENCE_SQL})`)
+      .run(new Date(nowMs).toISOString(), actor, reason, outboxId).changes;
+    if (changed !== 1) throw new OutboxHandlerError("not_unsettled", `outbox ${outboxId} was settled while this ran; nothing was changed.`);
+    return this.getByIdOrThrow(outboxId);
   }
 
   /** Settles one of those rows once the evidence is in: delivered, or failed because the send is proved gone (the only
@@ -677,9 +717,10 @@ export class OutboxHandler {
    * re-send. EXACT-CASE prefix, matching the executable selector. Returns the
    * count reconciled.
    */
-  reconcileAbandonedSending(idPrefix: string): number {
-    // Every claimed wake intent is sent through tmux today, so an abandoned claim is labelled with that path.
-    const set = this.labelSet({ path: "tmux", evidence: "crash_reconciled" });
+  reconcileAbandonedSending(idPrefix: string, path: "tmux" | "hc" = "tmux"): number {
+    // The claim is labelled with the path the daemon's seats are on, so a crash on an hc host leaves a row the unsettled list
+    // (and so `rig health`) sees. The label is a claim about the host, not about this row: every seat on an hc daemon is on hc.
+    const set = this.labelSet({ path, evidence: "crash_reconciled" });
     const result = this.db
       .prepare(
         `UPDATE outbox_entries SET delivery_state = 'indeterminate'${set.sql}

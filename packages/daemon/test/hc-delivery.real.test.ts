@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { HcAttach, type HcAttachment } from "../src/adapters/hc-attach.js";
@@ -14,12 +14,18 @@ import type { OutboxEntry } from "../src/domain/outbox-handler.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
 
 /** A program on a pty. It echoes what it is typed (so a token is on the screen), logs every chunk of stdin as hex, and
- *  with `turns` reports idle, then working and done for each Enter, so the core's turn counter moves. Bracketed paste on. */
+ *  with `turns` reports idle, then working and done for each Enter, so the core's turn counter moves. Bracketed paste on.
+ *  `slash`: a line that starts with `/` is a command the program runs and clears the screen for, with no turn and no echo
+ *  (what a TUI does for its own commands); the core's record afterwards is the one of a send that never arrived.
+ *  `marker`: the end of a paste writes a file, so a test can restart the core in the 200 ms before the Enter. */
 const STUB = `
 import os, sys, time, tty
 mode, log_path = sys.argv[1], sys.argv[2]
+marker = sys.argv[3] if len(sys.argv) > 3 else None
 tty.setraw(0)
 turns = "turns" in mode.split(",")
+slash = "slash" in mode.split(",")
+buf = b""
 os.write(1, b"\\x1b[?2004h")
 if turns:
     os.write(1, b"\\x1b]7501;state=idle:app=stub\\x1b\\\\")
@@ -33,8 +39,17 @@ while True:
     if not b:
         break
     log.write(b.hex().encode() + b"\\n")
+    if marker and b"\\x1b[201~" in b:
+        open(marker, "w").write("pasted")
     shown = b.replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"").replace(b"\\r", b"\\r\\n")
     os.write(1, shown)
+    buf += b
+    if b"\\r" in b:
+        line = buf.replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"").replace(b"\\r", b"")
+        buf = b""
+        if slash and line.startswith(b"/"):
+            os.write(1, b"\\x1b[2J\\x1b[HREADY\\r\\n")
+            continue
     if turns and b"\\r" in b:
         os.write(1, b"\\x1b]7501;state=working:app=stub\\x1b\\\\")
         time.sleep(0.3)
@@ -55,16 +70,17 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
   });
   afterAll(() => core.stop());
 
-  interface Seat { seat: string; address: string; stdin: () => string }
+  interface Seat { seat: string; address: string; marker: string; stdin: () => string }
 
   async function launch(mode: string): Promise<Seat> {
     const seat = `dlv${++n}@rig`;
     const address = hcTerminalName(seat);
     const log = join(core.root, "w", `${address}.stdin`);
     writeFileSync(log, "");
-    await core.client.call("terminal.run", { argv: ["python3", "-I", stubPath, mode, log], name: address, labels: { "openrig.seat": seat }, no_parent: true, no_notify: true, outlive_parent: true });
+    const marker = join(core.root, "w", `${address}.marker`);
+    await core.client.call("terminal.run", { argv: ["python3", "-I", stubPath, mode, log, marker], name: address, labels: { "openrig.seat": seat }, no_parent: true, no_notify: true, outlive_parent: true });
     await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes("READY"), "the stub's first paint");
-    return { seat, address, stdin: () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((hex) => Buffer.from(hex, "hex").toString("latin1")).join("") };
+    return { seat, address, marker, stdin: () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((hex) => Buffer.from(hex, "hex").toString("latin1")).join("") };
   }
 
   /** A person at the keyboard: one key every 400 ms, so the core's ~3 s quiet window never opens until `stop`. */
@@ -226,7 +242,80 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
       expect(await sweepVerdict(d, outcome)).toEqual([]);
       expect(occurrences(stub.stdin(), "hello window")).toBe(1);
     }, 60_000);
+
+    it("a slash command the program ran, reply lost, core restarted: not 'never reached' (it was delivered, and a retry would run it twice)", async () => {
+      // A seat with no token (a plain runner) that reports status: before, the restart plus "at rest, same turn" read as proof the
+      // send was gone, the sweep settled the row `failed`, and the queue's retry typed the command again.
+      const stub = await launch("turns,slash");
+      const d = new HcDelivery(core.client, lossyThenRestart());
+      const outcome = await d.deliver(stub.seat, "/x arg");
+      expect(stub.stdin()).toContain("\x1b[200~/x arg\x1b[201~");  // the program took it, and ran it
+      expect((await core.client.call<HcTerminal>("terminal.get", { terminal: stub.address })).turn).toBe(0);  // with no turn
+      expect(outcome).toMatchObject({ state: "waiting", cause: "restart_unsettled" });
+      expect(isBlindRetrySafe(outcome)).toBe(false);
+      expect(await sweepVerdict(d, outcome)).toEqual([]);  // the sweep never settles it failed, so the queue never retries it
+      expect(occurrences(stub.stdin(), "/x arg")).toBe(1);
+    }, 60_000);
   });
+
+  describe("the core goes between the paste and the Enter (200 ms apart): measured, the paste lands and the Enter does not", () => {
+    /** Restart the core the instant the stub has the paste, which is the 200 ms before hc presses Enter. */
+    async function restartBetween(how: "graceful" | "killed", seatMode: string) {
+      const stub = await launch(seatMode);
+      const token = deliveryTokenFor(`delivery:between-${how}-${n}`);
+      const d = new HcDelivery(core.client, new HcInput(core.client, attach, { deliveryTimeoutMs: 8_000 }));
+      const racing = d.deliver(stub.seat, withDeliveryToken("hello between", token), { token });
+      await until(() => existsSync(stub.marker), (seen) => seen, "the paste to reach the program", 10_000);
+      if (how === "graceful") core.restart();
+      else {
+        const pid = await core.corePid();
+        if (!core.isMine(pid)) throw new Error("the core pid is not this test's own");
+        process.kill(pid, "SIGKILL");
+      }
+      const first = await racing;
+      if (how === "killed") core.start();
+      await until(async () => { try { return (await core.client.call<HcTerminal>("terminal.get", { terminal: stub.address })).state; } catch { return "down"; } }, (state) => state === "live", "the terminal after the core came back", 15_000);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));  // longer than the 200 ms: a late Enter would have shown by now
+      return { stub, d, first, token };
+    }
+
+    it.each(["graceful", "killed"] as const)("%s: the text sits typed and unsubmitted, and the verdict is waiting, never delivered and never gone", async (how) => {
+      const { stub, d, first } = await restartBetween(how, "turns,marker");
+      expect(stub.stdin()).toContain("\x1b[200~hello between");
+      expect(stub.stdin()).not.toContain("\r");  // the Enter never came
+      expect((await core.client.call<HcTerminal>("terminal.get", { terminal: stub.address })).turn).toBe(0);  // no turn: nothing was submitted
+      const verdict = first.state === "waiting" || first.state === "unknown"
+        ? await until(() => d.verify(pending(first)), (o) => o.state !== "unknown", "a verdict once the core answered", 15_000)
+        : first;
+      expect(verdict).toMatchObject({ state: "waiting", cause: "text_present_no_turn" });
+      expect(isBlindRetrySafe(verdict)).toBe(false);
+      for (let i = 0; i < 3; i++) expect(await d.verify(pending(first.state === "waiting" || first.state === "unknown" ? first : verdict))).toMatchObject({ state: "waiting" });
+      expect(occurrences(stub.stdin(), "hello between")).toBe(1);  // nothing was typed again
+    }, 60_000);
+
+    it("a retry that typed again would put the text in twice and submit it once (the reason nobody resends)", async () => {
+      const { stub } = await restartBetween("graceful", "turns,marker");
+      const sent = await core.client.call<{ turn: number }>("terminal.send", { terminal: stub.address, text: "hello between" }, { timeoutMs: 20_000 });
+      expect(sent.turn).toBeGreaterThanOrEqual(0);
+      await until(() => stub.stdin(), (s) => s.includes("\r"), "the retry's Enter", 10_000);
+      expect(occurrences(stub.stdin(), "hello between")).toBe(2);
+      expect(occurrences(stub.stdin(), "\r")).toBe(1);
+    }, 60_000);
+  });
+
+  it("the daemon dies between the paste and the Enter: the core still presses the Enter, once, and the turn settles it", async () => {
+    // Not a restart of the core: only the client goes (here a 100 ms timeout, the socket is destroyed). Measured: a queued send
+    // outlives its client, so the program gets the paste and then the Enter exactly once.
+    const stub = await launch("turns,marker");
+    const token = deliveryTokenFor("delivery:client-dies");
+    const d = new HcDelivery(core.client, new HcInput(core.client, attach, { deliveryTimeoutMs: 100 }));
+    const first = await d.deliver(stub.seat, withDeliveryToken("hello client", token), { token });
+    await until(() => stub.stdin(), (text) => text.includes("\r"), "the Enter, after the client was gone", 10_000);
+    const settled = first.state === "delivered" ? first : await until(() => d.verify(pending(first)), (o) => o.state !== "waiting" && o.state !== "unknown", "the turn", 15_000);
+    expect(settled).toMatchObject({ state: "delivered" });
+    expect(occurrences(stub.stdin(), "hello client")).toBe(1);
+    expect(occurrences(stub.stdin(), "\r")).toBe(1);
+  }, 60_000);
 
   it("refuses a finished seat and an unknown one with nothing typed", async () => {
     const stub = await launch("plain");

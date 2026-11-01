@@ -8,7 +8,10 @@ import { parseSqliteUtcMs } from "./sqlite-time.js";
  * restart, a person who never stops typing) would otherwise stay `indeterminate` and silent for good. This source is the
  * escalation: in `rig health`, one "notice" row names the count, the oldest message and its seat once any has waited longer than
  * HC_UNSETTLED_ESCALATE_AFTER_MS. It reads (SELECT only), writes nothing, sends nothing and so can never resend; it clears by
- * itself when the rows settle. Same shape as the human-inbox waiting source.
+ * itself when the rows settle or an operator closes them (rig seat retire-unsettled-send). Same shape as the human-inbox waiting source.
+ * The rows include the claims a crashed daemon left on an hc host (`crash_reconciled`): they carry no record to settle by, so the
+ * notice and the operator's close are all there is. The age is the row's own `ts_dispatched`, kept in the database, so a restart
+ * does not reset the 15 minutes.
  */
 export const HC_UNSETTLED_ESCALATE_AFTER_MS = 15 * 60 * 1000;
 
@@ -42,7 +45,7 @@ export class HcUnsettledHealthSource implements HealthObservationSource {
       status: "notice",
       partial: false,
       reason: `${overdue.length} message(s) to hc seats are still not confirmed delivered or lost after more than ${Math.floor(HC_UNSETTLED_ESCALATE_AFTER_MS / 60_000)} min `
-        + `(oldest ${oldest.outboxId} to ${oldest.destination}, ${minutes} min). They are not resent: the text may already be there. Check the seat (rig capture ${oldest.destination}) and send again only if it is not.`,
+        + `(oldest ${oldest.outboxId} to ${oldest.destination}, ${minutes} min). They are not resent: the text may already be there. Check the seat (rig capture ${oldest.destination}) and send again only if it is not, then close the row: rig seat retire-unsettled-send ${oldest.destination} ${oldest.outboxId} --reason "<what you found>".`,
     }];
   }
 }

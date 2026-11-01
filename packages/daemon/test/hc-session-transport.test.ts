@@ -17,7 +17,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { CaptureObserver, hashSentText, type Observation } from "../src/domain/capture-observer.js";
 
 const SEAT = "dev-impl@my-rig";
-const PENDING: HcPendingSend = { version: 1, seat: SEAT, address: "t4", token: null, sendStartedAtMs: 4_100_000_000_000, preTurn: 3, preStatus: "idle", preReported: true };
+const PENDING: HcPendingSend = { version: 1, seat: SEAT, address: "t4", token: null, sendStartedAtMs: 4_100_000_000_000, preTurn: 3, preStatus: "idle", preReported: true, commandLed: false };
 
 type TmuxCalls = { sendText: ReturnType<typeof vi.fn>; sendKeys: ReturnType<typeof vi.fn>; capture: ReturnType<typeof vi.fn> };
 
@@ -191,7 +191,7 @@ describe("SessionTransport.send to an hc seat", () => {
   describe("a send the core may still deliver is not a failure and is never retried", () => {
     it("reports waiting_on_person with the pending record, once", async () => {
       bindAs("hc");
-      const hc = hcDelivery({ state: "waiting", reason: "waiting_on_person", pending: PENDING, message: "queued; do not resend" });
+      const hc = hcDelivery({ state: "waiting", reason: "waiting_on_person", cause: "queued_in_core", pending: PENDING, message: "queued; do not resend" });
       const result = await transport(mockTmux().tmux, hc).send(SEAT, "hello");
       expect(result).toMatchObject({ ok: false, path: "hc", reason: "waiting_on_person", hcPending: PENDING });
       expect(result.error).toContain("do not resend");

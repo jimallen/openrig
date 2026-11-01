@@ -16,7 +16,7 @@ import type { HcPendingSend } from "../src/adapters/hc-delivery.js";
 const T0 = Date.parse("2031-03-04T05:00:00.000Z");
 const MIN = 60_000;
 const sqliteStamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
-const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: null, sendStartedAtMs: T0, preTurn: 0, preStatus: null, preReported: false };
+const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: null, sendStartedAtMs: T0, preTurn: 0, preStatus: null, preReported: false, commandLed: false };
 
 describe("HcUnsettledHealthSource", () => {
   let db: Database.Database;
@@ -69,11 +69,80 @@ describe("HcUnsettledHealthSource", () => {
     expect(source().coverage()).toEqual([]);
   });
 
+  /** A wake intent a daemon claimed (`sending`) and then died on, dispatched `agoMin` minutes before T0. */
+  function abandonedClaim(id: string, agoMin: number): void {
+    outbox.record({ outboxId: id, senderSession: "planner@rig", destinationSession: "reviewer@rig", body: "x", auditPointer: id, identityProvenance: "transport:v1" });
+    db.prepare("UPDATE outbox_entries SET ts_dispatched = ? WHERE outbox_id = ?").run(sqliteStamp(T0 - agoMin * MIN), id);
+    expect(outbox.claimForDelivery(id)).toBe(true);
+  }
+
+  it("names what a crashed daemon left on an hc host: the abandoned claim carries no record and used to leave no trace", () => {
+    abandonedClaim("wake-intent-crash", 20);
+    expect(outbox.reconcileAbandonedSending("wake-intent-", "hc")).toBe(1);
+    expect(outbox.getById("wake-intent-crash")).toMatchObject({ deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: "crash_reconciled" });
+    const rows = source().coverage();
+    expect(rows).toHaveLength(1);
+    const notice = rows[0];
+    if (notice?.status !== "notice") throw new Error("expected a notice row");
+    expect(notice.reason).toContain("oldest wake-intent-crash to reviewer@rig, 20 min");
+  });
+
+  it("is silent about that claim for the first 15 minutes, as for any unsettled row", () => {
+    abandonedClaim("wake-intent-fresh", 14);
+    outbox.reconcileAbandonedSending("wake-intent-", "hc");
+    expect(source().coverage()).toEqual([]);
+  });
+
+  it("leaves a tmux host's abandoned claim where it was: the default label is still tmux and the notice does not claim it", () => {
+    abandonedClaim("wake-intent-old", 90);
+    outbox.reconcileAbandonedSending("wake-intent-");
+    expect(outbox.getById("wake-intent-old")).toMatchObject({ deliveryPath: "tmux", ackEvidence: "crash_reconciled" });
+    expect(source().coverage()).toEqual([]);
+  });
+
+  it("names the verb that closes the row, with the row's own seat and id", () => {
+    unsettled("old", 40, "reviewer@rig");
+    const notice = source().coverage()[0];
+    if (notice?.status !== "notice") throw new Error("expected a notice row");
+    expect(notice.reason).toContain('rig seat retire-unsettled-send reviewer@rig old --reason "<what you found>"');
+  });
+
+  it("closes when an operator retires the row", () => {
+    unsettled("old", 40, "reviewer@rig");
+    expect(source().coverage()).toHaveLength(1);
+    outbox.retireHcUnsettled("old", "reviewer@rig", "operator@rig", "looked", T0);
+    expect(source().coverage()).toEqual([]);
+  });
+
   it("reads only: no row changes", () => {
     unsettled("a", 60);
     const before = db.prepare("SELECT * FROM outbox_entries").all();
     source().coverage();
     expect(db.prepare("SELECT * FROM outbox_entries").all()).toEqual(before);
+  });
+});
+
+describe("across a restart", () => {
+  it("a row's 15 minutes run from its own dispatch time in the database, so a restart neither resets them nor drops the row", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hc-unsettled-restart-"));
+    const file = join(dir, "openrig.sqlite");
+    try {
+      const first = createDb(file);
+      migrate(first, ALL_MIGRATIONS);
+      const before = new OutboxHandler(first);
+      before.record({ outboxId: "waiting", senderSession: "planner@rig", destinationSession: "reviewer@rig", body: "x", auditPointer: "waiting", identityProvenance: "transport:v1" });
+      first.prepare("UPDATE outbox_entries SET ts_dispatched = ? WHERE outbox_id = 'waiting'").run(sqliteStamp(T0 - 16 * MIN));
+      before.markIndeterminate("waiting", labelForTmuxSend({ ok: false, path: "hc", reason: "waiting_on_person", hcPending: PENDING }));
+      expect(new HcUnsettledHealthSource(outboxHcUnsettledRows(before), () => new Date(T0)).coverage()).toHaveLength(1);
+      first.close();  // the daemon is gone
+      const second = createDb(file);  // a new process: nothing carried over but the file
+      const after = new OutboxHandler(second);
+      expect(new HcUnsettledHealthSource(outboxHcUnsettledRows(after), () => new Date(T0)).coverage()).toHaveLength(1);
+      expect(new HcUnsettledHealthSource(outboxHcUnsettledRows(after), () => new Date(T0 - 2 * MIN)).coverage()).toEqual([]);  // and the age is the row's, not the process's
+      second.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -98,6 +167,32 @@ describe("the daemon's `rig health` carries it", () => {
       expect(row).toMatchObject({ status: "notice", partial: false });
       expect(JSON.stringify(row)).toContain("1 message(s)");
       expect(JSON.stringify(row)).toContain("oldest hc-old");
+    } finally {
+      daemon.hcCoreWatch?.stop();
+      daemon.eventLoopMonitor.stop();
+      daemon.db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("a daemon killed while it held a wake claim on an hc seat: after the restart the claim shows in `rig health` once it is past the bound", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hc-unsettled-crash-"));
+    const file = join(dir, "openrig.sqlite");
+    const seeded = createDb(file);
+    migrate(seeded, ALL_MIGRATIONS);
+    const outbox = new OutboxHandler(seeded);
+    for (const [id, ageMin] of [["wake-intent-crashed", 45], ["wake-intent-crashed-young", 2]] as const) {
+      outbox.record({ outboxId: id, senderSession: "planner@rig", destinationSession: "reviewer@rig", body: "x", auditPointer: id, identityProvenance: "transport:v1" });
+      seeded.prepare("UPDATE outbox_entries SET ts_dispatched = ? WHERE outbox_id = ?").run(sqliteStamp(Date.now() - ageMin * MIN), id);
+      expect(outbox.claimForDelivery(id)).toBe(true);  // `sending`: the process died here
+    }
+    seeded.close();
+    const daemon = await createDaemon({ dbPath: file });
+    try {
+      const row = (daemon.deps.healthProjection!.list().coverage ?? []).find((c) => c.source === "hc-unsettled-sends");
+      expect(row).toMatchObject({ status: "notice", partial: false });
+      expect(JSON.stringify(row)).toContain("1 message(s)");
+      expect(JSON.stringify(row)).toContain("oldest wake-intent-crashed to reviewer@rig");
     } finally {
       daemon.hcCoreWatch?.stop();
       daemon.eventLoopMonitor.stop();

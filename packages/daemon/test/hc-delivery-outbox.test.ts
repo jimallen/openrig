@@ -16,7 +16,7 @@ import { parsePending, sweepHcUnsettled } from "../src/domain/hc-unsettled-sweep
 import type { HcDeliveryOutcome, HcPendingSend } from "../src/adapters/hc-delivery.js";
 import type { RestoreResult } from "../src/domain/types.js";
 
-const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: "tok-9", sendStartedAtMs: 4_100_000_000_000, preTurn: 2, preStatus: "idle", preReported: true };
+const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: "tok-9", sendStartedAtMs: 4_100_000_000_000, preTurn: 2, preStatus: "idle", preReported: true, commandLed: false };
 
 type HcResult = Awaited<ReturnType<QueueNudgeTransport["send"]>>;
 const unknownResult = (reason: "waiting_on_person" | "delivery_outcome_unknown"): HcResult => ({ ok: false, path: "hc", reason, error: `Delivery to 'reviewer@rig' is not confirmed (${reason})`, hcPending: PENDING });
@@ -159,7 +159,7 @@ describe("the sweep of rows the core may still deliver", () => {
   it("settles a row delivered on evidence, labels it, and tells the queue it is verified", async () => {
     const { qitemId, outboxId } = await waitingRow();
     const verify = vi.fn(async () => delivered);
-    expect(await sweep(verify)).toEqual({ delivered: 1, gone: 0, open: 0, unreadable: [] });
+    expect(await sweep(verify)).toEqual({ delivered: 1, gone: 0, open: 0, unreadable: [], noRecord: 0 });
     expect(verify).toHaveBeenCalledWith(PENDING);
     expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "delivered", deliveryPath: "hc", ackEvidence: "verified_after_wait", ackDetail: "token_on_screen" });
     expect(h.outbox.getById(outboxId)!.deliveredAt).not.toBeNull();
@@ -169,21 +169,21 @@ describe("the sweep of rows the core may still deliver", () => {
   it("settles a row failed only when the send is proved gone, which is what lets the queue retry it", async () => {
     const { qitemId, outboxId } = await waitingRow();
     const gone: HcDeliveryOutcome = { state: "not_delivered", reason: "core_restarted_send_gone", code: "send_gone", message: "gone" };
-    expect(await sweep(async () => gone)).toEqual({ delivered: 0, gone: 1, open: 0, unreadable: [] });
+    expect(await sweep(async () => gone)).toEqual({ delivered: 0, gone: 1, open: 0, unreadable: [], noRecord: 0 });
     expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "failed", deliveryPath: "hc", ackEvidence: "send_failed", ackDetail: "core_restarted_send_gone" });
     expect(h.outbox.getById(outboxId)!.deliveredAt).toBeNull();
     expect(h.repo.getById(qitemId)?.lastNudgeResult).toBe("failed:core_restarted_send_gone");
   });
 
   it.each([
-    ["still waiting", async (): Promise<HcDeliveryOutcome> => ({ state: "waiting", reason: "waiting_on_person", pending: PENDING, message: "" })],
+    ["still waiting", async (): Promise<HcDeliveryOutcome> => ({ state: "waiting", reason: "waiting_on_person", cause: "queued_in_core", pending: PENDING, message: "" })],
     ["unknown", async (): Promise<HcDeliveryOutcome> => ({ state: "unknown", reason: "seat_ended", pending: PENDING, message: "" })],
     ["a refusal that proves nothing", async (): Promise<HcDeliveryOutcome> => ({ state: "not_delivered", reason: "core_unreachable", code: "transport_unavailable", message: "" })],
     ["a read that threw", async (): Promise<HcDeliveryOutcome> => { throw new Error("boom"); }],
   ])("leaves the row alone when it is %s", async (_name, verify) => {
     const { qitemId, outboxId } = await waitingRow();
     const before = h.repo.getById(qitemId)?.lastNudgeResult;
-    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 1, unreadable: [] });
+    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 1, unreadable: [], noRecord: 0 });
     expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "indeterminate", ackEvidence: "waiting_on_person" });
     expect(h.repo.getById(qitemId)?.lastNudgeResult).toBe(before);
   });
@@ -202,7 +202,7 @@ describe("the sweep of rows the core may still deliver", () => {
       h.db.prepare("UPDATE outbox_entries SET delivery_state = 'delivered' WHERE outbox_id = ?").run(outboxId);
       return delivered;
     });
-    expect(await sweep(raced)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [] });
+    expect(await sweep(raced)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [], noRecord: 0 });
     expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "delivered", ackEvidence: "waiting_on_person" });
   });
 
@@ -210,7 +210,7 @@ describe("the sweep of rows the core may still deliver", () => {
     const { outboxId } = await waitingRow();
     h.db.prepare("UPDATE outbox_entries SET ack_detail = 'not json' WHERE outbox_id = ?").run(outboxId);
     const verify = vi.fn(async () => delivered);
-    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [outboxId] });
+    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [outboxId], noRecord: 0 });
     expect(verify).not.toHaveBeenCalled();
   });
 
@@ -220,15 +220,27 @@ describe("the sweep of rows the core may still deliver", () => {
     h.db.prepare("UPDATE outbox_entries SET delivery_state = 'indeterminate', ack_detail = ? WHERE outbox_id = ?").run(JSON.stringify(PENDING), outboxId);
     expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: "render_unconfirmed" });
     const verify = vi.fn(async () => delivered);
-    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [] });
+    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [], noRecord: 0 });
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("counts a crashed daemon's claim and asks nothing about it: it has no record to verify, and the sweep cannot settle it", async () => {
+    h.outbox.record({ outboxId: "wake-intent-crash", senderSession: "planner@rig", destinationSession: "reviewer@rig", body: "x", identityProvenance: "transport:v1" });
+    expect(h.outbox.claimForDelivery("wake-intent-crash")).toBe(true);
+    expect(h.outbox.reconcileAbandonedSending("wake-intent-", "hc")).toBe(1);
+    expect(h.outbox.listHcUnsettled().map((r) => r.outboxId)).toEqual(["wake-intent-crash"]);
+    const verify = vi.fn(async () => delivered);
+    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [], noRecord: 1 });
+    expect(verify).not.toHaveBeenCalled();
+    expect(h.outbox.settleHcUnsettled("wake-intent-crash", "delivered", { path: "hc", evidence: "verified_after_wait" })).toBe(false);
+    expect(h.outbox.getById("wake-intent-crash")).toMatchObject({ deliveryState: "indeterminate", ackEvidence: "crash_reconciled" });
   });
 
   it("ignores tmux timeouts and every other indeterminate row", async () => {
     h.next.result = { ok: false, reason: "verify timeout waiting for render ack" };
     await h.handoff();
     const verify = vi.fn(async () => delivered);
-    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [] });
+    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [], noRecord: 0 });
     expect(verify).not.toHaveBeenCalled();
   });
 });
@@ -239,10 +251,16 @@ describe("parsePending", () => {
     expect(parsePending(JSON.stringify({ ...PENDING, token: null, preStatus: null }))).toMatchObject({ token: null, preStatus: null });
   });
 
+  it("reads a record saved before `commandLed` existed as command-led: the side that never settles a row gone", () => {
+    const { commandLed: _omitted, ...old } = PENDING;
+    expect(parsePending(JSON.stringify(old))).toEqual({ ...PENDING, commandLed: true });
+    expect(parsePending(JSON.stringify({ ...PENDING, commandLed: true }))?.commandLed).toBe(true);
+  });
+
   it.each<[string, unknown]>([
     ["a newer version", { ...PENDING, version: 2 }], ["no seat", { ...PENDING, seat: "" }], ["no address", { ...PENDING, address: undefined }],
     ["a string time", { ...PENDING, sendStartedAtMs: "1" }], ["a non-finite time", { ...PENDING, sendStartedAtMs: null }], ["a missing turn", { ...PENDING, preTurn: undefined }],
-    ["a numeric token", { ...PENDING, token: 5 }], ["an empty token", { ...PENDING, token: "" }], ["a numeric status", { ...PENDING, preStatus: 1 }], ["reported as a string", { ...PENDING, preReported: "yes" }],
+    ["a numeric token", { ...PENDING, token: 5 }], ["an empty token", { ...PENDING, token: "" }], ["a numeric status", { ...PENDING, preStatus: 1 }], ["reported as a string", { ...PENDING, preReported: "yes" }], ["commandLed as a string", { ...PENDING, commandLed: "no" }],
     ["an array", []], ["null", null],
   ])("refuses %s", (_name, value) => {
     expect(parsePending(JSON.stringify(value))).toBeNull();

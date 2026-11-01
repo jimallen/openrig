@@ -24,7 +24,8 @@ import type { SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
  * A core restart alone is NOT proof that a send is gone. A queued send does not survive a restart, but a send that was
  * delivered and then lost its reply does, and "the core started after the send was issued" is true of both. So the
  * restart only says "gone" when the program also shows it never took the text (`neverReachedProgram`): it reports
- * status, it was at rest before the send, it is at rest now and its turn did not move. Anything else is `waiting`, which
+ * status, it was at rest before the send, it is at rest now, its turn did not move and the text was not a command a
+ * program can run without a turn. Anything else is `waiting`, which
  * the daemon surfaces to a person after a while (hc-unsettled-health): a lost message a person resends costs one nudge, a
  * message delivered twice cannot be taken back.
  */
@@ -49,17 +50,26 @@ export interface HcPendingSend {
   preStatus: string | null;
   /** Whether the program ever reported a status: without it a turn counter says nothing. */
   preReported: boolean;
+  /** The text began like a slash command. A program takes one without starting a turn (measured on a stub: `terminal.get`
+   *  is the same afterwards as after a send that never arrived), so "no turn" proves nothing about such a send. Absent on a
+   *  record saved before the field existed: read as true, the side that never claims "gone". */
+  commandLed: boolean;
 }
 
 export type HcNotDelivered =
   | "not_found" | "finished" | "blocked" | "status_mismatch" | "core_unreachable" | "refused" | "guard_refused" | "core_restarted_send_gone";
+
+/** Why a send is `waiting`, for whoever reads it: the core may still hold the text; the core restarted and the text was
+ *  either delivered first or lost; or the text is on the screen and nothing started (typed but not submitted, or taken by a
+ *  command: not told apart). */
+export type HcWaitingCause = "queued_in_core" | "restart_unsettled" | "text_present_no_turn";
 
 export type HcDeliveryOutcome =
   | { state: "delivered"; evidence: "reply" | "already_on_screen" | "turn_advanced" | "token_on_screen"; verified: boolean; started: boolean | null; status: string | null; turn: number | null }
   /** Nothing was typed, or the send is proved gone. The only state a blind retry is allowed to follow. */
   | { state: "not_delivered"; reason: HcNotDelivered; message: string; code: string }
   /** The core still holds the send and nothing says it was delivered: a person is typing, or the program is slow. Not a failure. */
-  | { state: "waiting"; reason: "waiting_on_person"; pending: HcPendingSend; message: string }
+  | { state: "waiting"; reason: "waiting_on_person"; cause: HcWaitingCause; pending: HcPendingSend; message: string }
   /** The evidence cannot settle it and the core no longer holds it, or cannot be asked. Never resend; the seat or an operator decides. */
   | { state: "unknown"; reason: "seat_ended" | "terminal_replaced" | "core_unreachable"; pending: HcPendingSend; message: string };
 
@@ -128,6 +138,7 @@ export class HcDelivery {
     const pending: HcPendingSend = {
       version: 1, seat, address: pre.facts.terminal.address, token: options.token ?? null, sendStartedAtMs: this.now(),
       preTurn: pre.facts.terminal.turn ?? 0, preStatus: status, preReported: pre.facts.terminal.reported === true,
+      commandLed: startsLikeCommand(text),
     };
     const sent = await this.submitter.submitText(seat, text, {
       ...(blocked === "allow" ? { force: true } : {}), ...(options.ifStatus ? { ifStatus: options.ifStatus } : {}),
@@ -156,6 +167,13 @@ export class HcDelivery {
       return { state: "unknown", reason: "terminal_replaced", pending, message: `${pending.seat} is a different terminal now (${pending.address} became ${terminal.address}); the old send's fate is not known. Do not resend.` };
     }
     const evidence = await this.evidence(pending, terminal);
+    if (evidence === "token_without_turn") {
+      // The text is on the screen and the program took no turn. Measured (core killed between the paste and the Enter, and
+      // again with `hc server restart`): the paste landed, the Enter did not, and the text sits unsubmitted in the input,
+      // token and all. A command the program ran and cleared leaves the same record. Neither is "delivered", and a resend
+      // would type the text a second time (measured: the composer then held it twice).
+      return { state: "waiting", reason: "waiting_on_person", cause: "text_present_no_turn", pending, message: `the text for ${pending.seat} is on its screen, but ${pending.seat} reports no turn started since: it may be typed and never submitted (the Enter lost), or it may have been a command the program ran without a turn. Not told apart. Do not resend: look at the seat (rig capture), press Enter there if the text is waiting in the input, and close this row once it is dealt with.` };
+    }
     if (evidence) {
       return { state: "delivered", evidence, verified: false, started: null, status: terminal.status?.state ?? null, turn: terminal.turn ?? null };
     }
@@ -166,14 +184,15 @@ export class HcDelivery {
     }
     if (coreStartedAtMs !== null && coreStartedAtMs >= pending.sendStartedAtMs + CORE_RESTART_MARGIN_MS) {
       // Restarted, and the program cannot say it never took the text: delivered before the restart, or lost with it. Not told apart.
-      return { state: "waiting", reason: "waiting_on_person", pending, message: `the hc core restarted after the send to ${pending.seat} was issued, and the text was either delivered before the restart or lost with it; ${pending.seat} reports nothing that tells which. Do not resend: check the seat (rig capture) and send again only if the text is not there.` };
+      return { state: "waiting", reason: "waiting_on_person", cause: "restart_unsettled", pending, message: `the hc core restarted after the send to ${pending.seat} was issued, and the text was either delivered before the restart or lost with it; ${pending.seat} reports nothing that tells which. Do not resend: check the seat (rig capture) and send again only if the text is not there.` };
     }
-    return { state: "waiting", reason: "waiting_on_person", pending, message: `the text for ${pending.seat} is queued in the hc core and not delivered yet (a person may be typing there). It will arrive; do not resend.` };
+    return { state: "waiting", reason: "waiting_on_person", cause: "queued_in_core", pending, message: `the text for ${pending.seat} is queued in the hc core and not delivered yet (a person may be typing there). It will arrive; do not resend.` };
   }
 
-  /** The turn advanced, or the token is on the screen. Null: neither, which proves nothing. */
-  private async evidence(pending: HcPendingSend, now: HcTerminal): Promise<"turn_advanced" | "token_on_screen" | null> {
-    if (pending.token && (await this.tokenOnScreen(pending.seat, pending.token)) === true) return "token_on_screen";
+  /** The turn advanced, or the token is on the screen. Null: neither, which proves nothing. A token on the screen with no turn
+   *  behind it is `token_without_turn`: present, and not shown to have been submitted. */
+  private async evidence(pending: HcPendingSend, now: HcTerminal): Promise<"turn_advanced" | "token_on_screen" | "token_without_turn" | null> {
+    if (pending.token && (await this.tokenOnScreen(pending.seat, pending.token)) === true) return noTurnSince(pending, now) ? "token_without_turn" : "token_on_screen";
     // The turn counts only for a program that reports status and was not already mid-turn: otherwise it advances for
     // work the send did not start.
     if (pending.preReported && pending.preStatus !== null && pending.preStatus !== "working" && (now.turn ?? 0) > pending.preTurn) return "turn_advanced";
@@ -233,14 +252,29 @@ const AT_REST = new Set(["idle", "done"]);
  * program that reports status and takes a prompt starts a turn. At rest before the send, at rest now, and the same turn
  * counter, it did not take the text. Needs all three: a program that reports nothing says nothing (null status), one that
  * was working or on a dialog would have changed state for other reasons, and a counter that differs (or went back, as it
- * would if a core forgot it; measured: it survives `hc server restart`) is not a measure of this send. A prompt the program swallows without a turn (a slash command) looks like "never reached"; that is
- * the residual this rule cannot exclude, and the reason it asks for a status at all.
+ * would if a core forgot it; measured: it survives `hc server restart`) is not a measure of this send. A command-led text is
+ * excluded outright: a program runs a slash command with no turn, and on a private core the core's record of that (status,
+ * turn, status_ms) was identical to the record of a send that never arrived; only what the program chose to print differed. So
+ * for such a text "no turn" is no evidence at all, and it stays `waiting`.
  */
 export function neverReachedProgram(pending: HcPendingSend, now: HcTerminal): boolean {
+  // A command takes no turn, so for a command-led text "no turn" is what both a lost send and a consumed one look like.
+  return !pending.commandLed && noTurnSince(pending, now);
+}
+
+/** A program that reports status was at rest before the send, is at rest now, and its turn counter is where it was. */
+function noTurnSince(pending: HcPendingSend, now: HcTerminal): boolean {
   // `preStatus` is null for a program that reports none, so a status on both sides is also "reports status".
   return pending.preStatus !== null && AT_REST.has(pending.preStatus)
     && now.status != null && AT_REST.has(now.status.state)
     && (now.turn ?? 0) === pending.preTurn;
+}
+
+/** The text begins like a slash command (after any leading blanks). Deliberately only that: the one class this module has
+ *  measured as taken with no turn; a `!` shell escape or other prefix is not claimed (unverified, and the sweep still never
+ *  resends). */
+export function startsLikeCommand(text: string): boolean {
+  return /^\s*\//.test(text);
 }
 
 /** The refusals after which nothing was typed, by the code HcInput gives them. Anything else is silence. */
