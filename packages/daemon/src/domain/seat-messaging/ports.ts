@@ -14,12 +14,24 @@ export function messageId(id: string): MessageId {
   return id as MessageId;
 }
 
-/** What a seat needs to take a message: the id and body never change between attempts. `occupantGeneration`, on a lifecycle
- *  message, binds it to one occupant, so it never reaches a successor. */
+/** Content and nudges take an id gate and the pump. A Command (`/compact`, `/clear`) has no marker, is confirmed by its effect and
+ *  never by `SeatGate.lookup`, and its retry stays with the enforcer, so the pump never carries one. */
+export type SeatMessageClass = "content" | "nudge" | "lifecycle" | "command";
+
+/** Invariant 5: delivery is FIFO per seat per lane. 0 startup and handover, 1 compaction prompts, 2 content and nudges. Lane 2 waits while
+ *  a seat's startup is open. */
+export type SeatMessageLane = 0 | 1 | 2;
+
+/** What a seat needs to take a message: the ids and body never change between attempts. `ids` holds one id, or a wake group's: N rows
+ *  go out as one text, each carrying its own marker, so a group is one attempt and each id has its own gate record. Never empty, and
+ *  in staging order. `occupantGeneration` binds a message to one occupant, so it never reaches a successor (a lifecycle message, a
+ *  watchdog fire). The body never holds a marker: the last hop adds it at the attempt. */
 export interface SeatMessage {
-  readonly id: MessageId;
+  readonly ids: readonly [MessageId, ...MessageId[]];
   readonly seat: string;
   readonly body: string;
+  readonly messageClass: SeatMessageClass;
+  readonly lane: SeatMessageLane;
   readonly occupantGeneration?: string | null;
 }
 
