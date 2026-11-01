@@ -28,6 +28,12 @@ describe("HcLifecycle.killSession", () => {
     await expect(new HcLifecycle(client).killSession("qa@rig")).resolves.toEqual({ ok: true });
     expect(client.calls).toEqual([["terminal.get", { terminal: hcTerminalName("qa@rig") }], ["terminal.kill", { terminal: "t7" }]]);
   });
+  it("asks hc for a seat whose name starts with `=` by that exact name, never for the seat without it (decision 14 strips only for readers)", async () => {
+    const client = new FakeClient((m) => (m === "terminal.get" ? term({ labels: { [SEAT_LABEL]: "=qa@rig" } }) : term({ state: "finished" })));
+    await expect(new HcLifecycle(client).killSession("=qa@rig")).resolves.toEqual({ ok: true });
+    expect(client.calls[0]).toEqual(["terminal.get", { terminal: hcTerminalName("=qa@rig") }]);
+    expect(hcTerminalName("=qa@rig")).not.toBe(hcTerminalName("qa@rig"));  // positive control: the two names are different terminals
+  });
   it("reads a missing terminal as session_not_found without killing anything", async () => {
     const client = new FakeClient(() => notFound());
     await expect(new HcLifecycle(client).killSession("qa@rig")).resolves.toMatchObject({ ok: false, code: "session_not_found" });

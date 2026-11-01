@@ -203,6 +203,7 @@ describe("hc scratch tripwire: the run fails (real vitest)", () => {
     expect(left).toBe(true); // the probe really left it (positive control for the next two lines)
     expect(output).toContain("hcs-probe1");
     expect(output).toContain("left behind by this run");
+    expect(output, "the report names the test file that asked for the root").toContain("hc-hermetic-harness.test.ts probe");
     expect(child.status, output).not.toBe(0);
   }, 180_000);
 
