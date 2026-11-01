@@ -9,6 +9,13 @@ import { SEAT_LABEL, hcTerminalName } from "./hc-seat.js";
  * "schema" is the hc API schema. Nothing in this file was measured against a window by its author: every app behaviour
  * below carries its source, and the real-core test covers labels and `keep` only, on a private core with no app.
  *
+ * STATUS (hc-w23, read at add4c5e2): the pure planning half (ids, `planRigTabs`, labels) has one runtime caller, the CLI's
+ * note in terminal-labels.ts. The driver class `HcPlacement` has NO runtime caller: the daemon has no `herdr-app`
+ * channel (`AppPort` has no implementation outside tests), `rig terminal open` opens `hc attach` viewer panes through
+ * `HerdrAdapter` (a fresh workspace per open), and the placer that labels and parks seats is rig-here (~/.agents, Python,
+ * same scheme, pinned equal by test/hc-placement-scheme.test.ts). It is kept as the reference for that scheme and the
+ * tested home of its idempotence and park rules for the day the daemon places seats itself; wiring it is a product call.
+ *
  * Closing a tab or a space KILLS its terminals (design 5, guide). A seat is therefore parked before any close, and a
  * close is allowed only when `safeToClose` says every seat of it is out of its pane.
  */
