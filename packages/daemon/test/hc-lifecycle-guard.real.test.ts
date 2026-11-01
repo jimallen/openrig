@@ -2,11 +2,13 @@ import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HcAdapter } from "../src/adapters/hc-adapter.js";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
+import { PROBE_LABEL } from "../src/adapters/hc-lifecycle.js";
 import { hcTerminalName } from "../src/adapters/hc-seat.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { migrate } from "../src/db/migrate.js";
+import { isProbeShellReady } from "../src/domain/native-resume-probe.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
-import { HC, PrivateCore } from "./hc-private-core.js";
+import { HC, PrivateCore, until } from "./hc-private-core.js";
 
 // Security review N3 on a real core, through the adapter production uses, with the real guard. The fake can only assume what
 // hc does with an address, a finished terminal and a respawn's new address; here the core answers.
@@ -110,6 +112,38 @@ describe.skipIf(!HC)("HcAdapter's lifecycle through the delivery guard, on a pri
     await expect(adapter.createProbeSession("rigged-refresh-p", core.root)).resolves.toEqual({ ok: true });
     await expect(adapter.killSession("rigged-refresh-p")).resolves.toEqual({ ok: true });
     expect((await get("rigged-refresh-p")).state).toBe("finished");
+  });
+
+  it("runs a metadata probe end to end with no lease: created, each input reaches its shell, the output is read, killed", async () => {
+    const probe = "rigged-refresh-e2e";
+    const screen = async () => (await adapter.capturePaneContent(probe, 40)) ?? "";
+    const shows = (marker: string) => until(screen, (text) => text.split("\n").some((line) => line.trim() === marker), `the probe's screen to show ${marker}`);
+    await expect(adapter.createProbeSession(probe, core.root)).resolves.toEqual({ ok: true });
+    // What the refresher waits for before it types (waitForProbeShellReady).
+    await until(async () => isProbeShellReady({ paneCommand: await adapter.getPaneCommand(probe), paneContent: await screen() }), (ready) => ready, "the probe's shell");
+    // Built in the shell, so the typed line itself does not show the marker.
+    await expect(adapter.sendText(probe, "echo one-$((40+2))")).resolves.toEqual({ ok: true });
+    await expect(adapter.sendKeys(probe, ["Enter"])).resolves.toEqual({ ok: true });
+    await shows("one-42");
+    await expect(adapter.sendShellCommand(probe, "echo two-$((40+3))")).resolves.toEqual({ ok: true });
+    await shows("two-43");
+    await expect(adapter.submitText(probe, "echo three-$((40+4))")).resolves.toMatchObject({ ok: true });
+    await shows("three-44");
+    await expect(adapter.killSession(probe)).resolves.toEqual({ ok: true });
+    expect((await get(probe)).state).toBe("finished");
+    await expect(adapter.sendKeys(probe, ["Enter"])).resolves.toMatchObject({ ok: false });
+  });
+
+  it("refuses input to a terminal labelled as a probe that the adapter did not make, and to a managed seat under a typing guard", async () => {
+    const forged = "rigged-refresh-forged";
+    await core.client.call("terminal.run", { argv: ["sleep", "120"], name: hcTerminalName(forged), labels: { [PROBE_LABEL]: forged }, no_parent: true, no_notify: true, outlive_parent: true });
+    await expect(adapter.sendKeys(forged, ["Enter"])).resolves.toMatchObject({ ok: false, code: "guard_target_unknown" });
+    await core.client.call("terminal.kill", { terminal: (await get(forged)).address });
+    const { id, seat } = await launched();
+    await guard.set(id, true, "person", "typing");
+    await expect(adapter.sendKeys(seat, ["Enter"])).resolves.toMatchObject({ ok: false, code: "typing_guard_enabled" });
+    await guard.set(id, false, "person", "done");
+    await adapter.killSession(seat);
   });
 
   it("refuses a kill by the address of a terminal that is not a seat's, which stays live", async () => {

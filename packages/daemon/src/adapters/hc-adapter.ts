@@ -35,12 +35,13 @@ export class HcAdapter extends TmuxAdapter {
       const client = this.client;
       // The same core as every other call: a default attach would resolve the socket from the env on its own.
       const opener = new HcAttach(client.socketPath);
-      const input = new HcInput(client, opener, guard ? { guard } : {});
+      const lifecycle = new HcLifecycle(client, guard ? { guard, isManagedSeat: (name) => !!guard.maybeTarget(name) } : {});
+      const input = new HcInput(client, opener, guard ? { guard, admission: lifecycle } : {});
       this.wired = {
         guard,
         host: new HcHost(client, guard ? { ownsLifecycle: (nodeId) => guard.ownsLifecycle(nodeId) } : {}),
         input,
-        lifecycle: new HcLifecycle(client, guard ? { guard, isManagedSeat: (name) => !!guard.maybeTarget(name) } : {}),
+        lifecycle,
         // A person at a view may answer a dialog, which a delivery refuses by default.
         viewer: new HcViewer({
           client, opener,

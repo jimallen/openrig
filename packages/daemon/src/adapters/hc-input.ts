@@ -1,5 +1,6 @@
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcClient, type HcTerminal } from "./hc-client.js";
 import { HcAttach, type HcAttachEnd, type HcAttachOpener, type HcAttachment } from "./hc-attach.js";
+import type { HcLifecycle } from "./hc-lifecycle.js";
 import { hcTerminalName } from "./hc-seat.js";
 import { DeliveryGuardError, type SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import { shellQuote } from "./shell-quote.js";
@@ -7,6 +8,10 @@ import { defaultTmuxFileOps, isTypedLineWidgetSafe, type TmuxFileOps, type TmuxR
 
 /** The part of the delivery guard an input needs: the serial lease and the synchronous last check before a write. */
 export type HcInputGuard = Pick<SeatDeliveryGuard, "input" | "checkInput">;
+
+/** Places a target the guard cannot resolve on its own: HcLifecycle's probe and launch cases, the tmux adapter's `freshProbes` and
+ *  `freshManaged`. One rule, kept there. */
+export type HcInputAdmission = Pick<HcLifecycle, "needsAdmission" | "admitted">;
 
 /** What to do when the program says it is blocked on a dialog (OSC 7501 `blocked`). `terminal.keys` and a staged paste
  *  carry no blocked refusal of their own (spike 1+2: a key answered a permission dialog), so this module refuses by
@@ -17,6 +22,8 @@ export type BlockedPolicy = "refuse" | "allow";
 export interface HcInputOptions {
   /** The tmux adapter's deliveryGuard, when the daemon has one. */
   guard?: HcInputGuard;
+  /** Without it a metadata probe or an unbound launch stays refused, as a target the guard does not know. */
+  admission?: HcInputAdmission;
   fileOps?: TmuxFileOps;
   /** How long a `terminal.send` or `terminal.keys` may take before the outcome reads as unknown. The core waits for a
    *  person to stop typing and has no ceiling (spike 1+2: 212 s seen), so a timeout is never a failure. */
@@ -243,6 +250,8 @@ export class HcInput {
     const guard = this.options.guard;
     try {
       if (!guard) return await op(() => {});
+      const admission = this.options.admission;
+      if (admission?.needsAdmission(target)) return await admission.admitted<T | Failure>(target, op, { madeHere: true });
       return await guard.input(target, () => op(() => guard.checkInput(target)));
     } catch (err) {
       return classify(err);

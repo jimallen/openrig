@@ -54,6 +54,8 @@ export class HcLifecycle {
   /** Seats launched and not yet bound, name to node id: the tmux adapter's `freshManaged`. Until the binding commits, the guard
    *  cannot resolve such a seat by its name, and the launch's rollback must still be able to kill it under its lease. */
   private readonly freshManaged = new Map<string, string>();
+  /** Probes this adapter made, name to address: the tmux adapter's `freshProbes`. Input goes only to one of these. */
+  private readonly freshProbes = new Map<string, string>();
 
   constructor(private readonly client: HcClient = new HcClient(), private readonly options: HcLifecycleOptions = {}) {}
 
@@ -63,7 +65,23 @@ export class HcLifecycle {
   /** The launch's binding is committed: the guard resolves the seat from here on. */
   finishLaunchBinding(name: string): void { this.freshManaged.delete(name); }
 
-  /** The tmux adapter's guardedInput, on what identifies a seat here. `act` calls `check` synchronously before each effect.
+  private async guarded(target: string, act: (check: () => void) => Promise<TmuxResult>, endingOnly = false): Promise<TmuxResult> {
+    try {
+      return await this.admitted(target, act, { endingOnly });
+    } catch (err) {
+      return failure(err, target);
+    }
+  }
+
+  /** True for a target only `admitted` can place: a launch not yet bound, or a name no managed record has (it may be a probe). For
+   *  any other target the guard resolves it and a plain `guard.input` is right, with no read of the core. */
+  needsAdmission(target: string): boolean {
+    const guard = this.options.guard;
+    return !!guard && (this.freshManaged.has(target) || !guard.maybeTarget(target));
+  }
+
+  /** The tmux adapter's guardedInput, on what identifies a seat here. `act` calls `check` synchronously before each effect. Throws
+   *  what the core or the guard throws; the caller words it, as a lifecycle call and an input word failures differently.
    *
    *  The guard is asked about the seat the terminal's label names, not the target as given. A caller may hold an address, and a
    *  respawn changes the address without the binding following at once, so an address can be one the guard has no row for.
@@ -72,33 +90,36 @@ export class HcLifecycle {
    *
    *  Three cases pass without a seat's lease, as on tmux: a target with no terminal (`act` reports that and any effect is refused,
    *  so there is nothing to serialize), with `endingOnly` a terminal with nothing live to end, and the metadata probe's own terminal,
-   *  which no managed record names. A seat under a lifecycle lease joins it: `guard.input` reuses the lease and does not wait. */
-  private async guarded(target: string, act: (check: () => void) => Promise<TmuxResult>, endingOnly = false): Promise<TmuxResult> {
+   *  which no managed record names. With `madeHere` the probe must be one this adapter made, at the address it was made: input
+   *  writes into a shell, where a kill only ends it. A seat under a lifecycle lease joins it: `guard.input` reuses the lease and does
+   *  not wait. */
+  async admitted<T>(target: string, act: (check: () => void) => Promise<T>, options: { endingOnly?: boolean; madeHere?: boolean } = {}): Promise<T> {
     const guard = this.options.guard;
     if (!guard) return act(() => {});
     const noTarget = () => { throw new DeliveryGuardError("guard_target_changed", `${target}: its terminal changed after it was read; nothing was done.`); };
-    try {
-      const seen = await this.find(target);
-      if (seen === null || (endingOnly && seen.state !== "live")) return await act(noTarget);
-      if (isProbeOf(seen, target) && !guard.maybeTarget(target)) return await act(() => {});
-      const created = this.freshManaged.get(target);
-      const identity = created ?? seen.labels[SEAT_LABEL] ?? target;
-      return await guard.input(identity, async () => {
-        const bound = guard.target(identity);
-        const fresh = created === bound.nodeId && guard.ownsLifecycle(bound.nodeId);
-        const current = await this.find(target);
-        // Revalidate after the asynchronous read.
-        guard.checkInput(identity);
-        if (current === null) return act(noTarget);
-        const seat = fresh ? target : bound.session;
-        if (current.labels[SEAT_LABEL] !== seat || current.name !== hcTerminalName(seat)) {
-          throw new DeliveryGuardError("guard_target_changed", `${target}: the terminal is not the managed seat's; nothing was done.`);
-        }
-        return guard.input(identity, () => act(() => guard.checkInput(identity)));
+    const seen = await this.find(target);
+    if (seen === null || (options.endingOnly && seen.state !== "live")) return await act(noTarget);
+    const isProbe = isProbeOf(seen, target) && !guard.maybeTarget(target) && (!options.madeHere || this.freshProbes.get(target) === seen.address);
+    if (isProbe) {
+      return await act(() => {
+        if (guard.maybeTarget(target)) throw new DeliveryGuardError("guard_target_managed", `${target}: a managed record now names this probe; nothing was done.`);
       });
-    } catch (err) {
-      return failure(err, target);
     }
+    const created = this.freshManaged.get(target);
+    const identity = created ?? seen.labels[SEAT_LABEL] ?? target;
+    return await guard.input(identity, async () => {
+      const bound = guard.target(identity);
+      const fresh = created === bound.nodeId && guard.ownsLifecycle(bound.nodeId);
+      const current = await this.find(target);
+      // Revalidate after the asynchronous read.
+      guard.checkInput(identity);
+      if (current === null) return act(noTarget);
+      const seat = fresh ? target : bound.session;
+      if (current.labels[SEAT_LABEL] !== seat || current.name !== hcTerminalName(seat)) {
+        throw new DeliveryGuardError("guard_target_changed", `${target}: the terminal is not the managed seat's; nothing was done.`);
+      }
+      return guard.input(identity, () => act(() => guard.checkInput(identity)));
+    });
   }
 
   /** End the seat's program (hangup, terminate, kill) and wait for hc's observed result. The finished record stays
@@ -114,7 +135,7 @@ export class HcLifecycle {
       if (found === null || found.state !== "live") return { ok: false, code: "session_not_found", message: `${name}: no live terminal` };
       if (!isSeatTerminal(found) && !isProbeOf(found, name)) return { ok: false, code: "not_a_seat", message: `${name}: the terminal is not a seat's, so it is not killed` };
       const result = await this.kill(name, found, check);
-      if (result.ok) this.freshManaged.delete(name);
+      if (result.ok) { this.freshManaged.delete(name); this.freshProbes.delete(name); }
       return result;
     } catch (err) {
       return failure(err, name);
@@ -305,10 +326,11 @@ export class HcLifecycle {
     }
     const argv = ["env", ...launch.unset.flatMap((key) => ["-u", key]), daemon.SHELL || "/bin/sh", "-l"];
     try {
-      await this.client.call("terminal.run", {
+      const started = await this.client.call<{ address: string }>("terminal.run", {
         argv, env: launch.env, name: hcTerminalName(name), labels: { [PROBE_LABEL]: name },
         ...(cwd != null ? { cwd } : {}), no_parent: true, no_notify: true, outlive_parent: true,
       });
+      this.freshProbes.set(name, started.address);
       return { ok: true };
     } catch (err) {
       if (err instanceof HcError && err.kind === "name_taken") return { ok: false, code: "duplicate_session", message: `duplicate session: ${name}` };
