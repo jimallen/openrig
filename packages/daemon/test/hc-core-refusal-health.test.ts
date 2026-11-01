@@ -8,10 +8,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HC_GENERATION, HcClient, HcUnavailableError } from "../src/adapters/hc-client.js";
 import { connectHcCore, type HcCoreWatch } from "../src/adapters/hc-core-watch.js";
 import { HcCoreRefusalHealthSource } from "../src/domain/hc-core-refusal-health.js";
+import type { HealthSourceCoverage } from "../src/domain/health-detectors.js";
 import { createDaemon } from "../src/startup.js";
 
 // Far from the wall clock, so a source that read Date.now() instead of its clock shows up.
 const T0 = new Date("2031-03-04T05:00:00.000Z");
+const reasonOf = (row: HealthSourceCoverage | undefined): string => (row && "reason" in row ? row.reason : "");
 
 describe("HcCoreRefusalHealthSource", () => {
   it("says nothing while no core is refused", () => {
@@ -22,7 +24,7 @@ describe("HcCoreRefusalHealthSource", () => {
     const rows = new HcCoreRefusalHealthSource(() => "the running core is hc 9.9.9; this build is pinned to 0.1.15", () => T0).coverage();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ source: "hc-core-refused", status: "notice", partial: false, evaluatedAt: "2031-03-04T05:00:00.000Z" });
-    const reason = rows[0]!.reason;
+    const reason = reasonOf(rows[0]);
     expect(reason).toContain("the running core is hc 9.9.9; this build is pinned to 0.1.15");  // the reason, verbatim
     expect(reason).toContain("until the daemon restarts");
     expect(reason).toMatch(/after the new version is tested/);                                  // the fix: a tested pin move ...
@@ -106,7 +108,7 @@ describe("the notice follows the real client's refusal", () => {
     core.helloReply = hello({ version: "9.9.9" });
     core.dropConnections();
     await until(() => source.coverage().length > 0, "the notice");
-    expect(source.coverage()[0]!.reason).toContain("9.9.9");
+    expect(reasonOf(source.coverage()[0])).toContain("9.9.9");
     await expect(client.call("probe")).rejects.toBeInstanceOf(HcUnavailableError);  // fail-closed behaviour unchanged
   });
 
@@ -141,7 +143,7 @@ describe("the daemon's `rig health` carries it", () => {
       core.dropConnections();
       await until(() => rows().length > 0, "the notice in rig health");
       expect(rows()[0]).toMatchObject({ status: "notice", partial: false });
-      expect(rows()[0]!.reason).toContain("9.9.9");
+      expect(reasonOf(rows()[0])).toContain("9.9.9");
     } finally {
       daemon.hcCoreWatch?.stop();
       daemon.eventLoopMonitor.stop();
