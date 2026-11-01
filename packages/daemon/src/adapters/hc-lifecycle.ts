@@ -1,6 +1,7 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { hcExactTerminalRef } from "./hc-identity.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-seat.js";
+import { DeliveryGuardError, type SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import type { SeatLaunchHints, TmuxResult } from "./tmux.js";
 
 /** Label a probe terminal carries instead of the seat label, so a probe is never read as a seat. */
@@ -8,8 +9,13 @@ export const PROBE_LABEL = "openrig.probe";
 
 export type HcSignal = "TERM" | "KILL";
 
+/** The part of the delivery guard a kill, a respawn or a signal needs. */
+export type HcLifecycleGuard = Pick<SeatDeliveryGuard, "input" | "checkInput" | "target" | "maybeTarget" | "ownsLifecycle">;
+
 export interface HcLifecycleOptions {
   daemonEnv?: NodeJS.ProcessEnv;
+  /** The tmux adapter's deliveryGuard, when the daemon has one. killSession, respawnPane and signalPaneProcess go through it. */
+  guard?: HcLifecycleGuard;
   /** The tmux adapter's `deliveryGuard.maybeTarget`: true when a managed seat record names this session. A probe must
    *  not reuse one. */
   isManagedSeat?: (name: string) => boolean;
@@ -17,7 +23,19 @@ export interface HcLifecycleOptions {
   kill?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
+/** A terminal that is a seat's: it carries the seat label and the name that seat's terminal has, so a label alone is not enough. */
+function isSeatTerminal(terminal: HcTerminal): boolean {
+  const seat = terminal.labels[SEAT_LABEL];
+  return !!seat && terminal.name === hcTerminalName(seat);
+}
+
+/** The metadata probe's own terminal for this name (createProbeSession). */
+function isProbeOf(terminal: HcTerminal, name: string): boolean {
+  return terminal.labels[PROBE_LABEL] === name && terminal.name === hcTerminalName(name);
+}
+
 function failure(err: unknown, what: string): TmuxResult {
+  if (err instanceof DeliveryGuardError) return { ok: false, code: err.code, message: err.message };
   // The kind, never the core's text: a launch call carried the seat's credentials.
   if (err instanceof HcError && err.kind === "not_found") return { ok: false, code: "session_not_found", message: `${what}: no such seat terminal` };
   if (err instanceof HcError) return { ok: false, code: "unknown", message: `hc refused ${what}: ${err.kind}` };
@@ -30,25 +48,80 @@ function failure(err: unknown, what: string): TmuxResult {
  *
  *  A seat is one terminal, found by its name (`hcTerminalName`) and carrying its canonical name in the `openrig.seat`
  *  label. A "pane target" in the tmux adapter becomes the seat's canonical name: a terminal's address changes on every
- *  respawn, the label is what follows (design gap 5). No delivery guard lives here; HcHost wraps these as it wraps
- *  createSession. */
+ *  respawn, the label is what follows (design gap 5). With a delivery guard, killSession, respawnPane and signalPaneProcess
+ *  run through it as the tmux adapter's do (see `guarded`); the other methods change no seat's program and take no lease. */
 export class HcLifecycle {
+  /** Seats launched and not yet bound, name to node id: the tmux adapter's `freshManaged`. Until the binding commits, the guard
+   *  cannot resolve such a seat by its name, and the launch's rollback must still be able to kill it under its lease. */
+  private readonly freshManaged = new Map<string, string>();
+
   constructor(private readonly client: HcClient = new HcClient(), private readonly options: HcLifecycleOptions = {}) {}
+
+  /** A managed launch made this seat under its lease. */
+  noteLaunched(name: string, nodeId: string): void { this.freshManaged.set(name, nodeId); }
+
+  /** The launch's binding is committed: the guard resolves the seat from here on. */
+  finishLaunchBinding(name: string): void { this.freshManaged.delete(name); }
+
+  /** The tmux adapter's guardedInput, on what identifies a seat here. `act` calls `check` synchronously before each effect.
+   *
+   *  The guard is asked about the seat the terminal's label names, not the target as given. A caller may hold an address, and a
+   *  respawn changes the address without the binding following at once, so an address can be one the guard has no row for.
+   *  What tmux proves with a pane id (ids are reused, names are recycled), hc proves with the label: inside the lease the terminal
+   *  must carry the seat's label. An address is not compared with the bound one, because a stale binding would wedge the kill.
+   *
+   *  Three cases pass without a seat's lease, as on tmux: a target with no terminal (`act` reports that and any effect is refused,
+   *  so there is nothing to serialize), with `endingOnly` a terminal with nothing live to end, and the metadata probe's own terminal,
+   *  which no managed record names. A seat under a lifecycle lease joins it: `guard.input` reuses the lease and does not wait. */
+  private async guarded(target: string, act: (check: () => void) => Promise<TmuxResult>, endingOnly = false): Promise<TmuxResult> {
+    const guard = this.options.guard;
+    if (!guard) return act(() => {});
+    const noTarget = () => { throw new DeliveryGuardError("guard_target_changed", `${target}: its terminal changed after it was read; nothing was done.`); };
+    try {
+      const seen = await this.find(target);
+      if (seen === null || (endingOnly && seen.state !== "live")) return await act(noTarget);
+      if (isProbeOf(seen, target) && !guard.maybeTarget(target)) return await act(() => {});
+      const created = this.freshManaged.get(target);
+      const identity = created ?? seen.labels[SEAT_LABEL] ?? target;
+      return await guard.input(identity, async () => {
+        const bound = guard.target(identity);
+        const fresh = created === bound.nodeId && guard.ownsLifecycle(bound.nodeId);
+        const current = await this.find(target);
+        // Revalidate after the asynchronous read.
+        guard.checkInput(identity);
+        if (current === null) return act(noTarget);
+        if (current.labels[SEAT_LABEL] !== (fresh ? target : bound.session)) {
+          throw new DeliveryGuardError("guard_target_changed", `${target}: the terminal is not the managed seat's; nothing was done.`);
+        }
+        return guard.input(identity, () => act(() => guard.checkInput(identity)));
+      });
+    } catch (err) {
+      return failure(err, target);
+    }
+  }
 
   /** End the seat's program (hangup, terminate, kill) and wait for hc's observed result. The finished record stays
    *  readable at its old address; nothing is removed. A seat with no live terminal is `session_not_found`, as a gone
-   *  tmux session is. */
+   *  tmux session is. Only a seat's terminal or the probe of that name is ended: an address that names anything else is refused. */
   async killSession(name: string): Promise<TmuxResult> {
+    return this.guarded(name, (check) => this.killUnchecked(name, check), true);
+  }
+
+  private async killUnchecked(name: string, check: () => void): Promise<TmuxResult> {
     try {
       const found = await this.find(name);
       if (found === null || found.state !== "live") return { ok: false, code: "session_not_found", message: `${name}: no live terminal` };
-      return await this.kill(name, found);
+      if (!isSeatTerminal(found) && !isProbeOf(found, name)) return { ok: false, code: "not_a_seat", message: `${name}: the terminal is not a seat's, so it is not killed` };
+      const result = await this.kill(name, found, check);
+      if (result.ok) this.freshManaged.delete(name);
+      return result;
     } catch (err) {
       return failure(err, name);
     }
   }
 
-  private async kill(name: string, live: HcTerminal): Promise<TmuxResult> {
+  private async kill(name: string, live: HcTerminal, check: () => void): Promise<TmuxResult> {
+    check();
     const ended = await this.client.call<HcTerminal>("terminal.kill", { terminal: live.address });
     if (ended.state !== "finished") return { ok: false, code: "kill_incomplete", message: `${name}: hc reports the terminal still ${ended.state}` };
     return { ok: true };
@@ -60,6 +133,10 @@ export class HcLifecycle {
    *  its old address, as a finished terminal, until someone removes it; it is no longer above the new program's output.
    *  Unlike `respawn-pane` without `-k`, a live program is ended here, not refused. */
   async respawnPane(target: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> } & SeatLaunchHints): Promise<TmuxResult> {
+    return this.guarded(target, (check) => this.respawnUnchecked(target, command, opts, check));
+  }
+
+  private async respawnUnchecked(target: string, command: string | undefined, opts: ({ cwd?: string; env?: Record<string, string> } & SeatLaunchHints) | undefined, check: () => void): Promise<TmuxResult> {
     const daemon = this.options.daemonEnv ?? process.env;
     let launch: ReturnType<typeof seatEnvironment>;
     try {
@@ -80,7 +157,7 @@ export class HcLifecycle {
     if (!seat) return { ok: false, code: "not_a_seat", message: `${target}: the terminal carries no seat label, so it is not respawned as a seat` };
     if (before.state === "live") {
       try {
-        const killed = await this.kill(seat, before);
+        const killed = await this.kill(seat, before, check);
         if (!killed.ok) return killed;
       } catch (err) {
         return failure(err, seat);
@@ -91,6 +168,7 @@ export class HcLifecycle {
     const cwd = opts?.cwd ?? before.cwd;
     let started: { address: string };
     try {
+      check();
       started = await this.client.call<{ address: string }>("terminal.run", {
         argv, env: launch.env, name: hcTerminalName(seat), cwd,
         // Everything that placed the old terminal (the app's space and tab labels) follows to the new one.
@@ -154,6 +232,10 @@ export class HcLifecycle {
    *  Only a LIVE terminal is signalled: a finished terminal still reports its old pid, which the OS may have given to
    *  an unrelated process. */
   async signalPaneProcess(seat: string, signal: HcSignal): Promise<TmuxResult> {
+    return this.guarded(seat, (check) => this.signalUnchecked(seat, signal, check));
+  }
+
+  private async signalUnchecked(seat: string, signal: HcSignal, check: () => void): Promise<TmuxResult> {
     let terminal: HcTerminal | null;
     try {
       terminal = await this.find(seat);
@@ -162,6 +244,11 @@ export class HcLifecycle {
     }
     if (terminal === null || terminal.state !== "live" || terminal.pid == null || terminal.address.includes("/")) {
       return { ok: false, code: "pane_pid_unavailable", message: `Could not resolve a live local pid for "${seat}".` };
+    }
+    try {
+      check();
+    } catch (err) {
+      return failure(err, seat);
     }
     return this.signalPid(terminal.pid, signal);
   }

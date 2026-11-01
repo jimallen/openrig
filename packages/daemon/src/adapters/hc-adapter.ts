@@ -40,7 +40,7 @@ export class HcAdapter extends TmuxAdapter {
         guard,
         host: new HcHost(client, guard ? { ownsLifecycle: (nodeId) => guard.ownsLifecycle(nodeId) } : {}),
         input,
-        lifecycle: new HcLifecycle(client, guard ? { isManagedSeat: (name) => !!guard.maybeTarget(name) } : {}),
+        lifecycle: new HcLifecycle(client, guard ? { guard, isManagedSeat: (name) => !!guard.maybeTarget(name) } : {}),
         // A person at a view may answer a dialog, which a delivery refuses by default.
         viewer: new HcViewer({
           client, opener,
@@ -70,7 +70,13 @@ export class HcAdapter extends TmuxAdapter {
   // Launch and presence
   override probeSession(...a: Parameters<HcHost["probeSession"]>): ReturnType<HcHost["probeSession"]> { return this.parts().host.probeSession(...a) as ReturnType<HcHost["probeSession"]>; }
   override hasSession(...a: Parameters<HcHost["hasSession"]>): ReturnType<HcHost["hasSession"]> { return this.parts().host.hasSession(...a) as ReturnType<HcHost["hasSession"]>; }
-  override createSession(...a: Parameters<HcHost["createSession"]>): ReturnType<HcHost["createSession"]> { return this.parts().host.createSession(...a) as ReturnType<HcHost["createSession"]>; }
+  override async createSession(...a: Parameters<HcHost["createSession"]>): ReturnType<HcHost["createSession"]> {
+    const { guard, host, lifecycle } = this.parts();
+    const created = await host.createSession(...a);
+    const nodeId = a[2]?.OPENRIG_NODE_ID;
+    if (created.ok && guard && nodeId) lifecycle.noteLaunched(a[0], nodeId);
+    return created;
+  }
 
   // Input
   override sendText(...a: Parameters<HcInput["sendText"]>): ReturnType<HcInput["sendText"]> { return this.parts().input.sendText(...a) as ReturnType<HcInput["sendText"]>; }
@@ -110,14 +116,14 @@ export class HcAdapter extends TmuxAdapter {
   override getPaneLocalOption(...a: Parameters<HcLifecycle["paneLocalOption"]>): ReturnType<HcLifecycle["paneLocalOption"]> { return this.parts().lifecycle.paneLocalOption(...a); }
   override createProbeSession(...a: Parameters<HcLifecycle["createProbeSession"]>): ReturnType<HcLifecycle["createProbeSession"]> { return this.parts().lifecycle.createProbeSession(...a) as ReturnType<HcLifecycle["createProbeSession"]>; }
 
-  // No meaning on hc: there is no server to start, no server or window options, no pane-local options other than `remain-on-exit` (above), and a launch
-  // binding has no fresh-pane proof to clear.
+  override finishLaunchBinding(session: string): void { this.parts().lifecycle.finishLaunchBinding(session); }
+
+  // No meaning on hc: there is no server to start, no server or window options, and no pane-local options other than `remain-on-exit` (above).
   override async startServer(): Promise<TmuxResult> { return { ok: true }; }
   override async setServerOption(_option: string, _value: string): Promise<TmuxResult> { return { ok: true }; }
   override async showServerOption(_option: string): Promise<string | null> { return null; }
   override async setWindowOption(_target: string, _option: string, _value: string): Promise<TmuxResult> { return { ok: true }; }
   override async restorePaneOption(_pane: string, _option: string, _value: string | null): Promise<TmuxResult> { return { ok: true }; }
-  override finishLaunchBinding(_session: string): void {}
   /** The tmux adapter's cached listing; no poll loop shares one here, so a caller reads it fresh. */
   override peekSessionWindowSnapshot(_maxAgeMs: number): SessionWindowSnapshot | null { return null; }
   override async getDefaultShell(): Promise<string | null> { return process.env.SHELL || null; }

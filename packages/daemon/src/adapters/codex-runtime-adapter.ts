@@ -528,7 +528,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   }
 
   /** Launch flags shared by fresh, fork and resume, decided once per launch. With `running`, the probed and
-   *  prepared parts come from the running Codex instead, and no Codex process is started to decide them. */
+   *  prepared parts come from the running Codex instead, and no Codex process is started to decide them.
+   *  Under hc the section 15 guards still apply: they read `codex --version` and `--help`, and choose nothing. */
   private async prepareLaunch(binding: NodeBinding, name: string, running?: RunningCodexLaunch): Promise<PreparedCodexLaunch | { ok: false; error: string }> {
     const model = binding.model?.trim();
     const modelArg = model ? ` -m ${shellQuote(model)}` : "";
@@ -550,6 +551,15 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const mcpArg = mcp.arg;
 
     if (running) {
+      if (this.tmux.hostKind === "hc") {
+        // Copied from the running argv, so a missing flag would stay missing: no probe can make this relaunch safe.
+        if (!running.daemonOptOut) {
+          return { ok: false, error: "This Codex is running without --no-daemon. Under hc a Codex that shares one app-server daemon runs its commands outside hc, so OpenRig did not restart it in place." };
+        }
+        // The relaunch runs the Codex on PATH now, which need not be the one that started.
+        const refusal = await codexHcPreflight(binding.cwd, this.detectVersion, await this.detectDaemonSupport?.(binding.cwd));
+        if (refusal) return { ok: false, error: refusal };
+      }
       // The running Codex already loaded its profile; drift in -p is the caller's to compare.
       return { ok: true, model, modelArg, effort, effortArg, profile, appliedLaunch, postureArg,
         queueStateDirArg: running.addDirs.map((dir) => ` --add-dir ${shellQuote(dir)}`).join(""),

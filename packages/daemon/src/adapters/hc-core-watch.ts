@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
+import { OPERATOR_SECRET_ENV_NAMES } from "./hc-seat.js";
 
 /** The hc this build was written and measured against (spikes 1 to 4: 0.1.15). hc is a preview with no stability
  *  statement, so any other version is refused until the pin is moved on purpose, as a tested release step. */
@@ -79,11 +80,14 @@ export async function probeCore(socketPath: string, options: { helloTimeoutMs?: 
   }
 }
 
-/** Starts a core with the hc CLI, which is the one thing that does. The core's env is the env given here, and every
- *  seat inherits it (design section 4), so pass the env a core should have. */
+/** Starts a core with the hc CLI, which is the one thing that does. The core's env is the env given here without the operator
+ *  secrets, whatever env that is, and every terminal on the core inherits it (design section 4), so pass the env a core should
+ *  have. `hc run` on that core goes through no launch wrapper, so what the core never held is the only thing it cannot pass on. */
 export function startCoreWithCli(options: { env?: NodeJS.ProcessEnv; hcPath?: string; timeoutMs?: number } = {}): () => Promise<void> {
   return () => new Promise<void>((resolve, reject) => {
-    execFile(options.hcPath ?? "hc", ["server", "start"], { env: options.env ?? process.env, timeout: options.timeoutMs ?? 30_000 }, (err) => {
+    const env = { ...(options.env ?? process.env) };
+    for (const name of OPERATOR_SECRET_ENV_NAMES) delete env[name];
+    execFile(options.hcPath ?? "hc", ["server", "start"], { env, timeout: options.timeoutMs ?? 30_000 }, (err) => {
       if (err) reject(new HcUnavailableError(`hc server start failed: ${err.message}`, err));
       else resolve();
     });

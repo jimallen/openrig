@@ -39,10 +39,11 @@ const binding = (): NodeBinding => ({
 });
 const sent = (tmux: TmuxAdapter) => (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1]));
 
-type Path = "fresh" | "fork" | "resume" | "restore";
-const PATHS: Path[] = ["fresh", "fork", "resume", "restore"];
+type Path = "fresh" | "fork" | "resume" | "restore" | "restart-in-place";
+const PATHS: Path[] = ["fresh", "fork", "resume", "restore", "restart-in-place"];
+const runningWithFlag = { addDirs: [], daemonOptOut: true, networkOverride: false };
 
-interface Probes { version?: CodexVersionCheck; support?: CodexDaemonSupport }
+interface Probes { version?: CodexVersionCheck; support?: CodexDaemonSupport; running?: typeof runningWithFlag }
 async function run(path: Path, hostKind: "tmux" | "hc", probes: Probes) {
   const tmux = mockTmux(hostKind);
   const detectVersion = vi.fn<CodexVersionDetector>(async () => probes.version!);
@@ -51,6 +52,11 @@ async function run(path: Path, hostKind: "tmux" | "hc", probes: Probes) {
     ...(probes.version ? { detectVersion } : {}),
     ...(probes.support ? { detectDaemonSupport } : {}),
   };
+  if (path === "restart-in-place") {
+    const result = await new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), listProcesses: () => [], sleep: async () => {}, ...wired })
+      .buildResumeCommand(binding(), { name: "dev-qa@test-rig", resumeToken: "sess 456", running: probes.running ?? runningWithFlag });
+    return { result, commands: result.ok ? [result.command] : [], detectVersion, detectDaemonSupport };
+  }
   const result = path === "restore"
     ? await new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, ...wired }).resume("r01-qa", "codex_id", "sess 456", "/project", null, undefined, "gpt-5.5")
     : await new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), listProcesses: () => [], sleep: async () => {}, ...wired }).launchHarness(binding(), {
@@ -119,6 +125,31 @@ for (const path of PATHS) {
     });
   });
 }
+
+describe("restart-in-place's own guard: the running argv", () => {
+  const without = { ...runningWithFlag, daemonOptOut: false };
+  it("refuses under hc a Codex running without --no-daemon, whatever the probes say, and asks neither", async () => {
+    for (const probes of [{ version: okVersion, support: supported }, {}]) {
+      const r = await run("restart-in-place", "hc", { ...probes, running: without });
+      expect(refused(r)).toBe(true);
+      expect(JSON.stringify(r.result)).toMatch(/running without --no-daemon/);
+      expect(r.commands).toEqual([]);
+      expect(r.detectVersion).not.toHaveBeenCalled();
+      expect(r.detectDaemonSupport).not.toHaveBeenCalled();
+    }
+  });
+  it("leaves tmux as it was: the running choice is kept and no probe is asked, with the flag or without it", async () => {
+    const withFlag = await run("restart-in-place", "tmux", { version: oldVersion, support: legacy });
+    expect(withFlag.commands[0]).toContain("--no-daemon");
+    const plain = await run("restart-in-place", "tmux", { version: oldVersion, support: legacy, running: without });
+    expect(plain.commands).toHaveLength(1);
+    expect(plain.commands[0]).not.toContain("--no-daemon");
+    for (const r of [withFlag, plain]) {
+      expect(r.detectVersion).not.toHaveBeenCalled();
+      expect(r.detectDaemonSupport).not.toHaveBeenCalled();
+    }
+  });
+});
 
 describe("startup", () => {
   it("wires the version probe into both Codex launch adapters", () => {

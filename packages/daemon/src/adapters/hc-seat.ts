@@ -18,7 +18,9 @@ const HOST_ENV_KEYS = ["TMUX", "TMUX_PANE"];
 /** The daemon's own operator credentials, read from its env (census at add4c5e: index.ts and startup.ts read the two
  *  bearer tokens; the Slack gateway reads the two bot tokens through resolveSecret). A seat has no use for them: the
  *  operator bearer is the write gate, the terminal bearer opens the terminal WebSocket. Never inherited from the daemon
- *  and always unset in the launch wrapper, so a core started with them does not pass them on either. A seat that must
+ *  and always unset in the launch wrapper, so a seat lacks them even on a core that holds them. A core the daemon starts never
+ *  holds them (startCoreWithCli). A core started any other way (the app, a person's shell, a first `hc` call) has the env it was
+ *  started with, and a plain `hc run` on it inherits that: the wrapper covers only the daemon's own launches. A seat that must
  *  hold one states it in its own env. Provider keys are not here: they keep the allowlisted channel. */
 export const OPERATOR_SECRET_ENV_NAMES: readonly string[] = [
   "OPENRIG_AUTH_BEARER_TOKEN", "OPENRIG_TERMINAL_BEARER_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
