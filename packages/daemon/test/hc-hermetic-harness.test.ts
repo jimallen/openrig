@@ -65,7 +65,11 @@ describe("hc env hygiene (in process)", () => {
   it("a default HcClient would resolve to a socket inside the fixture user home, never a poison or host path", () => {
     const socket = resolveHcSocket(process.env);
     const fixtureUserHome = `${process.env.OPENRIG_HOME}-user-home`;
-    expect(socket.startsWith(`${fixtureUserHome}/`)).toBe(true);
+    // Inside the fixture user home, unless that layout would put the socket over the platform's 103-byte limit (macOS temp folders):
+    // then the setup file's short `.oh-` state dir in the same temp folder (restated here, not imported from the setup).
+    const inHome = join(fixtureUserHome, ".local", "state", "herdr-core", "default", "default.sock");
+    if (Buffer.byteLength(inHome) <= 103) expect(socket.startsWith(`${fixtureUserHome}/`)).toBe(true);
+    else expect(socket.startsWith(`${dirname(fixtureUserHome)}/.oh-`)).toBe(true);
     expect(socket.startsWith(POISON_DIR)).toBe(false);
     expect(socket).toContain("/herdr-core/default/");
   });

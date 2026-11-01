@@ -107,7 +107,9 @@ describe.skipIf(!HC)("rig chatroom watch --terminal never starts or feeds a core
     const terminalEnv = readFileSync(envFile, "utf8");
     expect(terminalEnv).toContain("OPENRIG_URL=http://127.0.0.1:");  // positive control: this is the terminal's env, and the daemon address is in it
     for (const name of SECRETS) expect(terminalEnv).not.toContain(name);
-    const ls = spawnSync(HC, ["ls", "--json"], { env: cleanEnv, encoding: "utf8" }).stdout;
+    // `--all`: the program is `env > file`, which exits at once, and a plain `hc ls` hides a finished terminal (measured on macOS,
+    // hc 0.1.16: live at 100 ms, `{"hidden_finished":1,"terminals":[]}` by 2 s). Whether the terminal is still live when `ls` runs is a race.
+    const ls = spawnSync(HC, ["ls", "--all", "--json"], { env: cleanEnv, encoding: "utf8" }).stdout;
     expect(ls).toContain("cr-951006fa75ef7730ec3258ce");  // the terminal is on this core: cr- + 24 hex of sha256("my-rig") (shasum -a 256)
   });
 

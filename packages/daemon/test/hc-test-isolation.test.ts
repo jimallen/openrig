@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { resolveHcSocket } from "../src/adapters/hc-client.js";
 import { HC_SCRATCH_ROOT_ENV, HC_SOCKET_PATH_LIMIT, HcSocketTooLongError, hcScratchBase, startHcScratch } from "./helpers/hc-scratch.js";
 import { PrivateCore as RootPrivateCore } from "./hc-private-core.js";
 import { PrivateCore as HelperPrivateCore } from "./helpers/hc-private-core.js";
@@ -117,5 +118,16 @@ describe("census: no test reaches the account's real home or a hard-coded scratc
       ["packages/daemon/test/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), `hc-\$\{tag\}-`\)\)/],
     ];
     for (const [f, line] of makers) expect(text(join(repoRoot, f)), f).toMatch(line);
+  });
+});
+
+describe("the default core's socket path in a test worker fits the platform limit", () => {
+  it("is addressable (a probe of a core that is not running finds no core, not 'connect EINVAL')", () => {
+    // macOS's own os.tmpdir() (/var/folders/xx/<32 chars>/T) put the fixture home's socket at 139 bytes; a path over the limit
+    // makes every preflight that probes the default core report hc unhealthy (context add, setup, start, up auto-start).
+    const socket = resolveHcSocket();
+    expect(Buffer.byteLength(socket), socket).toBeLessThanOrEqual(HC_SOCKET_PATH_LIMIT);
+    expect(socket.startsWith(`${realpathSync(tmpdir())}/`), "inside the worker's temp folder, never the account's state dir").toBe(true);
+    expect(existsSync(socket), "no core is running at it").toBe(false);
   });
 });

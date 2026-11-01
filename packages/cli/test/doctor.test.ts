@@ -205,11 +205,22 @@ describe("runDoctorChecks", () => {
     }
   });
 
-  it("Node version check passes on current Node", () => {
-    const deps = makeDeps();
-    const { checks } = runDoctorChecks(deps);
-    const nodeCheck = checks.find((c) => c.name === "node_version");
-    expect(nodeCheck?.status).toBe("pass");
+  // The check reads process.version, so the rows pin it: a runner on Node 26 (even major above 24, untested) otherwise turns the
+  // "passes" row into a "warn" (measured on macOS, Node 26.9.0), and one on Node 20 into a "fail".
+  function withNodeVersion<T>(version: string, run: () => T): T {
+    const original = Object.getOwnPropertyDescriptor(process, "version")!;
+    Object.defineProperty(process, "version", { value: version, configurable: true });
+    try { return run(); } finally { Object.defineProperty(process, "version", original); }
+  }
+
+  it("Node version check passes on a supported Node (22)", () => {
+    const { checks } = withNodeVersion("v22.12.0", () => runDoctorChecks(makeDeps()));
+    expect(checks.find((c) => c.name === "node_version")).toMatchObject({ status: "pass", message: "Node v22.12.0" });
+  });
+
+  it("Node version check warns, not fails, on an untested even major above 24 (26)", () => {
+    const { checks } = withNodeVersion("v26.9.0", () => runDoctorChecks(makeDeps()));
+    expect(checks.find((c) => c.name === "node_version")).toMatchObject({ status: "warn" });
   });
 
   it("writable_home missing -> fail with guidance", () => {

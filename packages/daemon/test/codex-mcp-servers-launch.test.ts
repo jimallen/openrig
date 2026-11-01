@@ -395,7 +395,13 @@ describe("codexConfigLayerFiles / codexConfigServerNames read names only", () =>
     writeFileSync(join(layers, "proj", ".codex", "config.toml"), '[mcp_servers.fromproject]\ncommand = "/bin/true"\n');
     const files = codexConfigLayerFiles({ sharedCodexHome: join(layers, "home"), seatCwd: join(layers, "proj", "seat"), profileFile: join(layers, "home", "p.config.toml") });
     const result = codexConfigServerNames(files);
-    expect(result).toEqual({ ok: true, names: new Map([
+    // The walk climbs EVERY ancestor of the seat cwd (the stricter reading, by design), so a run root that sits under the
+    // account's home (macOS: a non-temp root, which trusted-scaffold tests need) also reads that home's own
+    // ~/.codex/config.toml. Only the layers this test built are asserted; a mutation that loses one of them still fails.
+    const own = result.ok
+      ? { ok: true as const, names: new Map([...result.names].filter(([, file]) => file.startsWith(layers + "/"))) }
+      : result;
+    expect(own).toEqual({ ok: true, names: new Map([
       ["lsp", join(layers, "home", "config.toml")],
       ["fromprofile", join(layers, "home", "p.config.toml")],
       ["fromproject", join(layers, "proj", ".codex", "config.toml")],

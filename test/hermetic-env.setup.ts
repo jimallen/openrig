@@ -114,6 +114,22 @@ const userHome = `${fixtureHome}-user-home`;
 // would name the host's default core even with HC_* gone. Dropped, the socket path falls to the fixture state dir.
 delete process.env["XDG_RUNTIME_DIR"];
 process.env["XDG_STATE_HOME"] = path.join(userHome, ".local/state");
+// A unix socket path has a hard limit: 103 bytes on macOS (sun_path is 104 with its NUL; hc 0.1.15 refuses a longer one itself, with 107
+// allowed on Linux). The fixture home is `<os.tmpdir()>/.openrig-test-fixture-home-XXXXXX-user-home`, and macOS's own os.tmpdir()
+// (/var/folders/xx/<32 chars>/T) makes the core's would-be socket under it 139 bytes, so a probe of it fails with `connect EINVAL`
+// (unhealthy) instead of finding no core. Where that is so, the state dir moves to a short sibling; it only ever holds the path of
+// a core that is never started. Linux's /tmp keeps the layout above.
+const HC_SOCKET_PATH_LIMIT = 103;
+const fixtureHcSocket = path.join(process.env["XDG_STATE_HOME"], "herdr-core", "default", "default.sock");
+if (Buffer.byteLength(fixtureHcSocket) > HC_SOCKET_PATH_LIMIT) {
+  const shortState = fs.mkdtempSync(path.join(os.tmpdir(), ".oh-"));
+  const registry = process.env["OPENRIG_TEST_FIXTURE_REGISTRY"];
+  if (registry) {
+    try { fs.writeFileSync(path.join(registry, path.basename(shortState)), shortState); } catch { /* best effort */ }
+  }
+  afterAll(() => { try { fs.rmSync(shortState, { recursive: true, force: true }); } catch { /* best effort */ } });
+  process.env["XDG_STATE_HOME"] = shortState;
+}
 if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
   fs.mkdirSync(userHome, { recursive: true });
   process.env["HOME"] = userHome;

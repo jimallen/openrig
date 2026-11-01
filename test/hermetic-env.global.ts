@@ -22,6 +22,8 @@ export const FIXTURE_REGISTRY_ENV = "OPENRIG_TEST_FIXTURE_REGISTRY";
 // inherits both variables; seeing another pid there, it makes its own registry instead of reusing
 // (and later removing) the outer run's.
 export const FIXTURE_HOME_PREFIX = ".openrig-test-fixture-home-";
+/** The short state dir the setup file makes where the fixture home's own socket path would be over the platform limit (macOS). */
+export const FIXTURE_SHORT_STATE_PREFIX = ".oh-";
 const OWNER_ENV = "OPENRIG_TEST_FIXTURE_REGISTRY_OWNER";
 const ownsRegistry = () => process.env[OWNER_ENV] === String(process.pid);
 
@@ -67,7 +69,7 @@ function removeFixtureHomes(): void {
     let home = "";
     try { home = fs.readFileSync(path.join(registry, entry), "utf8"); } catch { continue; }
     // Only paths this suite names as fixture homes are ever removed, whatever a registry file says.
-    if (!path.basename(home).startsWith(FIXTURE_HOME_PREFIX)) continue;
+    if (!path.basename(home).startsWith(FIXTURE_HOME_PREFIX) && !path.basename(home).startsWith(FIXTURE_SHORT_STATE_PREFIX)) continue;
     for (const dir of [home, `${home}-user-home`]) {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
     }
