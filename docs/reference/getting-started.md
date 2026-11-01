@@ -233,9 +233,9 @@ without opening a window or putting the view in another session.
 
 On Linux, a local graphical display and a supported hosting terminal are required
 (Ghostty, GNOME Terminal, Konsole or xterm). Linux reports a window request; verify
-what actually appeared. SSH, headless, CI and unsupported Linux hosts get a
-no-window result with the reason, a command for the person to run, and any
-follow-up the agent needs to perform.
+what actually appeared. SSH, headless, CI and unsupported Linux hosts have no Herdr app open, so the command fails with
+`herdr_unavailable` and the reason ("nothing was opened. Start the Herdr app, then run this again"); it prints no command for the person
+to run. Attach to a seat with the seat's own command instead (`hc attach -- <terminal>` for a seat in an hc terminal).
 
 OpenRig's Herdr launch and its printed manual command keep your personal Herdr
 config when present. If it is absent, OpenRig creates private sidebar defaults;
@@ -349,9 +349,8 @@ A provider running on the server opens no window on the person's desktop. From a
 own machine, connect over SSH with the known host and account, then attach:
 - **the operator's conversation**, with the command in
   [Talk to the operator in any terminal](#talk-to-the-operator-in-any-terminal);
-- **the Herdr view**, with the command that `rig terminal open saved:kernel --window` prints when it can't open a
-  window. It names the installed Herdr, wherever setup put it, and the daemon's socket. Then
-  `rig terminal open saved:kernel --provider herdr --json` selects the view in it.
+- **the Herdr view**: `rig terminal open saved:kernel --provider herdr --json` selects the view in a Herdr app that is open
+  on that machine; with no app open it fails with `herdr_unavailable` and prints no command.
 
 No new account or credential provisioning is part of this. **Agents:** the `rigs` skill gives the person this as one
 filled-in command.

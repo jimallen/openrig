@@ -133,19 +133,19 @@ unseen — which makes messages the one delivery channel that never gets skipped
   Ghostty a tab; from Claude Desktop, iTerm or VS Code on a Mac it opens a new Ghostty or Terminal
   window, and only then say that clicking macOS's Allow is fine. Herdr is visible only in a
   terminal the person can see; switching the shared TUI to `:terminals` does not open one. Over
-  SSH, in CI or with no display, the command returns a definite no-window result with the reason
-  and an attach command: relay that command exactly (for a seat in an hc terminal it is
+  SSH, in CI or with no display, the Herdr app is not open there and the command fails with
+  `herdr_unavailable` ("nothing was opened. Start the Herdr app, then run this again"); it prints no attach command. To let the
+  person see a seat anyway, give them the seat's own command (for a seat in an hc terminal it is
   `hc attach -- <terminal>`). Inspect the result and visible content, or
   say what cannot be verified. On a desktop, do not finish by printing a command for the person to
   type. Only if the window cannot open, `rig tui --shared` is the dashboard-only fallback; explain
-  the failure. `--provider herdr` adds tiles inside a workspace that is
-  already visible, without opening a window; in `--json` output, `reusedWorkspace` with no new
-  tiles means an existing view was reused, which is success.
+  the failure. `--provider herdr` opens the view in the Herdr app; a result with
+  no tiles opened is a failure, never a reused view.
   In the TUI, **TERMINALS** keeps Saved views prominent and Derived groups collapsed until
   expanded. Names load before detailed readiness. Select a view to inspect its members,
   layout and pages; preview is passive. Saved membership requires deliberate setup.
-  **Open terminals ▸** opens the inspected plan through the same desktop launcher, herdr, so the TUI must run on the daemon's desktop; when no window was attempted it shows the
-  preview and attach commands. Help or a side trip returns to the same preview.
+  **Open terminals ▸** opens the inspected plan through the same desktop launcher, herdr, so the TUI must run on the daemon's desktop; when the Herdr app is not open it returns to the
+  preview and its attach commands. Help or a side trip returns to the same preview.
 - **`rig walk <seat> --through <files> --pace <n>`** — deliver context pieces through
   file-backed terminal paste. When the current native generation record resolves, the complete
   piece and its matching Claude/Codex turn closure must arrive before pacing onward, including

@@ -27,7 +27,7 @@ console.log(${JSON.stringify(JSON.stringify(result))});process.exitCode=${exit};
 const opened = { provider: "tmux", ok: true, opened: ["advisor", "operator"], absent: [], degraded: [], pages: 1 };
 
 describe("TUI desktop terminal action", () => {
-  it.each(["rig", "pod"])("direct %s action reaches exact attach guidance after definite window refusal, without relaunch", async kind => {
+  it.each(["rig", "pod"])("direct %s action reaches exact attach guidance after the app is found not open (nothing opened), without relaunch", async kind => {
     let snap = demoSnapshot();
     const view = createViewState({ instanceId: "fixture", getSnapshot: () => snap });
     view.dispatch(parseCommand("rig openrig-build"));
@@ -35,10 +35,10 @@ describe("TUI desktop terminal action", () => {
       .map(hit => hit.action).find(a => a?.type === "act" && a.act === "open-terminal" && a.view.startsWith(`${kind}:`));
     if (action?.type !== "act" || action.act !== "open-terminal") throw new Error("direct terminal action missing");
     expect(view.get().section).not.toBe("terminals");
-    const f = child({ ...opened, ok: false, opened: [], code: "terminal_window_failed", windowAttempted: false,
-      error: "No terminal window was opened. No local desktop display is available." }, 1);
+    const f = child({ ...opened, ok: false, opened: [], code: "herdr_unavailable",
+      error: "herdr control socket is not answering; nothing was opened. Start the Herdr app, then run this again." }, 1);
     await expect(openWithRecovery(action.view, "http://selected.example:7654", f.entry, action.expectedPlan,
-      () => view.dispatch({ type: "terminal-preview", view: action.view }))).rejects.toThrow("No terminal window was opened");
+      () => view.dispatch({ type: "terminal-preview", view: action.view }))).rejects.toThrow("nothing was opened. Start the Herdr app");
     expect(view.get()).toMatchObject({ section: "terminals", terminalView: action.view });
     const paneCommand = "ssh viewer@other.example \"tmux attach -r -t '=seat with spaces'\"";
     const reads: string[] = [];
@@ -61,12 +61,16 @@ describe("TUI desktop terminal action", () => {
     expect(f.calls()).toHaveLength(1);
   });
 
-  it.each([true, undefined])("keeps an unknown outcome on the current view without recovery/replay (attempted: %s)", async windowAttempted => {
-    const f = child({ ...opened, ok: false, opened: [], code: "terminal_window_failed", windowAttempted,
-      error: "Terminal window status is unknown. Inspect the desktop before retrying." }, 1);
+  it.each([
+    ["another failure code", "plan_changed", []],
+    ["no code", undefined, []],
+    ["the old window code, which nothing emits now", "terminal_window_failed", []],
+    ["the app code but with tiles opened (not a definite nothing-opened)", "herdr_unavailable", ["advisor"]],
+  ])("keeps the current view without recovery or replay for %s", async (_label, code, tiles) => {
+    const f = child({ ...opened, ok: false, opened: tiles, code, error: "something failed" }, 1);
     let recoveries = 0;
     await expect(openWithRecovery("rig:team", "http://localhost:7433", f.entry, undefined, () => { recoveries++; }))
-      .rejects.toThrow("Inspect the desktop before retrying");
+      .rejects.toThrow("something failed");
     expect(recoveries).toBe(0);
     expect(f.calls()).toHaveLength(1);
   });
@@ -77,28 +81,8 @@ describe("TUI desktop terminal action", () => {
     expect(f.calls()).toEqual([{ url: "http://selected.example:7439", args: ["terminal", "open", "--window", "--json", "--expected-plan", "preview-42", "--", "saved:team with spaces"] }]);
   });
 
-  it("accepts a confirmed reused workspace without new tiles, preserving partial-state notes", async () => {
-    const reused = { ...opened, provider: "herdr", opened: [], pages: 0,
-      reusedWorkspace: { id: "existing", tabId: "first", view: "kernel" },
-      absent: [{ seat: "operator", reason: "stopped" }],
-      notes: ["Check the new terminal shows the intended view."],
-    };
-    const f = child(reused);
-    let recoveries = 0;
-    expect(await openTerminalInWindow("saved:kernel", "http://localhost:7433", f.entry, undefined, () => { recoveries++; })).toEqual(reused);
-    expect(f.calls()).toHaveLength(1);
-    expect(recoveries).toBe(0);
-    const notice = terminalWindowNotice("saved:kernel", reused);
-    expect(notice).toContain("Reused Herdr workspace existing");
-    expect(notice).toContain("0 tiles prepared; 1 absent");
-    expect(notice).toContain("Absent: operator — stopped");
-    expect(notice).toContain(reused.notes[0]);
-  });
-
-  it.each(["unconfirmed", "nonzero exit"])("does not accept reused-workspace metadata after %s", async kind => {
-    const f = child({ ...opened, ok: kind !== "unconfirmed", opened: [], pages: 0,
-      reusedWorkspace: { id: "existing", tabId: "first", view: "kernel" },
-    }, kind === "nonzero exit" ? 1 : 0);
+  it("a result with no tiles is a failure whatever else it carries", async () => {
+    const f = child({ ...opened, opened: [], pages: 0, reusedWorkspace: { id: "existing", tabId: "first", view: "kernel" } });
     await expect(openTerminalInWindow("saved:kernel", "http://localhost:7433", f.entry)).rejects.toThrow();
     expect(f.calls()).toHaveLength(1);
   });

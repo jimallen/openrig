@@ -5,7 +5,6 @@ import type { TerminalOpenResult } from "../daemon-client.js";
 export function terminalWindowNotice(view: string, result: TerminalOpenResult): string {
   return [
     `Terminal view requested: ${view}`,
-    ...(result.ok && result.reusedWorkspace ? [`Reused Herdr workspace ${result.reusedWorkspace.id}; existing contents were kept.`] : []),
     `${result.opened.length} tiles prepared; ${result.absent.length} absent; ${result.degraded.length} degraded.`,
     ...(result.error ? [result.error] : []),
     ...result.absent.map(member => `Absent: ${member.seat} — ${member.reason}`),
@@ -14,7 +13,7 @@ export function terminalWindowNotice(view: string, result: TerminalOpenResult): 
   ].join("\n");
 }
 
-/** Reuse the installed CLI's desktop selection and fallback, preserving this TUI's daemon. */
+/** Run the installed CLI against this TUI's daemon. */
 export async function openTerminalInWindow(view: string, endpoint: string, cliEntry?: string, expectedPlan?: string, onUnavailable?: () => void): Promise<TerminalOpenResult> {
   const args = ["terminal", "open", "--window", "--json", ...(expectedPlan !== undefined ? ["--expected-plan", expectedPlan] : []), "--", view];
   let stdout: string;
@@ -29,20 +28,20 @@ export async function openTerminalInWindow(view: string, endpoint: string, cliEn
     executionError = failure.message;
     stdout = failure.stdout;
   }
-  let result: TerminalOpenResult & { window?: { app: string; surface: string }; windowAttempted?: boolean };
+  let result: TerminalOpenResult;
   try { result = JSON.parse(stdout); }
   catch { throw new Error("The terminal command returned no readable result. Inspect any new terminal before retrying."); }
   if (!result || typeof result !== "object") throw new Error("The terminal command returned no view result. Inspect any new terminal before retrying.");
   if (!Array.isArray(result.opened) || !Array.isArray(result.absent) || !Array.isArray(result.degraded)) {
     throw new Error(result.error ?? "The terminal command returned no view result. Inspect any new terminal before retrying.");
   }
-  if (executionError || (!result.opened.length && !(result.ok && result.reusedWorkspace))) {
-    // Only a definite pre-launch failure can reveal passive recovery; unknown outcomes stay put.
-    if (result.code === "terminal_window_failed" && result.windowAttempted === false && !result.window && !result.opened.length) onUnavailable?.();
+  if (executionError || !result.opened.length) {
+    // The one definite "nothing was opened" is the app not being open (`herdr_unavailable`: the provider checks the app before it
+    // creates anything). Only then does the TUI return to the terminal preview and its attach commands; any other failure stays put.
+    if (result.code === "herdr_unavailable" && !result.opened.length) onUnavailable?.();
     throw new Error([result.error ?? executionError ?? "No terminals were confirmed open.", ...(result.notes ?? []),
       ...result.absent.map(member => `Absent: ${member.seat} — ${member.reason}`),
       ...result.degraded.map(member => `Skipped: ${member.seat} — ${member.reason}`),
-      ...(result.window ? [`Terminal: ${result.window.app} (${result.window.surface})`] : []),
     ].join("\n"));
   }
   return result;

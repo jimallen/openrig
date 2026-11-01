@@ -64,7 +64,7 @@ in a report; otherwise follow the accompanying diagnostic. If the only remaining
 ### Installation finished, but there is nobody to talk to
 
 Load the `rigs` skill and follow its step 2: it opens the OpenRig view (`rig terminal open saved:kernel --window`),
-gives the attach commands when the window can't open or over SSH, and hands the person's goal to the operator.
+gives each seat's own attach command when the Herdr app can't be opened or over SSH (the open command itself fails with `herdr_unavailable` and prints none), and hands the person's goal to the operator.
 [Install and sign in](getting-started.md#install-and-sign-in) says how to load it. The reference for the view, manual
 attachment and the table of what can interrupt it is
 [Open the kernel conversations](getting-started.md#open-the-kernel-conversations)

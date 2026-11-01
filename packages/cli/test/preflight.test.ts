@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import net from "node:net";
 import { Command } from "commander";
 import { SystemPreflight } from "../src/system-preflight.js";
-import { HC_GENERATION, HC_TESTED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
+import { HC_GENERATION, HC_TESTED_VERSION, probeHcInstall, type HcHelloOutcome } from "../src/tmux-health.js";
 import { ConfigStore } from "../src/config-store.js";
 import { preflightCommand } from "../src/commands/preflight.js";
 import type { DaemonStatus } from "../src/daemon-lifecycle.js";
 
-type HcMode = "healthy" | "missing" | "wrong_version" | "untested_version" | "other_generation" | "core_version" | "no_core" | "refused" | "unreadable";
+type HcMode = "healthy" | "missing" | "wrong_version" | "untested_version" | "untested_core" | "other_generation" | "core_version" | "no_core" | "refused" | "unreadable";
 
 function makeExec(hcMode: HcMode = "healthy"): (cmd: string) => Promise<string> {
   return async (cmd: string) => {
@@ -29,6 +29,7 @@ function makeHello(hcMode: HcMode = "healthy"): () => Promise<HcHelloOutcome> {
       case "no_core": return { kind: "no_core", detail: "no hc core at /x (ENOENT)" };
       case "refused": return { kind: "refused", refusal: "unsupported_generation", detail: "this core speaks generation 2" };
       case "other_generation": return { kind: "hello", generation: 2, version: HC_TESTED_VERSION };
+      case "untested_core": return { kind: "hello", generation: HC_GENERATION, version: "0.1.17" };
       case "core_version": return { kind: "hello", generation: HC_GENERATION, version: "0.1.14" };
       case "unreadable": return { kind: "unreadable", detail: "no reply to hello in 3000 ms" };
       default: return { kind: "hello", generation: HC_GENERATION, version: HC_TESTED_VERSION };
@@ -140,6 +141,15 @@ describe("SystemPreflight", () => {
   it("an hc of the tested minor line that is not the tested version passes (accepted, not refused)", async () => {
     const hcCheck = (await createPreflight({ hcMode: "untested_version" }).run()).checks.find((c) => c.name === "hc")!;
     expect(hcCheck.ok).toBe(true);
+    // Jim's rule: accept and warn. The wording is rig doctor's (hc-health's warning for 0.1.99), the same rule at the same site.
+    expect(hcCheck.warning).toContain("0.1.99");
+    expect(hcCheck.warning).toContain("0.1.16");
+    expect(hcCheck.warning).toBe(probeHcInstall(() => "hc 0.1.99\n").warning);
+  });
+
+  it("an untested running core warns the same way, and the tested version carries no warning", async () => {
+    expect((await createPreflight({ hcMode: "untested_core" }).run()).checks.find((c) => c.name === "hc")).toMatchObject({ ok: true, warning: expect.stringContaining("0.1.17") });
+    expect((await createPreflight({ hcMode: "healthy" }).run()).checks.find((c) => c.name === "hc")).toEqual({ name: "hc", ok: true });
   });
 
   it("a running core on another protocol generation → ready: false", async () => {

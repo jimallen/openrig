@@ -155,7 +155,8 @@ export class SystemPreflight {
         fix: "Install hc (herdr-core), see https://herdr.dev/core/ for the tested version.",
       });
     } else if (hcProbe.available) {
-      checks.push({ name: "hc", ok: true });
+      // Accepted. An hc that is not the tested version is accepted with a warning (hc-version.ts), worded as `rig doctor` words it.
+      checks.push(hcProbe.warning ? { name: "hc", ok: true, warning: hcProbe.warning } : { name: "hc", ok: true });
     } else {
       const failure = buildHcHostFailure(hcProbe.code, hcProbe.detail ?? "unknown hc failure");
       checks.push({
