@@ -5,13 +5,16 @@ import { HcHost, hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { HcIdentity, sessionEnvLabels } from "../src/adapters/hc-identity.js";
 import { HC, PrivateCore, waitUntil } from "./helpers/hc-private-core.js";
 
-const comm = (pid: number) => spawnSync("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8" }).stdout.trim();
+/** The process's name as the OS reports it: `comm` on Linux (the bare name); on macOS `comm` is the full path, so its `ucomm` (the process name). */
+const comm = (pid: number) => spawnSync("ps", ["-p", String(pid), "-o", process.platform === "darwin" ? "ucomm=" : "comm="], { encoding: "utf8" }).stdout.trim();
 
 /** Pane identity, listing and options against a private hc core, with seats launched the way HcHost launches them. */
 describe.skipIf(!HC)("HcIdentity against a private hc core", () => {
   const core = new PrivateCore();
   let identity: HcIdentity;
   let host: HcHost;
+  /** What the seat's shell is called here: `sh` on Linux, `bash` on macOS (its /bin/sh is bash 3.2 in sh mode; measured, hc reports `bash`). */
+  let shellName = "";
   const get = (seat: string) => core.client.call<HcTerminal>("terminal.get", { terminal: hcTerminalName(seat) });
 
   beforeAll(async () => {
@@ -21,7 +24,9 @@ describe.skipIf(!HC)("HcIdentity against a private hc core", () => {
     await expect(host.createSession("qa@rig", core.root, { OPENRIG_NODE_ID: "node-qa" })).resolves.toEqual({ ok: true });
     await expect(host.createSession("dev@rig", core.root)).resolves.toEqual({ ok: true });
     await core.client.call("terminal.run", { argv: ["sleep", "600"], name: "plain", no_parent: true, no_notify: true, outlive_parent: true });
-    await waitUntil(async () => (await get("qa@rig")).foreground?.name, (name) => name === "sh", "qa@rig shell");
+    const shell = await waitUntil(async () => (await get("qa@rig")).foreground, (fg) => !!fg && fg.name === comm(fg.pid), "qa@rig shell");
+    shellName = shell!.name;
+    expect(["sh", "bash"], "the seat's shell is /bin/sh").toContain(shellName);
   }, 30_000);
 
   afterAll(() => core.stop());
@@ -48,8 +53,8 @@ describe.skipIf(!HC)("HcIdentity against a private hc core", () => {
     const pid = await identity.getPanePid("qa@rig");
     expect(pid).toBe(terminal.pid);
     expect(await identity.getPanePid(terminal.address)).toBe(pid);
-    expect(comm(pid!)).toBe("sh");
-    await expect(identity.getPaneCommand("qa@rig")).resolves.toBe("sh");
+    expect(comm(pid!)).toBe(shellName);
+    await expect(identity.getPaneCommand("qa@rig")).resolves.toBe(shellName);
   });
 
   it("follows the foreground process: a command typed into the shell becomes the pane command, the pid stays the shell's", async () => {
@@ -62,7 +67,7 @@ describe.skipIf(!HC)("HcIdentity against a private hc core", () => {
   it("reads every pid and command at once, keyed by address", async () => {
     const all = await identity.readAllPaneProcesses();
     const qa = await get("qa@rig");
-    expect(all?.get(qa.address)).toEqual({ pid: qa.pid, command: "sh" });
+    expect(all?.get(qa.address)).toEqual({ pid: qa.pid, command: shellName });
     expect(all?.size).toBe(3);
   });
 

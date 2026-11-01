@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
+import { hcScratchBase, HC_SOCKET_PATH_LIMIT } from "./helpers/hc-scratch.js";
 
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -15,7 +16,7 @@ export class PrivateCore {
   readonly client: HcClient;
 
   constructor(tag: string, extraEnv: NodeJS.ProcessEnv = {}) {
-    this.root = mkdtempSync(join(tmpdir(), `hc-${tag}-`));
+    this.root = mkdtempSync(join(hcScratchBase(process.env, tmpdir()), `hc-${tag}-`));
     this.env = {
       PATH: process.env.PATH, HOME: join(this.root, "h"), HC_SESSION: `${tag}${process.pid}`,
       XDG_CONFIG_HOME: join(this.root, "c"), XDG_DATA_HOME: join(this.root, "d"), XDG_STATE_HOME: join(this.root, "s"), XDG_RUNTIME_DIR: join(this.root, "r"),
@@ -23,6 +24,10 @@ export class PrivateCore {
     };
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(this.root, d), { recursive: true, mode: 0o700 });
     this.socketPath = resolveHcSocket(this.env, this.env.HOME);
+    if (Buffer.byteLength(this.socketPath) > HC_SOCKET_PATH_LIMIT) {
+      rmSync(this.root, { recursive: true, force: true });
+      throw new Error(`hc private core: the socket path would be ${Buffer.byteLength(this.socketPath)} bytes (limit ${HC_SOCKET_PATH_LIMIT}): ${this.socketPath}`);
+    }
     this.client = new HcClient(this.socketPath);
   }
 
@@ -39,10 +44,19 @@ export class PrivateCore {
     rmSync(this.root, { recursive: true, force: true });
   }
 
-  /** The pid is this core's own process: its environment names this core's session. Linux only; false when unreadable. */
+  /**
+   * The pid is this core's own process: its environment names this core's session. Read from /proc on Linux and from `ps -Ewwo`
+   * on macOS (which shows the environment of the core's own unprotected `hc` processes). False when unreadable.
+   */
   isMine(pid: number): boolean {
+    const entry = `HC_SESSION=${this.env.HC_SESSION}`;
     try {
-      return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`HC_SESSION=${this.env.HC_SESSION}`);
+      if (existsSync("/proc/self/environ")) return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(entry);
+      const out = spawnSync("ps", ["-Ewwo", "command=", "-p", String(pid)], { encoding: "utf8" });
+      if (out.status !== 0) return false;
+      // The entry must be a whole word of the environment, and absent from the arguments `ps -o command` alone reports.
+      const argv = spawnSync("ps", ["-wwo", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout;
+      return ` ${out.stdout.trim()} `.includes(` ${entry} `) && !` ${argv.trim()} `.includes(` ${entry} `);
     } catch {
       return false;
     }

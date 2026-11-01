@@ -7,7 +7,7 @@ import {
   assertNoForeignHcCore, assertPrivateHcEnv, detectForeignHcCore, findHc, HcForeignCoreError, HcNotPrivateError,
   HcSocketTooLongError, HC_SOCKET_PATH_LIMIT, longestSocketPath, startHcScratch, type HcScratch,
 } from "./helpers/hc-scratch.js";
-import { hasProcFs, identityOf, pidsWithEnv, sameProcess, waitGone } from "./helpers/orphan-reaper.js";
+import { canSweepEnviron, hasProcFs, identityOf, pidsWithEnv, sameProcess, waitGone } from "./helpers/orphan-reaper.js";
 
 const HC = findHc();
 const PATH = process.env.PATH ?? "";
@@ -21,7 +21,7 @@ afterEach(() => {
 const tmpBase = (): string => { const d = mkdtempSync(join(tmpdir(), "hcsb-")); dirs.push(d); return d; };
 
 // A private env that is valid under a root, for the refusal rows. Each row breaks exactly one thing.
-const ROOT = "/tmp/hcs-fixture";
+const ROOT = "/run/hcs-fixture";
 const valid = (): Record<string, string | undefined> => ({
   PATH, HOME: `${ROOT}/h`, HC_SESSION: "sfixture", XDG_CONFIG_HOME: `${ROOT}/c`, XDG_DATA_HOME: `${ROOT}/d`,
   XDG_STATE_HOME: `${ROOT}/s`, XDG_RUNTIME_DIR: `${ROOT}/r`,
@@ -79,9 +79,9 @@ describe("hc scratch refuses to reach a core it did not start (no hc needed)", (
   });
 
   it("the default layout is well inside the limit on both platform layouts, with room to spare", () => {
-    const longest = longestSocketPath("/tmp/hcs-abc123", "sabc123");
+    const longest = longestSocketPath("/run/hcs-abc123", "sabc123");
     expect(Buffer.byteLength(longest)).toBeLessThan(HC_SOCKET_PATH_LIMIT - 30);
-    expect(longest).toBe("/tmp/hcs-abc123/s/herdr-core/sabc123/sabc123.sock");
+    expect(longest).toBe("/run/hcs-abc123/s/herdr-core/sabc123/sabc123.sock");
   });
 });
 
@@ -152,12 +152,12 @@ describe.skipIf(!HC)("hc scratch against a real private core", () => {
     s.cleanup();
     expect(existsSync(s.root)).toBe(false);
     for (const id of ids) expect(id !== null && sameProcess(id)).toBe(false);
-    if (hasProcFs()) expect(pidsWithEnv(`HC_SESSION=${s.session}`)).toEqual([]);
+    if (canSweepEnviron()) expect(pidsWithEnv(`HC_SESSION=${s.session}`)).toEqual([]);
     expect(() => s.cleanup()).not.toThrow();
     scratches.pop();
   });
 
-  it.skipIf(!hasProcFs())("cleanup disarms the orphan guard it armed (positive control: it is visible while armed)", () => {
+  it.skipIf(!canSweepEnviron())("cleanup disarms the orphan guard it armed (positive control: it is visible while armed)", () => {
     const watchdogs = (session: string): number => spawnSync("ps", ["-eo", "args="], { encoding: "utf8" }).stdout
       .split("\n").filter((l) => l.includes("reaper:hc-scratch") && l.includes(`HC_SESSION=${session}`)).length;
     const s = startHcScratch();
@@ -178,14 +178,19 @@ describe.skipIf(!HC)("hc scratch against a real private core", () => {
     s.run(["run", "--bg", "--json", "sleep", "300"]);
     const status = JSON.parse(s.run(["server", "status", "--json"]).stdout) as { pid: number; holders: Array<{ pid: number }> };
     expect(status.holders.length).toBe(1);  // positive control: there is a holder to lose
-    const targets = [status.pid, ...status.holders.map((h) => h.pid)].map((pid) => identityOf(pid));
+    // The terminal's own program, a child of its holder: on macOS it shows no environment, so only its parent leads to it.
+    const childrenOf = (parent: number): number[] => spawnSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" }).stdout.split("\n")
+      .map((l) => l.trim().split(/\s+/).map(Number)).filter(([, ppid]) => ppid === parent).map(([pid]) => pid!);
+    const program = childrenOf(status.holders[0]!.pid).map((pid) => identityOf(pid)).filter((id) => id !== null);
+    expect(program.length, "positive control: the holder has a program under it").toBeGreaterThan(0);
+    const targets = [status.pid, ...status.holders.map((h) => h.pid), ...program.map((id) => id.pid)].map((pid) => identityOf(pid));
     expect(targets.every((t) => t !== null && sameProcess(t))).toBe(true);
     process.kill(ownerPid, "SIGKILL");
     await waitGone(ownerPid, 5_000);
     // The watchdog polls once a second, TERMs, waits 3 s, then KILLs.
     const until = Date.now() + 15_000;
     while (targets.some((t) => t !== null && sameProcess(t)) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
-    expect(targets.map((t) => t !== null && sameProcess(t))).toEqual([false, false]);
+    expect(targets.map((t) => t !== null && sameProcess(t))).toEqual(targets.map(() => false));
     s.cleanup();  // a dead core: no hc call may restart it, and the root still goes
     expect(existsSync(s.root)).toBe(false);
     scratches.pop();

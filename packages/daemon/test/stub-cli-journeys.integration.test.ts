@@ -62,11 +62,14 @@ describe.runIf(findHc() !== null)("stub CLI journeys", () => {
     // A long token forces real mid-word terminal wrapping, not just modeled newlines. hc cannot pin a terminal narrower (a
     // terminal takes its viewers' size, born 200x120) and its capture joins soft-wrapped lines, so the token outgrows the
     // terminal's own width instead, and the wrap is proved by the width, not by a newline in the capture.
-    const marker = `verified-send-${randomUUID()}` + (wrapped ? "-" + "x".repeat(300) + " tail" : "");
-    if (wrapped) {
-      const terminal = await core!.client().call<HcTerminal>("terminal.get", { terminal: hcTerminalName(recipient) });
-      expect(marker.length, "the token is wider than the terminal, so the line really wraps").toBeGreaterThan(terminal.cols);
-    }
+    // The stub reads no input, so every pasted byte stays queued on its terminal, and on macOS that queue stops taking bytes at
+    // 1023 (measured at hc 0.1.15: the echo of the wide token ended at byte 1023 of the queued text, with no tail, no closing
+    // line, so the verified send could not find its envelope; Linux holds more, unmeasured here). The startup hint and the
+    // first row's envelope already queue about 680 bytes, so the wide token is only just wider than the terminal (cols + 6 = 206
+    // bytes at 200 columns; about 214 fit on macOS), not hundreds of bytes longer.
+    const terminal = wrapped ? await core!.client().call<HcTerminal>("terminal.get", { terminal: hcTerminalName(recipient) }) : undefined;
+    const marker = `verified-send-${randomUUID()}` + (terminal ? "-" + "x".repeat(terminal.cols - 50) + " tail" : "");
+    if (terminal) expect(marker.length, "the token is wider than the terminal, so the line really wraps").toBeGreaterThan(terminal.cols);
     const receipt = await cli(["send", recipient, marker, "--verify", "--json"]);
     expect(receipt.verified).toBe(true);
     const target = await cli(["capture", recipient, "--json"]);

@@ -423,7 +423,13 @@ describe("OF-187 start-up wiring, from an npm-shaped layout", () => {
     fs.writeFileSync(path.join(cli, "package.json"), JSON.stringify({ name: "@openrig/cli" }));
     return path.join(cli, "daemon", "dist");
   };
-  const passwdHome = () => os.userInfo().homedir;
+  // The product asks the account database (os.userInfo) for the host's home. The test answers that question itself, so it never
+  // reaches the real account: a fixed passwd home that is no real folder.
+  const PASSWD_HOME = "/home/passwd-fixture";
+  const passwdHome = () => PASSWD_HOME;
+  let userInfoSpy: ReturnType<typeof vi.spyOn> | undefined;
+  beforeEach(() => { userInfoSpy = vi.spyOn(os, "userInfo").mockReturnValue({ homedir: PASSWD_HOME } as os.UserInfo<string>); });
+  afterEach(() => { userInfoSpy?.mockRestore(); });
 
   it("the start-up module dir `dist/` resolves to the daemon package root: installed on the host's OPENRIG_HOME", () => {
     const lines: string[] = [];

@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { makeTrustedBase } from "./helpers/trusted-scaffold.js";
 
 // OF-102, typed through the shipped CLI against a scratch daemon (own OPENRIG_HOME, ephemeral port, private hc
 // core; never port 7433 or ~/.openrig), on the stub runtime, with NO operator bearer configured (as the live
@@ -70,9 +70,9 @@ describe.runIf(findHc() !== null)("OF-102 rig spec-source set: a rig with no spe
 
   beforeAll(async () => {
     // The scaffold root normally sits in the temp folder, which the trust check refuses; build it under the real home folder
-    // (the test runner points HOME at a temp fixture, so ask the account database instead).
+    // (the test runner points HOME at a temp fixture; `makeTrustedBase` names the folder: the run's trusted base or HOME outside temp, else the account's home, and a contained run refuses).
+    ctx.base = makeTrustedBase(".of102-e2e-"); // before the core: a refusal here must leave nothing running
     ctx.core = startHcScratch();
-    ctx.base = mkdtempSync(join(userInfo().homedir, ".of102-e2e-"));
     const savedTmp = process.env.TMPDIR;
     process.env.TMPDIR = ctx.base;
     try { ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } }); }
