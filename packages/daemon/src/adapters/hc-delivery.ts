@@ -47,6 +47,13 @@ import type { SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
  *     arrived or not (a stub measured so), so `pasteEchoes` is declared by the caller and defaults to false. No runtime is declared
  *     yet: whether Claude, Codex and Pi show a paste on the screen is for the real-agent test to measure. Until then `gone` does not
  *     happen in production, and every send lost in a restart waits for a person.
+ *     Pi (hc-w37, live-pi-hc-20261101.md 2b-2d): the OpenRig Pi runner's pane editor does show a paste on the screen (measured live,
+ *     one case), so the input to the declaration exists; the proof that row 6 is then safe does not. Needed before `pi` is added:
+ *     (a) a lost send with `pi` declared, on a real runner seat, reads `gone` only when the text never arrived, and a send delivered
+ *     before the restart never does (its screen differs: editor echo, then the runner's mirror line); (b) the runner's screen is
+ *     byte-identical across an idle wait (no tick, clock or spinner output), measured, since an unchanged screen is the evidence.
+ *     Row 6 also needs the seat to report status, which the Pi and pda runners did not before hc-w37 (`reported` was false, so
+ *     "at rest with no turn" could never hold for them); with the runners reporting, (a) is now measurable. Until then: empty.
  *   - A slash command is a turn-less input (measured: the core's record is the same as for a send that never arrived), so it can
  *     never be `gone`, and its token does not tie a turn.
  *   - A restart is not proof by itself: a send delivered before the restart lost its reply, and "the core started after the send"

@@ -1963,10 +1963,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // built, those scopes honestly return not-found rather than throwing.
   {
     const { TerminalService } = await import("./domain/terminal/terminal-service.js");
-    const { HerdrAdapter } = await import("./domain/terminal/herdr-adapter.js");
-    const { createHerdrSocketRpc, createHerdrSocketTransport, resolveHerdrSocketPath } = await import(
-      "./domain/terminal/herdr-transport.js"
-    );
+    const { HerdrAppProvider, createHerdrAppCli } = await import("./domain/terminal/herdr-app-provider.js");
     const { TerminalViewsStore } = await import("./domain/terminal/terminal-views-store.js");
     const { getNodeInventory, getNodeInventoryForRigs } = await import("./domain/node-inventory.js");
     const { loadHostRegistry, resolveHost: resolveHostInRegistry } = await import(
@@ -1990,12 +1987,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       logicalId: e.logicalId,
     });
 
-    const herdrSocketPath = resolveHerdrSocketPath();
-    const herdrProvider = new HerdrAdapter({
-      // FB4: herdr speaks its unix control socket (there is no `layout` CLI).
-      transportFactory: createHerdrSocketTransport(createHerdrSocketRpc(herdrSocketPath)),
-      launch: { socketPath: herdrSocketPath, ...(process.env["HERDR_SESSION"] ? { session: process.env["HERDR_SESSION"] } : {}) },
-    });
+    // hc cutover W37: `rig terminal open` opens viewers in the Herdr desktop app through `herdr-app`, never the old multiplexer's
+    // socket. The daemon never starts the app: with no window open the open is refused by name.
+    const herdrProvider = new HerdrAppProvider(createHerdrAppCli(resolveOnPath("herdr-app", process.env.PATH) ?? "herdr-app"));
     const providerMap: Record<string, typeof herdrProvider> = {
       herdr: herdrProvider,
     };
