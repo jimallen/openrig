@@ -69,9 +69,12 @@ describe("codexHcPreflight", () => {
     expect(await codexHcPreflight("/p", async () => okVersion, legacy)).toMatch(/--no-daemon/);
     expect(await codexHcPreflight("/p", async () => okVersion, unknownSupport)).not.toBeNull();
   });
-  it("refuses when a probe is missing: absence is not a pass", async () => {
-    expect(await codexHcPreflight("/p", undefined, supported)).toMatch(/no Codex version probe/);
-    expect(await codexHcPreflight("/p", async () => okVersion, undefined)).toMatch(/daemon-support/);
+  it("does not ask a probe that is not wired, as detectDaemonSupport is not asked when absent; the wired one still decides", async () => {
+    expect(await codexHcPreflight("/p", undefined, supported)).toBeNull();
+    expect(await codexHcPreflight("/p", async () => okVersion, undefined)).toBeNull();
+    expect(await codexHcPreflight("/p", undefined, undefined)).toBeNull();
+    expect(await codexHcPreflight("/p", async () => oldVersion, undefined)).toMatch(/older than/);
+    expect(await codexHcPreflight("/p", undefined, legacy)).toMatch(/--no-daemon/);
   });
 });
 
@@ -101,10 +104,9 @@ for (const path of PATHS) {
       expect(JSON.stringify(r.result)).toMatch(/--no-daemon/);
       expect(r.commands).toEqual([]);
     });
-    it("refuses a host wired without the probes", async () => {
+    it("launches an adapter composed without the probes, as before (production wires both: see the startup row)", async () => {
       const r = await run(path, "hc", {});
-      expect(refused(r)).toBe(true);
-      expect(r.commands).toEqual([]);
+      expect(r.commands).toHaveLength(1);
     });
     it("is not applied under tmux: an old or unreadable version launches as before, and the version probe is never run", async () => {
       for (const version of [oldVersion, unknownVersion]) {

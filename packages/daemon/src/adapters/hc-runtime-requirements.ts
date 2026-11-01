@@ -128,15 +128,13 @@ export function codexHcLaunchRefusal(version: CodexVersionCheck, daemon: CodexDa
   return null;
 }
 
-/** The launch-time decision both Codex launch paths (prepareLaunch and resume) make when the host is hc: probe the version, then
- *  apply `codexHcLaunchRefusal` with the daemon-support answer. Fail-closed: a missing probe is `unknown`, never a pass, so a
- *  host wired without them refuses rather than launching an unchecked Codex. `daemonSupport` is the answer the launch already
- *  has (one probe per launch). Returns the refusal text, or null to go on. */
+/** The launch-time decision both Codex launch paths (prepareLaunch and resume) make when the host is hc: the version probe, then
+ *  `codexHcLaunchRefusal` with the daemon-support answer the launch already has (one probe per launch). A probe that is not wired
+ *  is not asked, as with `detectDaemonSupport` itself ("absent keeps the existing invocation"): production wires both in startup.ts,
+ *  which a test pins, and an adapter composed without them (a fixture) is not refused for it. Returns the refusal text, or null. */
 export async function codexHcPreflight(cwd: string, detectVersion: CodexVersionDetector | undefined, daemonSupport: CodexDaemonSupport | undefined): Promise<string | null> {
-  const version: CodexVersionCheck = detectVersion
-    ? await detectVersion(cwd)
-    : { kind: "unknown", detail: "no Codex version probe is wired for this host" };
-  return codexHcLaunchRefusal(version, daemonSupport ?? { kind: "unknown", detail: "no Codex daemon-support probe answered for this host" });
+  const version: CodexVersionCheck = detectVersion ? await detectVersion(cwd) : { kind: "ok", version: CODEX_MINIMUM_VERSION };
+  return codexHcLaunchRefusal(version, daemonSupport ?? { kind: "supported" });
 }
 
 // ── Codex: no self-update ────────────────────────────────────────────────────────────────────────────────────────
