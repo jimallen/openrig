@@ -95,12 +95,10 @@ describe("SeatGateStore", () => {
     const store = SeatGateStore.open(log);
     store.seen(store.admit([M], "x", null)!, "t");
     fs.appendFileSync(log, '{"op":"intent","mark');
-    const again = SeatGateStore.open(log);
-    again.seen(again.admit([N], "y", null)!, "t");
-    const text = fs.readFileSync(log, "utf8");
-    expect(gateLogRecord(text, M)).not.toBeNull();
-    expect(gateLogRecord(text, N)).not.toBeNull();
-    expect(text.split("\n").every((line) => line === "" || line.startsWith('{"op":"') && line.endsWith("}"))).toBe(true);
+    SeatGateStore.open(log).admit([N], "y", null);
+    // Glued onto the torn bytes, this intent would be unreadable: a killed runner would have lost track of a message it sent.
+    expect(SeatGateStore.open(log).open.map((intent) => intent.markers)).toEqual([[N]]);
+    expect(gateLogRecord(fs.readFileSync(log, "utf8"), M)).not.toBeNull();
   });
 
   it("a log it cannot read refuses marked blocks rather than letting them through", () => {
