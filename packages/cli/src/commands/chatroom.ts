@@ -6,6 +6,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { hcCoreListening } from "../hc-core-probe.js";
 
 /** Label that ties a watch terminal to the rig it watches. */
 export const CHATROOM_LABEL = "openrig.chatroom";
@@ -26,11 +27,14 @@ export interface HcRunResult {
 /** The seams the dedicated-terminal watch uses: the `hc` CLI and the argv that re-runs this CLI. */
 export interface ChatroomHcDeps {
   runHc(args: string[]): HcRunResult;
+  /** Is an hc core already listening in this env? `hc run` starts one when none is, in the caller's env, so it is asked first (F6). */
+  coreListening(): Promise<boolean>;
   /** Absolute argv that starts this same CLI, so the terminal does not depend on the core's PATH. */
   selfArgv(): string[];
 }
 
-const realHcDeps: ChatroomHcDeps = {
+export const realHcDeps: ChatroomHcDeps = {
+  coreListening: () => hcCoreListening(),
   runHc(args) {
     // No shell: the rig name only ever travels as one argv element.
     const r = spawnSync("hc", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -229,6 +233,13 @@ export function chatroomCommand(depsOverride?: StatusDeps, hcDeps: ChatroomHcDep
       }
 
       if (opts.terminal || opts.tmux) {
+        // `hc run` starts a core when none runs, in THIS caller's env, and a core born there hands that env (an operator
+        // token the CLI holds, say) to every terminal on it afterwards. This path needs a core the daemon started: no listener, no run.
+        if (!(await hcDeps.coreListening())) {
+          console.error(`No hc core is running. A watch terminal does not start one from this shell, because a core started here would hold this shell's environment.`);
+          process.exitCode = 1;
+          return;
+        }
         const name = chatroomTerminalName(rig);
         const program = ["/usr/bin/env", ...daemonUrlEnv(client.baseUrl), ...hcDeps.selfArgv(), "chatroom", "watch", rig];
         const result = hcDeps.runHc([
