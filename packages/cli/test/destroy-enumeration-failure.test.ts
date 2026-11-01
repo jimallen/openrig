@@ -1,13 +1,14 @@
 // hc cutover (Jim, 2026-11-01): a full `rig destroy` that cannot list the seats it is about to delete the state of must stop,
 // state untouched, naming the cause and the fix, as an unconfirmed seat does. A warning and carrying on would delete the only record
 // of which terminals were ours, and leave them running. A database file that is not there is nothing to list, not a failure.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DESTROY_CONFIRM_TOKEN, buildDestroyPlan, executeDestroy, listManagedHcSeatsFromDb, listManagedTmuxSessionsFromDb, type DestroyDeps } from "../src/destroy-helpers.js";
 import { destroyCommand } from "../src/commands/destroy.js";
+import { ConfigStore } from "../src/config-store.js";
 
 const config = { stateRoot: "/x/.openrig", dbPath: "/x/.openrig/openrig.sqlite", transcriptsPath: "/x/.openrig/transcripts", daemonHost: "127.0.0.1", daemonPort: 7433 };
 
@@ -101,7 +102,11 @@ describe("rig destroy --all when the seats cannot be listed", () => {
 });
 
 describe("rig destroy --all command with a database that cannot be read", () => {
-  const configStore = { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx" } }) };
+  // A real ConfigStore over a scratch file, so the fixture needs no cast: only db.path is stated, the rest are its defaults.
+  const scratch = mkdtempSync(join(tmpdir(), "destroy-enum-cfg-"));
+  writeFileSync(join(scratch, "config.json"), JSON.stringify({ db: { path: "/tmp/destroy-enum-db" } }));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+  const configStore = new ConfigStore(join(scratch, "config.json"));
   async function run(destroyDeps: DestroyDeps): Promise<{ out: string; exitCode: number | undefined }> {
     const program = new Command();
     program.exitOverride();
