@@ -437,6 +437,7 @@ nodesRoutes.post("/:logicalId/open-cmux", terminalAuthGuard(), async (c) => {
   }
 
   const result = await nodeCmuxService.openOrFocusNodeSurface(rigId, logicalId);
+  if (!result.ok && result.code === "unsupported_host") return c.json(result, 409);
   if (!result.ok && result.code === "not_found") {
     return c.json(result, 404);
   }

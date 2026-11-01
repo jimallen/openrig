@@ -47,15 +47,6 @@ it.each([[1, 16], [3, 1], [19, 16]])("opens %i seats in pages of %i through the 
   expect(f.launched[0]).not.toMatch(/attach-session/);
 });
 
-it("states each seat's space and tab by label for the rigs it opened", async () => {
-  const f = fixture(3, 16);
-  const result = await openTerminalWindow(f.client, "saved:fixture", undefined, f.deps);
-  const placed = result.notes?.find(note => note.startsWith("Seats are placed by label"));
-  expect(placed).toContain("rig:rig0/cos holds pod-m0@rig0");
-  expect(placed).toContain("rig:rig0/team holds pod-m2@rig0");
-  expect(placed).toContain("rig:rig1/cos holds pod-m1@rig1");
-});
-
 it("does not ask a hosting tmux pane for its width", async () => {
   // A tmux that records being run, first on PATH, with the person's TMUX and TMUX_PANE set: the old probe's trigger.
   const dir = mkdtempSync(path.join(tmpdir(), "tw-trip-"));

@@ -352,3 +352,15 @@ describe("shadow capture labels an observation with the seat's registered pane",
     expect(label(entry(tm.nodeId, "tm@rig"))).toMatchObject({ nodeId: tm.nodeId, pane: "%2" });
   });
 });
+
+describe("cmux on a seat bound to hc", () => {
+  it("refuses, naming hc, and touches no surface", async () => {
+    const { NodeCmuxService } = await import("../src/domain/node-cmux-service.js");
+    let touched = 0;
+    const repo = { getRig: () => ({ nodes: [{ id: "n", logicalId: "dev", binding: { attachmentType: "hc", tmuxSession: "dev@r", cmuxSurface: "s" } }] }) };
+    const cmux = new Proxy({}, { get: () => () => { touched += 1; return { ok: true }; } });
+    const service = new NodeCmuxService(repo as never, {} as never, cmux as never, undefined);
+    await expect(service.openOrFocusNodeSurface("r", "dev")).resolves.toMatchObject({ ok: false, code: "unsupported_host" });
+    expect(touched).toBe(0);
+  });
+});

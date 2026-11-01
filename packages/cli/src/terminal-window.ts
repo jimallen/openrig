@@ -8,7 +8,6 @@ import type { DaemonClient } from "./client.js";
 import { shellQuote } from "./cross-host-executor.js";
 import { prepareHerdrLaunchConfig } from "./herdr-launch-config.js";
 import type { OpenViewResult } from "./commands/terminal.js";
-import { describeExpectedTabs, expectedViewerTabs } from "./terminal-labels.js";
 
 interface Pane { seat: string; label: string; paneCommand: string }
 interface Preview {
@@ -192,6 +191,9 @@ function failure(provider: string, error: string): OpenViewResult {
 }
 
 /** Render the daemon's existing composition; never rediscover/relaunch kernel seats here. */
+/** What a person needs to know about what opened: a detached viewer leaves its seat live (spike 1.4). */
+const VIEWER_NOTE = "These panes are viewers of the seats: closing one leaves the seat running.";
+
 export async function openTerminalWindow(client: DaemonClient, view: string, requestedProvider?: string, deps = defaultWindowDeps(), expectedPlan?: string): Promise<OpenViewResult> {
   let provider = requestedProvider ?? "herdr";
   let window: { app: string; surface: string; columns?: number } | undefined;
@@ -293,8 +295,8 @@ export async function openTerminalWindow(client: DaemonClient, view: string, req
         await deps.sleep(250);
       }
       if (!alive) throw new Error("The terminal was requested, but herdr's control socket did not become ready. Inspect the new terminal before retrying.");
-      // The CLI keeps no inventory of the app's tabs. A reuse proof read a seat's tmux client; a seat is now itself the pane
-      // (placed by label), so the daemon's labelled placement decides, and a repeat open relabels the same terminals.
+      // The CLI keeps no inventory of the app's tabs, and each open makes its own space of `hc attach` viewers. rig-here is what
+      // places the seats themselves.
       const herdrArgs = ["-u", "TMUX", "-u", "HERDR_SESSION", "-u", "HERDR_SOCKET_PATH", `HERDR_SOCKET_PATH=${endpoint.socketPath}`, herdr];
       // In the person's own Herdr, its focused space is what they are looking at.
       const shownNote = async (workspaceId?: string) => {
@@ -310,8 +312,7 @@ export async function openTerminalWindow(client: DaemonClient, view: string, req
       const result = await client.post<OpenViewResult>("/api/terminal/open", { view, provider: "herdr", expectedPlan: planId, ...(viewportColumns !== undefined ? { viewportColumns } : {}) }, { timeoutMs: 45_000 });
       if (result.status >= 400) return { ...failed(result.data.error ?? `The daemon refused the view (HTTP ${result.status}).`), window, notes: windowNotes, absent: composed.absent, degraded: composed.degraded };
       if (!Array.isArray(result.data?.opened)) throw new Error("The terminal opened, but the daemon returned no view result. Inspect it before retrying.");
-      const placed = describeExpectedTabs(expectedViewerTabs(result.data.opened));
-      return { ...result.data, window, notes: [...(result.data.notes ?? []), ...windowNotes, ...(placed ? [placed] : []), await shownNote()] };
+      return { ...result.data, window, notes: [...(result.data.notes ?? []), ...windowNotes, VIEWER_NOTE, await shownNote()] };
     }
 
     // Herdr is required above; reaching here means the herdr branch returned.

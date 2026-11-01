@@ -36,6 +36,10 @@ export class NodeCmuxService {
 
     const binding = node.binding;
 
+    if (binding?.attachmentType === "hc") {
+      return { ok: false, error: "cmux cannot attach a seat on hc: use rig terminal open", code: "unsupported_host" };
+    }
+
     // For tmux-backed nodes, check liveness BEFORE any surface creation or focus.
     const isTmux = binding?.attachmentType === "tmux" && binding?.tmuxSession;
     if (isTmux && this.tmuxAdapter) {

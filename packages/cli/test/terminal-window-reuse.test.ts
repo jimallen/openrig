@@ -76,25 +76,11 @@ describe("reopening a Herdr view in a desktop window", () => {
     expect(logs.join("\n")).not.toMatch(/herdr (workspace|tab) close/);
   });
 
-  it("names where the seats are placed by label, and warns that closing a tab ends them", async () => {
+  it("says the panes are viewers, so closing one leaves the seat running", async () => {
     const f = fixture();
     await f.run();
     const notes = (JSON.parse(logs[0]!) as { notes: string[] }).notes;
-    const placed = notes.find(note => note.startsWith("Seats are placed by label"))!;
-    expect(placed).toContain("herdr.space");
-    expect(placed).toContain("herdr.tab");
-    expect(placed).toContain("rig:eztrack/cos holds exec-cos@eztrack");
-    expect(placed).toContain("rig:eztrack/team holds dev-impl@eztrack, dev-qa@eztrack");
-    expect(placed).toContain("Closing a tab or space ends the seats shown in it.");
-  });
-
-  it.each([
-    ["a name that is not <pod>-<member>@<rig>", ["tui", "advisor"]],
-    ["a kernel seat", ["operator-agent@kernel"]],
-  ])("states no placement for %s", async (_name, seats) => {
-    const f = fixture(seats);
-    await f.run();
-    expect((JSON.parse(logs[0]!) as { notes: string[] }).notes.some(note => note.includes("placed by label"))).toBe(false);
+    expect(notes).toContain("These panes are viewers of the seats: closing one leaves the seat running.");
   });
 
   it("creates once inside the person's own Herdr, with no window or config change, and says whether the space is showing", async () => {

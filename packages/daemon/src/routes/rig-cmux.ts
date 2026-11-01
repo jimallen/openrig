@@ -197,7 +197,7 @@ rigCmuxRoutes.post("/launch", async (c) => {
       {
         ok: false,
         error: "rig_not_running",
-        message: `Rig "${rigName}" has no live tmux sessions — can't attach to anything — run: rig up ${rigRef} --existing`,
+        message: `Rig "${rigName}" has no seats cmux can attach (cmux cannot attach a seat on hc; use rig terminal open) — or run: rig up ${rigRef} --existing`,
         missing,
       },
       412,
