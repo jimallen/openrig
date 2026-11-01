@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { doctorCommand } from "../src/commands/doctor.js";
-import { HC_PINNED_VERSION } from "../src/tmux-health.js";
+import { HC_TESTED_VERSION } from "../src/tmux-health.js";
 
 const fixture = vi.hoisted(() => ({ home: "", exec: vi.fn() }));
 vi.mock("node:child_process", async () => ({ ...await vi.importActual("node:child_process"), execSync: fixture.exec }));
@@ -34,7 +34,7 @@ beforeEach(() => {
     // Deterministic slow-success discriminator: a newly imposed deadline would
     // turn an otherwise successful existing hc probe into a failure.
     if (command.startsWith("hc ") && options.timeout !== undefined) throw new Error("ETIMEDOUT: synthetic slow successful probe");
-    if (command === "hc --version") return `hc ${HC_PINNED_VERSION}`;
+    if (command === "hc --version") return `hc ${HC_TESTED_VERSION}`;
     return "available";
   });
 });

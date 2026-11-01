@@ -7,7 +7,7 @@ import * as surface from "../src/hc-surface.js";
 import * as client from "../src/adapters/hc-client.js";
 import * as placement from "../src/adapters/hc-placement.js";
 import * as seat from "../src/adapters/hc-seat.js";
-import * as watch from "../src/adapters/hc-core-watch.js";
+import * as version from "../src/adapters/hc-version.js";
 
 // `@openrig/daemon/hc` is what the CLI uses instead of restating the hc pin, protocol generation, socket path, seat label,
 // terminal name and placement labels. A change here reaches `rig destroy`, `rig whoami`, `rig doctor` and `rig setup`.
@@ -16,9 +16,9 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 describe("the hc surface exports", () => {
   it("exactly the names the CLI needs, and no host, lifecycle, watch or placement driver", () => {
     expect(Object.keys(surface).sort()).toEqual([
-      "HC_GENERATION", "HC_PINNED_VERSION", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError",
+      "HC_GENERATION", "HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError",
       "KERNEL_RIG", "KERNEL_TAB", "SEAT_LABEL", "SPACE_LABEL", "TAB_ID_SEPARATOR", "TAB_LABEL",
-      "hcTerminalName", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "resolveHcSocket",
+      "hcTerminalName", "judgeHcVersion", "parseHcVersionOutput", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "resolveHcSocket",
       "rigOfSeat", "rigSpaceId", "rigTabId",
     ]);
   });
@@ -28,7 +28,9 @@ describe("the hc surface exports", () => {
       expect(surface[name], name).toBe(client[name]);
     }
     for (const name of ["SEAT_LABEL", "hcTerminalName"] as const) expect(surface[name], name).toBe(seat[name]);
-    expect(surface.HC_PINNED_VERSION).toBe(watch.HC_PINNED_VERSION);
+    for (const name of ["HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "judgeHcVersion", "parseHcVersionOutput"] as const) {
+      expect(surface[name], name).toBe(version[name]);
+    }
     for (const name of ["KERNEL_RIG", "KERNEL_TAB", "SPACE_LABEL", "TAB_ID_SEPARATOR", "TAB_LABEL", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "rigOfSeat", "rigSpaceId", "rigTabId"] as const) {
       expect(surface[name], name).toBe(placement[name]);
     }
@@ -41,7 +43,8 @@ describe("the hc surface exports", () => {
     expect(surface.hcTerminalName("a@b")).not.toBe(surface.hcTerminalName("a@c"));
     expect(surface.SEAT_LABEL).toBe("openrig.seat");
     expect(surface.HC_GENERATION).toBe(1);
-    expect(surface.HC_PINNED_VERSION).toBe("0.1.16");
+    expect(surface.HC_TESTED_VERSION).toBe("0.1.16");
+    expect(surface.HC_OLDEST_ACCEPTED_VERSION).toBe("0.1.15");
   });
 });
 
@@ -64,13 +67,17 @@ describe("the hc surface pulls in nothing heavy", () => {
     return { files: [...seen].map((f) => relative(SRC, f)).sort(), external: [...external].sort() };
   }
 
-  it("reaches seven small files and only Node built-ins", () => {
+  it("reaches seven small files and only Node built-ins (the core watch is not among them)", () => {
     const { files, external } = closure(join(SRC, "hc-surface.ts"));
     expect(files).toEqual([
-      "adapters/hc-client.ts", "adapters/hc-core-watch.ts", "adapters/hc-placement.ts", "adapters/hc-remote-control-env.ts", "adapters/hc-seat.ts",
+      "adapters/hc-client.ts", "adapters/hc-placement.ts", "adapters/hc-remote-control-env.ts", "adapters/hc-seat.ts", "adapters/hc-version.ts",
       "domain/parent-session-env.ts", "hc-surface.ts",
     ]);
-    expect(external).toEqual(["node:child_process", "node:crypto", "node:fs", "node:net", "node:os", "node:path"]);
+    expect(external).toEqual(["node:crypto", "node:net", "node:os", "node:path"]);
+  });
+
+  it("the version rule is a leaf: it imports nothing, so judging a version never pulls in a client or a watch", () => {
+    expect(closure(join(SRC, "adapters/hc-version.ts"))).toEqual({ files: ["adapters/hc-version.ts"], external: [] });
   });
 
   it("the closure walker sees a relative and a bare import (control)", () => {

@@ -1,25 +1,28 @@
-// "Is the seat host healthy": hc is installed, it is the pinned version, and the running core speaks this build's
-// protocol generation. The file keeps its old name so its importers do not move; its subject is hc, not tmux.
+// "Is the seat host healthy": hc is installed, it is an accepted version, and the running core speaks this build's
+// protocol generation and is an accepted version too. Which versions are accepted is one rule, the daemon's (hc-version.ts):
+// the tested minor line from the oldest accepted release up, with a warning when it is not the tested version. The file keeps its old name so its importers do not move; its subject is hc, not tmux.
 //
 // A health check must never START a core. `hc server status`, `hc --skill` and `hc schema` all start one when none
 // runs (spike 1+2), with the caller's env. So this module runs only `hc --version` (measured safe) and reads the core's
 // socket itself, which is what the daemon's HcClient does too.
 import { createConnection } from "node:net";
-import { HC_GENERATION, HC_PINNED_VERSION, resolveHcSocket } from "@openrig/daemon/hc";
+import { HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, judgeHcVersion, parseHcVersionOutput, resolveHcSocket } from "@openrig/daemon/hc";
 
-// The pin and the protocol generation are the daemon's (hc-surface.ts); re-exported so importers keep one place to ask.
-export { HC_GENERATION, HC_PINNED_VERSION };
+// The tested version, the oldest accepted one and the protocol generation are the daemon's (hc-surface.ts); re-exported so importers keep one place to ask.
+export { HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION };
 
 const HELLO_TIMEOUT_MS = 3_000;
 
 export interface HcProbeResult {
   installed: boolean;
-  /** True when seats can be hosted now or once a core starts: installed, pinned, and no core that contradicts it. */
+  /** True when seats can be hosted now or once a core starts: installed, an accepted version, and no core that contradicts it. */
   available: boolean;
   /** The version found: the CLI's, or the core's when it is the core that disagrees. */
   version: string | null;
   detail: string | null;
-  /** `pinned` is the install-only answer (hc is there and is the pinned version); `available` is the full answer. */
+  /** Set when the version is accepted but is not the tested one: the words name both versions. `available` is still true. */
+  warning?: string;
+  /** `pinned` is the install-only answer (hc is there and is an accepted version); `available` is the full answer. */
   code: "available" | "pinned" | "no_core" | "not_installed" | "version_mismatch" | "unsupported_generation" | "unhealthy";
 }
 
@@ -83,9 +86,9 @@ export function readHcHello(socketPath: string = resolveHcSocket(), timeoutMs: n
   });
 }
 
-/** `hc --version` prints `hc 0.1.16`. */
+/** `hc --version` prints `hc 0.1.16`. The token is kept whole (`hc 0.1.16-rc1` is `0.1.16-rc1`), so the rule calls it malformed. */
 export function parseHcVersion(output: string): string | null {
-  return /(\d+\.\d+\.\d+)/.exec(output)?.[1] ?? null;
+  return parseHcVersionOutput(output);
 }
 
 function classifyInstalled(output: string): HcProbeResult {
@@ -93,17 +96,18 @@ function classifyInstalled(output: string): HcProbeResult {
   if (version === null) {
     return { installed: true, available: false, version: null, detail: `unparseable hc version output: ${output.trim().slice(0, 80)}`, code: "unhealthy" };
   }
-  if (version !== HC_PINNED_VERSION) {
-    return { installed: true, available: false, version, detail: `hc ${version} is installed; OpenRig is pinned to hc ${HC_PINNED_VERSION}`, code: "version_mismatch" };
+  const judged = judgeHcVersion(version);
+  if (judged.verdict === "refused") {
+    return { installed: true, available: false, version, detail: `${judged.reason}; hc is installed at ${version}`, code: "version_mismatch" };
   }
-  return { installed: true, available: true, version, detail: null, code: "pinned" };
+  return { installed: true, available: true, version, detail: null, code: "pinned", ...(judged.verdict === "untested" ? { warning: judged.warning } : {}) };
 }
 
 function notInstalled(err: unknown): HcProbeResult {
   return { installed: false, available: false, version: null, detail: errorMessage(err), code: "not_installed" };
 }
 
-/** Installed and the pinned version, by `hc --version` alone. Touches no core. */
+/** Installed and an accepted version, by `hc --version` alone. Touches no core. */
 export function probeHcInstall(exec: (cmd: string) => string): HcProbeResult {
   let output: string;
   try {
@@ -143,17 +147,23 @@ export function classifyHcCore(outcome: HcHelloOutcome): HcProbeResult {
           detail: `core speaks generation ${outcome.generation}, this build ${HC_GENERATION}`,
         };
       }
-      if (outcome.version !== HC_PINNED_VERSION) {
+      {
+        const judged = judgeHcVersion(outcome.version);
+        if (judged.verdict === "refused") {
+          return {
+            installed: true, available: false, version: outcome.version, code: "version_mismatch",
+            detail: `the running core is refused: ${judged.reason}`,
+          };
+        }
         return {
-          installed: true, available: false, version: outcome.version, code: "version_mismatch",
-          detail: `the running core is hc ${outcome.version}; OpenRig is pinned to hc ${HC_PINNED_VERSION}`,
+          installed: true, available: true, version: outcome.version, detail: null, code: "available",
+          ...(judged.verdict === "untested" ? { warning: judged.warning } : {}),
         };
       }
-      return { installed: true, available: true, version: outcome.version, detail: null, code: "available" };
   }
 }
 
-/** Installed, pinned, and a core (when one runs) on this build's generation and version. */
+/** Installed, an accepted version, and a core (when one runs) on this build's generation and an accepted version. */
 export async function probeHcHostAsync(
   exec: (cmd: string) => Promise<string>,
   readHello: () => Promise<HcHelloOutcome> = () => readHcHello(),
@@ -161,7 +171,9 @@ export async function probeHcHostAsync(
   const install = await probeHcInstallAsync(exec);
   if (install.code !== "pinned") return install;
   const core = classifyHcCore(await readHello());
-  return core.version === null ? { ...core, version: install.version } : core;
+  const result = core.version === null ? { ...core, version: install.version } : core;
+  // The install's warning stands when the core says nothing of its own (no core yet); a core that answers brings its own.
+  return result.warning === undefined && core.version === null && install.warning !== undefined ? { ...result, warning: install.warning } : result;
 }
 
 export function buildHcHostFailure(code: HcProbeResult["code"], detail: string): { message: string; reason: string; fix: string } {
@@ -169,15 +181,15 @@ export function buildHcHostFailure(code: HcProbeResult["code"], detail: string):
   switch (code) {
     case "version_mismatch":
       return {
-        message: "hc is not the pinned version.",
-        reason: `${reason} Only hc ${HC_PINNED_VERSION} is tested with this build. ${detail}`,
-        fix: `Install hc ${HC_PINNED_VERSION} (see hc update --help), and if a core from another version is running, restart it with hc server restart (terminals stay alive).`,
+        message: "hc is not a version OpenRig accepts.",
+        reason: `${reason} This build is tested with hc ${HC_TESTED_VERSION} and accepts that minor line from hc ${HC_OLDEST_ACCEPTED_VERSION} up. ${detail}`,
+        fix: `Install hc ${HC_TESTED_VERSION} (see hc update --help), and if a core from another version is running, restart it with hc server restart (terminals stay alive).`,
       };
     case "unsupported_generation":
       return {
         message: "The running hc core speaks a protocol generation OpenRig does not.",
         reason: `${reason} ${detail}`,
-        fix: `Use hc ${HC_PINNED_VERSION}. OpenRig refuses an unknown generation rather than guess at it.`,
+        fix: `Use hc ${HC_TESTED_VERSION}. OpenRig refuses an unknown generation rather than guess at it.`,
       };
     default:
       return {

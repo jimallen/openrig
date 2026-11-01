@@ -4,14 +4,14 @@ import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
 import { setupCommand, runSetup, goldenPathNextSteps, permissionPolicyMenuLines, parseSetupProviders, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
 import type { DoctorDeps } from "../src/commands/doctor.js";
-import { HC_PINNED_VERSION } from "../src/tmux-health.js";
+import { HC_TESTED_VERSION } from "../src/tmux-health.js";
 
 function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
   return {
     exec: (cmd: string) => {
       if (cmd === "herdr --version") return "herdr 0.9.3\n";
       if (cmd === "brew --version") return "Homebrew 4.0\n";
-      if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+      if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
       if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
       if (cmd === "claude auth status") return "Authenticated\n";
       if (cmd === "codex --version") return "codex-cli 0.118.0\n";
@@ -164,7 +164,7 @@ describe("rig setup", () => {
   it("--dry-run on linux reports the macOS-only steps as skipped with the real run's reasons", async () => {
     const dry = await runSetup(makeDeps({ platform: "linux" }), { dryRun: true });
     const real = await runSetup(makeDeps({ platform: "linux", exec: (cmd: string) => {
-      if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+      if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
       throw new Error(`not found: ${cmd}`);
     } }), {});
 
@@ -196,7 +196,7 @@ describe("rig setup", () => {
 
     const hc = result.steps.find((s) => s.id === "hc_install");
     expect(hc?.status).toBe("pass");
-    expect(hc?.message).toContain(HC_PINNED_VERSION);
+    expect(hc?.message).toContain(HC_TESTED_VERSION);
 
     const herdr = result.steps.find((s) => s.id === "herdr_install");
     expect(herdr?.status).toBe("pass");
@@ -268,7 +268,11 @@ describe("rig setup", () => {
   });
 
   it.each([
-    ["another version than the pin", () => "hc 0.1.14\n", "not the pinned version", "0.1.14"],
+    ["a version below the floor", () => "hc 0.1.14\n", "not a version OpenRig accepts", "0.1.14"],
+    ["another minor", () => "hc 0.2.0\n", "not a version OpenRig accepts", "0.2.0"],
+    ["another minor at a patch above the floor", () => "hc 0.2.16\n", "not a version OpenRig accepts", "0.2.16"],
+    ["another major", () => "hc 1.1.16\n", "not a version OpenRig accepts", "1.1.16"],
+    ["a malformed version", () => "hc 0.1.16-rc1\n", "not a version OpenRig accepts", "0.1.16-rc1"],
     ["a version it cannot read", () => "usage: hc\n", "not healthy", "unparseable"],
   ])("fails setup honestly when hc is installed with %s", async (_label, output, message, reason) => {
     const base = makeDeps();
@@ -280,6 +284,19 @@ describe("rig setup", () => {
     expect(hc?.reason).toContain(reason);
     expect(hc?.fixHint).toBeTruthy();
     expect(result.ready).toBe(false);
+  });
+
+  it.each(["0.1.15", "0.1.17", "0.1.99"])("setup accepts hc %s with a warning naming both versions, and stays ready", async (v) => {
+    const base = makeDeps();
+    const result = await runSetup(makeDeps({ exec: (cmd: string) => cmd === "hc --version" ? `hc ${v}\n` : base.exec(cmd) }), {});
+
+    const hc = result.steps.find((s) => s.id === "hc_install");
+    expect(hc?.status).toBe("warn");
+    expect(hc?.message).toContain(v);
+    expect(hc?.reason).toContain(v);
+    expect(hc?.reason).toContain(HC_TESTED_VERSION);
+    const baseline = await runSetup(base, {});
+    expect(result.ready).toBe(baseline.ready);
   });
 
   it("fails setup when hc is missing, with no install attempted and no tmux command run", async () => {
@@ -294,7 +311,7 @@ describe("rig setup", () => {
     const hc = result.steps.find((s) => s.id === "hc_install");
     expect(hc?.status).toBe("fail");
     expect(hc?.message).toBe("hc not found.");
-    expect(hc?.fixHint).toContain(HC_PINNED_VERSION);
+    expect(hc?.fixHint).toContain(HC_TESTED_VERSION);
     expect(result.ready).toBe(false);
     expect(seen.some((cmd) => /install hc|brew install|herdr-core|releases\.herdr\.dev|HC_VERSION/.test(cmd))).toBe(false);
     expect(seen.some((cmd) => cmd.startsWith("tmux"))).toBe(false);
@@ -333,7 +350,7 @@ describe("rig setup", () => {
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+        if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
         if (cmd === "claude --version") {
           if (claudeInstalled) return "2.1.101 (Claude Code)\n";
           throw new Error("command not found: claude");
@@ -363,7 +380,7 @@ describe("rig setup", () => {
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+        if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
         if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
         if (cmd === "claude auth status") return "Authenticated\n";
         if (cmd === "codex --version") return "codex-cli 0.118.0\n";
@@ -384,7 +401,7 @@ describe("rig setup", () => {
       platform: "linux",
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
-        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+        if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
         if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
         if (cmd === "claude auth status") return "Authenticated\n";
         if (cmd === "codex --version") return "codex-cli 0.118.0\n";
@@ -405,7 +422,7 @@ describe("rig setup", () => {
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") throw new Error("command not found: brew");
-        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+        if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
         throw new Error(`unexpected: ${cmd}`);
       },
     });
@@ -434,7 +451,7 @@ describe("rig setup", () => {
       exists: () => true,
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {
-        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+        if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
         return "";
       },
       checkPort: async () => true,
@@ -482,7 +499,7 @@ describe("rig setup", () => {
       exists: () => true,
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {
-        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+        if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
         return "";
       },
       checkPort: async () => true,
@@ -534,7 +551,7 @@ describe("rig setup", () => {
       exec: (cmd: string, opts?: { timeoutMs?: number }) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
+        if (cmd === "hc --version") return `hc ${HC_TESTED_VERSION}\n`;
         if (cmd === "claude --version") {
           if (claudeInstalled) return "2.1.101 (Claude Code)\n";
           throw new Error("command not found: claude");

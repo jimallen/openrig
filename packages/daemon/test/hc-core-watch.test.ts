@@ -4,10 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HcHello } from "../src/adapters/hc-client.js";
-import {
-  EMPTY_HC_VIEW, HC_HEARTBEAT_INTERVAL_MS, HC_HEARTBEAT_TIMEOUT_MS, HC_PINNED_VERSION, HcCoreRefusedError, HcCoreWatch, lossReason, probeCore, reduceHcView, turnsCompleted, verifyHello,
-  type HcNotice, type HcStreamMessage, type HcView, type HcViewTerminal,
-} from "../src/adapters/hc-core-watch.js";
+import { EMPTY_HC_VIEW, HC_HEARTBEAT_INTERVAL_MS, HC_HEARTBEAT_TIMEOUT_MS, HcCoreRefusedError, HcCoreWatch, lossReason, probeCore, reduceHcView, turnsCompleted, verifyHello, type HcNotice, type HcStreamMessage, type HcView, type HcViewTerminal } from "../src/adapters/hc-core-watch.js";
+import { HC_TESTED_VERSION } from "../src/adapters/hc-version.js";
 
 const T = (address: string, over: Partial<HcViewTerminal> = {}): HcViewTerminal => ({
   address, labels: { "openrig.seat": `seat-${address}` }, argv: ["sh"], cwd: "/", state: "live", created_ms: 0, screen: "exact", cols: 200, rows: 120, turn: 0, status: null, ...over,
@@ -116,7 +114,7 @@ describe("turns and loss", () => {
   });
 });
 
-const hello = (over: Partial<HcHello> = {}): HcHello => ({ generation: 1, version: HC_PINNED_VERSION, core: { id: "core-a", name: "n" }, framed: false, methods: [], features: [], ...over });
+const hello = (over: Partial<HcHello> = {}): HcHello => ({ generation: 1, version: HC_TESTED_VERSION, core: { id: "core-a", name: "n" }, framed: false, methods: [], features: [], ...over });
 
 describe("verifyHello", () => {
   it("accepts the pinned generation, version and core", () => {
@@ -126,9 +124,32 @@ describe("verifyHello", () => {
     expect(() => verifyHello(hello({ generation: 2 }))).toThrow(expect.objectContaining({ kind: "unsupported_generation" }));
     expect(() => verifyHello(hello({ generation: 0 }))).toThrow(HcCoreRefusedError);
   });
-  it("refuses a version that is not pinned, and accepts a listed one", () => {
-    expect(() => verifyHello(hello({ version: "0.1.15" }))).toThrow(expect.objectContaining({ kind: "unsupported_version" }));
-    expect(() => verifyHello(hello({ version: "0.1.15" }), { versions: ["0.1.15"] })).not.toThrow();
+  // The accepted band is the tested release's minor line from 0.1.15 up (Jim, 2026-11-01). The Herdr app updates hc by itself, so an
+  // exact pin would refuse a core the app just installed and stop OpenRig managing seats; a new minor or major could change the
+  // protocol and stays refused. Restated literally here: the rule's own module is not imported by the pin it checks.
+  it.each([
+    ["0.1.14", "unsupported_version"], ["0.2.0", "unsupported_version"], ["0.2.16", "unsupported_version"], ["1.1.16", "unsupported_version"], ["0.0.16", "unsupported_version"],
+    ["", "unsupported_version"], ["0.1", "unsupported_version"], ["0.1.16-rc1", "unsupported_version"], ["0.1.016", "unsupported_version"], [" 0.1.16", "unsupported_version"],
+  ])("refuses hc %j", (version, kind) => {
+    expect(() => verifyHello(hello({ version }))).toThrow(expect.objectContaining({ kind }));
+    expect(() => verifyHello(hello({ version }))).toThrow(HcCoreRefusedError);
+  });
+  it.each(["0.1.15", "0.1.16", "0.1.17", "0.1.99"])("accepts hc %s", (version) => {
+    expect(() => verifyHello(hello({ version }))).not.toThrow();
+  });
+  it("says whether an accepted version is the tested one, and names both versions when it is not", () => {
+    expect(verifyHello(hello({ version: "0.1.16" }))).toMatchObject({ verdict: "tested", version: "0.1.16" });
+    const untested = verifyHello(hello({ version: "0.1.99" }));
+    expect(untested).toMatchObject({ verdict: "untested", version: "0.1.99" });
+    expect(untested.verdict === "untested" ? untested.warning : "").toMatch(/0\.1\.99.*0\.1\.16/);
+  });
+  it("still lets an explicit list of versions decide (the test seam the real-core refusal tests use)", () => {
+    expect(() => verifyHello(hello({ version: "0.1.16" }), { versions: ["9.9.9"] })).toThrow(expect.objectContaining({ kind: "unsupported_version" }));
+    expect(() => verifyHello(hello({ version: "0.1.16" }), { versions: ["0.1.16"] })).not.toThrow();
+  });
+  it("judges generation before version, and the core id still refuses an accepted version", () => {
+    expect(() => verifyHello(hello({ generation: 2, version: "0.1.99" }))).toThrow(expect.objectContaining({ kind: "unsupported_generation" }));
+    expect(() => verifyHello(hello({ version: "0.1.99", core: { id: "core-b", name: "n" } }), { coreId: "core-a" })).toThrow(expect.objectContaining({ kind: "core_changed" }));
   });
   it("refuses a core that is not the one first seen", () => {
     expect(() => verifyHello(hello({ core: { id: "core-b", name: "n" } }), { coreId: "core-a" })).toThrow(expect.objectContaining({ kind: "core_changed" }));

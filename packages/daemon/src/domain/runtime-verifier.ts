@@ -4,10 +4,9 @@ import type { ExecFn } from "../adapters/tmux.js";
 import { ProbeTimeoutError } from "../adapters/bounded-probe-exec.js";
 import type { RuntimeVerification, RuntimeStatus } from "./bootstrap-types.js";
 import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcHello } from "../adapters/hc-client.js";
+import { HC_TESTED_VERSION, judgeHcVersion, parseHcVersionOutput } from "../adapters/hc-version.js";
 
-/** The hc release this build is tested against. A core upgrade is a tested release step, so the pin is exact. The CLI
- *  keeps its own copy (cli/src/tmux-health.ts), which it cannot import from here. */
-export const HC_PINNED_VERSION = "0.1.16";
+// Which hc versions are accepted is one rule (adapters/hc-version.ts), shared with the core watch and the CLI.
 
 interface RuntimeVerifierDeps {
   exec: ExecFn;
@@ -63,8 +62,9 @@ export class RuntimeVerifier {
   }
 
   /**
-   * Verify the seat host: hc is installed (`hc --version`, which starts no core), is the pinned version, and the
-   * running core, read over its socket, speaks this build's protocol generation. The record is kept under the runtime
+   * Verify the seat host: hc is installed (`hc --version`, which starts no core), is an accepted version (hc-version.ts), and the
+   * running core, read over its socket, speaks this build's protocol generation and is an accepted version too. An accepted
+   * version that is not the tested one verifies with its warning in `error` and `untested` in the capabilities. The record is kept under the runtime
    * name "hc". No core running is "degraded", not a failure: nothing here starts one, and a seat launch will say so.
    */
   async verifyHc(): Promise<RuntimeVerification> {
@@ -79,12 +79,13 @@ export class RuntimeVerifier {
         }
         throw err;  // runProbe records not_found
       }
-      const version = this.parseVersion(output);
+      const version = parseHcVersionOutput(output);
       if (!version) {
         return { status: "error" as RuntimeStatus, version: null, capabilitiesJson: null, error: "unparseable version output" };
       }
-      if (version !== HC_PINNED_VERSION) {
-        return { status: "error" as RuntimeStatus, version, capabilitiesJson: null, error: `hc ${version} is installed; OpenRig is pinned to hc ${HC_PINNED_VERSION}` };
+      const installed = judgeHcVersion(version);
+      if (installed.verdict === "refused") {
+        return { status: "error" as RuntimeStatus, version, capabilitiesJson: null, error: `${installed.reason}; hc is installed at ${version}` };
       }
       let hello: HcHello;
       try {
@@ -104,10 +105,18 @@ export class RuntimeVerifier {
       if (hello.generation !== HC_GENERATION) {
         return { status: "error" as RuntimeStatus, version, capabilitiesJson: null, error: `the hc core speaks generation ${hello.generation}, this build ${HC_GENERATION}` };
       }
-      if (hello.version !== HC_PINNED_VERSION) {
-        return { status: "error" as RuntimeStatus, version, capabilitiesJson: null, error: `the running hc core is ${hello.version}; OpenRig is pinned to hc ${HC_PINNED_VERSION}` };
+      const core = judgeHcVersion(hello.version);
+      if (core.verdict === "refused") {
+        return { status: "error" as RuntimeStatus, version, capabilitiesJson: null, error: `the running hc core is refused: ${core.reason}` };
       }
-      return { status: "verified" as RuntimeStatus, version, capabilitiesJson: JSON.stringify({ generation: hello.generation, coreVersion: hello.version }), error: null };
+      // Each is judged on its own; the warning names the one that is not the tested version (both when both are not).
+      const warnings = [installed, core].flatMap((j) => (j.verdict === "untested" ? [j.warning] : []));
+      const untested = warnings.length > 0;
+      return {
+        status: "verified" as RuntimeStatus, version,
+        capabilitiesJson: JSON.stringify({ generation: hello.generation, coreVersion: hello.version, ...(untested ? { testedVersion: HC_TESTED_VERSION, untested: true } : {}) }),
+        error: untested ? [...new Set(warnings)].join("; ") : null,
+      };
     });
     this.persist(result);
     return result;

@@ -9,7 +9,7 @@ import { parseDocument } from "yaml";
 import { runDoctorChecks, type DoctorDeps } from "./doctor.js";
 import { resolveDaemonPath } from "../daemon-lifecycle.js";
 import { ConfigStore } from "../config-store.js";
-import { HC_PINNED_VERSION, buildHcHostFailure, probeHcInstall } from "../tmux-health.js";
+import { HC_TESTED_VERSION, buildHcHostFailure, probeHcInstall } from "../tmux-health.js";
 import { checkClaudeAuth, checkCodexAuth } from "../provider-auth.js";
 
 export interface SetupStep {
@@ -370,18 +370,20 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     }
   }
 
-  // 2. hc: the seat host. Setup checks it is installed and the pinned version, by `hc --version` alone: nothing here
+  // 2. hc: the seat host. Setup checks it is installed and an accepted version, by `hc --version` alone: nothing here
   // starts a core. It never installs hc (Jim, 2026-11-01: check and instruct only), so a missing or wrong hc is a failure with a hint.
   const hcProbe = probeHcInstall((cmd) => deps.exec(cmd));
   if (hcProbe.code === "pinned") {
-    steps.push({ id: "hc_install", status: "pass", message: `hc ${hcProbe.version} available.` });
+    steps.push(hcProbe.warning
+      ? { id: "hc_install", status: "warn", message: `hc ${hcProbe.version} available, but untested.`, reason: hcProbe.warning }
+      : { id: "hc_install", status: "pass", message: `hc ${hcProbe.version} available.` });
   } else if (hcProbe.code === "not_installed") {
     steps.push({
       id: "hc_install",
       status: "fail",
       message: "hc not found.",
       reason: "OpenRig runs agent seats in hc terminals.",
-      fixHint: `Install hc (herdr-core) ${HC_PINNED_VERSION} (see https://herdr.dev/core/), then rerun rig setup.`,
+      fixHint: `Install hc (herdr-core) ${HC_TESTED_VERSION} (see https://herdr.dev/core/), then rerun rig setup.`,
     });
   } else {
     const failure = buildHcHostFailure(hcProbe.code, hcProbe.detail ?? "unknown hc failure");

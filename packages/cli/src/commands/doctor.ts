@@ -110,7 +110,7 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
     });
   }
 
-  // 4. hc: the seat host. Installed and the pinned version here; the running core's generation is an async check
+  // 4. hc: the seat host. Installed and an accepted version here; the running core's generation is an async check
   // below. Neither starts a core.
   const hcProbe = probeHcInstall((cmd) => deps.exec(cmd));
   if (hcProbe.code === "not_installed") {
@@ -119,10 +119,12 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
       status: "fail",
       message: "hc not found.",
       reason: "OpenRig runs agent seats in hc terminals.",
-      fix: "Install hc (herdr-core) at the pinned version, then rerun 'rig doctor'.",
+      fix: "Install hc (herdr-core), see https://herdr.dev/core/ for the tested version, then rerun 'rig doctor'.",
     });
   } else if (hcProbe.available && hcProbe.version) {
-    checks.push({ name: "hc", status: "pass", message: `hc ${hcProbe.version}` });
+    checks.push(hcProbe.warning
+      ? { name: "hc", status: "warn", message: `hc ${hcProbe.version} (untested)`, reason: hcProbe.warning }
+      : { name: "hc", status: "pass", message: `hc ${hcProbe.version}` });
   } else {
     const failure = buildHcHostFailure(hcProbe.code, hcProbe.detail ?? "unknown hc failure");
     checks.push({
@@ -190,7 +192,9 @@ async function buildHcCoreCheck(deps: DoctorDeps): Promise<DoctorCheck> {
   const outcome = await (deps.readHcHello ?? (() => readHcHello()))();
   const core = classifyHcCore(outcome);
   if (core.code === "available") {
-    return { name: "hc_core", status: "pass", message: `hc core ${core.version}, protocol generation ${HC_GENERATION}.` };
+    return core.warning
+      ? { name: "hc_core", status: "warn", message: `hc core ${core.version} (untested), protocol generation ${HC_GENERATION}.`, reason: core.warning }
+      : { name: "hc_core", status: "pass", message: `hc core ${core.version}, protocol generation ${HC_GENERATION}.` };
   }
   if (core.code === "no_core") {
     return { name: "hc_core", status: "pass", message: "No hc core running; one starts with the first seat.", reason: core.detail ?? undefined };

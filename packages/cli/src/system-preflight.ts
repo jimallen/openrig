@@ -144,7 +144,7 @@ export class SystemPreflight {
       });
     }
 
-    // 2. hc: the seat host. Installed, the pinned version, and a core (if one runs) on this build's generation.
+    // 2. hc: the seat host. Installed, an accepted version, and a core (if one runs) on this build's generation.
     const hcProbe = await probeHcHostAsync(this.deps.exec, this.deps.readHcHello);
     if (hcProbe.code === "not_installed") {
       checks.push({
@@ -152,7 +152,7 @@ export class SystemPreflight {
         ok: false,
         error: "hc was not found in PATH.",
         reason: "OpenRig runs agent seats in hc terminals.",
-        fix: "Install hc (herdr-core) at the pinned version.",
+        fix: "Install hc (herdr-core), see https://herdr.dev/core/ for the tested version.",
       });
     } else if (hcProbe.available) {
       checks.push({ name: "hc", ok: true });

@@ -5,18 +5,18 @@ import { tmpdir } from "node:os";
 import net from "node:net";
 import { Command } from "commander";
 import { SystemPreflight } from "../src/system-preflight.js";
-import { HC_GENERATION, HC_PINNED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
+import { HC_GENERATION, HC_TESTED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
 import { ConfigStore } from "../src/config-store.js";
 import { preflightCommand } from "../src/commands/preflight.js";
 import type { DaemonStatus } from "../src/daemon-lifecycle.js";
 
-type HcMode = "healthy" | "missing" | "wrong_version" | "other_generation" | "core_version" | "no_core" | "refused" | "unreadable";
+type HcMode = "healthy" | "missing" | "wrong_version" | "untested_version" | "other_generation" | "core_version" | "no_core" | "refused" | "unreadable";
 
 function makeExec(hcMode: HcMode = "healthy"): (cmd: string) => Promise<string> {
   return async (cmd: string) => {
     if (cmd === "hc --version") {
       if (hcMode === "missing") throw new Error("command not found: hc");
-      return hcMode === "wrong_version" ? "hc 0.1.14\n" : `hc ${HC_PINNED_VERSION}\n`;
+      return hcMode === "wrong_version" ? "hc 0.1.14\n" : hcMode === "untested_version" ? "hc 0.1.99\n" : `hc ${HC_TESTED_VERSION}\n`;
     }
     return "";
   };
@@ -28,10 +28,10 @@ function makeHello(hcMode: HcMode = "healthy"): () => Promise<HcHelloOutcome> {
     switch (hcMode) {
       case "no_core": return { kind: "no_core", detail: "no hc core at /x (ENOENT)" };
       case "refused": return { kind: "refused", refusal: "unsupported_generation", detail: "this core speaks generation 2" };
-      case "other_generation": return { kind: "hello", generation: 2, version: HC_PINNED_VERSION };
+      case "other_generation": return { kind: "hello", generation: 2, version: HC_TESTED_VERSION };
       case "core_version": return { kind: "hello", generation: HC_GENERATION, version: "0.1.14" };
       case "unreadable": return { kind: "unreadable", detail: "no reply to hello in 3000 ms" };
-      default: return { kind: "hello", generation: HC_GENERATION, version: HC_PINNED_VERSION };
+      default: return { kind: "hello", generation: HC_GENERATION, version: HC_TESTED_VERSION };
     }
   };
 }
@@ -127,14 +127,19 @@ describe("SystemPreflight", () => {
     expect(result.checks.find((c) => c.name === "tmux")).toBeUndefined();
   });
 
-  it("hc of another version than the pin → ready: false, naming both versions", async () => {
+  it("hc of a version below the floor → ready: false, naming both versions", async () => {
     const result = await createPreflight({ hcMode: "wrong_version" }).run();
     expect(result.ready).toBe(false);
     const hcCheck = result.checks.find((c) => c.name === "hc")!;
     expect(hcCheck.ok).toBe(false);
-    expect(hcCheck.error).toContain("not the pinned version");
+    expect(hcCheck.error).toContain("not a version OpenRig accepts");
     expect(hcCheck.reason).toContain("0.1.14");
-    expect(hcCheck.reason).toContain(HC_PINNED_VERSION);
+    expect(hcCheck.reason).toContain(HC_TESTED_VERSION);
+  });
+
+  it("an hc of the tested minor line that is not the tested version passes (accepted, not refused)", async () => {
+    const hcCheck = (await createPreflight({ hcMode: "untested_version" }).run()).checks.find((c) => c.name === "hc")!;
+    expect(hcCheck.ok).toBe(true);
   });
 
   it("a running core on another protocol generation → ready: false", async () => {
@@ -145,10 +150,10 @@ describe("SystemPreflight", () => {
     }
   });
 
-  it("a running core of another version than the pin → ready: false", async () => {
+  it("a running core of a version below the floor → ready: false", async () => {
     const hcCheck = (await createPreflight({ hcMode: "core_version" }).run()).checks.find((c) => c.name === "hc")!;
     expect(hcCheck.ok).toBe(false);
-    expect(hcCheck.reason).toContain("the running core is hc 0.1.14");
+    expect(hcCheck.reason).toContain("the running core is refused: hc 0.1.14");
   });
 
   it("a core that cannot be read is unhealthy, and its reason is shown", async () => {

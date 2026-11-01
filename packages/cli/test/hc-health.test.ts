@@ -8,20 +8,21 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  HC_GENERATION, HC_PINNED_VERSION, buildHcHostFailure, classifyHcCore, parseHcVersion, probeHcHostAsync, probeHcInstall,
+  HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, buildHcHostFailure, classifyHcCore, parseHcVersion, probeHcHostAsync, probeHcInstall,
   readHcHello, type HcHelloOutcome,
 } from "../src/tmux-health.js";
 
 // The pin is restated, not imported: a change to it must fail here and be a deliberate, reviewed edit.
 describe("the pins", () => {
-  it("are hc 0.1.16 and protocol generation 1", () => {
-    expect(HC_PINNED_VERSION).toBe("0.1.16");
+  it("are hc 0.1.16 tested, 0.1.15 the oldest accepted, and protocol generation 1", () => {
+    expect(HC_TESTED_VERSION).toBe("0.1.16");
+    expect(HC_OLDEST_ACCEPTED_VERSION).toBe("0.1.15");
     expect(HC_GENERATION).toBe(1);
   });
 });
 
 describe("parseHcVersion", () => {
-  it.each([["hc 0.1.16\n", "0.1.16"], ["hc 12.30.4", "12.30.4"], ["usage: hc", null], ["", null]])("%j -> %j", (output, expected) => {
+  it.each([["hc 0.1.16\n", "0.1.16"], ["hc 12.30.4", "12.30.4"], ["hc 0.1.16-rc1", "0.1.16-rc1"], ["usage: hc", null], ["", null]])("%j -> %j", (output, expected) => {
     expect(parseHcVersion(output)).toBe(expected);
   });
 });
@@ -31,11 +32,18 @@ describe("probeHcInstall (hc --version alone)", () => {
   const run = (answer: () => string) => probeHcInstall((cmd) => { seen.push(cmd); return answer(); });
   beforeEach(() => { seen.length = 0; });
 
-  it("is pinned only for exactly the pinned version", () => {
+  it("accepts the tested version silently, and refuses another minor, another major, anything below 0.1.15 and anything malformed", () => {
     expect(run(() => "hc 0.1.16\n")).toEqual({ installed: true, available: true, version: "0.1.16", detail: null, code: "pinned" });
-    for (const other of ["0.1.14", "0.1.15", "0.2.0", "1.1.15"]) {
+    for (const other of ["0.1.14", "0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1", "0.1"]) {
       expect(run(() => `hc ${other}\n`), other).toMatchObject({ installed: true, available: false, version: other, code: "version_mismatch" });
     }
+  });
+
+  it.each(["0.1.15", "0.1.17", "0.1.99"])("accepts hc %s with a warning that names it and the tested 0.1.16", (v) => {
+    const result = run(() => `hc ${v}\n`);
+    expect(result).toMatchObject({ installed: true, available: true, version: v, detail: null, code: "pinned" });
+    expect(result.warning).toContain(v);
+    expect(result.warning).toContain("0.1.16");
   });
 
   it("is not_installed when the command fails, and unhealthy when its output has no version", () => {
@@ -55,7 +63,11 @@ describe("classifyHcCore", () => {
     ["pinned version, this generation", { kind: "hello", generation: 1, version: "0.1.16" }, { code: "available", available: true }],
     ["another generation", { kind: "hello", generation: 2, version: "0.1.16" }, { code: "unsupported_generation", available: false }],
     ["generation 0", { kind: "hello", generation: 0, version: "0.1.16" }, { code: "unsupported_generation", available: false }],
-    ["another version on this generation", { kind: "hello", generation: 1, version: "0.1.14" }, { code: "version_mismatch", available: false }],
+    ["a version below the floor", { kind: "hello", generation: 1, version: "0.1.14" }, { code: "version_mismatch", available: false }],
+    ["another minor", { kind: "hello", generation: 1, version: "0.2.0" }, { code: "version_mismatch", available: false }],
+    ["another minor at a patch above the floor", { kind: "hello", generation: 1, version: "0.2.16" }, { code: "version_mismatch", available: false }],
+    ["another major", { kind: "hello", generation: 1, version: "1.1.16" }, { code: "version_mismatch", available: false }],
+    ["a malformed version", { kind: "hello", generation: 1, version: "0.1.16-rc1" }, { code: "version_mismatch", available: false }],
     ["a refusal of our generation", { kind: "refused", refusal: "unsupported_generation", detail: "this core speaks generation 2" }, { code: "unsupported_generation", available: false }],
     ["a refusal of another kind", { kind: "refused", refusal: "invalid_params", detail: "bad" }, { code: "unhealthy", available: false }],
     ["an unreadable reply", { kind: "unreadable", detail: "not JSON" }, { code: "unhealthy", available: false }],
@@ -63,6 +75,17 @@ describe("classifyHcCore", () => {
   ];
   it.each(cases)("%s", (_label, outcome, expected) => {
     expect(classifyHcCore(outcome)).toMatchObject(expected);
+  });
+
+  it.each(["0.1.15", "0.1.17", "0.1.99"])("a core on the tested minor line, hc %s, is available with a warning naming both versions", (v) => {
+    const core = classifyHcCore({ kind: "hello", generation: 1, version: v });
+    expect(core).toMatchObject({ code: "available", available: true, version: v });
+    expect(core.warning).toContain(v);
+    expect(core.warning).toContain("0.1.16");
+  });
+
+  it("the tested core has no warning", () => {
+    expect(classifyHcCore({ kind: "hello", generation: 1, version: "0.1.16" })).not.toHaveProperty("warning");
   });
 
   it("generation is judged before version, so a core of both kinds reads as the generation refusal", () => {
@@ -91,6 +114,14 @@ describe("probeHcHostAsync", () => {
     expect(await probeHcHostAsync(hc("0.1.16"), hello({ kind: "no_core", detail: "d" }))).toMatchObject({ code: "no_core", available: true, version: "0.1.16" });
   });
 
+  it("keeps the install's warning when there is no core, and takes the core's when the core is the untested one", async () => {
+    expect((await probeHcHostAsync(hc("0.1.17"), hello({ kind: "no_core", detail: "d" }))).warning).toContain("0.1.17");
+    const both = await probeHcHostAsync(hc("0.1.16"), hello({ kind: "hello", generation: 1, version: "0.1.99" }));
+    expect(both).toMatchObject({ code: "available", version: "0.1.99" });
+    expect(both.warning).toContain("0.1.99");
+    expect((await probeHcHostAsync(hc("0.1.16"), hello(good))).warning).toBeUndefined();
+  });
+
   it("reports the core's version when the core is the one that differs", async () => {
     expect(await probeHcHostAsync(hc("0.1.16"), hello({ kind: "hello", generation: 1, version: "0.1.14" }))).toMatchObject({ code: "version_mismatch", version: "0.1.14" });
   });
@@ -100,7 +131,7 @@ describe("buildHcHostFailure", () => {
   it("names the pin and the cause, and never tells the person to run a command that starts a core", () => {
     for (const code of ["version_mismatch", "unsupported_generation", "unhealthy"] as const) {
       const f = buildHcHostFailure(code, "DETAIL");
-      expect(f.reason + f.fix, code).toContain(code === "unhealthy" ? "DETAIL" : HC_PINNED_VERSION);
+      expect(f.reason + f.fix, code).toContain(code === "unhealthy" ? "DETAIL" : HC_TESTED_VERSION);
       expect(f.reason, code).toContain("DETAIL");
       expect(`${f.message}${f.reason}${f.fix}`, code).not.toMatch(/tmux/i);
     }

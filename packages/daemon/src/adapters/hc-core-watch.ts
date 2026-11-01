@@ -3,12 +3,7 @@ import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
 import { OPERATOR_SECRET_ENV_NAMES } from "./hc-seat.js";
-
-/** The hc this build is tested against. Written and measured on 0.1.15 (spikes 1 to 4); moved to 0.1.16 after W36 re-ran every
- *  `*.real.test.ts` (daemon 171, CLI 21) on a private 0.1.16 core: the OpenRPC schema differs from 0.1.15 only in `info.version`.
- *  hc is a preview with no stability statement, so any other version is refused until the pin is moved on purpose, as a
- *  tested release step. */
-export const HC_PINNED_VERSION = "0.1.16";
+import { judgeHcVersion, type HcVersionJudgement } from "./hc-version.js";
 
 /** The core sends `heartbeat` this often when nothing else is sent (measured: first beat 15.0 s after the last event). */
 export const HC_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -28,24 +23,33 @@ export class HcCoreRefusedError extends Error {
 }
 
 export interface HcCorePin {
-  /** Versions accepted; default is the pinned one. */
+  /** An exact list of versions to accept INSTEAD of the version rule (hc-version.ts). A test seam: the real-core refusal tests use
+   *  it to make a real core's own version the refused one. The daemon never sets it. */
   versions?: readonly string[];
   /** The core id seen first. A different one later is another core, with its own terminals. */
   coreId?: string;
 }
 
-/** Throws HcCoreRefusedError unless the core speaks this build's generation, an accepted version, and is the pinned core. */
-export function verifyHello(hello: HcHello, pin: HcCorePin = {}): void {
+/** Throws HcCoreRefusedError unless the core speaks this build's generation, an accepted hc version (hc-version.ts: the tested
+ *  minor line from the oldest accepted release up), and is the pinned core. Returns how the version was judged, so a caller can
+ *  say that an accepted version is not the tested one; a refusal throws. Generation and core id are judged exactly as before. */
+export function verifyHello(hello: HcHello, pin: HcCorePin = {}): Exclude<HcVersionJudgement, { verdict: "refused" }> {
   if (hello.generation !== HC_GENERATION) {
     throw new HcCoreRefusedError(`core speaks generation ${hello.generation}, this build ${HC_GENERATION}`, "unsupported_generation");
   }
-  const versions = pin.versions ?? [HC_PINNED_VERSION];
-  if (!versions.includes(hello.version)) {
-    throw new HcCoreRefusedError(`core is hc ${hello.version}, this build is pinned to ${versions.join(" or ")}`, "unsupported_version");
+  let judged: HcVersionJudgement;
+  if (pin.versions) {
+    judged = pin.versions.includes(hello.version)
+      ? { verdict: "tested", version: hello.version }
+      : { verdict: "refused", version: hello.version, reason: `hc ${hello.version} is not one of the versions this build accepts here: ${pin.versions.join(" or ")}` };
+  } else {
+    judged = judgeHcVersion(hello.version);
   }
+  if (judged.verdict === "refused") throw new HcCoreRefusedError(`the core is refused: ${judged.reason}`, "unsupported_version");
   if (pin.coreId !== undefined && hello.core.id !== pin.coreId) {
     throw new HcCoreRefusedError("the core answering is not the one this daemon first saw", "core_changed");
   }
+  return judged;
 }
 
 export type HcCorePresence =
@@ -598,6 +602,10 @@ export interface ConnectHcCoreOptions {
    *  under a running daemon) makes its calls fail as an unavailable core instead of going on talking to a core this build was
    *  not written for. */
   client?: Pick<HcClient, "refuseCore">;
+  /** Told the version of the core the watch is streaming from, every time it connects (a core restarted or swapped onto another
+   *  accepted version under a running daemon reports the new one), and null when a core is refused. `rig health` reads it to say
+   *  that the running core is accepted but not the tested version (HcUntestedVersionHealthSource). */
+  onCoreVersion?: (version: string | null) => void;
 }
 
 /** Make every later `hello` to this socket (every `call`, attach and size watch of this build) pass the pin, not only the first:
@@ -628,7 +636,15 @@ export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCo
     ...(startCore ? { startCore } : {}),
     ...(options.pin ? { pin: options.pin } : {}),
     onNotice: (notice) => {
-      if (notice.kind === "refused") options.client?.refuseCore(notice.refusal.message);
+      if (notice.kind === "refused") {
+        options.client?.refuseCore(notice.refusal.message);
+        options.onCoreVersion?.(null);  // the refusal has its own notice; a stale version beside it would contradict it
+      }
+      if (notice.kind === "connected") {
+        options.onCoreVersion?.(notice.version);
+        const judged = judgeHcVersion(notice.version);
+        if (judged.verdict === "untested") log(JSON.stringify({ kind: "untested_version", version: judged.version, warning: judged.warning }));
+      }
       // A refusal is not a loss of the core and a loss is not "gone": the log line says which.
       log(JSON.stringify(notice.kind === "refused" ? { kind: "refused", why: notice.refusal.message, refusalKind: notice.refusal.kind } : notice));
     },

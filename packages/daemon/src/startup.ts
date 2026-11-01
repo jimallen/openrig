@@ -513,10 +513,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // The seat host is hc. An injected exec keeps the tmux adapter only for the suites not converted yet: no runtime path
   // passes one, so there is no dual host.
   const hcClient = opts?.tmuxExec || opts?.argvExec ? undefined : new HcClient();
+  /** The version of the hc core the watch last connected to; `rig health` says so when it is accepted but not the tested one. */
+  let hcCoreVersion: string | null = null;
   const hcAdapter = hcClient ? new HcAdapter(hcClient) : undefined;
   // A wrong generation or version throws here: the daemon must not start against a core it can't speak to.
   // Kept, not discarded: stopped at shutdown (index.ts), and a refusal after the first attempt refuses the client's calls.
-  const hcCoreWatch = hcClient ? await connectHcCore({ socketPath: hcClient.socketPath, client: hcClient }) : undefined;
+  const hcCoreWatch = hcClient ? await connectHcCore({ socketPath: hcClient.socketPath, client: hcClient, onCoreVersion: (version) => { hcCoreVersion = version; } }) : undefined;
   // Not a startup gate only: every later call, attach and size watch to this core passes the same pin.
   if (hcClient && hcCoreWatch) pinCallsToCore(hcClient.socketPath, hcCoreWatch);
   const hcDelivery = hcAdapter ? new HcDelivery(hcAdapter.client, hcAdapter) : undefined;
@@ -1250,7 +1252,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Coverage-only: says so in `rig health` when the core watch refused the core (the client then fails every call, closed, until a restart).
   const { HcCoreRefusalHealthSource } = await import("./domain/hc-core-refusal-health.js");
   const hcCoreRefusalHealth = new HcCoreRefusalHealthSource(() => hcClient?.refusedBecause ?? null);
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
+  const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcUntestedVersionHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),

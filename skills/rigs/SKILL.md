@@ -22,7 +22,7 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
 ## 1. Install OpenRig, if it isn't installed
 
 - **Check first:** `rig --version`. If it prints a version, go to step 2.
-- **What it needs:** macOS or Linux, Node.js 22 or 24, hc (herdr-core, the pinned version; `rig setup` checks it and points to https://herdr.dev/core/ if it is missing), and Claude Code or Codex signed in. Check only what's
+- **What it needs:** macOS or Linux, Node.js 22 or 24, hc (herdr-core, tested at 0.1.16, later 0.1.x releases from 0.1.15 accepted with a warning; `rig setup` checks it and points to https://herdr.dev/core/ if it is missing), and Claude Code or Codex signed in. Check only what's
   missing: `node --version`, `hc --version`, `claude auth status` or `codex login status`.
 - **Install:** `npm install -g @openrig/cli`, then `rig preflight` (Node, hc, the daemon port and state folders)
   and `rig doctor`.

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createProgram } from "../src/index.js";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
-import { HC_GENERATION, HC_PINNED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
+import { HC_GENERATION, HC_TESTED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
 
 const defaultConfig = {
   daemon: { port: 7433, host: "127.0.0.1" },
@@ -81,19 +81,34 @@ describe("runDoctorChecks", () => {
   };
 
   it("hc installed at the pinned version -> pass, naming the version", () => {
-    const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${HC_PINNED_VERSION}\n`) }));
+    const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${HC_TESTED_VERSION}\n`) }));
     const hcCheck = checks.find((c) => c.name === "hc");
     expect(hcCheck?.status).toBe("pass");
-    expect(hcCheck?.message).toBe(`hc ${HC_PINNED_VERSION}`);
+    expect(hcCheck?.message).toBe(`hc ${HC_TESTED_VERSION}`);
   });
 
-  it("hc of another version than the pin -> fail naming both versions", () => {
+  it.each(["0.1.15", "0.1.17", "0.1.99"])("hc %s (same minor, not the tested one) -> warn naming both versions, not fail", (v) => {
+    const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${v}\n`) }));
+    const hcCheck = checks.find((c) => c.name === "hc");
+    expect(hcCheck?.status).toBe("warn");
+    expect(hcCheck?.message).toContain(v);
+    expect(hcCheck?.reason).toContain(v);
+    expect(hcCheck?.reason).toContain("0.1.16");
+  });
+
+  it.each(["0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1"])("hc %s -> fail: another minor, another major or a malformed version", (v) => {
+    const hcCheck = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${v}\n`) })).checks.find((c) => c.name === "hc");
+    expect(hcCheck?.status).toBe("fail");
+    expect(hcCheck?.reason).toContain(v);
+  });
+
+  it("hc of a version below the floor -> fail naming both versions", () => {
     const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => "hc 0.1.14\n") }));
     const hcCheck = checks.find((c) => c.name === "hc");
     expect(hcCheck?.status).toBe("fail");
-    expect(hcCheck?.message).toContain("not the pinned version");
+    expect(hcCheck?.message).toContain("not a version OpenRig accepts");
     expect(hcCheck?.reason).toContain("0.1.14");
-    expect(hcCheck?.reason).toContain(HC_PINNED_VERSION);
+    expect(hcCheck?.reason).toContain(HC_TESTED_VERSION);
   });
 
   it("hc version output that cannot be read -> fail, not a pass", () => {
@@ -110,7 +125,7 @@ describe("runDoctorChecks", () => {
 
   it("there is no tmux check, no tmux mouse check, and no tmux command run", () => {
     const seen: string[] = [];
-    const exec = hcExec(() => `hc ${HC_PINNED_VERSION}\n`);
+    const exec = hcExec(() => `hc ${HC_TESTED_VERSION}\n`);
     for (const platform of ["darwin", "linux"] as const) {
       const { checks } = runDoctorChecks(makeDeps({ platform, exec: (cmd) => { seen.push(cmd); return exec(cmd); } }));
       expect(checks.some((c) => c.name === "tmux" || c.name === "tmux_mouse")).toBe(false);
@@ -121,19 +136,19 @@ describe("runDoctorChecks", () => {
 
   describe("the running core", () => {
     const core = async (readHcHello: () => Promise<HcHelloOutcome>, over: Partial<DoctorDeps> = {}) => {
-      const { asyncChecks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${HC_PINNED_VERSION}\n`), readHcHello, ...over }));
+      const { asyncChecks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${HC_TESTED_VERSION}\n`), readHcHello, ...over }));
       return (await Promise.all(asyncChecks)).find((c) => c.name === "hc_core");
     };
 
     it("pass on the pinned version and this generation", async () => {
-      const check = await core(async () => ({ kind: "hello", generation: HC_GENERATION, version: HC_PINNED_VERSION }));
+      const check = await core(async () => ({ kind: "hello", generation: HC_GENERATION, version: HC_TESTED_VERSION }));
       expect(check).toMatchObject({ status: "pass" });
-      expect(check?.message).toContain(HC_PINNED_VERSION);
+      expect(check?.message).toContain(HC_TESTED_VERSION);
     });
 
     it("fail on another protocol generation, whether the core refuses or answers", async () => {
       const answers: HcHelloOutcome[] = [
-        { kind: "hello", generation: HC_GENERATION + 1, version: HC_PINNED_VERSION },
+        { kind: "hello", generation: HC_GENERATION + 1, version: HC_TESTED_VERSION },
         { kind: "refused", refusal: "unsupported_generation", detail: "this core speaks generation 2" },
       ];
       for (const answer of answers) {
@@ -141,6 +156,20 @@ describe("runDoctorChecks", () => {
         expect(check?.status, answer.kind).toBe("fail");
         expect(check?.message, answer.kind).toContain("protocol generation");
       }
+    });
+
+    it.each(["0.1.15", "0.1.17", "0.1.99"])("warn, naming both versions, on a core of hc %s (same minor, not the tested one)", async (v) => {
+      const check = await core(async () => ({ kind: "hello", generation: HC_GENERATION, version: v }));
+      expect(check?.status).toBe("warn");
+      expect(check?.message).toContain(v);
+      expect(check?.reason).toContain(v);
+      expect(check?.reason).toContain("0.1.16");
+    });
+
+    it.each(["0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1"])("fail on a core of hc %s", async (v) => {
+      const check = await core(async () => ({ kind: "hello", generation: HC_GENERATION, version: v }));
+      expect(check?.status).toBe("fail");
+      expect(check?.reason).toContain(v);
     });
 
     it("fail on a core of another version", async () => {

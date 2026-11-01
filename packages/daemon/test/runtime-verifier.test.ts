@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
-import { RuntimeVerifier, HC_PINNED_VERSION } from "../src/domain/runtime-verifier.js";
+import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
+import { HC_TESTED_VERSION } from "../src/adapters/hc-version.js";
 import { ProbeTimeoutError } from "../src/adapters/bounded-probe-exec.js";
 import { HC_GENERATION, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcHello } from "../src/adapters/hc-client.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
@@ -43,7 +44,7 @@ describe("RuntimeVerifier", () => {
   });
 
   // T1: hc present at the pin, core on this generation -> verified
-  it("hc at the pinned version with a core on this generation -> verified, recording both", async () => {
+  it("hc at the tested version with a core on this generation -> verified, recording both", async () => {
     const exec = createMockExec({ "hc --version": "hc 0.1.16\n" });
     const result = await withCore(db, exec, async () => hello()).verifyHc();
 
@@ -54,8 +55,8 @@ describe("RuntimeVerifier", () => {
     expect(result.error).toBeNull();
   });
 
-  it("the pin is hc 0.1.16 and the generation 1 (restated, so a change must be deliberate)", () => {
-    expect(HC_PINNED_VERSION).toBe("0.1.16");
+  it("the tested hc is 0.1.16 and the generation 1 (restated, so a change must be deliberate)", () => {
+    expect(HC_TESTED_VERSION).toBe("0.1.16");
     expect(HC_GENERATION).toBe(1);
   });
 
@@ -69,7 +70,8 @@ describe("RuntimeVerifier", () => {
     expect(asked).toBe(0);
   });
 
-  it.each(["0.1.14", "0.1.15", "0.2.0"])("hc %s is not the pin -> error naming both, and the core is not asked", async (installed) => {
+  // The accepted band: the tested minor line from 0.1.15 up. Anything else is refused before the core is asked.
+  it.each(["0.1.14", "0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1", "0.1"])("hc %s is not accepted -> error naming both, and the core is not asked", async (installed) => {
     let asked = 0;
     const exec = createMockExec({ "hc --version": `hc ${installed}` });
     const result = await withCore(db, exec, async () => { asked++; return hello(); }).verifyHc();
@@ -79,6 +81,38 @@ describe("RuntimeVerifier", () => {
     expect(result.error).toContain(installed);
     expect(result.error).toContain(PIN);
     expect(asked).toBe(0);
+  });
+
+  it("output with no version after `hc` -> error, and the core is not asked", async () => {
+    let asked = 0;
+    const result = await withCore(db, createMockExec({ "hc --version": "usage: hc" }), async () => { asked++; return hello(); }).verifyHc();
+    expect(result.status).toBe("error");
+    expect(asked).toBe(0);
+  });
+
+  it.each(["0.1.15", "0.1.17", "0.1.99"])("hc %s on both the CLI and the core is accepted, verified with a warning naming both versions", async (v) => {
+    const exec = createMockExec({ "hc --version": `hc ${v}` });
+    const result = await withCore(db, exec, async () => hello({ version: v })).verifyHc();
+    expect(result.status).toBe("verified");
+    expect(result.version).toBe(v);
+    expect(result.error).toContain(v);
+    expect(result.error).toContain(PIN);
+    expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: HC_GENERATION, coreVersion: v, testedVersion: PIN, untested: true });
+  });
+
+  it("the tested version carries no warning", async () => {
+    const result = await withCore(db, createMockExec({ "hc --version": `hc ${PIN}` }), async () => hello()).verifyHc();
+    expect(result.status).toBe("verified");
+    expect(result.error).toBeNull();
+    expect(JSON.parse(result.capabilitiesJson!)).not.toHaveProperty("untested");
+  });
+
+  it("a CLI that is accepted and a core that is not (or the reverse) -> error: each is judged on its own", async () => {
+    const cliOk = await withCore(db, createMockExec({ "hc --version": "hc 0.1.17" }), async () => hello({ version: "0.2.0" })).verifyHc();
+    expect(cliOk.status).toBe("error");
+    expect(cliOk.error).toContain("0.2.0");
+    const coreOk = await withCore(db, createMockExec({ "hc --version": "hc 0.1.14" }), async () => hello()).verifyHc();
+    expect(coreOk.status).toBe("error");
   });
 
   it("a running core on another generation -> error, however it says so", async () => {
@@ -94,11 +128,11 @@ describe("RuntimeVerifier", () => {
     }
   });
 
-  it("a running core of another version than the pin -> error", async () => {
+  it.each(["0.1.14", "0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1"])("a running core of version %s -> error", async (coreVersion) => {
     const exec = createMockExec({ "hc --version": "hc 0.1.16" });
-    const result = await withCore(db, exec, async () => hello({ version: "0.1.14" })).verifyHc();
+    const result = await withCore(db, exec, async () => hello({ version: coreVersion })).verifyHc();
     expect(result.status).toBe("error");
-    expect(result.error).toContain("0.1.14");
+    expect(result.error).toContain(coreVersion);
   });
 
   it("no core running -> degraded, not an error: the check starts none", async () => {
