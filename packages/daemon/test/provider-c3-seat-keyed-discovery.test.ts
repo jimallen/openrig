@@ -9,6 +9,7 @@
 // .getReadModel (the sealed C1 surface), never an injected signal.
 
 import { describe, it, expect } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
@@ -21,7 +22,7 @@ import { collectClaudeSignalsFromProviderUsageDirectory } from "../src/domain/pr
 const ASOF = "2026-08-04T00:00:00.000Z";
 
 function emptyCodexHomeEnv(): NodeJS.ProcessEnv {
-  const home = fs.mkdtempSync(nodePath.join(os.tmpdir(), "provider-c3-codex-"));
+  const home = mkTemp(nodePath.join(os.tmpdir(), "provider-c3-codex-"));
   return { CODEX_HOME: home } as NodeJS.ProcessEnv;
 }
 

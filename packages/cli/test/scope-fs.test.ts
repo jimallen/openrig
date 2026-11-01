@@ -1,6 +1,7 @@
 // release-0.3.2 slice 12 — scope-fs helpers + frontmatter parser tests.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,7 +24,7 @@ import {
 import { ScopeCliError } from "../src/lib/scope/types.js";
 
 function mktemp(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "rig-scope-test-"));
+  return mkTemp(path.join(os.tmpdir(), "rig-scope-test-"));
 }
 
 function writeFile(p: string, content: string): void {

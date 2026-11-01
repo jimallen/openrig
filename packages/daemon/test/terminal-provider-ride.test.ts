@@ -16,6 +16,7 @@
 //    seat) via CmuxLayoutService.buildWorkspacePanes and degrades honestly.
 
 import { describe, it, expect } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -218,7 +219,7 @@ describe("view-composer partition vectors", () => {
 
 describe("terminal-views store — round-trip byte-stable + atomic write + A3", () => {
   function tmpStore(): { store: TerminalViewsStore; dir: string; file: string } {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "terminal-views-"));
+    const dir = mkTemp(path.join(os.tmpdir(), "terminal-views-"));
     const file = path.join(dir, "terminal-views.yaml");
     return { store: new TerminalViewsStore(file), dir, file };
   }

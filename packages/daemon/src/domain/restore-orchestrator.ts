@@ -100,6 +100,11 @@ import { registeredPaneOf } from "./binding-pane.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
+/** A seat the operator named in `--fresh` that came up fresh-primed did what was asked; mark it so the roll-up counts it clean. */
+function freshRequestedMark(result: RestoreNodeResult, freshLogicalIds: string[] | undefined): RestoreNodeResult {
+  return result.status === "fresh-primed" && freshLogicalIds?.includes(result.logicalId) ? { ...result, requestedFresh: true } : result;
+}
+
 export function rollupRestoreRigResult(nodes: RestoreNodeResult[]): RestoreRigResult {
   if (nodes.length === 0) return "failed";
   // L3: `attention_required` is non-terminal failure (alive but blocked on
@@ -109,7 +114,7 @@ export function rollupRestoreRigResult(nodes: RestoreNodeResult[]): RestoreRigRe
   if (allFailed) return "failed";
   // A seat running without part of its guidance keeps its own status; the rig isn't fully restored.
   if (nodes.some((node) => (node.guidanceGaps?.length ?? 0) > 0)) return "partially_restored";
-  if (nodes.some((node) => node.status === "fresh" || node.status === "fresh-primed" || node.status === "awaiting-decision" || node.status === "failed" || node.status === "attention_required")) {
+  if (nodes.some((node) => node.status === "fresh" || (node.status === "fresh-primed" && !node.requestedFresh) || node.status === "awaiting-decision" || node.status === "failed" || node.status === "attention_required")) {
     return "partially_restored";
   }
   return "fully_restored";
@@ -491,7 +496,7 @@ export class RestoreOrchestrator {
       else if (opts?.nonInterruptive === false) restoreWarnings.push(nonInterruptiveSummary(false));
       for (const entry of plan) {
         const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, { ...opts, preValidatedCopies }, restoreWarnings);
-        nodeResults.push(result);
+        nodeResults.push(freshRequestedMark(result, opts?.freshLogicalIds));
       }
 
       const restoreResult: RestoreResult = {

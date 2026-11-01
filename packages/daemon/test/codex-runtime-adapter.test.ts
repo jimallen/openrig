@@ -5,6 +5,7 @@ import nodePath from "node:path";
 import Database from "better-sqlite3";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import type { NodeBinding, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-planner.js";
@@ -811,7 +812,7 @@ describe("Codex runtime adapter", () => {
   });
 
   it("launchHarness captures a fresh Codex thread id from the child process home directory", async () => {
-    const tempRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "rigged-codex-home-"));
+    const tempRoot = mkTemp(nodePath.join(os.tmpdir(), "rigged-codex-home-"));
     const actualHome = nodePath.join(tempRoot, "actual-home");
     createCodexLogsDb(actualHome, 901, "019d45bc-117d-78a3-a4ad-6fb186e5a86d");
 
@@ -847,7 +848,7 @@ describe("Codex runtime adapter", () => {
   });
 
   it("launchHarness captures a fresh Codex thread id from the current versioned logs database", async () => {
-    const tempRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "rigged-codex-home-"));
+    const tempRoot = mkTemp(nodePath.join(os.tmpdir(), "rigged-codex-home-"));
     const actualHome = nodePath.join(tempRoot, "actual-home");
     createCodexLogsDb(actualHome, 901, "019d45bc-117d-78a3-a4ad-6fb186e5a86d", "logs_2.sqlite");
 
@@ -1861,7 +1862,7 @@ describe("Codex runtime adapter", () => {
   // an unguarded probe lands the entry in ProjectionResult.failed and it is never
   // projected. This drives project() through a real-fs-backed listFiles.
   it("projects file-shaped subagent when listFiles throws ENOTDIR (production readdirSync semantics)", async () => {
-    const tempRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-codex-projection-"));
+    const tempRoot = mkTemp(nodePath.join(os.tmpdir(), "openrig-codex-projection-"));
     const srcFile = nodePath.join(tempRoot, "agents", "base", "subagents", "reviewer.yaml");
     fs.mkdirSync(nodePath.dirname(srcFile), { recursive: true });
     fs.writeFileSync(srcFile, "name: reviewer");

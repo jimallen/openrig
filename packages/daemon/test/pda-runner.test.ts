@@ -7,6 +7,7 @@
 // 1.3.0 declaration it cites (an earlier version of this file used a guessed vocabulary and the review blocked it).
 // Still unmeasured: a captured batch from a live pda (the design's Q-rows).
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1627,7 +1628,7 @@ describe("pda-runner: the activity poster", () => {
 
 const RUNNER_TS = fileURLToPath(new URL("../src/adapters/pda-runner.ts", import.meta.url));
 
-const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "pda-runner-home-"));
+const isolatedHome = mkTemp(path.join(os.tmpdir(), "pda-runner-home-"));
 
 function runProcess(argv: string[], env: Record<string, string> = {}) {
   const child = spawn(process.execPath, ["--import", "tsx", RUNNER_TS, ...argv], {
