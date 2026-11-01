@@ -10,6 +10,17 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### cmux support removed (hc cutover)
+
+- OpenRig no longer drives cmux. Gone: the cmux adapter and provider, `POST /api/rigs/:rigId/cmux/launch`,
+  `POST /api/rigs/:rigId/nodes/:logicalId/open-cmux`, `POST /api/rigs/:rigId/nodes/:logicalId/focus`,
+  `GET /api/adapters/cmux/status`, the `cmux` runtime check, the `cmux_shell` and `cmux_daemon` checks in `rig doctor`,
+  the `cmux:` line in `rig status`, the cmux buttons in the UI, and the `openrig-cmux` skill.
+- Herdr is the only terminal provider. A request that names another provider, `cmux` included, gets
+  `unknown_provider`; one that names none opens Herdr, with no fallback.
+- The `cmux_workspace` and `cmux_surface` columns of `bindings` stay in the database (no migration was added or edited);
+  nothing reads or writes them.
+
 ### Rig down with duplicate live sessions, and a seat with no cwd at restore (OF-116, OF-128, OF-125, fork)
 
 - `rig down` ends a seat's older duplicate live sessions before it takes its `auto-pre-down` snapshot, so the snapshot

@@ -13,7 +13,6 @@ import { PdaRuntimeAdapter } from "../src/adapters/pda-runtime-adapter.js";
 import { PdaResumeAdapter } from "../src/adapters/pda-resume.js";
 import { adapterFreshStart, RUNTIMES_WITHOUT_FRESH_START, type RunnerSendReadinessSource, type RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { pdaSeatPaths } from "../src/adapters/pda-runner-protocol.js";
-import type { CmuxTransportFactory } from "../src/terminal/cmux-transport.js";
 import type { ExecFn } from "../src/domain/tmux-adapter.js";
 
 let db: Database.Database;
@@ -30,9 +29,8 @@ beforeAll(async () => {
   delete process.env.OPENRIG_URL;
   delete process.env.OPENRIG_PORT;
   process.env.OPENRIG_NO_KERNEL = "1";
-  const cmuxFactory: CmuxTransportFactory = async () => { throw Object.assign(new Error("no socket"), { code: "ENOENT" }); };
   const tmuxExec: ExecFn = async () => "";
-  const result = await createDaemon({ cmuxFactory, tmuxExec, dbPath: process.env.OPENRIG_DB! });
+  const result = await createDaemon({ tmuxExec, dbPath: process.env.OPENRIG_DB! });
   db = result.db;
   deps = result.deps;
 }, 60000);

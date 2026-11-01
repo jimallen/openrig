@@ -5,9 +5,7 @@ import { getSelfHostId } from "../domain/hosts/fanout-contract.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { SessionRegistry } from "../domain/session-registry.js";
 import type { NodeLauncher } from "../domain/node-launcher.js";
-import type { CmuxAdapter } from "../adapters/cmux.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import type { NodeCmuxService } from "../domain/node-cmux-service.js";
 import type { TranscriptStore } from "../domain/transcript-store.js";
 import type { AgentActivityStore } from "../domain/agent-activity-store.js";
 import type { SeatActivityService } from "../domain/seat-activity-service.js";
@@ -65,7 +63,6 @@ function getDeps(c: { get: (key: string) => unknown }) {
     sessionRegistry: c.get("sessionRegistry" as never) as SessionRegistry,
     nodeLauncher: c.get("nodeLauncher" as never) as NodeLauncher,
     tmuxAdapter: c.get("tmuxAdapter" as never) as TmuxAdapter,
-    cmuxAdapter: c.get("cmuxAdapter" as never) as CmuxAdapter,
     agentActivityStore: c.get("agentActivityStore" as never) as AgentActivityStore | undefined,
     seatActivityService: c.get("seatActivityService" as never) as SeatActivityService | undefined,
     seatStructuralActivityService: c.get("seatStructuralActivityService" as never) as SeatStructuralActivityService | undefined,
@@ -424,45 +421,6 @@ nodesRoutes.get("/:logicalId/preview", terminalAuthGuard(), async (c) => {
   };
   rateLimiter?.set(cacheKey, payload);
   return c.json(payload);
-});
-
-// POST /api/rigs/:rigId/nodes/:logicalId/open-cmux
-nodesRoutes.post("/:logicalId/open-cmux", terminalAuthGuard(), async (c) => {
-  const rigId = c.req.param("rigId")!;
-  const logicalId = c.req.param("logicalId")!;
-  const nodeCmuxService = c.get("nodeCmuxService" as never) as NodeCmuxService | undefined;
-
-  if (!nodeCmuxService) {
-    return c.json({ ok: false, error: "cmux service not available", code: "unavailable" }, 500);
-  }
-
-  const result = await nodeCmuxService.openOrFocusNodeSurface(rigId, logicalId);
-  if (!result.ok && result.code === "unsupported_host") return c.json(result, 409);
-  if (!result.ok && result.code === "not_found") {
-    return c.json(result, 404);
-  }
-  return c.json(result);
-});
-
-// POST /api/rigs/:rigId/nodes/:logicalId/focus
-nodesRoutes.post("/:logicalId/focus", async (c) => {
-  const rigId = c.req.param("rigId")!;
-  const logicalId = c.req.param("logicalId")!;
-  const { rigRepo, cmuxAdapter } = getDeps(c);
-
-  const rig = rigRepo.getRig(rigId);
-  if (!rig) return c.json({ error: "rig not found" }, 404);
-
-  const node = rig.nodes.find((n) => n.logicalId === logicalId);
-  if (!node) return c.json({ error: "node not found" }, 404);
-
-  const cmuxSurface = node.binding?.cmuxSurface;
-  if (!cmuxSurface) {
-    return c.json({ error: "node has no cmux surface binding" }, 409);
-  }
-
-  const result = await cmuxAdapter.focusSurface(cmuxSurface);
-  return c.json(result);
 });
 
 // DELETE /api/rigs/:rigId/nodes/:logicalId

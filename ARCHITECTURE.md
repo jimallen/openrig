@@ -80,8 +80,8 @@ and fails the build on a specifier with no `exports` entry. To share new daemon 
   subdirectories, such as `gateway/`, `provider/`, `policies/`, `scope/`, `context-packs/` and
   `mission-control/`.
 - **`adapters/`.** The outside world. `tmux.ts` wraps tmux. The six `RuntimeAdapter`
-  implementations (OMP's extends Pi's) launch each runtime and project skills and files into it. `cmux.ts` and
-  `compose-services-adapter.ts` cover other integrations.
+  implementations (OMP's extends Pi's) launch each runtime and project skills and files into it. `compose-services-adapter.ts`
+  covers other integrations.
 - **`db/`.** `connection.ts`, `migrate.ts`, `all-migrations.ts` and `migrations/`.
 - **`middleware/auth-bearer-token.ts`.** The bearer-token check for operator write routes, plus
   the loopback and Tailscale bind detection used at startup.

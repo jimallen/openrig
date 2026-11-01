@@ -93,10 +93,6 @@ after an upgrade it can still hold the previous version's note.
 - **Attach commands name the daemon's tmux server.** When the daemon was started inside tmux on a non-default socket,
   every attach command OpenRig prints carries `-L <name>` or `-S <path>`, including `tmuxAttachCommand` in `rig ps
   --json`. From inside tmux, run it as `env -u TMUX <tmuxAttachCommand>`. On the default server nothing changed.
-- **When a caller of the daemon's terminal API names no provider, the daemon uses cmux if Herdr isn't available** and
-  cmux is, and says so. A named `--provider` is used as named. `rig terminal open` without `--provider`, and the TUI's
-  "Open terminals", open Herdr, or plain tmux when Herdr is missing, never cmux. The TUI's preview now asks for the
-  same provider as the window it opens, so it isn't refused when cmux is running.
 - **A tmux started inside a Herdr pane is recognised** by Herdr's markers (`HERDR_ENV`, `HERDR_PANE_ID`,
   `HERDR_SOCKET_PATH`), so `rig terminal open --window` opens in that Herdr.
 

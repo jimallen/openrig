@@ -214,8 +214,7 @@ describe("Rigspec import routes", () => {
 describe("Rigspec wiring", () => {
   it("startup mounts rigspec routes (createDaemon regression)", async () => {
     const tmuxExec: ExecFn = async () => "";
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
-    const { app, db, deps } = await createDaemon({ tmuxExec, cmuxExec });
+    const { app, db, deps } = await createDaemon({ tmuxExec });
     const rig = deps.rigRepo.createRig("r99");
     deps.rigRepo.addNode(rig.id, "worker", { runtime: "claude-code" });
 
@@ -254,8 +253,7 @@ describe("Rigspec wiring", () => {
 
   it("startup constructs all Phase 3 deps", async () => {
     const tmuxExec: ExecFn = async () => "";
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
-    const { app, db } = await createDaemon({ tmuxExec, cmuxExec });
+    const { app, db } = await createDaemon({ tmuxExec });
 
     // Import route is mounted (proves instantiator + preflight wired)
     const res = await app.request("/api/rigs/import/validate", {

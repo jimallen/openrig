@@ -30,8 +30,8 @@ layer):
     #   --demo            labeled demo fixture instead of live reads (never mixes with live)
     #   --no-color        plain text, no color
 
-Inside an existing herdr or cmux workspace, `rig terminal open <view> --provider herdr`
-(or `--provider cmux`) adds terminal tiles without opening a desktop window. The view
+Inside an existing herdr workspace, `rig terminal open <view> --provider herdr`
+adds terminal tiles without opening a desktop window. The view
 is a rig name, `mission:<id>`, `slice:<id>` or a saved-view id. For the first desktop
 view, use `rig terminal open saved:kernel --window` as above.
 

@@ -1175,20 +1175,20 @@ describe("RestoreOrchestrator", () => {
     }
   });
 
-  it("launch createSession fails -> full prior binding restored incl cmuxSurface", async () => {
+  it("launch createSession fails -> full prior binding restored incl externalSessionName", async () => {
     const snap = seedRigAndSnapshot({
       nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
       edges: [],
       withBinding: "worker",
     });
 
-    // Add cmuxSurface to the binding before snapshot
+    // Add externalSessionName to the binding before snapshot
     const nodeId = snap.data.nodes[0]!.id;
-    sessionRegistry.updateBinding(nodeId, { cmuxSurface: "surface-42" });
+    sessionRegistry.updateBinding(nodeId, { externalSessionName: "surface-42" });
 
     // Capture the exact prior binding state
     const priorBinding = sessionRegistry.getBindingForNode(nodeId);
-    expect(priorBinding!.cmuxSurface).toBe("surface-42");
+    expect(priorBinding!.externalSessionName).toBe("surface-42");
 
     // Add a session with known status
     const sess = sessionRegistry.registerSession(nodeId, "r99-worker");
@@ -1206,10 +1206,10 @@ describe("RestoreOrchestrator", () => {
       const failedNode = result.result.nodes.find((n) => n.logicalId === "worker");
       expect(failedNode!.status).toBe("failed");
 
-      // Full prior binding restored including cmuxSurface
+      // Full prior binding restored including externalSessionName
       const restoredBinding = sessionRegistry.getBindingForNode(nodeId);
       expect(restoredBinding).not.toBeNull();
-      expect(restoredBinding!.cmuxSurface).toBe("surface-42");
+      expect(restoredBinding!.externalSessionName).toBe("surface-42");
       expect(restoredBinding!.tmuxSession).toBe(priorBinding!.tmuxSession);
 
       // Session status restored to exact prior value
@@ -1228,7 +1228,7 @@ describe("RestoreOrchestrator", () => {
     });
 
     const nodeId = snap.data.nodes[0]!.id;
-    sessionRegistry.updateBinding(nodeId, { cmuxSurface: "surface-99" });
+    sessionRegistry.updateBinding(nodeId, { externalSessionName: "surface-99" });
     const sess = sessionRegistry.registerSession(nodeId, "r99-worker");
     sessionRegistry.updateStatus(sess.id, "idle");
 
@@ -1263,7 +1263,7 @@ describe("RestoreOrchestrator", () => {
       // Prior binding restored
       const restoredBinding = sessionRegistry.getBindingForNode(nodeId);
       expect(restoredBinding).not.toBeNull();
-      expect(restoredBinding!.cmuxSurface).toBe("surface-99");
+      expect(restoredBinding!.externalSessionName).toBe("surface-99");
 
       // Session restored to exact prior status
       const sessions = db.prepare("SELECT id, status FROM sessions WHERE id = ?").get(sess.id) as { status: string } | undefined;
@@ -5271,7 +5271,7 @@ describe("RestoreOrchestrator", () => {
 
     it("(B) POST-LAUNCH rollback: a null prior-binding field does NOT preserve launched-row data (exact restore, no partial merge)", async () => {
       // Guard BLOCKING dc16061c item 3: prior binding exists but has a null
-      // field (cmuxSurface). If launched-binding data lands in that field
+      // field (externalSessionName). If launched-binding data lands in that field
       // mid-flow, a merge-style restore would keep it; exact restore must
       // return the field to its prior null.
       const snap = seedRigAndSnapshot({
@@ -5279,7 +5279,7 @@ describe("RestoreOrchestrator", () => {
         edges: [],
         resumeType: "claude_name",
         resumeToken: "tok",
-        withBinding: "worker", // prior binding: tmuxSession only, cmuxSurface null
+        withBinding: "worker", // prior binding: tmuxSession only, externalSessionName null
       });
       const nodeId = snap.data.nodes[0]!.id;
       const tmux = mockTmux();
@@ -5288,7 +5288,7 @@ describe("RestoreOrchestrator", () => {
         resume: vi.fn(async () => {
           // Simulate post-launch binding data (the launched row the merge
           // would otherwise preserve) before the resume concludes failed.
-          sessionRegistry.updateBinding(nodeId, { cmuxSurface: "launched-surface" });
+          sessionRegistry.updateBinding(nodeId, { externalSessionName: "launched-surface" });
           return { ok: false as const, code: "resume_failed", message: "err" };
         }),
       } as unknown as ClaudeResumeAdapter;
@@ -5302,7 +5302,7 @@ describe("RestoreOrchestrator", () => {
       const binding = sessionRegistry.getBindingForNode(nodeId);
       // Prior binding restored exactly: tmuxSession back, null field stays null.
       expect(binding?.tmuxSession).toBe("r99-worker");
-      expect(binding?.cmuxSurface).toBeNull();
+      expect(binding?.externalSessionName).toBeNull();
     });
 
     it("PRECISION GUARD: a successful resume is never auto-killed", async () => {
@@ -5576,7 +5576,7 @@ describe("RestoreOrchestrator", () => {
       if (typeof opts.boundName === "string") {
         sessionRegistry.updateBinding(node.id, { tmuxSession: opts.boundName });
       } else if (opts.bindEmpty) {
-        sessionRegistry.updateBinding(node.id, { cmuxSurface: "s1" }); // binding row, tmux_session null
+        sessionRegistry.updateBinding(node.id, { externalSessionName: "s1" }); // binding row, tmux_session null
       }
       const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
       return { rigId: rig.id, nodeId: node.id, snapId: snap.id };
@@ -5873,7 +5873,7 @@ describe("RestoreOrchestrator", () => {
       const aId = snap.data.nodes.find((n) => n.logicalId === "seat-a")!.id;
       const bId = snap.data.nodes.find((n) => n.logicalId === "seat-b")!.id;
       // Seat A's prior state: a surface on its binding and an idle (not running) session row.
-      sessionRegistry.updateBinding(aId, { cmuxSurface: "surface-prior-a" });
+      sessionRegistry.updateBinding(aId, { externalSessionName: "surface-prior-a" });
       const priorSession = sessionRegistry.registerSession(aId, "r99-seat-a-prior");
       sessionRegistry.updateStatus(priorSession.id, "idle");
       return { snap, aId, bId, priorSessionId: priorSession.id };
@@ -5912,7 +5912,7 @@ describe("RestoreOrchestrator", () => {
       expect(result.result.rigResult).toBe("partially_restored");
 
       // A's prior binding and session status are back; B holds a live binding.
-      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.externalSessionName).toBe("surface-prior-a");
       expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(priorSessionId)).toEqual({ status: "idle" });
       expect(sessionRegistry.getBindingForNode(bId)).not.toBeNull();
 
@@ -5987,7 +5987,7 @@ describe("RestoreOrchestrator", () => {
       expect(a).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("launcher exploded on A") });
       expect(b.nodeId).toBe(bId);
       expect(b.status).not.toBe("failed");
-      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.externalSessionName).toBe("surface-prior-a");
       expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(priorSessionId)).toEqual({ status: "idle" });
       expect(eventTypes(snap.rigId).filter((t) => t === "restore.subset_completed")).toHaveLength(1);
     });
@@ -6011,7 +6011,7 @@ describe("RestoreOrchestrator", () => {
       expect(result.result.nodes.find((n) => n.logicalId === "seat-b")).toMatchObject({ nodeId: bId });
       expect(result.result.nodes.find((n) => n.logicalId === "seat-b")?.status).not.toBe("failed");
       // The launched session stays the current state: the prior binding was NOT put back over it.
-      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).not.toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.externalSessionName).not.toBe("surface-prior-a");
       expect(sessionRegistry.getBindingForNode(aId)?.tmuxSession).toBeTruthy();
       expect(result.result.rigResult).toBe("partially_restored");
     });
@@ -6037,7 +6037,7 @@ describe("RestoreOrchestrator", () => {
       // The launched binding stands: neither the stale pane nor the prior surface was written back over it.
       const binding = sessionRegistry.getBindingForNode(aId);
       expect(binding?.tmuxPane).not.toBe("%7");
-      expect(binding?.cmuxSurface).not.toBe("surface-prior-a");
+      expect(binding?.externalSessionName).not.toBe("surface-prior-a");
       expect(sessionRegistry.getSessionsForRig(snap.rigId).filter((s) => s.nodeId === aId && s.status === "running")).toHaveLength(1);
     });
 
@@ -6057,7 +6057,7 @@ describe("RestoreOrchestrator", () => {
       expect(result.result.nodes.find((n) => n.logicalId === "seat-a")).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("clearing exploded on A") });
       expect(result.result.nodes.find((n) => n.logicalId === "seat-b")?.status).not.toBe("failed");
       // clearStaleState had already cleared the binding; only compensation can have put it back.
-      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.externalSessionName).toBe("surface-prior-a");
     });
 
     it("restore: compensation restores every prior session even when one status write throws, and reports it", async () => {
@@ -6094,7 +6094,7 @@ describe("RestoreOrchestrator", () => {
       expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
       if (!result.ok) return;
       expect(result.result.nodes.find((n) => n.logicalId === "seat-a")?.error).not.toContain("left in place");
-      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.externalSessionName).toBe("surface-prior-a");
     });
 
     // The evidence check reads getSessionsForRig once, right after a seat's throw. This makes that one read fail and
@@ -6117,7 +6117,7 @@ describe("RestoreOrchestrator", () => {
 
     it("restore: a pre-commit throw on the SECOND seat is compensated; the first seat's new session is not its evidence", async () => {
       const { snap, aId, bId } = seedTwoSeats();
-      sessionRegistry.updateBinding(bId, { tmuxSession: "r99-seat-b", cmuxSurface: "surface-prior-b" });
+      sessionRegistry.updateBinding(bId, { tmuxSession: "r99-seat-b", externalSessionName: "surface-prior-b" });
       const orch = createOrchestrator();
       throwingLauncherFor(orch, "seat-b", "launcher exploded on B");
 
@@ -6131,7 +6131,7 @@ describe("RestoreOrchestrator", () => {
       expect(sessionRegistry.getSessionsForRig(snap.rigId).some((s) => s.nodeId === aId && s.status === "running")).toBe(true);
       expect(b).toMatchObject({ nodeId: bId, status: "failed", error: expect.stringContaining("launcher exploded on B") });
       expect(b.error).not.toContain("left in place");
-      expect(sessionRegistry.getBindingForNode(bId)?.cmuxSurface).toBe("surface-prior-b");
+      expect(sessionRegistry.getBindingForNode(bId)?.externalSessionName).toBe("surface-prior-b");
     });
 
     it("restore: a launcher throw before it returned, with the evidence unreadable, falls back to compensating", async () => {
@@ -6152,7 +6152,7 @@ describe("RestoreOrchestrator", () => {
       const a = result.result.nodes.find((n) => n.logicalId === "seat-a")!;
       expect(a).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("launcher exploded on A") });
       expect(a.error).not.toContain("left in place");
-      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.externalSessionName).toBe("surface-prior-a");
       expect(result.result.nodes.find((n) => n.logicalId === "seat-b")?.status).not.toBe("failed");
     });
 
@@ -6175,7 +6175,7 @@ describe("RestoreOrchestrator", () => {
       expect(a).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("post-launch exploded on A") });
       expect(a.error).toContain("the launched session was left in place");
       // The launched binding stands; the prior surface was not written back over it.
-      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).not.toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.externalSessionName).not.toBe("surface-prior-a");
       expect(sessionRegistry.getBindingForNode(aId)?.tmuxSession).toBeTruthy();
     });
 

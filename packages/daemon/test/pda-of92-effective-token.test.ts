@@ -117,7 +117,7 @@ function runnerAttaches(sessionName: string, agent: string, typedBy: { typed: st
 }
 
 const nodeBinding = (nodeId: string, sessionName: string, pdaBinding?: { agent: string; baseUrl: string }): NodeBinding => ({
-  id: "b", nodeId, tmuxSession: sessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+  id: "b", nodeId, tmuxSession: sessionName, tmuxWindow: null, tmuxPane: null,
   updatedAt: "", cwd: "/work", ...(pdaBinding ? { pda: pdaBinding } : {}),
 });
 

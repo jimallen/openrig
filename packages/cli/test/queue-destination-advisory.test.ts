@@ -7,9 +7,7 @@ describe("queue destination advisory through CLI and route", () => {
     const saved = { noKernel: process.env.OPENRIG_NO_KERNEL, session: process.env.OPENRIG_SESSION_NAME };
     process.env.OPENRIG_NO_KERNEL = "1";
     process.env.OPENRIG_SESSION_NAME = "sender-ba@advisory-source";
-    const daemon = await createDaemon({ cmuxFactory: async () => {
-      throw Object.assign(new Error("no fixture socket"), { code: "ENOENT" });
-    }, tmuxExec: async () => "" });
+    const daemon = await createDaemon({ tmuxExec: async () => "" });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       const source = daemon.deps.rigRepo.createRig("advisory-source");

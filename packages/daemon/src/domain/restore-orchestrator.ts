@@ -832,8 +832,6 @@ export class RestoreOrchestrator {
         tmuxPane: priorState.binding.tmuxPane ?? undefined,
         terminalAddress: priorState.binding.terminalAddress ?? undefined,
         externalSessionName: priorState.binding.externalSessionName ?? undefined,
-        cmuxWorkspace: priorState.binding.cmuxWorkspace ?? undefined,
-        cmuxSurface: priorState.binding.cmuxSurface ?? undefined,
       });
     }
     // Restore prior session statuses

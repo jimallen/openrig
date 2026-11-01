@@ -1,5 +1,5 @@
 // Slice 24.D BLOCKING-CONCERN repair (secondary): the trailing slot
-// (e.g., "Launch in CMUX" button) must be a SIBLING of the tablist,
+// (e.g., the terminal launcher) must be a SIBLING of the tablist,
 // not a child. Tablist children should only be tabs; per ARIA, mixing
 // non-tab interactive children confuses keyboard navigation +
 // screen-readers. Test pins the structural contract.

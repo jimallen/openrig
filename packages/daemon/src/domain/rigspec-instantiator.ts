@@ -2246,8 +2246,6 @@ export class PodRigInstantiator {
       tmuxSession: launchResult.binding.tmuxSession,
       tmuxWindow: null,
       tmuxPane: null,
-      cmuxWorkspace: null,
-      cmuxSurface: null,
       updatedAt: "",
       cwd: configResult.config.cwd,
       model: configResult.config.model,
@@ -2486,8 +2484,6 @@ export class PodRigInstantiator {
       tmuxSession: launchResult.binding.tmuxSession,
       tmuxWindow: null,
       tmuxPane: null,
-      cmuxWorkspace: null,
-      cmuxSurface: null,
       updatedAt: "",
       cwd: effectiveCwd,
       // Seam B: a terminal seat has no harness posture flag, but the resolved/persisted

@@ -30,7 +30,7 @@ export interface VerificationCheck {
 
 export interface RuntimeConfigDisclosure {
   scope: "global" | "project";
-  runtime: "claude-code" | "codex" | "cmux";
+  runtime: "claude-code" | "codex";
   path: string;
   purpose: string;
 }
@@ -165,7 +165,7 @@ function installHerdr(deps: SetupDeps, platform: NodeJS.Platform): SetupStep {
     return {
       id: "herdr_install", status: "warn",
       message: `Could not install or verify herdr: ${(err as Error).message}`,
-      reason: "The OpenRig view can use plain tmux without herdr. Existing cmux workflows remain available.",
+      reason: "The OpenRig view can use plain tmux without herdr.",
       fixHint: `Retry \`${HERDR_INSTALL_COMMAND}\`, or follow https://herdr.dev/docs/install/.`,
     };
   }
@@ -395,7 +395,7 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     });
   }
 
-  // 3. Herdr is the default view provider. Leave optional cmux installations untouched.
+  // 3. Herdr is the default view provider.
   steps.push(opts.herdr === false
     ? { id: "herdr_install", status: "skipped", message: "Skipped: herdr installation declined (--no-herdr)." }
     : installHerdr(deps, platform));

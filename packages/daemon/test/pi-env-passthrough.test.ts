@@ -209,7 +209,7 @@ describe("both launch paths pass the seat's names to the runner", () => {
     return tmux;
   }
   const binding: NodeBinding = { id: "b-1", nodeId: "n-1", tmuxSession: SESSION, tmuxWindow: null, tmuxPane: null,
-    cmuxWorkspace: null, cmuxSurface: null, updatedAt: "2026-10-31T10:00:00Z", cwd: "/work" };
+    updatedAt: "2026-10-31T10:00:00Z", cwd: "/work" };
 
   it("a fresh launch asks for this session's names", async () => {
     const fs = memFs(); const typed: string[] = []; const asked: string[] = [];

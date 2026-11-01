@@ -18,7 +18,6 @@ import { agentspecRebootSchema } from "../src/db/migrations/014_agentspec_reboot
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { StreamStore } from "../src/domain/stream-store.js";
-import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
@@ -100,20 +99,14 @@ describe("createDaemon startup composition", () => {
     delete process.env.OPENRIG_NO_KERNEL;
   });
 
-  it("calls cmuxAdapter.connect() during startup", async () => {
-    const connectCalled = vi.fn();
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      connectCalled();
-      const err = new Error("no socket") as Error & { code?: string };
-      err.code = "ENOENT";
-      throw err;
-    };
-    const tmuxExec: ExecFn = async () => "";
+  it("createDaemon runs no cmux command at startup (cmux was removed; positive control: tmuxExec saw other commands)", async () => {
+    const seen: string[] = [];
+    const tmuxExec: ExecFn = async (cmd) => { seen.push(cmd); return ""; };
 
-    const { db } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { db } = await createDaemon({ tmuxExec });
 
-    // Factory was called during startup (connect() invoked)
-    expect(connectCalled).toHaveBeenCalled();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter((cmd) => /cmux/i.test(cmd))).toEqual([]);
 
     db.close();
   });
@@ -124,11 +117,8 @@ describe("createDaemon startup composition", () => {
   // startup.ts:898 runtimeAdapters = {claude-code, codex, pi, terminal} — no stub; goes green when the stub
   // adapter is constructed + registered (step 4). Drives the REAL createDaemon composition, not a mock.
   it("STEP2: createDaemon registers the stub adapter in the production runtimeAdapters registry [RED until startup.ts:898 adds stub]", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
-    const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { db, deps } = await createDaemon({ tmuxExec });
     try {
       expect(deps.runtimeAdapters, "AppDeps.runtimeAdapters exposed").toBeDefined();
       expect(deps.runtimeAdapters!["stub"], "production runtimeAdapters registry must register the stub adapter").toBeDefined();
@@ -140,10 +130,7 @@ describe("createDaemon startup composition", () => {
   // OF-32 stage 3: a seat restored fresh re-reads its rig's spec through the production instantiator, the same reader
   // `rig seat launch --fresh` uses. Without this wiring a recorded rig's fresh seats are refused (launch_unavailable).
   it("wires the production restore orchestrator to the instantiator's spec re-read", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-    };
-    const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec: async () => "" });
+    const { db, deps } = await createDaemon({ tmuxExec: async () => "" });
     try {
       const instantiator = (deps as unknown as { podInstantiator: { readSeatStartupFromSpec: (input: unknown) => Promise<unknown> } }).podInstantiator;
       const read = vi.spyOn(instantiator, "readSeatStartupFromSpec").mockResolvedValue({ kind: "unrecorded" });
@@ -157,10 +144,7 @@ describe("createDaemon startup composition", () => {
   }, 30000);
 
   it("wires staged replacement into the production Claude collector adapter", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-    };
-    const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec: async () => "" });
+    const { db, deps } = await createDaemon({ tmuxExec: async () => "" });
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "startup-collector-wiring-"));
     const copy = vi.spyOn(fs, "copyFileSync");
     const rename = vi.spyOn(fs, "renameSync");
@@ -185,11 +169,8 @@ describe("createDaemon startup composition", () => {
   // OccupantInvalidator — so the re-key invalidation actually FIRES (the service-level call-fires is
   // pinned separately in seat-handover-service.test.ts). Never lose a live call while deduping.
   it("wires a concrete OccupantInvalidator so the seat-handover re-key invalidation FIRES in production", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
-    const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { db, deps } = await createDaemon({ tmuxExec });
     try {
       expect(deps.occupantInvalidator, "AppDeps.occupantInvalidator must be constructed + injected").toBeDefined();
       expect(typeof deps.occupantInvalidator!.invalidateRetiringOccupant).toBe("function");
@@ -208,9 +189,6 @@ describe("createDaemon startup composition", () => {
   // GREEN when step 4 registers the stub adapter at :710. The 30s timeout is HARNESS BUDGET (cold
   // createDaemon compose), not product readiness.
   it("STEP3: the assembled instantiator dispatches runtime:stub → the stub adapter's project() is REACHED [RED until startup.ts:710 adds stub]", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
 
     // REAL fs: the assembled instantiator uses fs.readFileSync (startup.ts:709), so agent_ref must
@@ -230,7 +208,7 @@ describe("createDaemon startup composition", () => {
     process.env.OPENRIG_CONTEXT_SYSTEM_WORLD = worldPath;
     let db: ReturnType<typeof createDb> | undefined;
     try {
-      const daemon = await createDaemon({ cmuxFactory, tmuxExec });
+      const daemon = await createDaemon({ tmuxExec });
       db = daemon.db;
       const { deps } = daemon;
       // Reach the PRODUCTION instantiator's private adapters map (startup.ts:710).
@@ -274,13 +252,10 @@ describe("createDaemon startup composition", () => {
     const priorToken = process.env.OPENRIG_TERMINAL_BEARER_TOKEN;
     process.env.OPENRIG_HOME = tmpDir;
     delete process.env.OPENRIG_TERMINAL_BEARER_TOKEN;
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
 
     try {
-      const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+      const { db, deps } = await createDaemon({ tmuxExec });
 
       expect(deps.terminalBearerToken).toBeNull();
       expect(fs.existsSync(path.join(tmpDir, "terminal-token"))).toBe(false);
@@ -296,12 +271,9 @@ describe("createDaemon startup composition", () => {
   });
 
   it("createDaemon app: GET /api/rigs/:rigId/sessions returns 200 (session routes mounted)", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
 
-    const { app, db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { app, db, deps } = await createDaemon({ tmuxExec });
 
     // Seed a rig so the sessions endpoint has something to query
     const rig = deps.rigRepo.createRig("r01");
@@ -315,12 +287,9 @@ describe("createDaemon startup composition", () => {
   });
 
   it("createDaemon queue validation accepts first-class human seats without a materialized kernel rig", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
 
-    const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { db, deps } = await createDaemon({ tmuxExec });
 
     const canonical = await deps.queueRepo!.create({
       sourceSession: "dev-qa@implementation-pair",
@@ -356,10 +325,7 @@ describe("createDaemon startup composition", () => {
   });
 
   it("queue admission advises on missing local seats while preserving destinations", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-    };
-    const daemon = await createDaemon({ cmuxFactory, tmuxExec: async () => "" });
+    const daemon = await createDaemon({ tmuxExec: async () => "" });
     const { app, db, deps } = daemon;
     try {
       const source = deps.rigRepo.createRig("membership-source");
@@ -465,18 +431,13 @@ describe("createDaemon startup composition", () => {
     }
   }, 30000);
 
-  it("createDaemon app: GET /api/adapters/cmux/status returns 200 (adapter routes mounted)", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
+  it("createDaemon app: GET /api/adapters/cmux/status returns 404 (cmux was removed, the adapter route is gone)", async () => {
     const tmuxExec: ExecFn = async () => "";
 
-    const { app, db } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { app, db } = await createDaemon({ tmuxExec });
 
     const res = await app.request("/api/adapters/cmux/status");
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toHaveProperty("available");
+    expect(res.status).toBe(404);
 
     db.close();
   });
@@ -487,13 +448,10 @@ describe("createDaemon startup composition", () => {
     vi.stubEnv("OPENRIG_PORT", "17433");
     vi.stubEnv("OPENRIG_HOST", "127.0.0.1");
     vi.stubEnv("OPENRIG_HOME", shimHome);
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec = vi.fn<ExecFn>(async () => "");
 
     try {
-      const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+      const { db, deps } = await createDaemon({ tmuxExec });
       const rig = deps.rigRepo.createRig("path-env-rig");
       deps.rigRepo.addNode(rig.id, "worker", { runtime: "codex" });
 
@@ -533,7 +491,6 @@ describe("createDaemon startup composition", () => {
 
     try {
       result = await createDaemon({
-        cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); },
         tmuxExec,
       });
       expect(result.deps.sessionEnv).toMatchObject({
@@ -585,7 +542,6 @@ describe("createDaemon startup composition", () => {
 
     try {
       result = await createDaemon({
-        cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); },
         tmuxExec: async () => "",
       });
       expect(result.deps.sessionEnv).toMatchObject({ HOME: daemonHome, CODEX_HOME: codexHome });
@@ -593,7 +549,7 @@ describe("createDaemon startup composition", () => {
       expect(adapter).toBeDefined();
       await adapter!.deliverStartup([], {
         id: "gap7-binding", nodeId: "gap7-node", tmuxSession: "gap7-session",
-        tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+        tmuxWindow: null, tmuxPane: null,
         updatedAt: "", cwd: workspace,
       });
       const configPath = path.join(codexHome, "config.toml");
@@ -626,12 +582,11 @@ describe("createDaemon startup composition", () => {
     let result: Awaited<ReturnType<typeof createDaemon>> | undefined;
     try {
       result = await createDaemon({
-        cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); },
         tmuxExec: async () => "",
       });
       await result.deps.runtimeAdapters!.codex!.deliverStartup([], {
         id: "of183-binding", nodeId: "of183-node", tmuxSession: "of183-session",
-        tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+        tmuxWindow: null, tmuxPane: null,
         updatedAt: "", cwd: workspace,
       });
       expect(fs.readFileSync(config).equals(before)).toBe(true);
@@ -653,7 +608,6 @@ describe("createDaemon startup composition", () => {
     let result: Awaited<ReturnType<typeof createDaemon>> | undefined;
     try {
       result = await createDaemon({
-        cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); },
         tmuxExec: async () => "",
       });
       const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[openrig] codex config write policy:"));
@@ -681,7 +635,6 @@ describe("createDaemon startup composition", () => {
     try {
       try {
         result = await createDaemon({
-          cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); },
           tmuxExec,
         });
       } catch (error) {
@@ -705,12 +658,9 @@ describe("createDaemon startup composition", () => {
     vi.stubEnv("OPENRIG_HOST", "100.64.0.5");
     vi.stubEnv("OPENRIG_URL", ""); // NOT operator-supplied → daemon derives it
     vi.stubEnv("OPENRIG_ACTIVITY_HOOK_TOKEN", "");
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec = vi.fn<ExecFn>(async () => "");
     try {
-      const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+      const { db, deps } = await createDaemon({ tmuxExec });
       const rig = deps.rigRepo.createRig("url-derive-rig");
       deps.rigRepo.addNode(rig.id, "worker", { runtime: "codex" });
       const result = await deps.nodeLauncher.launchNode(rig.id, "worker");
@@ -732,13 +682,10 @@ describe("createDaemon startup composition", () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "claude-oauth-test-token");
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     vi.stubEnv("BOGUS_TOKEN", "must-not-leak");
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const { tmuxExec, credentials } = credentialCapturingTmux();
 
     try {
-      const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+      const { db, deps } = await createDaemon({ tmuxExec });
       const rig = deps.rigRepo.createRig("provider-auth-env-rig");
       deps.rigRepo.addNode(rig.id, "worker", { runtime: "claude-code" });
 
@@ -767,11 +714,8 @@ describe("createDaemon startup composition", () => {
       vi.stubEnv("OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST", allowlist);
       vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", "synthetic-bedrock-token");
       vi.stubEnv("AWS_SECRET_ACCESS_KEY", "synthetic-unrelated-secret");
-      const cmuxFactory: CmuxTransportFactory = async () => {
-        throw Object.assign(new Error(""), { code: "ENOENT" });
-      };
       const { tmuxExec, credentials } = credentialCapturingTmux();
-      const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+      const { db, deps } = await createDaemon({ tmuxExec });
       try {
         const rig = deps.rigRepo.createRig("bedrock-forwarding-rig");
         deps.rigRepo.addNode(rig.id, "worker", { runtime: "codex" });
@@ -802,7 +746,7 @@ describe("createDaemon startup composition", () => {
     vi.stubEnv("OPENRIG_ACTIVITY_HOOK_TOKEN", token);
     const { tmuxExec, credentials } = credentialCapturingTmux();
     try {
-      const { db, deps } = await createDaemon({ cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); }, tmuxExec });
+      const { db, deps } = await createDaemon({ tmuxExec });
       const rig = deps.rigRepo.createRig("of46-hook-token-rig");
       deps.rigRepo.addNode(rig.id, "worker", { runtime: "claude-code" });
       expect((await deps.nodeLauncher.launchNode(rig.id, "worker")).ok).toBe(true);
@@ -845,76 +789,6 @@ describe("createDaemon startup composition", () => {
     });
   });
 
-  it("createDaemon wires node cmux service for POST /api/rigs/:rigId/nodes/:logicalId/open-cmux", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => ({
-      request: async (method: string) => {
-        if (method === "capabilities") return { capabilities: ["workspace.current", "surface.create", "surface.focus"] };
-        if (method === "workspace.current") return { workspace_id: "workspace:1" };
-        if (method === "surface.create") return { created_surface_ref: "surface:99" };
-        return {};
-      },
-      close: () => {},
-    });
-    const tmuxExec: ExecFn = async () => "";
-
-    const { app, db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
-    const rig = deps.rigRepo.createRig("r01");
-    const node = deps.rigRepo.addNode(rig.id, "dev1-impl");
-    deps.sessionRegistry.registerSession(node.id, "r01-dev1-impl");
-    deps.sessionRegistry.updateBinding(node.id, {
-      attachmentType: "tmux",
-      tmuxSession: "r01-dev1-impl",
-    });
-
-    const res = await app.request(`/api/rigs/${rig.id}/nodes/dev1-impl/open-cmux`, { method: "POST" });
-    expect(res.status).toBe(200);
-    const body = await res.json() as Record<string, unknown>;
-    expect(body["ok"]).toBe(true);
-    expect(body["action"]).toBe("created_new");
-
-    const binding = deps.sessionRegistry.getBindingForNode(node.id);
-    expect(binding?.cmuxWorkspace).toBe("workspace:1");
-    expect(binding?.cmuxSurface).toBe("surface:99");
-
-    db.close();
-  });
-
-  it("createDaemon accepts cmuxExec, connect() probes the live cmux surface through it", async () => {
-    const cmuxExec = vi.fn<ExecFn>().mockRejectedValue(
-      Object.assign(new Error("command not found"), { code: "ENOENT" })
-    );
-    const tmuxExec: ExecFn = async () => "";
-
-    const { db } = await createDaemon({ cmuxExec, tmuxExec });
-
-    // The injected cmuxExec was called during startup connect().
-    // The transport now probes the live command surface via `cmux --help`
-    // before issuing version-adaptive requests.
-    expect(cmuxExec).toHaveBeenCalled();
-    const helpCall = cmuxExec.mock.calls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("cmux --help")
-    );
-    expect(helpCall).toBeDefined();
-
-    db.close();
-  });
-
-  it("createDaemon with cmuxExec that throws -> still degrades cleanly", async () => {
-    const cmuxExec = vi.fn<ExecFn>().mockRejectedValue(
-      Object.assign(new Error("command not found"), { code: "ENOENT" })
-    );
-    const tmuxExec: ExecFn = async () => "";
-
-    const { app, db } = await createDaemon({ cmuxExec, tmuxExec });
-
-    const res = await app.request("/api/adapters/cmux/status");
-    expect(res.status).toBe(200);
-    const body: any = await res.json();
-    expect(body.available).toBe(false);
-
-    db.close();
-  });
-
   it("startup reconciles stale session: status=detached + event row in DB", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-test-"));
     const dbPath = path.join(tmpDir, "test.sqlite");
@@ -929,9 +803,8 @@ describe("createDaemon startup composition", () => {
       if (cmd.includes("has-session")) throw new Error("session not found");
       return "";
     };
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
-    const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+    const { db } = await createDaemon({ dbPath, tmuxExec });
 
     // After createDaemon returns, session should be detached
     const sessions = db.prepare("SELECT status FROM sessions").all() as { status: string }[];
@@ -959,9 +832,8 @@ describe("createDaemon startup composition", () => {
       if (cmd.includes("has-session")) throw new Error("session not found");
       return "";
     };
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
-    const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+    const { db } = await createDaemon({ dbPath, tmuxExec });
 
     // Both sessions should be detached
     const sessions = db.prepare("SELECT status FROM sessions ORDER BY session_name").all() as { status: string }[];
@@ -987,10 +859,9 @@ describe("createDaemon startup composition", () => {
       if (cmd.includes("has-session")) throw new Error("can't find session: gone");
       return "";
     };
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      const { db } = await createDaemon({ dbPath, tmuxExec });
       expect(statusesBySession(db)).toEqual({ "exec-cos@cel-track": "detached", "dev@live-rig": "detached" });
       const summary = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).find((l) => l.startsWith("startup reconcile:"));
       expect(summary).toMatch(/detached=2\b/);
@@ -1009,9 +880,8 @@ describe("createDaemon startup composition", () => {
       if (cmd.includes("has-session")) throw new Error("tmux: unexpected failure");
       return "";
     };
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
     try {
-      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      const { db } = await createDaemon({ dbPath, tmuxExec });
       expect(statusesBySession(db)).toEqual({ "exec-cos@cel-track": "running", "dev@live-rig": "running" });
       db.close();
     } finally {
@@ -1027,9 +897,8 @@ describe("createDaemon startup composition", () => {
       if (cmd.includes("has-session")) throw new Error("error connecting to /private/tmp/tmux-501/default (No such file or directory)");
       return "";
     };
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
     try {
-      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      const { db } = await createDaemon({ dbPath, tmuxExec });
       // The live rig keeps the long-standing boot choice (transport absence is detachable); the archived rig does not.
       expect(statusesBySession(db)).toEqual({ "exec-cos@cel-track": "running", "dev@live-rig": "detached" });
       db.close();
@@ -1040,9 +909,8 @@ describe("createDaemon startup composition", () => {
 
   it("startup reconcile with empty DB runs without error", async () => {
     const tmuxExec: ExecFn = async () => "";
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
-    const { db } = await createDaemon({ tmuxExec, cmuxExec });
+    const { db } = await createDaemon({ tmuxExec });
 
     // No sessions, no events, no errors
     const sessions = db.prepare("SELECT * FROM sessions").all();
@@ -1065,11 +933,10 @@ describe("createDaemon startup composition", () => {
       if (cmd.includes("has-session")) throw new Error("session not found");
       return "";
     };
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      const { db } = await createDaemon({ dbPath, tmuxExec });
 
       const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
       const summary = calls.find((line) => line.startsWith("startup reconcile:"));
@@ -1087,9 +954,6 @@ describe("createDaemon startup composition", () => {
   });
 
   it("does not let a throwing setDegradedHandler registration abort createDaemon", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
     const recorder = {
       setDegradedHandler() {
@@ -1098,7 +962,6 @@ describe("createDaemon startup composition", () => {
       snapshot: () => ({ healthy: true }),
     };
     const { db, eventLoopMonitor } = await createDaemon({
-      cmuxFactory,
       tmuxExec,
       slowOpRecorder: recorder,
     } as never);
@@ -1107,9 +970,6 @@ describe("createDaemon startup composition", () => {
   });
 
   it("isolates a throwing degradation callback body (streamStore.emit) from later work", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
     const originalEmit = StreamStore.prototype.emit;
     const spy = vi
@@ -1129,7 +989,6 @@ describe("createDaemon startup composition", () => {
     };
     try {
       const { db, eventLoopMonitor } = await createDaemon({
-        cmuxFactory,
         tmuxExec,
         slowOpRecorder: recorder,
       } as never);

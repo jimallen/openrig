@@ -1,5 +1,5 @@
 // Tier 1 in-process foundation proof for the lifecycle reboot/recovery
-// scenario matrix. One suite per scenario. Mocks tmuxExec/cmuxExec at the
+// scenario matrix. One suite per scenario. Mocks tmuxExec at the
 // adapter boundary; in-memory SQLite via createDaemon/createFullTestDb.
 //
 // Slice packet:
@@ -65,11 +65,6 @@ function seedDbWithStaleSessions(
   db.close();
 }
 
-function unavailableCmuxExec(): ExecFn {
-  return async () => {
-    throw Object.assign(new Error(""), { code: "ENOENT" });
-  };
-}
 
 function captureLog<T>(fn: () => Promise<T>): Promise<{ value: T; lines: string[] }> {
   const lines: string[] = [];
@@ -135,10 +130,9 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
   describe("Scenario 1: Clean start (empty DB, no rigs)", () => {
     it("daemon comes up; reconciliation summary line reads rigs=0 checked=0 detached=0 errors=0", async () => {
       const tmuxExec: ExecFn = async () => "";
-      const cmuxExec = unavailableCmuxExec();
 
       const { value, lines } = await captureLog(async () =>
-        createDaemon({ tmuxExec, cmuxExec }),
+        createDaemon({ tmuxExec }),
       );
 
       const summary = lines.find((line) => line.startsWith("startup reconcile:"));
@@ -168,10 +162,9 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
 
       // tmux is alive; has-session returns success (stdout empty, no throw).
       const tmuxExec: ExecFn = async () => "";
-      const cmuxExec = unavailableCmuxExec();
 
       const { value, lines } = await captureLog(async () =>
-        createDaemon({ dbPath, tmuxExec, cmuxExec }),
+        createDaemon({ dbPath, tmuxExec }),
       );
 
       const sessions = value.db
@@ -214,9 +207,8 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         if (cmd.includes("has-session")) throw new Error(errMsg);
         return "";
       };
-      const cmuxExec = unavailableCmuxExec();
 
-      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      const { db } = await createDaemon({ dbPath, tmuxExec });
 
       const sessions = db.prepare("SELECT status FROM sessions").all() as { status: string }[];
       expect(sessions).toHaveLength(1);
@@ -247,11 +239,10 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         }
         return "";
       };
-      const cmuxExec = unavailableCmuxExec();
 
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const { value, lines } = await captureLog(async () =>
-        createDaemon({ dbPath, tmuxExec, cmuxExec }),
+        createDaemon({ dbPath, tmuxExec }),
       );
 
       try {

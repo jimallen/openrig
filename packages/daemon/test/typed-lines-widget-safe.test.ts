@@ -65,7 +65,7 @@ function expectOnlySafeTyping(h: ReturnType<typeof harness>, shape = TYPED_SHAPE
 }
 
 const binding = (over: Partial<NodeBinding> = {}): NodeBinding => ({
-  id: "b", nodeId: "n", tmuxSession: "seat@rig", tmuxPane: "%1", tmuxWindow: null, cmuxWorkspace: null, cmuxSurface: null,
+  id: "b", nodeId: "n", tmuxSession: "seat@rig", tmuxPane: "%1", tmuxWindow: null,
   updatedAt: "", cwd: "/work", ...over,
 } as NodeBinding);
 
@@ -185,7 +185,7 @@ describe("typed command lines are safe from keystroke-rewriting widgets (OF-65)"
     });
   });
 
-  describe("cmux attach line (typed as it stands when safe; staged otherwise, see typed-line-charset.test.ts)", () => {
+  describe("tmux attach line (a widget-safe line for a canonical session name)", () => {
     it("holds no widget character for a canonical session name on the default tmux server", () => {
       const line = tmuxAttachCommand("dev-impl@rig-1");
       expect(line).toBe("tmux attach -t dev-impl@rig-1");

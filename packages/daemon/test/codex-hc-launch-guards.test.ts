@@ -36,7 +36,7 @@ function mockTmux(hostKind: "tmux" | "hc"): TmuxAdapter {
 const mockFs = (): CodexAdapterFsOps => ({ readFile: () => { throw new Error("not found"); }, writeFile: () => {}, exists: () => false, mkdirp: () => {}, listFiles: () => [] });
 const binding = (): NodeBinding => ({
   id: "b1", nodeId: "n1", tmuxSession: "r01-qa", tmuxWindow: null, tmuxPane: null,
-  cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/project", model: "gpt-5.5",
+  updatedAt: "", cwd: "/project", model: "gpt-5.5",
 });
 const sent = (tmux: TmuxAdapter) => (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1]));
 

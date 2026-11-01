@@ -121,7 +121,7 @@ function createMockDaemon() {
     // POST /api/rigs/import/preflight
     if (req.method === "POST" && url.pathname === "/api/rigs/import/preflight") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ready: false, warnings: ["cmux unavailable"], errors: ["rig name exists"] }));
+      res.end(JSON.stringify({ ready: false, warnings: ["layout hint ignored"], errors: ["rig name exists"] }));
       return;
     }
 
@@ -298,7 +298,7 @@ describe("rig export + import", () => {
     program.addCommand(importCommand(deps));
     const logs = await captureLogs(() => program.parseAsync(["node", "rig", "import", "rig.yaml", "--preflight"]));
     const output = logs.join("\n");
-    expect(output).toContain("cmux unavailable");
+    expect(output).toContain("layout hint ignored");
     expect(output).toContain("rig name exists");
   });
 

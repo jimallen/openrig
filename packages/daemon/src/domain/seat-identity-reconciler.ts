@@ -37,7 +37,7 @@ const SHELL_COMMANDS = new Set([
  * `python`, empty) never down-rank.
  *
  * Mirrors SessionFingerprinter's Layer-1 process-command vocabulary; we do NOT
- * run the full 4-layer scan (cmux query + pane-content capture) per poll — it
+ * run the full 4-layer scan (pane-content capture) per poll — it
  * is far more expensive at fleet scale and its content layer would not change
  * the down-rank decision here (the reconcile only needs to distinguish
  * "process contradicts the seat" from "no contradiction").

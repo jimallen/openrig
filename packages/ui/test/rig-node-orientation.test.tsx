@@ -41,7 +41,7 @@ function renderNode(oriented: string | undefined) {
           // 19/21 gap hides an unverified orientation behind.
           startupStatus: "ready" as const,
           canonicalSessionName: "dev-impl@test-rig",
-          binding: { tmuxSession: "dev-impl@test-rig", cmuxSurface: "s1" },
+          binding: { tmuxSession: "dev-impl@test-rig" },
           oriented,
         }}
       />

@@ -57,8 +57,6 @@ function makeBinding(cwd = "/project"): NodeBinding {
     tmuxSession: "r01-impl",
     tmuxWindow: null,
     tmuxPane: null,
-    cmuxWorkspace: null,
-    cmuxSurface: null,
     updatedAt: "",
     cwd,
   };

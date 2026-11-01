@@ -134,7 +134,7 @@ Install OpenRig (`npm install -g @openrig/cli`) and check `tmux -V`. With npm 11
 
 Install a missing selected CLI using its provider's installation instructions.
 The other provider's CLI/login is optional. Herdr is installed by default unless
-you decline it; cmux remains optional. Do not copy credentials
+you decline it. Do not copy credentials
 or start repeated sign-in attempts. Recheck the selected login after the user
 completes it. `rig setup --dry-run` previews the broader setup; applying
 `rig setup` checks **both** harnesses and installs a missing one with npm, unless
@@ -196,7 +196,7 @@ person's goal to the operator; [Install and sign in](#install-and-sign-in) says 
 `rig setup` installs Herdr by default on macOS and Linux. If the person declines
 Herdr, use `rig setup --no-herdr`; the OpenRig view can use plain tmux. Setup
 checks both PATH and the installer's default `~/.local/bin/herdr` location. It
-leaves existing cmux settings alone and does not open a view during setup.
+does not open a view during setup.
 
 On a Mac, the installing agent also asks once, "Install Ghostty for the OpenRig
 view?" On Yes it reruns setup with `--ghostty`, preserving earlier choices such
@@ -300,7 +300,7 @@ different points in the same journey:
 | Codex offers to switch to a cheaper model near a rate limit | This is Codex's own menu. Ask the person to choose in the seat's terminal; do not silently change the team's configured model. OpenRig disables Codex's startup update check for managed launches, but does not answer this model-choice menu. |
 | A missing Node.js, npm or tmux; an install download or command fails | The named prerequisite or install step did not finish. Read its error and the [platform and provider instructions](#install-and-sign-in), resolve that step, then recheck it. `FAILED [4/4]` with only selected-provider sign-ins outstanding means the package installed but those logins still need the person. |
 | The installing harness refuses a tool call or asks for permission | Its native rules, sandbox or automatic permission decision apply before OpenRig can run. Claude Code's [auto mode can deny calls](https://code.claude.com/docs/en/auto-mode-config) as well as approve them. Show the specific refusal and ask the person to review it in the harness permission controls or run that named step themselves. Keep their chosen restrictions; a refused call does not prove the OpenRig command failed. |
-| Herdr or Ghostty installation is unavailable or declined | Herdr is optional for the view: `--window` uses plain tmux when Herdr is absent, and its install failure is a warning. On macOS, Terminal.app is the fallback when supported Ghostty is absent. An explicitly requested Ghostty install can fail setup; resolve that install or decline it with `--no-ghostty`, preserving earlier choices. Address separate required-tool or login failures. Existing cmux remains supported. |
+| Herdr or Ghostty installation is unavailable or declined | Herdr is optional for the view: `--window` uses plain tmux when Herdr is absent, and its install failure is a warning. On macOS, Terminal.app is the fallback when supported Ghostty is absent. An explicitly requested Ghostty install can fail setup; resolve that install or decline it with `--no-ghostty`, preserving earlier choices. Address separate required-tool or login failures. |
 | macOS asks for Automation access, or the window action is denied | The command asks the desktop terminal app to open a new surface. Let the person answer the system prompt. Read the error and inspect any new window before retrying an uncertain action; do not silently switch apps and open a duplicate. |
 | No local display, or the configured daemon is remote | `--window` needs the daemon's desktop. An SSH shell or remote daemon address alone does not give the agent that desktop. Explain the limit and use the [manual](#talk-to-the-operator-in-any-terminal) or [SSH handoff](#headless-or-ssh-handoff) with the actual operator binding. |
 | Herdr shows its introduction or agent-integration panel | These are Herdr's first-run panels. Follow the displayed controls: Return continues the intro and Esc closes the integration panel. Opening this view does not require installing Herdr's agent integrations or changing your Claude/Codex settings. |
@@ -321,7 +321,6 @@ open. They create a workspace inside that provider, without opening an OS window
 ```sh
 rig terminal views --json
 rig terminal open saved:kernel --provider herdr --json
-rig terminal open saved:kernel --provider cmux --json
 ```
 
 Use `rig terminal status --json` to inspect provider availability and liveness.
@@ -512,8 +511,7 @@ guidance rather than creating a second kernel.
 Herdr users follow the same launch and task path. To place the managed team in
 Herdr, use `rig terminal open starter --provider herdr`; for the shared
 dashboard together with the kernel conversations, use the
-[saved first view](#open-the-kernel-conversations). The equivalent
-cmux provider is also available. Read the opened/absent/degraded result: a
+[saved first view](#open-the-kernel-conversations). Read the opened/absent/degraded result: a
 partial terminal view is not a healthy team. Repeated terminal-open calls can
 create another provider workspace; return to the one already open when you
 want to preserve it. This is terminal integration, not native plugin enrollment.

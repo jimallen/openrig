@@ -36,7 +36,7 @@ import type {
 
 /**
  * Default panes per grid page (3×3), used when a provider declares no page size
- * of its own (cmux). Herdr declares 16 (4×4). Overflow spills to the next
+ * of its own. Herdr declares 16 (4×4). Overflow spills to the next
  * provider tab/page. A future per-rig `terminal.tiles_per_page` config key is the
  * natural seam for a layout choice; no config key ships here.
  */

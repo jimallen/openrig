@@ -41,7 +41,7 @@
 //    first-vs-rest ratios (1/N, then 1/(N-1), …; VM pane.layout-verified).
 //    The prior alternating-0.5 BSP is retired: it rendered N=7 as 4×2 with
 //    one double-width cell. Incomplete rectangles are padded with inert
-//    blank panes (cmux's blank-surface precedent); blanks are never
+//    blank panes; blanks are never
 //    reported as opened seats.
 //
 // The `workspace.create` response envelope is VM-confirmed (OPR.0.4.7.1):
@@ -70,7 +70,6 @@ import type {
   HerdrTransport,
   HerdrTransportFactory,
 } from "./herdr-transport.js";
-import { autoGridCols } from "../cmux-layout-service.js";
 
 /** Sentinel host for herdr-surface degrades (a pane herdr itself failed to render). */
 const HERDR_SURFACE_HOST = "herdr";
@@ -197,7 +196,17 @@ export function equalStrip(nodes: HerdrLayoutNode[], direction: "right" | "down"
   };
 }
 
-/** An inert blank pane — pads an incomplete grid rectangle (cmux's blank-surface precedent). */
+/**
+ * The modal Auto-grid column count for N panes. MUST mirror the UI's
+ * TerminalLauncher `suggestLayout` (N=7 → 3×3, never 2×4). Kept here because
+ * the daemon cannot import from packages/ui; a drift is a bug in whichever
+ * side changed.
+ */
+export function autoGridCols(n: number): number {
+  return Math.max(1, Math.ceil(Math.sqrt(n)));
+}
+
+/** An inert blank pane — pads an incomplete grid rectangle. */
 function blankPane(): HerdrPaneNode {
   return { type: "pane", label: "", command: ["sh"] };
 }
@@ -209,7 +218,7 @@ function herdrPaneCommand(pane: ComposedPane): string {
 
 /**
  * Build an equal grid for one page. Explicit columns are capped to its pane
- * count, as in cmux; otherwise use the UI TerminalLauncher `suggestLayout` —
+ * count; otherwise use the UI TerminalLauncher `suggestLayout` —
  * cols = ceil(sqrt(N)), rows = ceil(N/cols): N=2 → 2×1, N=5 → 3×2, N=7 → 3×3
  * (cols×rows). An incomplete rectangle is padded with inert blank panes so
  * every cell is the same size; blanks are layout filler only — they are never
@@ -323,7 +332,7 @@ export interface HerdrAdapterDeps {
   tabPrefix?: string;
 }
 
-/** Herdr lays out 4×4 per tab (OPR.0.6.0.8); cmux keeps the composer default. */
+/** Herdr lays out 4×4 per tab (OPR.0.6.0.8). */
 export const HERDR_PANES_PER_PAGE = 16;
 
 /** A `tab_id` from a herdr result body (`result.tab.tab_id`, `result.layout.tab_id`, or top-level). */

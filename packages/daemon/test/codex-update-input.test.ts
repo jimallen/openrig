@@ -14,7 +14,7 @@ const CURRENT_MENU = fs.readFileSync(new URL("./fixtures/codex-update-0.160.0.tx
 const READY = "OpenAI Codex (v0.155.1)\n› Ask Codex to do anything";
 const binding = {
   id: "b", nodeId: "n", tmuxSession: "checker@test", tmuxWindow: null, tmuxPane: null,
-  cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/private-test",
+  updatedAt: "", cwd: "/private-test",
 } satisfies NodeBinding;
 
 // Modeled receiver, NOT native execution. Pinned upstream be2951ea:

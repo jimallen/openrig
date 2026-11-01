@@ -84,7 +84,7 @@ function createMockDaemon() {
           res.end(JSON.stringify({ ready: false, warnings: ["node name collision: worker shadows pod-a/worker"], errors: [] }));
         } else {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ready: true, warnings: ["cmux unavailable"], errors: [] }));
+          res.end(JSON.stringify({ ready: true, warnings: ["layout hint ignored"], errors: [] }));
         }
       });
       return;
@@ -257,7 +257,7 @@ describe("rig spec", () => {
     const { logs, exitCode } = await captureLogs(() => program.parseAsync(["node", "rig", "spec", "preflight", "/tmp/rig.yaml"]));
     const output = logs.join("\n");
     expect(output).toContain("Preflight ready");
-    expect(output).toContain("cmux unavailable");
+    expect(output).toContain("layout hint ignored");
     expect(exitCode).toBeUndefined();
   });
 

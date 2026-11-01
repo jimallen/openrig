@@ -12,8 +12,6 @@ function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
       if (cmd === "herdr --version") return "herdr 0.9.3\n";
       if (cmd === "brew --version") return "Homebrew 4.0\n";
       if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-      if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
-      if (cmd === "cmux --help") return "cmux help\n";
       if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
       if (cmd === "claude auth status") return "Authenticated\n";
       if (cmd === "codex --version") return "codex-cli 0.118.0\n";
@@ -47,7 +45,7 @@ function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCod
 }
 
 function expectRuntimeConfigDisclosure(result: SetupResult): void {
-  // Setup leaves cmux configuration alone; only managed runtime disclosures remain.
+  // Only managed runtime disclosures remain.
   expect(result.runtimeConfig).toHaveLength(4);
   expect(result.runtimeConfig.find((d) => d.path === "~/.claude/settings.json")).toBeUndefined();
   expect(result.runtimeConfig).toEqual(expect.arrayContaining([
@@ -336,7 +334,6 @@ describe("rig setup", () => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-        if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
         if (cmd === "claude --version") {
           if (claudeInstalled) return "2.1.101 (Claude Code)\n";
           throw new Error("command not found: claude");
@@ -367,7 +364,6 @@ describe("rig setup", () => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-        if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
         if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
         if (cmd === "claude auth status") return "Authenticated\n";
         if (cmd === "codex --version") return "codex-cli 0.118.0\n";
@@ -389,8 +385,6 @@ describe("rig setup", () => {
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-        if (cmd === "cmux capabilities --json") throw new Error("not found");
-        if (cmd === "cmux --help") throw new Error("not found");
         if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
         if (cmd === "claude auth status") return "Authenticated\n";
         if (cmd === "codex --version") return "codex-cli 0.118.0\n";
@@ -412,8 +406,6 @@ describe("rig setup", () => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") throw new Error("command not found: brew");
         if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-        if (cmd === "cmux capabilities --json") throw new Error("not found");
-        if (cmd === "cmux --help") throw new Error("not found");
         throw new Error(`unexpected: ${cmd}`);
       },
     });
@@ -436,15 +428,13 @@ describe("rig setup", () => {
     expect(verify?.status).toBe("warn");
   });
 
-  it("result includes verification section with real doctor check names including async cmux_daemon", async () => {
+  it("result includes verification section with real doctor check names including the async hc_core check", async () => {
     const deps = makeDeps();
     const doctorDeps: DoctorDeps = {
       exists: () => true,
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {
         if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
         return "";
       },
       checkPort: async () => true,
@@ -469,13 +459,8 @@ describe("rig setup", () => {
     expect(checkNames).toContain("hc");
     expect(checkNames).toContain("hc_core");
     expect(checkNames).not.toContain("tmux");
-    expect(checkNames).toContain("cmux_shell");
-    // Must include async doctor check (cmux_daemon resolved)
-    expect(checkNames).toContain("cmux_daemon");
-
-    // cmux_daemon should be skipped (daemon not reachable)
-    const cmuxDaemon = result.verification!.checks.find((c) => c.name === "cmux_daemon");
-    expect(cmuxDaemon?.status).toBe("skipped");
+    // cmux was removed: no cmux check of any kind
+    expect(checkNames.filter((n) => /cmux/i.test(n))).toEqual([]);
 
     // Doctor statuses used as-is, not renamed
     const nodeCheck = result.verification!.checks.find((c) => c.name === "node_version");
@@ -498,8 +483,6 @@ describe("rig setup", () => {
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {
         if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
         return "";
       },
       checkPort: async () => true,
@@ -521,7 +504,7 @@ describe("rig setup", () => {
       ...result.steps,
       ...(result.verification?.checks ?? []),
     ].some((c) => c.status === "warn" || c.status === "skipped");
-    // cmux_daemon is skipped, so this should be true
+    // this fixture has at least one warn or skipped entry, so this should be true
     expect(hasWarnOrSkipped).toBe(true);
     // But ready is still true
     expect(result.ready).toBe(true);
@@ -552,7 +535,6 @@ describe("rig setup", () => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
-        if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
         if (cmd === "claude --version") {
           if (claudeInstalled) return "2.1.101 (Claude Code)\n";
           throw new Error("command not found: claude");

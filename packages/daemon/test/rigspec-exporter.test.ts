@@ -63,7 +63,7 @@ describe("RigSpecExporter", () => {
     });
     rigRepo.addEdge(rig.id, n1.id, n2.id, "delegates_to");
     // Add a binding to n1 (should be excluded from export)
-    sessionRegistry.updateBinding(n1.id, { tmuxSession: "r99-orchestrator", cmuxSurface: "s-1" });
+    sessionRegistry.updateBinding(n1.id, { tmuxSession: "r99-orchestrator" });
     return { rig, n1, n2 };
   }
 
@@ -119,7 +119,6 @@ describe("RigSpecExporter", () => {
     expect(yaml).not.toContain("secret-token");
     expect(yaml).not.toContain(sess.id);
     expect(yaml).not.toContain("tmux_session");
-    expect(yaml).not.toContain("cmux_surface");
     expect(yaml).not.toContain(n1.id); // DB PK
   });
 

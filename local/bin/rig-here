@@ -9,7 +9,7 @@ If NO rig works here, it STARTS one: a per-directory instance of the jims-team
 spec named jims-team-<dirname> (unique tmux session namespace — same-name
 instances would collide at spawn), then tiles it.
 
-Usage: rig-here [herdr|cmux]                    (provider default: herdr)
+Usage: rig-here [herdr]                         (herdr is the only provider)
        rig-here <provider> --rig <name>        disambiguate when several rigs share this dir
 """
 import json
@@ -119,8 +119,8 @@ def main():
             provider = args[0]
     elif args:
         provider = args[0]
-    if provider not in ("herdr", "cmux"):
-        sys.exit(f"rig-here: unknown provider '{provider}' (herdr|cmux)")
+    if provider != "herdr":
+        sys.exit(f"rig-here: unknown provider '{provider}' (herdr)")
 
     cwd = os.path.realpath(os.environ.get("PWD") or os.getcwd())
 
@@ -161,7 +161,7 @@ def main():
         rig = hits[0][0]
         print(f"rig-here: {cwd} → rig '{rig}' ({hits[0][1]}), provider {provider}", flush=True)
     sys.stdout.flush()
-    opener = {"herdr": "rig-herdr", "cmux": "rig-cmux"}[provider]
+    opener = "rig-herdr"
     os.execvp(opener, [opener, rig])
 
 

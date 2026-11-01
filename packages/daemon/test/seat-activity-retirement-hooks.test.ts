@@ -124,7 +124,7 @@ describe("retired hook evidence through the real HTTP route", () => {
 
   it("a running non-tmux seat keeps its hook oracle across the tmux sampler sweep", async () => {
     const f = fixture();
-    f.sessions.updateBinding(f.node.id, { attachmentType: "cmux", cmuxWorkspace: "fixture", cmuxSurface: "fixture" });
+    f.sessions.updateBinding(f.node.id, { attachmentType: "external_cli" });
     await f.hook();
     await f.oracle.pollAllRunningTmuxSeats(f.db);
     expect(f.oracle.getSeatStateBySession(f.session.sessionName)!.activity).toBe("idle-at-prompt");

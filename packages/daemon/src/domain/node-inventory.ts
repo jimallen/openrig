@@ -91,8 +91,6 @@ interface BindingRow {
   /** Absent on a database that stops before migration 121. */
   terminal_address?: string | null;
   external_session_name: string | null;
-  cmux_workspace: string | null;
-  cmux_surface: string | null;
   updated_at: string;
 }
 
@@ -909,8 +907,6 @@ export function getNodeDetail(
     tmuxPane: bindingRow.tmux_pane,
     terminalAddress: bindingRow.terminal_address ?? null,
     externalSessionName: bindingRow.external_session_name ?? null,
-    cmuxWorkspace: bindingRow.cmux_workspace,
-    cmuxSurface: bindingRow.cmux_surface,
     updatedAt: bindingRow.updated_at,
   } : null;
 

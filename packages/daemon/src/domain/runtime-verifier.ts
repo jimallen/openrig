@@ -113,23 +113,6 @@ export class RuntimeVerifier {
     return result;
   }
 
-  /** Verify cmux: `cmux capabilities --json`, parse capabilities. */
-  async verifyCmux(): Promise<RuntimeVerification> {
-    const result = await this.runProbe("cmux", async () => {
-      const output = await this.exec("cmux capabilities --json");
-      const trimmed = output.trim();
-      try {
-        const parsed = JSON.parse(trimmed);
-        const capsJson = JSON.stringify(parsed);
-        return { status: "verified" as RuntimeStatus, version: null, capabilitiesJson: capsJson, error: null };
-      } catch {
-        return { status: "error" as RuntimeStatus, version: null, capabilitiesJson: null, error: "invalid capabilities JSON" };
-      }
-    }, "degraded");
-    this.persist(result);
-    return result;
-  }
-
   /** Verify Claude Code: `claude --version`, fallback to `claude --help`. */
   async verifyClaude(): Promise<RuntimeVerification> {
     const result = await this.verifyVersionOrHelp("claude", "claude-code");
@@ -179,7 +162,7 @@ export class RuntimeVerifier {
 
   /**
    * Verify multiple runtimes. Returns results in input order.
-   * @param runtimes - canonical runtime names: 'hc', 'cmux', 'claude-code', 'codex', 'pi', 'omp'
+   * @param runtimes - canonical runtime names: 'hc', 'claude-code', 'codex', 'pi', 'omp'
    */
   async verifyAll(runtimes: string[]): Promise<RuntimeVerification[]> {
     const results: RuntimeVerification[] = [];
@@ -188,7 +171,6 @@ export class RuntimeVerifier {
         case "hc":
         // "tmux" is the name bootstrap-orchestrator still asks for; the seat host it means is hc now.
         case "tmux": results.push(await this.verifyHc()); break;
-        case "cmux": results.push(await this.verifyCmux()); break;
         case "claude-code": results.push(await this.verifyClaude()); break;
         case "codex": results.push(await this.verifyCodex()); break;
         case "pi": results.push(await this.verifyPi()); break;

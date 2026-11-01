@@ -173,7 +173,6 @@ describe("BootstrapOrchestrator", () => {
       "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "codex --version": "codex 0.5.0",
-      "cmux capabilities": '{"workspaces":true}',
       "command -v": "/usr/local/bin/tool",
       "brew install": "installed",
       "brew list": new Error("not found"),

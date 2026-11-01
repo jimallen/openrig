@@ -47,20 +47,16 @@ function captureLogs(fn: () => Promise<void>): Promise<string[]> {
 // Echo server for daemon API
 function createDaemonServer(
   summaryData: unknown[],
-  cmuxStatus: unknown,
   kernelStatus?: { code: number; body: unknown },
 ) {
+  const requested: string[] = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url!, "http://localhost");
+    requested.push(url.pathname);
 
     if (url.pathname === "/api/rigs/summary") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(summaryData));
-      return;
-    }
-    if (url.pathname === "/api/adapters/cmux/status") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(cmuxStatus));
       return;
     }
     if (url.pathname === "/api/kernel/status") {
@@ -81,6 +77,7 @@ function createDaemonServer(
 
   return {
     server,
+    requested,
     port: 0,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     listen: () => new Promise<number>((resolve) => {
@@ -109,7 +106,6 @@ describe("rig status", () => {
           { id: "r1", name: "alpha", nodeCount: 3, latestSnapshotAt: "2026-03-24 01:00:00", latestSnapshotId: "snap-1" },
           { id: "r2", name: "beta", nodeCount: 1, latestSnapshotAt: null, latestSnapshotId: null },
         ],
-        { available: true },
       );
       port = await srv.listen();
     });
@@ -148,7 +144,7 @@ describe("rig status", () => {
     let srv: ReturnType<typeof createDaemonServer>;
     let port: number;
     beforeAll(async () => {
-      srv = createDaemonServer([], { available: false }, { code: 200, body: { kernel_state: "ready" } });
+      srv = createDaemonServer([], { code: 200, body: { kernel_state: "ready" } });
       port = await srv.listen();
     });
     afterAll(async () => { await srv.close(); });
@@ -185,7 +181,7 @@ describe("rig status", () => {
     });
 
     it("shows a recovered boot failure as history under a ready kernel (#1042)", async () => {
-      const recovered = createDaemonServer([], { available: false }, {
+      const recovered = createDaemonServer([], {
         code: 200,
         body: {
           kernel_state: "ready",
@@ -233,7 +229,7 @@ describe("rig status", () => {
     let port: number;
 
     beforeAll(async () => {
-      srv = createDaemonServer([], { available: false });
+      srv = createDaemonServer([]);
       port = await srv.listen();
     });
     afterAll(async () => { await srv.close(); });
@@ -358,21 +354,20 @@ describe("rig status", () => {
     expect(clientFactory).not.toHaveBeenCalled();
   });
 
-  // Test 5: Output includes cmux status
-  describe("cmux status in output", () => {
+  // Test 5: cmux was removed — status neither asks for it nor prints it
+  describe("no cmux status in output", () => {
     let srv: ReturnType<typeof createDaemonServer>;
     let port: number;
 
     beforeAll(async () => {
       srv = createDaemonServer(
         [{ id: "r1", name: "alpha", nodeCount: 1, latestSnapshotAt: null, latestSnapshotId: null }],
-        { available: true },
       );
       port = await srv.listen();
     });
     afterAll(async () => { await srv.close(); });
 
-    it("includes cmux status line", async () => {
+    it("prints no cmux line and never requests the cmux status route", async () => {
       const deps: StatusDeps = {
         lifecycleDeps: mockLifecycleDeps({
           exists: vi.fn((p: string) => p === STATE_FILE),
@@ -389,7 +384,10 @@ describe("rig status", () => {
       program.addCommand(statusCommand(deps));
       const logs = await captureLogs(() => program.parseAsync(["node", "rig", "status"]));
 
-      expect(logs.join("\n")).toMatch(/cmux/i);
+      expect(logs.join("\n")).toContain("alpha");
+      expect(logs.join("\n")).not.toMatch(/cmux/i);
+      expect(srv.requested).toContain("/api/rigs/summary");
+      expect(srv.requested.filter((path) => /cmux/i.test(path))).toEqual([]);
     });
   });
 
@@ -399,7 +397,7 @@ describe("rig status", () => {
     let port: number;
 
     beforeAll(async () => {
-      srv = createDaemonServer([], { available: false });
+      srv = createDaemonServer([]);
       port = await srv.listen();
     });
     afterAll(async () => { await srv.close(); });
@@ -430,7 +428,7 @@ describe("rig status", () => {
     });
   });
 
-  // Test 7: Running but healthy=false -> degraded message, no summary/cmux HTTP
+  // Test 7: Running but healthy=false -> degraded message, no summary HTTP
   it("unhealthy daemon -> degraded message, no DaemonClient calls", async () => {
     const clientFactory = vi.fn();
     const deps: StatusDeps = {

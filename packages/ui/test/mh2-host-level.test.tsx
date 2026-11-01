@@ -614,21 +614,21 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
     return mockFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST");
   }
 
-  it("TopologyTableView remote: actions cell = honest read-only marker, NO cmux affordance, ZERO POSTs", async () => {
+  it("TopologyTableView remote: actions cell = honest read-only marker, NO terminal affordance, ZERO POSTs", async () => {
     wireB1Fetch();
     renderPrimed(() => <TopologyTableView />, "vps-a");
     await waitFor(() => expect(screen.getByTestId("topology-table-actions-a1")).toBeTruthy());
     expect(screen.getByTestId("topology-table-actions-a1").getAttribute("data-remote-readonly")).toBe("true");
-    expect(screen.queryByTestId("topology-table-cmux-a1")).toBeNull();
     expect(screen.queryByTestId("topology-table-a1-terminal-open")).toBeNull();
     expect(postCalls()).toEqual([]);
   });
 
-  it("TopologyTableView local CONTROL: the cmux affordance renders (the harness catches violations)", async () => {
+  it("TopologyTableView local CONTROL: the terminal affordance renders (the harness catches violations)", async () => {
     wireB1Fetch();
     renderPrimed(() => <TopologyTableView />, LOCAL_HOST_ID);
-    await waitFor(() => expect(screen.getByTestId("topology-table-cmux-a1")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("topology-table-a1-terminal-open")).toBeTruthy());
     expect(screen.getByTestId("topology-table-actions-a1").getAttribute("data-remote-readonly")).toBeNull();
+    expect(screen.queryByTestId("topology-table-cmux-a1")).toBeNull();
     // proves the trigger testid shape the remote negative asserts against
     // (the -terminal-popover panel only exists while OPEN; the always-rendered
     // affordance is the -terminal-open trigger button)
@@ -676,7 +676,6 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
     renderPrimed(() => <LiveNodeDetails rigId="r1" logicalId="a1" />, "vps-a");
     await waitFor(() => expect(screen.getByTestId("live-node-actions-remote-readonly")).toBeTruthy());
     // B1: no local action affordances, terminal honestly gated
-    expect(screen.queryByTestId("detail-cmux-open")).toBeNull();
     expect(screen.queryByTestId("detail-copy-attach")).toBeNull();
     expect(screen.getByTestId("node-detail-terminal-remote-gated")).toBeTruthy();
     // B2: the detail read rides the host envelope; the bare local URL never fires
@@ -686,10 +685,11 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
     expect(postCalls()).toEqual([]);
   });
 
-  it("seat page local CONTROL: bare detail URL + the cmux action renders", async () => {
+  it("seat page local CONTROL: bare detail URL + the local actions row renders", async () => {
     wireB1Fetch();
     renderPrimed(() => <LiveNodeDetails rigId="r1" logicalId="a1" />, LOCAL_HOST_ID);
-    await waitFor(() => expect(screen.getByTestId("detail-cmux-open")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("live-node-actions")).toBeTruthy());
+    expect(screen.queryByTestId("detail-cmux-open")).toBeNull();
     expect(screen.queryByTestId("live-node-actions-remote-readonly")).toBeNull();
     const detailCalls = mockFetch.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/nodes/a1"));
     expect(detailCalls.length).toBeGreaterThan(0);

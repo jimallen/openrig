@@ -247,7 +247,6 @@ Runtime marks:
 
 Tool marks:
 
-- CMUX: blue chevron mark
 - tmux: pane-grid mark with green base
 - VS Code: blue code mark
 - Terminal, file, markdown, config, code, screenshot, proof, transcript, commit,
@@ -271,7 +270,7 @@ Graphics placement rules:
 
 Hover-only actions:
 
-- Dense topology cards show CMUX and terminal actions on hover/focus.
+- Dense topology cards show terminal actions on hover/focus.
 - Keyboard focus must reveal the same actions as mouse hover.
 - Action clicks must stop propagation so row or node navigation does not also
   fire.

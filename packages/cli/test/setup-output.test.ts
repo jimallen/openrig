@@ -27,7 +27,6 @@ function fixture(failed: boolean): SetupDeps {
     exec: vi.fn((cmd: string) => {
       if (cmd === "claude auth status" && failed) throw new Error("fixture login missing");
       if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}`;
-      if (cmd === "cmux capabilities --json") return '{"capabilities":[]}';
       return "available";
     }),
     readFile: () => null,

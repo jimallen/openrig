@@ -22,8 +22,6 @@ const CLASSIFIED: Record<string, Row> = {
   "adapters/stub-runtime-adapter.ts": { sendText: 1, send: 0, cls: "stripped" },
   "adapters/tmux.ts": { sendText: 1, send: 0, cls: "shell" },
   "domain/claude-compaction-enforcer.ts": { sendText: 0, send: 5, cls: "stripped (4 prompts) + constant (turn boundary)" },
-  "domain/cmux-layout-service.ts": { sendText: 1, send: 0, cls: "shell" },
-  "domain/node-cmux-service.ts": { sendText: 2, send: 0, cls: "shell" },
   "domain/queue-repository.ts": { sendText: 0, send: 1, cls: "stripped envelope + person body" },
   "domain/resume-metadata-refresher.ts": { sendText: 1, send: 0, cls: "gated" },
   "domain/seat-handover-service.ts": { sendText: 2, send: 0, cls: "handover" },

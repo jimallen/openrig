@@ -109,7 +109,7 @@ it("seatless startup, disable and projection preserve the other home's bytes; st
   vi.stubEnv('OPENRIG_DB', path.join(f.root, 'instance.sqlite')); vi.stubEnv('OPENRIG_NO_KERNEL', '1');
   vi.stubEnv('OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED', 'true'); vi.stubEnv('OPENRIG_URL', undefined); vi.stubEnv('OPENRIG_PORT', undefined);
   const { createDaemon } = await import('../src/startup.js');
-  const start = () => createDaemon({ dbPath: process.env.OPENRIG_DB!, tmuxExec: async () => '', cmuxFactory: async () => { throw Error('fixture: no cmux'); } });
+  const start = () => createDaemon({ dbPath: process.env.OPENRIG_DB!, tmuxExec: async () => '' });
   const first = await start();
   try {
     expect(first.db.prepare('SELECT count(*) AS n FROM nodes').get()).toEqual({ n: 0 });
@@ -157,7 +157,7 @@ it.each([
   process.chdir(f.cwd);
   try {
     const { createDaemon } = await import('../src/startup.js');
-    const daemon = await createDaemon({ dbPath: process.env.OPENRIG_DB!, tmuxExec: async () => '', cmuxFactory: async () => { throw Error('fixture: no cmux'); } });
+    const daemon = await createDaemon({ dbPath: process.env.OPENRIG_DB!, tmuxExec: async () => '' });
     try {
       expect(daemon.db.prepare('SELECT count(*) AS n FROM nodes').get()).toEqual({ n: 0 });
       expect(fs.existsSync(path.join(f.cwd, 'config.toml'))).toBe(false);

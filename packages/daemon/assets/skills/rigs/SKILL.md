@@ -58,7 +58,7 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
   open, point them to it rather than opening another. Only if the window cannot open, `rig tui --shared` is the
   dashboard-only fallback; explain the failure and help with the chosen fallback. Herdr is visible only in a terminal
   the person can see; switching the shared TUI to `:terminals` does not open one. No and headless/SSH use are valid
-  background outcomes. Provider-only `--provider herdr` or `--provider cmux` is for an existing provider workspace,
+  background outcomes. Provider-only `--provider herdr` is for an existing provider workspace,
   not the first desktop window.
 - **If the window can't open, or over headless SSH:** say plainly that no visible terminal was opened, and ask the
   person to open a new terminal window or tab on the daemon's host. Over SSH, that's a new SSH session to it with the

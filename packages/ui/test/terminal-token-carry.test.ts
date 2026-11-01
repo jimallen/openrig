@@ -44,17 +44,6 @@ describe("terminal-token carry on protected UI fetches", () => {
     expect(headers?.Authorization).toBe(`Bearer ${TOKEN}`);
   });
 
-  it("postOpenCmux sends Authorization: Bearer <token>", async () => {
-    const { calls } = stubFetch();
-    const { postOpenCmux } = await import("../src/hooks/useCmuxLaunch.js");
-    await postOpenCmux({ rigId: "rig-1", logicalId: "dev.impl" });
-    expect(calls.length).toBe(1);
-    expect(calls[0]!.url).toContain("/open-cmux");
-    expect(calls[0]!.init?.method).toBe("POST");
-    const headers = calls[0]!.init?.headers as Record<string, string>;
-    expect(headers?.Authorization).toBe(`Bearer ${TOKEN}`);
-  });
-
   it("terminalAuthHeaders reads token from localStorage", async () => {
     const { terminalAuthHeaders } = await import("../src/components/mission-control/missionControlAuth.js");
     expect(terminalAuthHeaders().Authorization).toBe(`Bearer ${TOKEN}`);
@@ -66,50 +55,14 @@ describe("terminal-token carry on protected UI fetches", () => {
     expect(terminalAuthHeaders().Authorization).toBeUndefined();
   });
 
-  it("source guard: all /open-cmux consumers use postOpenCmux (no direct fetch)", async () => {
+  it("source guard: no UI source calls the removed cmux routes (open-cmux, cmux/launch, adapters/cmux)", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const srcDir = path.resolve(import.meta.dirname, "../src");
-    const consumers = [
-      "components/LiveNodeDetails.tsx",
-      "components/RigNode.tsx",
-      "components/topology/LaunchCmuxButton.tsx",
-    ];
-    for (const file of consumers) {
-      const src = fs.readFileSync(path.join(srcDir, file), "utf-8");
-      expect(src, `${file} must import postOpenCmux`).toContain("postOpenCmux");
-      const lines = src.split("\n");
-      const directFetchLines = lines.filter((l) => l.includes("open-cmux") && l.includes("fetch("));
-      expect(directFetchLines.length, `${file} has direct fetch to /open-cmux`).toBe(0);
-    }
-  });
-
-  it("source guard: postOpenCmux owns the /open-cmux fetch with terminalAuthHeaders", async () => {
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const src = fs.readFileSync(path.resolve(import.meta.dirname, "../src/hooks/useCmuxLaunch.ts"), "utf-8");
-    expect(src).toContain("terminalAuthHeaders()");
-    expect(src).toContain("open-cmux");
-  });
-
-  it("source guard: hook-based open-cmux consumers carry the terminal auth contract via useCmuxLaunch", async () => {
-    // OPR.0.4.1.31 fold (dev1-guard) — the table + hybrid surfaces open cmux
-    // through the useCmuxLaunch hook (which wraps postOpenCmux -> terminalAuthHeaders).
-    // Guard that they keep using the hook and never hand-roll a direct /open-cmux
-    // fetch that would bypass the terminal auth contract.
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const srcDir = path.resolve(import.meta.dirname, "../src");
-    const consumers = [
-      "components/topology/TopologyTableView.tsx",
-      "components/topology/HybridTopologyNodes.tsx",
-    ];
-    for (const file of consumers) {
-      const src = fs.readFileSync(path.join(srcDir, file), "utf-8");
-      expect(src, `${file} must use useCmuxLaunch`).toContain("useCmuxLaunch");
-      const lines = src.split("\n");
-      const directFetchLines = lines.filter((l) => l.includes("open-cmux") && l.includes("fetch("));
-      expect(directFetchLines.length, `${file} has direct fetch to /open-cmux`).toBe(0);
-    }
+    const files = (fs.readdirSync(srcDir, { recursive: true }) as string[])
+      .filter((f) => /\.(ts|tsx)$/.test(f));
+    expect(files.length, "positive control: the walk saw the UI source tree").toBeGreaterThan(50);
+    const offenders = files.filter((f) => /open-cmux|cmux\/launch|adapters\/cmux/.test(fs.readFileSync(path.join(srcDir, f), "utf-8")));
+    expect(offenders).toEqual([]);
   });
 });

@@ -111,9 +111,9 @@ describe("GET /api/terminal/views + /status", () => {
 
   it("status passes the provider query through", async () => {
     const { app } = makeApp();
-    const res = await app.request("/api/terminal/status?provider=cmux");
+    const res = await app.request("/api/terminal/status?provider=herdr");
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ providers: [{ name: "cmux" }] });
+    expect(await res.json()).toMatchObject({ providers: [{ name: "herdr" }] });
   });
 });
 
@@ -127,8 +127,8 @@ describe("POST /api/rigs/:rigId/terminal/open — thin alias", () => {
 
   it("carries a provider from the body while still composing the rig view", async () => {
     const { app, openCalls } = makeApp();
-    await post(app, "/api/rigs/rig-id-1/terminal/open", { provider: "cmux" });
-    expect(openCalls[0]).toEqual({ view: "rig:rig-id-1", provider: "cmux" });
+    await post(app, "/api/rigs/rig-id-1/terminal/open", { provider: "herdr" });
+    expect(openCalls[0]).toEqual({ view: "rig:rig-id-1", provider: "herdr" });
   });
 });
 

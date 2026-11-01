@@ -95,7 +95,7 @@ function pda(opts?: { hold?: boolean; attach?: boolean; sendThrows?: boolean }) 
 }
 
 const nodeBinding = (s: { nodeId: string; sessionName: string }, bound: { agent: string; baseUrl: string }): NodeBinding => ({
-  id: "b", nodeId: s.nodeId, tmuxSession: s.sessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+  id: "b", nodeId: s.nodeId, tmuxSession: s.sessionName, tmuxWindow: null, tmuxPane: null,
   updatedAt: "", cwd: "/work", pda: bound,
 });
 const launchWithToken = (p: ReturnType<typeof pda>, s: { nodeId: string; sessionName: string }, token: string) =>

@@ -44,7 +44,7 @@ function sampleNodes() {
         runtime: "claude-code",
         model: "opus",
         status: "running",
-        binding: { tmuxSession: "r01-orch1-lead", cmuxSurface: "s-1" },
+        binding: { tmuxSession: "r01-orch1-lead" },
       },
     },
     {
@@ -61,22 +61,6 @@ function sampleNodes() {
       },
     },
   ];
-}
-
-function nodeWithBindingNoSurface() {
-  return {
-    id: "n3",
-    type: "rigNode",
-    position: { x: 0, y: 400 },
-    data: {
-      logicalId: "reviewer",
-      role: "reviewer",
-      runtime: "claude-code",
-      model: null,
-      status: "running",
-      binding: { tmuxSession: "r01-rev1-r1", cmuxSurface: null },
-    },
-  };
 }
 
 function sampleEdges() {
@@ -138,7 +122,7 @@ describe("RigGraph", () => {
           runtime: "claude-code",
           model: null,
           status: "running",
-          binding: { tmuxSession: "alpha-impl@test-rig", cmuxSurface: null },
+          binding: { tmuxSession: "alpha-impl@test-rig" },
           nodeKind: "agent",
           startupStatus: "ready",
           canonicalSessionName: "alpha-impl@test-rig",
@@ -199,7 +183,7 @@ describe("RigGraph", () => {
           runtime: "claude-code",
           model: null,
           status: "running",
-          binding: { tmuxSession: "alpha-impl@test-rig", cmuxSurface: null },
+          binding: { tmuxSession: "alpha-impl@test-rig" },
           nodeKind: "agent",
           startupStatus: "ready",
           canonicalSessionName: "alpha-impl@test-rig",
@@ -258,7 +242,7 @@ describe("RigGraph", () => {
           runtime: "claude-code",
           model: null,
           status: "running",
-          binding: { tmuxSession: "alpha-impl@test-rig", cmuxSurface: null },
+          binding: { tmuxSession: "alpha-impl@test-rig" },
           nodeKind: "agent",
           startupStatus: "ready",
           canonicalSessionName: "alpha-impl@test-rig",
@@ -402,7 +386,7 @@ describe("RigNode", () => {
       runtime: "claude-code",
       model: "opus",
       status: "running",
-      binding: { tmuxSession: "r01-dev1-impl", cmuxSurface: null },
+      binding: { tmuxSession: "r01-dev1-impl" },
     };
 
     render(
@@ -559,7 +543,7 @@ describe("RigNode", () => {
     expect(document.body.innerHTML).toContain("Phase B audit");
   });
 
-  it("node actions use the compact terminal plus cmux toolbar pattern", () => {
+  it("node actions use the compact terminal toolbar pattern (no cmux action)", () => {
     const data = {
       logicalId: "dev.impl",
       rigId: "rig-1",
@@ -569,7 +553,7 @@ describe("RigNode", () => {
       status: "running",
       startupStatus: "ready" as const,
       canonicalSessionName: "dev-impl@test-rig",
-      binding: { tmuxSession: "dev-impl@test-rig", cmuxSurface: "s1" },
+      binding: { tmuxSession: "dev-impl@test-rig" },
       resumeToken: "abc-123",
     };
 
@@ -580,12 +564,12 @@ describe("RigNode", () => {
     );
 
     expect(screen.getByTestId("rig-node-dev.impl-terminal-open")).toBeDefined();
-    expect(screen.getByTestId("toolbar-cmux-open")).toBeDefined();
+    expect(screen.queryByTestId("toolbar-cmux-open")).toBeNull();
     expect(screen.queryByTestId("toolbar-copy-attach")).toBeNull();
     expect(screen.queryByTestId("toolbar-copy-resume")).toBeNull();
   });
 
-  it("toolbar keeps terminal and cmux actions when no resumeToken", () => {
+  it("toolbar keeps the terminal action when no resumeToken", () => {
     const data = {
       logicalId: "dev.impl",
       rigId: "rig-1",
@@ -595,7 +579,7 @@ describe("RigNode", () => {
       status: "running",
       startupStatus: "ready" as const,
       canonicalSessionName: "dev-impl@test-rig",
-      binding: { tmuxSession: "dev-impl@test-rig", cmuxSurface: null },
+      binding: { tmuxSession: "dev-impl@test-rig" },
       resumeToken: null,
     };
 
@@ -608,86 +592,7 @@ describe("RigNode", () => {
     expect(screen.getByTestId("rig-node-dev.impl-terminal-open")).toBeDefined();
     expect(screen.queryByTestId("toolbar-copy-resume")).toBeNull();
     expect(screen.queryByTestId("toolbar-copy-attach")).toBeNull();
-    // CMUX button should still be present for unbound nodes (open-or-focus)
-    expect(screen.getByTestId("toolbar-cmux-open")).toBeDefined();
-  });
-
-  it("clicking toolbar cmux on unbound node posts to /open-cmux not /focus", async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ ok: true, action: "created_new" }) });
-
-    const data = {
-      logicalId: "dev.impl",
-      rigId: "rig-1",
-      role: "worker",
-      runtime: "claude-code",
-      model: null,
-      status: "running",
-      startupStatus: "ready" as const,
-      canonicalSessionName: "dev-impl@test-rig",
-      binding: { tmuxSession: "dev-impl@test-rig", cmuxSurface: null },
-      resumeToken: null,
-    };
-
-    render(
-      <ReactFlowProvider>
-        <RigNode data={data} />
-      </ReactFlowProvider>
-    );
-
-    fireEvent.click(screen.getByTestId("toolbar-cmux-open"));
-
-    await waitFor(() => {
-      const openCall = mockFetch.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/open-cmux")
-      );
-      expect(openCall).toBeDefined();
-      expect(openCall![0]).toBe("/api/rigs/rig-1/nodes/dev.impl/open-cmux");
-      expect(openCall![1]).toEqual(expect.objectContaining({ method: "POST" }));
-    });
-
-    // Must NOT have called /focus
-    const focusCall = mockFetch.mock.calls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/focus")
-    );
-    expect(focusCall).toBeUndefined();
-  });
-
-  it("clicking toolbar cmux on bound node posts to /open-cmux and shows feedback", async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ ok: true, action: "focused_existing" }) });
-
-    const data = {
-      logicalId: "dev.impl",
-      rigId: "rig-1",
-      role: "worker",
-      runtime: "claude-code",
-      model: null,
-      status: "running",
-      startupStatus: "ready" as const,
-      canonicalSessionName: "dev-impl@test-rig",
-      binding: { tmuxSession: "dev-impl@test-rig", cmuxSurface: "s1" },
-      resumeToken: null,
-    };
-
-    render(
-      <ReactFlowProvider>
-        <RigNode data={data} />
-      </ReactFlowProvider>
-    );
-
-    fireEvent.click(screen.getByTestId("toolbar-cmux-open"));
-
-    await waitFor(() => {
-      const openCall = mockFetch.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/open-cmux")
-      );
-      expect(openCall).toBeDefined();
-      expect(openCall![0]).toBe("/api/rigs/rig-1/nodes/dev.impl/open-cmux");
-    });
-
-    // Flash feedback
-    await waitFor(() => {
-      expect(screen.getByTestId("toolbar-cmux-open").textContent).toBe("opened");
-    });
+    expect(screen.queryByTestId("toolbar-cmux-open")).toBeNull();
   });
 
   it("treats nodes as non-draggable so the canvas can pan through them", async () => {
@@ -901,216 +806,7 @@ describe("RigGraph SSE integration", () => {
   });
 });
 
-describe("RigGraph click-through to focus", () => {
-  it("click node with cmux binding -> POST to focus URL", async () => {
-    mockFetch
-      .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
-    });
-
-    // Click the node with cmux binding (orchestrator, n1)
-    const node = container.querySelector("[data-testid='rf__node-n1']")!;
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => {
-      const focusCall = mockFetch.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/focus")
-      );
-      expect(focusCall).toBeDefined();
-      expect(focusCall![0]).toBe("/api/rigs/rig-1/nodes/orchestrator/focus");
-      expect(focusCall![1]).toEqual(expect.objectContaining({ method: "POST" }));
-    });
-  });
-
-  it("successful focus -> success indicator shown", async () => {
-    mockFetch
-      .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
-    });
-
-    const node = container.querySelector("[data-testid='rf__node-n1']")!;
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/focused/i)).toBeDefined();
-    });
-  });
-
-  it("click node without binding -> 'not bound' message, no focus fetch", async () => {
-    mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n2']")).not.toBeNull();
-    });
-
-    mockFetch.mockClear();
-
-    // Click unbound node (worker, n2, binding=null)
-    const node = container.querySelector("[data-testid='rf__node-n2']")!;
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/not bound/i)).toBeDefined();
-    });
-
-    // No focus API call made
-    const focusCalls = mockFetch.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/focus")
-    );
-    expect(focusCalls).toHaveLength(0);
-  });
-
-  it("focus API returns cmux unavailable -> 'cmux not connected' shown", async () => {
-    mockFetch
-      .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: false, code: "unavailable" }) });
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
-    });
-
-    const node = container.querySelector("[data-testid='rf__node-n1']")!;
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/cmux not connected/i)).toBeDefined();
-    });
-  });
-
-  it("focus API error -> error message shown", async () => {
-    mockFetch
-      .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
-      .mockResolvedValueOnce({ ok: false, status: 500 });
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
-    });
-
-    const node = container.querySelector("[data-testid='rf__node-n1']")!;
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/focus failed/i)).toBeDefined();
-    });
-  });
-
-  it("click uses correct rigId and logicalId in URL path", async () => {
-    mockFetch
-      .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="my-rig-id" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
-    });
-
-    const node = container.querySelector("[data-testid='rf__node-n1']")!;
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => {
-      const focusCall = mockFetch.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/focus")
-      );
-      expect(focusCall![0]).toBe("/api/rigs/my-rig-id/nodes/orchestrator/focus");
-    });
-  });
-
-  it("click node with binding but no cmuxSurface -> 'not bound' message", async () => {
-    const nodes = [...sampleNodes(), nodeWithBindingNoSurface()];
-    mockFetch.mockResolvedValueOnce(mockGraphResponse(nodes, sampleEdges()));
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n3']")).not.toBeNull();
-    });
-
-    mockFetch.mockClear();
-
-    // Click reviewer node (has binding but cmuxSurface=null)
-    const node = container.querySelector("[data-testid='rf__node-n3']")!;
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/not bound/i)).toBeDefined();
-    });
-
-    // No focus API call
-    const focusCalls = mockFetch.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/focus")
-    );
-    expect(focusCalls).toHaveLength(0);
-  });
-
-  it("sequential clicks: newer message not cleared by older timer", async () => {
-    // First click: success. Second click: unavailable.
-    mockFetch
-      .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: false, code: "unavailable" }) });
-
-    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
-    });
-
-    const node = container.querySelector("[data-testid='rf__node-n1']")!;
-
-    // First click -> "Focused"
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => {
-      expect(screen.getByText(/focused/i)).toBeDefined();
-    });
-
-    // Second click immediately -> "cmux not connected"
-    // This should cancel the first timer
-    await act(async () => {
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => {
-      expect(screen.getByText(/cmux not connected/i)).toBeDefined();
-    });
-
-    // The newer message should be visible (old timer was cancelled)
-    expect(screen.getByText(/cmux not connected/i)).toBeDefined();
-    // The old "Focused" message should be gone (replaced)
-    expect(screen.queryByText(/focused/i)).toBeNull();
-  });
-
+describe("RigGraph package badges (the focus click-through was removed with cmux)", () => {
   // === PUX-T05: Package badge tests ===
 
   it("node with packageRefs shows package badge with count and names in title", async () => {
@@ -1126,7 +822,7 @@ describe("RigGraph click-through to focus", () => {
           model: "opus",
           status: "running",
           packageRefs: ["acme-standards", "test-tools"],
-          binding: { tmuxSession: "r01-orch1-lead", cmuxSurface: "s-1" },
+          binding: { tmuxSession: "r01-orch1-lead" },
         },
       },
     ];
@@ -1154,7 +850,7 @@ describe("RigGraph click-through to focus", () => {
     expect(screen.queryByTestId("package-badge")).toBeNull();
   });
 
-  it("badge click does not trigger node focus/cmux handler", async () => {
+  it("badge click does not trigger the node click (no navigation)", async () => {
     const nodesWithPkgs = [
       {
         id: "n1",
@@ -1167,7 +863,7 @@ describe("RigGraph click-through to focus", () => {
           model: "opus",
           status: "running",
           packageRefs: ["acme-standards"],
-          binding: { tmuxSession: "r01-orch1-lead", cmuxSurface: "s-1" },
+          binding: { tmuxSession: "r01-orch1-lead" },
         },
       },
     ];
@@ -1179,9 +875,8 @@ describe("RigGraph click-through to focus", () => {
       expect(screen.getByTestId("package-badge")).toBeDefined();
     });
 
-    // Reset fetch mock to track focus calls
-    mockFetch.mockClear();
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ focused: true }) });
+    // Reset the navigation spy (a node click navigates; see the NS-T12 tests below)
+    navigateSpy.mockClear();
 
     // Click the badge
     const badge = screen.getByTestId("package-badge");
@@ -1189,11 +884,8 @@ describe("RigGraph click-through to focus", () => {
       badge.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    // No focus POST should have been made (stopPropagation prevents node click)
-    const focusCalls = mockFetch.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/focus")
-    );
-    expect(focusCalls.length).toBe(0);
+    // stopPropagation prevents the node click, so nothing navigated
+    expect(navigateSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1219,9 +911,7 @@ describe("RigGraph node selection (P5.1-2 navigate)", () => {
   it("click node -> navigate({ to: '/topology/seat/$rigId/$logicalId', params })", async () => {
     navigateSpy.mockClear();
 
-    mockFetch
-      .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
+    mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
     const { container } = render(
       <QueryWrapper>
@@ -1248,23 +938,17 @@ describe("RigGraph node selection (P5.1-2 navigate)", () => {
       );
     });
 
-    // OPR.0.4.6.MH2 rev1-r2 B1 local CONTROL: on the local host the bound
-    // node's click ALSO fires the focus POST (consumed by the second mock)
-    // and the hover toolbar affordances are mounted.
-    await waitFor(() => {
-      expect(
-        mockFetch.mock.calls.some(
-          ([url, init]) =>
-            String(url).includes("/focus") && (init as RequestInit | undefined)?.method === "POST",
-        ),
-      ).toBe(true);
-    });
+    // OPR.0.4.6.MH2 rev1-r2 B1 local CONTROL: on the local host the hover
+    // toolbar is mounted, and the click fires no POST (the cmux focus route was removed).
     expect(container.querySelector("[data-testid='node-toolbar']")).not.toBeNull();
+    expect(
+      mockFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST"),
+    ).toEqual([]);
   });
 
   // OPR.0.4.6.MH2 rev1-r2 B1: under a REMOTE selection the node click keeps
-  // the read drill-in (navigate) but the bare-local focus POST never fires and
-  // the RigNode hover toolbar (cmux-open + terminal preview) never mounts.
+  // the read drill-in (navigate) but no POST fires and
+  // the RigNode hover toolbar (terminal preview) never mounts.
   it("remote-selected: click node navigates but fires ZERO POSTs; node toolbar absent (rev1-r2 B1)", async () => {
     navigateSpy.mockClear();
 
@@ -1296,7 +980,7 @@ describe("RigGraph node selection (P5.1-2 navigate)", () => {
     // RigNode gate: no local action toolbar on remote graph nodes.
     expect(container.querySelector("[data-testid='node-toolbar']")).toBeNull();
 
-    // Click the bound orchestrator node (n1 — would focus-POST when local).
+    // Click the bound orchestrator node (n1).
     const node = container.querySelector("[data-testid='rf__node-n1']")!;
     await act(async () => {
       node.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1312,7 +996,7 @@ describe("RigGraph node selection (P5.1-2 navigate)", () => {
       );
     });
 
-    // …but NO POST of any kind fired (the focus leg is gated).
+    // …and NO POST of any kind fired.
     const postCalls = mockFetch.mock.calls.filter(
       ([, init]) => (init as RequestInit | undefined)?.method === "POST",
     );

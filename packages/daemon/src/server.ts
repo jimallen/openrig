@@ -14,7 +14,6 @@ import type { EventBus } from "./domain/event-bus.js";
 import type { NodeLauncher } from "./domain/node-launcher.js";
 import type { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import type { TmuxAdapter } from "./adapters/tmux.js";
-import type { CmuxAdapter } from "./adapters/cmux.js";
 import type { SnapshotCapture } from "./domain/snapshot-capture.js";
 import type { SnapshotRepository } from "./domain/snapshot-repository.js";
 import type { RestoreOrchestrator } from "./domain/restore-orchestrator.js";
@@ -103,9 +102,7 @@ import { slicesRoutes } from "./routes/slices.js";
 import { reviewRoutes } from "./routes/review.js";
 import { rigModeRoutes } from "./routes/rig-mode.js";
 import { missionsRoutes } from "./routes/missions.js";
-import { rigCmuxRoutes } from "./routes/rig-cmux.js";
 import { terminalRoutes, rigTerminalRoutes } from "./routes/terminal.js";
-import { CmuxLayoutService } from "./domain/cmux-layout-service.js";
 import { getNodeInventory } from "./domain/node-inventory.js";
 import { filesRoutes } from "./routes/files.js";
 import { progressRoutes } from "./routes/progress.js";
@@ -160,7 +157,6 @@ export interface AppDeps {
   tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
   /** OF-183 — whether this daemon may change the shared Codex config.toml; exposed to the seat-handover route. */
   codexConfigWritePolicy?: import("./domain/codex-config-write-policy.js").CodexConfigWritePolicy;
-  cmuxAdapter: CmuxAdapter;
   snapshotCapture: SnapshotCapture;
   snapshotRepo: SnapshotRepository;
   /** Slice-04 OPR.0.5.0.4: the provider read-model/precheck/switch service. Routes 503 honestly if absent. */
@@ -262,7 +258,7 @@ export interface AppDeps {
   // "slices_root_not_configured" 503 so the UI can surface a setup hint.
   sliceIndexer?: import("./domain/slices/slice-indexer.js").SliceIndexer;
   reviewGatherer?: import("./domain/review/gather.js").ReviewGatherer;
-  // OPR.0.4.6.02 C3 — the terminal-provider-ride composer (herdr/cmux views).
+  // OPR.0.4.6.02 C3 — the terminal-provider-ride composer (herdr views).
   terminalService?: import("./domain/terminal/terminal-service.js").TerminalService;
   sliceDetailProjector?: import("./domain/slices/slice-detail-projector.js").SliceDetailProjector;
   /** User Settings v0 — daemon-side settings store (env > file > default). */
@@ -352,7 +348,6 @@ export interface AppDeps {
    * the optional call but no concrete impl was wired — the invalidation was dead until this).
    */
   occupantInvalidator?: import("./domain/occupant-invalidator.js").OccupantInvalidator;
-  nodeCmuxService?: import("./domain/node-cmux-service.js").NodeCmuxService;
   agentActivityStore?: AgentActivityStore;
   /** Native comms step 3: inbox endpoint registration and marker acks (routes/activity.ts). */
   claudeNativeInbox?: import("./domain/claude-native-inbox.js").ClaudeNativeInbox;
@@ -521,14 +516,8 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("codexConfigWritePolicy" as never, deps.codexConfigWritePolicy);
     c.set("sessionEnv" as never, deps.sessionEnv);
     c.set("runtimeSessionEnv" as never, deps.runtimeSessionEnv);
-    c.set("cmuxAdapter" as never, deps.cmuxAdapter);
     // S10 — the in-daemon gateway subsystem handle (health surface + dispatch seam).
     c.set("gatewaySubsystem" as never, deps.gatewaySubsystem);
-    // Slice 24 — per-rig CMUX workspace launcher wiring.
-    c.set(
-      "cmuxLayoutService" as never,
-      new CmuxLayoutService(deps.cmuxAdapter),
-    );
     c.set(
       "nodeInventoryFn" as never,
       (rigId: string) => getNodeInventory(deps.rigRepo.db, rigId),
@@ -616,7 +605,6 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("contextMonitor" as never, deps.contextMonitor);
     c.set("compactionEnforcer" as never, deps.compactionEnforcer);
     c.set("occupantInvalidator" as never, deps.occupantInvalidator);
-    c.set("nodeCmuxService" as never, deps.nodeCmuxService);
     c.set("agentActivityStore" as never, deps.agentActivityStore);
     c.set("claudeNativeInbox" as never, deps.claudeNativeInbox);
     c.set("seatAttentionReconciler" as never, deps.seatAttentionReconciler);
@@ -731,8 +719,6 @@ export function createApp(deps: CreateAppDeps): Hono {
 
   app.route("/api/rigs", rigsRoutes);
   app.route("/api/rigs/:rigId/sessions", sessionsRoutes);
-  // Slice 24 — per-rig CMUX workspace launcher.
-  app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
   app.route("/api/rigs/:rigId/nodes", nodesRoutes);
   app.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: deps.missionControlBearerToken ?? null }));
   app.route("/api/sessions", sessionAdminRoutes);

@@ -59,7 +59,7 @@ describe("D4: the startup orchestrator withholds startup content from a withhold
       db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => {},
       readinessSettings: { resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }) } as never,
     });
-    const binding: NodeBinding = { id: "b1", nodeId: node.id, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "." };
+    const binding: NodeBinding = { id: "b1", nodeId: node.id, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "." };
     const actions: StartupAction[] = [
       { type: "startup_proof", value: "authenticated", phase: "after_ready", appliesOn: ["fresh_start", "restore"], idempotent: true },
       { type: "send_text", value: "IDENTITY-CANARY", phase: "after_ready", appliesOn: ["fresh_start", "restore"], idempotent: true, builtin: "session_identity" },

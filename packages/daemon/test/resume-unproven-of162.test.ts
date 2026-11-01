@@ -96,7 +96,7 @@ describe("OF-162: a fresh launch with an unverified first message", () => {
     const settings: Pick<SettingsStore, "resolveOne"> = { resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }) };
     const orch = new StartupOrchestrator({ db, sessionRegistry: reg, eventBus: bus, tmuxAdapter: tmux, readFile: () => "Read the project instructions.",
       readinessSettings: settings, sleep: async () => {} });
-    const binding: NodeBinding = { id: "b1", nodeId: seed.nodeId, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "." };
+    const binding: NodeBinding = { id: "b1", nodeId: seed.nodeId, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "." };
     const input: StartupInput = { ...seed, binding, adapter, isRestore: opts.resume === true,
       ...(opts.resume ? { resumeToken: CLAUDE_ID, resumeType: "claude_id", allowFreshFallback: false } : {}),
       plan: { runtime: "claude-code", cwd: ".", entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },

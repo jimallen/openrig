@@ -16,9 +16,6 @@ function mockHealth(body: unknown): void {
         headers: { "content-type": "application/json" },
       });
     }
-    if (u.includes("/api/adapters/cmux/status")) {
-      return new Response(JSON.stringify({ available: true }), { status: 200 });
-    }
     return new Response("{}", { status: 200 });
   });
   vi.stubGlobal("fetch", fetchImpl);
