@@ -34,12 +34,12 @@ export interface HeldBinding {
   readonly pane: string | null;
 }
 
-/** `occupant_changed`: the guard lifted, but the seat is not the one that held the message. A held message is never rebound
- *  to a new occupant (seat-delivery-guard.ts), so it stays held and shows on health. */
+/** `occupant_changed`: the guard lifted, but the seat is not the one that held the message (Jim's decision): it goes to the new occupant,
+ *  labelled, unless it is lifecycle text, which goes back to its sender. */
 export type HoldStatus = "held" | "lifted" | "occupant_changed";
 
 export interface HeldMessages {
-  status(binding: HeldBinding): HoldStatus;
+  status(binding: HeldBinding | null, seat: string): HoldStatus;
 }
 
 export type SenderReturnResult =

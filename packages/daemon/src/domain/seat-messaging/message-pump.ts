@@ -10,6 +10,8 @@ import type { HeldMessages, SeatDirectory, SeatMessagingPorts, SenderReturn } fr
  *
  * The values are the design's, to be tuned on M7.
  */
+/** On a held message that outlived the occupant it was for (Jim's decision): the new occupant is told it was not written to them. */
+export const PREVIOUS_OCCUPANT_LABEL = "[sent to the previous occupant of this seat]";
 export const PUMP_TICK_MS = 5_000;
 /** How soon a paused seat is looked at again. A pause is not an attempt, so it spends no backoff. */
 export const PUMP_PAUSE_RECHECK_MS = 15_000;
@@ -68,7 +70,7 @@ export class MessagePump {
   }
 
   /** Commits the message (invariant 1) and starts a pass, so a first attempt does not wait for the timer. Idempotent on the id. */
-  accept(input: MessageAcceptInput): MessageId {
+  accept(input: MessageAcceptInput & { freezeBody?: boolean }): MessageId {
     const accepted = this.deps.store.accept(input);
     void this.tick();
     return messageId(accepted.id);
@@ -100,9 +102,15 @@ export class MessagePump {
     }
   }
 
+  /** No message stays held waiting for a person: it leaves the guard when the guard lifts, and at once when its seat is gone for good.
+   *  A seat with no gate keeps its held rows, as it keeps everything else. */
   private rejoinHeld(): void {
+    const at = new Date(this.clock()).toISOString();
     for (const held of this.deps.store.listHeld()) {
-      if (this.deps.ports.gateFor(held.seat) && this.deps.held.status(held.binding) === "lifted") this.deps.store.adoptHeld(held.id, new Date(this.clock()).toISOString());
+      if (!this.deps.ports.gateFor(held.seat)) continue;
+      const status = this.deps.held.status(held.binding, held.seat);
+      if (status === "occupant_changed") this.deps.store.adoptHeld(held.id, at, held.binding?.occupant ?? "unknown");
+      else if (status === "lifted" || this.deps.directory.fate(held.seat).kind === "gone") this.deps.store.adoptHeld(held.id, at, null);
     }
   }
 
@@ -131,6 +139,10 @@ export class MessagePump {
     }
     const fate = this.deps.directory.fate(message.seat);
     const bound = message.occupantGeneration;
+    // Lifecycle text stays with the occupant it was for: a held copy goes back to its sender, never on to the new occupant.
+    if (message.messageClass === "lifecycle" && message.previousOccupant !== null) {
+      return this.end(message, `occupant ${message.previousOccupant} of ${message.seat} has ended`);
+    }
     if (bound !== null) {
       // A lifecycle message belongs to one occupant: never a successor, never a new occupant.
       if (fate.kind === "successor" || fate.kind === "gone" || (fate.kind === "live" && fate.occupantGeneration !== null && fate.occupantGeneration !== bound)) {
@@ -169,7 +181,7 @@ export class MessagePump {
     if (!this.deps.store.claimAttempt(message, now + nextAttemptDelayMs(message.attempts + 1, this.timing.backoffMs))) return "stop";
     let result: LastHopResult;
     try {
-      result = await hop.attempt({ ids: [message.id], seat: message.seat, body: message.body, occupantGeneration: message.occupantGeneration, messageClass: message.messageClass, lane: message.lane });
+      result = await hop.attempt({ ids: [message.id], seat: message.seat, body: message.previousOccupant === null ? message.body : `${PREVIOUS_OCCUPANT_LABEL} ${message.body}`, occupantGeneration: message.occupantGeneration, messageClass: message.messageClass, lane: message.lane });
     } catch (error) {
       result = { kind: "refused", reason: `the hop threw: ${(error as Error).message}` };
     }

@@ -15,6 +15,8 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
+import { OutboxHandler } from "../src/domain/outbox-handler.js";
+import { PREVIOUS_OCCUPANT_LABEL } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
@@ -43,6 +45,7 @@ while True:
         line, pending = pending.split(b"\\r", 1)
         found = re.search(rb"\\[openrig-msg id=([^\\]]+)\\] (.*)", line)
         if not found:
+            log.write(b"unmarked " + line + b"\\n")
             continue
         mid = found.group(1).decode()
         try:
@@ -69,7 +72,7 @@ describe.skipIf(!HC)("the pump across a daemon crash, on a private core", () => 
   afterEach(() => { for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); children = []; });
   afterAll(() => core.stop());
 
-  interface Fixture { dir: string; db: string; seat: string; read(id: string): Record<string, unknown>; seatLog(): string[]; hopLog(): string[]; accept(id: string): void }
+  interface Fixture { dir: string; db: string; seat: string; nodeId: string; lead: string; read(id: string): Record<string, unknown>; seatLog(): string[]; hopLog(): string[]; accept(id: string): void }
 
   async function fixture(options: { hold?: boolean } = {}): Promise<Fixture> {
     const dir = mkdtempSync(join(core.root, "w-"));
@@ -88,23 +91,26 @@ describe.skipIf(!HC)("the pump across a daemon crash, on a private core", () => 
     const sessions = new SessionRegistry(handle);
     sessions.updateStatus(sessions.registerSession(node.id, seat).id, "running");
     sessions.updateBinding(node.id, { attachmentType: "hc", tmuxSession: seat });
+    const leadRig = rigs.createRig(`lead-rig-${serial}`);
+    rigs.addNode(leadRig.id, "lead", { role: "worker", runtime: "claude-code" });
     handle.close();
     const address = hcTerminalName(seat);
     await core.client.call("terminal.run", { argv: ["/usr/bin/python3", "-I", join(dir, "seat.py"), dir], name: address, labels: { "openrig.seat": seat }, no_parent: true, no_notify: true, outlive_parent: true });
     await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes("READY"), "the seat's first paint");
     const lines = (file: string) => readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean);
     return {
-      dir, db, seat,
+      dir, db, seat, nodeId: node.id, lead: `lead@lead-rig-${serial}`,
       read: (id) => { const h = createDb(db); try { return h.prepare("SELECT * FROM outbox_entries WHERE outbox_id = ?").get(id) as Record<string, unknown>; } finally { h.close(); } },
       seatLog: () => lines("seat.log"), hopLog: () => lines("hop.log"),
       accept: (id) => { const h = createDb(db); try { new MessageStore(h).accept({ id: messageId(id), seat, sender: "lead@pump-rig", body: `body of ${id}` }); } finally { h.close(); } },
     };
   }
 
-  function daemon(f: Fixture, crash: "none" | "before_bytes" | "after_bytes", setting = "true"): ChildProcess {
+  function daemon(f: Fixture, crash: "none" | "before_bytes" | "after_bytes", setting = "true", send?: { id: string; body: string }): ChildProcess {
     const env: NodeJS.ProcessEnv = {
       ...core.env, PATH: `${dirname(HC)}:/usr/bin:/bin`, TMPDIR: join(core.root, "h"), OPENRIG_HOME: join(core.root, "h", "openrig"),
       OPENRIG_TRANSPORT_MESSAGE_PUMP: setting, MPD_DB: f.db, MPD_DIR: f.dir, MPD_CRASH: crash,
+      ...(send ? { MPD_SEND: JSON.stringify({ seat: f.seat, ...send }) } : {}),
     };
     const stderr: string[] = [];
     const child = spawn(process.execPath, ["--import", "tsx", CHILD], { cwd: resolve(here, ".."), env, stdio: ["ignore", "ignore", "pipe"] });
@@ -173,6 +179,67 @@ describe.skipIf(!HC)("the pump across a daemon crash, on a private core", () => 
     const log = f.seatLog();
     expect(log.filter((l) => l.startsWith("agent "))).toEqual(["agent m1 body of m1", "agent m2 body of m2"]);
     expect(log.filter((l) => l === "dropped m1").length).toBeGreaterThanOrEqual(1);
+  }, 90_000);
+
+  it("a send through SessionTransport to a gated seat is the pump's alone: killed mid-attempt, the seat gets it once and never from the transport", async () => {
+    const f = await fixture();
+    const first = daemon(f, "after_bytes", "true", { id: "t1", body: "from a sender" });
+    await hopSaw(f, "sent t1");
+    await until(() => f.seatLog(), (l) => l.length >= 1, "the seat's record");
+    await kill(first);
+    expect(f.hopLog().filter((l) => l.startsWith("transport "))).toEqual(["transport t1 handed_to_pump sent=false"]);  // it answered while the attempt hung: it does not drive it
+
+    daemon(f, "none");
+    await received(f, "t1");
+    await new Promise((r) => setTimeout(r, 800));
+    expect(f.seatLog()).toEqual(["agent t1 from a sender"]);
+    expect(count(f.hopLog(), "claimed t1")).toBe(1);
+  }, 90_000);
+
+  it("the transport's answer says handed to the pump, nothing was sent by it", async () => {
+    const f = await fixture();
+    daemon(f, "none", "true", { id: "t2", body: "x" });
+    await until(() => f.hopLog(), (l) => l.some((x) => x.startsWith("transport t2")), "the transport's answer", 40_000);
+    expect(f.hopLog().find((x) => x.startsWith("transport t2"))).toBe("transport t2 handed_to_pump sent=false");
+    await received(f, "t2");
+    expect(f.seatLog()).toEqual(["agent t2 x"]);
+  }, 90_000);
+
+  const hold = (f: Fixture, id: string, sender: string, messageClass?: "lifecycle") => {
+    const h = createDb(f.db);
+    try {
+      new OutboxHandler(h).retain({ outboxId: id, senderSession: sender, destinationSession: f.seat, body: `held ${id}`, messageClass }, { nodeId: f.nodeId, session: f.seat, occupant: "the-old-occupant", pane: null });
+    } finally { h.close(); }
+  };
+
+  it("a held message whose occupant changed goes to the new occupant, labelled, once across a crash", async () => {
+    const f = await fixture();
+    hold(f, "h1", "lead@pump-rig");
+    const first = daemon(f, "after_bytes");
+    await hopSaw(f, "sent h1");
+    await until(() => f.seatLog(), (l) => l.length >= 1, "the seat's record");
+    await kill(first);
+
+    daemon(f, "none");
+    await received(f, "h1");
+    expect(f.seatLog()).toEqual([`agent h1 ${PREVIOUS_OCCUPANT_LABEL} held h1`]);
+    expect(f.read("h1")).toMatchObject({ body: "held h1", delivery_state: "delivered" });
+  }, 90_000);
+
+  it("held lifecycle text whose occupant changed goes back to its sender, and a crash repeats no item", async () => {
+    const f = await fixture();
+    hold(f, "h2", f.lead, "lifecycle");
+    daemon(f, "none");
+    await until(() => f.read("h2"), (r) => r.message_state === "undeliverable", "h2 ended", 40_000);
+    await kill(children[0]!);
+    daemon(f, "none");
+    await new Promise((r) => setTimeout(r, 600));
+    const h = createDb(f.db);
+    try {
+      expect((h.prepare("SELECT destination_session AS d FROM queue_items").all() as Array<{ d: string }>).map((r) => r.d)).toEqual([f.lead]);
+    } finally { h.close(); }
+    expect(f.seatLog()).toEqual([]);
+    expect(f.hopLog().filter((l) => l.startsWith("claimed"))).toEqual([]);
   }, 90_000);
 
   it("with the setting off, the same daemon drives nothing", async () => {

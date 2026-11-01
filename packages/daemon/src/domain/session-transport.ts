@@ -20,6 +20,8 @@ import {
 export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler, WAKE_INTENT_PREFIX, type SeatMessageClass, type SeatMessageLane } from "./outbox-handler.js";
 import { MessageLedger, mintMessageId } from "./seat-messaging/message-ledger.js";
+import type { MessageHandOff } from "./seat-messaging/hand-off.js";
+import { messageId } from "./seat-messaging/ports.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
@@ -994,6 +996,14 @@ function promptAnswerStaged(pane: string | null, answer: string, runtime: string
   return end > inputIndex && lines.slice(inputIndex, end).join("\n").trimStart().slice(1).trim() === answer.trim();
 }
 
+export const HANDED_TO_PUMP = "handed_to_pump";
+
+/** What the pump carries. Not: an Enter with no text, a person's answer to a prompt, a Command, a row the caller settles itself, and a
+ *  send with a closure on it (`/compact`'s lease check, startup's submit check), since a closure cannot sit on a durable row. */
+function isPumpMessage(opts?: SendOpts): boolean {
+  return !opts?.submitOnly && !opts?.dangerouslyInteract && !opts?.ownsOutboxRow && opts?.messageClass !== "command" && !opts?.beforeWrite && !opts?.onStartupMismatch;
+}
+
 export interface SendOpts {
   /** Internal managed lifecycle prerequisite; never accepted from HTTP send options. */
   beforeWrite?: () => void;
@@ -1002,6 +1012,8 @@ export interface SendOpts {
   auditPointer?: string;
   /** Internal queue seam: already committed original members, never client-supplied. */
   committedOutboxIds?: string[];
+  /** Internal: this send IS the pump's attempt, so it is not handed to the pump. Never client-supplied. */
+  pumpAttempt?: boolean;
   /** Internal: the caller writes this send's outbox row itself (the /send and /broadcast routes, the deadline sweeper's fallback),
    *  so the transport does not record an unconfirmed hc send for it. Every other send that ends unconfirmed on an hc seat is recorded
    *  here, `indeterminate` with its pending record, so a sweep can settle it and `rig health` can name it. Never client-supplied. */
@@ -1623,6 +1635,9 @@ export class SessionTransport {
     // OF-148: before any wait, hold or retention. `--dangerously-interact` is exempt here only because it may turn out to
     // send unbracketed key input; sendUnguarded refuses again at the bracketed delivery if it did not.
     if (!opts?.dangerouslyInteract && containsPasteTerminator(text)) return pasteTerminatorRefusal(sessionName);
+    if (opts?.pumpAttempt) return this.attempt(sessionName, text, opts);
+    const handOff = this.tmuxAdapter.messageHandOff?.takes(sessionName) ? this.tmuxAdapter.messageHandOff : null;
+    if (handOff && isPumpMessage(opts)) return this.handToPump(handOff, sessionName, text, opts);
     if (opts?.submitOnly || opts?.ownsOutboxRow || opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX)) return this.attempt(sessionName, text, opts);
     if (opts?.committedOutboxIds && opts.committedOutboxIds.length > 0) {
       for (const id of opts.committedOutboxIds) new OutboxHandler(this.db).countAttempt(id);
@@ -1644,6 +1659,8 @@ export class SessionTransport {
       return { ok: false, sessionName, sent: false, reason: "delivery_identity_conflict", error: "Delivery ID names different content/identity." };
     }
     ledger.beginAttempt(accepted.id);
+    // Direct on a seat the pump serves: this send is the row's one driver, so a crash must not leave it open to the pump.
+    if (handOff) new OutboxHandler(this.db).closeMessageState(accepted.id);
     let result: SendResult;
     try {
       result = await this.attempt(sessionName, accepted.body, { ...opts, deliveryId: accepted.id });
@@ -1653,6 +1670,31 @@ export class SessionTransport {
     }
     ledger.settle(accepted.id, result, { keepOpenOnRefusal: opts?.keepRowOpenOnRefusal });
     return result;
+  }
+
+  /**
+   * One driver per row (Seat Messaging): on a seat the pump serves, a message is committed and left to the pump, so nothing here writes
+   * to the seat and nothing races it. `outcome: "retained"` is the existing word for "a durable row holds this, nothing was delivered",
+   * which every consumer already reads correctly; `reason` says whose hands it is in.
+   */
+  private handToPump(handOff: MessageHandOff, sessionName: string, text: string, opts?: SendOpts): SendResult {
+    const handed = (ids: string[]): SendResult => ({ ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
+      warning: "Accepted, not yet received: the pump carries it until the seat's gate records it." });
+    const claimed = opts?.committedOutboxIds?.length ? opts.committedOutboxIds : opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX) ? [opts.deliveryId] : null;
+    if (claimed) { handOff.adoptClaimed(claimed); return handed(claimed); }
+    let accepted;
+    try {
+      accepted = handOff.accept({
+        id: messageId(opts?.deliveryId ?? mintMessageId()), seat: sessionName, body: text, sender: opts?.actorSession ?? "unknown",
+        identityProvenance: opts?.actorSession ? "transport:v1" : "origin-unknown:v1", auditPointer: opts?.auditPointer,
+        messageClass: opts?.messageClass ?? "content", lane: opts?.lane, occupantGeneration: opts?.occupantGeneration ?? null, freezeBody: opts?.freezeBody,
+      });
+    } catch (error) {
+      return { ok: false, sessionName, sent: false, reason: "message_not_recorded", error: `The message's row could not be written, so nothing was sent: ${(error as Error).message}` };
+    }
+    if (accepted.kind === "conflict") return { ok: false, sessionName, sent: false, reason: "delivery_identity_conflict", error: "Delivery ID names different content/identity." };
+    if (accepted.kind === "ended") return { ok: accepted.received, sessionName, sent: false, verified: accepted.received, reason: "message_already_ended" };
+    return handed([accepted.id]);
   }
 
   /** One attempt: the guards, the native inbox or the typing guard, then the write. */

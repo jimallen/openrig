@@ -15,7 +15,7 @@ import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { MESSAGE_STUCK_AFTER_MS, SeatMessagingHealthSource } from "../src/domain/seat-messaging/message-health.js";
 import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn, returnQitemId } from "../src/domain/seat-messaging/seat-directory.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
-import type { HeldMessages, SeatMessagingPorts } from "../src/domain/seat-messaging/pump-ports.js";
+import type { SeatMessagingPorts } from "../src/domain/seat-messaging/pump-ports.js";
 
 describe("the fleet, as the pump reads it", () => {
   let db: Database.Database;
@@ -80,11 +80,14 @@ describe("the fleet, as the pump reads it", () => {
       const { guard, held } = guarded();
       const binding = guard.target(s.name);
       await guard.set(s.nodeId, true, "jim", "typing");
-      expect(held.status(binding)).toBe("held");
+      expect(held.status(binding, s.name)).toBe("held");
       await guard.set(s.nodeId, false, "jim", "done");
-      expect(held.status(binding)).toBe("lifted");
+      expect(held.status(binding, s.name)).toBe("lifted");
       tenure(s.nodeId, 11, "g2");
-      expect(held.status(binding)).toBe("occupant_changed");
+      expect(held.status(binding, s.name)).toBe("occupant_changed");
+      expect(held.status(null, s.name)).toBe("occupant_changed");
+      await guard.set(s.nodeId, true, "jim", "typing");
+      expect(held.status(null, s.name)).toBe("held");
     });
 
     it("an activation still pending counts as held", () => {
@@ -92,7 +95,7 @@ describe("the fleet, as the pump reads it", () => {
       const { guard, held } = guarded();
       const binding = guard.target(s.name);
       db.prepare("INSERT INTO seat_delivery_guards (node_id, desired, effective, actor, reason, changed_at) VALUES (?, 0, 1, 'a', 'r', 't')").run(s.nodeId);
-      expect(held.status(binding)).toBe("held");
+      expect(held.status(binding, s.name)).toBe("held");
     });
   });
 
@@ -125,10 +128,9 @@ describe("the fleet, as the pump reads it", () => {
 
   describe("rig health", () => {
     const NOW = new Date("1999-06-01T12:00:00.000Z");
-    const heldNone: HeldMessages = { status: () => "held" };
-    const gated: SeatMessagingPorts = { gateFor: (s) => (s === "dev@r" ? { version: 1, lookup: async () => ({ kind: "not_seen" }) } : null), hopFor: () => null };
-    const source = (held = heldNone) => new SeatMessagingHealthSource(new MessageStore(db), gated, held, () => NOW);
-    const reasons = (held = heldNone) => source(held).coverage().map((c) => (c as { reason: string }).reason);
+        const gated: SeatMessagingPorts = { gateFor: (s) => (s === "dev@r" ? { version: 1, lookup: async () => ({ kind: "not_seen" }) } : null), hopFor: () => null };
+    const source = () => new SeatMessagingHealthSource(new MessageStore(db), gated, () => NOW);
+    const reasons = () => source().coverage().map((c) => (c as { reason: string }).reason);
     const age = (id: string, ms: number) => db.prepare("UPDATE outbox_entries SET ts_dispatched = ? WHERE outbox_id = ?").run(new Date(NOW.getTime() - ms).toISOString(), id);
     const accept = (id: string, s = "dev@r") => new MessageStore(db).accept({ id: messageId(id), seat: s, sender: "lead@r", body: "x" });
 
@@ -169,14 +171,6 @@ describe("the fleet, as the pump reads it", () => {
       accept("u1", "ungated@r");
       age("u1", MESSAGE_STUCK_AFTER_MS + 60_000);
       expect(reasons()[0]).toContain("declares no gate");
-    });
-
-    it("names a held message left for an occupant that is gone, and how to close it", () => {
-      new OutboxHandler(db).retain({ outboxId: "h1", senderSession: "a@r", destinationSession: "dev@r", body: "x" }, { nodeId: "n1", session: "dev@r", occupant: "g1", pane: null });
-      expect(reasons()).toEqual([]);
-      const row = reasons({ status: () => "occupant_changed" });
-      expect(row).toHaveLength(1);
-      expect(row[0]).toContain("rig seat retire-held-message dev@r h1");
     });
   });
 });

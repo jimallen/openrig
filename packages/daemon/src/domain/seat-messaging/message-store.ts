@@ -29,6 +29,8 @@ export interface StoredMessage {
   readonly seat: string;
   readonly body: string;
   readonly occupantGeneration: string | null;
+  /** Set when a held row went to a new occupant: the occupant that held it. Every attempt then carries the label. */
+  readonly previousOccupant: string | null;
   readonly sender: string;
   readonly lane: SeatMessageLane;
   readonly messageClass: SeatMessageClass;
@@ -82,6 +84,7 @@ interface MessageRow {
   message_pause_reason: string | null;
   message_last_refusal: string | null;
   occupant_generation: string | null;
+  message_previous_occupant: string | null;
 }
 
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
@@ -102,7 +105,7 @@ function iso(ms: number | null): string | null { return ms === null ? null : new
 function toMessage(row: MessageRow): StoredMessage {
   return {
     id: messageId(row.outbox_id), seat: row.destination_session, sender: row.sender_session, body: row.body,
-    occupantGeneration: row.occupant_generation,
+    occupantGeneration: row.occupant_generation, previousOccupant: row.message_previous_occupant,
     state: row.message_state === "accepted" ? "accepted" : "attempting",
     lane: laneOf(row.lane), messageClass: classOf(row.class),
     attempts: row.attempts, nextAttemptAtMs: row.next_attempt_at === null ? null : Date.parse(row.next_attempt_at),
@@ -116,14 +119,14 @@ export class MessageStore {
 
   /** Commits the row before any attempt (invariant 1). Accepting an id again is the same answer, so a sender may repeat it free. A
    *  row the send path already wrote and has not settled is adopted; one it settled is refused, since accepting it would send it again. */
-  accept(input: MessageAcceptInput): StoredMessage {
+  accept(input: MessageAcceptInput & { freezeBody?: boolean }): StoredMessage {
     if (input.messageClass === "command") throw new OutboxHandlerError("command_not_pumped", "A command is confirmed by its effect and stays with its owner; the pump never carries it.");
     return this.db.transaction(() => {
       const existing = this.outbox.getById(input.id);
-      if (existing && (existing.senderSession !== input.sender || existing.destinationSession !== input.seat || existing.body !== input.body)) {
+      if (existing && (existing.senderSession !== input.sender || existing.destinationSession !== input.seat || (!input.freezeBody && existing.body !== input.body))) {
         throw new OutboxHandlerError("delivery_identity_conflict", "The message id already names different content or target identity.");
       }
-      if (existing && existing.deliveryState !== "pending") {
+      if (existing && existing.deliveryState !== "pending" && existing.deliveryState !== "retained") {
         const open = this.db.prepare(`SELECT 1 FROM outbox_entries WHERE outbox_id = ? AND ${OPEN}`).get(input.id) !== undefined;
         if (!open) throw new OutboxHandlerError("delivery_already_attempted", `Message ${input.id} is already ${existing.deliveryState}; it is not accepted again.`);
       }
@@ -214,19 +217,27 @@ export class MessageStore {
       WHERE outbox_id = ? AND ${OPEN}`).run(successor, id).changes === 1;
   }
 
-  /** Held rows still the guard's, oldest first. A binding that is not JSON names no seat, so such a row stays with `retire`. */
-  listHeld(): Array<{ id: MessageId; seat: string; binding: HeldBinding }> {
-    const rows = this.db.prepare(`SELECT outbox_id AS id, destination_session AS seat, guard_binding AS binding FROM outbox_entries
-      WHERE delivery_state = 'retained' AND message_hold_released_at IS NULL AND guard_binding IS NOT NULL AND json_valid(guard_binding) ORDER BY rowid`)
-      .all() as Array<{ id: string; seat: string; binding: string }>;
-    return rows.map((r) => ({ id: messageId(r.id), seat: r.seat, binding: JSON.parse(r.binding) as HeldBinding }));
+  /** Held rows still the guard's, oldest first. A binding that is not JSON reads as null: the seat is on the row. A command is not a
+   *  message, so it stays with its owner. */
+  listHeld(): Array<{ id: MessageId; seat: string; binding: HeldBinding | null }> {
+    const rows = this.db.prepare(`SELECT outbox_id AS id, destination_session AS seat, CASE WHEN json_valid(guard_binding) THEN guard_binding END AS binding FROM outbox_entries
+      WHERE delivery_state = 'retained' AND message_hold_released_at IS NULL AND class IS NOT 'command' ORDER BY rowid`)
+      .all() as Array<{ id: string; seat: string; binding: string | null }>;
+    return rows.map((r) => ({ id: messageId(r.id), seat: r.seat, binding: r.binding === null ? null : JSON.parse(r.binding) as HeldBinding }));
   }
 
   /** Decision 4: a held message rejoins its seat's queue when the guard lifts. It keeps its rowid, so it stays ahead of anything
-   *  newer, and stays `retained` until received (see the class note). */
-  adoptHeld(id: MessageId, atIso: string): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET message_state = coalesce(message_state, 'accepted'), message_id = coalesce(message_id, outbox_id), message_hold_released_at = ?
-      WHERE outbox_id = ? AND delivery_state = 'retained' AND message_hold_released_at IS NULL`).run(atIso, id).changes === 1;
+   *  newer, and stays `retained` until received (see the class note). `previousOccupant`: the seat changed hands, so it goes labelled. */
+  adoptHeld(id: MessageId, atIso: string, previousOccupant: string | null): boolean {
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = coalesce(message_state, 'accepted'), message_id = coalesce(message_id, outbox_id), message_hold_released_at = ?, message_previous_occupant = ?
+      WHERE outbox_id = ? AND delivery_state = 'retained' AND message_hold_released_at IS NULL`).run(atIso, previousOccupant, id).changes === 1;
+  }
+
+  /** A row a drain claimed or still holds moves to the pump, whole. A nudge in the content lane, unless the row says otherwise. */
+  adoptClaimed(id: MessageId): boolean {
+    return this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'pending', message_state = 'accepted', message_id = coalesce(message_id, outbox_id),
+        class = coalesce(class, 'nudge'), lane = coalesce(lane, ?)
+      WHERE outbox_id = ? AND delivery_state IN ('pending', 'sending') AND message_state IS NULL`).run(MESSAGE_LANES.content, id).changes === 1;
   }
 
   /** One line per seat with an open message: how many, and the oldest. SELECT only. */

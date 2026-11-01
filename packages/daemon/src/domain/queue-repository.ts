@@ -1515,7 +1515,7 @@ export class QueueRepository {
           : { classified: "native-pending", nudgeResult: "native-ack-pending", label: { path: "native", evidence: "native_written" } };
       }
       const label = labelForTmuxSend(res);
-      if (res.outcome === "retained") return { classified: "retained", nudgeResult: "retained:typing_guard", label };
+      if (res.outcome === "retained") return { classified: "retained", nudgeResult: res.reason === "handed_to_pump" ? "retained:pump" : "retained:typing_guard", label };
       if (res.ok && label.evidence !== "send_failed") {
         return res.verified
           ? { classified: "verified", nudgeResult: "verified", label }

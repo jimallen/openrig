@@ -35,10 +35,15 @@ export class DbSeatDirectory implements SeatDirectory {
 export class GuardHeldMessages implements HeldMessages {
   constructor(private readonly guard: Pick<SeatDeliveryGuard, "preference" | "maybeTarget">) {}
 
-  status(binding: HeldBinding): HoldStatus {
-    const preference = this.guard.preference(binding.nodeId);
-    if (preference.desired || preference.effective) return "held";
-    return this.guard.maybeTarget(binding.nodeId)?.occupant === binding.occupant ? "lifted" : "occupant_changed";
+  status(binding: HeldBinding | null, seat: string): HoldStatus {
+    const target = this.guard.maybeTarget(binding?.nodeId ?? seat);
+    const nodeId = binding?.nodeId ?? target?.nodeId;
+    if (nodeId !== undefined) {
+      const preference = this.guard.preference(nodeId);
+      if (preference.desired || preference.effective) return "held";
+    }
+    // A binding that cannot be read has lost who held the message: that is never proof the seat is the same one.
+    return binding !== null && target?.occupant === binding.occupant ? "lifted" : "occupant_changed";
   }
 }
 

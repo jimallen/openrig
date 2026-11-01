@@ -11,6 +11,8 @@ import type { Migration } from "../migrate.js";
  *  - `message_closed_reason`, `message_closed_at`: why and when a row ended `undeliverable`.
  *  - `message_hold_released_at`: when a held row rejoined its seat's queue. A `retained` row stays the guard's until this is set, whatever
  *    its `message_state`: the send path leaves a held row `attempting`, so `message_state` cannot say who holds it.
+ *  - `message_previous_occupant`: set when a held row goes to a new occupant (Jim's decision): every attempt carries the label, built
+ *    from this at the attempt. The stored body never changes (invariant 2).
  */
 export const seatMessageStateSchema: Migration = {
   name: "123_seat_message_state.sql",
@@ -21,6 +23,7 @@ export const seatMessageStateSchema: Migration = {
     ALTER TABLE outbox_entries ADD COLUMN message_closed_reason TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_closed_at TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_hold_released_at TEXT;
+    ALTER TABLE outbox_entries ADD COLUMN message_previous_occupant TEXT;
     CREATE INDEX idx_outbox_message_open ON outbox_entries(destination_session, message_state)
       WHERE message_state IN ('accepted', 'attempting');
   `,

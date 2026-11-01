@@ -37,10 +37,16 @@ const hop: LastHop = {
   },
 };
 
-await createDaemon({
+const daemon = await createDaemon({
   dbPath: db,
   seatMessagingPorts: { gateFor: () => gate, hopFor: () => hop },
   messagePumpTiming: { tickMs: 40, pauseRecheckMs: 100, backoffMs: [300, 300, 300] },
 });
 note("booted");
+// A send through the daemon's real SessionTransport, as every sender makes one.
+if (process.env.MPD_SEND) {
+  const { seat, id, body } = JSON.parse(process.env.MPD_SEND) as { seat: string; id: string; body: string };
+  const result = await daemon.deps.sessionTransport.send(seat, body, { deliveryId: id, actorSession: "lead@pump-rig" });
+  note(`transport ${id} ${result.reason ?? ""} sent=${String(result.sent)}`);
+}
 setInterval(() => undefined, 60_000);

@@ -33,6 +33,7 @@ import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
 import { MessagePump } from "./domain/seat-messaging/message-pump.js";
 import { MessageStore } from "./domain/seat-messaging/message-store.js";
 import { SeatMessagingHealthSource } from "./domain/seat-messaging/message-health.js";
+import { PumpHandOff } from "./domain/seat-messaging/hand-off.js";
 import { NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
 import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
 import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
@@ -1270,7 +1271,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
   const seatMessagingPorts = opts?.seatMessagingPorts ?? NO_SEAT_MESSAGING_PORTS;
   const heldMessages = new GuardHeldMessages(deliveryGuard);
-  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(new MessageStore(db), seatMessagingPorts, heldMessages)] : [];
+  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(new MessageStore(db), seatMessagingPorts)] : [];
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, ...seatMessagingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
@@ -2208,12 +2209,16 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       setInterval(() => { void hcSweep(); }, 15_000).unref();
     }
     nativeSweepTimer.unref?.();
-    // Started at boot and driven by the database. Not wired to any sender yet (S4): it serves rows `accept` wrote, for seats with a gate.
+    // Started at boot and driven by the database. It serves seats with a gate; SessionTransport hands it their messages.
     if (messagePumpEnabled) {
-      new MessagePump({
-        store: new MessageStore(db), ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
+      const messageStore = new MessageStore(db);
+      const messagePump = new MessagePump({
+        store: messageStore, ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
         senders: new QueueSenderReturn(queueRepoInstance), timing: opts?.messagePumpTiming,
-      }).start();
+      });
+      // Before the first pass and before any route: from here no SessionTransport sends a message to a gated seat itself.
+      tmuxAdapter.messageHandOff = new PumpHandOff(messageStore, messagePump, seatMessagingPorts);
+      messagePump.start();
     }
     queueRepoInstance.attachActivityReader((session) => {
       const nodeId = resolveSessionNodeId(db, session);

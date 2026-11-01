@@ -387,6 +387,8 @@ function parseLines<T>(output: string, parser: (line: string) => T | null): T[] 
 export class TmuxAdapter {
   readonly hostKind: "tmux" | "hc" = "tmux";
   deliveryGuard?: SeatDeliveryGuard;
+  /** Seat Messaging S3: set by startup, as `deliveryGuard` is, so every SessionTransport sees it. Absent: the pump is off. */
+  messageHandOff?: import("../domain/seat-messaging/hand-off.js").MessageHandOff;
   /** The latest window listing, shared by the poll loops (OF-176): a read in flight is joined, a recent one reused. */
   private windowSnapshot: { at: number; settled: boolean; value: SessionWindowSnapshot | null; result: Promise<SessionWindowSnapshot | null> } | null = null;
   private readonly freshProbes = new Map<string, string>();

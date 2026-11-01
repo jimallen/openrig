@@ -10,7 +10,7 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
-import { ATTEMPT_BACKOFF_MS, MessagePump, PUMP_PAUSE_RECHECK_MS, nextAttemptDelayMs, type MessagePumpDeps } from "../src/domain/seat-messaging/message-pump.js";
+import { ATTEMPT_BACKOFF_MS, MessagePump, PREVIOUS_OCCUPANT_LABEL, PUMP_PAUSE_RECHECK_MS, nextAttemptDelayMs, type MessagePumpDeps } from "../src/domain/seat-messaging/message-pump.js";
 import { MESSAGE_LANES, MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId, type GateLookup, type GateRecord, type LastHop, type LastHopResult, type MessageId, type SeatGate, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
 import type { HeldMessages, HoldStatus, SeatDirectory, SeatFate, SenderReturn, SenderReturnResult } from "../src/domain/seat-messaging/pump-ports.js";
@@ -53,7 +53,8 @@ class World {
   returnResult: SenderReturnResult | "throw" = { kind: "returned", qitemId: "qitem-back" };
   ungated = new Set<string>();
   readonly directory: SeatDirectory = { fate: (seat) => this.fates.get(seat) ?? { kind: "live", occupantGeneration: null } };
-  readonly held: HeldMessages = { status: (binding) => this.holds.get(binding.nodeId) ?? "held" };
+  readonly seatHolds = new Map<string, HoldStatus>();
+  readonly held: HeldMessages = { status: (binding, seat) => (binding ? this.holds.get(binding.nodeId) : this.seatHolds.get(seat)) ?? "held" };
   readonly senders: SenderReturn = {
     returnToSender: async (m, reason) => {
       if (this.returnResult === "throw") throw new Error("queue busy");
@@ -79,8 +80,8 @@ describe("the message pump", () => {
   const SEAT = "dev@r";
   const accept = (id: string, seat = SEAT, extra: { occupantGeneration?: string; sender?: string } = {}) =>
     store.accept({ id: messageId(id), seat, sender: extra.sender ?? "lead@r", body: `body of ${id}`, occupantGeneration: extra.occupantGeneration });
-  const hold = (id: string, nodeId = "n1", seat = SEAT) => new OutboxHandler(db).retain(
-    { outboxId: id, senderSession: "lead@r", destinationSession: seat, body: `held ${id}` }, { nodeId, session: seat, occupant: "g1", pane: null });
+  const hold = (id: string, nodeId = "n1", seat = SEAT, messageClass?: "lifecycle") => new OutboxHandler(db).retain(
+    { outboxId: id, senderSession: "lead@r", destinationSession: seat, body: `held ${id}`, messageClass }, { nodeId, session: seat, occupant: "g1", pane: null });
 
   beforeEach(() => {
     db = createDb();
@@ -435,20 +436,73 @@ describe("the message pump", () => {
       db.prepare("UPDATE outbox_entries SET message_state = 'attempting', attempts = 1 WHERE outbox_id = 'h1'").run();
       await pump.tick();
       expect(w.hop.calls).toEqual([]);
-      w.holds.set("n1", "occupant_changed");
-      await pump.tick();
-      expect(w.hop.calls).toEqual([]);
       w.holds.set("n1", "lifted");
       await pump.tick();
       expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["h1"]);
     });
 
-    it("are not replayed to an occupant that did not hold them", async () => {
+    it("go to the new occupant when the occupant changed, labelled at every attempt, the stored body untouched", async () => {
       hold("h1");
       w.holds.set("n1", "occupant_changed");
       await pump.tick();
+      w.now += 2 * MIN;
+      await pump.tick();
+      const text = `${PREVIOUS_OCCUPANT_LABEL} held h1`;
+      expect(w.hop.calls.map((c) => c.body)).toEqual([text, text]);
+      expect(row(db, "h1")).toMatchObject({ body: "held h1", message_state: "attempting", message_previous_occupant: "g1" });
+      expect(w.returned).toEqual([]);
+    });
+
+    it("a held command is not a message: it stays with its owner", async () => {
+      hold("h1");
+      db.prepare("UPDATE outbox_entries SET class = 'command' WHERE outbox_id = 'h1'").run();
+      w.holds.set("n1", "occupant_changed");
+      await pump.tick();
       expect(w.hop.calls).toEqual([]);
-      expect(row(db, "h1")).toMatchObject({ delivery_state: "retained", message_state: null });
+      expect(row(db, "h1").message_hold_released_at).toBeNull();
+    });
+
+    it("a held message that changed no occupant carries no label", async () => {
+      hold("h1");
+      w.holds.set("n1", "lifted");
+      await pump.tick();
+      expect(w.hop.calls[0]!.body).toBe("held h1");
+    });
+
+    it("held lifecycle text stays bound: it goes back to its sender, never to the new occupant", async () => {
+      hold("h1", "n1", SEAT, "lifecycle");
+      w.holds.set("n1", "occupant_changed");
+      await pump.tick();
+      expect(w.hop.calls).toEqual([]);
+      expect(w.returned.map((r) => r.id)).toEqual(["h1"]);
+      expect(row(db, "h1")).toMatchObject({ message_state: "undeliverable", delivery_state: "failed" });
+    });
+
+    it("a held message bound to one occupant goes back too, whatever its class", async () => {
+      hold("h1");
+      db.prepare("UPDATE outbox_entries SET occupant_generation = 'g1' WHERE outbox_id = 'h1'").run();
+      w.holds.set("n1", "occupant_changed");
+      w.fates.set(SEAT, { kind: "live", occupantGeneration: "g2" });
+      await pump.tick();
+      expect(w.hop.calls).toEqual([]);
+      expect(w.returned.map((r) => r.id)).toEqual(["h1"]);
+    });
+
+    it("a held message on a seat gone for good does not wait for its guard: it ends", async () => {
+      hold("h1");
+      w.fates.set(SEAT, { kind: "gone", reason: "rig r is archived" });
+      await pump.tick();
+      expect(row(db, "h1").message_state).toBe("undeliverable");
+      expect(w.returned.map((r) => r.reason)).toEqual(["rig r is archived"]);
+    });
+
+    it("a held message on a seat with a successor moves when the guard lets go", async () => {
+      hold("h1");
+      w.holds.set("n1", "occupant_changed");
+      w.fates.set(SEAT, { kind: "successor", seat: "dev2@r" });
+      await pump.tick();
+      await pump.tick();
+      expect(w.hop.calls.map((c) => [c.seat, c.body])).toEqual([["dev2@r", `${PREVIOUS_OCCUPANT_LABEL} held h1`]]);
     });
 
     it("are not taken for a seat with no gate", async () => {
@@ -472,12 +526,15 @@ describe("the message pump", () => {
       expect(row(db, "h1").delivery_state).toBe("retired");
     });
 
-    it("a row with an unreadable binding is left to retire", async () => {
+    it("a row with an unreadable binding still leaves the guard: its seat is on the row, and it goes labelled, since who held it is lost", async () => {
       hold("h1");
       db.prepare("UPDATE outbox_entries SET guard_binding = '{broken' WHERE outbox_id = 'h1'").run();
-      w.holds.set("n1", "lifted");
       await pump.tick();
-      expect(row(db, "h1").message_state).toBeNull();
+      expect(row(db, "h1").message_state).toBeNull();  // the seat's guard is on
+      w.seatHolds.set(SEAT, "occupant_changed");
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.body)).toEqual([`${PREVIOUS_OCCUPANT_LABEL} held h1`]);
+      expect(row(db, "h1").message_previous_occupant).toBe("unknown");
     });
   });
 
