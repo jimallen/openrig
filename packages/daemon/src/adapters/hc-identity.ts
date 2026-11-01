@@ -11,6 +11,7 @@ import type { SessionWindowSnapshot, TmuxPane, TmuxResult, TmuxSession, TmuxWind
 const ADDRESS = /^(?:[A-Za-z0-9_.-]+\/)?t[0-9bcdfghjkmnpqrstvwxyz]+$/;
 const TMUX_ID = /^[%@$]\d+$/;
 
+
 /**
  * What a tmux-style target means to hc. Callers pass a seat's canonical name (a "session"), a tmux exact form of one
  * (`=name`, `=name:`, `name:0`, `name:0.0`), or the terminal address that replaces a pane id. One terminal is one program,
@@ -28,6 +29,17 @@ export function hcTerminalRef(target: string): string | null {
   }
   if (name === "" || TMUX_ID.test(name)) return null;
   return ADDRESS.test(name) ? name : hcTerminalName(name);
+}
+
+/**
+ * What a target means where the name is exact: an hc address as it is, any other string as a seat's name, hashed exactly as
+ * given. No tmux exact form is read (`=name`, `name:0`), so a seat whose name starts with `=` stays itself. Null for a tmux
+ * `%3`/`@1`/`$2` id and the empty string. This is how probeSession, createSession and the launch name a seat, and so how
+ * HcLifecycle must find the seat it kills or respawns (decision 14: only the readers strip a leading `=`).
+ */
+export function hcExactTerminalRef(target: string): string | null {
+  if (target === "" || TMUX_ID.test(target)) return null;
+  return ADDRESS.test(target) ? target : hcTerminalName(target);
 }
 
 /** Every failure that is hc's or the socket's, as opposed to a bug in the caller. */

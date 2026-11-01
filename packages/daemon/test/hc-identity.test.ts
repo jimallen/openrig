@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HcError, HcOutcomeUnknownError, HcUnavailableError } from "../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import {
-  HcIdentity, hcTerminalRef, optionLabelKey, sessionEnvLabels, SESSION_ENV_LABEL_PREFIX, SESSION_ENV_PRESENT_PREFIX,
+  HcIdentity, hcExactTerminalRef, hcTerminalRef, optionLabelKey, sessionEnvLabels, SESSION_ENV_LABEL_PREFIX, SESSION_ENV_PRESENT_PREFIX,
 } from "../src/adapters/hc-identity.js";
 import { FakeHc, notFound, terminal } from "./helpers/hc-fake-client.js";
 
@@ -12,6 +12,23 @@ const unreachable = () => { throw new HcUnavailableError("down"); };
 const lost = () => { throw new HcOutcomeUnknownError("lost", "terminal.get"); };
 const getting = (t: ReturnType<typeof terminal> | (() => unknown)) => ({ "terminal.get": typeof t === "function" ? t : () => t });
 const listing = (...terminals: ReturnType<typeof terminal>[]) => ({ "terminal.list": () => ({ terminals, hidden_finished: 0 }) });
+
+describe("hcExactTerminalRef: where the name is exact (kill, respawn), a leading `=` is part of the name", () => {
+  it("hashes a name as given, keeps an address, and refuses what names nothing", () => {
+    expect(hcExactTerminalRef("dev-impl@my-rig")).toBe(hcTerminalName("dev-impl@my-rig"));
+    expect(hcExactTerminalRef("t7")).toBe("t7");
+    expect(hcExactTerminalRef("t1b")).toBe("t1b");
+    expect(hcExactTerminalRef("spk/t12")).toBe("spk/t12");
+    for (const none of ["", "%3", "@1", "$2"]) expect(hcExactTerminalRef(none), none).toBeNull();
+  });
+  it("does not read tmux's exact forms: `=worker@rig` is a different seat from `worker@rig` (decision 14 strips only for readers)", () => {
+    expect(hcExactTerminalRef("=worker@rig")).toBe(hcTerminalName("=worker@rig"));
+    expect(hcExactTerminalRef("=worker@rig")).not.toBe(hcTerminalName("worker@rig"));
+    expect(hcExactTerminalRef("worker@rig:0")).toBe(hcTerminalName("worker@rig:0"));
+    // Positive control: the reader this differs from does strip.
+    expect(hcTerminalRef("=worker@rig")).toBe(hcTerminalName("worker@rig"));
+  });
+});
 
 describe("hcTerminalRef: what a tmux-style target means", () => {
   const hashed = hcTerminalName("dev-impl@my-rig");

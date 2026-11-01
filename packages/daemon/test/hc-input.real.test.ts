@@ -124,10 +124,13 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       a.write(big);
       a.resize(70, 20);
       await poll(() => size(stub.address)).toBe("70x20");
+      // The program sees the size when its SIGWINCH handler RUNS, not when the signal was sent. Detaching restores the terminal's
+      // size, so a program slow to run its handler (a loaded host) reads the restored 200x120 and never 70x20: the winches read
+      // ['100x30', '200x120']. Wait for it while the writer is still attached, then detach.
+      await poll(() => stub.winches()).toContain("70x20");
       await expect(a.detach()).resolves.toEqual({ reason: "detached" });
       await poll(() => stub.stdin().toString("latin1").length).toBe(3 + big.length);
       expect(stub.stdin().toString("latin1")).toBe(`hi\r${big.toString("latin1")}`);
-      await poll(() => stub.winches()).toContain("70x20");
     });
 
     it("reports the program's finish with its reason, and an attach to a missing terminal as not_found", async () => {
