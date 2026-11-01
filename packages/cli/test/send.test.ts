@@ -276,23 +276,23 @@ describe("Send CLI", () => {
     expect(logs.join("\n")).toContain("Sent to slow-hc-session");
   }, 20_000);
 
-  it("hc-w45: a fan-out to a list waits for ITS recipients: each may take the daemon's 30 s bound, plus the margin (3 no-run seats took 15.6 s)", async () => {
+  it("hc-w45/46: a fan-out to a list waits for its WAVES of eight: 3 seats are one wave, 30 s bound + 15 s margin (3 no-run seats took 15.6 s serially)", async () => {
     const postFn = vi.fn(async () => ({ status: 200, data: { total: 3, sent: 3, failed: 0, results: [] } }));
     const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
     await captureLogs(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "--to", "a@r,b@r,c@r", "hello", "--json"]);
     });
     expect(postFn.mock.calls[0]?.[0]).toBe("/api/transport/broadcast");
-    expect(postFn.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 3 * 30_000 + 15_000 });
+    expect(postFn.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 30_000 + 15_000 });
   });
 
-  it("hc-w45: a fan-out the client cannot count (--rig) is budgeted as the shared maximum, 32 seats", async () => {
+  it("hc-w45/46: a fan-out the client cannot count (--rig) is budgeted as 32 seats: four waves, 135 s", async () => {
     const postFn = vi.fn(async () => ({ status: 200, data: { total: 1, sent: 1, failed: 0, results: [] } }));
     const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
     await captureLogs(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "--rig", "my-rig", "hello", "--json"]);
     });
-    expect(postFn.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 32 * 30_000 + 15_000 });
+    expect(postFn.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 4 * 30_000 + 15_000 });
   });
 
   it("P18: a resolvable seat SENDS with its attributed identity — actorSession derived from the seat env, never forged", async () => {

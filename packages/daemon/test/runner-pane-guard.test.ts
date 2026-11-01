@@ -2,7 +2,9 @@
 // census of who writes to a runner's pane. The private-core proof is runner-pane-guard.real.test.ts.
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { createPaneFilter, filterPaneText, guardPaneStream, installPaneGuard, paneGuard } from "../src/adapters/runner-pane-guard.js";
+import { createPaneFilter, filterPaneText, guardPaneStream, installPaneGuard, paneGuard, rawWriterOf } from "../src/adapters/runner-pane-guard.js";
+import { createRunnerInput } from "../src/adapters/runner-pane-io.js";
+import { PdaPane } from "../src/adapters/pda-render.js";
 import fs from "node:fs";
 
 const ESC = "\u001b";
@@ -76,13 +78,16 @@ describe("filterPaneText: plain text and a short list of CSI forms, every other 
     expect(out).toContain("before ");
     expect(out).toContain(" after");
   });
-  it("leaves plain text, tab, LF, CR, BS, BEL, and the runner's own CSI forms exactly as they were", () => {
-    const text = `hello\tworld\r\n ] [ P ^ _ \\ \u0008\u0007 ${ESC}[1G${ESC}[0J${ESC}[K${ESC}[12C${ESC}[?2004h${ESC}[?2004l ${ESC}[31;1mred${ESC}[0m emoji 😀 مرحبا`;
+  it("leaves plain text, tab, LF, CR, BS, BEL, and the line editor's CSI forms exactly as they were", () => {
+    const text = `hello\tworld\r\n ] [ P ^ _ \\ \u0008\u0007 ${ESC}[1G${ESC}[0J${ESC}[K${ESC}[12C ${ESC}[31;1mred${ESC}[0m emoji 😀 مرحبا`;
     expect(filterPaneText(text)).toBe(text);
   });
   it.each([
     ["a CSI form the runner does not use", `${ESC}[6n`, "[6n"],
-    ["a private mode other than bracketed paste", `${ESC}[?1049h`, "[?1049h"],
+    ["a private mode (alternate screen)", `${ESC}[?1049h`, "[?1049h"],
+    ["bracketed paste ON: only the runner's own writer sends it (security F7)", `${ESC}[?2004h`, "[?2004h"],
+    ["bracketed paste OFF: a message must not take the pane out of paste mode (security F7)", `${ESC}[?2004l`, "[?2004l"],
+    ["a mode form between text", `a${ESC}[?2004lb${ESC}[?2004hc`, "a[?2004lb[?2004hc"],
     ["too many parameters", `${ESC}[${"1;".repeat(8)}m`, `[${"1;".repeat(8)}m`],
     ["a CSI with an intermediate byte", `${ESC}[ q`, "[ q"],
     ["an SS3", `${ESC}OA`, "OA"],
@@ -91,6 +96,11 @@ describe("filterPaneText: plain text and a short list of CSI forms, every other 
     ["C0 controls other than TAB LF CR BS BEL, and DEL", "a\u0000\u0001\u0003\u000b\u000c\u000e\u001f\u007fb", "ab"],
   ])("%s is not passed", (_name, input, expected) => {
     expect(filterPaneText(input)).toBe(expected);
+  });
+  it("exactly TAB, LF, CR, BS and BEL pass of the C0 controls, and DEL does not (QA M2: the stated set was unpinned)", () => {
+    const passed = [...Array(0x20).keys(), 0x7f].filter((c) => filterPaneText(`a${String.fromCharCode(c)}b`) === `a${String.fromCharCode(c)}b`);
+    expect(passed).toEqual([0x07, 0x08, 0x09, 0x0a, 0x0d]);
+    expect(filterPaneText("a\u0018b\u001ac")).toBe("abc"); // CAN and SUB cancel a parser's sequence; they are not text either
   });
   it("a CSI form the text ends inside of is not passed by the stateless filter (nothing can complete it)", () => {
     expect(filterPaneText(`x${ESC}[1`)).toBe("x[1");
@@ -112,7 +122,7 @@ describe("createPaneFilter: writes that split a form", () => {
     expect(pane).not.toContain(ESC);
   });
   it("an allowed CSI split at every position is rejoined whole", () => {
-    for (const form of [`${ESC}[1G`, `${ESC}[?2004h`, `${ESC}[31;1m`, `${ESC}[0J`]) {
+    for (const form of [`${ESC}[1G`, `${ESC}[31;1m`, `${ESC}[0J`]) {
       for (let cut = 1; cut < form.length; cut++) {
         const f = createPaneFilter();
         expect(f(`x${form.slice(0, cut)}`) + f(`${form.slice(cut)}y`), `${JSON.stringify(form)} cut ${cut}`).toBe(`x${form}y`);
@@ -168,7 +178,7 @@ describe("fuzz: whatever bytes go in, no introducer comes out, however the write
       const opened = introducersOpened(out);
       if (opened.length > 0 || /[\u0080-\u009f]/.test(out)) throw new Error(`case ${n}: ${JSON.stringify(input)} -> ${JSON.stringify(out)}: ${opened.join(", ")}`);
       // every ESC left is the start of an allowed CSI form, whole
-      for (const m of out.matchAll(/\u001b/g)) expect(/^\u001b\[(?:[0-9;]{0,12}[ABCDGHJKm]|\?2004[hl])/.test(out.slice(m.index!)), `case ${n} ESC at ${m.index}`).toBe(true);
+      for (const m of out.matchAll(/\u001b/g)) expect(/^\u001b\[(?:[0-9;]{0,12}[ABCDGHJKm])/.test(out.slice(m.index!)), `case ${n} ESC at ${m.index}`).toBe(true);
     }
     expect(rawFlagged, "positive control: the generator makes many inputs a terminal would read as an introducer").toBeGreaterThan(500);
   });
@@ -230,6 +240,58 @@ describe("guardPaneStream", () => {
     f.stream.write(bytes.subarray(1));
     await new Promise((r) => setTimeout(r, 10));
     expect(f.text()).toBe("é漢");
+  });
+});
+
+describe("the runner's own mode writes (security F7)", () => {
+  function ttyPair() {
+    const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode() { return this; } });
+    const output = Object.assign(new PassThrough(), { isTTY: true, columns: 80, rows: 24 });
+    const seen: string[] = [];
+    output.on("data", (d: Buffer) => seen.push(d.toString("utf8")));
+    return { input, output, seen: () => seen.join("") };
+  }
+  it("rawWriterOf is the stream's original writer once guarded, and nothing for a stream that is not", () => {
+    const out = new PassThrough();
+    expect(rawWriterOf(out)).toBeUndefined();
+    guardPaneStream(out);
+    expect(rawWriterOf(out)).toBeTypeOf("function");
+  });
+  it("the editor sets ESC[?2004h at start and ESC[?2004l at close by its own writer; a pasted ESC[?2004l is not echoed", async () => {
+    const { input, output, seen } = ttyPair();
+    guardPaneStream(output as never);
+    const editor = createRunnerInput(input as never, output as never, () => undefined, {});
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen()).toContain(`${ESC}[?2004h`);
+    input.write(`${ESC}[200~first ${ESC}[?2004l and ${ESC}[?2004h more${ESC}[201~`);
+    await new Promise((r) => setTimeout(r, 30));
+    const echoed = seen();
+    expect(echoed.match(/\u001b\[\?2004[hl]/g), "only the runner's own start-up write is on the pane: the pasted forms were not echoed").toEqual([`${ESC}[?2004h`]);
+    expect(echoed).toContain("first [?2004l and [?2004h more");
+    editor.close();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen().match(/\u001b\[\?2004[hl]/g)).toEqual([`${ESC}[?2004h`, `${ESC}[?2004l`]);
+  });
+  it("on an output the guard does not wrap, the editor writes its mode forms to it as before", async () => {
+    const { input, output, seen } = ttyPair();
+    createRunnerInput(input as never, output as never, () => undefined, {});
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen()).toContain(`${ESC}[?2004h`);
+  });
+});
+
+describe("the pda pane's bracketed-paste re-assert is the runner's own write (security F7)", () => {
+  it("endBatch writes ESC[?2004h by the mode writer, never the pane writer the guard filters; and falls back to the pane writer when none is given", () => {
+    const pane: string[] = []; const mode: string[] = [];
+    const withMode = new PdaPane((t) => pane.push(t), () => [], (t) => mode.push(t));
+    withMode.line("hello");
+    withMode.endBatch();
+    expect(mode).toEqual([`${ESC}[?2004h`]);
+    expect(pane.join("")).toBe("hello\n");
+    const only: string[] = [];
+    const plain = new PdaPane((t) => only.push(t), () => []);
+    plain.line("hi"); plain.endBatch();
+    expect(only.join("")).toBe(`hi\n${ESC}[?2004h`);
   });
 });
 

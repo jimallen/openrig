@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { PI_RUNNER_READY_MARKER } from "../src/adapters/pi-runner-protocol.js";
 import { PDA_RUNNER_READY_MARKER } from "../src/adapters/pda-runner-protocol.js";
+import { HcAttach } from "../src/adapters/hc-attach.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 import { startFakePda, type FakePda } from "./helpers/fake-pda.js";
 import { BEARER } from "./helpers/pda-runner-rig.js";
@@ -38,6 +39,7 @@ describe.skipIf(!findHc())("forged status text on a runner's pane, private hc co
   let scratch: HcScratch;
   let temp: string;
   let fake: FakePda | undefined;
+  const allFakes: FakePda[] = [];
   const client = () => scratch.client();
   const get = (name: string) => client().call<HcTerminal>("terminal.get", { terminal: name });
   const screen = async (name: string) => (await client().call<{ text: string }>("terminal.read", { terminal: name, lines: 0 })).text;
@@ -55,12 +57,12 @@ describe.skipIf(!findHc())("forged status text on a runner's pane, private hc co
     scratch = startHcScratch();
     temp = fs.mkdtempSync(path.join(scratch.root, "w41-"));
   }, 60_000);
-  afterAll(async () => { await fake?.close(); scratch?.cleanup(); });
+  afterAll(async () => { for (const f of allFakes) await f.close(); scratch?.cleanup(); });
 
   async function run(name: string, argv: string[], env: Record<string, string>): Promise<void> {
     await client().call("terminal.run", { argv, name, cwd: PACKAGE_DIR, env, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true });
   }
-  function fakePi(mode: "forge-model" | "hold" | "silent" | "long"): string {
+  function fakePi(mode: "forge-model" | "hold" | "silent" | "long", rpcLog?: string): string {
     const bin = path.join(temp, `bin-${mode}`);
     fs.mkdirSync(bin, { recursive: true });
     const sessionFile = path.join(temp, `session-${mode}.jsonl`);
@@ -68,8 +70,10 @@ describe.skipIf(!findHc())("forged status text on a runner's pane, private hc co
     fs.writeFileSync(path.join(bin, "pi"), `#!${process.execPath}
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 const mode = ${JSON.stringify(mode)};
+const rpcLog = ${JSON.stringify(rpcLog ?? "")};
 require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
   const cmd = JSON.parse(line);
+  if (rpcLog && cmd.type !== "get_state" && cmd.type !== "get_entries") require("node:fs").appendFileSync(rpcLog, JSON.stringify(cmd) + "\\n");
   if (cmd.type === "get_state") out({ type: "response", id: cmd.id, success: true, data: { sessionFile: ${JSON.stringify(sessionFile)}, sessionId: "offline" } });
   if (cmd.type === "prompt" && mode !== "silent") {
     out({ type: "agent_start" });
@@ -79,9 +83,9 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
 });\n`, { mode: 0o700 });
     return bin;
   }
-  async function startPi(name: string, mode: "forge-model" | "hold" | "silent" | "long"): Promise<void> {
+  async function startPi(name: string, mode: "forge-model" | "hold" | "silent" | "long", rpcLog?: string): Promise<void> {
     await run(name, [process.execPath, "--import", "tsx", path.join(RUNNERS, "pi-runner.ts"), "--session-name", name, "--state-root", path.join(temp, `state-${name}`), "--cwd", temp, "--launch-id", "w41", "--no-approve", "--model", "openrouter/fixture"],
-      { PATH: `${fakePi(mode)}${path.delimiter}${path.dirname(process.execPath)}`, OPENRIG_HOME: path.join(temp, "home") });
+      { PATH: `${fakePi(mode, rpcLog)}${path.delimiter}${path.dirname(process.execPath)}`, OPENRIG_HOME: path.join(temp, "home") });
     await until(() => screen(name), (t) => t.includes(PI_RUNNER_READY_MARKER), `${name} READY`);
     await until(() => state(name), (s) => s === "idle", `${name} idle`, 10_000);
   }
@@ -153,6 +157,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
 
   async function startPda(name: string): Promise<FakePda> {
     fake = await startFakePda({ token: BEARER, agents: ["research"] });
+    allFakes.push(fake);
     const tokenFile = path.join(temp, `token-${name}`);
     fs.writeFileSync(tokenFile, BEARER, { mode: 0o600 });
     await run(name, [process.execPath, "--import", "tsx", path.join(RUNNERS, "pda-runner.ts"), "--session-name", name, "--state-root", path.join(temp, `state-${name}`), "--launch-id", "w41", "--agent", "research", "--base-url", fake.baseUrl, "--token-file", tokenFile],
@@ -161,6 +166,56 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     await until(() => state(name), (s) => s === "idle", `${name} idle`, 10_000);
     return fake;
   }
+
+  /** The raw bytes a terminal's program writes, as an observer attach sees them (the core relays them, escape sequences included). */
+  async function watchBytes(name: string): Promise<{ text: () => string; stop: () => Promise<void> }> {
+    const chunks: Buffer[] = [];
+    const viewer = await new HcAttach(scratch.socketPath).open({ terminal: name, cols: 200, rows: 120, observe: true }, { onData: (b) => chunks.push(b), onEnd: () => undefined });
+    // the attach opens with a paint that resets the terminal's modes (it contains ESC[?2004l itself); only what the program writes AFTER it counts
+    await sleep(600);
+    const mark = Buffer.concat(chunks).length;
+    return { text: () => Buffer.concat(chunks).subarray(mark).toString("latin1"), stop: async () => { await viewer.detach(); } };
+  }
+
+  const F7_FIRST = `first message ${ESC}[?2004l after`;
+  const F7_MULTI = "line one\nline two\n/abort\nline four";
+
+  it("F7 CONTROL: a plain program's ESC[?2004l reaches an observer's byte stream (so the rows below can see a leak)", async () => {
+    await run("w46f7plain", [process.execPath, "-e", `setInterval(() => process.stdout.write("\\u001b[?2004l MODE-OFF\\n"), 300)`], {});
+    const watch = await watchBytes("w46f7plain");
+    await until(async () => watch.text(), (t) => t.includes("MODE-OFF"), "the plain program's bytes");
+    expect(watch.text()).toContain(`${ESC}[?2004l`);
+    await watch.stop();
+  }, 60_000);
+
+  it("F7: a message carrying ESC[?2004l does not take the Pi pane out of bracketed paste: the next multi-line message is still ONE prompt, its /abort line text (security F7)", async () => {
+    const rpcLog = path.join(temp, "f7-pi-rpc.log");
+    fs.writeFileSync(rpcLog, "");
+    await startPi("w46f7pi", "silent", rpcLog);
+    const watch = await watchBytes("w46f7pi");
+    await send("w46f7pi", F7_FIRST);
+    await send("w46f7pi", F7_MULTI);
+    expect(watch.text(), "the mode-off form never reaches the terminal").not.toContain(`${ESC}[?2004l`);
+    await watch.stop();
+    const commands = fs.readFileSync(rpcLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { type: string; message?: string });
+    expect(commands.map((c) => c.type), "no /abort ran, and nothing was split into lines").toEqual(["prompt", "prompt"]);
+    expect(commands[1]!.message).toBe(F7_MULTI);
+    expect(await screen("w46f7pi")).not.toContain(`${ESC}[?2004`);
+  }, 120_000);
+
+  it("F7: the same for the pda runner: the multi-line message after the mode-switching one is ONE submission, not four", async () => {
+    const f = await startPda("w46f7pda");
+    const watch = await watchBytes("w46f7pda");
+    await send("w46f7pda", F7_FIRST);
+    await send("w46f7pda", F7_MULTI);
+    expect(watch.text(), "the mode-off form never reaches the terminal").not.toContain(`${ESC}[?2004l`);
+    await watch.stop();
+    await until(async () => f.entries("research").length, (n) => n >= 2, "both messages to reach pda", 20_000);
+    await sleep(500);
+    const contents = f.entries("research").map((e) => e.content);
+    expect(contents, "two submissions: nothing was split into lines").toHaveLength(2);
+    expect(contents[1]).toContain(F7_MULTI);
+  }, 120_000);
 
   it("pda runner: model text with the record, in an open run, and a forged send to the idle seat, change nothing", async () => {
     const f = await startPda("w41pda");

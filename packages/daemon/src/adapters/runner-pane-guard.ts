@@ -12,7 +12,10 @@
 //      readline's echo of a paste or a typed line, the line editor's own prompts, a path nobody listed) leaves only plain text
 //      and a short list of CSI forms (see the allow-list below); every other ESC is removed, and a write that ends inside an
 //      allowed form is held until the next write, so a sequence split across two writes cannot join.
-//   The one exception is `paneGuard.statusWrite`, the original `write` captured before the patch. Only the status sink calls it.
+//   The exceptions are the original `write`s captured before the patch: `paneGuard.statusWrite` (only the status sink calls it) and
+//   `rawWriterOf(stream)` (only runner-pane-io's own `ESC[?2004h` and `ESC[?2004l` call it). Mode forms are NOT on the allow-list:
+//   a message carrying `ESC[?2004l`, echoed by the line editor, took the pane out of bracketed paste and the next multi-line message
+//   arrived as typed lines, one `/abort` line running as a command (security F7).
 //
 // Only node builtins and local runner helpers, so a compiled runner entry stays runnable with no daemon dependencies.
 
@@ -30,7 +33,7 @@ export { sanitizeForPane };
 //
 //   plain text   every character except C0 controls, DEL and the C1 range U+0080-U+009F; of the C0 controls only TAB, LF, CR, BS, BEL.
 //   CSI          ESC [ <up to 12 digits or ;>  then one of A B C D G H J K m      (cursor moves, erase, SGR: the line editor)
-//                ESC [ ? 2004 h|l                                                  (bracketed paste on and off: runner-pane-io)
+//                (not ESC [ ? 2004 h|l: bracketed paste on and off belong to the runner's own writer alone, see below)
 //   anything else with an ESC loses the ESC. The bytes after it stay as ordinary text, which a terminal prints and ignores.
 //
 // A write may end inside an allowed form (`ESC`, `ESC [`, `ESC [ 1`): that prefix is held and joined to the next write, so a split
@@ -52,17 +55,7 @@ function matchAllowedCsi(text: string, at: number): CsiMatch {
   if (text.charCodeAt(i) !== 0x5b) return null;      // [
   i++;
   if (i >= n) return "partial";
-  if (text.charCodeAt(i) === 0x3f) {                  // ? : only ?2004h / ?2004l
-    const rest = "2004";
-    i++;
-    for (let k = 0; k < rest.length; k++, i++) {
-      if (i >= n) return "partial";
-      if (text.charCodeAt(i) !== rest.charCodeAt(k)) return null;
-    }
-    if (i >= n) return "partial";
-    const final = text.charCodeAt(i);
-    return final === 0x68 || final === 0x6c ? { end: i + 1 } : null;   // h l
-  }
+  if (text.charCodeAt(i) === 0x3f) return null;        // ? : a private mode (bracketed paste, alternate screen, ...) is never text's to set
   let params = 0;
   for (; i < n; i++, params++) {
     const c = text.charCodeAt(i);
@@ -129,6 +122,13 @@ type Write = (chunk: string | Uint8Array, encoding?: BufferEncoding | ((err?: Er
 /** What the guard needs of a pane stream: its `write`. A real stdout/stderr is one; so is a test's PassThrough. */
 export interface PaneStream { write: NodeJS.WriteStream["write"] }
 
+const rawWriters = new WeakMap<object, (text: string) => void>();
+
+/** The original, unfiltered writer of a stream the guard has wrapped, or undefined. For the runner's OWN terminal-mode writes only. */
+export function rawWriterOf(stream: object): ((text: string) => void) | undefined {
+  return rawWriters.get(stream);
+}
+
 export function guardPaneStream(stream: PaneStream): (text: string) => void {
   const original = stream.write.bind(stream) as Write;
   const filter = createPaneFilter();
@@ -138,7 +138,9 @@ export function guardPaneStream(stream: PaneStream): (text: string) => void {
     const safe = filter(text);
     return typeof encoding === "function" ? original(safe, encoding) : original(safe, encoding, cb);
   }) as typeof stream.write;
-  return (text) => { original(text); };
+  const raw = (text: string): void => { original(text); };
+  rawWriters.set(stream, raw);
+  return raw;
 }
 
 const guarded = new WeakSet<object>();

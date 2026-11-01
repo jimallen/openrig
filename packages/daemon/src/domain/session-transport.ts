@@ -1,3 +1,4 @@
+import { TRANSPORT_BROADCAST_CONCURRENCY } from "../transport-budget.js";
 import { CODEX_TURN_STATUS_PATTERN } from "./codex-pane-patterns.js";
 import type { ClaudeNativeInbox } from "./claude-native-inbox.js";
 import { randomUUID } from "node:crypto";
@@ -3044,22 +3045,42 @@ export class SessionTransport {
       ? (this.sessionRegistry.currentOccupantGenerationForSession(opts.envelopeSender) ?? undefined)
       : undefined;
 
-    const results: SendResult[] = [];
-    for (const session of resolved.sessions) {
-      // OPR.0.4.3.30 — per-recipient From/To envelope for `rig send` fan-out, rendered daemon-side (the
-      // CLI can't wrap per recipient because it doesn't know each resolved seat). Ruling 03c35295: the
-      // To line now projects the SCALE (multi = full list; rig/pod/topology = the broadcast scale) + a
-      // Sent stamp, so a recipient tells DM from broadcast header-alone (anti-storm). Raw paths
-      // (--raw / --dangerously-interact, absent envelopeSender) still deliver unwrapped.
-      const perRecipientText = opts?.envelopeSender
-        ? wrapPaneEnvelope(opts.envelopeSender, session.sessionName, text, { scope, stampISO, genUuid })
-        : text;
-      // (h) thread the resolved stampISO so send()'s delivered-latency calc measures from the SAME
-      // compose stamp the envelope carries (opts may not have carried one; the local stampISO is truth).
-      const result = await this.send(session.sessionName, perRecipientText, { ...opts, stampISO,
-        deliveryId: opts?.deliveryId ? `${opts.deliveryId}:${session.sessionName}` : undefined });
-      results.push(result);
-    }
+    // hc-w46 (QA F2): the recipients are independent seats, and herdr-core holds a send to a seat that starts no run for ~5 s, so
+    // delivering them one after another made the wait scale with the rig. They are delivered TRANSPORT_BROADCAST_CONCURRENCY at a time.
+    // Kept: one result per recipient in the RECIPIENT order; sends to ONE seat in order (the recipients are grouped by seat and a group
+    // runs in sequence); a send that throws stops new work and is the broadcast's error once everything in flight has settled (nothing
+    // is left running behind the caller).
+    const perRecipientText = (sessionName: string): string => opts?.envelopeSender
+      // OPR.0.4.3.30 — per-recipient From/To envelope for `rig send` fan-out, rendered daemon-side (the CLI can't wrap per recipient
+      // because it doesn't know each resolved seat). Ruling 03c35295: the To line projects the SCALE + a Sent stamp, so a recipient
+      // tells DM from broadcast header-alone (anti-storm). Raw paths (--raw / --dangerously-interact) still deliver unwrapped.
+      ? wrapPaneEnvelope(opts.envelopeSender, sessionName, text, { scope, stampISO, genUuid })
+      : text;
+    const results: SendResult[] = new Array(resolved.sessions.length);
+    const groups = new Map<string, number[]>();
+    resolved.sessions.forEach((s, index) => { const at = groups.get(s.sessionName); if (at) at.push(index); else groups.set(s.sessionName, [index]); });
+    const queue = [...groups.values()];
+    let failure: { error: unknown } | null = null;
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (failure === null) {
+        const indexes = queue[next++];
+        if (indexes === undefined) return;
+        for (const index of indexes) {
+          const session = resolved.sessions[index]!;
+          try {
+            // (h) thread the resolved stampISO so send()'s delivered-latency calc measures from the SAME compose stamp the envelope carries.
+            results[index] = await this.send(session.sessionName, perRecipientText(session.sessionName), { ...opts, stampISO,
+              deliveryId: opts?.deliveryId ? `${opts.deliveryId}:${session.sessionName}` : undefined });
+          } catch (error) {
+            failure ??= { error };
+            return;
+          }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(TRANSPORT_BROADCAST_CONCURRENCY, queue.length) }, () => worker()));
+    if (failure !== null) throw (failure as { error: unknown }).error;
 
     return {
       total: results.length,

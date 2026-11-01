@@ -1,3 +1,4 @@
+import { transportWakingWriteBudgetMs } from "@openrig/daemon/transport-budget";
 import { readFileSync } from "node:fs";
 import { Command, InvalidArgumentError, Option } from "commander";
 import {
@@ -410,7 +411,7 @@ list/explain never mutate. Diagnosis mutations use explicit subcommands; automat
     const json = Boolean(options.json || command.opts().json);
     const client = await readyClient(deps, json);
     if (!client) return;
-    const response = await guardedRequest(() => payload === undefined ? client.get(`/api/health-diagnosis${path}`) : client.post(`/api/health-diagnosis${path}`, { ...(payload as object), actor: command.opts().actor }), json);
+    const response = await guardedRequest(() => payload === undefined ? client.get(`/api/health-diagnosis${path}`) : client.post(`/api/health-diagnosis${path}`, { ...(payload as object), actor: command.opts().actor }, { timeoutMs: transportWakingWriteBudgetMs() }), json);
     if (!response) return;
     if (response.status >= 400) { console.error(JSON.stringify(response.data)); process.exitCode = 1; return; }
     const occurrenceRead = payload === undefined && path !== "/policy" && path !== "/checkpoints";

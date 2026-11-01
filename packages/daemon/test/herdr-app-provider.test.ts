@@ -194,3 +194,38 @@ describe("createHerdrAppCli (the process boundary, exec injected)", () => {
     await expect(createHerdrAppCli("h", exec({ code: 1, stdout: "", stderr: "boom" })).do("tab.new", {})).rejects.toThrow(/boom/);
   });
 });
+
+describe("each cause of an unavailable app names its own fix (QA G14: the wording was pinned only by an integration test on the built CLI)", () => {
+  const exec = (answer: Awaited<ReturnType<HerdrAppExec>>): HerdrAppExec => async () => answer;
+
+  it("no window: the error says the app is not running, and the fix is to open it on the desktop or attach with hc", async () => {
+    const err = await createHerdrAppCli("h", exec({ code: 1, stdout: "", stderr: "" })).ls().then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(HerdrAppUnavailableError);
+    expect((err as HerdrAppUnavailableError).message).toContain("not running");
+    expect((err as HerdrAppUnavailableError).fix).toContain("Open the Herdr app");
+    expect((err as HerdrAppUnavailableError).fix).toContain("`hc attach`");
+    expect((err as HerdrAppUnavailableError).fix).not.toContain("Install");
+  });
+  it("not installed: the fix is to install it, or attach by hand, and it is not the no-window fix", async () => {
+    const err = await createHerdrAppCli("h", exec({ code: null, stdout: "", stderr: "", missing: true })).ls().then(() => null, (e: unknown) => e);
+    expect((err as HerdrAppUnavailableError).message).toContain("not installed");
+    expect((err as HerdrAppUnavailableError).fix).toContain("Install the Herdr app");
+    expect((err as HerdrAppUnavailableError).fix).toContain("`hc attach`");
+    expect((err as HerdrAppUnavailableError).fix).not.toContain("Open the Herdr app");
+  });
+  it.each([
+    ["no window", { code: 1, stdout: "", stderr: "" } as const, "Open the Herdr app"],
+    ["not installed", { code: null, stdout: "", stderr: "", missing: true } as const, "Install the Herdr app"],
+  ])("openView refusing for %s puts that fix in the result's error, with nothing opened", async (_name, answer, fix) => {
+    const result = await new HerdrAppProvider(createHerdrAppCli("h", exec(answer))).openView(view([[pane("a@r")]]));
+    expect(result).toMatchObject({ ok: false, opened: [], code: "herdr_unavailable" });
+    expect(result.error).toContain("nothing was opened");
+    expect(result.error).toContain(fix);
+    expect(result.error).not.toContain("Start the Herdr app, then run this again");
+  });
+  it("an unavailable error that carries no fix falls back to the generic one", async () => {
+    const app: AppPort = { ls: async () => { throw new HerdrAppUnavailableError("custom"); }, do: async () => ({}) };
+    const result = await new HerdrAppProvider(app).openView(view([[pane("a@r")]]));
+    expect(result.error).toContain("Start the Herdr app, then run this again.");
+  });
+});

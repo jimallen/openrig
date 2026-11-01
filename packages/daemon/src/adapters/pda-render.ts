@@ -79,7 +79,7 @@ export class PdaPane {
   private wrote = false;
   readonly redactor: PdaRedactor;
 
-  constructor(private readonly write: (text: string) => void, secrets: () => readonly PdaSecret[]) {
+  constructor(private readonly write: (text: string) => void, secrets: () => readonly PdaSecret[], private readonly modeWrite: (text: string) => void = write) {
     this.redactor = new PdaRedactor(secrets);
   }
 
@@ -137,7 +137,7 @@ export class PdaPane {
   endBatch(): void {
     if (!this.wrote) return;
     this.wrote = false;
-    this.write(BRACKETED_PASTE_ON);
+    this.modeWrite(BRACKETED_PASTE_ON);
   }
 }
 

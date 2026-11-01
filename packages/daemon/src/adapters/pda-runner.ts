@@ -33,7 +33,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
-import { installPaneGuard, paneGuard } from "./runner-pane-guard.js";
+import { installPaneGuard, paneGuard, rawWriterOf } from "./runner-pane-guard.js";
 import {
   PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_LABEL, PDA_RUNNER_READY_MARKER, PDA_RUNTIME,
   isPdaLoopbackBaseUrl, parsePdaRunnerLock, parsePdaRunnerState, pdaAgentNameProblem, pdaRunnerLockLive, pdaSeatPaths, processPidAlive, sanitizeForPane,
@@ -150,6 +150,9 @@ export interface PdaRunnerDeps {
   secrets: () => readonly PdaSecret[];
   /** The pane (stdout). */
   write: (text: string) => void;
+  /** The runner's OWN terminal-mode writes (`ESC[?2004h`, re-asserted after each output batch). The pane guard strips mode forms
+   *  from `write` (security F7); in production this is the stream's original writer. Absent: `write`. */
+  writeMode?: (text: string) => void;
   /** Best-effort POST to the daemon's activity endpoint. Must not throw, must not block. */
   postActivity: (payload: Record<string, unknown>) => void;
   /** hc cutover W37: tell herdr-core what the seat is doing (OSC 7501 on the pane). Absent outside an hc terminal. */
@@ -268,7 +271,7 @@ export class PdaRunner {
     this.sleep = deps.sleep ?? defaultSleep;
     this.usage = deps.usage ?? {};
     this.paths = pdaSeatPaths(deps.args.stateRoot, deps.args.sessionName);
-    this.pane = new PdaPane(deps.write, deps.secrets);
+    this.pane = new PdaPane(deps.write, deps.secrets, deps.writeMode);
     deps.outbox.onAck = (requestId, submissionId) => { this.recordMinted(requestId); this.onAck(submissionId); };
   }
 
@@ -1330,6 +1333,7 @@ async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths): Promise<void
     args, nodeId, generation, client, outbox,
     readToken: trackedSource, secrets,
     write: (text) => { process.stdout.write(text); },
+    writeMode: (text) => { (rawWriterOf(process.stdout) ?? ((t: string) => { process.stdout.write(t); }))(text); },
     postActivity: createActivityPoster(endpoint),
     reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { paneGuard.statusWrite(text); }, "pda-runner"),
     fs: nodeRunnerFs,

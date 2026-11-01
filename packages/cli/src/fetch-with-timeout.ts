@@ -1,3 +1,5 @@
+import { fetchForBudget } from "./http-fetch.js";
+
 export class FetchTimeoutError extends Error {
   constructor(message: string) {
     super(message);
@@ -40,7 +42,7 @@ export async function fetchWithTimeout(
   }
 
   try {
-    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    const response = await fetchForBudget(fetchImpl, options.timeoutMs)(url, { ...init, signal: controller.signal });
     await options.consumeResponse?.(response);
     return response;
   } catch (err) {

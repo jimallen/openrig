@@ -21,6 +21,7 @@ import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { formatDaemonHostForUrl } from "./daemon-url.js";
+import { rawWriterOf } from "./runner-pane-guard.js";
 
 // Canonical TTY buffers can overflow before Node sees even the paste terminator.
 // Use Node's line editor in raw mode, with only paste framing handled here.
@@ -199,10 +200,13 @@ export function createRunnerInput(
       }
     }
   };
+  // The runner's own terminal-mode writes. The pane guard strips these from everything else (security F7), so they go out by the
+  // stream's original writer when the guard wraps it; any other output (a test's) is written as before.
+  const modeWrite = (text: string): void => { (rawWriterOf(output) ?? ((t: string) => { output.write(t); }))(text); };
   const wasRaw = input.isRaw;
   const end = () => editor.close();
   input.setRawMode(true);
-  output.write("\u001b[?2004h");
+  modeWrite("\u001b[?2004h");
   const onData = (chunk: Buffer) => {
     try { options.beforeInput?.(); } catch { /* the pane's own bookkeeping must not break the editor */ }
     receive(chunk);
@@ -219,7 +223,7 @@ export function createRunnerInput(
     input.setRawMode(wasRaw);
     input.pause();
     keys.destroy();
-    output.write("\u001b[?2004l");
+    modeWrite("\u001b[?2004l");
   });
   return editor;
 }

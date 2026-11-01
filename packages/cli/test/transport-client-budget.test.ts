@@ -80,6 +80,11 @@ describe("writes that wake seats before they answer", () => {
     expect(posts.length, "positive control").toBeGreaterThanOrEqual(8);
     // validate and compile read a spec; every other write may wake a seat before it answers
     expect(posts.filter((p) => !/\/api\/workflow\/(validate|compile)/.test(p.slice(0, 120)) && !p.includes("transportWakingWriteBudgetMs(")).map((p) => p.replace(/\s+/g, " ").slice(0, 90))).toEqual([]);
+    // `rig health diagnose --apply` (and the other diagnosis writes) await a nudge to the owner inside the request
+    const health = read(path.join(SRC, "commands/health.ts"));
+    const diagnosisPost = callAround(health, health.indexOf("client.post(`/api/health-diagnosis"));
+    expect(diagnosisPost, "positive control: the scan found the diagnosis write").toContain("/api/health-diagnosis");
+    expect(diagnosisPost).toContain("transportWakingWriteBudgetMs(");
     const queue = read(path.join(SRC, "commands/queue.ts"));
     const resolve = callAround(queue, queue.indexOf('"/api/mission-control/action"'));
     expect(resolve).toContain("transportWakingWriteBudgetMs(");
@@ -117,4 +122,39 @@ describe("rig broadcast against a daemon that takes longer than 5 s", () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
   }, 30_000);
+});
+
+describe("rig broadcast sends the terminal bearer (security M10: it sent none before hc-w45 and nothing pinned it back)", () => {
+  let exit: typeof process.exitCode;
+  beforeEach(() => { exit = process.exitCode; process.exitCode = undefined; vi.spyOn(console, "log").mockImplementation(() => undefined); });
+  afterEach(() => { process.exitCode = exit; vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+  async function broadcastOptions(): Promise<{ timeoutMs?: number; headers?: Record<string, string> } | undefined> {
+    let seen: { timeoutMs?: number; headers?: Record<string, string> } | undefined;
+    const post = vi.fn(async (_path: string, _body: unknown, options?: { timeoutMs?: number; headers?: Record<string, string> }) => {
+      seen = options;
+      return { status: 200, data: { total: 0, sent: 0, failed: 0, results: [] } };
+    });
+    const program = new Command();
+    program.addCommand(broadcastCommand({
+      lifecycleDeps: {} as never,
+      clientFactory: () => ({ baseUrl: "http://localhost:7433", post }) as never,
+    } as never));
+    await program.parseAsync(["broadcast", "--rig", "r", "--json", "hello"], { from: "user" });
+    expect(post).toHaveBeenCalledTimes(1);
+    return seen;
+  }
+
+  it("the Authorization header is on the broadcast POST when a terminal bearer is configured, with the shared fan-out wait", async () => {
+    vi.stubEnv("OPENRIG_TERMINAL_BEARER_TOKEN", "broadcast-canary-token");
+    const options = await broadcastOptions();
+    expect(options?.headers).toEqual({ Authorization: "Bearer broadcast-canary-token" });
+    expect(options?.timeoutMs).toBe(4 * 30_000 + 15_000);
+  });
+  it("and no header when none is configured", async () => {
+    vi.stubEnv("OPENRIG_TERMINAL_BEARER_TOKEN", "");
+    vi.stubEnv("OPENRIG_HOME", "/nonexistent-w46-home");
+    const options = await broadcastOptions();
+    expect(options?.headers).toBeUndefined();
+  });
 });

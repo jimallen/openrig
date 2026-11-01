@@ -694,8 +694,8 @@ describe("broadcast --host (net-new, CLI-direct POST)", () => {
     const h = mockClient(() => ({ status: 200, data: { results: [], sent: 0, total: 0, failed: 0 } }));
     const cmd = broadcastCommand(httpDeps(h));
     await cmd.parseAsync(["--host", "vps-b", "msg"], { from: "user" });
-    // a fan-out the client cannot count (the remote resolves the rig): 32 seats, each up to the 30 s bound, plus the 15 s margin
-    expect(h.calls[0]!.options?.timeoutMs).toBe(32 * 30_000 + 15_000);
+    // a fan-out the client cannot count (the remote resolves the rig): 32 seats in four waves of eight, each up to the 30 s bound, plus the 15 s margin
+    expect(h.calls[0]!.options?.timeoutMs).toBe(4 * 30_000 + 15_000);
   });
 
   it("the text positional is NEVER sugar-parsed: a message containing a@b@vps-b broadcasts locally intact when no host is set", async () => {
