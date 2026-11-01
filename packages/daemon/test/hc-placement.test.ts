@@ -313,3 +313,44 @@ describe("nameShown", () => {
     expect(app.done).toEqual([]);
   });
 });
+
+describe("showing a plan again (the premise of a repeat `rig terminal open`: reopening a view changes nothing)", () => {
+  const seats = ["exec-cos@r", "dev-a@r", "dev-b@r"];
+  const snapshot = (core: FakeCore): string => JSON.stringify([...core.terminals.entries()]);
+
+  it("leaves every terminal exactly as the first show left it, creates none and asks the app for nothing", async () => {
+    const { core, app, placement } = setup();
+    core.adoptTurnsKeepOn = true;
+    for (const s of seats) core.add(s);
+    const plan = planRigTabs("r", seats);
+    await placement.showTabs(plan);
+    const first = snapshot(core);
+    core.calls.length = 0;
+
+    const again = await placement.showTabs(plan);
+
+    expect(snapshot(core)).toBe(first);
+    expect(core.terminals.size).toBe(3);
+    expect(again.map((r) => r.outcome)).toEqual(["shown", "shown", "shown"]);
+    // Only reads and the two label/keep writes on the seats' own terminals: nothing that would run, kill or park one.
+    expect(new Set(core.methods())).toEqual(new Set(["terminal.get", "terminal.label", "terminal.keep"]));
+    expect(core.calls.every(([, p]) => seats.map(hcTerminalName).includes(String(p.terminal)))).toBe(true);
+    expect(app.done).toEqual([]);
+    for (const s of seats) expect(core.terminals.get(hcTerminalName(s))?.keep).toBe(false);
+  });
+
+  it("puts a seat back in its tab with both labels after it was parked, and no other seat moves", async () => {
+    const { core, placement } = setup();
+    for (const s of seats) core.add(s);
+    const plan = planRigTabs("r", seats);
+    await placement.showTabs(plan);
+    const before = snapshot(core);
+    const parked = core.terminals.get(hcTerminalName("dev-a@r"))!;
+    delete parked.labels["herdr.space"];
+    delete parked.labels["herdr.tab"];
+
+    await placement.showTabs(plan);
+
+    expect(snapshot(core)).toBe(before);
+  });
+});
