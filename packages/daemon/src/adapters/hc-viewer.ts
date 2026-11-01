@@ -1,6 +1,6 @@
 import { createConnection, type Socket } from "node:net";
 import { HcAttach, type HcAttachEnd, type HcAttachOpener, type HcAttachment } from "./hc-attach.js";
-import { HC_GENERATION, HcClient, HcError, HcUnavailableError, resolveHcSocket, type HcHello, type HcTerminal } from "./hc-client.js";
+import { HC_GENERATION, HcClient, HcError, HcUnavailableError, checkHcHello, resolveHcSocket, type HcHello, type HcTerminal } from "./hc-client.js";
 import { HC_HEARTBEAT_TIMEOUT_MS } from "./hc-core-watch.js";
 import { HcCapture } from "./hc-capture.js";
 import { ModeTracker, type TerminalModes } from "./hc-modes.js";
@@ -192,6 +192,12 @@ export class CoreSizeSource implements SizeSource {
             const hello = line.result as HcHello;
             if (hello.generation !== HC_GENERATION) {
               fail(new HcError(`core speaks generation ${hello.generation}, this build ${HC_GENERATION}`, "unsupported_generation", -32000));
+              return;
+            }
+            try {
+              checkHcHello(this.socketPath, hello);
+            } catch (err) {
+              fail(err instanceof Error ? err : new Error(String(err)));
               return;
             }
             phase = "subscribe";

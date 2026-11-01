@@ -78,12 +78,27 @@ export function resolveHcSocket(env: NodeJS.ProcessEnv = process.env, home: stri
   return join(state, "herdr-core", session, `${session}.sock`);
 }
 
+/** A check every `hello` this build makes to a socket must pass, beyond the generation: the daemon's pin on the core's version and
+ *  identity (hc-core-watch.ts `pinCallsToCore`). It lives here, keyed by socket, because three places say `hello` (HcClient, the
+ *  attach wire, the size watch) and all three must refuse a core that is no longer the one the daemon pinned (security review F5).
+ *  No pin registered for a socket is no check, as for the CLI and for tests on a private core. Throws an HcError to refuse. */
+export type HcHelloCheck = (hello: HcHello) => void;
+const helloChecks = new Map<string, HcHelloCheck>();
+export function setHcHelloCheck(socketPath: string, check: HcHelloCheck | null): void {
+  if (check) helloChecks.set(socketPath, check);
+  else helloChecks.delete(socketPath);
+}
+export function checkHcHello(socketPath: string, hello: HcHello): void {
+  helloChecks.get(socketPath)?.(hello);
+}
+
 interface RpcReply { id?: number; result?: unknown; error?: { code: number; message: string; data?: { kind?: string; hint?: string } } }
 
 /** One short-lived connection per call: a queued send can block for as long as a person types, and must never hold up
  *  a liveness read. Reaching the core and hearing it are kept apart: see the two error classes. */
 export class HcClient {
-  constructor(readonly socketPath: string = resolveHcSocket(), private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS) {}
+  /** `enforcePin` is false only for the core watch's own probes: it judges the pin itself and must see a refused core as `present`. */
+  constructor(readonly socketPath: string = resolveHcSocket(), private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS, private readonly enforcePin = true) {}
 
   async hello(): Promise<HcHello> {
     const conn = await this.open();
@@ -115,6 +130,7 @@ export class HcClient {
     if (hello.generation !== HC_GENERATION) {
       throw new HcError(`core speaks generation ${hello.generation}, this build ${HC_GENERATION}`, "unsupported_generation", -32000);
     }
+    if (this.enforcePin) checkHcHello(this.socketPath, hello);
     return hello;
   }
 

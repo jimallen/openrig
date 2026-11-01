@@ -1,5 +1,5 @@
 import { createConnection, type Socket } from "node:net";
-import { HC_GENERATION, HcError, HcOutcomeUnknownError, HcUnavailableError, resolveHcSocket, type HcTerminal } from "./hc-client.js";
+import { HC_GENERATION, HcError, HcOutcomeUnknownError, HcUnavailableError, checkHcHello, resolveHcSocket, type HcHello, type HcTerminal } from "./hc-client.js";
 
 /** The framed layer of hc's socket (spike 3, measured; the schema does not carry it):
  *  `[u32 LE channel][u8 kind][u32 LE length][payload]`. Channel 0 carries framed JSON-RPC; a channel from
@@ -105,7 +105,7 @@ export class HcAttach implements HcAttachOpener {
     const socket = await this.connect();
     try {
       const wire = new Wire(socket, handlers);
-      await wire.hello(this.timeoutMs);
+      await wire.hello(this.timeoutMs, this.socketPath);
       const result = await wire.attach({
         terminal: params.terminal, cols: params.cols, rows: params.rows,
         observe: params.observe ?? false, history: params.history ?? 0, resumed: params.resumed ?? false,
@@ -142,7 +142,7 @@ class Wire {
     socket.on("close", () => this.onGone());
   }
 
-  async hello(timeoutMs: number): Promise<void> {
+  async hello(timeoutMs: number, socketPath: string): Promise<void> {
     let reply: Reply;
     try {
       reply = await this.request("hello", { generation: HC_GENERATION, framed: true }, timeoutMs);
@@ -150,10 +150,11 @@ class Wire {
       if (err instanceof HcOutcomeUnknownError) throw new HcUnavailableError(err.message, err);  // hello changes nothing
       throw err;
     }
-    const hello = reply as unknown as { generation: number; framed: boolean };
+    const hello = reply as unknown as HcHello;
     if (hello.generation !== HC_GENERATION) {
       throw new HcError(`core speaks generation ${hello.generation}, this build ${HC_GENERATION}`, "unsupported_generation", -32000);
     }
+    checkHcHello(socketPath, hello);
     if (!hello.framed) throw new HcError("the core did not switch to framed mode", "needs_framed", -32000);
     this.framed = true;
     // Bytes that came with the hello line are already frames.
