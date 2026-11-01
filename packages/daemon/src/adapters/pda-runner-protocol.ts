@@ -343,31 +343,97 @@ export type PdaOutboxRecord =
 
 // ── Pane sanitiser (design A5, mandatory) ────────────────────────────────────
 
-// One left-to-right pass over every escape form. String-type sequences (OSC; DCS, SOS, PM, APC) run to
-// their terminator, so their payload goes with them. An unterminated one loses only its introducer, and
-// step 2 then removes any control left behind.
-const ESCAPE_SEQUENCES = new RegExp([
-  "\\u001b\\][\\s\\S]*?(?:\\u0007|\\u001b\\\\)",          // OSC ... BEL | ST
-  "\\u001b[PX^_][\\s\\S]*?\\u001b\\\\",                  // DCS, SOS, PM, APC ... ST
-  "\\u001b\\[[0-?]*[ -/]*[@-~]",                        // CSI
-  "\\u001b[ -/]*[0-~]",                                 // 2-byte ESC (with intermediates)
-  "\\u009d[\\s\\S]*?(?:\\u0007|\\u009c|\\u001b\\\\)",     // C1 OSC ... BEL | ST
-  "[\\u0090\\u0098\\u009e\\u009f][\\s\\S]*?(?:\\u009c|\\u001b\\\\)", // C1 DCS, SOS, PM, APC ... ST
-  "\\u009b[0-?]*[ -/]*[@-~]",                           // C1 CSI
-].join("|"), "g");
-// Every remaining C0, DEL and C1 control except LF and TAB: CR, BEL, ETX, a lone ESC, ...
-const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
-// Bidi controls (embedding, override, isolate; the LRM, RLM and ALM marks) and the line and paragraph
-// separators: they can make capture read differently from the bytes. Written as escapes so no editor or
-// formatter can silently drop an invisible character out of the guard (review N5); a pin checks the source.
-const BIDI_CONTROLS = /[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+// Strip every escape form in ONE left-to-right pass, linear in the text (hc-w45, security N10: the regex form rescanned to the end
+// of the text at every unterminated introducer, 200 KB took 4.5 s). The forms and the order they are tried in are the old
+// regex's, unchanged, and a differential fuzz against that regex pins it (pda-sanitize-linear.test.ts):
+//   OSC `ESC ]` .. BEL | ST        DCS/SOS/PM/APC `ESC P|X|^|_` .. ST        CSI `ESC [ [0-?]* [ -/]* [@-~]`
+//   2-byte `ESC [ -/]* [0-~]`      C1 OSC U+009D .. BEL | U+009C | ST        C1 DCS/SOS/PM/APC .. U+009C | ST     C1 CSI U+009B ...
+// String-type sequences run to their terminator, so their payload goes with them. An unterminated one loses only its introducer,
+// and the control removal then takes any ESC left behind. Then every remaining C0, DEL and C1 control except LF and TAB, and the
+// bidi controls (embedding, override, isolate; LRM, RLM, ALM; the line and paragraph separators), which can make capture read
+// differently from the bytes.
+const ESC_CHAR = 0x1b;
+
+/** Where the next `needle` at or after `from` starts, remembering the answer: a search that found none finds none later either,
+ *  and one that found a hit at or after `from` is still right for any later `from` up to that hit. Total work is linear. */
+function memoizedFinder(text: string, needle: string): (from: number) => number {
+  let at = -2; // -2: not searched, -1: none left
+  return (from) => {
+    if (at === -1) return -1;
+    if (at >= from) return at;
+    at = text.indexOf(needle, from);
+    return at;
+  };
+}
+
+function isBidiControl(c: number): boolean {
+  return c === 0x061c || c === 0x200e || c === 0x200f || c === 0x2028 || c === 0x2029
+    || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+}
 
 /** Strip every terminal control from text bound for the pane: escape sequences (7-bit and C1), then every
  *  control except `\n` and `\t`, then the bidi controls. Applied to EVERY string the runner prints. The
  *  runner applies exact-value token redaction AFTER this (L1b), and re-asserts `ESC[?2004h` itself after
  *  each output batch; this function emits no escape at all. */
 export function sanitizeForPane(text: string): string {
-  return text.replace(ESCAPE_SEQUENCES, "").replace(CONTROLS, "").replace(BIDI_CONTROLS, "");
+  const n = text.length;
+  const nextBel = memoizedFinder(text, "\u0007");
+  const nextSt7 = memoizedFinder(text, "\u001b\\");
+  const nextSt8 = memoizedFinder(text, "\u009c");
+  const parts: string[] = [];
+  let run = 0;
+  let i = 0;
+  /** The end (one past the terminator) of the string sequence whose body starts at `from`, or -1 when none terminates it. */
+  const stringEnd = (from: number, bel: boolean, st8: boolean): number => {
+    let best = -1; let bestLen = 0;
+    const consider = (idx: number, len: number) => { if (idx >= 0 && (best === -1 || idx < best)) { best = idx; bestLen = len; } };
+    if (bel) consider(nextBel(from), 1);
+    if (st8) consider(nextSt8(from), 1);
+    consider(nextSt7(from), 2);
+    return best === -1 ? -1 : best + bestLen;
+  };
+  /** CSI body at `from`: `[0-?]*` then `[ -/]*` then a final `[@-~]`; the end, or -1. */
+  const csiEnd = (from: number): number => {
+    let j = from;
+    while (j < n && text.charCodeAt(j) >= 0x30 && text.charCodeAt(j) <= 0x3f) j++;
+    while (j < n && text.charCodeAt(j) >= 0x20 && text.charCodeAt(j) <= 0x2f) j++;
+    return j < n && text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e ? j + 1 : -1;
+  };
+  /** The 2-byte form at `from` (just after the ESC): `[ -/]*` then `[0-~]`; the end, or -1. */
+  const twoByteEnd = (from: number): number => {
+    let j = from;
+    while (j < n && text.charCodeAt(j) >= 0x20 && text.charCodeAt(j) <= 0x2f) j++;
+    return j < n && text.charCodeAt(j) >= 0x30 && text.charCodeAt(j) <= 0x7e ? j + 1 : -1;
+  };
+  while (i < n) {
+    const c = text.charCodeAt(i);
+    let end = -1;
+    if (c === ESC_CHAR) {
+      const k = i + 1 < n ? text.charCodeAt(i + 1) : -1;
+      if (k === 0x5d) end = stringEnd(i + 2, true, false);                                  // ESC ]
+      else if (k === 0x50 || k === 0x58 || k === 0x5e || k === 0x5f) end = stringEnd(i + 2, false, false); // ESC P X ^ _
+      if (end === -1 && k === 0x5b) end = csiEnd(i + 2);                                    // ESC [
+      if (end === -1) end = twoByteEnd(i + 1);
+    } else if (c === 0x9d) {
+      end = stringEnd(i + 1, true, true);
+    } else if (c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f) {
+      end = stringEnd(i + 1, false, true);
+    } else if (c === 0x9b) {
+      end = csiEnd(i + 1);
+    }
+    if (end !== -1) {
+      if (run < i) parts.push(text.slice(run, i));
+      i = end; run = end;
+      continue;
+    }
+    const dropped = (c <= 0x08) || (c >= 0x0b && c <= 0x1f) || (c >= 0x7f && c <= 0x9f) || isBidiControl(c);
+    if (dropped) {
+      if (run < i) parts.push(text.slice(run, i));
+      i++; run = i;
+    } else i++;
+  }
+  if (run < n) parts.push(text.slice(run, n));
+  return parts.join("");
 }
 
 // ── Usage wire payload (J-3, J-5) ────────────────────────────────────────────

@@ -9,15 +9,8 @@ import { emitCrossHostError, emitRemoteHttpFailure } from "../cross-host-cli-hel
 import { runRemoteHttpOp } from "../remote-host-ops.js";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
 import { resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
-import { refuseEmptyMessage } from "./send.js";
-
-/**
- * OPR.0.4.6.MH4 C3 — the cross-host broadcast deadline, named at the call
- * site (arch delivery-lane note (a)): the remote route responds only after
- * the ORIGIN daemon's per-target fan-out loop completes, so a many-seat rig
- * needs more than the 5s read-class default.
- */
-const BROADCAST_REMOTE_TIMEOUT_MS = 30_000;
+import { transportFanoutBudgetMs } from "@openrig/daemon/transport-budget";
+import { refuseEmptyMessage, transportBroadcastOptions } from "./send.js";
 
 export interface BroadcastDeps extends StatusDeps {
   /** Test seam: inject a registry loader so no real ~/.openrig is touched. */
@@ -132,7 +125,7 @@ selection, not the agent@rig@host sugar.`)
       // header). An env-less broadcast delivers-and-labels rather than refusing.
       body.envelopeSender = seatSender ?? SENDER_FALLBACK;
 
-      const res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body);
+      const res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, transportBroadcastOptions());
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));
@@ -161,7 +154,7 @@ selection, not the agent@rig@host sugar.`)
  * pod?}); the ORIGIN daemon's own fan-out engine resolves the TargetSpec on
  * ITS topology and returns per-target results, printed VERBATIM — per-target
  * honesty is passthrough, never summarized; a partial fan-out exits non-zero
- * exactly as the local path does. Deadline: BROADCAST_REMOTE_TIMEOUT_MS
+ * exactly as the local path does. Deadline: transportFanoutBudgetMs()
  * (named — a full fan-out outlives the read-class default).
  */
 async function runCrossHostBroadcast(
@@ -196,7 +189,7 @@ async function runCrossHostBroadcast(
   body.envelopeSender = seatSender ?? SENDER_FALLBACK;
 
   const result = await runRemoteHttpOp(hostId, "POST", "/api/transport/broadcast", body, deps, {
-    timeoutMs: BROADCAST_REMOTE_TIMEOUT_MS,
+    timeoutMs: transportFanoutBudgetMs(),
   });
 
   if (opts.json) {

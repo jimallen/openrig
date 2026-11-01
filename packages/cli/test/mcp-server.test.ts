@@ -470,7 +470,7 @@ describe("MCP Server", () => {
     });
 
     expect(postFn).toHaveBeenCalled();
-    expect(postFn.mock.calls[0]?.[2]).toBeUndefined();
+    expect(postFn.mock.calls[0]?.[2], "hc-w45: the shared send budget, not the client's 5 s read default").toEqual({ timeoutMs: 45_000 });
     expect(result.isError).toBeUndefined();
     const parsed = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
     expect(parsed.ok).toBe(true);
@@ -497,7 +497,7 @@ describe("MCP Server", () => {
         text: "hello",
         waitForIdleMs: 30000,
       }),
-      { timeoutMs: 35000 },
+      { timeoutMs: 75000 },
     );
     expect(result.isError).toBeUndefined();
     await cleanup();

@@ -334,19 +334,19 @@ describe("send --host (http branch)", () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it("--wait-for-idle sizes the http deadline: waitForIdleMs + the cross-host send budget", async () => {
+  it("--wait-for-idle sizes the http deadline: waitForIdleMs + the shared send budget (30 s bound + 15 s margin)", async () => {
     const h = mockClient(() => ({ status: 200, data: {} }));
     const cmd = sendCommand(httpDeps(h));
     await cmd.parseAsync(["--host", "vps-b", "dev-impl@my-rig", "hello", "--wait-for-idle", "30"], { from: "user" });
-    expect(h.calls[0]!.options?.timeoutMs).toBe(30_000 + 30_000);
+    expect(h.calls[0]!.options?.timeoutMs).toBe(30_000 + 45_000);
     expect((h.calls[0]!.body as Record<string, unknown>).waitForIdleMs).toBe(30_000);
   });
 
-  it("a cross-host send waits 30 s for the remote to deliver, not the 5 s read default", async () => {
+  it("a cross-host send waits 45 s (past the daemon's own 30 s bound), not the 5 s read default or the old 30 s (hc-w45)", async () => {
     const h = mockClient(() => ({ status: 200, data: {} }));
     const cmd = sendCommand(httpDeps(h));
     await cmd.parseAsync(["--host", "vps-b", "dev-impl@my-rig", "hello"], { from: "user" });
-    expect(h.calls[0]!.options?.timeoutMs).toBe(30_000);
+    expect(h.calls[0]!.options?.timeoutMs).toBe(45_000);
   });
 
   it("a remote that delivers after more than 5 s reports the send, not a failure", { timeout: 20_000 }, async () => {
@@ -694,7 +694,8 @@ describe("broadcast --host (net-new, CLI-direct POST)", () => {
     const h = mockClient(() => ({ status: 200, data: { results: [], sent: 0, total: 0, failed: 0 } }));
     const cmd = broadcastCommand(httpDeps(h));
     await cmd.parseAsync(["--host", "vps-b", "msg"], { from: "user" });
-    expect(h.calls[0]!.options?.timeoutMs).toBe(30_000);
+    // a fan-out the client cannot count (the remote resolves the rig): 32 seats, each up to the 30 s bound, plus the 15 s margin
+    expect(h.calls[0]!.options?.timeoutMs).toBe(32 * 30_000 + 15_000);
   });
 
   it("the text positional is NEVER sugar-parsed: a message containing a@b@vps-b broadcasts locally intact when no host is set", async () => {

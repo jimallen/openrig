@@ -1,3 +1,4 @@
+import { DAEMON_DELIVERY_BOUND_MS } from "../transport-budget.js";
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcClient, type HcTerminal } from "./hc-client.js";
 import { HcAttach, type HcAttachEnd, type HcAttachOpener, type HcAttachment } from "./hc-attach.js";
 import type { HcLifecycle } from "./hc-lifecycle.js";
@@ -142,7 +143,7 @@ export class HcInput {
   ) {
     this.fileOps = options.fileOps ?? defaultTmuxFileOps();
     this.timing = {
-      deliveryTimeoutMs: options.deliveryTimeoutMs ?? 30_000,
+      deliveryTimeoutMs: options.deliveryTimeoutMs ?? DAEMON_DELIVERY_BOUND_MS,
       paintSettleMs: options.paintSettleMs ?? 40,
       paintMaxMs: options.paintMaxMs ?? 400,
       paintFirstMs: options.paintFirstMs ?? 1_500,

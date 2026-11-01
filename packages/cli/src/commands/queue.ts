@@ -1,3 +1,4 @@
+import { transportWakingWriteBudgetMs } from "@openrig/daemon/transport-budget";
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import { Command, InvalidArgumentError } from "commander";
@@ -1106,7 +1107,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
             decision: opts.decision,
             notify: opts.notify,
           },
-          bearer ? { headers: { Authorization: `Bearer ${bearer}` } } : undefined,
+          { timeoutMs: transportWakingWriteBudgetMs(), ...(bearer ? { headers: { Authorization: `Bearer ${bearer}` } } : {}) },
         );
         await printQueueItemResult(client, qitemId, opts.json ?? false, res.data, res.status);
       });

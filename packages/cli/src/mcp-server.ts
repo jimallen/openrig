@@ -1,3 +1,4 @@
+import { transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
@@ -5,7 +6,6 @@ import type { DaemonClient, DaemonResponse } from "./client.js";
 import { CLI_VERSION } from "./version.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
-const WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS = 5_000;
 
 type TextResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -287,7 +287,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
           verify,
           force,
           waitForIdleMs,
-        }, waitForIdleRequestOptions(waitForIdleMs));
+        }, transportSendOptions(waitForIdleMs));
         return mapResult(res);
       } catch (err) {
         return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
@@ -428,7 +428,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
   return server;
 }
 
-function waitForIdleRequestOptions(waitForIdleMs: number | undefined): { timeoutMs: number } | undefined {
-  if (waitForIdleMs === undefined) return undefined;
-  return { timeoutMs: waitForIdleMs + WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS };
+/** hc-w45: the wait for a send is the shared rule (the daemon's own bound plus a margin), not the client's 5 s read default. */
+function transportSendOptions(waitForIdleMs: number | undefined): { timeoutMs: number } {
+  return { timeoutMs: transportSendBudgetMs(waitForIdleMs) };
 }

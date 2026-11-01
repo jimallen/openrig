@@ -115,3 +115,41 @@ describe("HcClient", () => {
     expect(err).toMatchObject({ kind: "unsupported_generation" });
   });
 });
+
+// A unit row that always runs for the launch-block lifecycle (security review, mutant M10: removing the clear survived because its only
+// pin, hc-launch-refusal.real.test.ts, skips without both hc builds). `rig health` shows the block until a launch succeeds.
+describe("HcClient launch block", () => {
+  const refuseOrRun = (fail: { run: boolean }) => (method: string, _p: Record<string, unknown>, id: number, socket: Socket) => {
+    if (method === "terminal.run" && fail.run) {
+      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "no holder", data: { kind: "unavailable" } } })}\n`);
+    } else reply(socket, id, { ok: true });
+  };
+
+  it("is read as null until a launch is refused, then as the noted message", async () => {
+    const path = await fakeCore(refuseOrRun({ run: false }));
+    const client = new HcClient(path);
+    expect(client.launchBlockedBecause).toBeNull();
+    client.noteLaunchBlocked("the core has no holder");
+    expect(client.launchBlockedBecause).toBe("the core has no holder");
+  });
+
+  it("is cleared by the next terminal.run that succeeds, and by nothing else", async () => {
+    const path = await fakeCore(refuseOrRun({ run: false }));
+    const client = new HcClient(path);
+    client.noteLaunchBlocked("the core has no holder");
+    await client.call("terminal.get", { terminal: "t1" });
+    await client.call("terminal.list", {});
+    expect(client.launchBlockedBecause, "reads do not clear it").toBe("the core has no holder");
+    await client.call("terminal.run", { argv: ["sh"] });
+    expect(client.launchBlockedBecause, "a launch that succeeded does").toBeNull();
+  });
+
+  it("is kept when the launch itself fails", async () => {
+    const fail = { run: true };
+    const path = await fakeCore(refuseOrRun(fail));
+    const client = new HcClient(path);
+    client.noteLaunchBlocked("the core has no holder");
+    await expect(client.call("terminal.run", { argv: ["sh"] })).rejects.toBeInstanceOf(HcError);
+    expect(client.launchBlockedBecause).toBe("the core has no holder");
+  });
+});

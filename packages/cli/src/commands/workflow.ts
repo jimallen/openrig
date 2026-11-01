@@ -1,3 +1,4 @@
+import { transportWakingWriteBudgetMs } from "@openrig/daemon/transport-budget";
 import { resolve, isAbsolute } from "node:path";
 import { statSync } from "node:fs";
 import { Command } from "commander";
@@ -195,7 +196,7 @@ Examples:
         const res = opts.apply ? await client.post<unknown>(route, {
           expectedVersion: Number(opts.expectedVersion), expectedDigest: opts.expectedDigest,
           operationKey: opts.operationKey, actorSession: opts.actorSession, reason: opts.reason,
-        }) : await client.get<unknown>(route);
+        }, { timeoutMs: transportWakingWriteBudgetMs() }) : await client.get<unknown>(route);
         if (opts.json || opts.apply || res.status >= 400) printResult(opts.json ?? false, res.data, res.status);
         else for (const line of renderGraphRevision(res.data as Parameters<typeof renderGraphRevision>[0])) console.log(line);
         if (opts.apply) printOutcomeSummary(opts.json ?? false, res.status, {
@@ -249,7 +250,7 @@ Examples:
           createdBySession: opts.createdBy,
           entryOwnerSession: opts.entryOwner,
           targetRig: opts.rig,
-        });
+        }, { timeoutMs: transportWakingWriteBudgetMs() });
         printResult(opts.json ?? false, res.data, res.status);
         printWorkflowAdvisories(res.data?.advisories);
         printOutcomeSummary(opts.json ?? false, res.status, {
@@ -299,7 +300,7 @@ Examples:
           createdBySession: opts.createdBy,
           entryOwnerSession: opts.entryOwner,
           targetRig: opts.rig,
-        });
+        }, { timeoutMs: transportWakingWriteBudgetMs() });
         printResult(opts.json ?? false, res.data, res.status);
         printWorkflowAdvisories(res.data?.advisories);
         const body = res.data ?? {};
@@ -426,7 +427,7 @@ Examples:
               }
             : undefined,
           nextOwnerSession: opts.nextOwner,
-        });
+        }, { timeoutMs: transportWakingWriteBudgetMs() });
         printResult(opts.json ?? false, res.data, res.status);
         const body = res.data ?? {};
         const closedId = asString(body.closurePriorPacketId) ?? opts.currentPacket;
@@ -657,7 +658,7 @@ Examples:
             targetedAction: "resume" | "none";
           }>;
           unknowns?: string[];
-        }>(`/api/workflow/${encodeURIComponent(instanceId)}/continue`, {});
+        }>(`/api/workflow/${encodeURIComponent(instanceId)}/continue`, {}, { timeoutMs: transportWakingWriteBudgetMs() });
         printResult(opts.json ?? false, res.data, res.status);
         const body = res.data ?? {};
         const status = body.instance?.status ?? "(unknown)";
@@ -725,7 +726,7 @@ Examples:
           createdBySession: opts.createdBy,
           entryOwnerSession: opts.entryOwner,
           targetRig: opts.rig,
-        });
+        }, { timeoutMs: transportWakingWriteBudgetMs() });
         printWorkflowAdvisories(res.data?.advisories);
         // The daemon returns the nested InstantiateResult shape
         // ({instance:{instanceId}}); tolerate a flattened {instanceId}
@@ -810,7 +811,7 @@ Examples:
           packetId: opts.packet,
           actorSession: opts.actorSession,
           reason: opts.reason,
-        });
+        }, { timeoutMs: transportWakingWriteBudgetMs() });
         printResult(opts.json ?? false, res.data, res.status);
         const body = res.data ?? {};
         printOutcomeSummary(opts.json ?? false, res.status, {
@@ -861,7 +862,7 @@ Examples:
           actorSession: opts.actorSession,
           occurrenceId: opts.occurrence,
           decision: opts.decision,
-        });
+        }, { timeoutMs: transportWakingWriteBudgetMs() });
         printResult(opts.json ?? false, res.data, res.status);
         const body = res.data ?? {};
         printOutcomeSummary(opts.json ?? false, res.status, {
@@ -884,7 +885,7 @@ Examples:
         const res = await client.post<{ closedPacketIds?: string[]; status?: string }>(
           `/api/workflow/${encodeURIComponent(instanceId)}/abort`,
           { reason: opts.reason, actorSession: opts.actorSession },
-        );
+         { timeoutMs: transportWakingWriteBudgetMs() });
         printResult(opts.json ?? false, res.data, res.status);
         printOutcomeSummary(opts.json ?? false, res.status, {
           what: `Aborted workflow ${instanceId}`,

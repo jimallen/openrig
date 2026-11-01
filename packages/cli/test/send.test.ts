@@ -276,6 +276,25 @@ describe("Send CLI", () => {
     expect(logs.join("\n")).toContain("Sent to slow-hc-session");
   }, 20_000);
 
+  it("hc-w45: a fan-out to a list waits for ITS recipients: each may take the daemon's 30 s bound, plus the margin (3 no-run seats took 15.6 s)", async () => {
+    const postFn = vi.fn(async () => ({ status: 200, data: { total: 3, sent: 3, failed: 0, results: [] } }));
+    const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
+    await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "send", "--to", "a@r,b@r,c@r", "hello", "--json"]);
+    });
+    expect(postFn.mock.calls[0]?.[0]).toBe("/api/transport/broadcast");
+    expect(postFn.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 3 * 30_000 + 15_000 });
+  });
+
+  it("hc-w45: a fan-out the client cannot count (--rig) is budgeted as the shared maximum, 32 seats", async () => {
+    const postFn = vi.fn(async () => ({ status: 200, data: { total: 1, sent: 1, failed: 0, results: [] } }));
+    const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
+    await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "send", "--rig", "my-rig", "hello", "--json"]);
+    });
+    expect(postFn.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 32 * 30_000 + 15_000 });
+  });
+
   it("P18: a resolvable seat SENDS with its attributed identity — actorSession derived from the seat env, never forged", async () => {
     vi.stubEnv("OPENRIG_SESSION_NAME", "driver@my-rig");
     vi.stubEnv("RIGGED_SESSION_NAME", "");
@@ -469,7 +488,7 @@ describe("Send CLI", () => {
         text: expect.stringContaining("hello"),
         waitForIdleMs: 30000,
       }),
-      { timeoutMs: 35000 },
+      { timeoutMs: 75000 }, // the 30 s idle wait, then a delivery: 30 s bound + 15 s margin
     );
     const sentText = postFn.mock.calls[0]?.[1] as { text: string } | undefined;
     expect(sentText?.text).toContain("To: dev-impl@my-rig");

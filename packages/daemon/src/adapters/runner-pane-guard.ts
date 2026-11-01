@@ -9,10 +9,9 @@
 //   1. TEXT: every string a runner prints goes through `sanitizeForPane` (the pda runner's own sanitiser) at the point it is
 //      handed to the pane, so no escape sequence of any kind is printed from text.
 //   2. CHOKEPOINT: `installPaneGuard` replaces `write` on the runner's stdout and stderr, so EVERY other writer (console.log,
-//      readline's echo of a paste or a typed line, the line editor's own prompts, a path nobody listed) can still not produce
-//      an OSC, DCS, SOS, PM or APC introducer. Complete string sequences are removed with their payload, a bare introducer
-//      loses its introducer, and a trailing ESC is held back until the next write so that a sequence split across two writes
-//      cannot join. CSI (cursor movement, `?2004h`) is left alone: the editor needs it, and it cannot carry a status.
+//      readline's echo of a paste or a typed line, the line editor's own prompts, a path nobody listed) leaves only plain text
+//      and a short list of CSI forms (see the allow-list below); every other ESC is removed, and a write that ends inside an
+//      allowed form is held until the next write, so a sequence split across two writes cannot join.
 //   The one exception is `paneGuard.statusWrite`, the original `write` captured before the patch. Only the status sink calls it.
 //
 // Only node builtins and local runner helpers, so a compiled runner entry stays runnable with no daemon dependencies.
@@ -22,35 +21,101 @@ import { sanitizeForPane } from "./pda-runner-protocol.js";
 
 export { sanitizeForPane };
 
-const STRINGS = new RegExp([
-  "\\u001b\\][\\s\\S]*?(?:\\u0007|\\u001b\\\\)",       // OSC ... BEL | ST
-  "\\u001b[PX^_][\\s\\S]*?\\u001b\\\\",               // DCS, SOS, PM, APC ... ST
-  "\\u009d[\\s\\S]*?(?:\\u0007|\\u009c|\\u001b\\\\)",  // C1 OSC
-  "[\\u0090\\u0098\\u009e\\u009f][\\s\\S]*?(?:\\u009c|\\u001b\\\\)", // C1 DCS, SOS, PM, APC
-].join("|"), "g");
-const INTRODUCERS = /\u001b[\]PX^_]|[\u0090\u0098\u009d\u009e\u009f]/g;
+// ── The allow-list ───────────────────────────────────────────────────────────
+// A denylist of string-sequence introducers (hc-w41) missed `ESC <C0 byte or DEL> ]`: a terminal parser in its escape state
+// executes a C0 control and ignores DEL and stays in that state, so the `]` still opens an OSC (security F6, confirmed on real
+// 0.1.15 and 0.1.16 cores). The class is closed the other way round: what leaves the guard is plain text and a short list of CSI
+// forms, and EVERY other ESC is removed. So no byte the guard emits can put a terminal in an escape state, and an introducer of any
+// kind (`ESC ]`, `ESC P`, `ESC X`, `ESC ^`, `ESC _`, with anything between) cannot be built from what it passes.
+//
+//   plain text   every character except C0 controls, DEL and the C1 range U+0080-U+009F; of the C0 controls only TAB, LF, CR, BS, BEL.
+//   CSI          ESC [ <up to 12 digits or ;>  then one of A B C D G H J K m      (cursor moves, erase, SGR: the line editor)
+//                ESC [ ? 2004 h|l                                                  (bracketed paste on and off: runner-pane-io)
+//   anything else with an ESC loses the ESC. The bytes after it stay as ordinary text, which a terminal prints and ignores.
+//
+// A write may end inside an allowed form (`ESC`, `ESC [`, `ESC [ 1`): that prefix is held and joined to the next write, so a split
+// cannot make an introducer out of two clean halves. The held prefix is at most 17 characters.
+//
+// Linear: one pass over the text, a bounded look-ahead at each ESC.
 
-/** Text with no string-sequence introducer left. Removing a sequence can join its neighbours into a new introducer
- *  (`ESC` + `ESC ] x BEL` + `]`), so it runs to a fixed point. */
-export function stripPaneStrings(text: string): string {
-  let current = text;
-  for (let i = 0; i < 64; i++) {
-    const next = current.replace(STRINGS, "").replace(INTRODUCERS, "");
-    if (next === current) return next;
-    current = next;
+const CSI_FINALS = new Set([..."ABCDGHJKm"].map((c) => c.charCodeAt(0)));
+const MAX_CSI_PARAMS = 12;
+
+type CsiMatch = { end: number } | "partial" | null;
+
+/** Does an allowed CSI start at `at` (an ESC)? `end` is one past its last character; "partial" when the text ends while the
+ *  characters so far are still a prefix of an allowed form (the next write decides); null when it is not one. */
+function matchAllowedCsi(text: string, at: number): CsiMatch {
+  const n = text.length;
+  let i = at + 1;
+  if (i >= n) return "partial";
+  if (text.charCodeAt(i) !== 0x5b) return null;      // [
+  i++;
+  if (i >= n) return "partial";
+  if (text.charCodeAt(i) === 0x3f) {                  // ? : only ?2004h / ?2004l
+    const rest = "2004";
+    i++;
+    for (let k = 0; k < rest.length; k++, i++) {
+      if (i >= n) return "partial";
+      if (text.charCodeAt(i) !== rest.charCodeAt(k)) return null;
+    }
+    if (i >= n) return "partial";
+    const final = text.charCodeAt(i);
+    return final === 0x68 || final === 0x6c ? { end: i + 1 } : null;   // h l
   }
-  // A text built to outlast 64 passes loses every ESC and C1 control instead: nothing can remain an introducer.
-  return current.replace(/[\u001b\u0080-\u009f]/g, "");
+  let params = 0;
+  for (; i < n; i++, params++) {
+    const c = text.charCodeAt(i);
+    if ((c >= 0x30 && c <= 0x39) || c === 0x3b) { if (params >= MAX_CSI_PARAMS) return null; continue; }
+    return CSI_FINALS.has(c) ? { end: i + 1 } : null;
+  }
+  return "partial";
 }
 
-/** A filter with one character of memory: a write that ends in ESC is held until the next write decides what it was. */
-export function createPaneStringFilter(): (text: string) => string {
+function plainCode(c: number): boolean {
+  if (c < 0x20) return c === 0x09 || c === 0x0a || c === 0x0d || c === 0x08 || c === 0x07;
+  return c !== 0x7f && !(c >= 0x80 && c <= 0x9f);
+}
+
+/** The allow-list over `text` as a whole: a form the text ends inside of is not allowed (nothing can complete it). */
+export function filterPaneText(text: string): string {
+  return filterWithCarry(text, "", false).out;
+}
+
+function filterWithCarry(text: string, carry: string, keepPartial: boolean): { out: string; carry: string } {
+  const s = carry + text;
+  const n = s.length;
+  const parts: string[] = [];
+  let runStart = 0;
+  let i = 0;
   let held = "";
+  while (i < n) {
+    const c = s.charCodeAt(i);
+    if (c === 0x1b) {
+      if (runStart < i) parts.push(s.slice(runStart, i));
+      const m = matchAllowedCsi(s, i);
+      if (m === "partial") {
+        if (keepPartial) { held = s.slice(i); i = n; runStart = n; break; }
+        i++; runStart = i; continue;
+      }
+      if (m) { parts.push(s.slice(i, m.end)); i = m.end; runStart = i; continue; }
+      i++; runStart = i; continue;       // any other ESC is removed
+    }
+    if (plainCode(c)) { i++; continue; }
+    if (runStart < i) parts.push(s.slice(runStart, i));
+    i++; runStart = i;
+  }
+  if (runStart < n) parts.push(s.slice(runStart, n));
+  return { out: parts.join(""), carry: held };
+}
+
+/** The same allow-list for a stream of writes: a write that ends inside an allowed CSI waits for the next one. */
+export function createPaneFilter(): (text: string) => string {
+  let carry = "";
   return (text) => {
-    let joined = held + text;
-    held = "";
-    if (joined.endsWith("\u001b")) { held = "\u001b"; joined = joined.slice(0, -1); }
-    return stripPaneStrings(joined);
+    const r = filterWithCarry(text, carry, true);
+    carry = r.carry;
+    return r.out;
   };
 }
 
@@ -66,7 +131,7 @@ export interface PaneStream { write: NodeJS.WriteStream["write"] }
 
 export function guardPaneStream(stream: PaneStream): (text: string) => void {
   const original = stream.write.bind(stream) as Write;
-  const filter = createPaneStringFilter();
+  const filter = createPaneFilter();
   const decoder = new StringDecoder("utf8");
   stream.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding | ((err?: Error | null) => void), cb?: (err?: Error | null) => void): boolean => {
     const text = typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));

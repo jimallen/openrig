@@ -14,19 +14,8 @@ import { runRemoteHttpOp } from "../remote-host-ops.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import { resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
 import { COMPOSER_PROMPT_CLASS } from "@openrig/daemon/composer-prompts";
+import { transportFanoutBudgetMs, transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
-
-const WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS = 5_000;
-/** A plain send is not a read: on an hc seat that reports its status, herdr-core holds the send for about 5 s to see whether the
- *  program goes `working`, longer while a person is typing, and the daemon answers `waiting` after about 30 s. The client's 5 s read
- *  default gave up first and called a delivered message "UNCONFIRMED" (hc-w41: every Pi and pda runner send that did not start a run
- *  within 5 s, once the runners reported status). Longer than the daemon's own bound, so its outcome is what the person reads. */
-const SEND_REQUEST_TIMEOUT_MS = 45_000;
-// A cross-host send waits for the remote to deliver, and the remote has no fixed deadline of its own (its tmux
-// calls run without a timeout), so no client budget is exact. This one sits well above a normal send, and above
-// fetch's 10 s connect timeout, so a host that never accepts the connection still reads as unreachable. A send
-// that outlasts it reads as unconfirmed, never as failed.
-const CROSS_HOST_SEND_TIMEOUT_MS = 30_000;
 
 /** The shared composer glyph set (Claude `❯`, Codex `›`, Codex 0.153 `»`) from the daemon's
  * composer-prompts surface, so the CLI staged check can never disagree with the daemon guard. */
@@ -900,7 +889,7 @@ async function runCrossHostSend(
  * sender verbatim — honest provenance; unknown on the remote it degrades to
  * the shipped non-blocking advisory, never a refusal. `--verify` prints the
  * REMOTE route's verified/outcome verbatim (remote-authoritative, never
- * locally synthesized). Deadline: CROSS_HOST_SEND_TIMEOUT_MS, plus waitForIdleMs
+ * locally synthesized). Deadline: transportSendBudgetMs(), plus waitForIdleMs
  * when --wait-for-idle. A send that may have arrived reads as unconfirmed.
  *
  * Auth posture (named, v0): runRemoteHttpOp presents the REGISTRY bearer
@@ -937,7 +926,7 @@ async function runHttpHostSend(
   const result = await runRemoteHttpOp(host.id, "POST", "/api/transport/send", {
     session, text: outboundText, deliveryId: randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
     dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
-  }, deps, { timeoutMs: (waitForIdleMs ?? 0) + CROSS_HOST_SEND_TIMEOUT_MS });
+  }, deps, { timeoutMs: transportSendBudgetMs(waitForIdleMs) });
 
   // A send that may have reached the remote is unconfirmed, not unreachable: it may have been delivered, and a
   // resend without checking risks a duplicate.
@@ -1056,7 +1045,7 @@ async function runFanOutSend(params: {
 
   let res: { status: number; data: Record<string, unknown> };
   try {
-    res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, transportRequestOptions());
+    res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, transportBroadcastOptions(toList?.length));
   } catch (err) {
     if (err instanceof DaemonConnectionError) {
       // 1b45cf21 — same helper as single-seat, so the remediation is
@@ -1158,19 +1147,18 @@ function parseWaitForIdleMs(value: string | undefined): number | undefined | nul
   return Math.ceil(seconds * 1000);
 }
 
-function waitForIdleRequestOptions(waitForIdleMs: number | undefined): { timeoutMs: number } {
-  if (waitForIdleMs === undefined) return { timeoutMs: SEND_REQUEST_TIMEOUT_MS };
-  return { timeoutMs: waitForIdleMs + WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS };
+/** hc-w45: how long a client of the transport routes waits is ONE rule, shared with the daemon's own bound
+ *  (@openrig/daemon/transport-budget). The 5 s read default gave up on delivered sends. */
+function transportRequestOptions(waitForIdleMs?: number): { timeoutMs: number; headers?: Record<string, string> } {
+  const headers = terminalAuthHeaders();
+  return { timeoutMs: transportSendBudgetMs(waitForIdleMs), ...(Object.keys(headers).length > 0 ? { headers } : {}) };
 }
 
-function transportRequestOptions(waitForIdleMs?: number): { timeoutMs?: number; headers?: Record<string, string> } | undefined {
-  const waitOptions = waitForIdleRequestOptions(waitForIdleMs);
+/** The same for `/api/transport/broadcast`: the daemon delivers to its recipients one after another. `recipients` is the
+ *  count the caller knows (an explicit list); a rig, a pod or everyone is resolved by the daemon and budgeted as the shared maximum. */
+export function transportBroadcastOptions(recipients?: number): { timeoutMs: number; headers?: Record<string, string> } {
   const headers = terminalAuthHeaders();
-  const hasHeaders = Object.keys(headers).length > 0;
-  return {
-    ...waitOptions,
-    ...(hasHeaders ? { headers } : {}),
-  };
+  return { timeoutMs: transportFanoutBudgetMs(recipients), ...(Object.keys(headers).length > 0 ? { headers } : {}) };
 }
 
 /** B8-2 test seam: the transport-failure renderer, exported for the honesty pins. */
