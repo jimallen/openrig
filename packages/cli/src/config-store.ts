@@ -96,6 +96,7 @@ export interface RiggedConfig {
   // Native comms step 3: inbox-socket delivery to Claude seats (default off).
   transport: {
     nativeClaude: boolean;
+    messagePump: boolean;
   };
   // V1 attempt-3 Phase 4 — Advisor / Operator rail icon V1 placeholders
   // per universal-shell.md L82–L84. SC-29 EXCEPTION: allowlist-only
@@ -289,6 +290,7 @@ const DEFAULTS = {
   },
   transport: {
     nativeClaude: false,
+    messagePump: false,
   },
   // V1 Phase 4 — Advisor default per universal-shell.md L83;
   // Operator default empty per L84 ("not configured").
@@ -443,6 +445,7 @@ export const VALID_KEYS = [
   "recovery.provider_auth_env_allowlist",
   "recovery.post_restart_prompt",
   "transport.native_claude",
+  "transport.message_pump",
   // V1 Phase 4 SC-29 exception — allowlist-only additions.
   "agents.advisor_session",
   "agents.operator_session",
@@ -561,6 +564,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "recovery.provider_auth_env_allowlist": { primary: "OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST" },
   "recovery.post_restart_prompt": { primary: "OPENRIG_RECOVERY_POST_RESTART_PROMPT" },
   "transport.native_claude": { primary: "OPENRIG_TRANSPORT_NATIVE_CLAUDE" },
+  "transport.message_pump": { primary: "OPENRIG_TRANSPORT_MESSAGE_PUMP" },
   "agents.advisor_session": { primary: "OPENRIG_AGENTS_ADVISOR_SESSION" },
   "agents.operator_session": { primary: "OPENRIG_AGENTS_OPERATOR_SESSION" },
   "workspace.operator_seat_name": { primary: "OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME" },
@@ -654,6 +658,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "recovery.provider_auth_env_allowlist": ["recovery", "providerAuthEnvAllowlist"],
   "recovery.post_restart_prompt": ["recovery", "postRestartPrompt"],
   "transport.native_claude": ["transport", "nativeClaude"],
+  "transport.message_pump": ["transport", "messagePump"],
   "agents.advisor_session": ["agents", "advisorSession"],
   "agents.operator_session": ["agents", "operatorSession"],
   "workspace.operator_seat_name": ["workspace", "operatorSeatName"],
@@ -1177,6 +1182,7 @@ export class ConfigStore {
       },
       transport: {
         nativeClaude: v("transport.native_claude") as boolean,
+        messagePump: v("transport.message_pump") as boolean,
       },
       agents: {
         advisorSession: v("agents.advisor_session") as string,

@@ -126,6 +126,8 @@ export const SETTINGS_VALID_KEYS = [
   "recovery.post_restart_prompt",
   // Native comms step 3: deliver daemon and agent messages to Claude seats through the seat's inbox socket (default off).
   "transport.native_claude",
+  // Seat Messaging S3: the pump that resends until a seat's gate records the id (default off until a gate is wired).
+  "transport.message_pump",
   // V1 attempt-3 Phase 4 - Advisor / Operator rail icon V1 placeholders
   // per universal-shell.md L82–L84. SC-29 EXCEPTION declared in
   // dispatch ACK §4: allowlist-only edit; no migrations / new
@@ -272,6 +274,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "recovery.provider_auth_env_allowlist": { primary: "OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST" },
   "recovery.post_restart_prompt": { primary: "OPENRIG_RECOVERY_POST_RESTART_PROMPT" },
   "transport.native_claude": { primary: "OPENRIG_TRANSPORT_NATIVE_CLAUDE" },
+  "transport.message_pump": { primary: "OPENRIG_TRANSPORT_MESSAGE_PUMP" },
   "agents.advisor_session": { primary: "OPENRIG_AGENTS_ADVISOR_SESSION" },
   "host.selected": { primary: "OPENRIG_HOST_SELECTED" },
   "host.name": { primary: "OPENRIG_HOST_NAME" },
@@ -366,6 +369,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "recovery.provider_auth_env_allowlist": ["recovery", "providerAuthEnvAllowlist"],
   "recovery.post_restart_prompt": ["recovery", "postRestartPrompt"],
   "transport.native_claude": ["transport", "nativeClaude"],
+  "transport.message_pump": ["transport", "messagePump"],
   "agents.advisor_session": ["agents", "advisorSession"],
   "host.selected": ["host", "selected"],
   "host.name": ["host", "name"],
@@ -633,6 +637,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "recovery.provider_auth_env_allowlist": return "";
     case "recovery.post_restart_prompt": return true;
     case "transport.native_claude": return false;
+    case "transport.message_pump": return false;
     // V1 Phase 4 — Advisor default per universal-shell.md L83;
     // Operator default empty per L84 ("not configured").
     case "agents.advisor_session": return "advisor-lead@kernel";
@@ -962,6 +967,7 @@ export interface ResolvedConfig {
   recoveryAutoDriveProviderPrompts: boolean;
   recoveryProviderAuthEnvAllowlistRaw: string;
   transportNativeClaude: boolean;
+  transportMessagePump: boolean;
 }
 
 export class SettingsStore {
@@ -1074,6 +1080,7 @@ export class SettingsStore {
       recoveryAutoDriveProviderPrompts: this.resolveOne("recovery.auto_drive_provider_prompts", fc, wr).value as boolean,
       recoveryProviderAuthEnvAllowlistRaw: this.resolveOne("recovery.provider_auth_env_allowlist", fc, wr).value as string,
       transportNativeClaude: this.resolveOne("transport.native_claude", fc, wr).value as boolean,
+      transportMessagePump: this.resolveOne("transport.message_pump", fc, wr).value as boolean,
     };
   }
 

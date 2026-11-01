@@ -30,6 +30,11 @@ import { NodeLauncher } from "./domain/node-launcher.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
+import { MessagePump } from "./domain/seat-messaging/message-pump.js";
+import { MessageStore } from "./domain/seat-messaging/message-store.js";
+import { SeatMessagingHealthSource } from "./domain/seat-messaging/message-health.js";
+import { NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
+import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
 import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
@@ -201,6 +206,10 @@ import {
 
 interface DaemonOptions {
   dbPath?: string;
+  /** Seat Messaging S3: the seats the pump may serve. Default: none. S2 and S4 wire real gates; a test passes a stub. */
+  seatMessagingPorts?: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
+  /** Seat Messaging S3: a test's shorter schedule. */
+  messagePumpTiming?: Partial<import("./domain/seat-messaging/message-pump.js").MessagePumpTiming>;
   /** S20 — the effective bind plan (mode/hosts/tailscaleDetected/ignoredRoutingHost),
    *  computed once in index.ts and exposed on /healthz so adoption gates verify
    *  listeners by binding evidence. Absent (tests/legacy) = healthz body unchanged. */
@@ -1256,7 +1265,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const hcLaunchBlockedHealth = new HcLaunchBlockedHealthSource(() => hcClient?.launchBlockedBecause ?? null);
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
   const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // Seat Messaging S3: one setting, read at boot, default off. Off, no pump and no health source exist, and every path is as it was.
+  const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
+  const seatMessagingPorts = opts?.seatMessagingPorts ?? NO_SEAT_MESSAGING_PORTS;
+  const heldMessages = new GuardHeldMessages(deliveryGuard);
+  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(new MessageStore(db), seatMessagingPorts, heldMessages)] : [];
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, ...seatMessagingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
@@ -2193,6 +2207,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       setInterval(() => { void hcSweep(); }, 15_000).unref();
     }
     nativeSweepTimer.unref?.();
+    // Started at boot and driven by the database. Not wired to any sender yet (S4): it serves rows `accept` wrote, for seats with a gate.
+    if (messagePumpEnabled) {
+      new MessagePump({
+        store: new MessageStore(db), ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
+        senders: new QueueSenderReturn(queueRepoInstance), timing: opts?.messagePumpTiming,
+      }).start();
+    }
     queueRepoInstance.attachActivityReader((session) => {
       const nodeId = resolveSessionNodeId(db, session);
       return nodeId ? seatActivityService.getSeatState(nodeId) : null;

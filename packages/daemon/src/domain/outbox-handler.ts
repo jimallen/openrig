@@ -87,6 +87,8 @@ export const OUTBOX_ACK_EVIDENCE = [
   // The row stays `indeterminate` and listed, for a person to send again by hand: nothing resends it, and `failed` would have left
   // the list and `rig health` with no retry behind it.
   "send_gone",
+  // Seat Messaging S3: the seat's gate recorded the id (the only thing that makes a Message `received`); the seat is gone for good.
+  "gate_seen", "seat_gone",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
 
@@ -523,6 +525,12 @@ export class OutboxHandler {
       .map((x) => x.entry);
   }
 
+  private hasMessageStateColumn(): boolean {
+    this.messageStateColumn ??= (this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "message_state");
+    return this.messageStateColumn;
+  }
+  private messageStateColumn: boolean | undefined;
+
   private hasNativeColumns(): boolean {
     if (this.nativeColumns === undefined) {
       this.nativeColumns = (this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "native_nonce");
@@ -722,10 +730,11 @@ export class OutboxHandler {
     const rows = this.db
       .prepare(
         `SELECT * FROM outbox_entries
-          WHERE delivery_state = 'pending' AND substr(outbox_id, 1, ?) = ?
+          WHERE delivery_state = 'pending' AND substr(outbox_id, 1, ?) = ?${this.hasMessageStateColumn() ? " AND message_state IS NULL" : ""}
           ORDER BY ts_dispatched ASC, rowid ASC LIMIT ? OFFSET ?`
       )
       .all(idPrefix.length, idPrefix, limit, offset) as OutboxEntryRow[];
+    // Seat Messaging: a row the pump owns (message_state set) has one driver; the drain never takes it too.
     // OF-117: marked, not refused: one damaged intent must not end the drain for the intents behind it (the drain skips it).
     return rows.map((r) => this.rowToEntry(r, "mark"));
   }

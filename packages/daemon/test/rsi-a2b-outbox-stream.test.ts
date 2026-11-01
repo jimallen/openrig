@@ -16,6 +16,15 @@ describe("D8 outbox state never settles", () => {
     return ids;
   };
 
+  it("does not call a row the pump owns 'never settles': open is its job (S4 design N7)", () => {
+    const f = fixture();
+    const ids = pending(f, 10, 30);
+    expect(f.records(source(f))).toHaveLength(1);
+    const rw = f.db;
+    rw.prepare(`UPDATE outbox_entries SET message_state = 'attempting' WHERE rowid IN (${ids.join(",")})`).run();
+    expect(f.records(source(f))).toEqual([]);
+  });
+
   it("fires at exactly 10 stale pending rows and not at 9", () => {
     const at = fixture();
     pending(at, 10, 30);
