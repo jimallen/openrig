@@ -3,7 +3,7 @@ import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTe
 import { hcTerminalName } from "../src/adapters/hc-seat.js";
 import type { HcSubmitOptions, HcSubmitResult } from "../src/adapters/hc-input.js";
 import {
-  CORE_RESTART_MARGIN_MS, HcDelivery, defaultBlockedPolicy, hcPanePid, isBlindRetrySafe, type HcDeliveryOutcome, type HcPendingSend, type HcSubmitter,
+  CORE_RESTART_MARGIN_MS, HcDelivery, defaultBlockedPolicy, hcPanePid, isBlindRetrySafe, startsLikeCommand, type HcDeliveryOutcome, type HcPendingSend, type HcSubmitter,
 } from "../src/adapters/hc-delivery.js";
 
 const SEAT = "qa@rig";
@@ -45,7 +45,9 @@ class FakeCore {
   type(text: string): void {
     this.landed.push(text);
     this.screen += `${text}\n`;
-    if (this.reported) { this.turn += 1; this.status = "idle"; }
+    // A program runs a slash command without a turn: measured on a stub, the core's record afterwards (status, turn) is the same as
+    // after a send that never arrived.
+    if (this.reported && !text.startsWith("/")) { this.turn += 1; this.status = "idle"; }
   }
 
   restartCore(): void {
@@ -278,6 +280,35 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
       expect(verdict).toMatchObject({ state: "not_delivered", reason: "core_restarted_send_gone" });
     });
 
+    it("a slash command the program ran (no turn) is not proof of gone: the record is the same as for a send that never arrived", async () => {
+      // The reply was lost, the program took `/x` and ran it, the core restarted. Before: this read "gone", and the queue's retry
+      // would have run the command a second time. The core's record cannot tell the two apart, so the verdict is waiting.
+      const core = new FakeCore();
+      const { delivery, send } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "/x arg");
+      core.personStops();  // the program ran it: landed, and no turn
+      core.clock += 10_000;
+      core.restartCore();
+      core.clock += 5_000;
+      expect(core.landed).toEqual(["/x arg"]);
+      expect(pendingOf(first)).toMatchObject({ commandLed: true });
+      const verdict = await delivery.verify(pendingOf(first));
+      expect(verdict).toMatchObject({ state: "waiting", cause: "restart_unsettled" });
+      expect(isBlindRetrySafe(verdict)).toBe(false);
+      expect(send.sent).toHaveLength(1);
+    });
+
+    it("a slash command that really was lost with the core is also waiting: the two cannot be told apart, so neither is resent", async () => {
+      const core = new FakeCore();
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "/x arg");
+      core.clock += 10_000;
+      core.restartCore();  // the queue is dropped, nothing landed
+      core.clock += 5_000;
+      expect(core.landed).toEqual([]);
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting", cause: "restart_unsettled" });
+    });
+
     it("done counts as at rest, both before and after", async () => {
       const { verdict } = await afterRestart((c) => { c.status = "done"; }, (c) => { c.status = "done"; });
       expect(verdict).toMatchObject({ state: "not_delivered", reason: "core_restarted_send_gone" });
@@ -316,13 +347,49 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     expect((await b.delivery.verify(pendingOf(second))).state).toBe("waiting");
   });
 
-  it("lets evidence win over a restart: a token or turn that is there means the text landed", async () => {
+  it("lets evidence win over a restart: a token with the turn that followed it means the text landed", async () => {
     const core = new FakeCore();
     const { delivery } = build(core, "silent");
     const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
     core.clock += 10_000;
     core.restartCore();
-    core.screen += "hello <tok-1>\n";  // the paste landed before the restart (the unmeasured gap in spike 1+2)
+    core.screen += "hello <tok-1>\n";
+    core.turn += 1;  // the program took the text and its turn ended: the Enter did reach it
+    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "token_on_screen" });
+  });
+
+  it("does not take a token as delivery when the seat started no turn: the paste may have landed and the Enter not (measured)", async () => {
+    // Measured on a private core: the core killed, or restarted with `hc server restart`, between the paste and the Enter leaves
+    // the text, token included, typed into the program's input and never submitted. The record is status idle, turn unchanged.
+    const core = new FakeCore();
+    const { delivery, send } = build(core, "silent");
+    const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+    core.clock += 10_000;
+    core.restartCore();
+    core.screen += "hello <tok-1>\n";  // the paste landed before the restart; no turn followed
+    const verdict = await delivery.verify(pendingOf(first));
+    expect(verdict).toMatchObject({ state: "waiting", reason: "waiting_on_person", cause: "text_present_no_turn" });
+    expect(verdict.state === "waiting" && verdict.message).toMatch(/Not told apart/);
+    expect(isBlindRetrySafe(verdict)).toBe(false);
+    expect(send.sent).toHaveLength(1);  // nothing was typed again
+  });
+
+  it("settles a token with no turn once a turn does follow: the Enter was only slow", async () => {
+    const core = new FakeCore();
+    const { delivery } = build(core, "silent");
+    const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+    core.screen += "hello <tok-1>\n";
+    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting", cause: "text_present_no_turn" });
+    core.turn += 1;
+    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "token_on_screen" });
+  });
+
+  it("takes a token as delivery while the program is mid-turn: it is working on it", async () => {
+    const core = new FakeCore();
+    const { delivery } = build(core, "silent");
+    const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+    core.screen += "hello <tok-1>\n";
+    core.status = "working";
     expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "token_on_screen" });
   });
 
@@ -416,9 +483,23 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     const { delivery } = build(core, "silent");
     const first = await delivery.deliver(SEAT, "hello <tok-4>", { token: "tok-4" });
     const stored: HcPendingSend = JSON.parse(JSON.stringify(pendingOf(first)));
-    expect(stored).toEqual({ version: 1, seat: SEAT, address: ADDRESS, token: "tok-4", sendStartedAtMs: T0, preTurn: 0, preStatus: "idle", preReported: true });
+    expect(stored).toEqual({ version: 1, seat: SEAT, address: ADDRESS, token: "tok-4", sendStartedAtMs: T0, preTurn: 0, preStatus: "idle", preReported: true, commandLed: false });
     core.personStops();
     expect(await delivery.verify(stored)).toMatchObject({ state: "delivered" });
+  });
+});
+
+describe("startsLikeCommand", () => {
+  it.each([["/x", true], ["/clear", true], ["  \n/compact now", true], ["\t/x\n[openrig delivery abc]", true], ["hello /x", false], ["see /etc/hosts", false], ["", false], ["!ls", false]])("%j -> %s", (text, expected) => {
+    expect(startsLikeCommand(text)).toBe(expected);
+  });
+
+  it("is what the pending record carries, for the text as sent", async () => {
+    const core = new FakeCore();
+    for (const [text, led] of [["/x", true], ["hello", false]] as const) {
+      const { delivery } = build(core, "silent");
+      expect(pendingOf(await delivery.deliver(SEAT, text))).toMatchObject({ commandLed: led });
+    }
   });
 });
 

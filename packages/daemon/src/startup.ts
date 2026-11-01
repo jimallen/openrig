@@ -2632,7 +2632,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // BLOCKING 1: reconcile abandoned `sending` claims (a prior crash) FIRST,
       // then drain committed `pending` intents. Reconcile is a one-time boundary
       // step, separate from the drain.
-      const reconciled = queueRepoInstance.reconcileAbandonedWakeIntents();
+      const reconciled = queueRepoInstance.reconcileAbandonedWakeIntents(hcDelivery ? "hc" : "tmux");
       const drained = await queueRepoInstance.drainPendingWakeIntents();
       if (drained.delivered || drained.indeterminate || drained.failed || reconciled) {
         console.log(

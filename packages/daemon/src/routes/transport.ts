@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
-import { isUnconfirmedHcSend, labelForTmuxSend, type OutboxHandler } from "../domain/outbox-handler.js";
+import { isUnconfirmedHcSend, labelForTmuxSend, OutboxHandlerError, type OutboxHandler } from "../domain/outbox-handler.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
 // S2 (OPR.0.5.4.3) — the sender-side half of two-ended honesty: appended to any
@@ -150,6 +150,20 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         delivery_outcome_unknown: 202,
       };
       const status = (statusMap[result.reason ?? ""] ?? 500) as 202 | 400 | 404 | 409 | 500 | 502 | 503;
+      // A send to an hc seat the core may still deliver (or whose reply was lost) is accepted, not failed, and not settled: it is
+      // recorded `indeterminate` with its pending record, exactly as /broadcast records it, so the sweep can settle it and `rig
+      // health` can name it. Without the row it left no trace anywhere once this response was read (the one rule, at its other site).
+      if (derivedActor && !body.submitOnly && isUnconfirmedHcSend(result)) {
+        const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
+        if (outbox) {
+          try {
+            const entry = outbox.record({ senderSession: derivedActor, destinationSession: body.session, body: body.text, identityProvenance: "transport:v1" });
+            outbox.markIndeterminate(entry.outboxId, labelForTmuxSend(result));
+          } catch (err) {
+            console.warn(`[transport/send] outbox auto-record of an unconfirmed hc send failed: ${(err as Error).message}`);
+          }
+        }
+      }
       return c.json(result, status);
     }
 
@@ -192,6 +206,24 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     }
 
     return c.json(result);
+  });
+
+  // The operator's close of an unsettled hc send (rig seat retire-unsettled-send): the person has looked at the seat. Audited with
+  // the transport-derived actor and a reason; refuses a row that is settled, another seat's, or not yet escalated.
+  router.post("/retire-unsettled/:seat/:id", async (c) => {
+    const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
+    if (!outbox) return c.json({ error: "Outbox unavailable" }, 503);
+    const body = await c.req.json<{ reason?: unknown }>().catch(() => ({} as { reason?: unknown }));
+    const actor = transportSenderSession(c);
+    if (!actor || typeof body.reason !== "string" || !body.reason.trim()) return c.json({ error: "Sender identity and reason required" }, 400);
+    try {
+      const entry = outbox.retireHcUnsettled(c.req.param("id"), c.req.param("seat"), actor, body.reason);
+      return c.json({ entry: { outboxId: entry.outboxId, destinationSession: entry.destinationSession, deliveryState: entry.deliveryState, retiredAt: entry.retiredAt, retiredBy: entry.retiredBy, retirementReason: entry.retirementReason },
+        effect: "Closed: the row leaves the unsettled list and `rig health`. Nothing was sent and nothing is asserted about delivery; the label and pending record are kept as evidence." });
+    } catch (err) {
+      if (!(err instanceof OutboxHandlerError)) throw err;
+      return c.json({ error: err.message, code: err.code }, err.code === "outbox_not_found" ? 404 : err.code === "retirement_reason_required" ? 400 : 409);
+    }
   });
 
   router.post("/capture", async (c) => {
