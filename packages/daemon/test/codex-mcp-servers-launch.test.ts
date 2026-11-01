@@ -81,7 +81,7 @@ function fixture(kind: Kind, selection: SeatMcpSelection | undefined, opts: { po
   const restore = new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, exec: async () => "", ...(names ? { existingMcpServerNames: names } : {}), mcpTrustIo: TRUST });
   const posture = opts.posture ?? "floor";
   const binding: NodeBinding = {
-    id: "b1", nodeId, tmuxSession: "r01-ops", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+    id: "b1", nodeId, tmuxSession: "r01-ops", tmuxWindow: null, tmuxPane: null,
     updatedAt: "", cwd, model: "gpt-5.5", launchPosture: posture, codexConfigProfile: opts.profile,
   };
   const restoreSelection = selection && nodeId === "n1" ? selection : undefined;

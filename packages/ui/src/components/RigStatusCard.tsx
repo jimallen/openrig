@@ -2,7 +2,7 @@
 // aggregate (up / partial / down / blocked / unknown), NOT inferred from pane
 // text. Used in two places: the dashboard kernel-status card and the topology
 // rig control. The card exposes ONE primary recovery/launch action (opens the
-// launch/recovery modal); terminal-surface actions (Open topology / CMUX) live
+// launch/recovery modal); terminal-surface actions (Open topology) live
 // SEPARATELY, never on this card (guard 5).
 //
 // The status badge CONSUMES the backend verdict in its rendered tone — a

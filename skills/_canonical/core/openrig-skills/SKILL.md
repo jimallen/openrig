@@ -73,7 +73,6 @@ These ship in the OpenRig repo and reach a seat when its profile selects them. T
 
 - **openrig-software-factory** — a user wants continuing reviewed work: manual/team, queue-only orchestration or an explicit Workflow; add one or two seats to the running starter when useful, with context, ownership, concurrency, spend and permission limits. Load `rig context get skills/core/openrig-software-factory/SKILL.md`.
 - **openrig-architect** — authoring a rig or topology (NOT for changing OpenRig itself — that's `developing-openrig`).
-- **openrig-cmux** — driving the `cmux` terminal provider.
 - **openrig-herdr** — opening/managing seat terminals via the default proof-gated provider.
 - **agent-startup-and-context-ingestion** — a seat is booting and ingesting its startup context.
 - **topology-mutation-and-seat-management** — adding, removing, renaming seats or otherwise mutating rig topology.

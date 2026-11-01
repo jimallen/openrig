@@ -19,8 +19,7 @@ import { TerminalPreviewPopover } from "./topology/TerminalPreviewPopover.js";
 import type { TopologyActivityVisual } from "../lib/topology-activity.js";
 import { formatCompactTokenCount, formatTokenTotalTitle, sumTokenCounts } from "../lib/token-format.js";
 import { formatRuntimeModel } from "../lib/runtime-brand.js";
-import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
-import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
+import { RuntimeBadge } from "./graphics/RuntimeMark.js";
 
 interface RigNodeData {
   logicalId: string;
@@ -44,7 +43,6 @@ interface RigNodeData {
   edgeCount?: number;
   binding: {
     tmuxSession?: string | null;
-    cmuxSurface?: string | null;
   } | null;
   contextUsedPercentage?: number | null;
   contextFresh?: boolean;
@@ -64,7 +62,7 @@ interface RigNodeData {
   reducedMotion?: boolean;
   // OPR.0.4.6.MH2 rev1-r2 B1: set by RigGraph's enrichment (the same channel
   // as reducedMotion) when a REMOTE host is selected — the hover toolbar's
-  // cmux-open POST + terminal preview are LOCAL actions and never mount on
+  // terminal preview is a LOCAL action and never mounts on
   // remote data. A data prop (not a hook) so standalone RigNode harnesses
   // need no QueryClientProvider.
   remoteReadonly?: boolean;
@@ -77,9 +75,7 @@ function isCore(role: string | null): boolean {
 
 export function RigNode({ data }: { data: RigNodeData }) {
   const prevStatusRef = useRef(data.startupStatus);
-  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [statusChanged, setStatusChanged] = useState(false);
-  const [actionFeedback, setActionFeedback] = useState<"cmux" | null>(null);
   const core = isCore(data.role);
   const isInfra = data.nodeKind === "infrastructure";
 
@@ -92,14 +88,6 @@ export function RigNode({ data }: { data: RigNodeData }) {
     }
     prevStatusRef.current = data.startupStatus;
   }, [data.startupStatus]);
-
-  useEffect(() => {
-    return () => {
-      if (feedbackTimerRef.current) {
-        clearTimeout(feedbackTimerRef.current);
-      }
-    };
-  }, []);
 
   const runtimeTitle = data.runtime || data.model ? formatRuntimeModel(data.runtime, data.model) : null;
   const agentName = displayAgentName(data.logicalId);
@@ -139,32 +127,6 @@ export function RigNode({ data }: { data: RigNodeData }) {
   ].filter((line): line is string => Boolean(line));
   const hoverHint = hoverHintLines.join("\n");
 
-  const flashFeedback = (kind: "cmux") => {
-    if (feedbackTimerRef.current) {
-      clearTimeout(feedbackTimerRef.current);
-    }
-    setActionFeedback(kind);
-    feedbackTimerRef.current = setTimeout(() => {
-      setActionFeedback((current) => (current === kind ? null : current));
-      feedbackTimerRef.current = null;
-    }, 900);
-  };
-
-  const handleOpenCmux = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!data.rigId) return;
-    try {
-      const result = await postOpenCmux({ rigId: data.rigId, logicalId: data.logicalId });
-      if (result.ok) flashFeedback("cmux");
-    } catch { /* best-effort */ }
-  };
-
-  const buttonClass = (kind: "cmux") =>
-    `inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[7px] uppercase transition-colors ${
-      actionFeedback === kind
-        ? "bg-inverse-surface text-background border-on-surface"
-        : "bg-surface-lowest text-on-surface border-outline-variant hover:bg-surface-low"
-    }`;
   const toolbarIconButtonClass = "border font-mono text-[7px] uppercase transition-colors bg-surface-lowest text-on-surface border-outline-variant hover:bg-surface-low inline-flex h-6 w-6 items-center justify-center px-0 py-0";
   const terminalSessionName = data.canonicalSessionName ?? data.binding?.tmuxSession ?? null;
 
@@ -337,18 +299,6 @@ export function RigNode({ data }: { data: RigNodeData }) {
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
-            {data.rigId && (
-              <button
-                onClick={handleOpenCmux}
-                data-testid="toolbar-cmux-open"
-                className={`${buttonClass("cmux")} inline-flex h-6 w-6 items-center justify-center px-0 py-0`}
-                aria-label="Open in cmux"
-                title="Open in cmux"
-              >
-                <ToolMark tool="cmux" size="sm" />
-                <span className="sr-only">{actionFeedback === "cmux" ? "opened" : "cmux"}</span>
-              </button>
-            )}
             {data.rigId && terminalSessionName && (
               <TerminalPreviewPopover
                 rigId={data.rigId}

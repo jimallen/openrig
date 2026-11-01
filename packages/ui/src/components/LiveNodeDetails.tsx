@@ -50,7 +50,6 @@ import {
 import { getRestoreStatusColorClass } from "../lib/restore-status-colors.js";
 import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
-import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
 
 type Tab = "overview" | "details";
 
@@ -184,21 +183,14 @@ function extractAgentPluginIds(review: unknown): string[] {
   return ids;
 }
 
-function ActionButtonsRow({ rigId, logicalId, data }: { rigId: string; logicalId: string; data: NodeDetailData }) {
-  // OPR.0.4.6.MH2 rev1-r2 B1: every button here is a LOCAL action (cmux-open
-  // POST; tmux-attach / resume commands for THIS host's sessions). Under a
+function ActionButtonsRow({ data }: { data: NodeDetailData }) {
+  // OPR.0.4.6.MH2 rev1-r2 B1: every button here is a LOCAL action (tmux-attach /
+  // resume commands for THIS host's sessions). Under a
   // remote selection the row renders an honest read-only marker instead —
   // acting on a remote host is MH-3/MH-4.
   const actionsAreRemote = useSelectedHostId() !== LOCAL_HOST_ID;
   const handleCopyAttach = async () => {
     if (data.tmuxAttachCommand) await copyText(data.tmuxAttachCommand);
-  };
-  const handleOpenCmux = async () => {
-    try {
-      await postOpenCmux({ rigId, logicalId });
-    } catch {
-      // best effort
-    }
   };
   const handleCopyResume = async () => {
     if (data.resumeCommand) await copyText(data.resumeCommand);
@@ -216,14 +208,6 @@ function ActionButtonsRow({ rigId, logicalId, data }: { rigId: string; logicalId
   }
   return (
     <div data-testid="live-node-actions" className="flex flex-wrap gap-2">
-      <button
-        onClick={handleOpenCmux}
-        data-testid="detail-cmux-open"
-        className="inline-flex min-h-11 items-center gap-1.5 px-3 py-2 border border-outline-variant bg-surface-lowest/30 font-mono text-[10px] uppercase tracking-wide text-on-surface hover:bg-surface-low/60"
-      >
-        <ToolMark tool="cmux" size="sm" />
-        Open CMUX
-      </button>
       {data.tmuxAttachCommand && (
         <button
           onClick={handleCopyAttach}
@@ -759,7 +743,7 @@ export function LiveNodeDetails({ rigId, logicalId }: LiveNodeDetailsProps) {
 
         {data && (
           <>
-            <ActionButtonsRow rigId={rigId} logicalId={logicalId} data={data} />
+            <ActionButtonsRow data={data} />
             <TabNav tabs={tabs} activeTab={activeTab} onSelect={setActiveTab} />
             <div data-testid="live-node-tab-body" className="space-y-4">
               {activeTab === "overview" && <OverviewTab data={data} activityVisual={activityVisual} />}

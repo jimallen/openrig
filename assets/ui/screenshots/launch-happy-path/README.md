@@ -12,7 +12,6 @@ Purpose:
 
 Annotated README walkthrough:
 - `guide-step-01-open-demo.png` — click the `demo` rig in the explorer
-- `guide-step-02-open-cmux.png` — click the `CMUX` button on `orch1.lead` in the topology
 
 Archived proof/source bundle:
 - raw proof captures and guide source were moved out of the repo to:

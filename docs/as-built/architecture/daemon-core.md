@@ -76,7 +76,7 @@ Hono daemon routes (69 app.route() mounts + direct handlers for /healthz,
 Framework-free domain services (431 files under packages/daemon/src/domain)
       |
       +-- SQLite state (96 migrations)
-      +-- tmux / cmux / resume adapters
+      +-- tmux / resume adapters
       +-- runtime adapters (Claude Code / Codex / Pi / Oh My Pi / Stub / Terminal)
       +-- rig environment services (compose adapter, service readiness, orchestrator)
       +-- transport / transcript / chat / ask layers
@@ -99,7 +99,7 @@ sorts them by name (`:29`) and records each applied name in `schema_migrations`
 
 `rigs` (topology container, `001_core_schema.ts:7`), `nodes` (logical node
 identity, `:17`) and `edges` (logical topology relationships, `:30`); then
-`bindings` (physical tmux/cmux surface attachment) and `sessions` (live
+`bindings` (physical tmux/hc terminal attachment; the `cmux_workspace` and `cmux_surface` columns remain in the schema, unused) and `sessions` (live
 execution state) in `002_bindings_sessions.ts`, `events` (append-only event log)
 in `003_events.ts`, `snapshots` (serialized rig state) in `004_snapshots.ts`, and
 `checkpoints` (per-node recovery state) in `005_checkpoints.ts`.

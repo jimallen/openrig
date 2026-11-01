@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createDaemon } from "../src/startup.js";
-import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 
 // S10 (OPR.0.5.5.10) proof item 1 — ACTIVATION, RED-FIRST. The M1 gateway components shipped
@@ -14,9 +13,6 @@ import type { ExecFn } from "../src/adapters/tmux.js";
 // subsystem; they go green with the startup wiring. That pins the landed-not-activated class:
 // a future regression that drops the boot caller turns this suite red by name.
 
-const cmuxFactory: CmuxTransportFactory = async () => {
-  throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-};
 const tmuxExec: ExecFn = async () => "";
 
 describe("S10 gateway subsystem activation (RED at tip: no boot-time subsystem caller)", () => {
@@ -28,7 +24,7 @@ describe("S10 gateway subsystem activation (RED at tip: no boot-time subsystem c
   });
 
   it("createDaemon exposes an ACTIVE gateway subsystem on AppDeps (daemon boot activates it in-process)", async () => {
-    const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { db, deps } = await createDaemon({ tmuxExec });
     try {
       const subsystem = deps.gatewaySubsystem;
       expect(subsystem, "AppDeps.gatewaySubsystem must be constructed by createDaemon (the boot-time caller)").toBeDefined();
@@ -39,7 +35,7 @@ describe("S10 gateway subsystem activation (RED at tip: no boot-time subsystem c
   }, 30000);
 
   it("subsystem health is visible on a real surface: GET /api/health-summary/gateway", async () => {
-    const { db, app } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { db, app } = await createDaemon({ tmuxExec });
     try {
       const res = await app.request("/api/health-summary/gateway");
       expect(res.status, "the gateway health route must exist (404 = no surface)").toBe(200);

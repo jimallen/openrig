@@ -374,7 +374,7 @@ describe("SessionRegistry", () => {
     expect(binding.id).toBeDefined();
     expect(binding.nodeId).toBe("node-1");
     expect(binding.tmuxSession).toBe("r01-dev1-impl");
-    expect(binding.cmuxSurface).toBeNull();
+    expect(binding.externalSessionName).toBeNull();
   });
 
   it("updateBinding partial update preserves existing fields", () => {
@@ -385,22 +385,32 @@ describe("SessionRegistry", () => {
       tmuxPane: "%1",
     });
 
-    // Second: set cmux fields only — tmux fields must survive
+    // Second: set the external session name only — tmux fields must survive
     const updated = registry.updateBinding("node-1", {
-      cmuxWorkspace: "review",
-      cmuxSurface: "surface-42",
+      externalSessionName: "ext-42",
     });
 
     expect(updated.tmuxSession).toBe("r01-dev1-impl");
     expect(updated.tmuxWindow).toBe("0");
     expect(updated.tmuxPane).toBe("%1");
-    expect(updated.cmuxWorkspace).toBe("review");
-    expect(updated.cmuxSurface).toBe("surface-42");
+    expect(updated.externalSessionName).toBe("ext-42");
+  });
+
+  it("updateBinding leaves the legacy cmux_workspace / cmux_surface columns alone (columns stay, nothing reads or writes them)", () => {
+    registry.updateBinding("node-1", { tmuxSession: "r01-dev1-impl" });
+    db.prepare("UPDATE bindings SET cmux_workspace = ?, cmux_surface = ? WHERE node_id = ?").run("ws-old", "surface-old", "node-1");
+
+    const updated = registry.updateBinding("node-1", { tmuxPane: "%9" });
+
+    expect(updated.tmuxPane).toBe("%9");
+    expect(Object.keys(updated).filter((k) => /cmux/i.test(k))).toEqual([]);
+    expect(db.prepare("SELECT cmux_workspace, cmux_surface FROM bindings WHERE node_id = ?").get("node-1"))
+      .toEqual({ cmux_workspace: "ws-old", cmux_surface: "surface-old" });
   });
 
   it("updateBinding keeps exactly one row per node after multiple upserts", () => {
     registry.updateBinding("node-1", { tmuxSession: "r01-dev1-impl" });
-    registry.updateBinding("node-1", { cmuxSurface: "surface-42" });
+    registry.updateBinding("node-1", { externalSessionName: "ext-42" });
     registry.updateBinding("node-1", { tmuxPane: "%3" });
 
     const rows = db

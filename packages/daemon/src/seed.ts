@@ -39,13 +39,12 @@ repo.addEdge(rig.id, orch.id, reviewer.id, "delegates_to");
 
 console.log("Created edges: orch->impl, orch->qa, impl->qa, orch->reviewer");
 
-// Add a binding with cmuxSurface to the orchestrator for focus click-through QA
+// Add a tmux binding to the orchestrator
 const sessionRegistry = new SessionRegistry(db);
 sessionRegistry.updateBinding(orch.id, {
   tmuxSession: "r99-demo1-lead",
-  cmuxSurface: "surface-orch-1",
 });
-console.log("Added cmuxSurface binding to orch1-lead (surface-orch-1)");
+console.log("Added tmux binding to orch1-lead (r99-demo1-lead)");
 
 db.close();
 console.log("Done. Start daemon with: OPENRIG_DB=" + dbPath + " npx tsx packages/daemon/src/index.ts");

@@ -65,7 +65,7 @@ describe("(a) launchHarness waits, bounded, for the seat's previous runner to fi
   });
 
   const binding = (): NodeBinding => ({
-    id: "b1", nodeId: "node-1", tmuxSession: SESSION, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+    id: "b1", nodeId: "node-1", tmuxSession: SESSION, tmuxWindow: null, tmuxPane: null,
     updatedAt: "", cwd: "/work", pda: { agent: "research", baseUrl: BASE },
   });
   const writeLock = (over: Record<string, unknown> = {}) =>
@@ -383,7 +383,7 @@ describe("(b) the real runner process: main()'s signal handlers, the SIGKILL pat
       pollMs: 10, launchWaitMs: 20, oldRunnerWaitMs: 30_000,                        // real pid check: the dead pid must end the wait at once
     });
     const t0 = Date.now();
-    await adapter.launchHarness({ id: "b", nodeId: "n", tmuxSession: rig.args.sessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/", pda: { agent: "research", baseUrl: rig.args.baseUrl } }, { name: "x" });
+    await adapter.launchHarness({ id: "b", nodeId: "n", tmuxSession: rig.args.sessionName, tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "/", pda: { agent: "research", baseUrl: rig.args.baseUrl } }, { name: "x" });
     expect(typedAt).toHaveLength(1);
     expect(typedAt[0]! - t0).toBeLessThan(2000);
   }, 60000);
@@ -409,7 +409,7 @@ describe("(d) the restart race: the next runner is not started until the old one
       pollMs: 25, launchWaitMs: 20,
     });
     p.hangup!();                             // what tmux kill-session does: the pty master closes, then SIGHUP
-    const result = await adapter.launchHarness({ id: "b", nodeId: "n", tmuxSession: rig.args.sessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/", pda: { agent: "research", baseUrl: rig.args.baseUrl } }, { name: "x" });
+    const result = await adapter.launchHarness({ id: "b", nodeId: "n", tmuxSession: rig.args.sessionName, tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "/", pda: { agent: "research", baseUrl: rig.args.baseUrl } }, { name: "x" });
     expect(result.ok).toBe(false);           // the fake pane starts no new runner, so the attach wait times out: only the typing moment matters
     expect(atTyping).toEqual({ spill: true, lock: false });
     expect(await p.exit).toEqual({ code: 0, signal: null });

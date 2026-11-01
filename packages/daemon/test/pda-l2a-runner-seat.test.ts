@@ -50,8 +50,8 @@ function seatAdapter(r: Rig, commands: string[]) {
 }
 
 const bindingFor = (r: Rig): NodeBinding => ({
-  id: "b", nodeId: r.args.nodeId, tmuxSession: r.args.sessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null,
-  cmuxSurface: null, updatedAt: "", cwd: "/w", pda: { agent: r.args.agent, baseUrl: r.args.baseUrl },
+  id: "b", nodeId: r.args.nodeId, tmuxSession: r.args.sessionName, tmuxWindow: null, tmuxPane: null,
+  updatedAt: "", cwd: "/w", pda: { agent: r.args.agent, baseUrl: r.args.baseUrl },
 });
 
 describe("the pda adapter driving the real runner against the fake pda", () => {

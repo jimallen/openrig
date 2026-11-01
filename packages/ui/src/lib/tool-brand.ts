@@ -1,5 +1,4 @@
 export type ToolBrandId =
-  | "cmux"
   | "tmux"
   | "vscode"
   | "terminal"
@@ -26,13 +25,6 @@ export interface ToolBrand {
 }
 
 const TOOL_BRANDS: Record<ToolBrandId, ToolBrand> = {
-  cmux: {
-    id: "cmux",
-    label: "CMUX",
-    shortLabel: "CMUX",
-    actionLabel: "Open in CMUX",
-    tone: "cyan",
-  },
   tmux: {
     id: "tmux",
     label: "tmux",
@@ -149,7 +141,6 @@ const TOOL_BRANDS: Record<ToolBrandId, ToolBrand> = {
 
 export function normalizeToolBrandId(tool: string | null | undefined): ToolBrandId {
   const normalized = tool?.toLowerCase().trim() ?? "";
-  if (normalized === "cmux" || normalized.includes("cmux")) return "cmux";
   if (normalized === "tmux" || normalized.includes("tmux")) return "tmux";
   if (
     normalized === "vscode" ||

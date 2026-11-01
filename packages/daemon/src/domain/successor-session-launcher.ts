@@ -403,8 +403,6 @@ export class SuccessorSessionLauncher {
       tmuxSession,
       tmuxWindow: null,
       ...(this.tmuxAdapter.hostKind === "hc" ? { tmuxPane: null, terminalAddress: tmuxPane } : { tmuxPane }),
-      cmuxWorkspace: null,
-      cmuxSurface: null,
       updatedAt: "",
       cwd: cwd ?? "",
       launchGeneration: launchGeneration ?? undefined,

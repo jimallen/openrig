@@ -74,7 +74,7 @@ function adapter(over: Partial<PdaRuntimeAdapterDeps> = {}, tmuxOver: Partial<Fa
 }
 
 const binding = (over: Partial<NodeBinding> = {}): NodeBinding => ({
-  id: "b1", nodeId: "node-1", tmuxSession: SESSION, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+  id: "b1", nodeId: "node-1", tmuxSession: SESSION, tmuxWindow: null, tmuxPane: null,
   updatedAt: "", cwd: "/work", pda: { agent: "research", baseUrl: BASE }, ...over,
 });
 

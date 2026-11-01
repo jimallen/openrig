@@ -11,14 +11,13 @@ import {
 } from "../../lib/activity-visuals.js";
 import type { AgentActivitySummary, SeatIdentityVerdictSummary } from "../../hooks/useNodeInventory.js";
 import { cn } from "../../lib/utils.js";
-import { useCmuxLaunch } from "../../hooks/useCmuxLaunch.js";
 import { ActivityRing } from "./ActivityRing.js";
 import { getActivityCardClasses, getActivityCardSignal } from "./activity-card-visuals.js";
 import { TerminalPreviewPopover } from "./TerminalPreviewPopover.js";
 import type { TopologyActivityVisual } from "../../lib/topology-activity.js";
 import { formatCompactTokenCount, formatTokenTotalTitle, sumTokenCounts } from "../../lib/token-format.js";
 import { formatRuntimeModel } from "../../lib/runtime-brand.js";
-import { RuntimeBadge, ToolMark } from "../graphics/RuntimeMark.js";
+import { RuntimeBadge } from "../graphics/RuntimeMark.js";
 import { useSelectedHostId } from "../../hooks/useHosts.js";
 import { LOCAL_HOST_ID } from "../../lib/host-param.js";
 
@@ -115,11 +114,10 @@ export const HybridPodGroupNode = memo(
 HybridPodGroupNode.displayName = "HybridPodGroupNode";
 
 function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
-  // OPR.0.4.6.MH2 rev1-r2 B1 — terminal preview + cmux-open are LOCAL
-  // affordances (local session reads / bare local POST); gated off when a
+  // OPR.0.4.6.MH2 rev1-r2 B1 — terminal preview is a LOCAL
+  // affordance (local session reads); gated off when a
   // remote host's data is on the canvas (FR-7 read-only remote views).
   const nodeIsRemote = useSelectedHostId() !== LOCAL_HOST_ID;
-  const cmuxLaunch = useCmuxLaunch();
   const core = isCoreRole(data.role);
   const isInfra = data.nodeKind === "infrastructure";
   const { state: activityState, source: activitySource } = getActivityStateWithSource(data.agentActivity, data.terminalActive, data.identityVerdict);
@@ -197,58 +195,6 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
           progressive
         />
       ) : null}
-      {data.rigId && !nodeIsRemote ? (
-        <>
-        <button
-          type="button"
-          data-testid={`hybrid-cmux-open-${data.logicalId}`}
-          aria-busy={cmuxLaunch.isPending || undefined}
-          aria-label={
-            cmuxLaunch.isPending
-              ? `Opening ${data.logicalId} in cmux`
-              : cmuxLaunch.isError
-                ? `Open ${data.logicalId} in cmux failed: ${cmuxLaunch.error instanceof Error ? cmuxLaunch.error.message : String(cmuxLaunch.error)}. Click to retry.`
-                : `Open ${data.logicalId} in cmux`
-          }
-          title={
-            cmuxLaunch.isPending
-              ? "Opening in cmux"
-              : cmuxLaunch.isError
-                ? `Failed: ${cmuxLaunch.error instanceof Error ? cmuxLaunch.error.message : String(cmuxLaunch.error)} — click to retry`
-                : "Open in cmux"
-          }
-          disabled={cmuxLaunch.isPending || !data.logicalId}
-          data-error={cmuxLaunch.isError || undefined}
-          onClick={(event) => {
-            event.stopPropagation();
-            // OPR.0.4.1.31 part D (rev1-r2) — symmetric to the table guard: never
-            // POST open-cmux for a malformed node (a null/empty logicalId would
-            // build /nodes/"null"/open-cmux). The button is also disabled above.
-            if (!data.logicalId) return;
-            // part B — reset a prior error then retry; the failure is no longer
-            // silent (data-error + title/aria carry the message).
-            if (cmuxLaunch.isError) cmuxLaunch.reset();
-            cmuxLaunch.mutate({ rigId: data.rigId!, logicalId: data.logicalId });
-          }}
-          className={cn("absolute right-1.5 top-6 z-10 disabled:cursor-wait disabled:opacity-60", cmuxLaunch.isError ? "text-rose-700" : "", hoverIconClass)}
-        >
-          <ToolMark tool="cmux" size="sm" />
-        </button>
-        {cmuxLaunch.isError ? (
-          // OPR.0.4.1.31 B2 (dev1-guard) — a stable, VISIBLE error message (not
-          // just title/aria/color): a persistent role=alert chip near the button
-          // carrying the daemon message so a failed open-cmux is readable, not a
-          // dead-looking button.
-          <span
-            data-testid={`hybrid-cmux-error-${data.logicalId}`}
-            role="alert"
-            className="absolute right-1.5 top-14 z-20 max-w-[180px] border border-rose-300 bg-rose-50 px-1.5 py-1 font-mono text-[8px] leading-tight text-rose-700 whitespace-normal break-words shadow-sm"
-          >
-            {cmuxLaunch.error instanceof Error ? cmuxLaunch.error.message : String(cmuxLaunch.error)}
-          </span>
-        ) : null}
-        </>
-      ) : null}
       <div className="space-y-1 px-2 py-1.5">
         <div className="truncate font-mono text-[8px] leading-tight text-on-surface-variant">
           {data.canonicalSessionName ?? data.logicalId}
@@ -309,7 +255,7 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
  * Its `data` prop reference changes on every `useTopologyActivity` bump
  * (1s interval + per-stream-event in HostMultiRigGraph.activeNodes) but
  * most fields are stable across bumps for any given seat. Without
- * memoization we re-render the full card — including `useCmuxLaunch`,
+ * memoization we re-render the full card — including
  * `TerminalPreviewPopover`, multiple format calls, ActivityRing — on
  * every tick for every visible seat. Slice 12.5 made this acute by
  * mounting the graph at workspace scope (many rigs × many seats).

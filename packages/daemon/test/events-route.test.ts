@@ -6,7 +6,6 @@ import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { EventBus } from "../src/domain/event-bus.js";
 import { createDaemon } from "../src/startup.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
-import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
 
 /**
  * Read SSE lines from a streaming response until we have enough or timeout.
@@ -232,12 +231,9 @@ describe("SSE events route", () => {
   });
 
   it("production app mounts /api/events (regression)", async () => {
-    const cmuxFactory: CmuxTransportFactory = async () => {
-      throw Object.assign(new Error(""), { code: "ENOENT" });
-    };
     const tmuxExec: ExecFn = async () => "";
 
-    const { app: prodApp, db: prodDb, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+    const { app: prodApp, db: prodDb, deps } = await createDaemon({ tmuxExec });
     const rig = deps.rigRepo.createRig("r01");
 
     const res = await prodApp.request(`/api/events?rigId=${rig.id}`);

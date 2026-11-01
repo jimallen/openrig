@@ -18,7 +18,7 @@ export class PdaResumeAdapter {
   async resume(nodeId: string, tmuxSessionName: string, resumeType: string | null, resumeToken: string | null, cwd: string): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) return { ok: false, code: "no_resume", message: "pda resume not available" };
     const result = await this.adapter.launchHarness({
-      id: "", nodeId, tmuxSession: tmuxSessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+      id: "", nodeId, tmuxSession: tmuxSessionName, tmuxWindow: null, tmuxPane: null,
       updatedAt: "", cwd,
     }, { name: tmuxSessionName, resumeToken: resumeToken! });
     if (result.ok) return { ok: true };

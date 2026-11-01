@@ -106,7 +106,7 @@ describe("terminal open desktop default", () => {
     expect(f.post).not.toHaveBeenCalled();
   });
 
-  it.each(["herdr", "cmux"])("keeps explicit %s on its existing-workspace route from a headless caller", async provider => {
+  it.each(["herdr"])("keeps explicit %s on its existing-workspace route from a headless caller", async provider => {
     const f = fixture({ platform: "linux", env: {} });
     await f.run(["saved:kernel", "--provider", provider]);
     expect(process.exitCode).toBeUndefined();

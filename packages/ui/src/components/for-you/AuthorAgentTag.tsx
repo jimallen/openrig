@@ -1,17 +1,10 @@
-// V1 attempt-3 Phase 4 — AuthorAgentTag with cmux launcher wired.
+// V1 attempt-3 Phase 4 — AuthorAgentTag.
 //
 // Per agent-chat-surface.md L13–L21 V1 default: click → topology seat
-// detail with cmux launcher button. Phase 3 stubbed the navigation;
-// Phase 4 wires the cmux launcher itself via useCmuxLaunch (POST to
-// /api/rigs/$rigId/nodes/$logicalId/open-cmux — open-or-focus cmux
-// surface semantics).
-//
-// Click semantics: Tag click → cmux launches (foregrounds the seat
-// in cmux). The label stays a Link so right-click / cmd-click still
-// open the seat detail page (URL preserved).
+// detail. The tag is a Link, so right-click / cmd-click open the seat
+// detail page in the usual way (URL preserved).
 
 import { Link } from "@tanstack/react-router";
-import { useCmuxLaunch } from "../../hooks/useCmuxLaunch.js";
 import { ActorMark, isHumanActor } from "../graphics/RuntimeMark.js";
 import { parseSessionName } from "../../lib/session-name.js";
 
@@ -33,7 +26,6 @@ function parseSeat(authorSession: string): { logicalId: string; rigId: string | 
 export function AuthorAgentTag({ authorSession, rigId, className, testId }: AuthorAgentTagProps) {
   const parsed = parseSeat(authorSession);
   const targetRigId = rigId ?? parsed.rigId;
-  const cmuxLaunch = useCmuxLaunch();
   const humanActor = isHumanActor(authorSession);
 
   // If we can't resolve a rigId, just show the tag without a link.
@@ -54,12 +46,6 @@ export function AuthorAgentTag({ authorSession, rigId, className, testId }: Auth
       to="/topology/seat/$rigId/$logicalId"
       params={{ rigId: targetRigId, logicalId: encodeURIComponent(parsed.logicalId) }}
       data-testid={testId ?? "author-agent-tag"}
-      onClick={(e) => {
-        // Cmd/Ctrl-click or right-click → standard Link behavior (open seat detail).
-        // Plain click → fire cmux launcher AND let Link navigate.
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-        cmuxLaunch.mutate({ rigId: targetRigId, logicalId: parsed.logicalId });
-      }}
       className={
         className ??
         "inline-flex items-center gap-1 font-mono text-[10px] text-on-surface-variant hover:text-on-surface hover:underline"

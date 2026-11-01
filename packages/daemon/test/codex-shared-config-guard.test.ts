@@ -216,7 +216,7 @@ const plan = (): ProjectionPlan => ({
   } as never],
   startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [],
 });
-const binding = () => ({ id: "b", nodeId: "n", tmuxSession: "s", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: path.join(tmp, "workspace") });
+const binding = () => ({ id: "b", nodeId: "n", tmuxSession: "s", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: path.join(tmp, "workspace") });
 
 describe("OF-183 the shared ~/.codex/config.toml, adapter writers", () => {
   /** The installed daemon provisions the host config once; that file is what a second daemon must not touch. */

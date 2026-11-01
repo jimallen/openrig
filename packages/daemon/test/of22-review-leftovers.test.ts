@@ -87,7 +87,6 @@ describe("startup wiring of the live-first helpers (OF-22 S1/S2)", () => {
     delete process.env["OPENRIG_PORT"];
     process.env["OPENRIG_NO_KERNEL"] = "1";
     const result = await createDaemon({
-      cmuxFactory: async () => { throw Object.assign(new Error("no socket"), { code: "ENOENT" }); },
       tmuxExec: async () => "",
       dbPath: process.env["OPENRIG_DB"]!,
     });

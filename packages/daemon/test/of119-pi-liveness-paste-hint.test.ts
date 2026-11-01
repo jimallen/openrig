@@ -262,7 +262,7 @@ describe("OF-119 adapter and transport: a sidecar that stopped ticking is no ans
   });
 
   // OF-129: checkReady uses the same alive window as sendReadiness (the pane here shows `node`, not a shell, with a READY line in scrollback).
-  const binding = { id: "b1", nodeId: "n1", tmuxSession: SEAT, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/p" } as never;
+  const binding = { id: "b1", nodeId: "n1", tmuxSession: SEAT, tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "/p" } as never;
   it.each([
     ["just written", NOW, true],
     ["exactly the 180 s window", NOW - 180_000, true],

@@ -8,8 +8,6 @@ const MOCK_BINDING: NodeBinding = {
   tmuxSession: "infra-server@test-rig",
   tmuxWindow: null,
   tmuxPane: null,
-  cmuxWorkspace: null,
-  cmuxSurface: null,
   updatedAt: "",
   cwd: "/project",
 };

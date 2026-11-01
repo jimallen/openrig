@@ -35,7 +35,6 @@ beforeEach(() => {
     // turn an otherwise successful existing hc probe into a failure.
     if (command.startsWith("hc ") && options.timeout !== undefined) throw new Error("ETIMEDOUT: synthetic slow successful probe");
     if (command === "hc --version") return `hc ${HC_PINNED_VERSION}`;
-    if (command === "cmux capabilities --json") return '{"capabilities":[]}';
     return "available";
   });
 });

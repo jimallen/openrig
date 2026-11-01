@@ -67,7 +67,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { rig, node, sessionName } = seedCanonicalNode(db);
@@ -110,7 +109,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { rig, node, sessionName } = seedCanonicalNode(db, "failure-rig");
@@ -140,7 +138,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { rigRepo, rig, node } = seedCanonicalNode(db, "exclusion-rig");
@@ -193,7 +190,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { node, sessionName } = seedCanonicalNode(db, "state-rig");
@@ -216,7 +212,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { node, sessionName } = seedCanonicalNode(db, "conflict-rig");
@@ -252,7 +247,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { rig, node } = seedCanonicalNode(db, "actual-rig");
@@ -275,7 +269,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { node, sessionName } = seedCanonicalNode(db, "missing-rig");
@@ -314,7 +307,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, eventLoopMonitor } = await createDaemon({
       dbPath,
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       expect(db.prepare("SELECT id FROM sessions WHERE id = 'dangling-session'").get()).toBeDefined();
@@ -343,7 +335,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, eventLoopMonitor } = await createDaemon({
       dbPath,
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const attributable = warn.mock.calls.map((args) => args.map(String).join(" ")).filter((line) =>
@@ -363,7 +354,6 @@ describe("W2c watchdog auto-registration — production composition", () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
     });
     try {
       const { rig, node, sessionName } = seedCanonicalNode(db, "delivery-rig");

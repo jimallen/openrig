@@ -268,7 +268,7 @@ function mockClaudeFs(captured?: string): ClaudeAdapterFsOps {
 function makeBinding(): NodeBinding {
   return {
     id: "b1", nodeId: "n1", tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null,
-    cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/project",
+    updatedAt: "", cwd: "/project",
   };
 }
 
@@ -757,7 +757,7 @@ describe("StartupOrchestrator forkSource integration", () => {
       rigId: s.rigId,
       nodeId: s.nodeId,
       sessionId: s.sessionId,
-      binding: { id: "b1", nodeId: s.nodeId, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "." },
+      binding: { id: "b1", nodeId: s.nodeId, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "." },
       adapter: makeStubAdapter("NEW-POST-FORK-TOKEN-aaa"),
       plan: emptyPlan(),
       resolvedStartupFiles: [],

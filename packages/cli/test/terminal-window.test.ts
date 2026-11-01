@@ -221,9 +221,9 @@ describe("desktop terminal view", () => {
 
   it("refuses a provider it cannot open a window for", async () => {
     const f = fixture();
-    const result = await openTerminalWindow(f.client, "saved:kernel", "cmux", f.deps);
+    const result = await openTerminalWindow(f.client, "saved:kernel", "tmate", f.deps);
     expect(result).toMatchObject({ ok: false, windowAttempted: false });
-    expect(result.error).toContain("--window supports herdr. Use cmux without --window.");
+    expect(result.error).toContain("--window supports herdr.");
     expect(f.exec).not.toHaveBeenCalled();
     expect(f.post).not.toHaveBeenCalled();
   });

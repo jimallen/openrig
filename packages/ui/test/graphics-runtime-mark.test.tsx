@@ -16,8 +16,8 @@ describe("graphics runtime package", () => {
     expect(runtimeBrand("codex").label).toBe("Codex");
   });
 
-  it("normalizes tool brands for CMUX, tmux, VS Code, and screenshots", () => {
-    expect(normalizeToolBrandId("cmux")).toBe("cmux");
+  it("normalizes tool brands for tmux, VS Code, and screenshots (cmux was removed: it is an unknown tool)", () => {
+    expect(normalizeToolBrandId("cmux")).toBe("unknown");
     expect(normalizeToolBrandId("tmux attach")).toBe("tmux");
     expect(normalizeToolBrandId("Visual Studio Code")).toBe("vscode");
     expect(normalizeToolBrandId("proof-image.png")).toBe("screenshot");
@@ -27,7 +27,7 @@ describe("graphics runtime package", () => {
     expect(normalizeToolBrandId("src/App.tsx")).toBe("code");
     expect(normalizeToolBrandId("capture.log")).toBe("transcript");
     expect(normalizeToolBrandId("trace.zip")).toBe("trace");
-    expect(toolBrand("cmux").actionLabel).toBe("Open in CMUX");
+    expect(toolBrand("cmux").label).toBe("Unknown tool");
     expect(toolBrand("proof").label).toBe("Proof");
   });
 
@@ -50,8 +50,8 @@ describe("graphics runtime package", () => {
   });
 
   it("renders tool marks as named glyphs", () => {
-    render(<ToolMark tool="cmux" title="Open in CMUX" />);
-    expect(screen.getByRole("img", { name: "Open in CMUX" })).toBeTruthy();
+    render(<ToolMark tool="tmux" title="Attach tmux" />);
+    expect(screen.getByRole("img", { name: "Attach tmux" })).toBeTruthy();
   });
 
   it("allows decorative tool marks when visible text already labels the row", () => {

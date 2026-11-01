@@ -7,14 +7,6 @@ export function NodeDetailPlaceholder({ rigId, logicalId, onClose }: {
   logicalId: string;
   onClose: () => void;
 }) {
-  const handleFocus = async () => {
-    try {
-      await fetch(`/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/focus`, {
-        method: "POST",
-      });
-    } catch { /* best-effort */ }
-  };
-
   return (
     <div
       data-testid="node-detail-placeholder"
@@ -27,13 +19,6 @@ export function NodeDetailPlaceholder({ rigId, logicalId, onClose }: {
       <div className="font-mono text-[9px] text-on-surface-variant">
         Rig: {rigId}
       </div>
-      <button
-        onClick={handleFocus}
-        data-testid="focus-cmux"
-        className="px-3 py-1.5 border border-outline-variant font-mono text-[9px] uppercase hover:bg-surface-high transition-colors"
-      >
-        Focus in cmux
-      </button>
       <div className="font-mono text-[8px] text-on-surface-variant mt-auto">
         Full detail panel in NS-T11
       </div>

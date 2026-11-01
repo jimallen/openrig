@@ -2,9 +2,9 @@
 // the operator's terminal-provider-ride entry). Three subcommands, all hitting
 // the ONE canonical daemon composer (`/api/terminal/...`):
 //
-//   rig terminal open <view> [--provider herdr|cmux] [--json]
+//   rig terminal open <view> [--provider herdr] [--json]
 //   rig terminal views [--json]
-//   rig terminal status [--provider herdr|cmux] [--json]
+//   rig terminal status [--provider herdr] [--json]
 //
 // `<view>` resolves daemon-side: a rig name (per-rig derived) | `mission:<id>` |
 // `slice:<id>` (derived) | a saved-view id. The result is the ONE shared
@@ -111,7 +111,7 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
     .command("open")
     .argument("<view>", "a rig name, mission:<id>, slice:<id>, or a saved-view id")
     .description("Open a desktop terminal showing the view's live agents as interactive tiles")
-    .option("--provider <name>", "herdr or cmux: use an existing workspace without opening a window")
+    .option("--provider <name>", "herdr: use an existing workspace without opening a window")
     .option("--window", "Open a new desktop terminal tab/window (the default when --provider is omitted)")
     .option("--expected-plan <id>", "Open only if the view still matches this preview")
     .option("--json", "JSON output for agents")
@@ -150,7 +150,7 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
   cmd
     .command("status")
     .description("Show terminal provider availability + liveness (doctor)")
-    .option("--provider <name>", "restrict to one provider (herdr / cmux)")
+    .option("--provider <name>", "restrict to one provider (herdr)")
     .option("--json", "JSON output for agents")
     .action(async (opts: { provider?: string; json?: boolean }) => {
       const deps = getDeps();

@@ -345,11 +345,11 @@ describe("P5.3 ActivityRing and HotPotatoEdge", () => {
     expect(table).toMatch(/terminalActive: row\.terminalActive/);
     // 0.3.1 slice 14 walk-item 16 deliberately removed the hover-
     // gated `opacity-0` + `group-hover:opacity-100` pattern from
-    // action-column buttons — operators kept missing the cmux
-    // launcher when it was hidden off-mouse. The test now asserts
-    // the action button is wired in (data-testid present) instead
-    // of asserting the rejected hover-reveal chain.
-    expect(table).toMatch(/data-testid=\{`topology-table-cmux-/);
+    // action-column buttons — operators kept missing the launcher when
+    // it was hidden off-mouse. The test now asserts the actions cell is
+    // wired in (data-testid present) instead of asserting the rejected
+    // hover-reveal chain. (cmux was removed; the cell carries the terminal preview.)
+    expect(table).toMatch(/data-testid=\{`topology-table-actions-/);
     expect(ring).not.toMatch(/StatusPip/);
     expect(edge).toMatch(/animateMotion/);
     expect(activity).toMatch(/TOPOLOGY_NODE_ACTIVITY_TTL_MS/);

@@ -214,7 +214,7 @@ describe("managed refocus and trace results", () => {
         return original.apply(this, args);
       });
     }
-    const { db } = await createDaemon({ dbPath: ":memory:", tmuxExec: async () => "", cmuxFactory: async () => { throw new Error("inert fixture"); } });
+    const { db } = await createDaemon({ dbPath: ":memory:", tmuxExec: async () => "" });
     try {
       for (const harness of [".claude", ".agents"]) {
         const skill = join(f.root, harness, "skills/refocusing");

@@ -44,7 +44,7 @@ describe("RigNode terminal popover (OPR.0.4.0.1 round-two QA fix)", () => {
             status: "running",
             startupStatus: "ready" as const,
             canonicalSessionName: "dev-impl@test-rig",
-            binding: { tmuxSession: "dev-impl@test-rig", cmuxSurface: "s1" },
+            binding: { tmuxSession: "dev-impl@test-rig" },
             resumeToken: "abc-123",
           }}
         />

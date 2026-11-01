@@ -210,7 +210,7 @@ export async function openTerminalWindow(client: DaemonClient, view: string, req
   try {
     if (!localDaemon(client.baseUrl)) throw new Error("The window launcher must run on the daemon's own desktop; the configured daemon is remote.");
     if (requestedProvider === "tmux") throw new Error("The tmux viewer is gone: seats show in the Herdr app by label, not in a tmux session. Use --provider herdr.");
-    if (requestedProvider && requestedProvider !== "herdr") throw new Error("--window supports herdr. Use cmux without --window.");
+    if (requestedProvider && requestedProvider !== "herdr") throw new Error("--window supports herdr.");
     const launchWindow = await windowLauncher(deps, windowNotes);
     const measured = typeof launchWindow !== "string" ? await deps.columns?.().catch(() => undefined) : undefined;
     let viewportColumns = Number.isSafeInteger(measured) && measured! > 0 ? measured : undefined;

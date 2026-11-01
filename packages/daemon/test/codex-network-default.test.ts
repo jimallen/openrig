@@ -164,7 +164,7 @@ describe("#275 every Codex launch site adds the override only when the reader ap
       sleep: async () => {}, maxWaitMs: 0, exec: async () => "", ...(read ? { readNetworkDefault: read } : {}),
     });
     const binding: NodeBinding = {
-      id: "b1", nodeId: "n1", tmuxSession: "r01-qa", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+      id: "b1", nodeId: "n1", tmuxSession: "r01-qa", tmuxWindow: null, tmuxPane: null,
       updatedAt: "", cwd, model: "gpt-5.5", launchPosture: posture, codexConfigProfile: profile,
     };
     const run = () => kind === "restore" || kind === "last"

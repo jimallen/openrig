@@ -5,9 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDaemon } from "../src/startup.js";
 import type { ArgvExecFn, ExecFn, TmuxAdapter } from "../src/adapters/tmux.js";
-import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
 
-const cmuxFactory: CmuxTransportFactory = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
 function argvExecOf(adapter: TmuxAdapter): ArgvExecFn | undefined {
   return (adapter as unknown as { argvExec?: ArgvExecFn }).argvExec;
@@ -37,7 +35,7 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
   for (const host of ["linux", "darwin", "win32"] as const) {
     it(`seats the daemon on hc, with no tmux exec, on ${host}`, async () => {
       Object.defineProperty(process, "platform", { ...platform, value: host });
-      const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
+      const daemon = await createDaemon({ dbPath: ":memory:" });
       try {
         expect(daemon.deps.tmuxAdapter.hostKind).toBe("hc");
         // Its exec is the refusal HcAdapter installs, so a tmux call that slipped through fails loudly and never runs tmux.
@@ -50,7 +48,7 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
   }
 
   it("keeps the core watch it starts on hc, and has none on an injected tmux exec", async () => {
-    const hcDaemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
+    const hcDaemon = await createDaemon({ dbPath: ":memory:" });
     try {
       expect(hcDaemon.hcCoreWatch).toBeDefined();
       expect(hcDaemon.hcCoreWatch!.state()).not.toBe("stopped");
@@ -61,7 +59,7 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
       hcDaemon.eventLoopMonitor.stop();
       hcDaemon.db.close();
     }
-    const tmuxDaemon = await createDaemon({ dbPath: ":memory:", cmuxFactory, argvExec: async () => "" });
+    const tmuxDaemon = await createDaemon({ dbPath: ":memory:", argvExec: async () => "" });
     try {
       expect(tmuxDaemon.hcCoreWatch).toBeUndefined();
     } finally {
@@ -72,7 +70,7 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
 
   it("OPENRIG_TMUX_SHELL=1 does not move the daemon off hc", async () => {
     vi.stubEnv("OPENRIG_TMUX_SHELL", "1");
-    const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
+    const daemon = await createDaemon({ dbPath: ":memory:" });
     try {
       expect(daemon.deps.tmuxAdapter.hostKind).toBe("hc");
     } finally {
@@ -83,7 +81,7 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
 
   it("an injected argv exec keeps the tmux adapter, and is the exec it runs", async () => {
     const argvExec: ArgvExecFn = async () => "";
-    const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory, argvExec });
+    const daemon = await createDaemon({ dbPath: ":memory:", argvExec });
     try {
       expect(daemon.deps.tmuxAdapter.hostKind).toBe("tmux");
       expect(argvExecOf(daemon.deps.tmuxAdapter)).toBe(argvExec);
@@ -95,7 +93,7 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
 
   it("keeps an injected string exec on the shell path, so its fake sees every command", async () => {
     const tmuxExec: ExecFn = async () => "";
-    const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory, tmuxExec });
+    const daemon = await createDaemon({ dbPath: ":memory:", tmuxExec });
     try {
       expect(argvExecOf(daemon.deps.tmuxAdapter)).toBeUndefined();
     } finally {

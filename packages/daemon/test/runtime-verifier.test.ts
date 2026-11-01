@@ -125,34 +125,6 @@ describe("RuntimeVerifier", () => {
     expect(seen).toEqual(["hc --version", "hc --version"]);
   });
 
-  // T3: cmux capabilities --json succeeds -> verified with capabilities_json
-  it("cmux capabilities succeeds -> verified with capabilities_json as valid JSON string", async () => {
-    const capsOutput = JSON.stringify({ workspaces: true, surfaces: true, notifications: false });
-    const exec = createMockExec({ "cmux capabilities --json": capsOutput });
-    const verifier = new RuntimeVerifier({ exec, db });
-
-    const result = await verifier.verifyCmux();
-
-    expect(result.status).toBe("verified");
-    expect(result.runtime).toBe("cmux");
-    // capabilities_json is a valid JSON string
-    expect(result.capabilitiesJson).toBeTruthy();
-    const parsed = JSON.parse(result.capabilitiesJson!);
-    expect(parsed.workspaces).toBe(true);
-    expect(parsed.surfaces).toBe(true);
-  });
-
-  // T4: cmux absent -> degraded
-  it("cmux absent -> degraded (not blocking)", async () => {
-    const exec = createMockExec({});
-    const verifier = new RuntimeVerifier({ exec, db });
-
-    const result = await verifier.verifyCmux();
-
-    expect(result.status).toBe("degraded");
-    expect(result.runtime).toBe("cmux");
-  });
-
   // T5: claude --version succeeds -> verified
   it("claude --version succeeds -> verified", async () => {
     const exec = createMockExec({ "claude --version": "claude 1.0.23" });
@@ -266,16 +238,14 @@ describe("RuntimeVerifier", () => {
     expect(result.version).toBeNull();
   });
 
-  // T13: cmux invalid JSON output -> status='error'
-  it("cmux capabilities returns invalid JSON -> error status", async () => {
-    const exec = createMockExec({ "cmux capabilities --json": "not valid json {{{" });
-    const verifier = new RuntimeVerifier({ exec, db });
+  // T13: cmux was removed -> it is an unknown runtime and nothing is run for it
+  it('verifyAll(["cmux"]) -> not_found "unknown runtime", and no command is run', async () => {
+    const exec = vi.fn(async () => "never");
+    const results = await new RuntimeVerifier({ exec, db }).verifyAll(["cmux"]);
 
-    const result = await verifier.verifyCmux();
-
-    expect(result.status).toBe("error");
-    expect(result.error).toContain("invalid");
-    expect(result.capabilitiesJson).toBeNull();
+    expect(exec).not.toHaveBeenCalled();
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ runtime: "cmux", status: "not_found", error: "unknown runtime: cmux" });
   });
 
   // T14: verifyAll preserves input order + persists canonical names

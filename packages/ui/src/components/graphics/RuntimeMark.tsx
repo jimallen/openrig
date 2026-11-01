@@ -54,7 +54,6 @@ const inlineToneClass: Record<RuntimeBrandId, string> = {
 };
 
 const toolToneClass: Record<ToolBrandId, string> = {
-  cmux: "border-cyan-400/45 bg-cyan-50/75 text-cyan-950",
   tmux: "border-emerald-400/45 bg-emerald-50/75 text-emerald-950",
   vscode: "border-sky-400/45 bg-sky-50/75 text-sky-950",
   screenshot: "border-amber-400/45 bg-amber-50/75 text-amber-950",
@@ -132,20 +131,6 @@ function TerminalGlyph({ className, title, decorative }: { className?: string; t
       <rect x="2" y="3" width="12" height="10" fill="#1c1917" />
       <path d="M4 6 6 8 4 10" fill="none" stroke="#fafaf9" strokeWidth="1.2" strokeLinecap="square" strokeLinejoin="miter" />
       <path d="M7.5 10h4" fill="none" stroke="#fafaf9" strokeWidth="1.2" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-function CmuxGlyph({ className, title, decorative }: { className?: string; title: string; decorative?: boolean }) {
-  return (
-    <svg viewBox="0 0 16 16" {...glyphA11y(title, decorative)} className={className}>
-      <defs>
-        <linearGradient id="cmux-preview-mark" x1="3" x2="13" y1="3" y2="13" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#20d5f4" />
-          <stop offset="1" stopColor="#4357ff" />
-        </linearGradient>
-      </defs>
-      <path d="M4.1 2.7 12.3 8l-8.2 5.3V9.9L7.8 8 4.1 6.1z" fill="url(#cmux-preview-mark)" />
     </svg>
   );
 }
@@ -419,7 +404,6 @@ export function ToolMark({
   const id = normalizeToolBrandId(tool);
   const label = title ?? toolBrand(tool).label;
   const cls = cn(sizeClass[size], "shrink-0", className);
-  if (id === "cmux") return <CmuxGlyph className={cls} title={label} decorative={decorative} />;
   if (id === "tmux") return <TmuxGlyph className={cls} title={label} decorative={decorative} />;
   if (id === "vscode") return <VSCodeGlyph className={cls} title={label} decorative={decorative} />;
   if (id === "terminal") return <TerminalGlyph className={cls} title={label} decorative={decorative} />;

@@ -63,7 +63,7 @@ const fsOps: CodexAdapterFsOps = {
 function binding(cwd: string): NodeBinding {
   return {
     id: "b1", nodeId: "n1", tmuxSession: "r01-qa", tmuxWindow: null, tmuxPane: null,
-    cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd,
+    updatedAt: "", cwd,
   };
 }
 

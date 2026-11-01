@@ -227,7 +227,7 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     const fsOps: CodexAdapterFsOps = { readFile: () => { throw new Error("nf"); }, writeFile: () => {}, exists: () => false, mkdirp: () => {}, listFiles: () => [] };
     const adapter = new CodexRuntimeAdapter({ tmux, fsOps, listProcesses: () => [], sleep: async () => {}, resolveGitAddDirs: async () => [],
       verifyProfilePreflight: async (n) => ({ ok: true, profile: n }), readSeatMcpServers: (id: string) => readSeatMcpServers(db, id), mcpTrustIo: TRUST } as ConstructorParameters<typeof CodexRuntimeAdapter>[0]);
-    const binding: NodeBinding = { id: `b-${s.node.id}`, nodeId: s.node.id, tmuxSession: s.ref, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+    const binding: NodeBinding = { id: `b-${s.node.id}`, nodeId: s.node.id, tmuxSession: s.ref, tmuxWindow: null, tmuxPane: null,
       updatedAt: "", cwd: s.node.cwd!, launchPosture: posture };
     const result = await adapter.launchHarness(binding, { name: s.ref }) as { ok: boolean; error?: string };
     return { ...result, commands };
@@ -788,7 +788,7 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     const adapter = new CodexRuntimeAdapter({ tmux, fsOps, listProcesses: () => [], sleep: async () => {}, resolveGitAddDirs: async () => [],
       verifyProfilePreflight: async (n) => ({ ok: true, profile: n }), readSeatMcpServers: (id: string) => readSeatMcpServers(db, id), mcpTrustIo: TRUST } as ConstructorParameters<typeof CodexRuntimeAdapter>[0]);
     for (const s of [eztrack, openrig]) {
-      const binding: NodeBinding = { id: `b-${s.node.id}`, nodeId: s.node.id, tmuxSession: s.ref, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+      const binding: NodeBinding = { id: `b-${s.node.id}`, nodeId: s.node.id, tmuxSession: s.ref, tmuxWindow: null, tmuxPane: null,
         updatedAt: "", cwd: s.node.cwd!, launchPosture: "full_bypass", codexConfigProfile: "rig-yolo" };
       await adapter.launchHarness(binding, { name: s.ref, resumeToken: "thread-1" });
     }

@@ -92,7 +92,7 @@ describe("contained Claude restore activity resources", () => {
   }
   function binding(): NodeBinding {
     return { id: "b", nodeId: "n", tmuxSession: "seat@restore", tmuxWindow: null, tmuxPane: null,
-      cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd };
+      updatedAt: "", cwd };
   }
   function settings() { return JSON.parse(fs.readFileSync(settingsPath, "utf8")); }
   function owned(s = settings()): string[] {

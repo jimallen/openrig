@@ -72,10 +72,9 @@ export function statusCommand(depsOverride?: StatusDeps): Command {
 
     const client = deps.clientFactory(getDaemonUrl(status));
 
-    // Fetch summary + cmux + kernel readiness
-    const [summaryRes, cmuxRes, kernelRes] = await Promise.all([
+    // Fetch summary + kernel readiness
+    const [summaryRes, kernelRes] = await Promise.all([
       client.get<Array<{ id: string; name: string; nodeCount: number; latestSnapshotAt: string | null; latestSnapshotId: string | null }>>("/api/rigs/summary"),
-      client.get<{ available: boolean }>("/api/adapters/cmux/status").catch(() => null),
       client.get<{
         kernel_state?: string;
         error?: string;
@@ -130,10 +129,6 @@ export function statusCommand(depsOverride?: StatusDeps): Command {
         console.log(`  ${rig.name}  ${rig.nodeCount} node(s)  snapshot: ${snap}`);
       }
     }
-
-    // cmux status
-    const cmuxAvailable = cmuxRes?.data?.available ?? false;
-    console.log(`cmux: ${cmuxAvailable ? "available" : "unavailable"}`);
 
     // OPR.0.3.3.04.2 (AC-1): reinforcing HINT back to the one canonical ordered
     // path - status does not re-author the sequence (that lives in `rig setup`

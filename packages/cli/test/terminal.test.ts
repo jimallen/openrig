@@ -1,6 +1,6 @@
 // OPR.0.4.6.02 C3 — the `rig terminal` CLI family. Pins arg parsing, the daemon
 // path/body each subcommand hits, the --json shape, and the open exit
-// semantics for explicit cmux (partial-with-names = exit 0; zero-pane = non-zero).
+// semantics for an explicit provider (partial-with-names = exit 0; zero-pane = non-zero).
 // The default desktop path is exercised in terminal-open-window-default.test.ts.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -94,9 +94,9 @@ describe("rig terminal CLI", () => {
     });
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
-    await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "cmux", "--json"]);
+    await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "herdr", "--json"]);
     const call = calls.find((c) => c.path === "/api/terminal/open");
-    expect(call!.body).toEqual({ view: "acme-build", provider: "cmux" });
+    expect(call!.body).toEqual({ view: "acme-build", provider: "herdr" });
   });
 
   it("open with a partial (some opened, some named) is a SUCCESS — exit 0", async () => {
@@ -110,7 +110,7 @@ describe("rig terminal CLI", () => {
     });
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
-    await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "cmux"]);
+    await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "herdr"]);
     expect(process.exitCode).toBeUndefined(); // exit 0 (disclosure, not failure)
   });
 
@@ -122,7 +122,7 @@ describe("rig terminal CLI", () => {
     try {
       const program = createProgram({ terminalDeps: deps });
       program.exitOverride();
-      await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "cmux"]);
+      await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "herdr"]);
       expect(log.mock.calls.map((c) => String(c[0])).join("\n")).toContain('  note: A workspace named "acme-build" already exists, so this one is "acme-build (2)".');
     } finally { log.mockRestore(); }
   });
@@ -133,7 +133,7 @@ describe("rig terminal CLI", () => {
     });
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
-    await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "cmux"]);
+    await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "herdr"]);
     expect(process.exitCode).toBe(1);
   });
 
@@ -143,7 +143,7 @@ describe("rig terminal CLI", () => {
     const { deps } = makeDeps({ routes: { "POST /api/terminal/open": { status: 200, data: result } } });
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
-    await program.parseAsync(["node", "rig", "terminal", "open", "saved:kernel", "--provider", "cmux", ...(json ? ["--json"] : [])]);
+    await program.parseAsync(["node", "rig", "terminal", "open", "saved:kernel", "--provider", "herdr", ...(json ? ["--json"] : [])]);
     expect(process.exitCode).toBe(1);
     if (json) expect(JSON.parse(logs[0]!)).toEqual(result);
     else expect(logs.join("\n")).toContain(command);
@@ -155,7 +155,7 @@ describe("rig terminal CLI", () => {
     });
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
-    await program.parseAsync(["node", "rig", "terminal", "open", "nope", "--provider", "cmux", "--json"]);
+    await program.parseAsync(["node", "rig", "terminal", "open", "nope", "--provider", "herdr", "--json"]);
     expect(process.exitCode).toBe(1);
     expect(logs.join("\n")).toContain("view_not_found");
   });
@@ -164,7 +164,7 @@ describe("rig terminal CLI", () => {
     const { deps } = makeDeps({ routes: { "POST /api/terminal/open": { status: 503, data: { error: "terminal_service_unavailable" } } } });
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
-    await expect(program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "cmux", ...(json ? ["--json"] : [])])).resolves.toBeDefined();
+    await expect(program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "herdr", ...(json ? ["--json"] : [])])).resolves.toBeDefined();
     expect(process.exitCode).toBe(2);
     const output = [...logs, ...vi.mocked(console.error).mock.calls.map(args => args.join(" "))].join("\n");
     expect(output).toContain("terminal_service_unavailable");
@@ -177,7 +177,7 @@ describe("rig terminal CLI", () => {
     });
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
-    await program.parseAsync(["node", "rig", "terminal", "open", "nope", "--provider", "cmux"]);
+    await program.parseAsync(["node", "rig", "terminal", "open", "nope", "--provider", "herdr"]);
     expect(process.exitCode).toBe(1);
     expect(logs.join("\n")).toContain("provider: unknown view 'nope' (view_not_found)");
     expect(logs.join("\n")).not.toMatch(/^\s*\{/);

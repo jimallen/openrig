@@ -96,7 +96,7 @@ function enableFs(extra?: Store): ReturnType<typeof mockFs> {
 }
 
 function binding(cwd = CWD): NodeBinding {
-  return { id: "b1", nodeId: "n1", tmuxSession: "t", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd } as NodeBinding;
+  return { id: "b1", nodeId: "n1", tmuxSession: "t", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd } as NodeBinding;
 }
 
 function plan(entries: ProjectionEntry[]): ProjectionPlan {

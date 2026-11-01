@@ -19,7 +19,7 @@ afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); });
 const fsOps = { readFile: () => { throw Error("forbidden read"); }, writeFile: () => { throw Error("forbidden write"); },
   exists: () => false, mkdirp: () => { throw Error("forbidden mkdir"); }, copyFile: () => { throw Error("forbidden copy"); } };
 const binding: NodeBinding = { id: "binding", nodeId: "node", attachmentType: "tmux", tmuxSession: "seat", tmuxWindow: null,
-  tmuxPane: "%1", cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/seat/older-cli", permissionMode: "auto" };
+  tmuxPane: "%1", updatedAt: "", cwd: "/seat/older-cli", permissionMode: "auto" };
 function transport() {
   const sendText = vi.fn(async (_target: string, _text: string) => ({ ok: false as const, message: "offline stop before submission" }));
   return { sendText, tmux: mockShellCommand({ sendText, sendKeys: () => { throw Error("forbidden input"); } } as unknown as TmuxAdapter) };

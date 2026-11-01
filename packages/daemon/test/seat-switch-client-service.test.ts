@@ -211,7 +211,7 @@ describe("SeatSwitchClientService", () => {
     expect(probes.switchClient).not.toHaveBeenCalled();
   });
 
-  it("honest no_client error (suggest attach / CMUX) when no client is attached", async () => {
+  it("honest no_client error (suggest attach) when no client is attached", async () => {
     seedLiveSeat();
     const { adapter, probes } = spyTmux({ clients: [] });
     const service = new SeatSwitchClientService({ rigRepo, tmuxAdapter: adapter });

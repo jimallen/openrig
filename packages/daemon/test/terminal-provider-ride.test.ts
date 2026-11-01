@@ -11,9 +11,7 @@
 //    the no-CLI-strings regression — the VM-RED `herdr layout apply` class);
 //  - herdr equal auto-grid root (2×1 / 3×2 / 3×3 matching UI suggestLayout;
 //    first-vs-rest ratios; inert blank padding — the OPR.0.4.7.1 fix for the
-//    alternating-0.5 double-width-cell defect);
-//  - cmux provider renders ONE gridded workspace per page (never a window per
-//    seat) via CmuxLayoutService.buildWorkspacePanes and degrades honestly.
+//    alternating-0.5 double-width-cell defect).
 
 import { describe, it, expect } from "vitest";
 import { mkTemp } from "./helpers/temp-roots.js";
@@ -38,6 +36,7 @@ import {
 import {
   planHerdrLayout,
   buildGridRoot,
+  autoGridCols,
   extractWorkspaceId,
   HerdrAdapter,
   type HerdrLayoutNode,
@@ -53,7 +52,6 @@ import {
   type HerdrSocketRpc,
   type HerdrTransport,
 } from "../src/domain/terminal/herdr-transport.js";
-import { CmuxProviderAdapter } from "../src/domain/terminal/cmux-provider-adapter.js";
 import type { HostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
 import type { ComposedView } from "../src/domain/terminal/terminal-provider.js";
 
@@ -351,6 +349,12 @@ describe("herdr layout plan — fresh-tab-on-relaunch (BR-5) + equal auto-grid r
   }
 
   it.each([
+    [0, 1], [1, 1], [2, 2], [3, 2], [4, 2], [5, 3], [7, 3], [9, 3], [10, 4], [16, 4], [17, 5],
+  ])("autoGridCols(%i) = %i: the daemon mirror of the UI's suggestLayout (cols = ceil(sqrt(N)), at least 1); a drift from the modal preview is a bug", (n, cols) => {
+    expect(autoGridCols(n)).toBe(cols);
+  });
+
+  it.each([
     { n: 2, cols: 2, rows: 1, blanks: 0 },
     { n: 5, cols: 3, rows: 2, blanks: 1 },
     { n: 7, cols: 3, rows: 3, blanks: 2 }, // the founder repro size
@@ -642,165 +646,5 @@ describe("herdr socket transport — ping probe, envelope unwrap, socket path (F
     expect(resolveHerdrSocketPath({})).toContain(path.join(".config", "herdr", "herdr.sock"));
     expect(parseHerdrVersion("herdr 0.7.1")).toBe("0.7.1");
     expect(parseHerdrVersion(undefined)).toBeNull();
-  });
-});
-
-describe("cmux provider — ONE gridded workspace per page (never a window per seat), degrades honestly", () => {
-  function fakeCmuxAdapter(available: boolean) {
-    return {
-      getStatus: () => ({ available, capabilities: { rpc: true } }),
-      isAvailable: () => available,
-    } as unknown as import("../src/adapters/cmux.js").CmuxAdapter;
-  }
-
-  /** Records buildWorkspacePanes calls; per-name outcome override for failure vectors. */
-  function fakeLayoutService(failFor: (name: string) => string | null = () => null) {
-    const builds: Array<{ name: string; commands: string[]; cols?: number }> = [];
-    const layoutService = {
-      buildWorkspacePanes: async (name: string, _cwd: string | undefined, commands: string[], cols?: number) => {
-        builds.push({ name, commands, cols });
-        const fail = failFor(name);
-        if (fail) return { ok: false as const, code: "request_failed", message: fail };
-        return {
-          ok: true as const,
-          data: { workspaceId: `ws:${name}`, workspaceName: name, paneCount: commands.length, blanks: 0 },
-        };
-      },
-    } as unknown as import("../src/domain/cmux-layout-service.js").CmuxLayoutService;
-    return { layoutService, builds };
-  }
-
-  const pane = { seat: "a@r", label: "pod.a · s02", paneCommand: "tmux attach -t 'a@r'", readOnly: false };
-  const paneB = { ...pane, seat: "b@r", paneCommand: "tmux attach -r -t 'b@r'", readOnly: true };
-  const view: ComposedView = {
-    id: "v",
-    opened: [pane, paneB],
-    absent: [{ seat: "z@r", host: null, reason: "dead" }],
-    degraded: [{ seat: "h@r", host: "factory", reason: "http-registered" }],
-    pages: [[pane, paneB]],
-  };
-
-  it("renders the page as ONE workspace; paneCommands carried verbatim; absents/degrades carried", async () => {
-    const { layoutService, builds } = fakeLayoutService();
-    const adapter = new CmuxProviderAdapter({
-      cmuxAdapter: fakeCmuxAdapter(true),
-      layoutService,
-      newLaunchToken: () => "t1",
-    });
-
-    const res = await adapter.openView(view);
-    expect(res.ok).toBe(true);
-    expect(res.opened).toEqual(["a@r", "b@r"]);
-    expect(res.pages).toBe(1);
-    // THE bug-fix invariant: one grid build for the whole page — never one
-    // window per seat — and the composed commands (incl. read-only -r) verbatim.
-    expect(builds).toHaveLength(1);
-    expect(builds[0]!.commands).toEqual(["tmux attach -t 'a@r'", "tmux attach -r -t 'b@r'"]);
-    expect(res.absent).toEqual([{ seat: "z@r", host: null, reason: "dead" }]);
-    expect(res.degraded).toEqual([{ seat: "h@r", host: "factory", reason: "http-registered" }]);
-  });
-
-  it.each([
-    { n: 2, cols: 2 },
-    { n: 5, cols: 3 },
-    { n: 7, cols: 3 }, // the founder's 7-seat repro: modal promises 3×3 — cmux must apply it
-  ])("passes the modal Auto-grid column count for N=$n (cols=$cols) — PM ruling", async ({ n, cols }) => {
-    const panes = Array.from({ length: n }, (_, i) => ({
-      ...pane,
-      seat: `s${i + 1}@r`,
-      paneCommand: `tmux attach -t 's${i + 1}@r'`,
-    }));
-    const { layoutService, builds } = fakeLayoutService();
-    const adapter = new CmuxProviderAdapter({
-      cmuxAdapter: fakeCmuxAdapter(true),
-      layoutService,
-      newLaunchToken: () => "t1",
-    });
-
-    const res = await adapter.openView({ id: "v", opened: panes, absent: [], degraded: [], pages: [panes] });
-    expect(res.opened).toHaveLength(n);
-    expect(builds).toHaveLength(1); // ONE new workspace — never appended surfaces
-    expect(builds[0]!.cols).toBe(cols);
-  });
-
-  it("multi-page view → one workspace per page with /N suffixes; a failed page degrades its seats, others open", async () => {
-    const paneC = { ...pane, seat: "c@r", paneCommand: "tmux attach -t 'c@r'" };
-    const multiView: ComposedView = {
-      id: "v",
-      opened: [pane, paneB, paneC],
-      absent: [],
-      degraded: [],
-      pages: [[pane, paneB], [paneC]],
-    };
-    const { layoutService, builds } = fakeLayoutService((name) =>
-      name.endsWith("/2") ? "cmux daemon not ready" : null,
-    );
-    const adapter = new CmuxProviderAdapter({
-      cmuxAdapter: fakeCmuxAdapter(true),
-      layoutService,
-      newLaunchToken: () => "t1",
-    });
-
-    const res = await adapter.openView(multiView);
-    expect(builds.map((b) => b.name)).toEqual(["openrig:v#t1/1", "openrig:v#t1/2"]);
-    expect(res.ok).toBe(true); // honest-partial: page 1 opened
-    expect(res.opened).toEqual(["a@r", "b@r"]);
-    expect(res.pages).toBe(1);
-    expect(res.degraded).toEqual([
-      { seat: "c@r", host: "local", reason: "cmux: cmux daemon not ready" },
-    ]);
-  });
-
-  it("kernel geometry passes three columns to cmux while ordinary views keep auto-grid", async () => {
-    const panes = ["TUI", "advisor", "operator"].map(label => ({ seat: label, label, paneCommand: `attach ${label}`, readOnly: false }));
-    const { layoutService, builds } = fakeLayoutService();
-    const adapter = new CmuxProviderAdapter({ cmuxAdapter: fakeCmuxAdapter(true), layoutService, newLaunchToken: () => "fixed" });
-    const composed: ComposedView = { id: "kernel", opened: panes, pages: [panes], absent: [], degraded: [] };
-    expect((await adapter.openView({ ...composed, columns: 3 })).opened).toEqual(["TUI", "advisor", "operator"]);
-    expect(builds[0]!.cols).toBe(3);
-    expect(builds[0]!.commands).toEqual(["attach TUI", "attach advisor", "attach operator"]);
-    await adapter.openView(composed);
-    expect(builds[1]!.cols).toBe(2);
-  });
-
-  it("cmux not connected → honest refuse cmux_unavailable; nothing is built", async () => {
-    const { layoutService, builds } = fakeLayoutService();
-    const adapter = new CmuxProviderAdapter({
-      cmuxAdapter: fakeCmuxAdapter(false),
-      layoutService,
-    });
-    const res = await adapter.openView(view);
-    expect(res.ok).toBe(false);
-    expect(res.code).toBe("cmux_unavailable");
-    expect(res.opened).toEqual([]);
-    expect(builds).toHaveLength(0);
-  });
-
-  it("an all-absent/degraded view (no pages) → no workspace side effect", async () => {
-    const { layoutService, builds } = fakeLayoutService();
-    const adapter = new CmuxProviderAdapter({
-      cmuxAdapter: fakeCmuxAdapter(true),
-      layoutService,
-    });
-    const res = await adapter.openView({
-      id: "v",
-      opened: [],
-      absent: [{ seat: "z@r", host: null, reason: "dead" }],
-      degraded: [],
-      pages: [],
-    });
-    expect(res.ok).toBe(true);
-    expect(res.pages).toBe(0);
-    expect(builds).toHaveLength(0);
-  });
-
-  it("status/liveness reflect the shipped CmuxAdapter", async () => {
-    const { layoutService } = fakeLayoutService();
-    const adapter = new CmuxProviderAdapter({
-      cmuxAdapter: fakeCmuxAdapter(false),
-      layoutService,
-    });
-    expect((await adapter.status()).available).toBe(false);
-    expect((await adapter.liveness()).alive).toBe(false);
   });
 });

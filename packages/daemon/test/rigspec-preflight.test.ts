@@ -62,12 +62,11 @@ describe("RigSpecPreflight", () => {
     db.close();
   });
 
-  function createPreflight(opts?: { tmux?: TmuxAdapter; exec?: ExecFn; cmuxExec?: ExecFn }) {
+  function createPreflight(opts?: { tmux?: TmuxAdapter; exec?: ExecFn }) {
     return new RigSpecPreflight({
       rigRepo,
       tmuxAdapter: opts?.tmux ?? mockTmux(),
       exec: opts?.exec ?? (async () => ""),
-      cmuxExec: opts?.cmuxExec ?? (async () => ""),
     });
   }
 
@@ -212,24 +211,18 @@ describe("RigSpecPreflight", () => {
     expect(result.errors.filter((e) => e.includes("/bad/path")).length).toBe(2);
   });
 
-  it("cmux unavailable + spec has surfaceHint -> warning", async () => {
-    const cmuxExec = vi.fn<ExecFn>().mockRejectedValue(new Error("not found"));
+  it.each([
+    ["surfaceHint", { surfaceHint: "tab:main" }],
+    ["workspace", { workspace: "review" }],
+  ])("spec with a %s layout hint -> no warning and no error (cmux was removed; the hint is inert)", async (_name, hint) => {
     const spec = validSpec({
-      nodes: [{ id: "worker", runtime: "claude-code", cwd: "/", surfaceHint: "tab:main" }],
+      nodes: [{ id: "worker", runtime: "claude-code", cwd: "/", ...hint }],
     });
-    const pf = createPreflight({ cmuxExec });
+    const exec = vi.fn<ExecFn>().mockResolvedValue("");
+    const pf = createPreflight({ exec });
     const result = await pf.check(spec);
-    expect(result.warnings.some((w) => w.toLowerCase().includes("cmux"))).toBe(true);
-  });
-
-  it("cmux unavailable + spec has NO layout hints -> no warning", async () => {
-    const cmuxExec = vi.fn<ExecFn>().mockRejectedValue(new Error("not found"));
-    const spec = validSpec({
-      nodes: [{ id: "worker", runtime: "claude-code", cwd: "/" }],
-    });
-    const pf = createPreflight({ cmuxExec });
-    const result = await pf.check(spec);
-    expect(result.warnings.filter((w) => w.toLowerCase().includes("cmux"))).toHaveLength(0);
+    expect(result).toEqual({ ready: true, warnings: [], errors: [] });
+    expect(exec).not.toHaveBeenCalledWith(expect.stringContaining("cmux"));
   });
 
   it("node with no cwd -> no cwd check (passes)", async () => {
@@ -249,37 +242,6 @@ describe("RigSpecPreflight", () => {
     expect(result.errors.some((e) => e.includes("tmux") || e.includes("session"))).toBe(true);
   });
 
-  it("spec with workspace hint + cmux unavailable -> warning", async () => {
-    const cmuxExec = vi.fn<ExecFn>().mockRejectedValue(new Error("not found"));
-    const spec = validSpec({
-      nodes: [{ id: "worker", runtime: "claude-code", cwd: "/", workspace: "review" }],
-    });
-    const pf = createPreflight({ cmuxExec });
-    const result = await pf.check(spec);
-    expect(result.warnings.some((w) => w.toLowerCase().includes("cmux"))).toBe(true);
-  });
-
-  it("error + warning coexist: bad cwd + cmux unavailable with layout hint", async () => {
-    const cmuxExec = vi.fn<ExecFn>().mockRejectedValue(new Error("not found"));
-    const spec = validSpec({
-      nodes: [{ id: "worker", runtime: "claude-code", cwd: "/nonexistent/bad", surfaceHint: "tab:x" }],
-    });
-    const pf = createPreflight({ cmuxExec });
-    const result = await pf.check(spec);
-    expect(result.ready).toBe(false);
-    expect(result.errors.length).toBeGreaterThanOrEqual(1);
-    expect(result.warnings.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("cmux availability probed via 'cmux capabilities --json' (exact command)", async () => {
-    const cmuxExec = vi.fn<ExecFn>().mockResolvedValue("{}");
-    const spec = validSpec({
-      nodes: [{ id: "worker", runtime: "claude-code", cwd: "/", surfaceHint: "tab:x" }],
-    });
-    const pf = createPreflight({ cmuxExec });
-    await pf.check(spec);
-    expect(cmuxExec).toHaveBeenCalledWith("cmux capabilities --json");
-  });
 });
 
 // -- Rebooted rig preflight (AgentSpec reboot) --
