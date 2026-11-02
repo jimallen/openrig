@@ -1261,7 +1261,7 @@ describe("the S4 review's pump rows", () => {
     recordParts(w, store, 2, 2);
     w.now += 1000; await pump.tick();
     expect(row(db, "L1")).toMatchObject({ message_state: "received", message_parts_done: 2 });
-    expect(store.reopenCleared(partId(messageId("L1"), 2, 2), store.nonceOf(messageId("L1")))).toBe(true);
+    expect(store.reopenCleared(partId(messageId("L1"), 2, 2), store.nonceOf(messageId("L1"))!)).toBe(true);
     expect(row(db, "L1")).toMatchObject({ message_state: "attempting", message_parts: 2, message_parts_done: 0 });
   });
 
