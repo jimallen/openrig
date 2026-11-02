@@ -10,6 +10,21 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A message sent to a seat whose agent dies can no longer run in a login shell (OF-200, hc)
+
+- On herdr-core the core holds a `rig send` for 0.45 s to several seconds and checks only that the terminal is live when it writes. A seat's agent used
+  to run under the login shell its terminal started with, so an agent that died inside that hold left a shell, which read the paste and the Enter and ran
+  the message as a command (measured: every kill from 0 to 300 ms into the send, on zsh).
+- The agent is now the terminal's own program. The launch line is `exec /bin/sh <script>`, which replaces the login shell in the same process, terminal and
+  address; a classic Claude launch, which has to be sourced in the shell so an rc alias or function still resolves, ends the shell as its last step. When
+  the agent ends, the terminal ends, and the core refuses the send as `finished` instead of typing it.
+- A crashed seat now reads as a lost seat (`rig ps` shows it detached; restore relaunches it and resumes its conversation, as after a reboot) instead of a
+  seat with an idle shell that a person had to decide about. Nobody gets a prompt in a seat's pane after its agent exits.
+- `rig seat restart --keep-conversation` on a Codex launched this way reports pane shape `script_backed`: it stops Codex, waits for the terminal to end and
+  respawns it with the resume command. A respawn carries the seat's own launch env. Seats launched before this build keep their login shell until they are
+  launched again.
+- The tmux host is unchanged: its shell stays above the agent.
+
 ### cmux support removed (hc cutover)
 
 - OpenRig no longer drives cmux. Gone: the cmux adapter and provider, `POST /api/rigs/:rigId/cmux/launch`,
