@@ -47,6 +47,9 @@ describe("startup text through the pump", () => {
   let tenure: string;
   let launching: () => void;
   let startPump: (tickMs: number) => void;
+  /** Held, a read of the row `old` waits here. */
+  let gateHold: Promise<void> | null;
+  let holding: boolean;
 
   beforeEach(() => {
     db = createDb();
@@ -66,11 +69,16 @@ describe("startup text through the pump", () => {
     seen = new Set();
     attempts = [];
     gated = true;
+    gateHold = null;
+    holding = false;
     launching = () => undefined;
     onAttempt = (message) => { for (const id of message.ids) seen.add(id); return { kind: "sent" }; };
     const gate: SeatGate = {
       version: 1,
-      lookup: async (_seat, id) => (seen.has(id) ? { kind: "seen", record: { id, recordedAt: "2026-04-24T18:30:01.000Z", nonce: null } } : { kind: "not_seen" }),
+      lookup: async (_seat, id) => {
+        if (gateHold !== null && id === messageId("old")) { holding = true; await gateHold; }
+        return seen.has(id) ? { kind: "seen", record: { id, recordedAt: "2026-04-24T18:30:01.000Z", nonce: null } } : { kind: "not_seen" };
+      },
     };
     const hop = { attempt: (message: SeatMessage) => guarded(guard, message.seat, async () => { attempts.push(message); return onAttempt(message); }) };
     const ports = { gateFor: () => (gated ? gate : null), hopFor: () => (gated ? hop : null) };
@@ -156,6 +164,24 @@ describe("startup text through the pump", () => {
     expect(result.ok, JSON.stringify(result)).toBe(true);
     await vi.waitFor(() => expect(typed()).toContain("queued"));
     expect(typed()).toEqual(["first file", "second file", "queued"]);
+  });
+
+  it("the timer's pass is on the seat, outside the lease, when the startup text is accepted: the text still goes, under the lease", async () => {
+    // The timer's pass sits in the gate on an older row. When it comes back it reaches the startup row and can only pause it. That order is forced,
+    // so this does not depend on how many steps a pass takes.
+    store.accept({ id: messageId("old"), seat: SEAT, sender: "lead@seat-rig", body: "older" });
+    let release = () => undefined as void;
+    gateHold = new Promise<void>((resolve) => { release = resolve; });
+    await vi.waitFor(() => expect(holding).toBe(true));
+    const accept = store.accept.bind(store);
+    store.accept = (entry) => {
+      const row = accept(entry);
+      if (String(entry.id).includes("startup-")) { seen.add(messageId("old")); gateHold = null; setTimeout(release, 10); store.accept = accept; }
+      return row;
+    };
+    const result = await orchestrator().startNode(input({ resolvedStartupFiles: [file("/one.txt")] }));
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(typed()).toEqual(["first file"]);
   });
 
   it("a seat with no gate keeps the paste and its Enter, and writes no row", async () => {

@@ -47,8 +47,8 @@ export class MessagePump {
   private readonly timing: MessagePumpTiming;
   private readonly clock: () => number;
   private readonly log: (line: string) => void;
-  /** Seats with a pass running. It guards this process only: across a restart, the row's committed next time does the same job. */
-  private readonly inFlight = new Set<string>();
+  /** Seats with a pass running, and how it ends. It guards this process only: across a restart, the row's committed next time does the same job. */
+  private readonly inFlight = new Map<string, Promise<void>>();
   /** Seats whose content lane is held, and by how many. In memory by design: see `MessageHandOff.holdContentLane`. */
   private readonly contentLaneHolds = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -77,7 +77,7 @@ export class MessagePump {
   /** Commits the message (invariant 1) and starts a pass, so a first attempt does not wait for the timer. Idempotent on the id. */
   accept(input: MessageAcceptInput & { freezeBody?: boolean }): MessageId {
     const accepted = this.deps.store.accept(input);
-    void this.tick();
+    void this.ask();
     return messageId(accepted.id);
   }
 
@@ -106,16 +106,29 @@ export class MessagePump {
       const left = this.contentLaneHolds.get(seat)! - 1;
       if (left > 0) this.contentLaneHolds.set(seat, left);
       else this.contentLaneHolds.delete(seat);
-      void this.tick();
+      void this.ask();
     };
   }
 
-  /** One pass. A seat whose last pass is still running is skipped, so one slow hop holds up only its own seat. */
-  async tick(): Promise<void> {
+  /** The timer's pass. A seat whose last pass is still running is skipped, so one slow hop holds up only its own seat. */
+  tick(): Promise<void> {
+    return this.pass((seat) => (this.inFlight.has(seat) ? Promise.resolve() : this.driveSeat(seat, false)));
+  }
+
+  /** A pass someone asked for, in the caller's context: a caller under a lifecycle lease has its own attempts made under that lease. Unlike the
+   *  timer's, it is never skipped. A seat's running pass may be outside that lease, in which case it can only pause, so this one waits for it and
+   *  then runs, and a pause does not make it wait out the recheck: a pause spent no attempt. It never shortens a backoff. */
+  ask(): Promise<void> {
+    return this.pass(async (seat) => {
+      while (this.inFlight.has(seat)) await this.inFlight.get(seat);
+      await this.driveSeat(seat, true);
+    });
+  }
+
+  private async pass(drive: (seat: string) => Promise<void>): Promise<void> {
     try {
       this.rejoinHeld();
-      const seats = this.deps.store.seatsWithOpenMessages().filter((seat) => !this.inFlight.has(seat));
-      await Promise.all(seats.map((seat) => this.driveSeat(seat)));
+      await Promise.all(this.deps.store.seatsWithOpenMessages().map(drive));
     } catch (error) {
       if (!this.deps.store.isOpen) { this.stop(); return; }  // the daemon closed its database: nothing here can run again
       this.log(`pass failed: ${(error as Error).message}`);
@@ -136,21 +149,25 @@ export class MessagePump {
     }
   }
 
-  private async driveSeat(seat: string): Promise<void> {
-    this.inFlight.add(seat);
+  private driveSeat(seat: string, asked: boolean): Promise<void> {
+    const running = this.walkSeat(seat, asked).finally(() => { this.inFlight.delete(seat); });
+    this.inFlight.set(seat, running);
+    return running;
+  }
+
+  private async walkSeat(seat: string, asked: boolean): Promise<void> {
+    await Promise.resolve();  // so `inFlight` names this pass before any of it runs
     try {
       for (;;) {
         const head = this.stopped ? null : this.deps.store.headOf(seat);
-        if (!head || await this.visit(head) === "stop") return;
+        if (!head || await this.visit(head, asked) === "stop") return;
       }
     } catch (error) {
       this.log(`seat ${seat}: ${(error as Error).message}`);
-    } finally {
-      this.inFlight.delete(seat);
     }
   }
 
-  private async visit(message: StoredMessage): Promise<Visit> {
+  private async visit(message: StoredMessage, asked: boolean): Promise<Visit> {
     const gate = this.deps.ports.gateFor(message.seat);
     if (!gate) {
       // A row the pump took whose seat has no gate now: the seat's record went with its rig (decision 1). Any other row on a gateless seat is
@@ -196,15 +213,12 @@ export class MessagePump {
     if (lookup.nextPart !== undefined && lookup.nextPart - 1 > message.partsDone) {
       return this.deps.store.recordPartsDone(message, lookup.nextPart - 1) ? "next" : "stop";
     }
-    return this.attempt(gate, message, lookup.nextPart);
+    return this.attempt(gate, message, lookup.nextPart, asked);
   }
 
   /** The message's own id, then, for a long message, each of its numbered parts. All of them seen is the message seen. */
-  private readGate(gate: SeatGate, message: StoredMessage): Promise<GateLookup & { nextPart?: number }> {
-    // A message in one piece is one look, returned as it comes: no step is added before the pass reaches its attempt. S4g's startup wait
-    // starts its own pass from `accept`, which is skipped while the timer's pass on that seat is still running, so how soon a pass ends
-    // decides whether the startup text goes at once (startup-pump.test.ts, "a message queued during the launch").
-    if (message.parts === null || message.parts < 2) return this.readOne(gate, message, message.id);
+  private async readGate(gate: SeatGate, message: StoredMessage): Promise<GateLookup & { nextPart?: number }> {
+    if (message.parts === null || message.parts < 2) return await this.readOne(gate, message, message.id);
     return this.readParts(gate, message, message.parts);
   }
 
@@ -263,11 +277,11 @@ export class MessagePump {
     return rows;
   }
 
-  private async attempt(gate: SeatGate, message: StoredMessage, part: number | undefined): Promise<Visit> {
+  private async attempt(gate: SeatGate, message: StoredMessage, part: number | undefined, asked: boolean): Promise<Visit> {
     const hop = this.deps.ports.hopFor(message.seat);
     if (!hop) return "stop";
     const now = this.clock();
-    if (message.nextAttemptAtMs !== null && now < message.nextAttemptAtMs) return "stop";
+    if (message.nextAttemptAtMs !== null && now < message.nextAttemptAtMs && !(asked && message.pauseReason !== null)) return "stop";
     const rows = await this.rowsToSend(gate, message);
     if (rows === null || rows.length === 0) return "stop";
     if (!this.deps.store.claimAttempts(rows, now + nextAttemptDelayMs(message.attempts + 1, this.timing.backoffMs))) return "stop";

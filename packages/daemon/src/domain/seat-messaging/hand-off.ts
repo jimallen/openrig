@@ -61,7 +61,7 @@ export class PumpHandOff implements MessageHandOff {
 
   adoptClaimed(ids: readonly string[]): void {
     this.store.adoptClaimed(ids.map(messageId));
-    void this.pump.tick();
+    void this.pump.ask();
   }
 
   awaitReceived(id: MessageId, waitMs: number): Promise<MessageOutcome> {
@@ -73,7 +73,7 @@ export class PumpHandOff implements MessageHandOff {
   }
 
   drive(): void {
-    void this.pump.tick();
+    void this.pump.ask();
   }
 
   stagedPaste(id: MessageId, text: string): string | null {
