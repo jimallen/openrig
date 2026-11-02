@@ -1,6 +1,6 @@
 import { createConnection, type Socket } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
 
 /** The protocol generation this build speaks. A core on any other refuses `hello`, and the daemon must stop there. */
 export const HC_GENERATION = 1;
@@ -78,15 +78,32 @@ export function resolveHcSocket(env: NodeJS.ProcessEnv = process.env, home: stri
   return join(state, "herdr-core", session, `${session}.sock`);
 }
 
+/** The account the process runs as: its uid names the host's runtime dir (`/run/user/<uid>`), its home the host's state dir. */
+export interface CoreAccount { uid: number; home: string }
+
+function currentAccount(): CoreAccount | null {
+  try {
+    const { uid, homedir: home } = userInfo();
+    return uid >= 0 && home ? { uid, home } : null;
+  } catch { return null; }
+}
+
 /** Why a core must not be started with this env, or null when it names where its runtime lives. A core started with no named runtime
  *  location takes the host's: on Linux hc asks the user manager and uses `/run/user/<uid>`, where a core with a fresh state dir adopts
  *  every holder it finds and ends the programs its own registry does not know (incident 2026-11-02, every terminal under the host's
  *  holder ended). On macOS there is no runtime dir: the socket and the holders live under the state dir, `XDG_STATE_HOME` or else
  *  `$HOME/.local/state` (see resolveHcSocket), so HOME names the location and an env without one is the refusal. `HC_SOCKET` and
- *  `XDG_RUNTIME_DIR` name it on both. An empty value is no value, as for resolveHcSocket. Never makes `resolveHcSocket` fall back to
- *  `/run/user/<uid>`: a scratch daemon would then talk to the host's core. */
-export function coreRuntimeLocationRefusal(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string | null {
-  if (env.HC_SOCKET || env.XDG_RUNTIME_DIR) return null;
+ *  `XDG_RUNTIME_DIR` name it on both. An empty value is no value, as for resolveHcSocket.
+ *
+ *  Naming the HOST's runtime dir is not enough on Linux: the registry lives in the state dir, so the same runtime dir with another state
+ *  dir is the destructive pair (two homes, one runtime dir, no lock between them; second plan read S2b). A core whose runtime dir is
+ *  `/run/user/<this uid>` (named by XDG_RUNTIME_DIR or under it by HC_SOCKET) is refused unless its state dir is the account's own
+ *  (`XDG_STATE_HOME`, else `$HOME/.local/state`, equal to `<account home>/.local/state`). A private runtime dir with a private HOME, the
+ *  scratch cores' shape, and the production unit (account HOME, the manager's runtime dir) both pass. OPENRIG_HOME is not judged: it does not
+ *  key the registry, and a second instance with its own OPENRIG_HOME and the account's HOME joins the same core. Never makes `resolveHcSocket`
+ *  fall back to `/run/user/<uid>`: a scratch daemon would then talk to the host's core. */
+export function coreRuntimeLocationRefusal(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform, account: CoreAccount | null = currentAccount()): string | null {
+  if (env.HC_SOCKET || env.XDG_RUNTIME_DIR) return hostRuntimeWithOtherState(env, platform, account);
   if (platform === "linux") {
     return "refusing to start an hc core: neither XDG_RUNTIME_DIR nor HC_SOCKET is set, so hc would use the host's runtime dir (/run/user/<uid>) "
       + "and could take over, or end the programs of, a core that is not this instance's. Set XDG_RUNTIME_DIR to this instance's runtime dir (or HC_SOCKET to its socket) and start again.";
@@ -94,6 +111,20 @@ export function coreRuntimeLocationRefusal(env: NodeJS.ProcessEnv, platform: Nod
   if (env.XDG_STATE_HOME || env.HOME) return null;
   return "refusing to start an hc core: none of HC_SOCKET, XDG_RUNTIME_DIR, XDG_STATE_HOME or HOME is set, so hc would take the account's own home for "
     + "its state dir and could take over a core that is not this instance's. Set HOME (or XDG_STATE_HOME, or HC_SOCKET) to this instance's and start again.";
+}
+
+function hostRuntimeWithOtherState(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, account: CoreAccount | null): string | null {
+  if (platform !== "linux" || account === null) return null;
+  const hostRuntime = `/run/user/${account.uid}`;
+  const runtime = env.XDG_RUNTIME_DIR ? env.XDG_RUNTIME_DIR.replace(/\/+$/, "") : "";
+  const socket = env.HC_SOCKET ?? "";
+  if (runtime !== hostRuntime && !socket.startsWith(`${hostRuntime}/`)) return null;
+  const accountState = resolve(account.home, ".local", "state");
+  const state = resolve(env.XDG_STATE_HOME || join(env.HOME || account.home, ".local", "state"));
+  if (state === accountState) return null;
+  return `refusing to start an hc core: it names the host's runtime dir (${hostRuntime}) but its state dir is ${state}, not the account's (${accountState}). `
+    + "A core with another state dir in the host's runtime dir adopts the host's holders and ends the programs its own registry does not know. "
+    + "Give this instance its own XDG_RUNTIME_DIR with its own HOME, or the account's own HOME with the host's.";
 }
 
 /** A check every `hello` this build makes to a socket must pass, beyond the generation: the daemon's pin on the core's version and

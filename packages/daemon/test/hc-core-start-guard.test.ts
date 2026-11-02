@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { HcUnavailableError } from "../src/adapters/hc-client.js";
+import { HcUnavailableError, coreRuntimeLocationRefusal } from "../src/adapters/hc-client.js";
 import { connectHcCore, startCoreWithCli } from "../src/adapters/hc-core-watch.js";
 
 // A core started without a NAMED runtime location lands in the host's: hc asks the user manager and uses /run/user/<uid>, and a
@@ -111,5 +111,56 @@ describe("the daemon's own core start (connectHcCore, no injected startCore) is 
     expect(hcRan()).toBe(true);
     expect(logs.some((m) => m.includes('"core_started"'))).toBe(true);
     expect(logs.some((m) => m.includes("core_start_failed"))).toBe(false);
+  });
+});
+
+// Naming the host's runtime dir is not naming a runtime location of one's own: with another state dir (another registry) it is the incident's
+// pair, two homes in one runtime dir. The account is injected, so the rows do not depend on who runs the suite.
+describe("the host's runtime dir with a state dir that is not the account's (second plan read, S2b)", () => {
+  const account = { uid: 1000, home: "/home/u" };
+  const refused = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform = "linux") => coreRuntimeLocationRefusal(env, platform, account);
+  it("passes the production shape: the account's HOME, the manager's runtime dir (Sparky's unit)", () => {
+    expect(refused({ HOME: "/home/u", XDG_RUNTIME_DIR: "/run/user/1000" })).toBeNull();
+  });
+  it("passes the account's state dir named outright, and a trailing slash on the runtime dir", () => {
+    expect(refused({ HOME: "/home/u", XDG_RUNTIME_DIR: "/run/user/1000/", XDG_STATE_HOME: "/home/u/.local/state" })).toBeNull();
+  });
+  it("passes a HOME that is not set at all (hc then takes the account's)", () => {
+    expect(refused({ XDG_RUNTIME_DIR: "/run/user/1000" })).toBeNull();
+  });
+  it("passes a private runtime dir with a private HOME: the scratch cores' shape", () => {
+    expect(refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: "/scratch/run" })).toBeNull();
+  });
+  it("passes another account's runtime dir (not this host user's)", () => {
+    expect(refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: "/run/user/1001" })).toBeNull();
+  });
+  it("passes a private OPENRIG_HOME beside the account's HOME and the host's runtime dir: it does not key the registry", () => {
+    expect(refused({ HOME: "/home/u", XDG_RUNTIME_DIR: "/run/user/1000", OPENRIG_HOME: "/scratch/openrig" })).toBeNull();
+  });
+  it("refuses the host's runtime dir with a private HOME, naming both dirs", () => {
+    const message = refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: "/run/user/1000" });
+    expect(message).toContain("/run/user/1000");
+    expect(message).toContain("/scratch/home/.local/state");
+    expect(message).toContain("/home/u/.local/state");
+  });
+  it("refuses it with a trailing slash on the runtime dir", () => {
+    expect(refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: "/run/user/1000/" })).not.toBeNull();
+  });
+  it("refuses it when only the state dir is private (XDG_STATE_HOME), the HOME being the account's", () => {
+    expect(refused({ HOME: "/home/u", XDG_RUNTIME_DIR: "/run/user/1000", XDG_STATE_HOME: "/scratch/state" })).not.toBeNull();
+  });
+  it("refuses a HC_SOCKET under the host's runtime dir with a private HOME", () => {
+    expect(refused({ HOME: "/scratch/home", HC_SOCKET: "/run/user/1000/herdr-core/default.sock" })).not.toBeNull();
+  });
+  it("is a linux rule: macOS has no shared runtime dir", () => {
+    expect(refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: "/run/user/1000" }, "darwin")).toBeNull();
+  });
+  it("without an account to compare with, judges nothing more (the named-location rule stands)", () => {
+    expect(coreRuntimeLocationRefusal({ HOME: "/scratch/home", XDG_RUNTIME_DIR: "/run/user/1000" }, "linux", null)).toBeNull();
+  });
+  it("stops startCoreWithCli before hc runs", async () => {
+    const err = await startCoreWithCli({ env: { PATH, HOME: "/scratch/home", XDG_RUNTIME_DIR: "/run/user/1000" }, hcPath: fakeHc, platform: "linux", account })().then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(HcUnavailableError);
+    expect(hcRan()).toBe(false);
   });
 });

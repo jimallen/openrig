@@ -1,3 +1,5 @@
+import { coreRuntimeLocationRefusal } from "@openrig/daemon/hc";
+
 /**
  * A seat does not control the daemon. The `rig daemon` verbs stop, start and restart, run from inside a seat, can end the host's terminals
  * (incident 2026-11-02: a Pi seat, unprompted, stopped and started the daemon from its shell, and a core it started onto the
@@ -28,4 +30,13 @@ export function seatDaemonControlRefusal(verb: string, env: NodeJS.ProcessEnv = 
   return `rig daemon ${verb} is refused in a seat (${names.join(", ")} set). Stopping or starting the daemon from a seat can end other seats' terminals. `
     + "Report to the operator that the daemon needs attention and what you saw (`rig daemon status`, `rig daemon logs`); "
     + "they run it from a shell outside any seat.";
+}
+
+/** Why no daemon may be started with this env, or null: the seat check, then the core's runtime location (the daemon starts the hc core
+ *  when none runs). Applied in startDaemon, the one place a daemon is spawned, so `rig up`, `rig start` and `rig context add` are covered
+ *  as `rig daemon start` is (second plan read S4). A daemon that will not start a core (OPENRIG_HC_NO_START_CORE=1, as test runs set it) is
+ *  not judged on the location. */
+export function daemonStartRefusal(env: NodeJS.ProcessEnv = process.env): string | null {
+  return seatDaemonControlRefusal("start", env)
+    ?? (env["OPENRIG_HC_NO_START_CORE"] === "1" ? null : coreRuntimeLocationRefusal(env));
 }

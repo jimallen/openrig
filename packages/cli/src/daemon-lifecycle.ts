@@ -9,6 +9,7 @@ import { rebaseRelativePath, rebaseRelativePathEnv } from "@openrig/daemon/daemo
 import { DAEMON_STOP_WAIT_MS, DAEMON_SHUTDOWN_RECEIPT, type DaemonShutdownReceipt } from "@openrig/daemon/daemon-shutdown";
 import { ConfigStore } from "./config-store.js";
 import { readLocalOrigin } from "./local-origin.js";
+import { daemonStartRefusal } from "./seat-daemon-guard.js";
 import { OPENRIG_HOME, LEGACY_RIGGED_HOME, readOpenRigEnv } from "./openrig-compat.js";
 import {
   ensureDefaultWorkspace,
@@ -622,6 +623,10 @@ class StartupIdentityError extends Error {}
 class StartupChildPendingError extends Error {}
 
 export async function startDaemon(opts: StartOptions, deps: LifecycleDeps): Promise<DaemonState> {
+  // The one place a daemon is spawned: `rig daemon start`, `rig up`, `rig start` and `rig context add` all come through here. A seat starts
+  // none, and none starts a core with no runtime location of its own (seat-daemon-guard.ts).
+  const refusal = daemonStartRefusal();
+  if (refusal !== null) throw new Error(refusal);
   if (!deps.acquireStartLock) throw new Error("Daemon startup requires a local launch reservation");
   const lock = deps.acquireStartLock();
   let preserve = false;

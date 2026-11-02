@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
-import { HC_GENERATION, HcClient, coreRuntimeLocationRefusal, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
+import { HC_GENERATION, HcClient, coreRuntimeLocationRefusal, type CoreAccount, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
 import { OPERATOR_SECRET_ENV_NAMES } from "./hc-seat.js";
 import { judgeHcVersion, type HcVersionJudgement } from "./hc-version.js";
 
@@ -89,11 +89,11 @@ export async function probeCore(socketPath: string, options: { helloTimeoutMs?: 
 /** Starts a core with the hc CLI, which is the one thing that does. The core's env is the env given here without the operator
  *  secrets, whatever env that is, and every terminal on the core inherits it (design section 4), so pass the env a core should
  *  have. `hc run` on that core goes through no launch wrapper, so what the core never held is the only thing it cannot pass on. */
-export function startCoreWithCli(options: { env?: NodeJS.ProcessEnv; hcPath?: string; timeoutMs?: number; platform?: NodeJS.Platform } = {}): () => Promise<void> {
+export function startCoreWithCli(options: { env?: NodeJS.ProcessEnv; hcPath?: string; timeoutMs?: number; platform?: NodeJS.Platform; account?: CoreAccount | null } = {}): () => Promise<void> {
   return () => new Promise<void>((resolve, reject) => {
     const env = { ...(options.env ?? process.env) };
     // Never start a core that names no runtime location of its own: it would take the host's (see coreRuntimeLocationRefusal).
-    const refusal = coreRuntimeLocationRefusal(env, options.platform);
+    const refusal = coreRuntimeLocationRefusal(env, options.platform, options.account);
     if (refusal) { reject(new HcUnavailableError(refusal)); return; }
     for (const name of OPERATOR_SECRET_ENV_NAMES) delete env[name];
     execFile(options.hcPath ?? "hc", ["server", "start"], { env, timeout: options.timeoutMs ?? 30_000 }, (err) => {
