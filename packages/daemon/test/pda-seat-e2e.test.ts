@@ -445,7 +445,7 @@ describe.runIf(findHc() !== null)("pda seat end to end: real daemon, real hc (pr
     expect(await runnerPids()).toHaveLength(1);
   }, 60_000);
 
-  it("row 9 (runner gone): a runner killed without a trace leaves a ready sidecar and a shell; rig send types nothing", async () => {
+  it("row 9 (runner gone): a runner killed without a trace leaves a ready sidecar and no terminal (the runner was the terminal's own program, OF-200); rig send types nothing", async () => {
     const pids = await runnerPids();
     expect(pids).toHaveLength(1);
     process.kill(pids[0]!, "SIGKILL");
@@ -455,11 +455,15 @@ describe.runIf(findHc() !== null)("pda seat end to end: real daemon, real hc (pr
     const typed = await cli(["send", PDA_SEAT, "RM-RF-MUST-NOT-BE-TYPED", "--json"]);
     expect(typed.code).not.toBe(0);
     const body = JSON.parse(typed.stdout) as { ok: boolean; sent: boolean; reason: string; error: string };
-    // Two independent guards refuse this (the shell-foreground check before readiness, and the seam's own clause).
-    expect(body).toMatchObject({ ok: false, sent: false });
-    expect(["target_runtime_unverified", "target_runner_unverified"]).toContain(body.reason);
+    // The runner was the terminal's own program, so its death ended the terminal: there is no shell for a send to reach, and the sidecar's stale
+    // `ready` is never consulted. The refusal is the lost seat's, before any readiness check (it was the shell-foreground clause and the seam's own
+    // `target_runtime_unverified` / `target_runner_unverified` while a login shell stayed above the runner).
+    expect(body).toMatchObject({ ok: false, reason: "session_missing" });
     expect(body.error).toContain("No text was sent");
-    expect(occurrences(await captureText(), "RM-RF-MUST-NOT-BE-TYPED")).toBe(0);
+    // `rig capture` refuses a lost seat, so the finished terminal's own record is read: nothing was typed into it.
+    const record = await core.client().call("terminal.read", { terminal: hcTerminalName(PDA_SEAT), lines: 100_000 });
+    expect(occurrences(JSON.stringify(record), "RM-RF-MUST-NOT-BE-TYPED")).toBe(0);
+    expect(await core.client().call<{ state: string }>("terminal.get", { terminal: hcTerminalName(PDA_SEAT) })).toMatchObject({ state: "finished" });
   }, 60_000);
 
   let postsAtDown = 0;
@@ -470,7 +474,8 @@ describe.runIf(findHc() !== null)("pda seat end to end: real daemon, real hc (pr
     requestsAtDown = fake.requests.length;
     const down = await cli(["down", RIG, "--json"]);
     expect(down.code).toBe(0);
-    expect(JSON.parse(down.stdout)).toMatchObject({ sessionsKilled: 1, errors: [] });
+    // Row 9 ended the runner and with it the terminal, so there is no live session left for `down` to kill (it was one while a shell stayed up).
+    expect(JSON.parse(down.stdout)).toMatchObject({ sessionsKilled: 0, errors: [] });
     expect(await seatStatus()).not.toBe("running");
 
     const fresh = await cli(["up", RIG, "--existing", "--fresh", "lab.research", "--json", "--yes"], {}, 120_000);

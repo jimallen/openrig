@@ -256,11 +256,12 @@ describe("the paths that make a terminal", () => {
     expect(found[0]).toMatch(/^domain\/node-launcher\.ts: .*remoteControl/);
     expect(found[1]).toMatch(/^domain\/resume-metadata-refresher\.ts: probeSession,/);
   });
-  it("respawns in two places: the successor, with the hint, and Codex's restart in place, which cannot declare Remote Control", () => {
+  it("respawns in two files: the successor, with the hint, and Codex's restart in place (two sites: a pane that is Codex itself, and OF-200's script-backed pane), which cannot declare Remote Control", () => {
     const found = callers("respawnPane");
-    expect(found).toHaveLength(2);
+    expect(found).toHaveLength(3);
     expect(found[0]).toMatch(/^domain\/seat-restart-in-place\.ts: pane, relaunch\.command, \{ cwd \}/);
-    expect(found[1]).toMatch(/^domain\/successor-session-launcher\.ts: .*remoteControl/);
+    expect(found[1]).toMatch(/^domain\/seat-restart-in-place\.ts: pane, relaunch\.command, \{ cwd \}/);
+    expect(found[2]).toMatch(/^domain\/successor-session-launcher\.ts: .*remoteControl/);
   });
   it("sends terminal.run only from the host, a respawn and a probe", () => {
     const found = files(src).flatMap((path) => (readFileSync(path, "utf8").match(/"terminal\.run"/g) ?? []).map(() => relative(src, path))).sort();

@@ -163,6 +163,14 @@ export class HcLifecycle {
 
   private async respawnUnchecked(target: string, command: string | undefined, opts: ({ cwd?: string; env?: Record<string, string> } & SeatLaunchHints) | undefined, check: () => void): Promise<TmuxResult> {
     const daemon = this.options.daemonEnv ?? process.env;
+    // An env the caller names is judged before the seat is read: a name that cannot be an env name touches nothing.
+    if (opts?.env) {
+      try {
+        seatEnvironment(opts.env, daemon, opts);
+      } catch (err) {
+        return { ok: false, code: "invalid_env", message: (err as Error).message };
+      }
+    }
     let before: HcTerminal | null;
     try {
       before = await this.find(target);
