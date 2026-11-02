@@ -1301,8 +1301,6 @@ export class SessionTransport {
   private rigRepo: RigRepository;
   private sessionRegistry: SessionRegistry;
   private tmuxAdapter: TmuxAdapter;
-  /** Absent: the pump is off. */
-  get messageHandOff(): MessageHandOff | undefined { return this.tmuxAdapter.messageHandOff; }
   private agentActivityStore?: AgentActivityStore;
   private nativeInbox?: ClaudeNativeInbox;
   private eventBus?: EventBus;

@@ -273,15 +273,15 @@ describe("startup text through the pump", () => {
 
     describe("a long text, which reaches the seat as a short note that its gate hook completes (decision 33)", () => {
       const NOTE = "OpenRig: long message. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again.";
-      const stagedBy = (staged: { text: string | null }, later: number) => (message: SeatMessage) => {
+      const stagedBy = (staged: { text: string | null }, later: number) => (message: SeatMessage): LastHopResult => {
         store.markParts(message.ids[0], 1);
         setTimeout(() => { staged.text = `${NOTE}\n[openrig-msg ${message.ids[0]}:${store.nonceOf(message.ids[0])}]`; }, later);
-        return { kind: "sent" } as const;
+        return { kind: "sent" };
       };
       beforeEach(() => { contents["/long.txt"] = "L".repeat(3_000); });
 
       it("gets the guarded Enter on the note and its marker, never on the whole text", async () => {
-        const staged = { text: null as string | null };
+        const staged: { text: string | null } = { text: null };
         onAttempt = stagedBy(staged, 700);
         capture.mockImplementation(async () => (staged.text ? composerWith(staged.text) : ""));
         sendKeys.mockImplementation(async () => { staged.text = null; seen.add(attempts[0]!.ids[0]); return { ok: true }; });
