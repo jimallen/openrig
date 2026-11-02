@@ -23,7 +23,7 @@ const SITES: Array<{ file: string; calls: number; class: Class; id: string; note
   { file: "domain/claude-compaction-enforcer.ts", calls: 5, class: "transport-commits-row", id: "seat-msg-compaction-<attempt>-<prep|compact|turn_boundary|restore_prompt|compliance_prompt>", note: "the three post-compact stages, prep, /compact (a Command: no message state, the enforcer keeps its retry)" },
   { file: "domain/session-transport.ts", calls: 1, class: "transport-commits-row", id: "<id>:<seat>, or minted per recipient", note: "broadcast's per-recipient send" },
   { file: "domain/post-restart-notifier.ts", calls: 1, class: "pump-owns-row", id: "post-restart-<seq>-<node>; gated: accepted at the restore. ungated: the row stays open between its own retries", note: "the wiring in startup.ts" },
-  { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id" },
+  { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id. On a seat the pump serves both go to the pump, which owns their retries; the ladder reads the row and sends nothing (S4d)" },
 ];
 
 /** Text written past SessionTransport. Not S1's (Jim, via the lead, 2026-11-01): these 8 paths move in S4 and keep their own loops until

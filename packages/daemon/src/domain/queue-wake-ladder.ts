@@ -358,7 +358,8 @@ function hasPickupEvidence(db: Database.Database, row: Pick<QueueItem, "qitemId"
   return false;
 }
 
-type WakeMode = "failed" | "unconfirmed";
+/** `pumped`: the pump has the wake, so the ladder's only act is its notice. */
+type WakeMode = "failed" | "unconfirmed" | "pumped";
 
 export function classifyWakeResult(lastNudgeResult: string | null): WakeMode | null {
   if (!lastNudgeResult) return null;
@@ -631,6 +632,8 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
   const status = deps.status;
   try {
     const now = deps.now ?? new Date();
+    // First: an escalation whose wake has since arrived retires below, on the item's own result.
+    deps.queueRepo.settlePumpedWakes();
     // Retire only aggregates whose explicitly tagged underlying members all
     // resolved. Legacy untagged history is not interpreted from its body.
     const aggregates = deps.db.prepare("SELECT qitem_id, source_session, tags, ts_created FROM queue_items WHERE state IN ('pending','in-progress','blocked') AND tags LIKE ?").all(`%"${WAKE_ESCALATION_TAG}"%`) as Array<{ qitem_id: string; source_session: string; tags: string; ts_created: string }>;
@@ -666,6 +669,12 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
     const attemptWake =
       deps.attemptWake ??
       (async (qitemId: string, target: string): Promise<string> => {
+        // The row is the record: a wake the pump has is reported, never sent again.
+        const pumped = deps.queueRepo.pumpedWake(qitemId);
+        if (pumped) {
+          deps.queueRepo.recordNudgeAttempt(qitemId, pumped.nudgeResult);
+          return pumped.nudgeResult;
+        }
         await deps.queueRepo.maybeNudge(qitemId, target, true);
         return deps.queueRepo.getById(qitemId)?.lastNudgeWireResult ?? "indeterminate:no transport available";
       });
@@ -791,7 +800,12 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
         actions.push({ qitemId: row.qitemId, action: "park-usage-limit" });
         continue;
       }
-      const mode = unclaimedWakeMode(row);
+      // On a seat the pump serves the row decides. Its cap is a time: what the ladder's own retries would have taken. Past it the ladder gives
+      // its one notice and the pump goes on, since no state needs a person (invariant 4).
+      const pumped = deps.queueRepo.pumpedWake(row.qitemId);
+      const noticeDue = pumped?.kind === "ended" || (pumped?.kind === "open" && now.getTime() - pumped.sinceMs >= cap * intervalS * 1000);
+      if (pumped?.kind === "open" && !noticeDue) continue;
+      const mode = noticeDue ? "pumped" : unclaimedWakeMode(row);
       if (!mode) continue;
       const disposition = findWakeRecovery(deps.db, row.qitemId);
       if (disposition && !["pending", "in-progress", "blocked"].includes(disposition.state)) {
@@ -866,7 +880,11 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
       // Escalation phase (past the cap, or the F1 direct path). Grouped per destination
       // regardless of due-ness so the aggregate refresh rides every detection pass.
       const reason =
-        mode === "failed"
+        mode === "pumped"
+          ? pumped?.kind === "open"
+            ? `wake not received after ${minutesSince(pumped.sinceMs, now)} min; OpenRig keeps trying`
+            : `wake ended undelivered: ${pumped?.nudgeResult.slice("failed:".length)}`
+          : mode === "failed"
           ? `wake failed ${view.attempts} times over ${minutesSince(view.firstMarkerTs ?? row.tsCreated, now)} min`
           : `unconfirmed delivery with no pickup evidence over ${minutesSince(row.tsCreated, now)} min`;
       const dest = row.destinationSession;

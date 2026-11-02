@@ -9,6 +9,8 @@ import type { PersistedEvent } from "./types.js";
 import { QueueTransitionLog, type OwnerNotificationLevel, type QueueTransition, type RecentQueueTransitionScope } from "./queue-transition-log.js";
 import { WAKE_INTENT_PREFIX, labelForTmuxSend, type OutboxHandler, type OutboxOutcomeLabel, type SeatMessageClass } from "./outbox-handler.js";
 import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
+import type { MessageHandOff } from "./seat-messaging/hand-off.js";
+import type { MessageObligations } from "./seat-messaging/pump-ports.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 import { renderQueueHandoffNudge } from "./queue-nudge-text.js";
@@ -482,8 +484,18 @@ export class QueueRepositoryError extends Error {
  *  that does not preallocate. */
 /** What a wake's `last_nudge_result` says when no write happened: a durable row holds it, either the typing guard's or the pump's. */
 export function retainedNudgeResult(reason: string | undefined): string {
-  return reason === "handed_to_pump" ? "retained:pump" : "retained:typing_guard";
+  return reason === "handed_to_pump" ? PUMP_NUDGE_RESULT : "retained:typing_guard";
 }
+
+const PUMP_NUDGE_RESULT = "retained:pump";
+/** The fixed id of a plain nudge. */
+const PLAIN_NUDGE_PREFIX = "guard-nudge-";
+
+/** A wake the pump has. `open`: it goes on, whatever the ladder does. */
+export type PumpedWake =
+  | { readonly kind: "open"; readonly nudgeResult: string; readonly sinceMs: number }
+  | { readonly kind: "received"; readonly nudgeResult: "verified" }
+  | { readonly kind: "ended"; readonly nudgeResult: string };
 
 export function newQitemId(): string {
   const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
@@ -769,6 +781,8 @@ export class QueueRepository {
   readonly destinationAdvisory: (sessionRef: string) => QueueDestinationAdvisory | null;
   private readonly validateRig: (sessionRef: string) => boolean;
   private transport: QueueNudgeTransport | undefined;
+  /** Absent: the pump is off, and every wake takes the ladder's old path. */
+  private messageHandOff: MessageHandOff | undefined;
   /** W1 (transactional closure): the durable wake-intent store. A terminal act
    *  (handoff / handoff-and-complete) stages an outbox intent row INSIDE its
    *  db.transaction so close + transition + intent commit as one act or none;
@@ -920,6 +934,18 @@ export class QueueRepository {
    * which itself needs eventBus). Calling this is safe at any time; create /
    * handoff / handoff-and-complete will start nudging on the next call.
    */
+  /** The pump carries wakes to the seats it serves (S4d). Each wake family says what it stands for, read at every attempt, so a closed item
+   *  ends its wake. Registered before the pump starts. */
+  attachMessagePump(handOff: MessageHandOff, obligations: MessageObligations): void {
+    this.messageHandOff = handOff;
+    obligations.register(WAKE_INTENT_PREFIX, ({ id, auditPointer }) => this.whyWakeNotWanted(id, auditPointer));
+    // A plain nudge can carry a parked owner's decision, so a claim does not end it; only the item's close does.
+    obligations.register(PLAIN_NUDGE_PREFIX, ({ auditPointer }) => {
+      const state = auditPointer ? this.stateOf(auditPointer) : undefined;
+      return state !== undefined && isBlockerLive(state) ? null : `queue item ${auditPointer ?? "(none)"} is closed`;
+    });
+  }
+
   attachTransport(transport: QueueNudgeTransport): void {
     this.transport = transport;
   }
@@ -1123,6 +1149,56 @@ export class QueueRepository {
     }
   }
 
+  private stateOf(qitemId: string): string | undefined {
+    return (this.db.prepare("SELECT state FROM queue_items WHERE qitem_id = ?").get(qitemId) as { state: string } | undefined)?.state;
+  }
+
+  /** Why a wake row no longer stands for anything, or null while its item waits on it. Reads only. */
+  private whyWakeNotWanted(wakeId: string, auditPointer: string | null): string | null {
+    const state = auditPointer ? this.stateOf(auditPointer) : undefined;
+    if (state !== "pending") return `queue item ${auditPointer ?? "(none)"} is ${state ?? "gone"}`;
+    const resumePrefix = `${WAKE_INTENT_PREFIX}blocker-`;
+    if (!wakeId.startsWith(resumePrefix)) return null;
+    const expected = Number(wakeId.slice(resumePrefix.length));
+    const latest = this.db.prepare(`SELECT transition_id FROM (
+      SELECT transition_id, state, LAG(state) OVER (ORDER BY transition_id) AS previous_state
+      FROM queue_transitions WHERE qitem_id = ?)
+      WHERE state = 'pending' AND previous_state IS NOT 'pending' ORDER BY transition_id DESC LIMIT 1`)
+      .get(auditPointer) as { transition_id: number } | undefined;
+    return expected === latest?.transition_id ? null : `queue item ${auditPointer} left the transition this wake was for`;
+  }
+
+  /**
+   * Where the pump has this item's wake, in the nudge grammar, or null when it has none: the row is the record (S4d). `sinceMs` is when the
+   * oldest open row committed. The pump's first attempt comes at once, and a pause gives its attempt back, so a row's commit time, not its
+   * attempt count, is what still runs while a seat is stopped. A superseded row says nothing: it ended because something newer replaced it.
+   * A row the typing guard holds counts, on a seat the pump serves: the pump takes it when the guard lifts.
+   */
+  pumpedWake(qitemId: string): PumpedWake | null {
+    const handOff = this.messageHandOff;
+    if (!handOff) return null;
+    const rows = this.db.prepare(`SELECT message_state AS state, delivery_state AS delivery, destination_session AS seat, ts_dispatched AS at, message_closed_reason AS reason, ack_evidence AS evidence
+      FROM outbox_entries WHERE audit_pointer = ? AND class = 'nudge' AND (message_pump_owned = 1 OR delivery_state = 'retained') ORDER BY rowid`)
+      .all(qitemId) as Array<{ state: string | null; delivery: string; seat: string; at: string; reason: string | null; evidence: string | null }>;
+    const open = rows.find((row) => row.state === "accepted" || row.state === "attempting" || (row.delivery === "retained" && handOff.takes(row.seat)));
+    if (open) return { kind: "open", nudgeResult: PUMP_NUDGE_RESULT, sinceMs: Date.parse(open.at) };
+    const last = rows.filter((row) => row.state !== null && row.evidence !== "superseded").at(-1);
+    if (last?.state === "received") return { kind: "received", nudgeResult: "verified" };
+    if (last?.state === "undeliverable") return { kind: "ended", nudgeResult: `failed:${last.reason ?? "the wake ended undelivered"}` };
+    return null;
+  }
+
+  /** What a tick reads first: `last_nudge_result` catches up with the rows, since the stuck sweep and a retiring escalation read that column. */
+  settlePumpedWakes(): void {
+    if (!this.messageHandOff) return;
+    const items = this.db.prepare(`SELECT qitem_id FROM queue_items WHERE last_nudge_result = ? AND state IN ('pending', 'in-progress', 'blocked')`)
+      .all(PUMP_NUDGE_RESULT) as Array<{ qitem_id: string }>;
+    for (const { qitem_id: qitemId } of items) {
+      const wake = this.pumpedWake(qitemId);
+      if (wake && wake.kind !== "open") this.recordNudgeAttempt(qitemId, wake.nudgeResult);
+    }
+  }
+
   /**
    * W1-b: deliver ONE committed wake intent. MF3: CLAIM (pending→sending) before
    * the external send, then finalize (sending→outcome) after — so overlapping
@@ -1142,7 +1218,8 @@ export class QueueRepository {
     if (!this.transport) return "skipped"; // no transport → stays pending for a later drain
     const alreadyHeld = this.outbox.getById(outboxId);
     if (alreadyHeld?.deliveryState === "retained" || alreadyHeld?.deliveryState === "retired") {
-      if (alreadyHeld.auditPointer) this.recordNudgeAttempt(alreadyHeld.auditPointer, "retained:typing_guard");
+      // The pump takes a held row when the guard lifts, so on a seat it serves the ladder has no retry to run.
+      if (alreadyHeld.auditPointer) this.recordNudgeAttempt(alreadyHeld.auditPointer, this.messageHandOff?.takes(alreadyHeld.destinationSession) ? "retained:pump" : "retained:typing_guard");
       return "retained";
     }
     // MF3: CLAIM (pending→sending) BEFORE the external send so overlapping drains
@@ -1153,18 +1230,7 @@ export class QueueRepository {
     // original frozen intent and audit pointer survives; only transport coalesces.
     let superseded = false;
     const actionable = (entry: import("./outbox-handler.js").OutboxEntry): boolean => {
-      const row = entry.auditPointer ? this.db.prepare("SELECT state FROM queue_items WHERE qitem_id = ?").get(entry.auditPointer) as { state: string } | undefined : undefined;
-      let current = row?.state === "pending";
-      const resumePrefix = `${WAKE_INTENT_PREFIX}blocker-`;
-      if (current && entry.outboxId.startsWith(resumePrefix)) {
-        const expected = Number(entry.outboxId.slice(resumePrefix.length));
-        const latest = this.db.prepare(`SELECT transition_id FROM (
-          SELECT transition_id, state, LAG(state) OVER (ORDER BY transition_id) AS previous_state
-          FROM queue_transitions WHERE qitem_id = ?)
-          WHERE state = 'pending' AND previous_state IS NOT 'pending' ORDER BY transition_id DESC LIMIT 1`)
-          .get(entry.auditPointer) as { transition_id: number } | undefined;
-        current = expected === latest?.transition_id;
-      }
+      const current = this.whyWakeNotWanted(entry.outboxId, entry.auditPointer ?? null) === null;
       if (!current) {
         // Existing failed state means the requested old delivery was refused;
         // the explicit tag distinguishes supersession from a transport attempt.
@@ -1176,22 +1242,25 @@ export class QueueRepository {
       }
       return current;
     };
+    // One driver per row: a row the pump has stays `pending` while it carries it, and a claim here would take it out of the pump's hands for good.
+    const notPumped = this.messageHandOff ? " AND message_state IS NULL" : "";
+    const isPumped = (id: string) => notPumped !== "" && this.db.prepare("SELECT 1 FROM outbox_entries WHERE outbox_id = ? AND message_state IS NOT NULL").get(id) !== undefined;
     const group = this.db.transaction(() => {
       const candidate = this.outbox!.getById(outboxId);
-      if (!candidate || candidate.deliveryState !== "pending" || !actionable(candidate)) return [];
+      if (!candidate || candidate.deliveryState !== "pending" || isPumped(outboxId) || !actionable(candidate)) return [];
       if (!this.outbox!.claimForDelivery(outboxId)) return [];
       const first = this.outbox!.getById(outboxId)!;
       const intents = [first];
       const correlation = first.tags?.find(tag => tag.startsWith("queue:return:"));
       if (correlation) {
         const peers = this.db.prepare(`SELECT outbox_id FROM outbox_entries
-          WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?
+          WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?${notPumped}
           AND json_valid(outbox_entries.tags) AND EXISTS (SELECT 1 FROM json_each(outbox_entries.tags) WHERE value = ?)
           ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>;
         // OF-168: a pending peer of the same wake group whose saved tags are not JSON cannot say it carries the correlation, so it is
         // not coalesced into this group (it is delivered on its own later). It is named, not silently left out of the grouping.
         const skippedPeers = (this.db.prepare(`SELECT outbox_id FROM outbox_entries
-          WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?
+          WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?${notPumped}
           AND tags IS NOT NULL AND NOT json_valid(tags) AND instr(tags, '"' || ? || '"') > 0 ORDER BY outbox_id`)
           .all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>).map((r) => r.outbox_id);
         nameRowsThrottled(`wake-peers:${correlation}`, skippedPeers, (due, total) => {
@@ -1333,7 +1402,18 @@ export class QueueRepository {
    */
   reconcileAbandonedWakeIntents(path: "tmux" | "hc" = "tmux"): number {
     if (!this.outbox) return 0;
+    this.adoptAbandonedWakeIntents();
     return this.outbox.reconcileAbandonedSending(WAKE_INTENT_PREFIX, path);
+  }
+
+  /** A crash between a claim and its hand-over: on a seat the pump serves a repeat is free, so what would be `indeterminate` goes on instead. */
+  private adoptAbandonedWakeIntents(): void {
+    const handOff = this.messageHandOff;
+    if (!handOff) return;
+    const claimed = this.db.prepare(`SELECT outbox_id AS id, destination_session AS seat FROM outbox_entries
+      WHERE delivery_state = 'sending' AND message_state IS NULL AND delivery_path IS NOT 'native' AND substr(outbox_id, 1, ?) = ?`)
+      .all(WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX) as Array<{ id: string; seat: string }>;
+    for (const { id, seat } of claimed) if (handOff.takes(seat)) handOff.adoptClaimed([id]);
   }
 
   async drainPendingWakeIntents(): Promise<{ delivered: number; indeterminate: number; failed: number; retained: number; unreadable?: string[] }> {
@@ -1495,7 +1575,7 @@ export class QueueRepository {
         : undefined;
       text = wrapNudgeEnvelope(sourceSession, destinationSession, bareBody, { stampISO, genUuid });
     }
-    const deliveryId = `guard-nudge-${qitemId}-${createHash("sha256").update(JSON.stringify([sourceSession, destinationSession, bodyOverride ?? null])).digest("hex")}`;
+    const deliveryId = `${PLAIN_NUDGE_PREFIX}${qitemId}-${createHash("sha256").update(JSON.stringify([sourceSession, destinationSession, bodyOverride ?? null])).digest("hex")}`;
     const held = !committedOutboxIds ? this.outbox?.getById(deliveryId) : null;
     if (held?.deliveryState === "retained" || held?.deliveryState === "retired") {
       // Same logical nudge reuses its original frozen envelope, not a new timestamp.
