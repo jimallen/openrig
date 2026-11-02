@@ -8,7 +8,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { CLAUDE_SPOOL_ROUTE, PASTE_LIMIT, ClaudeSeatHop, CodexSeatHop, PiSeatHop, foregroundHoldsAgent, isSeatAgent, markedText, readClaudeComposer, type HopGuard, type SeatSpool } from "../src/adapters/seat-hops.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { promptMarkers, spooledNote, type SeatMarker } from "../src/adapters/seat-gate-marker.js";
-import { startupTextId } from "../src/domain/seat-messaging/long-message.js";
+import { handoverTextId, startupTextId } from "../src/domain/seat-messaging/long-message.js";
 import type { NativeEligibility, NativeEndpointRow } from "../src/domain/claude-native-inbox.js";
 import { CLAUDE_SOCKET_REPEAT_WINDOW_MS } from "../src/domain/seat-messaging/claude-last-hop.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
@@ -317,7 +317,7 @@ describe("the hops", () => {
       it("a group over the limit with no socket: its short first row pastes alone, body in the prompt", async () => {
         eligible = false;
         const rest = "b".repeat(PASTE_LIMIT);
-        await expect(hop().attempt(group("first", rest))).resolves.toEqual({ kind: "sent" });
+        await expect(hop().attempt(group("first", rest))).resolves.toEqual({ kind: "sent", carried: [ID] });
         expect(calls).toEqual([`paste:first\n[openrig-msg m-1:${store.nonceOf(ID)}]`]);
       });
       it("a group whose first row is itself long, with no socket: paused, nothing typed", async () => {
@@ -332,9 +332,9 @@ describe("the hops", () => {
         await hop({ version: 1 }).afterReceived(sent);  // whatever the relay declared
         expect(calls).toEqual(["keys:C-c"]);
       });
-      it("startup text is the one exception: with no socket it pastes whole, body in the prompt, and never as a note", async () => {
+      for (const [name, known] of [["startup", startupTextId("gen", "attempt", 1)], ["handover", handoverTextId("succ", "restore")]] as const) it(`${name} text is the named exception (decision 39): with no socket it pastes whole, body in the prompt, and never as a note`, async () => {
         eligible = false;
-        const startup = messageId(startupTextId("gen", "attempt", 1));
+        const startup = messageId(known);
         store.accept({ id: startup, seat: SEAT, sender: "startup@system", body: "s" });
         db.prepare("UPDATE outbox_entries SET native_nonce = 'abcdef0123456789abcdef0123456789' WHERE outbox_id = ?").run(startup);
         for (const spoolRoute of [false, true]) {
@@ -373,7 +373,7 @@ describe("the hops", () => {
           expect(spooled).toEqual([LONG]);
           expect(calls[0]).not.toContain("yyy");
           calls.length = 0;
-          const staged = spooledNote(null);
+          const staged = spooledNote(null, { id: "m-1", nonce: store.nonceOf(ID)! });
           screen = `❯ ${staged}\n  [openrig-msg m-1:${store.nonceOf(ID)}]\n──────────────\n`;
           await on().afterReceived({ ...message, body: LONG });  // a blocked repeat is cleared by what it was, not by the body
           expect(calls).toEqual(["keys:C-c"]);
@@ -383,10 +383,18 @@ describe("the hops", () => {
           await expect(hop({ spoolRoute: true, version: 1 }).attempt({ ...message, body: LONG })).resolves.toEqual({ kind: "sent" });
           expect(calls[0]).toContain(LONG);
         });
-        it("a long group goes a row at a time", async () => {
+        it("a long group goes a row at a time, and says so", async () => {
           eligible = false;
-          await on().attempt(group("a".repeat(PASTE_LIMIT), "b"));
+          await expect(on().attempt(group("a".repeat(PASTE_LIMIT), "b"))).resolves.toEqual({ kind: "sent", carried: [ID] });
           expect(spooled).toEqual(["a".repeat(PASTE_LIMIT)]);
+        });
+        it("QA F5: a blocked repeat of a numbered part is cleared by that part's own note", async () => {
+          store.markParts(ID, 3);
+          const nonce = store.nonceOf(ID)!;
+          const id = "m-1.part1of3";
+          screen = `❯ ${spooledNote({ index: 1, total: 3 }, { id, nonce })}\n  [openrig-msg ${id}:${nonce}]\n──────────────\n`;
+          await on().afterReceived({ ...message, body: LONG, part: 1 });
+          expect(calls).toEqual(["keys:C-c"]);
         });
       });
     });
@@ -508,7 +516,7 @@ describe("the hops", () => {
 
         it("past the limit goes a row at a time: the first row's short paste, marker and spool, and nothing of the second", async () => {
           const body = "y".repeat(PASTE_LIMIT);
-          await expect(hop().attempt(group(body))).resolves.toEqual({ kind: "sent" });
+          await expect(hop().attempt(group(body))).resolves.toEqual({ kind: "sent", carried: [ID] });
           const sent = calls[0]!.replace("paste:", "");
           expect(promptMarkers(sent)).toEqual([{ id: "m-1", nonce: store.nonceOf(ID), spooled: true }]);
           expect(sent).not.toContain("second");

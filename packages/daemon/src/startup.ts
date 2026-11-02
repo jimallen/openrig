@@ -105,7 +105,7 @@ import { SeatIdentityStore, SelfHostIdentityStore } from "./domain/seat-identity
 import { DaemonLifecycleStore } from "./domain/daemon-lifecycle-store.js";
 import { randomUUID } from "node:crypto";
 import { getSelfHostId, setSelfHostId, setSelfHostIdSource } from "./domain/hosts/fanout-contract.js";
-import { CrossHostSenderReturn, FarDaemons, FarSeatDirectory, withFarSeats } from "./domain/seat-messaging/far-daemon.js";
+import { FarDaemons, OriginPollsSenderReturn, FarSeatDirectory, withFarSeats } from "./domain/seat-messaging/far-daemon.js";
 import { UpCommandRouter } from "./domain/up-command-router.js";
 import { RigTeardownOrchestrator } from "./domain/rig-teardown.js";
 import { ResumeMetadataRefresher } from "./domain/resume-metadata-refresher.js";
@@ -2264,7 +2264,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     if (messagePumpEnabled) {
       const messagePump = new MessagePump({
         store: seatMessages, ports: seatMessagingPorts, directory: new FarSeatDirectory(new DbSeatDirectory(db)), held: heldMessages,
-        senders: new CrossHostSenderReturn(new QueueSenderReturn(queueRepoInstance), farDaemons), obligations: messageObligations, timing: opts?.messagePumpTiming,
+        senders: new OriginPollsSenderReturn(new QueueSenderReturn(queueRepoInstance), () => farDaemons.selfHost), obligations: messageObligations, timing: opts?.messagePumpTiming,
       });
       // Before the first pass and before any route: from here no SessionTransport sends a message to a gated seat itself.
       tmuxAdapter.messageHandOff = new PumpHandOff(seatMessages, messagePump, seatMessagingPorts);

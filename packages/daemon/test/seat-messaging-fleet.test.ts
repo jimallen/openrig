@@ -209,6 +209,24 @@ describe("the fleet, as the pump reads it", () => {
       expect(store.headOf("dev@r")!.pauseReason).toBeNull();
     });
 
+    it("a cleared record of a caller's id with a part's shape reopens that row, not its namesake", () => {
+      const store = new MessageStore(db);
+      accept("q.part1of1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      const nonce = store.nonceOf(messageId("q.part1of1"))!;
+      store.recordReceived({ id: messageId("q.part1of1"), recordedAt: "1999-01-01T00:00:00.000Z", nonce }, 2);
+      expect(store.reopenCleared(messageId("q.part1of1"), nonce)).toBe(true);
+      expect(store.outcomeOf(messageId("q.part1of1"))).toBe("open");
+    });
+
+    it("a far seat with no gate is named at once", () => {
+      const store = new MessageStore(db);
+      accept("f1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("f1"), "far_not_gated", 2);
+      expect(reasons()[0]).toContain("no gate on its host");
+    });
+
     it("a cleared part reopens its whole message", () => {
       const store = new MessageStore(db);
       accept("p1");

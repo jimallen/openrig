@@ -288,7 +288,7 @@ function recordSeen(seenDir, marker, record) {
 // The order is the crash rule. The record is written LAST, after the text has gone to stdout, so a record proves the agent was given the text. A
 // hook that crashes or times out before that leaves no record, and the prompt ran with only the note: the row stays open and the next attempt
 // passes. A crash after the text and before the record gives a second copy, the safe way round. The agent sees nothing until this process ends.
-const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\.$/;
+const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\. \(([a-f0-9]{16})\)$/;
 
 function spooledMarker(prompt) {
   const markers = trailingMarkers(prompt);
@@ -296,7 +296,9 @@ function spooledMarker(prompt) {
   const lines = prompt.split("\n").map((line) => line.replace(/\r$/, "").trim());
   let end = lines.length;
   while (end > 0 && (lines[end - 1] === "" || WRAPPER_CLOSE.test(lines[end - 1]))) end -= 1;
-  return SPOOLED_NOTE.test(lines[end - 2] || "") ? markers[0] : null;
+  // The tag binds the note to the nonce, which no sender knows: a body that ends in this note is an ordinary prompt.
+  const tag = crypto.createHash("sha256").update(`spooled:${markers[0].id}:${markers[0].nonce}`).digest("hex").slice(0, 16);
+  return (SPOOLED_NOTE.exec(lines[end - 2] || "") || [])[1] === tag ? markers[0] : null;
 }
 
 // null: not a long message's paste. Otherwise what the gate says of it, with the text when it may pass.

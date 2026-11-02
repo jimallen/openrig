@@ -44,6 +44,30 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+/** Security F5: a writer that calls `submitText` or the core's `terminal.send` directly has no `.sendText(` for the tables above to count. Each is an
+ *  implementation or the pump's input port; a new one fails here until it says how it meets the rules. */
+const DIRECT_WRITE = /\.submitText\(|"terminal\.send"/g;
+const DIRECT_WRITERS: Array<{ file: string; calls: number; note: string }> = [
+  { file: "adapters/hc-input.ts", calls: 2, note: "the implementation: terminal.send itself" },
+  { file: "adapters/hc-adapter.ts", calls: 1, note: "delegates to hc-input" },
+  { file: "adapters/hc-delivery.ts", calls: 1, note: "the transport's hc send, under its committed row" },
+  { file: "adapters/seat-hops.ts", calls: 2, note: "the pump's Claude and Pi hops, under the delivery guard" },
+  { file: "adapters/codex-paste-hop.ts", calls: 1, note: "the pump's Codex hop, under the delivery guard" },
+  { file: "startup.ts", calls: 1, note: "the pump's input port, wired to the hops" },
+];
+
+describe("every direct writer to a terminal is classified", () => {
+  it("the census finds exactly these, file by file, and the population is not empty", () => {
+    const found = new Map<string, number>();
+    for (const file of sourceFiles(SRC)) {
+      const n = (readFileSync(file, "utf8").match(DIRECT_WRITE) ?? []).length;
+      if (n > 0) found.set(relative(SRC, file), n);
+    }
+    expect([...found.entries()].sort()).toEqual(DIRECT_WRITERS.map((w) => [w.file, w.calls] as [string, number]).sort());
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBe(8);
+  });
+});
+
 describe("every daemon send into SessionTransport is classified", () => {
   const found = new Map<string, number>();
   for (const file of sourceFiles(SRC)) {

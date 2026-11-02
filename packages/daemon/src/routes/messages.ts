@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { DAEMON_OUTBOX_ID_PREFIXES, OutboxHandler, SEAT_MESSAGE_ID_PREFIX } from "../domain/outbox-handler.js";
-import { crossHostMessageId, farSeatName, isCrossHostMessageId, MESSAGE_NOT_FOUND, type FarDaemons } from "../domain/seat-messaging/far-daemon.js";
+import { crossHostMessageId, farSeatName, isCrossHostMessageId, MESSAGE_NOT_FOUND, SEAT_NOT_GATED, SEAT_UNRESOLVED, type FarDaemons } from "../domain/seat-messaging/far-daemon.js";
 import { mintMessageId } from "../domain/seat-messaging/message-ledger.js";
 import { MessageStore } from "../domain/seat-messaging/message-store.js";
 import { messageId } from "../domain/seat-messaging/ports.js";
@@ -73,9 +73,10 @@ export function messageRoutes(opts?: { bearerToken?: string | null; far?: FarDae
     if (refusal) return c.json({ error: refusal, code: "invalid_accept" }, 400);
     const accept = body as { id: string; seat: string; body: string; class: "content" | "nudge"; origin: { host: string; sender: string } };
     const resolved = await transport.resolveSessions({ session: accept.seat });
-    if (!resolved.ok) return c.json({ error: resolved.error, code: "seat_unresolved" }, resolved.code === "ambiguous" ? 409 : 404);
+    // Only a seat that is not there is final (decision 37): an ambiguous name keeps its plain text, so the origin keeps trying.
+    if (!resolved.ok) return resolved.code === "ambiguous" ? c.json({ error: resolved.error, code: SEAT_UNRESOLVED }, 409) : c.json({ error: `${SEAT_UNRESOLVED}: ${resolved.error}`, code: SEAT_UNRESOLVED }, 404);
     const seat = resolved.sessions[0]!.sessionName;
-    if (!handOff.takes(seat)) return c.json({ error: `seat_not_gated: ${seat} has no gate, so nothing could confirm a message to it.`, code: "seat_not_gated" }, 409);
+    if (!handOff.takes(seat)) return c.json({ error: `${SEAT_NOT_GATED}: ${seat} has no gate, so nothing could confirm a message to it.`, code: SEAT_NOT_GATED }, 409);
     const id = crossHostMessageId(accept.origin.host, accept.id);
     const result = await transport.send(seat, accept.body, {
       deliveryId: id, actorSession: accept.origin.sender, messageClass: accept.class, lane: 2, auditPointer: `cross-host:${accept.origin.host}:${accept.id}`,
@@ -122,7 +123,8 @@ export function messageRoutes(opts?: { bearerToken?: string | null; far?: FarDae
     const waitMs = typeof body.waitMs === "number" ? Math.min(Math.max(body.waitMs, 0), FAR_WAIT_MS) : FAR_WAIT_MS;
     const outcome = accepted.kind === "ended" ? (accepted.received ? "received" : "undeliverable") : await handOff.awaitReceived(messageId(id), waitMs);
     if (outcome === "undeliverable") return c.json({ ok: false, reason: "message_already_ended", messageId: id, host }, 409);
-    return c.json({ outcome: outcome === "received" ? "held" : "accepted", messageId: id, host });
+    if (outcome === "received") return c.json({ outcome: "received", messageId: id, host });
+    return c.json({ outcome: new MessageStore((c.get("outboxHandler" as never) as OutboxHandler).db).headOf(seat)?.pauseReason === "far_held" ? "held" : "accepted", messageId: id, host });
   });
 
   return router;

@@ -99,8 +99,8 @@ export const OUTBOX_ACK_EVIDENCE = [
   "send_gone",
   // Seat Messaging S3: the seat's gate recorded the id (the only thing that makes a Message `received`); the seat is gone for good.
   "gate_seen", "seat_gone",
-  // Seat Messaging S4h: the far daemon committed the row. It holds the message; nothing is known yet of the seat.
-  "far_accepted",
+  // Seat Messaging, decision 36: the far daemon's row is `received`, by that seat's own gate.
+  "far_received",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
 

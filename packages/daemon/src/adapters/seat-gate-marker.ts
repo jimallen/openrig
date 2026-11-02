@@ -6,6 +6,8 @@
 // A marker is a claim, not a proof: a runner cannot tell a real nonce from a forged one, only the daemon holds it. So a gate treats
 // (id, nonce) as the identity. A forged pair is then a different message: it can neither confirm the real id nor stand in the way of it.
 
+import { createHash } from "node:crypto";
+
 export interface SeatMarker {
   id: string;
   nonce: string;
@@ -44,10 +46,15 @@ export function trailingMarkers(prompt: string): SeatMarker[] {
 /** The line above the marker of a long message's short paste. Its body is not in the prompt: the gate hook adds it as `additionalContext`, from
  *  the seat's spool. activity-relay.cjs reads the same line. A hook that crashed let that prompt run with no body, so such a prompt in a
  *  transcript is no proof of arrival, and only the hook's own record is. */
-export function spooledNote(part: { index: number; total: number } | null): string {
-  return `OpenRig: long message${part === null ? "" : `, part ${part.index} of ${part.total}`}. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again.`;
+export function spooledNote(part: { index: number; total: number } | null, marker: SeatMarker): string {
+  return `OpenRig: long message${part === null ? "" : `, part ${part.index} of ${part.total}`}. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again. (${spooledTag(marker)})`;
 }
-const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\.$/;
+
+/** Binds the note to its marker's (id, nonce). A sender never knows its message's nonce, so no body can end in a note that reads as gate syntax. */
+function spooledTag(marker: SeatMarker): string {
+  return createHash("sha256").update(`spooled:${seatMarkerKey(marker)}`).digest("hex").slice(0, 16);
+}
+const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\. \(([a-f0-9]{16})\)$/;
 
 /** `trailingMarkers`, each saying whether its prompt is a long message's short paste. A record of a prompt uses this one. */
 export function promptMarkers(prompt: string): SeatMarker[] {
@@ -56,7 +63,7 @@ export function promptMarkers(prompt: string): SeatMarker[] {
   const lines = prompt.split("\n").map((line) => line.replace(/\r$/, "").trim());
   let end = lines.length;
   while (end > 0 && (lines[end - 1] === "" || WRAPPER_CLOSE.test(lines[end - 1]!))) end -= 1;
-  return SPOOLED_NOTE.test(lines[end - 2] ?? "") ? [{ ...markers[0]!, spooled: true }] : markers;
+  return SPOOLED_NOTE.exec(lines[end - 2] ?? "")?.[1] === spooledTag(markers[0]!) ? [{ ...markers[0]!, spooled: true }] : markers;
 }
 
 /** The text a gate passes on, and the markers it found. Only the block's trailing lines count: a marker quoted inside a message is

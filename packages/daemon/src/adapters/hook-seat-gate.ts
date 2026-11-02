@@ -22,9 +22,9 @@ export interface HookSeatGateDeps {
 export function hookSeatGate(deps: HookSeatGateDeps): SeatGate {
   return {
     version: HOOK_GATE_VERSION,
-    lookup: async (seat: string, id: MessageId): Promise<GateLookup> => {
+    lookup: async (seat: string, id: MessageId, row: MessageId = id): Promise<GateLookup> => {
       if (deps.store.declaredVersion(seat) === null) return { kind: "unavailable", cause: "no_gate_declared" };
-      const nonce = deps.nonceOf(id);
+      const nonce = deps.nonceOf(row);
       if (nonce === null) return { kind: "not_seen" };
       const read = deps.store.read(seat, { id, nonce });
       if (read.kind === "seen") return { kind: "seen", record: { id, recordedAt: read.record.recordedAt, nonce } };

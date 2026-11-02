@@ -12,7 +12,7 @@ import { CodexPasteHop, type CodexPasteInput } from "./codex-paste-hop.js";
 import type { PiRunnerState } from "./pi-runner-protocol.js";
 import { nativeMarker, type NativeEndpointRow, type NativeEligibility } from "../domain/claude-native-inbox.js";
 import { decideClaudeRetry } from "../domain/seat-messaging/claude-last-hop.js";
-import { isStartupText, partId, splitLongMessage } from "../domain/seat-messaging/long-message.js";
+import { partId, pastesWhole, splitLongMessage } from "../domain/seat-messaging/long-message.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "../domain/seat-messaging/message-label.js";
 import type { LastHop, LastHopResult, MessageId, SeatMessage } from "../domain/seat-messaging/ports.js";
 import type { GuardTarget } from "../domain/seat-delivery-guard.js";
@@ -78,7 +78,7 @@ function pasteHead(message: SeatMessage, rows: Pick<HopRows, "nonceOf">): SeatMe
 /** The note and the marker, under the label a message for the previous occupant carries on every attempt. */
 function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
   const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL}\n` : "";
-  return `${label}${spooledNote(total === 1 ? null : { index, total })}\n${nativeMarker(marker.id, marker.nonce)}`;
+  return `${label}${spooledNote(total === 1 ? null : { index, total }, marker)}\n${nativeMarker(marker.id, marker.nonce)}`;
 }
 
 export interface HopGuard {
@@ -137,6 +137,11 @@ async function readSeat(client: HopClient, seat: string, runtime: SeatRuntime, g
     if (error instanceof HcUnavailableError || error instanceof HcOutcomeUnknownError) return { kind: "paused", reason: "seat_stopped" };
     throw error;
   }
+}
+
+/** A `sent` that says which rows the text held, when a group went a row at a time. */
+function carrying(result: LastHopResult, sent: SeatMessage, given: SeatMessage): LastHopResult {
+  return result.kind === "sent" && sent !== given ? { kind: "sent", carried: sent.ids } : result;
 }
 
 function sentOrRefused(sent: { ok: true } | { ok: false; code: string; message: string }): LastHopResult {
@@ -213,7 +218,8 @@ export interface ClaudeHopDeps {
 function stagedLongPaste(message: SeatMessage, rows: Pick<HopRows, "nonceOf" | "partsOf">): string {
   const id = message.ids[0];
   const total = rows.partsOf(id) ?? 1;
-  return shortPaste(message, { id: total === 1 ? id : partId(id, total, total), nonce: rows.nonceOf(id)! }, total, total);
+  const index = Math.min(message.part ?? total, total);
+  return shortPaste(message, { id: total === 1 ? id : partId(id, index, total), nonce: rows.nonceOf(id)! }, index, total);
 }
 
 /** The socket where a seat is eligible (a person's draft stays untouched, M3), the paste where it is not. `decideClaudeRetry` decides. */
@@ -226,9 +232,9 @@ export class ClaudeSeatHop implements LastHop {
   }
 
   /** The text of a paste this attempt may make, or null when it may make none. Off, the spool is never used, so a paste always carries its body
-   *  in the prompt: a group goes a row at a time, and a row over the limit does not go. Startup text alone may paste long: see `isStartupText`. */
+   *  in the prompt: a group goes a row at a time, and a row over the limit does not go. Startup and handover text alone may paste long: see `pastesWhole`. */
   private pasteable(message: SeatMessage): SeatMessage | null {
-    if (this.spoolRoute || isStartupText(message.ids[0])) return message;
+    if (this.spoolRoute || pastesWhole(message.ids[0])) return message;
     const head = pasteHead(message, this.deps.rows);
     return Buffer.byteLength(markedText(head, this.deps.rows)!) <= PASTE_LIMIT ? head : null;
   }
@@ -248,7 +254,7 @@ export class ClaudeSeatHop implements LastHop {
     }
     const pasted = this.pasteable(message);
     if (pasted === null) return { kind: "paused", reason: "long_no_socket" };
-    return this.paste(pasted, markedText(pasted, this.deps.rows)!);
+    return carrying(await this.paste(pasted, markedText(pasted, this.deps.rows)!), pasted, message);
   }
 
   private paste(message: SeatMessage, whole: string): Promise<LastHopResult> {
@@ -256,7 +262,7 @@ export class ClaudeSeatHop implements LastHop {
       const seat = await readSeat(this.deps.client, message.seat, "claude-code", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
-      const spool = this.spoolRoute && !isStartupText(message.ids[0]) ? this.deps.spool : undefined;
+      const spool = this.spoolRoute && !pastesWhole(message.ids[0]) ? this.deps.spool : undefined;
       const one = longGroupHead(message, this.deps.rows, spool);
       const text = prepareLongPaste(one, one === message ? whole : markedText(one, this.deps.rows)!, this.deps.rows, spool);
       const step = decideClaudeRetry({
@@ -264,8 +270,8 @@ export class ClaudeSeatHop implements LastHop {
         atRest: seat.status !== null && AT_REST.has(seat.status), composer: readClaudeComposer(seat.screen),
       });
       switch (step.kind) {
-        case "paste": return sentOrRefused(await this.deps.input.submitText(message.seat, text));
-        case "enter_only": return sentOrRefused(await this.deps.input.sendKeys(message.seat, ["Enter"]));
+        case "paste": return carrying(sentOrRefused(await this.deps.input.submitText(message.seat, text)), one, message);
+        case "enter_only": return carrying(sentOrRefused(await this.deps.input.sendKeys(message.seat, ["Enter"])), one, message);
         case "paused": return { kind: "paused", reason: step.reason };
         default: return { kind: "paused", reason: "busy" };
       }
@@ -313,7 +319,7 @@ export class CodexSeatHop implements LastHop {
     return guarded(this.deps.guard, message.seat, async () => {
       const seat = await readSeat(this.deps.client, message.seat, "codex", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
-      return this.hop.attempt({ ...message, body: prepareLongPaste(message, text, this.deps.rows, this.deps.spool) });
+      return carrying(await this.hop.attempt({ ...message, body: prepareLongPaste(message, text, this.deps.rows, this.deps.spool) }), message, whole);
     });
   }
 

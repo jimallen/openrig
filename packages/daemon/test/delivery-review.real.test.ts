@@ -579,6 +579,15 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       expect(context(s, "long")).toHaveLength(1);
     }, 60_000);
 
+    it("security F3: cancelling a long message clears its text from the seat's spool", async () => {
+      const s = fixture(["lose-enter"]); await s.launch();
+      s.accept("long", "x".repeat(1500), { sender: "lead@r" }); daemon(s);
+      await until(() => spoolFiles(s), (f) => f.length === 1, "the spool");
+      await hopSaw(s, "booted");
+      expect(http(s, `/api/transport/cancel-message/${encodeURIComponent(s.name)}/long`, { reason: "no longer wanted" }, null).status).toBe(200);
+      expect(spoolFiles(s)).toEqual([]);
+    }, 60_000);
+
     it("a seat whose relay declared an older gate gets the message whole: a short paste there would lose the text", async () => {
       const s = fixture(); await s.launch();
       writeFileSync(join(s.gateDir, "gate.json"), JSON.stringify({ version: 1 }));

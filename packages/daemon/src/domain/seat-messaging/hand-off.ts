@@ -26,9 +26,9 @@ export interface MessageHandOff {
   /** Waits up to `waitMs`. `open` is not a failure: the pump goes on until someone calls `cancel`. */
   awaitReceived(id: MessageId, waitMs: number): Promise<MessageOutcome>;
   /** Ends a row nobody should still deliver, with no notice. False when it was not open. */
-  cancel(id: MessageId, reason: string): boolean;
-  /** A pass now, in the caller's context, so a caller waiting under a lifecycle lease has its own retries made under that lease. */
-  drive(): void;
+  cancel(id: MessageId, reason: string, actor?: string | null): boolean;
+  /** A pass of this seat now, in the caller's context, so a caller waiting under a lifecycle lease has its own retries made under that lease. */
+  drive(seat: string): void;
   /** What a paste of this message put in the composer, given the text it was accepted with: the text and its marker, whatever its length (decision
    *  35: startup text never goes as a note). Null when no paste went: nothing was attempted, or it went by socket. */
   stagedPaste(id: MessageId, text: string): string | null;
@@ -58,19 +58,20 @@ export class PumpHandOff implements MessageHandOff {
 
   adoptClaimed(ids: readonly string[]): void {
     this.store.adoptClaimed(ids.map(messageId));
-    void this.pump.ask();
+    const seat = ids[0] === undefined ? null : this.store.seatOf(messageId(ids[0]));
+    if (seat !== null) void this.pump.ask(seat);
   }
 
   awaitReceived(id: MessageId, waitMs: number): Promise<MessageOutcome> {
     return this.pump.awaitReceived(id, waitMs);
   }
 
-  cancel(id: MessageId, reason: string): boolean {
-    return this.pump.cancel(id, reason);
+  cancel(id: MessageId, reason: string, actor: string | null = null): boolean {
+    return this.pump.cancel(id, reason, actor);
   }
 
-  drive(): void {
-    void this.pump.ask();
+  drive(seat: string): void {
+    void this.pump.ask(seat);
   }
 
   stagedPaste(id: MessageId, text: string): string | null {

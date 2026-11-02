@@ -26,7 +26,7 @@ import { findOtherSessionOwner } from "./session-owner.js";
 import { probePresence } from "./session-liveness.js";
 import { getSeatCwdFault, handoverCwdRefusalMessage, HANDOVER_CWD_REFUSAL_GUIDANCE, type SeatCwdFault } from "./cwd-resolution.js";
 import { inertPacketText } from "./packet-text.js";
-import { SEAT_MESSAGE_ID_PREFIX } from "./outbox-handler.js";
+import { handoverTextId } from "./seat-messaging/long-message.js";
 import { PUMP_PAUSE_RECHECK_MS } from "./seat-messaging/message-pump.js";
 import { messageId } from "./seat-messaging/ports.js";
 
@@ -905,7 +905,7 @@ export class SeatHandoverService {
    */
   private async deliverThroughPump(seat: string, text: string, kind: PacketKind, successor: string, current: string | null): Promise<{ ok: true } | { ok: false; message: string }> {
     const handOff = this.tmuxAdapter.messageHandOff!;
-    const id = messageId(`${SEAT_MESSAGE_ID_PREFIX}handover-${successor}-${kind}`);
+    const id = messageId(handoverTextId(successor, kind));
     const accepted = handOff.accept({
       id, seat, sender: HANDOVER_PACKET_SENDER, body: text, messageClass: "lifecycle", occupantGeneration: current, identityProvenance: "transport:v1",
     });

@@ -8,9 +8,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { codexRolloutMarkers, reconcileCodexSeatGate } from "../src/adapters/codex-seat-gate.js";
 import { HOOK_GATE_VERSION, SPOOL_GATE_VERSION } from "../src/adapters/hook-gate-version.js";
+import { hookSeatGate } from "../src/adapters/hook-seat-gate.js";
 import { HookSeenStore, reconcileSeen, seatGateFolder, seatGateRoot, transcriptHasPrompt, transcriptMarkers } from "../src/adapters/hook-seen-store.js";
 import { promptMarkers, spooledNote, trailingMarkers } from "../src/adapters/seat-gate-marker.js";
-import { LONG_PART_CHARS, isStartupText, messageOfPart, partId, splitLongMessage, startupTextId } from "../src/domain/seat-messaging/long-message.js";
+import { LONG_PART_BYTES, handoverTextId, messageOfPart, partId, pastesWhole, splitLongMessage, startupTextId } from "../src/domain/seat-messaging/long-message.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -19,21 +20,29 @@ const SEAT = "dev.a@rig";
 const NONCE = "a".repeat(32);
 const name = (id: string, nonce = NONCE) => createHash("sha256").update(`${id}:${nonce}`).digest("hex");
 const marker = (id: string, nonce = NONCE) => `[openrig-msg ${id}:${nonce}]`;
-const NOTE = spooledNote(null);
+const NOTE = spooledNote(null, { id: "m", nonce: NONCE });
+/** What a sender can write: the words, with no way to know the tag. */
+const BARE_NOTE = NOTE.replace(/ \([a-f0-9]{16}\)$/, "");
 
 describe("splitting a long message", () => {
-  it("cuts every 9000 characters, and the parts join to the body", () => {
+  it("cuts at 9000 bytes, and the parts join to the body", () => {
     const body = "a".repeat(9000) + "b".repeat(9000) + "c";
-    expect(LONG_PART_CHARS).toBe(9000);
+    expect(LONG_PART_BYTES).toBe(9000);
     expect(splitLongMessage(body).map((p) => p.length)).toEqual([9000, 9000, 1]);
     expect(splitLongMessage(body).join("")).toBe(body);
     expect(splitLongMessage("a".repeat(9000))).toHaveLength(1);
   });
   it("never cuts inside a character", () => {
-    const body = "😀".repeat(9001);
+    const body = `a${"😀".repeat(2251)}`;
     const parts = splitLongMessage(body);
-    expect(parts.map((p) => Array.from(p).length)).toEqual([9000, 1]);
+    expect(parts.map((p) => Buffer.byteLength(p))).toEqual([8997, 8]);
     expect(parts.join("")).toBe(body);
+  });
+  it("decision 38: a part of any text is at most 9000 bytes, so Codex's budget holds whatever it counts (QA probe P3)", () => {
+    const parts = splitLongMessage("あ".repeat(9000));
+    expect(parts).toHaveLength(3);
+    for (const part of parts) expect(Buffer.byteLength(part)).toBeLessThanOrEqual(9000);
+    expect(parts.join("")).toBe("あ".repeat(9000));
   });
   it("a part's id names its message, and any other id is its own", () => {
     const id = messageId("m.1");
@@ -46,8 +55,13 @@ describe("splitting a long message", () => {
 describe("the prompt rule", () => {
   it("a note right above the one marker makes a spooled prompt, in either form and through a wrapper", () => {
     expect(promptMarkers(`${NOTE}\n${marker("m")}`)).toEqual([{ id: "m", nonce: NONCE, spooled: true }]);
-    expect(promptMarkers(`${spooledNote({ index: 2, total: 3 })}\n${marker("m")}`)[0]!.spooled).toBe(true);
+    expect(promptMarkers(`${spooledNote({ index: 2, total: 3 }, { id: "m", nonce: NONCE })}\n${marker("m")}`)[0]!.spooled).toBe(true);
     expect(promptMarkers(`<pasted_content id="1">\n${NOTE}\n${marker("m")}\n</pasted_content>`)[0]!.spooled).toBe(true);
+  });
+  it("a sender's bytes are never gate syntax: the words alone, or a note bound to another id or nonce, make an ordinary prompt", () => {
+    expect(promptMarkers(`text\n${BARE_NOTE}\n${marker("m")}`)[0]!.spooled).toBeUndefined();
+    expect(promptMarkers(`${spooledNote(null, { id: "other", nonce: NONCE })}\n${marker("m")}`)[0]!.spooled).toBeUndefined();
+    expect(promptMarkers(`${spooledNote(null, { id: "m", nonce: "b".repeat(32) })}\n${marker("m")}`)[0]!.spooled).toBeUndefined();
   });
   it("anything else is an ordinary prompt", () => {
     expect(promptMarkers(`hello\n${marker("m")}`)).toEqual(trailingMarkers(`hello\n${marker("m")}`));
@@ -99,12 +113,20 @@ describe("the gate hook adds the text", () => {
     expect((JSON.parse(run(`${NOTE}\n${marker("m")}`).stdout) as { decision: string }).decision).toBe("block");
     expect(fs.existsSync(seenFile("m"))).toBe(false);
   });
-  it("another nonce reads nothing: a forged marker gets no text", () => {
+  it("another nonce reads nothing: a forged marker gets no text, and is its own message", () => {
     store().spool(SEAT, { id: "m", nonce: NONCE }, "secret text");
     const forged = "b".repeat(32);
     const ran = run(`${NOTE}\n${marker("m", forged)}`);
-    expect(ran.stdout).not.toContain("secret text");
-    expect(fs.existsSync(seenFile("m", forged))).toBe(false);
+    expect(ran.stdout).toBe("");
+    expect(fs.existsSync(seenFile("m"))).toBe(false);
+  });
+  it("security F1: a short message ending in the note's words runs and is recorded, so its seat's queue goes on", () => {
+    const ran = run(`innocuous text\n${BARE_NOTE}\n${marker("m")}`);
+    expect(ran.status).toBe(0);
+    expect(ran.stdout).toBe("");
+    expect(fs.existsSync(seenFile("m"))).toBe(true);
+    expect(run(`quoted\n${spooledNote(null, { id: "old", nonce: NONCE })}\n${marker("m2")}`).stdout).toBe("");
+    expect(fs.existsSync(seenFile("m2"))).toBe(true);
   });
   it("a hook that dies giving the text leaves no record: the crash rule", () => {
     store().spool(SEAT, { id: "m", nonce: NONCE }, "text");
@@ -132,7 +154,7 @@ describe("the gate hook adds the text", () => {
     const relay = fs.readFileSync(RELAY, "utf8");
     const pattern = /const SPOOLED_NOTE = (\/.*\/);/.exec(relay)![1]!;
     expect(new RegExp(pattern.slice(1, -1)).test(NOTE)).toBe(true);
-    expect(new RegExp(pattern.slice(1, -1)).test(spooledNote({ index: 1, total: 2 }))).toBe(true);
+    expect(new RegExp(pattern.slice(1, -1)).test(spooledNote({ index: 1, total: 2 }, { id: "m", nonce: NONCE }))).toBe(true);
     expect(/const SEAT_GATE_VERSION = (\d+);/.exec(relay)![1]).toBe(String(HOOK_GATE_VERSION));
     expect(HOOK_GATE_VERSION).toBeGreaterThanOrEqual(SPOOL_GATE_VERSION);
   });
@@ -164,6 +186,11 @@ describe("the gate hook adds the text", () => {
       expect(done.received.map((m) => m.id)).toEqual(["n"]);
       expect(store().read(SEAT, { id: "m", nonce: NONCE }).kind).toBe("not_seen");
     });
+    it("security F1: a sender's note proves arrival like any prompt", () => {
+      const file = path.join(home, "t.jsonl");
+      fs.writeFileSync(file, `${claudeLine(`text\n${BARE_NOTE}\n${marker("m")}`)}\n`);
+      expect(transcriptHasPrompt(file, marker("m"))).toBe(true);
+    });
     it("Codex's rollout: the same", () => {
       const file = path.join(home, "r.jsonl");
       fs.writeFileSync(file, `${codexLine(prompt)}\n`);
@@ -185,10 +212,28 @@ describe("the gate hook adds the text", () => {
   });
 });
 
+describe("security F2: a caller's id of a part's shape", () => {
+  it("round-trips: its own record is its own, and a real part's record is read under its row", async () => {
+    const home = fs.mkdtempSync(path.join(process.env.OPENRIG_TEST_SCRATCH_ROOT ?? os.tmpdir(), "long-"));
+    const store = new HookSeenStore(seatGateRoot(home));
+    fs.mkdirSync(path.dirname(path.join(seatGateRoot(home), seatGateFolder(SEAT), "gate.json")), { recursive: true });
+    fs.writeFileSync(path.join(seatGateRoot(home), seatGateFolder(SEAT), "gate.json"), JSON.stringify({ version: 2 }));
+    const nonces: Record<string, string> = { "att.part1of1": NONCE, att: "c".repeat(32) };
+    const gate = hookSeatGate({ store, nonceOf: (id) => nonces[id] ?? null, transcriptsOf: () => [], fileIncludes: () => false });
+    store.markReceived(SEAT, { id: "att.part1of1", nonce: NONCE });
+    expect((await gate.lookup(SEAT, messageId("att.part1of1"))).kind).toBe("seen");
+    store.markReceived(SEAT, { id: "att.part2of2", nonce: "c".repeat(32) });
+    expect((await gate.lookup(SEAT, messageId("att.part2of2"), messageId("att"))).kind).toBe("seen");
+    expect((await gate.lookup(SEAT, messageId("att.part2of2"))).kind).toBe("not_seen");
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+});
+
 describe("startup text's id", () => {
   it("is known by its id, so a restart still knows it", () => {
-    expect(isStartupText(messageId(startupTextId("g", "a", 2)))).toBe(true);
-    expect(isStartupText(messageId("seat-msg-handover-x-y"))).toBe(false);
-    expect(isStartupText(messageId("startup-g-a-2"))).toBe(false);
+    expect(pastesWhole(messageId(startupTextId("g", "a", 2)))).toBe(true);
+    expect(pastesWhole(messageId(handoverTextId("x", "restore")))).toBe(true);
+    expect(pastesWhole(messageId("seat-msg-compaction-a-b"))).toBe(false);
+    expect(pastesWhole(messageId("startup-g-a-2"))).toBe(false);
   });
 });

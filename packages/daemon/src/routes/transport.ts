@@ -220,7 +220,9 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     if (actor !== UNATTRIBUTED_OPERATOR && actor !== store.senderOf(id) && actor !== operatorSeatName(c)) {
       return c.json({ error: `${actor} did not send message ${id} and is not the operator seat; only the sender or the operator may cancel it. Nothing was changed.` }, 403);
     }
-    const cancelled = store.cancel(id, body.reason, new Date().toISOString(), actor);
+    // Through the pump when there is one: it also clears the message's text from the seat's spool.
+    const handOff = (c.get("sessionTransport" as never) as SessionTransport | undefined)?.messageHandOff;
+    const cancelled = handOff ? handOff.cancel(id, body.reason, actor) : store.cancel(id, body.reason, new Date().toISOString(), actor);
     return cancelled ? c.json({ ok: true, id }) : c.json({ error: `Message ${id} is not open; nothing was changed.` }, 409);
   });
 

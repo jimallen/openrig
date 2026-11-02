@@ -1112,7 +1112,8 @@ export class StartupOrchestrator {
   /**
    * The next text goes only once the seat's gate has recorded this one, and anything else fails the startup, so `ok` never means Enter was accepted.
    * The row is the occupant's: the pump ends it if the seat has a new one by the time it is attempted, and a row this wait gave up on ends here, so
-   * nothing arrives after the failure. The id names the attempt too: a startup run again on the same occupant is new text for a new process.
+   * nothing more is attempted after the failure. That cannot recall a copy already typed: on a busy seat it can queue behind the running turn and
+   * reach the agent after the failure, and its record then finds the row closed and changes nothing (QA F9, accepted). The id names the attempt too: a startup run again on the same occupant is new text for a new process.
    * A daemon that dies during the wait leaves the row open, and the pump delivers it to that occupant, or ends it.
    */
   private async sendThroughPump(input: StartupDeliveryInput, text: string, occupantGeneration: string, sendOrder: number): Promise<StartupSendFailure | null> {
@@ -1143,7 +1144,7 @@ export class StartupOrchestrator {
       // pastes whole (decision 35), so the body is in the prompt however long it is.
       const staged = claude && !entered ? handOff.stagedPaste(id, text) : null;
       if (staged !== null) entered = await this.submitStagedPaste(input, staged);
-      handOff.drive();
+      handOff.drive(input.binding.tmuxSession!);
     }
   }
 

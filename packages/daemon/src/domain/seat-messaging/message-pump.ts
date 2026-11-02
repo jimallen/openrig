@@ -77,7 +77,7 @@ export class MessagePump {
   /** Commits the message (invariant 1) and starts a pass, so a first attempt does not wait for the timer. Idempotent on the id. */
   accept(input: MessageAcceptInput & { freezeBody?: boolean }): MessageId {
     const accepted = this.deps.store.accept(input);
-    void this.ask();
+    void this.ask(input.seat);
     return messageId(accepted.id);
   }
 
@@ -91,9 +91,13 @@ export class MessagePump {
     }
   }
 
-  /** Ends a row nobody should still deliver. False when it was not open. */
-  cancel(id: MessageId, reason: string): boolean {
-    return this.deps.store.cancel(id, reason, new Date(this.clock()).toISOString());
+  /** Ends a row nobody should still deliver. False when it was not open. Only the head can have text in the seat's spool. */
+  cancel(id: MessageId, reason: string, actor: string | null = null): boolean {
+    const seat = this.deps.store.seatOf(id);
+    const head = seat !== null && this.deps.store.headOf(seat)?.id === id;
+    const cancelled = this.deps.store.cancel(id, reason, new Date(this.clock()).toISOString(), actor);
+    if (cancelled && head) this.forgetText(seat);
+    return cancelled;
   }
 
   /** Lane 2 waits on `seat` until the returned function is called. Calling it again changes nothing. */
@@ -106,7 +110,7 @@ export class MessagePump {
       const left = this.contentLaneHolds.get(seat)! - 1;
       if (left > 0) this.contentLaneHolds.set(seat, left);
       else this.contentLaneHolds.delete(seat);
-      void this.ask();
+      void this.ask(seat);
     };
   }
 
@@ -117,9 +121,11 @@ export class MessagePump {
 
   /** A pass someone asked for, in the caller's context: a caller under a lifecycle lease has its own attempts made under that lease. Unlike the
    *  timer's, it is never skipped. A seat's running pass may be outside that lease, in which case it can only pause, so this one waits for it and
-   *  then runs, and a pause does not make it wait out the recheck: a pause spent no attempt. It never shortens a backoff. */
-  ask(): Promise<void> {
+   *  then runs, and a pause does not make it wait out the recheck: a pause spent no attempt. It never shortens a backoff. It is for one seat: every
+   *  other seat keeps its own recheck. */
+  ask(only: string): Promise<void> {
     return this.pass(async (seat) => {
+      if (seat !== only) return;
       while (this.inFlight.has(seat)) await this.inFlight.get(seat);
       await this.driveSeat(seat, true);
     });
@@ -177,6 +183,7 @@ export class MessagePump {
     }
     const lookup = await this.readGate(gate, message);
     // First, ahead of the seat's fate: a record means the message arrived, whatever became of the seat since.
+    if (lookup.kind === "ended") return this.end(message, lookup.reason);
     if (lookup.kind === "seen") {
       // Read first: the seat was sent the whole group, and a blocked repeat in its composer is that text.
       const sent = message.attempts > 1 ? this.deps.store.groupOf(message) : [];
@@ -205,12 +212,18 @@ export class MessagePump {
       this.deps.store.recordGateUnavailable(message.id, this.clock() + this.timing.pauseRecheckMs);
       return "stop";
     }
+    if (lookup.kind === "waiting") {
+      this.deps.store.recordGateUnavailable(message.id, this.clock() + this.timing.pauseRecheckMs, lookup.reason);
+      return "stop";
+    }
     if (message.lane === MESSAGE_LANES.content && this.contentLaneHolds.has(message.seat)) {
       this.deps.store.recordLaneHeld(message.id);
       return "stop";
     }
     // A part arrived: the next one is due now, on a fresh backoff, not at the end of the last one's.
     if (lookup.nextPart !== undefined && lookup.nextPart - 1 > message.partsDone) {
+      // A blocked repeat of the part that just arrived would read as a draft to the next one.
+      if (message.attempts > 1) await this.tidyAfterReceived([message], lookup.nextPart - 1);
       return this.deps.store.recordPartsDone(message, lookup.nextPart - 1) ? "next" : "stop";
     }
     return this.attempt(gate, message, lookup.nextPart, asked);
@@ -229,7 +242,7 @@ export class MessagePump {
     for (let index = 1; index <= parts; index += 1) {
       last = await this.readOne(gate, message, partId(message.id, index, parts));
       if (last.kind === "not_seen") return { kind: "not_seen", nextPart: index };
-      if (last.kind === "unavailable") return last;
+      if (last.kind !== "seen") return last;
     }
     return last.kind === "seen" ? { kind: "seen", record: { ...last.record, id: message.id } } : last;
   }
@@ -250,7 +263,7 @@ export class MessagePump {
   private async readOne(gate: SeatGate, message: StoredMessage, id: MessageId): Promise<GateLookup> {
     let lookup: GateLookup;
     try {
-      lookup = await gate.lookup(message.seat, id);
+      lookup = await gate.lookup(message.seat, id, message.id);
     } catch (error) {
       return { kind: "unavailable", cause: (error as Error).message };
     }
@@ -291,10 +304,14 @@ export class MessagePump {
     } catch (error) {
       result = { kind: "refused", reason: `the hop threw: ${(error as Error).message}` };
     }
+    if (result.kind === "gone") return this.end(message, result.reason);
     for (const { id } of rows) {
-      if (result.kind === "sent") this.deps.store.recordSent(id);
-      else if (result.kind === "refused") this.deps.store.recordRefusal(id, result.reason);
-      else this.deps.store.recordHopPause(id, result.reason, this.clock() + this.timing.pauseRecheckMs);
+      if (result.kind === "sent") {
+        if (result.carried && !result.carried.includes(id)) this.deps.store.releaseClaim(id);
+        else this.deps.store.recordSent(id);
+      } else if (result.kind === "refused") this.deps.store.recordRefusal(id, result.reason);
+      // What only a person on the far host can change is asked again at the cap, not every recheck.
+      else this.deps.store.recordHopPause(id, result.reason, this.clock() + (result.reason === "far_not_gated" ? this.timing.backoffMs.at(-1)! : this.timing.pauseRecheckMs));
     }
     return "stop";
   }
@@ -317,10 +334,10 @@ export class MessagePump {
     }
   }
 
-  private async tidyAfterReceived(rows: readonly StoredMessage[]): Promise<void> {
+  private async tidyAfterReceived(rows: readonly StoredMessage[], part?: number): Promise<void> {
     const message = rows[0]!;
     try {
-      await this.deps.ports.hopFor(message.seat)?.afterReceived?.(this.seatMessage(rows));
+      await this.deps.ports.hopFor(message.seat)?.afterReceived?.({ ...this.seatMessage(rows), ...(part === undefined ? {} : { part }) });
     } catch (error) {
       this.log(`message ${message.id}: tidying the seat after it arrived failed: ${(error as Error).message}`);
     }

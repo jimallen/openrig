@@ -1,7 +1,7 @@
 // Seat Messaging S4h: a message to a seat on another host. Two real databases, two real pumps, the real route and the real SessionTransport,
 // joined by a fetch that calls the far app in process, so every far answer is the route's own. The far seat's gate and hop are stubs: the real
 // pair of daemons is in cross-host-messages.real.test.ts.
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
@@ -14,7 +14,7 @@ import type { HostRegistryLoadResult } from "../src/domain/hosts/hosts-registry-
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { MESSAGE_MAX_BYTES, SessionTransport } from "../src/domain/session-transport.js";
-import { CrossHostSenderReturn, crossHostMessageId, FarDaemons, FarSeatDirectory, farSeatName, parseFarSeat, withFarSeats } from "../src/domain/seat-messaging/far-daemon.js";
+import { MESSAGE_NOT_FOUND, OriginPollsSenderReturn, crossHostMessageId, FarDaemons, FarSeatDirectory, farSeatName, parseFarSeat, withFarSeats } from "../src/domain/seat-messaging/far-daemon.js";
 import { PumpHandOff } from "../src/domain/seat-messaging/hand-off.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
@@ -41,7 +41,7 @@ const post = (app: Hono, path: string, body: unknown, headers: Record<string, st
 interface Side { db: Database.Database; app: Hono; store: MessageStore; hopCalls: string[]; pump: MessagePump; seen: Set<string> }
 
 /** One daemon. `seatPorts` is what its own seats get; `far` adds the far seats, as startup does. */
-function side(opts: { gated: boolean; pumpOff?: boolean; far?: FarDaemons; senders?: SenderReturn }): Side {
+function side(opts: { gated: boolean; pumpOff?: boolean; far?: FarDaemons; senders?: SenderReturn; seatTakes?: boolean }): Side {
   const db = createDb();
   migrate(db, ALL_MIGRATIONS);
   const rigRepo = new RigRepository(db);
@@ -54,7 +54,7 @@ function side(opts: { gated: boolean; pumpOff?: boolean; far?: FarDaemons; sende
   const hopCalls: string[] = [];
   const seen = new Set<string>();
   const gate: SeatGate = { version: 1, lookup: async (_seat, id) => (seen.has(id) ? { kind: "seen", record: { id, recordedAt: "2026-11-01T00:00:00.000Z", nonce: null } } : { kind: "not_seen" }) };
-  const hop: LastHop = { attempt: async (m) => { hopCalls.push(m.ids[0]); return { kind: "sent" }; } };
+  const hop: LastHop = { attempt: async (m) => { hopCalls.push(m.ids[0]); if (opts.seatTakes !== false) seen.add(m.ids[0]); return { kind: "sent" }; } };
   const store = new MessageStore(db);
   const own: SeatMessagingPorts = opts.gated ? { gateFor: () => gate, hopFor: () => hop } : NO_SEAT_MESSAGING_PORTS;
   const ports = opts.far ? withFarSeats(own, opts.far, (id) => store.senderOf(id)) : own;
@@ -242,28 +242,98 @@ describe("the sender's daemon", () => {
   beforeEach(() => {
     farDown = false; requests = [];
     farSide = side({ gated: true });
+    farSide.pump.start();
     near = side({ gated: false, far: daemons(bridge(() => farSide.app)) });
     near.pump.start();
   });
+  afterEach(() => { farSide.pump.stop(); });
 
   it("the local row commits, the hop accepts at the far daemon, and the record is the far daemon's accept", async () => {
     const res = await sendFar({ deliveryId: "m1", waitMs: 2000 });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ outcome: "held", host: "sparky", messageId: "m1" });
+    expect(await res.json()).toMatchObject({ outcome: "received", host: "sparky", messageId: "m1" });
     const local = rowOf(near.db, "m1");
-    expect(local).toMatchObject({ message_state: "received", destination_session: farSeatName("sparky", FAR_SEAT), ack_evidence: "far_accepted", sender_session: LOCAL_SENDER, class: "content", lane: 2 });
+    expect(local).toMatchObject({ message_state: "received", destination_session: farSeatName("sparky", FAR_SEAT), ack_evidence: "far_received", sender_session: LOCAL_SENDER, class: "content", lane: 2 });
     expect(rowOf(farSide.db, FAR_ID("m1"))).toMatchObject({ destination_session: FAR_SEAT, body: "the text", sender_session: `${LOCAL_SENDER}@${NEAR}` });
-    expect(new OutboxHandler(near.db).getById("m1")).toMatchObject({ ackEvidence: "far_accepted" });
+    expect(new OutboxHandler(near.db).getById("m1")).toMatchObject({ ackEvidence: "far_received" });
     near.pump.stop();
   });
 
-  it("the local row is not received until the far row exists: a failed accept leaves it open", async () => {
+  it("decision 36: the local row stays open while the far row is, under a named wait, and is received when the far row is", async () => {
+    farSide.pump.stop();
+    farSide = side({ gated: true, seatTakes: false });
+    farSide.pump.start();
+    const res = await sendFar({ deliveryId: "h1", waitMs: 200 });
+    expect(await res.json()).toMatchObject({ outcome: "held", messageId: "h1" });
+    expect(rowOf(near.db, "h1")).toMatchObject({ message_state: "attempting", delivery_state: "pending", message_pause_reason: "far_held", delivered_at: null });
+    expect(near.store.endedSince("1970-01-01T00:00:00.000Z").received).toBe(0);
+    const posts = requests.filter((r) => r === "POST /api/messages/accept").length;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(requests.filter((r) => r === "POST /api/messages/accept").length).toBe(posts);  // held is not a reason to send again
+    farSide.seen.add(FAR_ID("h1"));
+    await until(() => rowOf(near.db, "h1")?.message_state === "received", "received");
+    expect(rowOf(near.db, "h1")).toMatchObject({ ack_evidence: "far_received", delivery_state: "delivered" });
+    near.pump.stop();
+  });
+
+  it("decision 36: a far row that ended ends this one undeliverable, and its sender is told here", async () => {
+    const told: string[] = [];
+    near.pump.stop();
+    near = side({ gated: false, far: daemons(bridge(() => farSide.app)), senders: { returnToSender: async (_m, reason) => { told.push(reason); return { kind: "returned", qitemId: "q" }; } } });
+    farSide.pump.stop();
+    farSide = side({ gated: true, seatTakes: false });
+    farSide.pump.start();
+    near.pump.start();
+    near.store.accept({ id: messageId("h2"), seat: farSeatName("sparky", FAR_SEAT), sender: LOCAL_SENDER, body: "b", messageClass: "content" });
+    await until(() => rowOf(near.db, "h2")?.message_pause_reason === "far_held", "held");
+    farSide.store.cancel(messageId(FAR_ID("h2")), "the far seat's rig went", "2026-11-02T00:00:00.000Z");
+    await until(() => rowOf(near.db, "h2")?.message_state === "undeliverable", "ended");
+    expect(told).toEqual([expect.stringContaining("could not deliver")]);
+    expect(rowOf(near.db, "h2")?.delivery_state).toBe("failed");
+    near.pump.stop();
+  });
+
+  it("decision 36: a far build that reports no state is a named wait, never received", async () => {
+    near.pump.stop();
+    const noState = new Hono();
+    noState.get("/healthz", (c) => c.json({ status: "ok", messaging: 1 }));
+    noState.post("/api/messages/accept", (c) => c.json({ ok: true }));
+    noState.get("/api/messages/:id", (c) => c.json({ id: c.req.param("id") }));
+    near = side({ gated: false, far: daemons(bridge(() => noState)) });
+    near.store.accept({ id: messageId("h3"), seat: farSeatName("sparky", FAR_SEAT), sender: LOCAL_SENDER, body: "b" });
+    await near.pump.tick();
+    expect(rowOf(near.db, "h3")).toMatchObject({ message_state: "attempting", message_pause_reason: "far_no_state" });
+  });
+
+  it("decision 37: a far seat that is gone ends undeliverable and the sender is told", async () => {
+    near.pump.stop();
+    const told: string[] = [];
+    near = side({ gated: false, far: daemons(bridge(() => farSide.app)), senders: { returnToSender: async (_m, reason) => { told.push(reason); return { kind: "returned", qitemId: "q" }; } } });
+    near.store.accept({ id: messageId("x2"), seat: farSeatName("sparky", "ghost@far"), sender: LOCAL_SENDER, body: "b", messageClass: "content" });
+    await near.pump.tick();
+    await near.pump.tick();
+    expect(rowOf(near.db, "x2")).toMatchObject({ message_state: "undeliverable", delivery_state: "failed" });
+    expect(told).toEqual([expect.stringContaining("ghost@far")]);
+  });
+
+  it("a 404 with no such code, from a proxy, ends nothing", async () => {
+    near.pump.stop();
+    const proxy = new Hono();
+    proxy.get("/healthz", (c) => c.json({ status: "ok", messaging: 1 }));
+    proxy.get("/api/messages/:id", (c) => c.json({ error: MESSAGE_NOT_FOUND }, 404));
+    proxy.post("/api/messages/accept", (c) => c.json({ error: "no such route" }, 404));
+    near = side({ gated: false, far: daemons(bridge(() => proxy)) });
+    near.store.accept({ id: messageId("x3"), seat: farSeatName("sparky", FAR_SEAT), sender: LOCAL_SENDER, body: "b" });
+    await near.pump.tick();
+    expect(rowOf(near.db, "x3")).toMatchObject({ message_state: "attempting", message_last_refusal: expect.stringContaining("no such route") });
+  });
+
+  it("decision 37 (the row was pinned open here before): a far seat with no gate pauses under its name, retried at the cap, and health says so", async () => {
     await post(farSide.app, "/api/messages/accept", originBody({ id: "other" }));
     farSide = side({ gated: false });  // the far seat lost its gate: accepts are refused
     near.store.accept({ id: messageId("m2"), seat: farSeatName("sparky", FAR_SEAT), sender: LOCAL_SENDER, body: "b", messageClass: "content" });
-    await until(() => (rowOf(near.db, "m2")?.attempts as number) >= 1, "an attempt");
-    await near.pump.tick();
-    expect(rowOf(near.db, "m2")).toMatchObject({ message_state: "attempting", message_last_refusal: expect.stringContaining("seat_not_gated") });
+    await until(() => rowOf(near.db, "m2")?.message_pause_reason === "far_not_gated", "the pause");
+    expect(rowOf(near.db, "m2")).toMatchObject({ message_state: "attempting", message_pause_reason: "far_not_gated", attempts: 0 });
     near.pump.stop();
   });
 
@@ -404,7 +474,7 @@ describe("the sender's daemon", () => {
   it("a resend under the id is free; another body under it is a conflict", async () => {
     await sendFar({ deliveryId: "m13", waitMs: 2000 });
     const again = await sendFar({ deliveryId: "m13", waitMs: 2000 });
-    expect(await again.json()).toMatchObject({ outcome: "held", messageId: "m13" });
+    expect(await again.json()).toMatchObject({ outcome: "received", messageId: "m13" });
     expect(rowCount(farSide.db)).toBe(1);
     const changed = await sendFar({ deliveryId: "m13", text: "other" });
     expect(changed.status).toBe(409);
@@ -523,38 +593,13 @@ describe("undeliverable at the far end", () => {
   const message = { id: messageId("m1"), seat: FAR_SEAT, sender: `${LOCAL_SENDER}@${NEAR}`, body: "the text" };
   const inner: SenderReturn = { returnToSender: async () => ({ kind: "no_return_path", reason: "inner" }) };
 
-  it("goes back through the origin's queue, under one item id per message", async () => {
-    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
-    const fetchImpl: typeof fetch = async (input, init) => { calls.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> }); return new Response(JSON.stringify({ ok: true }), { status: 201 }); };
-    const back = new CrossHostSenderReturn(inner, new FarDaemons({ selfHost: () => "far-host", loadRegistry: () => registry, fetchImpl }));
-    const one = await back.returnToSender(message, "rig archived");
-    const two = await back.returnToSender(message, "rig archived");
-    expect(one).toEqual(two);
-    expect(one.kind).toBe("returned");
-    expect(calls[0]!.url).toBe("http://near:1/api/queue/create");
-    expect(calls[0]!.body).toMatchObject({ destinationSession: LOCAL_SENDER, tags: ["seat-messaging:returned"] });
-    expect(String(calls[0]!.body["body"])).toContain("the text");
-    expect(calls[0]!.body["qitemId"]).toBe(calls[1]!.body["qitemId"]);
-  });
-
-  it("no route back: no_return_path, so the row ends and health names it", async () => {
-    const back = new CrossHostSenderReturn(inner, new FarDaemons({ selfHost: () => "far-host", loadRegistry: () => ({ ok: true, registry: { hosts: [] } }), fetchImpl: async () => { throw new Error("no call"); } }));
-    expect((await back.returnToSender(message, "gone")).kind).toBe("no_return_path");
-  });
-
-  it("the origin refuses it: no_return_path, since asking again would get the same answer", async () => {
-    const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({ error: "no" }), { status: 400 });
-    const back = new CrossHostSenderReturn(inner, new FarDaemons({ selfHost: () => "far-host", loadRegistry: () => registry, fetchImpl }));
-    expect((await back.returnToSender(message, "gone")).kind).toBe("no_return_path");
-  });
-
-  it("the origin is down: a throw, which means not now", async () => {
-    const back = new CrossHostSenderReturn(inner, new FarDaemons({ selfHost: () => "far-host", loadRegistry: () => registry, fetchImpl: async () => { throw new Error("refused"); } }));
-    await expect(back.returnToSender(message, "gone")).rejects.toThrow();
+  it("decision 36: this daemon posts nothing to a host a sender only claims. Its origin polls, and the row counts as told", async () => {
+    const back = new OriginPollsSenderReturn(inner, () => "far-host");
+    expect(await back.returnToSender(message, "gone")).toEqual({ kind: "returned", qitemId: `origin-polls:${NEAR}` });
   });
 
   it("a local sender is the real queue's", async () => {
-    const back = new CrossHostSenderReturn(inner, new FarDaemons({ selfHost: () => "far-host", loadRegistry: () => registry, fetchImpl: async () => { throw new Error("no call"); } }));
+    const back = new OriginPollsSenderReturn(inner, () => "far-host");
     expect(await back.returnToSender({ ...message, sender: LOCAL_SENDER }, "gone")).toEqual({ kind: "no_return_path", reason: "inner" });
   });
 });

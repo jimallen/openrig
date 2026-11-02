@@ -58,6 +58,11 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: the oldest (${seat.oldestId}) is too long to paste and the seat has no working socket. It is never pasted; it goes when the socket is back, and its lane waits behind it.`));
         continue;
       }
+      // A far seat that lost its gate: only that host can change it, and the row can be cancelled here by id.
+      if (seat.pauseReason === "far_not_gated") {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: that seat has no gate on its host now (oldest ${seat.oldestId}). They are tried again every so often, and can be cancelled by id.`));
+        continue;
+      }
       if (seat.pauseReason === "seat_stopped") {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its terminal is not running (oldest ${seat.oldestId}). They go when the seat is back, or return to their senders if it is archived.`));
         continue;

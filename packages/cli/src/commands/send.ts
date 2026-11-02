@@ -932,7 +932,9 @@ async function sendThroughLocalDaemon(
   }
   console.log(`[via host=${host.id} (${hostDisplayTarget(host)})]`);
   const id = String(data["messageId"] ?? "");
-  console.log(data["outcome"] === "held"
+  console.log(data["outcome"] === "received"
+    ? `Delivered to ${session} on ${host.id} (${id}): its gate recorded it.`
+    : data["outcome"] === "held"
     ? `Held by ${host.id} (${id}): it carries the message until ${session}'s gate records it. Not yet delivered.`
     : `Accepted for ${session} (${id}): this host carries it to ${host.id}. Not yet delivered.`);
   return { kind: "done" };

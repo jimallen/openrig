@@ -22,7 +22,7 @@ export type MessageState = (typeof MESSAGE_STATES)[number];
 type HopPause = Extract<LastHopResult, { kind: "paused" }>["reason"];
 /** Why the pump is not attempting now. Two are the pump's own: `gate_unavailable`, the gate cannot be read, which proves nothing; `lane_held`,
  *  the seat's startup or another lifecycle sequence has the content lane. */
-export type MessagePauseReason = HopPause | "gate_unavailable" | "lane_held";
+export type MessagePauseReason = HopPause | "gate_unavailable" | "lane_held" | "far_held" | "far_no_state";
 
 /** FIFO's unit (S4 design, N4). The lowest open lane goes first, so nothing lands between restore stages or ahead of a startup packet. */
 export const MESSAGE_LANES = { startup: 0, compaction: 1, content: 2 } as const satisfies Record<string, SeatMessageLane>;
@@ -113,7 +113,7 @@ interface MessageRow {
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
 const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
-const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "long_no_socket", "gate_unavailable", "lane_held"];
+const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "long_no_socket", "far_not_gated", "far_held", "far_no_state", "gate_unavailable", "lane_held"];
 
 function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;
@@ -247,9 +247,14 @@ export class MessageStore {
    *  arrive, whatever the row says. It opens again, keeping its id, nonce, body and place in the queue. The one way out of `received`, and
    *  only for the nonce the gate cleared. A row that is still open needs nothing: its next attempt now passes the gate. */
   reopenCleared(id: MessageId, nonce: string): boolean {
+    // The exact id first: a caller's id may have a part's shape. The nonce decides which row it is.
+    return this.reopenRow(id, nonce) || this.reopenRow(messageOfPart(id), nonce);
+  }
+
+  private reopenRow(id: MessageId, nonce: string): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', delivery_state = 'pending', delivered_at = NULL, gate_recorded_at = NULL,
         gate_nonce = NULL, message_gate_version = NULL, delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, next_attempt_at = NULL, message_id = coalesce(message_id, outbox_id), message_pump_owned = 1
-      WHERE outbox_id = ? AND native_nonce = ? AND delivery_state = 'delivered'`).run(messageOfPart(id), nonce).changes === 1;
+      WHERE outbox_id = ? AND native_nonce = ? AND delivery_state = 'delivered'`).run(id, nonce).changes === 1;
   }
 
   /** The hop did not send, so the claim gives its attempt back: a pause spends no step of the backoff. */
@@ -258,10 +263,19 @@ export class MessageStore {
       WHERE outbox_id = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), reason, id);
   }
 
-  /** The gate cannot be read: no attempt was claimed, so there is none to give back. */
-  recordGateUnavailable(id: MessageId, nextAttemptAtMs: number): void {
-    this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', next_attempt_at = max(coalesce(next_attempt_at, ''), ?), message_pause_reason = 'gate_unavailable'
-      WHERE outbox_id = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), id);
+  /** The gate cannot be read, or says to wait: no attempt was claimed, so there is none to give back. */
+  recordGateUnavailable(id: MessageId, nextAttemptAtMs: number, reason: "gate_unavailable" | "far_held" | "far_no_state" = "gate_unavailable"): void {
+    this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', next_attempt_at = max(coalesce(next_attempt_at, ''), ?), message_pause_reason = ?
+      WHERE outbox_id = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), reason, id);
+  }
+
+  /** A row of a group that this attempt did not carry: its claim goes back, so it owes no backoff for bytes that never left. */
+  releaseClaim(id: MessageId): void {
+    this.db.prepare(`UPDATE outbox_entries SET attempts = max(attempts - 1, 0), next_attempt_at = NULL WHERE outbox_id = ? AND ${OPEN}`).run(id);
+  }
+
+  seatOf(id: MessageId): string | null {
+    return (this.db.prepare("SELECT destination_session AS seat FROM outbox_entries WHERE outbox_id = ?").get(id) as { seat: string } | undefined)?.seat ?? null;
   }
 
   /** Waiting its lane's turn: nothing is claimed and nothing is rescheduled, so it goes on the first pass after the hold lifts. */

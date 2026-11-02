@@ -46,22 +46,27 @@ export interface GateRecord {
   readonly id: MessageId;
   readonly recordedAt: string;
   readonly nonce: string | null;
-  /** What the record rests on, when it is not the seat's own gate: `far_accepted`, a far daemon holds the row (cross-host). */
-  readonly evidence?: "far_accepted";
+  /** What the record rests on, when it is not this daemon's gate: `far_received`, the far daemon's row is `received` (decision 36). */
+  readonly evidence?: "far_received";
 }
 
 /** `unavailable`: the gate could not be read now (the seat is down, a file is missing), which proves nothing either way. */
 export type GateLookup =
   | { readonly kind: "seen"; readonly record: GateRecord }
   | { readonly kind: "not_seen" }
-  | { readonly kind: "unavailable"; readonly cause: string };
+  | { readonly kind: "unavailable"; readonly cause: string }
+  /** It has gone as far as this daemon can take it, and the next hop has it: nothing to attempt, nothing arrived yet. */
+  | { readonly kind: "waiting"; readonly reason: "far_held" | "far_no_state" }
+  /** The next hop ended it: it will never arrive. */
+  | { readonly kind: "ended"; readonly reason: string };
 
 /** One per runtime: did this id arrive? The gate itself drops a repeat, before the agent sees it. This port is the daemon's
  *  read of that gate's record. */
 export interface SeatGate {
   /** The gate version the seat declared at launch. A seat that declared none has no gate. */
   readonly version: number;
-  lookup(seat: string, id: MessageId): Promise<GateLookup>;
+  /** `row`: the message `id` belongs to, when `id` is one of its numbered parts. Its nonce is the row's. */
+  lookup(seat: string, id: MessageId, row?: MessageId): Promise<GateLookup>;
 }
 
 /** Bytes left, or did not. Neither says the seat took the message; only the gate does. `paused` is a reason to come back, never
@@ -70,8 +75,11 @@ export interface SeatGate {
  *  (`agent_absent`: a paste into a login shell runs each line as a command, so nothing is typed until the agent is back), or its screen shows no composer at all, such as a picker (`screen_unreadable`), or the message is too long to paste and the seat has no socket
  *  (`long_no_socket`: decision 35, it goes when the socket is back). */
 export type LastHopResult =
-  | { readonly kind: "sent" }
-  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" | "agent_absent" | "screen_unreadable" | "long_no_socket" }
+  /** `carried`: the ids this attempt put in the text, when that is fewer than it was given. The rest were not attempted. */
+  | { readonly kind: "sent"; readonly carried?: readonly MessageId[] }
+  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" | "agent_absent" | "screen_unreadable" | "long_no_socket" | "far_not_gated" }
+  /** The seat is gone for good, by the word of whoever owns it. */
+  | { readonly kind: "gone"; readonly reason: string }
   | { readonly kind: "refused"; readonly reason: string };
 
 /** How bytes reach a seat: the socket, a paste, a runner. Safe to repeat, because the gate drops a repeat. */

@@ -14,7 +14,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
-import { crossHostMessageId } from "../src/domain/seat-messaging/far-daemon.js";
+import { crossHostMessageId, farSeatName } from "../src/domain/seat-messaging/far-daemon.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
 
@@ -156,16 +156,17 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     await s.launch();
     expect(http(far, "/healthz").json["messaging"]).toBe(1);
     const run = rigSend(near, s.name, "across", lead, ["--id", "job-1"]);
-    expect(run.out).toContain("Held by sparky (job-1)");
+    expect(run.out).toMatch(/Held by sparky \(job-1\)|Delivered to .* on sparky \(job-1\)/);
     expect(run.out).not.toContain("Sent to");
     expect(run.status).toBe(0);
-    expect(near.read("job-1")).toMatchObject({ message_state: "received", ack_evidence: "far_accepted", sender_session: lead });
     const farId = crossHostMessageId(nearId(near), "job-1");
     await state(far, farId, "received");
+    await state(near, "job-1", "received");
+    expect(near.read("job-1")).toMatchObject({ ack_evidence: "far_received", sender_session: lead });
     expect(far.read(farId)).toMatchObject({ destination_session: s.name, sender_session: `${lead}@${nearId(near)}`, ack_evidence: "gate_seen" });
     await until(() => agentCopies(far, farId), (l) => l.length > 0, "the agent's copy");
     const again = rigSend(near, s.name, "across", lead, ["--id", "job-1"]);
-    expect(again.out).toContain("Held by sparky");
+    expect(again.out).toContain("Delivered to");
     await wait(800);
     expect(agentCopies(far, farId).length).toBe(1);
     expect(far.count()).toBe(1);
@@ -211,7 +212,7 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     const s = seat(far); const lead = sender(near);
     const farChild = await start(far); await start(near);
     await s.launch();
-    expect(rigSend(near, s.name, "warm", lead, ["--id", "warm"]).out).toContain("Held by sparky");  // capability read while it answered
+    expect(rigSend(near, s.name, "warm", lead, ["--id", "warm"]).out).toMatch(/Held by sparky|Delivered to/);  // capability read while it answered
     await kill(farChild);
     const run = rigSend(near, s.name, "while down", lead, ["--id", "m3"]);
     expect(run.out).toContain("Accepted for");
@@ -272,7 +273,7 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     const s = seat(far); const lead = sender(near);
     const newFar = await start(far); await start(near);
     await s.launch();
-    expect(rigSend(near, s.name, "warm", lead, ["--id", "warm"]).out).toContain("Held by sparky");
+    expect(rigSend(near, s.name, "warm", lead, ["--id", "warm"]).out).toMatch(/Held by sparky|Delivered to/);
     await kill(newFar);
     const oldFar = await start(far, { build: oldPackage });
     expect(http(far, "/healthz").json).not.toHaveProperty("messaging");
@@ -289,22 +290,25 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     expect(agentCopies(far, farId).length).toBe(1);
   }, 240_000);
 
-  it("undeliverable at the far end goes back to the sender's queue on its own host, once", async () => {
+  it("decision 36: undeliverable at the far end ends the sender's row, and its own daemon tells it, once", async () => {
     const { near, far } = await pair();
     const s = seat(far); const lead = sender(near);
     await start(near);
     const id = nearId(near);
     const farId = crossHostMessageId(id, "m7");
+    near.withDb((c) => { new MessageStore(c).accept({ id: messageId("m7"), seat: farSeatName("sparky", s.name), sender: lead, body: "never arrives", messageClass: "content", firstAttemptAtMs: Date.now() + 60_000 }); });
     far.withDb((c) => {
       new MessageStore(c).accept({ id: messageId(farId), seat: s.name, sender: `${lead}@laptop`, body: "never arrives", messageClass: "content" });
       c.prepare("UPDATE rigs SET archived_at = datetime('now')").run();
     });
     await start(far);
     await state(far, farId, "undeliverable");
+    await state(near, "m7", "undeliverable", 30_000);
     const items = near.withDb((c) => c.prepare("SELECT destination_session AS d, body FROM queue_items").all() as Array<{ d: string; body: string }>);
     expect(items.length).toBe(1);
     expect(items[0]!.d).toBe(lead);
     expect(items[0]!.body).toContain("never arrives");
-    expect(far.read(farId)?.ack_detail).toMatch(/^qitem-returned-/);
+    expect(far.read(farId)?.ack_detail).toBe(`origin-polls:laptop`);
+    expect(near.read("m7")?.ack_detail).toMatch(/^qitem-returned-/);
   }, 120_000);
 });

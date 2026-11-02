@@ -14,6 +14,7 @@ import { ATTEMPT_BACKOFF_MS, MessagePump, PREVIOUS_OCCUPANT_LABEL, PUMP_PAUSE_RE
 import { PumpHandOff, type MessageHandOff } from "../src/domain/seat-messaging/hand-off.js";
 import { MessageLedger } from "../src/domain/seat-messaging/message-ledger.js";
 import { MESSAGE_LANES, MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { partId } from "../src/domain/seat-messaging/long-message.js";
 import { messageId, type GateLookup, type GateRecord, type LastHop, type LastHopResult, type MessageId, type SeatGate, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
 import { MessageObligations, type HeldMessages, type HoldStatus, type SeatDirectory, type SeatFate, type SenderReturn, type SenderReturnResult } from "../src/domain/seat-messaging/pump-ports.js";
 
@@ -38,6 +39,7 @@ class StubGate implements SeatGate {
 class StubHop implements LastHop {
   readonly calls: SeatMessage[] = [];
   afterReceived?: (message: SeatMessage) => Promise<void>;
+  forget?: (seat: string) => void;
   result: LastHopResult | "throw" | Promise<LastHopResult> = { kind: "sent" };
   async attempt(message: SeatMessage): Promise<LastHopResult> {
     this.calls.push(message);
@@ -1141,5 +1143,111 @@ describe("the message store", () => {
     store.accept({ ...input, id: messageId("m2") });
     store.recordUndeliverable(messageId("m2"), "gone", null, "1970-01-01T00:00:00.000Z");
     expect(handler.getById("m2")).toMatchObject({ deliveryState: "failed", ackEvidence: "seat_gone" });
+  });
+});
+
+describe("the S4 review's pump rows", () => {
+  const SEAT = "dev@r";
+  const world = () => {
+    const db = createDb(); migrate(db, ALL_MIGRATIONS);
+    const store = new MessageStore(db); const w = new World();
+    return { db, store, w, pump: new MessagePump(w.deps(store)) };
+  };
+
+  it("QA F4 (probe P1): rows of a long group the hop did not carry owe no backoff: the next goes at once", async () => {
+    const { db, store, w, pump } = world();
+    const handOff = new PumpHandOff(store, pump, w.deps(store).ports);
+    for (const id of ["w1", "w2", "w3"]) new OutboxHandler(db).record({ outboxId: id, senderSession: "lead@r", destinationSession: SEAT, body: `wake ${id}`, auditPointer: `q-${id}` });
+    w.hop.result = { kind: "sent", carried: [messageId("w1")] };
+    handOff.adoptClaimed(["w1", "w2", "w3"]);
+    await new Promise((r) => setImmediate(r));
+    expect(row(db, "w1").attempts).toBe(1);
+    expect(row(db, "w2")).toMatchObject({ attempts: 0, next_attempt_at: null });
+    w.gate.record(messageId("w1"));
+    w.hop.result = { kind: "sent", carried: [messageId("w2")] };
+    await pump.tick();  // no clock move: not one minute of a backoff is owed
+    expect(w.hop.calls.at(-1)!.ids[0]).toBe("w2");
+  });
+
+  it("a group carried whole charges every row", async () => {
+    const { db, store, w, pump } = world();
+    const handOff = new PumpHandOff(store, pump, w.deps(store).ports);
+    for (const id of ["w1", "w2"]) new OutboxHandler(db).record({ outboxId: id, senderSession: "lead@r", destinationSession: SEAT, body: `wake ${id}`, auditPointer: `q-${id}` });
+    handOff.adoptClaimed(["w1", "w2"]);
+    await new Promise((r) => setImmediate(r));
+    expect(row(db, "w2").attempts).toBe(1);
+  });
+
+  it("QA F5 (probe P2): a part that needed a repeat is tidied before the next part, and names itself", async () => {
+    const { store, w, pump } = world();
+    const tidied: Array<number | undefined> = [];
+    w.hop.afterReceived = async (m) => { tidied.push(m.part); };
+    store.accept({ id: messageId("L1"), seat: SEAT, sender: "lead@r", body: "x" });
+    store.markParts(messageId("L1"), 3);
+    await pump.tick();
+    w.now += 2 * MIN; await pump.tick();
+    w.gate.record(partId(messageId("L1"), 1, 3), store.nonceOf(messageId("L1")));
+    w.now += 1000; await pump.tick();
+    expect(tidied).toEqual([1]);
+    expect(w.hop.calls.at(-1)!.part).toBe(2);
+  });
+
+  it("a part that took one attempt needs no tidying", async () => {
+    const { store, w, pump } = world();
+    const tidied: unknown[] = [];
+    w.hop.afterReceived = async (m) => { tidied.push(m); };
+    store.accept({ id: messageId("L1"), seat: SEAT, sender: "lead@r", body: "x" });
+    store.markParts(messageId("L1"), 2);
+    await pump.tick();
+    w.gate.record(partId(messageId("L1"), 1, 2), store.nonceOf(messageId("L1")));
+    await pump.tick();
+    expect(tidied).toEqual([]);
+  });
+
+  it("QA F7: a pass asked for one seat leaves every other seat to its recheck", async () => {
+    const { store, w, pump } = world();
+    store.accept({ id: messageId("a"), seat: "other@r", sender: "lead@r", body: "x" });
+    w.hop.result = { kind: "paused", reason: "busy" };
+    await pump.tick();
+    const before = w.hop.calls.length;
+    store.accept({ id: messageId("b"), seat: SEAT, sender: "lead@r", body: "y" });
+    await pump.ask(SEAT);
+    await pump.ask(SEAT);
+    expect(w.hop.calls.filter((c) => c.seat === "other@r")).toHaveLength(before);
+    expect(w.hop.calls.filter((c) => c.seat === SEAT).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("security F3: a cancelled head clears the seat's spool; a cancel further back leaves the head's text alone", async () => {
+    const { store, w, pump } = world();
+    const forgot: string[] = [];
+    w.hop.forget = (seat) => { forgot.push(seat); };
+    store.accept({ id: messageId("h"), seat: SEAT, sender: "lead@r", body: "x" });
+    store.accept({ id: messageId("t"), seat: SEAT, sender: "lead@r", body: "y" });
+    expect(pump.cancel(messageId("t"), "later")).toBe(true);
+    expect(forgot).toEqual([]);
+    expect(pump.cancel(messageId("h"), "now")).toBe(true);
+    expect(forgot).toEqual([SEAT]);
+    expect(pump.cancel(messageId("h"), "again")).toBe(false);
+    expect(forgot).toEqual([SEAT]);
+  });
+
+  it("a hop that says the seat is gone ends the row and tells the sender", async () => {
+    const { store, w, pump } = world();
+    store.accept({ id: messageId("g"), seat: SEAT, sender: "lead@r", body: "x" });
+    w.hop.result = { kind: "gone", reason: "no such seat" };
+    await pump.tick();
+    expect(store.outcomeOf(messageId("g"))).toBe("undeliverable");
+    expect(w.returned).toEqual([{ id: "g", sender: "lead@r", reason: "no such seat" }]);
+  });
+
+  it("far_not_gated is asked again at the cap, not every recheck", async () => {
+    const { store, w, pump } = world();
+    store.accept({ id: messageId("n"), seat: SEAT, sender: "lead@r", body: "x" });
+    w.hop.result = { kind: "paused", reason: "far_not_gated" };
+    await pump.tick();
+    w.now += PUMP_PAUSE_RECHECK_MS + 1; await pump.tick();
+    expect(w.hop.calls).toHaveLength(1);
+    w.now += ATTEMPT_BACKOFF_MS.at(-1)!; await pump.tick();
+    expect(w.hop.calls).toHaveLength(2);
   });
 });

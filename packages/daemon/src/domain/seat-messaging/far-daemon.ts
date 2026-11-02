@@ -2,15 +2,15 @@ import { createHash } from "node:crypto";
 import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
 import { loadHostRegistry, resolveHost, type HostRegistryLoadResult, type HttpHostEntry } from "../hosts/hosts-registry-reader.js";
 import { SEAT_MESSAGE_ID_PREFIX } from "../outbox-handler.js";
-import { returnQitemId } from "./seat-directory.js";
 import type { GateLookup, LastHop, LastHopResult, MessageId, SeatGate, SeatMessage } from "./ports.js";
 import type { SeatDirectory, SeatFate, SeatMessagingPorts, SenderReturn, SenderReturnResult } from "./pump-ports.js";
 
 /**
  * Cross-host (S4 design, section 2). The far daemon owns the last hop: gate, marker, FIFO and pauses. The sender's daemon owns one hop, to the
- * far daemon, behind the same two ports as any seat: `RemoteDaemonHop` is its `LastHop`, and `RemoteDaemonGate` its `SeatGate`, whose record is the
- * far daemon's committed accept. So invariant 3 stays literal: for the local row the far daemon is the gate. A far row that exists proves the far
- * daemon holds the message, and nothing about the seat, so the local row says `far_accepted` and `rig send` says "held", never "delivered".
+ * far daemon, behind the same two ports as any seat: `RemoteDaemonHop` is its `LastHop`, and `RemoteDaemonGate` its `SeatGate`. Decision 36: the
+ * sender's row stays open until the far row is `received`, so `received` here means what it means everywhere: the body reached the agent. A far row
+ * that is still open is a named wait (`far_held`), and one that ended ends this row, which tells its sender here. The cost is this daemon's polling,
+ * and a row that stays open while the far host is unreachable.
  */
 
 /** The capability's value on `/healthz`. Absent: a build, or a pump setting, that takes no `/api/messages/accept`. A 404 from the route is never
@@ -18,6 +18,10 @@ import type { SeatDirectory, SeatFate, SeatMessagingPorts, SenderReturn, SenderR
 export const MESSAGING_CAPABILITY = 1;
 /** The far route's answer for a row it does not hold. Only this body means "not seen": an old daemon's 404 has none. */
 export const MESSAGE_NOT_FOUND = "message_not_found";
+
+/** The far `/accept`'s two final answers, at the head of its error text, because that text is all a remote failure carries. */
+export const SEAT_UNRESOLVED = "seat_unresolved";
+export const SEAT_NOT_GATED = "seat_not_gated";
 
 const FAR_REQUEST_TIMEOUT_MS = 10_000;
 const CAPABILITY_TTL_MS = 30_000;
@@ -46,9 +50,10 @@ export function isCrossHostMessageId(id: string): boolean {
 
 export type FarCapability = "capable" | "legacy" | "unknown";
 export type FarSeatAnswer = { readonly kind: "takes"; readonly seat: string } | { readonly kind: "no" } | { readonly kind: "unreachable" };
-export type FarRowState = "held" | "absent" | "unavailable";
+/** `unreported`: the far row exists, on a build that does not say how it stands. */
+export type FarRowState = "received" | "undeliverable" | "open" | "unreported" | "absent" | "unavailable";
 export interface FarDelivery { readonly id: MessageId; readonly seat: string; readonly body: string; readonly messageClass: string; readonly sender: string }
-export type FarAcceptAnswer = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+export type FarAcceptAnswer = { readonly ok: true } | { readonly ok: false; readonly reason: string; readonly code?: typeof SEAT_UNRESOLVED | typeof SEAT_NOT_GATED };
 
 export interface FarDaemonsDeps {
   selfHost: () => string | null;
@@ -108,7 +113,10 @@ export class FarDaemons {
     const host = this.httpHost(hostId);
     if (!host) return "unavailable";
     const res = await this.request(host, `/api/messages/${encodeURIComponent(farId)}`, "GET");
-    if (res.ok) return "held";
+    if (res.ok) {
+      const state = (res.payload as { state?: unknown } | null | undefined)?.state;
+      return state === "received" || state === "undeliverable" || state === "open" ? state : "unreported";
+    }
     return res.kind === "http" && res.status === 404 && res.detail === MESSAGE_NOT_FOUND ? "absent" : "unavailable";
   }
 
@@ -120,17 +128,9 @@ export class FarDaemons {
       id: delivery.id, seat: delivery.seat, body: delivery.body, class: delivery.messageClass, origin: { host: self, sender: originSender(delivery.sender, self) },
     });
     if (res.ok) return { ok: true };
-    return { ok: false, reason: `${res.kind}${res.status === undefined ? "" : ` ${res.status}`}: ${res.detail}` };
-  }
-
-  /** The origin's queue item for a message that can never arrive here. The item id is fixed per message, so a repeat lands on the same item. */
-  async returnToOrigin(hostId: string, item: { qitemId: string; destinationSession: string; body: string }): Promise<SenderReturnResult> {
-    const host = this.httpHost(hostId);
-    if (!host) return { kind: "no_return_path", reason: `no http route back to ${hostId}` };
-    const res = await this.request(host, "/api/queue/create", "POST", { ...item, sourceSession: "daemon@kernel", tags: ["seat-messaging:returned"] });
-    if (res.ok) return { kind: "returned", qitemId: item.qitemId };
-    if (res.kind === "http" && res.status !== undefined && res.status >= 400 && res.status < 500) return { kind: "no_return_path", reason: `${hostId} refused it: ${res.detail}` };
-    throw new Error(`${hostId} did not take it: ${res.kind} ${res.detail}`);
+    const reason = `${res.kind}${res.status === undefined ? "" : ` ${res.status}`}: ${res.detail}`;
+    const code = res.kind !== "http" ? undefined : res.status === 404 && res.detail.startsWith(`${SEAT_UNRESOLVED}:`) ? SEAT_UNRESOLVED : res.status === 409 && res.detail.startsWith(`${SEAT_NOT_GATED}:`) ? SEAT_NOT_GATED : undefined;
+    return { ok: false, reason, ...(code ? { code } : {}) };
   }
 }
 
@@ -139,7 +139,7 @@ function originSender(sender: string, selfHost: string): string {
   return sender.split("@").length === 2 ? `${sender}@${selfHost}` : sender;
 }
 
-/** Its record is the far daemon's committed accept. It remembers nothing here, so a crash between the far commit and the local one costs one read. */
+/** Reads the far row each time and remembers nothing here, so a crash between the far commit and the local one costs one read. */
 export class RemoteDaemonGate implements SeatGate {
   readonly version = 1;
   constructor(private readonly far: FarDaemons, private readonly clock: () => number = Date.now) {}
@@ -153,7 +153,10 @@ export class RemoteDaemonGate implements SeatGate {
     const state = await this.far.rowState(parsed.hostId, crossHostMessageId(self, id));
     if (state === "absent") return { kind: "not_seen" };
     if (state === "unavailable") return { kind: "unavailable", cause: `${parsed.hostId} did not say` };
-    return { kind: "seen", record: { id, recordedAt: new Date(this.clock()).toISOString(), nonce: null, evidence: "far_accepted" } };
+    if (state === "undeliverable") return { kind: "ended", reason: `${parsed.hostId} could not deliver it to ${parsed.seat}` };
+    if (state === "open") return { kind: "waiting", reason: "far_held" };
+    if (state === "unreported") return { kind: "waiting", reason: "far_no_state" };
+    return { kind: "seen", record: { id, recordedAt: new Date(this.clock()).toISOString(), nonce: null, evidence: "far_received" } };
   }
 }
 
@@ -166,7 +169,10 @@ export class RemoteDaemonHop implements LastHop {
     if (!parsed) return { kind: "refused", reason: `${message.seat} is not a far seat` };
     const id = message.ids[0];
     const answer = await this.far.accept(parsed.hostId, { id, seat: parsed.seat, body: message.body, messageClass: message.messageClass, sender: this.senderOf(id) ?? "unknown" });
-    return answer.ok ? { kind: "sent" } : { kind: "refused", reason: answer.reason };
+    if (answer.ok) return { kind: "sent" };
+    if (answer.code === SEAT_UNRESOLVED) return { kind: "gone", reason: `${parsed.seat} is not a seat on ${parsed.hostId}: ${answer.reason}` };  // decision 37
+    if (answer.code === SEAT_NOT_GATED) return { kind: "paused", reason: "far_not_gated" };
+    return { kind: "refused", reason: answer.reason };
   }
 }
 
@@ -189,16 +195,14 @@ export class FarSeatDirectory implements SeatDirectory {
   }
 }
 
-/** Undeliverable at the far end goes back through the origin's queue. The origin needs an http entry here, or the row ends and health names it. */
-export class CrossHostSenderReturn implements SenderReturn {
-  constructor(private readonly inner: SenderReturn, private readonly far: FarDaemons) {}
+/** A message from another host that can never arrive here. Its origin's daemon polls this row and tells its sender (decision 36), so this daemon
+ *  posts nothing to anyone: a sender's claimed host is never a place it sends text. The row counts as returned, because its origin will know. */
+export class OriginPollsSenderReturn implements SenderReturn {
+  constructor(private readonly inner: SenderReturn, private readonly selfHost: () => string | null) {}
 
   async returnToSender(message: { readonly id: MessageId; readonly seat: string; readonly sender: string; readonly body: string }, reason: string): Promise<SenderReturnResult> {
-    const [member, rig, host] = message.sender.split("@");
-    if (host === undefined || host === this.far.selfHost) return this.inner.returnToSender(message, reason);
-    return this.far.returnToOrigin(host, {
-      qitemId: returnQitemId(message.id), destinationSession: `${member}@${rig}`,
-      body: `Your message ${message.id} to ${message.seat} was not delivered and will not be: ${reason}. Its text:\n\n${message.body}`,
-    });
+    const host = message.sender.split("@")[2];
+    if (host === undefined || host === this.selfHost()) return this.inner.returnToSender(message, reason);
+    return { kind: "returned", qitemId: `origin-polls:${host}` };
   }
 }
