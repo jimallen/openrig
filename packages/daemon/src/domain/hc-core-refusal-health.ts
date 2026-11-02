@@ -14,21 +14,37 @@ export class HcCoreRefusalHealthSource implements HealthObservationSource {
   constructor(
     private readonly refusal: () => string | null,
     private readonly clock: () => Date = () => new Date(),
+    /** The cause of the latest core start that was refused or failed (connectHcCore's `onCoreStartFailure`), null while starts go through. */
+    private readonly startFailure: () => string | null = () => null,
   ) {}
 
   read(): readonly HealthDetectorObservation[] { return []; }
 
   coverage(): readonly HealthSourceCoverage[] {
+    const rows: HealthSourceCoverage[] = [];
     const why = this.refusal();
-    if (why === null) return [];
-    return [{
-      source: this.name,
-      evaluatedAt: this.clock().toISOString(),
-      status: "notice",
-      partial: false,
-      reason: `The hc core is refused, so every call to an hc seat fails as an unavailable core until the daemon restarts (a seat is not gone, and nothing is ended): ${why}. `
-        + "Fix: if the core was changed on purpose, change the accepted hc versions (hc-version.ts) only after the new version is tested, then have the operator restart the daemon (a seat reports this and does not restart it); "
-        + "otherwise put an accepted hc core back and have the operator restart the daemon. Seats in the core keep running meanwhile.",
-    }];
+    if (why !== null) {
+      rows.push({
+        source: this.name,
+        evaluatedAt: this.clock().toISOString(),
+        status: "notice",
+        partial: false,
+        reason: `The hc core is refused, so every call to an hc seat fails as an unavailable core until the daemon restarts (a seat is not gone, and nothing is ended): ${why}. `
+          + "Fix: if the core was changed on purpose, change the accepted hc versions (hc-version.ts) only after the new version is tested, then have the operator restart the daemon (a seat reports this and does not restart it); "
+          + "otherwise put an accepted hc core back and have the operator restart the daemon. Seats in the core keep running meanwhile.",
+      });
+    }
+    const startWhy = this.startFailure();
+    if (startWhy !== null) {
+      rows.push({
+        source: "hc-core-start-refused",
+        evaluatedAt: this.clock().toISOString(),
+        status: "notice",
+        partial: false,
+        reason: `The daemon has no hc core and could not start one, so seats read transport_unavailable until it can (nothing is ended, and the watch keeps trying): ${startWhy}. `
+          + "Fix: the operator gives the daemon's environment a runtime location of its own (see the message) and restarts it; a seat reports this and does not restart the daemon.",
+      });
+    }
+    return rows;
   }
 }

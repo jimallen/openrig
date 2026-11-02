@@ -69,7 +69,7 @@ function piCredentialHint(message: string): string {
   const provider = match[1]!.toLowerCase();
   const key = Object.hasOwn(PI_PROVIDER_ENV_VARS, provider) ? PI_PROVIDER_ENV_VARS[provider] : undefined;
   return key
-    ? ` For managed Pi, set ${key} in the daemon environment and add ${key} to recovery.provider_auth_env_allowlist. Use model ${provider}/<id>, then restart the daemon and relaunch the seat. Default Pi logins are not automatically shared.`
+    ? ` For managed Pi, set ${key} in the daemon environment and add ${key} to recovery.provider_auth_env_allowlist. Use model ${provider}/<id>, then have the operator restart the daemon and relaunch the seat. Default Pi logins are not automatically shared.`
     : " For managed Pi, configure this provider in the seat's PI_CODING_AGENT_DIR (auth.json or models.json). Its key is not in OpenRig's Pi environment passthrough map; default Pi logins are not automatically shared.";
 }
 

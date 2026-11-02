@@ -6,7 +6,7 @@ import type { TmuxResult } from "./tmux.js";
 // launch, by running the program file it was started from. If that file was replaced while the core ran (an `hc update`, the
 // Herdr app updating its core, an installer), the holder is the new file's build, the core compares builds and refuses:
 //   error kind `unavailable`, message "no holder: holder build elf:... differs from core build elf:...",
-//   hint "run hc server restart on this machine, then retry".
+//   hint: the operator restarts the hc core on this machine, then retry.
 // A core that already has a holder is not affected (new launches go to it); only a core with no holder is. The daemon used to
 // show only the kind, so every seat read `hc refused <seat>: unavailable` with nothing to act on. It now says what was found
 // and the fix, in its own words: the core's text is never quoted, because the call carried the seat's credentials.
@@ -38,7 +38,7 @@ export async function explainLaunchUnavailable(client: HcClient, what: string): 
     noHolder: true,
     message: `hc cannot launch ${what}: the running hc core${version} has no holder for new terminals and could not start one. The usual cause is that the hc program file it was started from was replaced `
       + "while it ran (an hc or Herdr app update), so the holder it starts is another build and the core refuses it. Nothing was launched and no seat is lost: a core with no holder holds no terminals. "
-      + `Fix: run "hc server restart" on this machine (it ends nothing), then launch again.`,
+      + `Fix: have the operator restart the hc core on this machine (it ends nothing; a seat does not), then launch again.`,
   };
 }
 

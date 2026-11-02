@@ -609,6 +609,9 @@ export interface ConnectHcCoreOptions {
    *  accepted version under a running daemon reports the new one), and null when a core is refused. `rig health` reads it to say
    *  that the running core is accepted but not the tested version (HcUntestedVersionHealthSource). */
   onCoreVersion?: (version: string | null) => void;
+  /** Told the cause of the latest core start that was refused or failed, and null once a start goes through or a core is found. `rig health`
+   *  reads it (HcCoreRefusalHealthSource): without it the cause was a log line and nothing else. */
+  onCoreStartFailure?: (why: string | null) => void;
 }
 
 /** Make every later `hello` to this socket (every `call`, attach and size watch of this build) pass the pin, not only the first:
@@ -627,15 +630,23 @@ export function pinCallsToCore(socketPath: string, watch: Pick<HcCoreWatch, "pin
   return () => setHcHelloCheck(socketPath, null);
 }
 
-/** The watch keeps retrying when a core will not start and says nothing: the daemon log must name why (a refusal to start one, or hc's own failure). One line per distinct
- *  reason, so the retries do not repeat it. */
-function loggingRefusals(start: () => Promise<void>, log: (message: string) => void): () => Promise<void> {
-  let last: string | null = null;
-  return () => start().catch((err: unknown) => {
-    const why = err instanceof Error ? err.message : String(err);
-    if (why !== last) { last = why; log(JSON.stringify({ kind: "core_start_failed", why })); }
-    throw err;
-  });
+/** What the watch knows of its core starts: the cause of the latest refused or failed one, null while they go through. One per
+ *  connectHcCore, so a second outage after a recovery is reported and logged again. */
+interface CoreStartState { why: string | null }
+
+/** The watch keeps retrying when a core will not start and says nothing: the daemon log must name why (a refusal to start one, or hc's own
+ *  failure), once per distinct reason while the outage lasts, and `rig health` reads the same cause through `report`. A start that goes
+ *  through, or a core that turns up by another route, ends the outage (see connectHcCore), so the next one is new again. */
+function loggingRefusals(start: () => Promise<void>, log: (message: string) => void, state: CoreStartState, report: (why: string | null) => void): () => Promise<void> {
+  return () => start().then(
+    () => { state.why = null; report(null); },
+    (err: unknown) => {
+      const why = err instanceof Error ? err.message : String(err);
+      report(why);
+      if (why !== state.why) { state.why = why; log(JSON.stringify({ kind: "core_start_failed", why })); }
+      throw err;
+    },
+  );
 }
 
 /** The daemon's link to the seat host: pins the core's generation and version at startup and keeps watching. A refused core
@@ -644,7 +655,9 @@ function loggingRefusals(start: () => Promise<void>, log: (message: string) => v
 export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCoreWatch> {
   const env = options.env ?? process.env;
   const log = options.log ?? ((message: string) => console.warn(`[hc] ${message}`));
-  const startCore = env.OPENRIG_HC_NO_START_CORE === "1" ? undefined : options.startCore ?? loggingRefusals(startCoreWithCli({ env }), log);
+  const startState: CoreStartState = { why: null };
+  const report = (why: string | null): void => { try { options.onCoreStartFailure?.(why); } catch { /* a listener never breaks the watch */ } };
+  const startCore = env.OPENRIG_HC_NO_START_CORE === "1" ? undefined : options.startCore ?? loggingRefusals(startCoreWithCli({ env }), log, startState, report);
   const watch = new HcCoreWatch({
     socketPath: options.socketPath,
     ...(startCore ? { startCore } : {}),
@@ -655,6 +668,9 @@ export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCo
         options.onCoreVersion?.(null);  // the refusal has its own notice; a stale version beside it would contradict it
       }
       if (notice.kind === "connected") {
+        // A core is there, whoever started it: the outage is over, and the next one is a new one.
+        startState.why = null;
+        report(null);
         options.onCoreVersion?.(notice.version);
         const judged = judgeHcVersion(notice.version);
         if (judged.verdict === "untested") log(JSON.stringify({ kind: "untested_version", version: judged.version, warning: judged.warning }));

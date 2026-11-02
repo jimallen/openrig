@@ -136,7 +136,7 @@ export function piCredentialNotice(opts: {
     case "managed-env": return `Pi provider key present in the managed environment for ${source.provider}; validity is unverified. Launch continues.`;
     case "none": {
       const fix = source.envVar
-        ? `Set ${source.envVar} in the daemon environment and add its name to recovery.provider_auth_env_allowlist, then restart the daemon and relaunch the seat, or sign in using this seat's PI_CODING_AGENT_DIR.`
+        ? `Set ${source.envVar} in the daemon environment and add its name to recovery.provider_auth_env_allowlist, then have the operator restart the daemon and relaunch the seat, or sign in using this seat's PI_CODING_AGENT_DIR.`
         : "Configure this provider in the seat's PI_CODING_AGENT_DIR (auth.json or models.json), or sign in to Pi using that directory.";
       return `No stored sign-in or provider key was found for Pi provider ${source.provider} in this managed seat. ${fix} Pi may resolve another credential source; launch continues. Default Pi logins are not automatically shared.`;
     }

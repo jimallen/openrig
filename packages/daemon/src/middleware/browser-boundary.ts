@@ -300,7 +300,7 @@ export function browserBoundary(options: BrowserBoundaryOptions): MiddlewareHand
         if (!tokenValid) {
           const value = shown(host.hostname);
           return refuse(c, "untrusted_host", value,
-            `This OpenRig daemon does not accept requests addressed to "${value}". Use localhost, an IP address or this machine's own name, or add this name to OPENRIG_ALLOWED_HOSTS in the daemon's environment and restart the daemon.`);
+            `This OpenRig daemon does not accept requests addressed to "${value}". Use localhost, an IP address or this machine's own name, or add this name to OPENRIG_ALLOWED_HOSTS in the daemon's environment and have the operator restart the daemon.`);
         }
       }
     }
@@ -316,7 +316,7 @@ export function browserBoundary(options: BrowserBoundaryOptions): MiddlewareHand
       if (!ownUi && !explicitlyAllowedOrigin(originHeader, origin)) {
         const value = shown(originHeader);
         return refuse(c, "browser_origin_refused", value,
-          `This OpenRig daemon refuses browser requests from origin "${value}". Open the OpenRig UI from the daemon's own address with the web UI enabled (rig config set ui.enabled true, then restart the daemon), or add this exact origin to OPENRIG_ALLOWED_ORIGINS in the daemon's environment and restart. Web pages on other origins cannot read this response.`);
+          `This OpenRig daemon refuses browser requests from origin "${value}". Open the OpenRig UI from the daemon's own address with the web UI enabled (rig config set ui.enabled true, then have the operator restart the daemon), or add this exact origin to OPENRIG_ALLOWED_ORIGINS in the daemon's environment and restart. Web pages on other origins cannot read this response.`);
       }
     }
 

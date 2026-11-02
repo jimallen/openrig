@@ -24,7 +24,7 @@ export function steeringRoutes(): Hono {
     if (!composer.isReady()) {
       return c.json({
         error: "steering_workspace_not_configured",
-        hint: "Run rig config init-workspace, or set workspace.steering_path / OPENRIG_STEERING_PATH for non-canonical layouts, then restart the daemon.",
+        hint: "Run rig config init-workspace, or set workspace.steering_path / OPENRIG_STEERING_PATH for non-canonical layouts, then have the operator restart the daemon.",
       }, 503);
     }
     return c.json(composer.compose());

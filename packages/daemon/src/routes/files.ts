@@ -75,7 +75,7 @@ export function filesRoutes(): Hono {
     if (deps.allowlist.length === 0) {
       return c.json({
         roots: [],
-        hint: "No allowlist roots configured. Set OPENRIG_FILES_ALLOWLIST=name1:/abs/path,name2:/abs/path and restart the daemon.",
+        hint: "No allowlist roots configured. Set OPENRIG_FILES_ALLOWLIST=name1:/abs/path,name2:/abs/path and have the operator restart the daemon.",
       });
     }
     return c.json({

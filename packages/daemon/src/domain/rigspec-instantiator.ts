@@ -2294,7 +2294,7 @@ export class PodRigInstantiator {
       if (!library) {
         return {
           status: "failed",
-          error: `session_source: mode: agent_image requires the daemon AgentImageLibraryService to be wired; restart the daemon or check ~/.openrig/agent-images/ exists.`,
+          error: `session_source: mode: agent_image requires the daemon AgentImageLibraryService to be wired; have the operator restart the daemon or check ~/.openrig/agent-images/ exists.`,
           sessionName: canonicalSessionName,
         };
       }

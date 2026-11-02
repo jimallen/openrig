@@ -75,14 +75,14 @@ Keys:
   files.allowlist        name:/abs/path,name:/abs/path
   progress.scan_roots    name:/abs/path,name:/abs/path
   ui.timezone            TUI IANA timezone (default America/Los_Angeles; reopen TUI after changing)
-  ui.enabled             serve the web UI and its terminal WebSocket (default off; restart the daemon)
+  ui.enabled             serve the web UI and its terminal WebSocket (default off; the operator restarts the daemon to apply)
   ui.preview.*           refresh_interval_seconds, max_pins, default_lines
   recovery.*             auto_drive_provider_prompts, provider_auth_env_allowlist,
                          post_restart_prompt (tell a seat a restore resumed that it was restarted and its background work killed; default on)
   transport.native_claude  deliver messages to Claude seats through their inbox socket, paste where a seat is ineligible (default on; a seat launched before enabling stays on paste)
   transport.message_pump   resend each message to a gated seat until its gate records the id; read at boot; a seat with no gate is unchanged (default on)
   agents.*               advisor_session, operator_session
-  rsi.steward_session    the improvement steward's <member>@<rig>; the daemon arms its hourly finding wake, and daily report at boot (default unset; unset or invalid disarms both at the next boot; restart the daemon to apply)
+  rsi.steward_session    the improvement steward's <member>@<rig>; the daemon arms its hourly finding wake, and daily report at boot (default unset; unset or invalid disarms both at the next boot; the operator restarts the daemon to apply)
   feed.subscriptions.*   action_required, approvals, shipped, progress, audit_log
   runtime.codex.*        hooks_enabled
   runtime.readiness_timeout_seconds

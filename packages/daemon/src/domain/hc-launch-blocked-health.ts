@@ -4,7 +4,7 @@ import type { HealthDetectorObservation, HealthObservationSource, HealthSourceCo
  * hc cutover (W42, 2026-11-01): a launch refused because the hc core has no holder (its program file was replaced while it ran) used to
  * show only as `hc refused <seat>: unavailable` on each seat. This source makes it visible in `rig health` with the cause and the fix.
  * Same shape as the core-refusal notice (hc-core-refusal-health.ts): coverage only, read-only, no observation. It clears by itself on
- * the next launch that succeeds (HcClient.launchBlockedBecause), which is what `hc server restart` followed by a launch gives.
+ * the next launch that succeeds (HcClient.launchBlockedBecause), which is what the operator's restart of the hc core followed by a launch gives.
  */
 export class HcLaunchBlockedHealthSource implements HealthObservationSource {
   readonly name = "hc-launch-blocked";

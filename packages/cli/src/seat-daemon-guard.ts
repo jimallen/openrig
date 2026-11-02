@@ -22,14 +22,21 @@ export function seatIdentityNames(env: NodeJS.ProcessEnv): string[] {
   return SEAT_IDENTITY_ENV_NAMES.filter((name) => (env[name] ?? "").trim() !== "");
 }
 
-/** The refusal for `rig daemon <verb>` in this env, or null when it is not a seat's. Names only: no value is printed. */
-export function seatDaemonControlRefusal(verb: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  if (!SEAT_REFUSED_DAEMON_VERBS.includes(verb)) return null;
+/** The refusal for this command in this env, or null when it is not a seat's. `command` is what the reader typed (`rig daemon status`,
+ *  `rig destroy`). Names only: no value is printed. HC_* names are not identity: an operator's hc terminal carries HC_SCOPE, HC_TERMINAL_ID
+ *  and HC_TERMINAL_SOCKET and no OPENRIG_*, and must start and stop the daemon (review of 6f813a07, pinned). */
+export function seatCommandRefusal(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const names = seatIdentityNames(env);
   if (names.length === 0) return null;
-  return `rig daemon ${verb} is refused in a seat (${names.join(", ")} set). Stopping or starting the daemon from a seat can end other seats' terminals. `
+  return `${command} is refused in a seat (${names.join(", ")} set). Stopping, starting or destroying the daemon from a seat can end other seats' terminals. `
     + "Report to the operator that the daemon needs attention and what you saw (`rig daemon status`, `rig daemon logs`); "
     + "they run it from a shell outside any seat.";
+}
+
+/** The refusal for `rig daemon <verb>`, or null: not a refused verb, or not a seat's env. */
+export function seatDaemonControlRefusal(verb: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (!SEAT_REFUSED_DAEMON_VERBS.includes(verb)) return null;
+  return seatCommandRefusal(`rig daemon ${verb}`, env);
 }
 
 /** Why no daemon may be started with this env, or null: the seat check, then the core's runtime location (the daemon starts the hc core

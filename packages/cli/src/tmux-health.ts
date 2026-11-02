@@ -184,7 +184,7 @@ export function buildHcHostFailure(code: HcProbeResult["code"], detail: string):
       return {
         message: "hc is not a version OpenRig accepts.",
         reason: `${reason} This build is tested with hc ${HC_TESTED_VERSION} and accepts that minor line from hc ${HC_OLDEST_ACCEPTED_VERSION} up. ${detail}`,
-        fix: `Install hc ${HC_TESTED_VERSION} (see hc update --help), and if a core from another version is running, restart it with hc server restart (terminals stay alive).`,
+        fix: `Install hc ${HC_TESTED_VERSION} (see hc update --help), and if a core from another version is running, have the operator restart it (a seat does not; terminals stay alive).`,
       };
     case "unsupported_generation":
       return {

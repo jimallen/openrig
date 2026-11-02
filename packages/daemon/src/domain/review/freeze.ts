@@ -259,7 +259,7 @@ export function freezeSliceExport(opts: {
       ok: false,
       error: "allowlist_missing",
       message: `slice folder '${opts.sliceDir}' is not under any OPENRIG_FILES_ALLOWLIST root — the freeze write path is allowlist-governed`,
-      hint: `add OPENRIG_FILES_ALLOWLIST=<name>:${path.dirname(opts.sliceDir)} (or a parent root) and restart the daemon`,
+      hint: `add OPENRIG_FILES_ALLOWLIST=<name>:${path.dirname(opts.sliceDir)} (or a parent root) and have the operator restart the daemon`,
     };
   }
   const fileName = frozenFileName(composed.sliceId, composed.slice, composed.delivered.lock.at);

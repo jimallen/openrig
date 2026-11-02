@@ -143,9 +143,23 @@ describe("the host's runtime dir with a state dir that is not the account's (sec
     expect(message).toContain("/scratch/home/.local/state");
     expect(message).toContain("/home/u/.local/state");
   });
-  it("refuses it with a trailing slash on the runtime dir", () => {
-    expect(refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: "/run/user/1000/" })).not.toBeNull();
-  });
+  // The comparison is of paths, not of text (review of 6f813a07, F2): every spelling of the host's runtime dir is the host's.
+  it.each(["/run/user/1000/", "/run/user//1000", "/run/user/1000/.", "/run/user/1000/../1000", "/run/user/./1000//"])(
+    "refuses %s as the runtime dir with a private HOME", (runtime) => {
+      expect(refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: runtime }), runtime).not.toBeNull();
+    });
+  it.each(["/run/user//1000/herdr-core/default.sock", "/run/user/1000/../1000/herdr-core/default.sock", "/run/user/./1000/herdr-core/d.sock"])(
+    "refuses a socket spelled %s with a private HOME", (socket) => {
+      expect(refused({ HOME: "/scratch/home", HC_SOCKET: socket }), socket).not.toBeNull();
+    });
+  it.each(["/run/user/1001", "/run/user/1000x", "/run/user/1000/../1001", "/run/user/10000"])(
+    "does not take %s for the host's runtime dir", (runtime) => {
+      expect(refused({ HOME: "/scratch/home", XDG_RUNTIME_DIR: runtime }), runtime).toBeNull();
+    });
+  it.each(["/run/user/1000x/herdr-core/d.sock", "/run/user/1000/../1001/herdr-core/d.sock"])(
+    "does not take a socket spelled %s for one under the host's runtime dir", (socket) => {
+      expect(refused({ HOME: "/scratch/home", HC_SOCKET: socket }), socket).toBeNull();
+    });
   it("refuses it when only the state dir is private (XDG_STATE_HOME), the HOME being the account's", () => {
     expect(refused({ HOME: "/home/u", XDG_RUNTIME_DIR: "/run/user/1000", XDG_STATE_HOME: "/scratch/state" })).not.toBeNull();
   });

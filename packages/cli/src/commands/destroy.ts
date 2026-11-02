@@ -19,6 +19,7 @@ import {
   type DestroyScope,
 } from "../destroy-helpers.js";
 import { stopDaemon } from "../daemon-lifecycle.js";
+import { seatCommandRefusal } from "../seat-daemon-guard.js";
 
 export interface DestroyCommandDeps {
   configStore: Pick<ConfigStore, "resolve">;
@@ -190,6 +191,14 @@ export function destroyCommand(depsOverride?: DestroyCommandDeps): Command {
     .option("--yes", "Confirm the destructive operation")
     .option("--confirm <token>", `Exact confirmation token: ${DESTROY_CONFIRM_TOKEN}`)
     .action(async (opts: { state?: boolean; all?: boolean; backup?: boolean; yes?: boolean; confirm?: string }) => {
+      // First, before any plan or backup: destroy stops the daemon, signals its listener, removes the state and ends the hc seats, and a failed
+      // stop only warns, so the refusal in stopDaemon alone would not stop it (review of 6f813a07, F1).
+      const refusal = seatCommandRefusal("rig destroy");
+      if (refusal !== null) {
+        console.error(refusal);
+        process.exitCode = 1;
+        return;
+      }
       const selectedScopes = [opts.state ? "state" : null, opts.all ? "all" : null].filter(Boolean) as DestroyScope[];
       if (selectedScopes.length !== 1) {
         console.error("Specify exactly one destroy scope: --state or --all");

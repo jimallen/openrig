@@ -124,7 +124,7 @@ export function reviewRoutes(): Hono {
       return c.json(
         {
           error: "file_write_service_unavailable",
-          hint: "the freeze write path is allowlist-governed; set OPENRIG_FILES_ALLOWLIST=name:/abs/path and restart the daemon",
+          hint: "the freeze write path is allowlist-governed; set OPENRIG_FILES_ALLOWLIST=name:/abs/path and have the operator restart the daemon",
         },
         503,
       );

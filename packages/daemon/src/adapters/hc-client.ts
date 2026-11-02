@@ -116,8 +116,9 @@ export function coreRuntimeLocationRefusal(env: NodeJS.ProcessEnv, platform: Nod
 function hostRuntimeWithOtherState(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, account: CoreAccount | null): string | null {
   if (platform !== "linux" || account === null) return null;
   const hostRuntime = `/run/user/${account.uid}`;
-  const runtime = env.XDG_RUNTIME_DIR ? env.XDG_RUNTIME_DIR.replace(/\/+$/, "") : "";
-  const socket = env.HC_SOCKET ?? "";
+  // Paths, not text: `/run/user//1000`, `/run/user/1000/.` and `/run/user/1000/../1000` are the host's runtime dir too (review of 6f813a07, F2).
+  const runtime = env.XDG_RUNTIME_DIR ? resolve(env.XDG_RUNTIME_DIR) : "";
+  const socket = env.HC_SOCKET ? resolve(env.HC_SOCKET) : "";
   if (runtime !== hostRuntime && !socket.startsWith(`${hostRuntime}/`)) return null;
   const accountState = resolve(account.home, ".local", "state");
   const state = resolve(env.XDG_STATE_HOME || join(env.HOME || account.home, ".local", "state"));

@@ -30,7 +30,7 @@ export function progressRoutes(): Hono {
     if (!deps.indexer.isReady()) {
       return c.json({
         error: "progress_scan_roots_not_configured",
-        hint: "Set OPENRIG_PROGRESS_SCAN_ROOTS=name1:/abs/path,name2:/abs/path and restart the daemon.",
+        hint: "Set OPENRIG_PROGRESS_SCAN_ROOTS=name1:/abs/path,name2:/abs/path and have the operator restart the daemon.",
       }, 503);
     }
     return c.json(deps.indexer.scan());

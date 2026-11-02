@@ -9,7 +9,7 @@ import { rebaseRelativePath, rebaseRelativePathEnv } from "@openrig/daemon/daemo
 import { DAEMON_STOP_WAIT_MS, DAEMON_SHUTDOWN_RECEIPT, type DaemonShutdownReceipt } from "@openrig/daemon/daemon-shutdown";
 import { ConfigStore } from "./config-store.js";
 import { readLocalOrigin } from "./local-origin.js";
-import { daemonStartRefusal } from "./seat-daemon-guard.js";
+import { daemonStartRefusal, seatDaemonControlRefusal } from "./seat-daemon-guard.js";
 import { OPENRIG_HOME, LEGACY_RIGGED_HOME, readOpenRigEnv } from "./openrig-compat.js";
 import {
   ensureDefaultWorkspace,
@@ -881,6 +881,9 @@ function removeMatchingState(deps: LifecycleDeps, stateFile: string, state: Daem
 }
 
 export async function stopDaemon(deps: LifecycleDeps): Promise<"stopped" | "no-target"> {
+  // Every stop path comes through here (the daemon verb `stop`, and `rig destroy`): a seat stops none (seat-daemon-guard.ts).
+  const refusal = seatDaemonControlRefusal("stop");
+  if (refusal !== null) throw new Error(refusal);
   const state = readState(deps);
   const configured = resolveConfiguredDaemonTarget();
   const explicitUrl = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");

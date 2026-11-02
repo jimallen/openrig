@@ -47,7 +47,7 @@ export async function planSupportRefusal(read: (path: string) => Promise<unknown
   const version = typeof stamped === "string" ? stamped : field(await get(DAEMON_VERSION_PATH), "version");
   if (supportsPlan(version)) return null;
   const seen = typeof version === "string" ? `reports version ${version}` : "did not report its version";
-  return `Not sent: the daemon ${seen}, and --plan needs ${PLAN_MIN_DAEMON_VERSION} or later. An older daemon ignores --plan and launches. Upgrade or restart the daemon, then retry.`;
+  return `Not sent: the daemon ${seen}, and --plan needs ${PLAN_MIN_DAEMON_VERSION} or later. An older daemon ignores --plan and launches. Upgrade or have the operator restart the daemon, then retry.`;
 }
 
 /** After a plan request: true only for an answer that says it changed nothing. */

@@ -54,7 +54,7 @@ describe.skipIf(!have || process.platform !== "linux")("a launch on a real core 
     expect(result).toMatchObject({ ok: false, code: "unknown" });
     const message = result.ok ? "" : result.message;
     expect(message).toContain("no holder");
-    expect(message).toContain('"hc server restart"');
+    expect(message).toContain("have the operator restart the hc core");
     expect(message).not.toBe("hc refused qa@rig: unavailable");  // the symptom as reported
     expect(client.launchBlockedBecause).toBe(message);           // and `rig health` has it
     expect(await live(client)).toEqual([]);                      // nothing was launched

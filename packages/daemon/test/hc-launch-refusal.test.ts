@@ -44,7 +44,7 @@ describe("a launch refused as unavailable by a core with no holder", () => {
     const message = result.ok ? "" : result.message;
     expect(message).toContain("no holder");
     expect(message).toContain("replaced");                    // the cause
-    expect(message).toContain('"hc server restart"');         // the fix
+    expect(message).toContain("have the operator restart the hc core");         // the fix
     expect(message).toContain("Nothing was launched");
     expect(message).toContain("hc core 0.1.15");               // the version it read from server.status
     expect(message).not.toContain("elf:");                     // the core's text is never quoted ...
@@ -82,7 +82,7 @@ describe("a launch refused as unavailable by a core with no holder", () => {
   it("is told to the client only when the core has no holder, for rig health", async () => {
     const blocked = new FakeClient(unavailable(), noHolder);
     await new HcHost(blocked, { daemonEnv: {} }).createSession("qa@rig");
-    expect(blocked.launchBlockedBecause).toContain('"hc server restart"');
+    expect(blocked.launchBlockedBecause).toContain("have the operator restart the hc core");
     const other = new FakeClient(unavailable(), withHolder);
     await new HcHost(other, { daemonEnv: {} }).createSession("qa@rig");
     expect(other.launchBlockedBecause).toBeNull();
@@ -92,14 +92,14 @@ describe("a launch refused as unavailable by a core with no holder", () => {
     const client = new FakeClient(unavailable(), noHolder);
     const result = await new HcLifecycle(client, { daemonEnv: {} }).respawnPane("qa@rig");
     const message = result.ok ? "" : result.message;
-    expect(message).toContain('"hc server restart"');
+    expect(message).toContain("have the operator restart the hc core");
     expect(message).toContain("(the previous program had already ended)");
   });
 
   it("is the same at the probe-launch site", async () => {
     const client = new FakeClient(unavailable(), noHolder);
     const result = await new HcLifecycle(client, { daemonEnv: {} }).createProbeSession("probe-1");
-    expect(result.ok ? "" : result.message).toContain('"hc server restart"');
+    expect(result.ok ? "" : result.message).toContain("have the operator restart the hc core");
   });
 
   it("takes a version from status only when it is a plain release number", async () => {
@@ -176,7 +176,7 @@ describe("the daemon's `rig health` carries it", () => {
       expect(result).toMatchObject({ ok: false });
       expect(rows()).toHaveLength(1);
       expect(rows()[0]).toMatchObject({ status: "notice", partial: false });
-      expect(reasonOf(rows()[0])).toContain('"hc server restart"');
+      expect(reasonOf(rows()[0])).toContain("have the operator restart the hc core");
     } finally {
       daemon.hcCoreWatch?.stop();
       daemon.eventLoopMonitor.stop();

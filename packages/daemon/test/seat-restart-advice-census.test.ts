@@ -11,7 +11,9 @@ import { WEB_UI_OFF_MESSAGE } from "../src/server.js";
 // outside a seat (packages/cli/src/commands/daemon.ts), which its own test (cli seat-daemon-guard.test.ts) pins to that branch.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ALLOWED = new Set(["cli/src/commands/daemon.ts"]);
-const RESTART_ADVICE = /rig daemon (stop|restart)/;
+// Widened after the review of 6f813a07 (F6): a core restart (`hc server restart`) and a plain "restart the daemon" are the same advice. A hint that
+// names the restart must name the operator ("have the operator restart the daemon", "ask the operator to restart ...") or say a seat does not.
+const RESTART_ADVICE = /rig daemon (stop|restart)|hc server (stop|restart)|(?<!(?:operator |operator to |not ))restart the daemon/;
 
 function sources(dir: string): string[] {
   const out: string[] = [];
@@ -29,7 +31,7 @@ describe("no shipped runtime string tells a seat to stop or restart the daemon",
     expect(files.length).toBeGreaterThan(300);
     expect(files.map((f) => relative(ROOT, f))).toContain("cli/src/commands/daemon.ts");
   });
-  it("names `rig daemon stop|restart` only in the allowed places", () => {
+  it("names a daemon or core restart without the operator only in the allowed places", () => {
     const hits = files.filter((f) => RESTART_ADVICE.test(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f)).filter((f) => !ALLOWED.has(f));
     expect(hits).toEqual([]);
   });

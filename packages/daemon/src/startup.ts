@@ -537,10 +537,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const hcClient = opts?.tmuxExec || opts?.argvExec ? undefined : new HcClient();
   /** The version of the hc core the watch last connected to; `rig health` says so when it is accepted but not the tested one. */
   let hcCoreVersion: string | null = null;
+  /** Why the latest core start was refused or failed (connectHcCore), null while starts go through; `rig health` shows it. */
+  let hcCoreStartFailure: string | null = null;
   const hcAdapter = hcClient ? new HcAdapter(hcClient) : undefined;
   // A wrong generation or version throws here: the daemon must not start against a core it can't speak to.
   // Kept, not discarded: stopped at shutdown (index.ts), and a refusal after the first attempt refuses the client's calls.
-  const hcCoreWatch = hcClient ? await connectHcCore({ socketPath: hcClient.socketPath, client: hcClient, onCoreVersion: (version) => { hcCoreVersion = version; } }) : undefined;
+  const hcCoreWatch = hcClient ? await connectHcCore({ socketPath: hcClient.socketPath, client: hcClient, onCoreVersion: (version) => { hcCoreVersion = version; }, onCoreStartFailure: (why) => { hcCoreStartFailure = why; } }) : undefined;
   // Not a startup gate only: every later call, attach and size watch to this core passes the same pin.
   if (hcClient && hcCoreWatch) pinCallsToCore(hcClient.socketPath, hcCoreWatch);
   const hcDelivery = hcAdapter ? new HcDelivery(hcAdapter.client, hcAdapter) : undefined;
@@ -1284,7 +1286,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const hcUnsettledHealth = new HcUnsettledHealthSource(outboxHcUnsettledRows(outboxHandlerInstance));
   // Coverage-only: says so in `rig health` when the core watch refused the core (the client then fails every call, closed, until a restart).
   const { HcCoreRefusalHealthSource } = await import("./domain/hc-core-refusal-health.js");
-  const hcCoreRefusalHealth = new HcCoreRefusalHealthSource(() => hcClient?.refusedBecause ?? null);
+  const hcCoreRefusalHealth = new HcCoreRefusalHealthSource(() => hcClient?.refusedBecause ?? null, undefined, () => hcCoreStartFailure);
   const { HcLaunchBlockedHealthSource } = await import("./domain/hc-launch-blocked-health.js");
   const hcLaunchBlockedHealth = new HcLaunchBlockedHealthSource(() => hcClient?.launchBlockedBecause ?? null);
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
