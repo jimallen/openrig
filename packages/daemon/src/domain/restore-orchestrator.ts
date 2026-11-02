@@ -54,6 +54,7 @@ import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
 import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, unreadableSnapshotsNote, type SeatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
+import { launchPrecedence } from "./rig-edge-service.js";
 import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 import { classifySessionLiveness, probePresence, type SessionPresence } from "./session-liveness.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
@@ -86,9 +87,6 @@ export type ReconcileNodeResult =
         | "prior_reconciliation_unreadable";
       detail: string;
     };
-
-// Only these edge kinds constrain launch order
-const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
 
 // OPR.0.5.7.1 consumer alignment: the four-way active-occupant ladder lives
 // in the pure leaf module active-occupant.ts, shared with preview, snapshot
@@ -864,19 +862,10 @@ export class RestoreOrchestrator {
     }
 
     for (const edge of edges) {
-      if (!LAUNCH_DEPENDENCY_KINDS.has(edge.kind)) continue;
-
-      let from: string;
-      let to: string;
-
-      if (edge.kind === "delegates_to") {
-        from = edge.sourceId;
-        to = edge.targetId;
-      } else {
-        // spawned_by: target (parent) must launch before source (child)
-        from = edge.targetId;
-        to = edge.sourceId;
-      }
+      const precedence = launchPrecedence(edge.kind, edge.sourceId, edge.targetId);
+      if (!precedence) continue;
+      const from = precedence.first;
+      const to = precedence.then;
 
       if (adjacency[from] && inDegree[to] !== undefined) {
         adjacency[from]!.push(to);

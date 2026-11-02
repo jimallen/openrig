@@ -75,6 +75,7 @@ import { whoamiCommand } from "./commands/whoami.js";
 import { releaseCommand } from "./commands/release.js";
 import { launchCommand } from "./commands/launch.js";
 import { removeCommand } from "./commands/remove.js";
+import { edgeCommand } from "./commands/edge.js";
 import { shrinkCommand } from "./commands/shrink.js";
 import { destroyCommand, type DestroyCommandDeps } from "./commands/destroy.js";
 import { setupCommand } from "./commands/setup.js";
@@ -145,6 +146,7 @@ export interface ProgramDeps {
   releaseDeps?: StatusDeps;
   launchDeps?: StatusDeps;
   removeDeps?: StatusDeps;
+  edgeDeps?: StatusDeps;
   shrinkDeps?: StatusDeps;
   destroyDeps?: DestroyCommandDeps;
   restorePacketDeps?: RestorePacketDeps;
@@ -244,6 +246,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(releaseCommand(depsOverride?.releaseDeps));
   program.addCommand(launchCommand(depsOverride?.launchDeps));
   program.addCommand(removeCommand(depsOverride?.removeDeps));
+  program.addCommand(edgeCommand(depsOverride?.edgeDeps));
   program.addCommand(shrinkCommand(depsOverride?.shrinkDeps));
   program.addCommand(destroyCommand(depsOverride?.destroyDeps));
   program.addCommand(setupCommand());

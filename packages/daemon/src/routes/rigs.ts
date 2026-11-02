@@ -44,6 +44,8 @@ import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
 import { rigAdviceHandleIn } from "../domain/rig-ref.js";
+import { RigEdgeService } from "../domain/rig-edge-service.js";
+import { transportSenderSession } from "./require-sender-identity.js";
 
 export const rigsRoutes = new Hono();
 
@@ -876,6 +878,31 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
   // 201 created. The node may still be failed/attention_required at launch; that
   // is carried in outcome.result.node.status (mirrors expand's per-node status).
   return c.json(outcome, 201);
+});
+
+// GET/POST /api/rigs/:rigId/edges - read or add one edge between existing seats (`rig edge list|add`). Same posture as the
+// other rig mutations (add_member, node removal): the /api browser boundary, and the actor from the transport identity when
+// present else the body's operator. The write and its rig.edge_added audit event are one transaction (RigEdgeService).
+function edgeService(c: { get: (key: string) => unknown }): RigEdgeService {
+  const rigRepo = getRepo(c);
+  return new RigEdgeService({ db: rigRepo.db, rigRepo, eventBus: c.get("eventBus" as never) as EventBus });
+}
+
+rigsRoutes.get("/:rigId/edges", (c) => {
+  const result = edgeService(c).list(c.req.param("rigId")!);
+  return c.json(result, result.ok ? 200 : 404);
+});
+
+rigsRoutes.post("/:rigId/edges", async (c) => {
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const result = edgeService(c).add({
+    rigId: c.req.param("rigId")!, from: body["from"], to: body["to"], kind: body["kind"],
+    reason: str(body["reason"]), operator: transportSenderSession(c) ?? str(body["operator"]),
+  });
+  if (result.ok) return c.json(result, result.created ? 201 : 200);
+  return c.json(result, result.code === "rig_not_found" || result.code === "node_not_found" ? 404
+    : result.code === "would_cycle" ? 409 : 400);
 });
 
 // DELETE /api/rigs/:rigId/pods/:podRef
