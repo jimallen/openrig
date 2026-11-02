@@ -45,9 +45,10 @@ while True:
 `;
 
 /** The option sets the runtimes' adapters pass (census: launch-as-terminal-program-census.test.ts), and the command shape each hands over. */
-type Shape = "runner" | "codex" | "managed" | "classic";
+type Shape = "runner" | "runnerStaged" | "codex" | "managed" | "classic";
 const SHAPES: Record<Shape, { options: HcShellCommandOptions; why: string }> = {
   runner: { options: { stageIfLong: true, execInScript: true, asTerminalProgram: true }, why: "Pi, OMP, PDA and the stub: the script execs the runner, which is the terminal's own process" },
+  runnerStaged: { options: { stageIfLong: true, execInScript: true, asTerminalProgram: true }, why: "the same runner with a command too long to type (a real Pi launch with its env wrapper is), so it goes in a staged script: `exec /bin/sh <script>` and the script execs the runner" },
   codex: { options: { asTerminalProgram: true }, why: "Codex: the script is the terminal's program and the agent is its child (what the pump's agent check expects)" },
   managed: { options: { asTerminalProgram: true }, why: "managed Claude: `cd <cwd> && env -i claude ...`, a compound command, run by the script as a child" },
   classic: { options: { sourceInPane: true, asTerminalProgram: true }, why: "classic Claude: an rc function, so the launch is sourced in the pane shell, which then ends" },
@@ -110,7 +111,7 @@ describe.skipIf(!HC)("a message in flight when the agent dies (OF-200), on a pri
     const log = join(root, `r${id}.log`);
     const canary = join(root, `r${id}.canary`);
     expect(await hostFor(shell).createSession(seatName, root)).toMatchObject({ ok: true });
-    const tail = `${ready} ${log}${repaint ? " repaint" : ""}`;
+    const tail = `${ready} ${log}${repaint ? " repaint" : ""}${shape === "runnerStaged" ? ` ${"p".repeat(600)}` : ""}`;
     const command = shape === "classic" ? `stubagent ${tail}` : shape === "managed" ? `cd ${root} && python3 -I ${stubPath} ${tail}` : `python3 -I ${stubPath} ${tail}`;
     // The sourced launch reads the pane shell from the terminal's foreground, which hc reports about 0.4 s after a start (claude-interactive-launch.test.ts).
     if (shape === "classic") for (let i = 0; i < 200 && !(await client.call<HcTerminal>("terminal.get", { terminal: address })).foreground?.name; i++) await wait(25);
