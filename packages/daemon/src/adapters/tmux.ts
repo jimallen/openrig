@@ -16,6 +16,11 @@ interface TmuxShellCommandOptions {
   execInScript?: boolean;
   /** Preserve rc aliases/functions in POSIX or fish panes; other shells use /bin/sh. */
   sourceInPane?: boolean;
+  /** OF-200: nothing may be left that reads the terminal after the agent ends. The hc host replaces the pane's login shell with the
+   *  launch (`exec /bin/sh <script>`), or for a sourced launch ends the shell with the launch (`exit` in the staged script), so a
+   *  message in flight when the agent dies meets a finished terminal, not a shell that runs it. The tmux adapter ignores it: its
+   *  shell stays above the agent (the deployed shape; not changed here). */
+  asTerminalProgram?: boolean;
 }
 
 /**

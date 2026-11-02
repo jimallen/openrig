@@ -319,10 +319,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         // the codex fork path) — a hostile id must not leave --resume.
         : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(parentId)} --fork-session --session-id ${forkSessionId} --name=${shellWord(opts.name)}`;
       // Every branch stages the command: only the source line is typed into the pane shell.
-      const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
+      const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent, { asTerminalProgram: true })
         : await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
           ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
-          : cmd, undefined, { sourceInPane: true });
+          : cmd, undefined, { sourceInPane: true, asTerminalProgram: true });
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
       }
@@ -338,10 +338,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(opts.resumeToken)} --name=${shellWord(opts.name)}`
       : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --session-id ${generatedSessionId} --name=${shellWord(opts.name)}`;
 
-    const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
+    const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent, { asTerminalProgram: true })
       : await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
         ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
-        : cmd, undefined, { sourceInPane: true });
+        : cmd, undefined, { sourceInPane: true, asTerminalProgram: true });
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
     }

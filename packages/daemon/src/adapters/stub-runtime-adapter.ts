@@ -18,6 +18,7 @@ import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
 import { yoloEnabled, type ResolvedLaunchPosture } from "./yolo-mode.js";
+import { runnerTerminalEnded } from "./runner-terminal-ended.js";
 import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile,
   InstalledResource, ProjectionResult, StartupDeliveryResult, ReadinessResult,
@@ -190,7 +191,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
         resumeToken: opts.resumeToken,
       });
       // Staged: only `/bin/sh <path>` is typed into the pane shell, and the script execs the runner.
-      const textResult = await this.tmux.sendShellCommand(sessionName, cmd, undefined, { execInScript: true });
+      const textResult = await this.tmux.sendShellCommand(sessionName, cmd, undefined, { execInScript: true, asTerminalProgram: true });
       if (!textResult.ok) return { ok: false, error: `Failed to send stub launch command: ${textResult.message}` };
 
       const ready = await this.waitForRunnerReady(binding, launchId);
@@ -229,6 +230,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
     if (this.fsOps) {
       if (typeof this.tmux?.hasSession === "function") {
         if (!(await this.tmux.hasSession(sessionName))) {
+          if (await runnerTerminalEnded(this.tmux, sessionName)) return { ready: false, reason: "stub-runner exited: its terminal has ended", code: "runner_exited" };
           return { ready: false, reason: "tmux session not responsive" };
         }
       }

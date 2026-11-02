@@ -33,6 +33,7 @@ import type { ProjectionPlan } from "../domain/projection-planner.js";
 import type { AgentActivity } from "../domain/types.js";
 import { PDA_USAGE_CLOSE_BUDGET_MS } from "./pda-usage-sink.js";
 import { isShellForeground } from "../domain/shell-classifier.js";
+import { runnerTerminalEnded, type TerminalEndedHost } from "./runner-terminal-ended.js";
 import type { PdaLaunchReservation } from "../domain/pda-launch-reservations.js";
 import {
   PDA_RESUME_TYPE, PDA_RUNTIME, PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_READY_MARKER,
@@ -253,7 +254,7 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
     const command = ["node", shellQuote(this.deps.runnerEntryPath), ...argv.map((arg) => /^--[a-z-]+$/.test(arg) ? arg : shellQuote(arg))].join(" ");
     // From here a runner may exist (even when the send throws half way): the claim's release rule is the runner's lock.
     progress.runnerInPane = true;
-    const sent = await this.deps.tmux.sendShellCommand(sessionName, command, undefined, { stageIfLong: true, execInScript: true });
+    const sent = await this.deps.tmux.sendShellCommand(sessionName, command, undefined, { stageIfLong: true, execInScript: true, asTerminalProgram: true });
     if (!sent.ok) {
       progress.runnerInPane = false; // the send said it typed nothing
       return { ok: false, error: `Failed to send the pda-runner command: ${sent.message}` };
@@ -267,7 +268,10 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
   async checkReady(binding: NodeBinding): Promise<ReadinessResult> {
     const sessionName = binding.tmuxSession;
     if (!sessionName) return { ready: false, reason: "No tmux session bound" };
-    if (!(await this.deps.tmux.hasSession(sessionName))) return { ready: false, reason: "tmux session not responsive" };
+    if (!(await this.deps.tmux.hasSession(sessionName))) {
+      if (await runnerTerminalEnded(this.deps.tmux as TerminalEndedHost, sessionName)) return { ready: false, reason: "pda-runner exited: its terminal has ended", code: "runner_exited" };
+      return { ready: false, reason: "tmux session not responsive" };
+    }
     // A sidecar or a READY line can outlive the runner: neither counts while the pane is back at a shell.
     const atShell = isShellForeground((await this.deps.tmux.getPaneCommand(sessionName)) ?? "");
     const state = this.readState(sessionName);

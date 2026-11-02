@@ -1,5 +1,5 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
-import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment } from "./hc-seat.js";
+import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment, type SeatLaunchRecords } from "./hc-seat.js";
 import { sessionEnvLabels } from "./hc-identity.js";
 import { refusedLaunch } from "./hc-launch-refusal.js";
 import type { SeatLaunchHints, SessionProbe, TmuxResult } from "./tmux.js";
@@ -10,6 +10,8 @@ export interface HcHostOptions {
   /** The launch lease of a managed seat (the tmux adapter's deliveryGuard.ownsLifecycle). */
   ownsLifecycle?: (nodeId: string) => boolean;
   daemonEnv?: NodeJS.ProcessEnv;
+  /** Where a created seat's env is kept for a later respawn (see SeatLaunchRecords). */
+  launches?: SeatLaunchRecords;
 }
 
 /** The seat host on herdr-core, behind the method names of the tmux adapter it replaces. */
@@ -35,6 +37,7 @@ export class HcHost {
         argv, env: seat.env, name: hcTerminalName(name), labels: { ...sessionEnvLabels(env ?? {}), [SEAT_LABEL]: name },
         ...(cwd != null ? { cwd } : {}), no_parent: true, no_notify: true, outlive_parent: true,
       });
+      this.options.launches?.remember(name, { ...(cwd != null ? { cwd } : {}), env: env ?? {}, ...(hints ? { hints } : {}) });
       return seat.warnings.length > 0 ? { ok: true, warnings: seat.warnings } : { ok: true };
     } catch (err) {
       if (err instanceof HcError && err.kind === "name_taken") {

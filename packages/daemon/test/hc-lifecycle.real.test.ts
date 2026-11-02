@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { HcHost, SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-host.js";
+import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
+import { SeatLaunchRecords } from "../src/adapters/hc-seat.js";
 import { HcLifecycle, PROBE_LABEL } from "../src/adapters/hc-lifecycle.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
 
@@ -205,5 +207,55 @@ describe.skipIf(!HC)("HcLifecycle against a private hc core", () => {
     await expect(lifecycle.createProbeSession("rigged-refresh-x")).resolves.toMatchObject({ ok: false, code: "duplicate_session" });
     await expect(lifecycle.killSession("rigged-refresh-x")).resolves.toEqual({ ok: true });
     writeFileSync(join(core.root, "probe-done"), "");
+  });
+
+  // OF-200: an agent that is its terminal's own program ends the terminal, so its restart is a respawn, and a respawn starts the new program from
+  // the env it is given alone (hc cannot read a terminal's launch env back). Without the seat's own names the restarted agent would run as a
+  // different seat: this pins that they follow.
+  describe("a respawn that names no env keeps the seat's own (OF-200)", () => {
+    const CODEX_HOME = "/seat/codex-home";
+    const SEAT_ENV = { OPENRIG_NODE_ID: "node-of200", OPENRIG_SESSION_NAME: "env@rig", OPENRIG_RUNTIME: "codex", CODEX_HOME, OF200_ONLY_IN_SEAT_ENV: `own-${process.pid}` };
+    const seen = async (out: string) => { await until(() => { try { return readFileSync(out, "utf8"); } catch { return ""; } }, (t) => t.includes("OPENRIG_NODE_ID="), "the respawned program's env"); return readFileSync(out, "utf8"); };
+
+    it("from the record the host that made the terminal kept: every name the seat was created with", async () => {
+      const launches = new SeatLaunchRecords();
+      const made = new HcHost(core.client, { daemonEnv, launches });
+      const mine = new HcLifecycle(core.client, { daemonEnv, launches });
+      await made.createSession("env@rig", core.root, SEAT_ENV);
+      const out = join(core.root, "env-record.txt");
+      await expect(mine.respawnPane("env@rig", `env > ${out}; exec sleep 120`)).resolves.toEqual({ ok: true });
+      const env = await seen(out);
+      for (const [key, value] of Object.entries(SEAT_ENV)) expect(env, key).toContain(`${key}=${value}`);
+      await expect(mine.killSession("env@rig")).resolves.toEqual({ ok: true });
+    });
+
+    it("from the labels its launch wrote when no record is kept (a daemon restart since): the identity names and CODEX_HOME, and nothing else", async () => {
+      await host.createSession("env2@rig", core.root, SEAT_ENV);   // this host keeps no record the lifecycle below could read
+      const out = join(core.root, "env-labels.txt");
+      await expect(new HcLifecycle(core.client, { daemonEnv }).respawnPane("env2@rig", `env > ${out}; exec sleep 120`)).resolves.toEqual({ ok: true });
+      const env = await seen(out);
+      for (const key of ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "CODEX_HOME"] as const) expect(env, key).toContain(`${key}=${SEAT_ENV[key]}`);
+      expect(env, "a name that is not a label is not invented").not.toContain("OF200_ONLY_IN_SEAT_ENV=");
+      await expect(new HcLifecycle(core.client, { daemonEnv }).killSession("env2@rig")).resolves.toEqual({ ok: true });
+    });
+
+    it("an env the caller names wins, and is what the next respawn keeps", async () => {
+      const launches = new SeatLaunchRecords();
+      const mine = new HcLifecycle(core.client, { daemonEnv, launches });
+      await new HcHost(core.client, { daemonEnv, launches }).createSession("env3@rig", core.root, SEAT_ENV);
+      const out = join(core.root, "env-named.txt");
+      await mine.respawnPane("env3@rig", `env > ${out}; exec sleep 120`, { env: { OPENRIG_NODE_ID: "named-node" } });
+      expect(await seen(out)).toContain("OPENRIG_NODE_ID=named-node");
+      const next = join(core.root, "env-next.txt");
+      await mine.respawnPane("env3@rig", `env > ${next}; exec sleep 120`);
+      const again = await seen(next);
+      expect(again).toContain("OPENRIG_NODE_ID=named-node");
+      expect(again, "the caller's env replaced the creation env; it did not merge with it").not.toContain("OF200_ONLY_IN_SEAT_ENV=");
+      await expect(mine.killSession("env3@rig")).resolves.toEqual({ ok: true });
+    });
+
+    it("labels carry only the names a launch is allowed to write, so no credential rides a respawn from them", () => {
+      expect(Object.keys(sessionEnvLabels({ ...SEAT_ENV, API_KEY: SECRET })).some((key) => key.includes("API_KEY"))).toBe(false);
+    });
   });
 });

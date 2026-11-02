@@ -93,6 +93,17 @@ export const SESSION_ENV_PRESENCE_KEYS = [
   "OPENRIG_URL", "RIGGED_URL", "OPENRIG_PORT", "RIGGED_PORT", "OPENRIG_ACTIVITY_HOOK_TOKEN", "RIGGED_ACTIVITY_HOOK_TOKEN", "RIGGED_RUNTIME",
 ] as const;
 
+/** The values a launch wrote as labels, as an env: the identity names and CODEX_HOME (SESSION_ENV_VALUE_KEYS), nothing else. What a respawn
+ *  can still say of a terminal's launch env when no record of it is kept (a daemon restart since). */
+export function sessionEnvFromLabels(labels: Readonly<Record<string, string>>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of SESSION_ENV_VALUE_KEYS) {
+    const value = labels[`${SESSION_ENV_LABEL_PREFIX}${key}`];
+    if (value !== undefined && value.trim() !== "") env[key] = value;
+  }
+  return env;
+}
+
 /** The labels a launch writes so the session environment can be read back: values for the identity names, a presence mark for the
  *  rest. A blank value is no value (an hc label with an empty value is a removed label). */
 export function sessionEnvLabels(env: Readonly<Record<string, string | undefined>>): Record<string, string> {

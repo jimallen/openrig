@@ -6,6 +6,7 @@ import { HcHost } from "./hc-host.js";
 import { HcIdentity } from "./hc-identity.js";
 import { HcInput } from "./hc-input.js";
 import { HcLifecycle } from "./hc-lifecycle.js";
+import { SeatLaunchRecords } from "./hc-seat.js";
 import { HcViewer } from "./hc-viewer.js";
 import { TmuxAdapter, type SessionWindowSnapshot, type TmuxResult } from "./tmux.js";
 
@@ -20,6 +21,8 @@ export class HcAdapter extends TmuxAdapter {
   override readonly hostKind = "hc" as const;
   private readonly identity: HcIdentity;
   private readonly capture: HcCapture;
+  /** What the seats' terminals were made with, shared by the host that makes them and the lifecycle that respawns them (OF-200); it outlives a rewire. */
+  private readonly launches = new SeatLaunchRecords();
   private wired?: { guard: SeatDeliveryGuard | undefined; host: HcHost; input: HcInput; lifecycle: HcLifecycle; viewer: HcViewer };
 
   constructor(readonly client: HcClient = new HcClient()) {
@@ -35,11 +38,11 @@ export class HcAdapter extends TmuxAdapter {
       const client = this.client;
       // The same core as every other call: a default attach would resolve the socket from the env on its own.
       const opener = new HcAttach(client.socketPath);
-      const lifecycle = new HcLifecycle(client, guard ? { guard, isManagedSeat: (name) => !!guard.maybeTarget(name) } : {});
+      const lifecycle = new HcLifecycle(client, guard ? { guard, isManagedSeat: (name) => !!guard.maybeTarget(name), launches: this.launches } : { launches: this.launches });
       const input = new HcInput(client, opener, guard ? { guard, admission: lifecycle } : {});
       this.wired = {
         guard,
-        host: new HcHost(client, guard ? { ownsLifecycle: (nodeId) => guard.ownsLifecycle(nodeId) } : {}),
+        host: new HcHost(client, guard ? { ownsLifecycle: (nodeId) => guard.ownsLifecycle(nodeId), launches: this.launches } : { launches: this.launches }),
         input,
         lifecycle,
         // A person at a view may answer a dialog, which a delivery refuses by default.

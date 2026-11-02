@@ -110,7 +110,10 @@ export interface InPlaceRestartRefusal { ok: false; code: InPlaceRestartRefusalC
 
 export type InPlaceRestartOutcome = "restarted_account_unverified" | "not_started" | "incomplete" | "native_unknown";
 
-type PaneShape = "shell_backed" | "direct_native";
+/** `script_backed` (OF-200, hc): the pane's root IS OpenRig's staged launch script (`/bin/sh <script>`, which replaced the login shell) and Codex is its
+ *  child, so Codex's end is the terminal's end and there is no shell to type a resume into: the restart stops Codex, waits for the terminal to end,
+ *  and respawns it with the resume command, as for `direct_native`. */
+type PaneShape = "shell_backed" | "direct_native" | "script_backed";
 
 export interface EffectiveSettings {
   model: string | null; profile: string | null; sandbox: string | null; approval: string | null;
@@ -275,6 +278,32 @@ export class CodexInPlaceRestart {
     const recoveryCommand = relaunch.core;
 
     let launch: HarnessLaunchResult;
+    if (report.paneShape === "script_backed") {
+      // Codex is the launch script's child and the script is the terminal's program (OF-200), so Codex ending ends the terminal: nothing is left to
+      // type a resume into. Stop Codex (not the script: a signalled script would leave Codex running), wait for the terminal to end, then run the resume
+      // command as the terminal's new program under the same name and labels (hc mints a new address; the identity check below rebinds it).
+      const stopped = await this.stopUnderShell(pane, panePid, codexPid, codexStartedAt, "terminal_ends");
+      if (stopped === "running") {
+        return { ...report, outcome: "not_started", recoveryCommand, message: "Codex did not exit after TERM and KILL; nothing was restarted and the original process is still running." };
+      }
+      if (stopped === "unknown") {
+        return { ...report, outcome: "native_unknown", recoveryCommand, couldNotSee: ["whether the original Codex exited and the seat's terminal ended"],
+          message: "Signals were sent, but the terminal could not be observed afterwards; no resume was attempted." };
+      }
+      progress.stage = "respawn";
+      const respawned = await this.deps.tmux.respawnPane(pane, relaunch.command, { cwd });
+      if (!respawned.ok) {
+        return { ...report, outcome: "incomplete", recoveryCommand,
+          remainingStep: "The original Codex exited and its terminal ended, but the resume could not be started. Resume the conversation for this seat with the recovery command; nothing was retried.",
+          message: `The original Codex exited (observed), but the terminal could not be respawned: ${respawned.message}` };
+      }
+      if (respawned.warnings) report.warnings.push(...respawned.warnings);
+      progress.stage = "resume";
+      launch = await this.deps.codex.verifyResumeInPane(sessionName, report.conversationId);
+      if (!launch.ok) return this.incomplete(report, launch, recoveryCommand);
+      progress.stage = "identity check";
+      return this.verifyReplacement(target, report, oldExe);
+    }
     if (report.paneShape === "shell_backed") {
       const stopped = await this.stopUnderShell(pane, panePid, codexPid, codexStartedAt);
       if (stopped === "running") {
@@ -419,15 +448,18 @@ export class CodexInPlaceRestart {
     const between = rows.find((row) => row.pid === top.ppid);
     const viaLaunchScript = !!between && between.ppid === panePid && isStagedLaunchScript(between);
     if (top.pid === panePid) paneShape = "direct_native";
+    // OF-200: an hc seat launched as its terminal's program has OpenRig's staged script as the pane root and Codex directly under it. Tested
+    // before the shell shape, which a bare `sh` root also satisfies.
+    else if (root && top.ppid === panePid && isStagedLaunchScript(root)) paneShape = "script_backed";
     else if (root && (top.ppid === panePid || viaLaunchScript) && isShellForeground(executableBase(root))) paneShape = "shell_backed";
     else return { ok: false, code: "pane_shape_unknown", message: "The pane is neither a shell running Codex (directly or through OpenRig's own launch script) nor Codex itself; nothing was stopped." };
 
     // Where the relaunched Codex would run, and with which home.
     let cwd: string;
     let shellFacts: ProcessFacts | null = null;
-    if (paneShape === "shell_backed") {
+    if (paneShape === "shell_backed" || paneShape === "script_backed") {
       shellFacts = await this.io.readProcess(panePid);
-      if (!shellFacts?.cwd) return { ok: false, code: "settings_unverified", message: "The pane shell's working directory could not be read. Nothing was stopped." };
+      if (!shellFacts?.cwd) return { ok: false, code: "settings_unverified", message: `The pane ${paneShape === "script_backed" ? "launch script" : "shell"}'s working directory could not be read. Nothing was stopped.` };
       cwd = shellFacts.cwd;
     } else {
       if (!facts.cwd) return { ok: false, code: "settings_unverified", message: "The running Codex's working directory could not be read. Nothing was stopped." };
@@ -545,11 +577,13 @@ export class CodexInPlaceRestart {
 
   /** Shell-backed: TERM the Codex chain's top process (not the pane's shell), KILL after the timeout, then
    *  require the original process gone AND the shell back in the foreground. */
-  private async stopUnderShell(pane: string, panePid: number, pid: number, startedAt: string | null): Promise<"stopped" | "running" | "unknown"> {
+  private async stopUnderShell(pane: string, panePid: number, pid: number, startedAt: string | null, until: "shell_back" | "terminal_ends" = "shell_back"): Promise<"stopped" | "running" | "unknown"> {
     const gone = async (): Promise<boolean | null> => {
       const rows = await this.listProcesses();
       if (rows.length === 0) return null;
       if (rows.some((row) => row.pid === pid && (row.startedAt ?? null) === startedAt)) return false;
+      // The launch script is the terminal's program: it ends with Codex, and the terminal with it. Only a positive "ended" counts.
+      if (until === "terminal_ends") return this.deps.tmux.isPaneDead(pane);
       const command = await this.deps.tmux.getPaneCommand(pane);
       const root = rows.find((row) => row.pid === panePid);
       return command !== null && isShellForeground(command) && !!root;

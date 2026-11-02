@@ -1,7 +1,7 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
-import { hcExactTerminalRef } from "./hc-identity.js";
+import { hcExactTerminalRef, sessionEnvFromLabels } from "./hc-identity.js";
 import { refusedLaunch } from "./hc-launch-refusal.js";
-import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-seat.js";
+import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatLaunchRecords } from "./hc-seat.js";
 import { DeliveryGuardError, type SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import type { SeatLaunchHints, TmuxResult } from "./tmux.js";
 
@@ -22,6 +22,8 @@ export interface HcLifecycleOptions {
   isManagedSeat?: (name: string) => boolean;
   /** Sends a signal to a local pid. Injected so unit tests never signal a real process. */
   kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** What the seats' terminals were made with (the host's createSession writes it), so a respawn that names no env keeps the seat's own. */
+  launches?: SeatLaunchRecords;
 }
 
 /** A terminal that is a seat's: it carries the seat label and the name that seat's terminal has, so a label alone is not enough. */
@@ -161,12 +163,6 @@ export class HcLifecycle {
 
   private async respawnUnchecked(target: string, command: string | undefined, opts: ({ cwd?: string; env?: Record<string, string> } & SeatLaunchHints) | undefined, check: () => void): Promise<TmuxResult> {
     const daemon = this.options.daemonEnv ?? process.env;
-    let launch: ReturnType<typeof seatEnvironment>;
-    try {
-      launch = seatEnvironment(opts?.env, daemon, opts);
-    } catch (err) {
-      return { ok: false, code: "invalid_env", message: (err as Error).message };
-    }
     let before: HcTerminal | null;
     try {
       before = await this.find(target);
@@ -178,6 +174,18 @@ export class HcLifecycle {
     // after the address. A terminal that is not a seat's (a probe) is not respawned here.
     const seat = before.labels[SEAT_LABEL];
     if (!seat) return { ok: false, code: "not_a_seat", message: `${target}: the terminal carries no seat label, so it is not respawned as a seat` };
+    // The seat's env across the respawn (OF-200): what the caller names, else what the seat's terminal was made with (kept by the host
+    // that made it), else the identity names its launch wrote as labels. hc starts the new program from the env it is given alone, so
+    // a respawn that named none would lose the seat's own names that the first launch carried.
+    const recalled = this.options.launches?.recall(seat);
+    const seatEnv = opts?.env ?? recalled?.env ?? sessionEnvFromLabels(before.labels);
+    const hints: SeatLaunchHints = { ...(recalled?.hints ?? {}), ...(opts?.remoteControl !== undefined ? { remoteControl: opts.remoteControl } : {}) };
+    let launch: ReturnType<typeof seatEnvironment>;
+    try {
+      launch = seatEnvironment(seatEnv, daemon, hints);
+    } catch (err) {
+      return { ok: false, code: "invalid_env", message: (err as Error).message };
+    }
     if (before.state === "live") {
       try {
         const killed = await this.kill(seat, before, check);
@@ -189,6 +197,7 @@ export class HcLifecycle {
     const shell = daemon.SHELL || "/bin/sh";
     const argv = ["env", ...launch.unset.flatMap((key) => ["-u", key]), ...(command != null && command.length > 0 ? ["/bin/sh", "-c", command] : [shell, "-l"])];
     const cwd = opts?.cwd ?? before.cwd;
+    this.options.launches?.remember(seat, { cwd, env: seatEnv, hints });
     let started: { address: string };
     try {
       check();

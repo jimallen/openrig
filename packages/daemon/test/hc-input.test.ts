@@ -412,6 +412,81 @@ describe("HcInput.sendShellCommand", () => {
     expect(f.written).toHaveLength(1);
   });
 
+  // OF-200: nothing may be left above the agent that could read the terminal after the agent ends.
+  describe("as the terminal's program (asTerminalProgram)", () => {
+    it("types exec /bin/sh <script>, which replaces the login shell, and stages the command exactly as before", async () => {
+      const f = files();
+      const { client, calls } = fakeClient({ "terminal.send": { turn: 0 } });
+      await expect(new HcInput(client, fakeAttach(null).opener, { fileOps: f.ops }).sendShellCommand(SEAT, "echo SECRET-VALUE", undefined, { asTerminalProgram: true })).resolves.toEqual({ ok: true });
+      expect(calls.at(-1)!.params.text).toBe(`exec /bin/sh ${PATH}`);
+      expect(f.written).toEqual([{ path: PATH, content: `/bin/rm -f -- '${PATH}'\necho SECRET-VALUE\n`, mode: 0o600, flag: "wx" }]);
+      expect(JSON.stringify(calls)).not.toContain("SECRET-VALUE");
+    });
+
+    it("never types a short command as it stands, whatever stageIfLong says, unless it is a runner's command that its script would exec", async () => {
+      for (const [options, text, content] of [
+        [{ stageIfLong: true }, `exec /bin/sh ${PATH}`, `/bin/rm -f -- '${PATH}'\npi --continue\n`],
+        [{ stageIfLong: true, execInScript: true }, "exec pi --continue", null],
+      ] as const) {
+        const f = files();
+        const { client, calls } = fakeClient({ "terminal.send": { turn: 0 } });
+        await new HcInput(client, fakeAttach(null).opener, { fileOps: f.ops }).sendShellCommand(SEAT, "pi --continue", undefined, { asTerminalProgram: true, ...options });
+        expect({ options, text: calls.at(-1)!.params.text, script: f.written[0]?.content ?? null }).toEqual({ options, text, script: content });
+      }
+    });
+
+    it("execs the command in the script for a runner (execInScript) and runs any other command as a child of the script that ends with it", async () => {
+      for (const [options, exec] of [[{ execInScript: true }, true], [{}, false]] as const) {
+        const f = files();
+        await new HcInput(fakeClient({ "terminal.send": { turn: 0 } }).client, fakeAttach(null).opener, { fileOps: f.ops }).sendShellCommand(SEAT, "cd /w && env -i claude", undefined, { asTerminalProgram: true, ...options });
+        expect(f.written[0]!.content).toBe(`/bin/rm -f -- '${PATH}'\n${exec ? "exec " : ""}cd /w && env -i claude\n`);
+      }
+    });
+
+    it("sources the launch in a POSIX pane shell and ends that shell with it: the staged script's last line is exit", async () => {
+      const f = files();
+      const { client, calls } = fakeClient({ "terminal.get": shell("-zsh"), "terminal.send": { turn: 0 } });
+      await new HcInput(client, fakeAttach(null).opener, { fileOps: f.ops }).sendShellCommand(SEAT, "claude --resume", undefined, { sourceInPane: true, asTerminalProgram: true });
+      expect(f.written).toEqual([
+        { path: `${PATH}.cmd`, content: `/bin/rm -f -- '${PATH}.cmd'\nclaude --resume\n`, mode: 0o600, flag: "wx" },
+        { path: PATH, content: `/bin/rm -f -- '${PATH}'\n( . '${PATH}.cmd' )\nexit\n`, mode: 0o600, flag: "wx" },
+      ]);
+      expect(calls.at(-1)!.params.text).toBe(`. ${PATH}`);
+    });
+
+    it.each(["fish", "nu", "claude", ""])("replaces a pane shell that cannot source the launch (%j) with /bin/sh, so nothing is left above the agent there either", async (name) => {
+      const f = files();
+      const { client, calls } = fakeClient({ "terminal.get": name ? shell(name) : terminal(), "terminal.send": { turn: 0 } });
+      await new HcInput(client, fakeAttach(null).opener, { fileOps: f.ops }).sendShellCommand(SEAT, "x", undefined, { sourceInPane: true, asTerminalProgram: true });
+      expect(calls.at(-1)!.params.text).toBe(`exec /bin/sh ${PATH}`);
+      expect(f.written).toHaveLength(1);
+      expect(f.written[0]!.content).toBe(`/bin/rm -f -- '${PATH}'\nx\n`);
+    });
+
+    it("keeps the bare-command fallback for a runner whose script path is too long to type, typed after exec; refuses it for any other command", async () => {
+      const long = `/tmp/${"d".repeat(600)}`;
+      const runner = files(); runner.ops.tmpName = () => long;
+      const a = fakeClient({ "terminal.send": { turn: 0 } });
+      await expect(new HcInput(a.client, fakeAttach(null).opener, { fileOps: runner.ops }).sendShellCommand(SEAT, "node runner --x", undefined, { stageIfLong: true, execInScript: true, asTerminalProgram: true })).resolves.toEqual({ ok: true });
+      expect(a.calls.at(-1)!.params.text).toBe("exec node runner --x");
+      expect(runner.written).toEqual([]);
+      for (const options of [{ stageIfLong: true }, {}] as const) {
+        const other = files(); other.ops.tmpName = () => long;
+        const b = fakeClient({ "terminal.send": { turn: 0 } });
+        await expect(new HcInput(b.client, fakeAttach(null).opener, { fileOps: other.ops }).sendShellCommand(SEAT, "node runner --x", undefined, { asTerminalProgram: true, ...options })).resolves.toMatchObject({ ok: false, code: "launch_path_too_long" });
+        expect(b.calls).toEqual([]);
+        expect(other.written).toEqual([]);
+      }
+    });
+
+    it("is the same call without the option: a launch that does not say it is the terminal's program is typed as before", async () => {
+      const f = files();
+      const { client, calls } = fakeClient({ "terminal.send": { turn: 0 } });
+      await new HcInput(client, fakeAttach(null).opener, { fileOps: f.ops }).sendShellCommand(SEAT, "pi --continue", undefined, { stageIfLong: true, execInScript: true });
+      expect(calls.at(-1)!.params.text).toBe("pi --continue");
+    });
+  });
+
   it("refuses a script path too long to type, writing nothing", async () => {
     const f = files();
     f.ops.tmpName = () => `/tmp/${"d".repeat(600)}`;

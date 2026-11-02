@@ -105,10 +105,10 @@ export class ClaudeResumeAdapter {
 
     // Every branch stages the command: only the source line is typed into the pane shell, and
     // sendShellCommand owns the Enter and its C-c cleanup.
-    const textResult = managed ? await this.tmux.sendShellCommand(tmuxSessionName, cmd, managed.assertCurrent)
+    const textResult = managed ? await this.tmux.sendShellCommand(tmuxSessionName, cmd, managed.assertCurrent, { asTerminalProgram: true })
       : await this.tmux.sendShellCommand(tmuxSessionName, this.options.seatLaunchEnvironment
         ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { runtime: "claude-code", nodeId })
-        : cmd, undefined, { sourceInPane: true });
+        : cmd, undefined, { sourceInPane: true, asTerminalProgram: true });
     if (!textResult.ok) {
       return { ok: false, code: "resume_failed", message: textResult.message };
     }

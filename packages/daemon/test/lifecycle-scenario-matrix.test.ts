@@ -371,7 +371,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
 
         const r = await adapter.resume("r99-worker", "codex_id", "tok-abc", "/tmp");
 
-        expect(tmux.sendShellCommand).toHaveBeenCalledWith("r99-worker", "codex -s workspace-write '-c' 'check_for_update_on_startup=false' resume 'tok-abc'");
+        expect(tmux.sendShellCommand).toHaveBeenCalledWith("r99-worker", "codex -s workspace-write '-c' 'check_for_update_on_startup=false' resume 'tok-abc'", undefined, { asTerminalProgram: true });
         expect(tmux.sendText).not.toHaveBeenCalled();
         expect(r).toEqual({
           ok: true,

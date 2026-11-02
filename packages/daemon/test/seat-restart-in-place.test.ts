@@ -22,7 +22,7 @@ const TOKEN = "019a0000-0000-7000-8000-000000000001";
 const SEAT = "dev-codex@r";
 const HOME = "/home/u/.codex";
 
-type Shape = "shell_backed" | "direct_native";
+type Shape = "shell_backed" | "direct_native" | "script_backed";
 
 interface WorldOptions {
   shape?: Shape;
@@ -68,6 +68,11 @@ afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
 function shellRow(pid: number, tpgid: number): NativeProcessRow {
   return { pid, ppid: 1, pgid: pid, tpgid, executableName: "bash", command: "-bash", startedAt: LSTART };
 }
+/** OF-200: an hc seat launched as its terminal's program. OpenRig's staged launch script replaced the login shell, so it is the pane root. */
+const STAGED = "/bin/sh /tmp/openrig-tmux-send-1128548-5b249a92-40d6-40c4-b424-57b3b6980529.txt";
+function scriptRow(pid: number, command = STAGED): NativeProcessRow {
+  return { pid, ppid: 1, pgid: pid, tpgid: pid, executableName: "sh", command, startedAt: LSTART };
+}
 function codexRow(pid: number, ppid: number, args: string, startedAt = LSTART, pgid = pid): NativeProcessRow {
   return { pid, ppid, pgid, tpgid: pgid, executableName: "codex", command: `/usr/local/bin/codex ${args}`, startedAt };
 }
@@ -104,8 +109,11 @@ function world(options: WorldOptions = {}) {
       ? [shellRow(100, 150), { pid: 150, ppid: 100, pgid: 150, tpgid: 150, executableName: options.betweenName ?? options.between.split(" ")[0]!.split("/").pop()!, command: options.between, startedAt: LSTART },
         codexRow(200, 150, runningArgs, LSTART, 150)]
       : [shellRow(100, 200), codexRow(200, 100, runningArgs)]
-    : [codexRow(100, 1, runningArgs, LSTART, 100)];
-  let paneCommand = "codex";
+    : shape === "script_backed"
+      ? [scriptRow(100), codexRow(200, 100, runningArgs, LSTART, 100)]
+      : [codexRow(100, 1, runningArgs, LSTART, 100)];
+  let rowsAfterRespawn = false;
+  let paneCommand = shape === "script_backed" ? "sh" : "codex";
   let dead = false;
   let paneGone = false;
   let remainOnExit: string | null = options.remainOnExit === "unreadable" ? null : options.remainOnExit ?? null;
@@ -123,6 +131,7 @@ function world(options: WorldOptions = {}) {
       ? codexRow(300, 100, runningArgs, startedAt)
       : codexRow(300, 1, runningArgs, startedAt, 300);
     rows = shape === "shell_backed" ? [shellRow(100, 300), replacement] : [replacement];
+    if (shape === "script_backed") rowsAfterRespawn = true;
     relaunched = true;
     paneCommand = "codex";
     dead = false;
@@ -134,7 +143,7 @@ function world(options: WorldOptions = {}) {
     getPanePid: async (pane: string) => {
       paneAsked.push(pane);
       if (options.hc && pane !== livePane) return null;  // a finished terminal's address names no live process
-      return shape === "shell_backed" ? 100 : rows[0]?.pid ?? null;
+      return shape === "shell_backed" || (shape === "script_backed" && !rowsAfterRespawn) ? 100 : rows[0]?.pid ?? null;
     },
     getPaneCommand: async () => paneCommand,
     getSessionEnv: async (_s: string, key: string) => (key === "CODEX_HOME" ? HOME : undefined),
@@ -142,7 +151,13 @@ function world(options: WorldOptions = {}) {
       calls.push(`signalPid ${pid} ${signal}`);
       maybeThrow("signalPid");
       // The launch script ends with Codex, so its sh exits too.
-      if (!options.codexIgnoresSignals) { rows = rows.filter((row) => row.executableName !== "codex" && row.pid !== 150); paneCommand = "bash"; }
+      if (!options.codexIgnoresSignals) {
+        rows = rows.filter((row) => row.executableName !== "codex" && row.pid !== 150 && !(shape === "script_backed" && row.pid === 100));
+        paneCommand = "bash";
+        // The launch script is the terminal's program: it ends with Codex and the terminal with it, so there is no shell to come back to.
+        // Other processes keep running: an empty table would mean the process list couldn't be read.
+        if (shape === "script_backed") { dead = true; rows = [{ ...shellRow(900, 900), command: "sshd" }]; }
+      }
       return { ok: true };
     },
     signalPaneProcess: async (_pane: string, signal: string): Promise<TmuxResult> => {
@@ -526,6 +541,48 @@ describe("hc cutover: the seat's pane is the terminal address its binding regist
     const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });
     expect(result).toMatchObject({ ok: false, code: "pane_unverified", message: expect.stringContaining("t9") });
     expect(w.calls).toEqual([]);
+  });
+});
+
+describe("OF-200: a Codex launched as its hc terminal's program (the staged launch script is the pane root)", () => {
+  const bindingOf = (w: ReturnType<typeof world>) => w.sessionRegistry.getBindingForNode(w.node.id);
+
+  it("plan names the shape script_backed, changes nothing, and does not mistake the script for a shell to type into", async () => {
+    const w = world({ shape: "script_backed", hc: {} });
+    expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: true, planOnly: true, paneShape: "script_backed", pane: "t1", conversationId: TOKEN });
+    expect(w.calls).toEqual([]);
+  });
+
+  it("restart stops Codex itself (not the script, which would orphan it), waits for the terminal to end, and respawns with the resume command", async () => {
+    const w = world({ shape: "script_backed", hc: {} });
+    const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });
+    expect(result).toMatchObject({ ok: true, outcome: "restarted_account_unverified", paneShape: "script_backed", pane: "t2", newProcess: { pid: 300 } });
+    expect(w.calls.filter((call) => call.startsWith("signalPid"))).toEqual(["signalPid 200 TERM"]);
+    expect(w.calls.some((call) => call.startsWith("signalPaneProcess")), "the pane's own process is the script: signalling it would leave Codex running").toBe(false);
+    expect(w.calls.filter((call) => call.startsWith("respawn"))).toEqual([expect.stringMatching(/^respawn env CODEX_HOME='.*' codex .* resume '019a0000-/)]);
+    expect(w.launches, "no resume is typed: there is no shell").toEqual([]);
+    expect(w.calls).toContain("verifyResumeInPane");
+    expect(w.respawnCwds).toEqual(["/work"]);
+    expect(bindingOf(w)).toMatchObject({ attachmentType: "hc", tmuxPane: null, terminalAddress: "t2" });
+    expect(await w.service.verifyRestartInPlace({ seatRef: SEAT })).toMatchObject({ ok: true, outcome: "restarted_account_unverified" });
+  });
+
+  it("a Codex that ignores TERM and KILL is reported still running, and nothing is respawned over it", async () => {
+    const w = world({ shape: "script_backed", hc: {}, codexIgnoresSignals: true });
+    expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ ok: true, outcome: "not_started", message: expect.stringContaining("still running") });
+    expect(w.calls.filter((call) => call.startsWith("signalPid"))).toEqual(["signalPid 200 TERM", "signalPid 200 KILL"]);
+    expect(w.calls.some((call) => call.startsWith("respawn"))).toBe(false);
+  });
+
+  it("a respawn that fails after Codex ended is reported unknown, with the recovery command, never as a restart", async () => {
+    const w = world({ shape: "script_backed", hc: {}, throwAt: "respawnPane" });
+    expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ ok: true, outcome: "native_unknown", recoveryCommand: expect.stringContaining("codex") });
+  });
+
+  it("a script that is not OpenRig's staged launch script is still the shell shape it was (an arbitrary sh with Codex under it)", async () => {
+    const w = world({ shape: "script_backed", hc: {} });
+    w.setRows([scriptRow(100, "/bin/sh /home/u/run-codex.sh"), codexRow(200, 100, `-m gpt-5.5 -s workspace-write resume ${TOKEN}`, LSTART, 100)]);
+    expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: true, paneShape: "shell_backed" });
   });
 });
 

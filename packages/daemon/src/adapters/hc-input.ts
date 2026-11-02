@@ -43,6 +43,14 @@ export interface HcShellCommandOptions {
   execInScript?: boolean;
   /** Source the script in a POSIX pane shell, so rc aliases and functions stay; any other shell runs it with /bin/sh. */
   sourceInPane?: boolean;
+  /** OF-200: leave nothing above the agent that could read the terminal after it ends. The core holds a send (0.45 s to seconds)
+   *  and re-checks only that the terminal is live, so a login shell left above an agent that dies in that hold runs the message
+   *  (the account's rights, outside the agent's sandbox and dialogs). The launch is never typed as a bare command: the typed line
+   *  is `exec /bin/sh <script>`, which REPLACES the login shell (same process, same terminal, same address), so the terminal ends
+   *  with the agent and the core refuses the send as `finished`. A sourced launch (a classic Claude that may be an rc alias or
+   *  function needs the shell) ends the shell instead: the staged script's last line is `exit`, reached before the shell reads
+   *  anything again. */
+  asTerminalProgram?: boolean;
 }
 
 type Failure = Extract<TmuxResult, { ok: false }>;
@@ -191,13 +199,19 @@ export class HcInput {
         paneShell = paneShellOf(terminal);
       }
       const sourceInPane = POSIX_SHELLS.includes(paneShell);
-      const typedDirect = !!options.stageIfLong && commandBytes <= MAX_TYPED_BYTES && isTypedLineWidgetSafe(command) && !CONTROL_CHARACTER.test(command);
+      const asProgram = options.asTerminalProgram === true;
+      // A command typed as it stands would leave the login shell above the agent, so as a program it is typed only after `exec`, and only
+      // when it is a runner's simple command (`execInScript`: its script `exec`s it too); any other command is staged (and refused if the
+      // staged line cannot be typed).
+      const typedAsIs = !asProgram || !!options.execInScript;
+      const typedCommand = asProgram ? `exec ${command}` : command;
+      const typedDirect = !!options.stageIfLong && typedAsIs && commandBytes <= MAX_TYPED_BYTES && isTypedLineWidgetSafe(typedCommand) && !CONTROL_CHARACTER.test(command);
       let path: string | undefined = typedDirect ? undefined : this.fileOps.tmpName();
-      let invocation = path ? `${sourceInPane ? "." : "/bin/sh"} ${typedPathArg(path)}` : command;
+      let invocation = path ? `${sourceInPane ? "." : asProgram ? "exec /bin/sh" : "/bin/sh"} ${typedPathArg(path)}` : typedCommand;
       if (Buffer.byteLength(invocation, "utf8") > MAX_TYPED_BYTES) {
-        if (options.stageIfLong && commandBytes < 1024 && !CONTROL_CHARACTER.test(command)) {
+        if (options.stageIfLong && typedAsIs && commandBytes < 1024 && !CONTROL_CHARACTER.test(command)) {
           path = undefined;
-          invocation = command;
+          invocation = typedCommand;
         } else {
           return { ok: false, code: "launch_path_too_long", message: "Temporary launch-script path exceeds the safe terminal input bound" };
         }
@@ -211,7 +225,7 @@ export class HcInput {
             const commandFile = `${path}.cmd`;
             await this.fileOps.writeFile(commandFile, `/bin/rm -f -- ${shellQuote(commandFile)}\n${command}\n`, { mode: 0o600, flag: "wx" });
             staged.push(commandFile);
-            await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n( . ${shellQuote(commandFile)} )\n`, { mode: 0o600, flag: "wx" });
+            await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n( . ${shellQuote(commandFile)} )\n${asProgram ? "exit\n" : ""}`, { mode: 0o600, flag: "wx" });
           } else {
             await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
           }

@@ -437,7 +437,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       // -s workspace-write floor flag.
       // 0.5.2-07 A2-3: the FORK path threads the SPEC model too (fork-instantiate reverted it before).
       const cmd = `codex${daemonArg}${postureArg}${networkArg}${mcpArg}${modelArg}${effortArg} fork${queueStateDirArg} ${shellQuote(parentId)}`;
-      const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
+      const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd), undefined, { asTerminalProgram: true });
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
       }
@@ -471,7 +471,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // On every launch, a fresh one too: the process before it may have died holding a recorded prompt (M5). With no thread, a record's own
     // rollout path is still searched.
     this.settleSeatGate(binding.tmuxSession, opts.resumeToken ?? null);
-    const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
+    const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd), undefined, { asTerminalProgram: true });
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
     }
@@ -511,7 +511,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    *  does. Nothing is prepared again, so the command runs exactly as it was built and checked. */
   async sendResumeCommand(tmuxSession: string, command: string, resumeToken: string): Promise<HarnessLaunchResult> {
     this.settleSeatGate(tmuxSession, resumeToken);
-    const textResult = await this.tmux.sendShellCommand(tmuxSession, command);
+    const textResult = await this.tmux.sendShellCommand(tmuxSession, command, undefined, { asTerminalProgram: true });
     if (!textResult.ok) return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
     return this.verifyResumeInPane(tmuxSession, resumeToken);
   }

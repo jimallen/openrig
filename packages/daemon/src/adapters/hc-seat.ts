@@ -56,3 +56,17 @@ export function seatEnvironment(seat: Readonly<Record<string, string>> = {}, dae
   const candidates = [...PARENT_SESSION_ENV_KEYS, "CLAUDE_EFFORT", ...HOST_ENV_KEYS, ...OPERATOR_SECRET_ENV_NAMES, ...remoteControlNames];
   return { env, unset: candidates.filter((key) => !(key in env)), warnings: hints.remoteControl === true ? [...remoteControlEnvWarnings(env), ...remoteControlClearedWarnings(daemon, seat)] : [] };
 }
+
+/** What a seat's terminal was last made with: the working folder, the seat's own env and the launch hints. hc has no way to read a
+ *  terminal's launch environment back (see SESSION_ENV_LABEL_PREFIX), and a terminal that is respawned (OF-200: the restart of an
+ *  agent that is its terminal's own program ends the terminal and runs a new one) starts from the env it is given. Without this a
+ *  respawn that names no env would start the agent with the daemon's env alone, losing the seat's own names (a per-seat CODEX_HOME,
+ *  the OpenRig identity) that the first launch carried. Kept by the adapter that made the terminal, so it is empty after a daemon
+ *  restart; HcLifecycle then falls back to the identity names the launch wrote as labels. */
+export interface SeatLaunchRecord { cwd?: string; env?: Readonly<Record<string, string>>; hints?: SeatLaunchHints }
+
+export class SeatLaunchRecords {
+  private readonly records = new Map<string, SeatLaunchRecord>();
+  remember(seat: string, record: SeatLaunchRecord): void { this.records.set(seat, record); }
+  recall(seat: string): SeatLaunchRecord | undefined { return this.records.get(seat); }
+}

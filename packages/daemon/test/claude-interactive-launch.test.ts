@@ -62,6 +62,16 @@ describe.skipIf(!findHc() || !fs.existsSync("/bin/bash"))("classic Claude intera
     return false;
   }
 
+  /** The terminal once it has finished (the launch ended the pane shell), or a failure after 10 s. */
+  async function terminalFinished(name: string): Promise<{ exit_code?: number | null; reason?: string | null }> {
+    for (let i = 0; i < 400; i++) {
+      const terminal = await scratch.client().call<{ state: string; exit_code?: number | null; reason?: string | null }>("terminal.get", { terminal: hcTerminalName(name) });
+      if (terminal.state === "finished") return terminal;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error(`the pane shell of ${name} did not end after the launch`);
+  }
+
   async function foregroundReported(name: string): Promise<void> {
     for (let i = 0; i < 400; i++) {
       const terminal = await scratch.client().call<{ foreground?: { name?: string } | null }>("terminal.get", { terminal: hcTerminalName(name) });
@@ -152,7 +162,9 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
               ...(kind === "fork" ? { forkSource: { kind: "native_id" as const, value: token } }
                 : kind === "launch-resume" ? { resumeToken: token } : {}) });
           }
-          await until(() => fs.existsSync(status));
+          // OF-200: the launch ends the pane shell (the staged script's last line is `exit`), so there is no prompt to return to: the
+          // terminal finishes, and the launch's exit status is the terminal's exit code (`exit` with no argument reports `$?`).
+          const finished = await terminalFinished(name);
           const started = fs.existsSync(marker), issues: string[] = [];
           if (started) {
             const got = JSON.parse(fs.readFileSync(marker, "utf8"));
@@ -164,8 +176,8 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
               if (!got.path.endsWith(bin + ":/usr/bin:/bin")) issues.push("user PATH replaced");
             } else if (got.node !== "rc-node" || got.home !== "rc-home") issues.push("fallback/legacy environment changed");
           }
-          cells.push({ shape, route, kind, started, exit: Number(fs.readFileSync(status, "utf8").trim()), issues });
-          expect(await transport.killSession(name)).toEqual({ ok: true });
+          cells.push({ shape, route, kind, started, exit: finished.exit_code ?? -1, issues });
+          expect(await transport.killSession(name), "the launch already ended the terminal: nothing is left to kill").toMatchObject({ ok: false, code: "session_not_found" });
         }
       }
       console.log("CLAUDE_INTERACTIVE_CELLS", JSON.stringify(cells));
