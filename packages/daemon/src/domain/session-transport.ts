@@ -1625,6 +1625,9 @@ export class SessionTransport {
 
   get deliveryGuard() { return this.tmuxAdapter.deliveryGuard; }
 
+  /** Absent: the pump is off. A consumer that must follow a message past `send` (S4) reads it here, as it reads the guard. */
+  get messageHandOff(): MessageHandOff | undefined { return this.tmuxAdapter.messageHandOff; }
+
   retentionTarget(sessionName: string) {
     const guard = this.tmuxAdapter.deliveryGuard;
     const target = guard?.maybeTarget(sessionName);
