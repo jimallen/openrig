@@ -198,6 +198,17 @@ describe("SessionTransport and the pump", () => {
     });
   });
 
+  it("a claimed wake group the drain hands over goes out as one text", async () => {
+    build(true);
+    const outbox = new OutboxHandler(db);
+    for (const id of ["wake-intent-a", "wake-intent-b"]) outbox.record({ outboxId: id, senderSession: "lead@hr", destinationSession: SEAT, body: id });
+    const result = await transport.send(SEAT, "wake-intent-a\nwake-intent-b", { committedOutboxIds: ["wake-intent-a", "wake-intent-b"] });
+    await new Promise((r) => setImmediate(r));
+    expect(result.reason).toBe("handed_to_pump");
+    expect(hopCalls).toEqual(["wake-intent-a"]);
+    expect(row("wake-intent-b")).toMatchObject({ attempts: 1, message_group: "wake-intent-a" });
+  });
+
   describe("a seat with no gate", () => {
     beforeEach(() => { build(false); });
 

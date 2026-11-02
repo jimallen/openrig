@@ -30,6 +30,9 @@ export interface SeatMessage {
   readonly ids: readonly [MessageId, ...MessageId[]];
   readonly seat: string;
   readonly body: string;
+  /** Each row's own text, label included, in `ids` order; `body` is these joined. A last hop that cannot send a long group as one paste sends the
+   *  first row alone. Absent: the rows are not known apart. */
+  readonly bodies?: readonly string[];
   readonly messageClass: SeatMessageClass;
   readonly lane: SeatMessageLane;
   readonly occupantGeneration?: string | null;

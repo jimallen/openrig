@@ -53,6 +53,18 @@ function prepareLongPaste(message: SeatMessage, text: string, rows: Pick<HopRows
   return shortPaste(message, marker, index, total);
 }
 
+/** A wake group is one text with one marker per row, but the spool holds one message's text under one marker, so a long group goes a row at a
+ *  time: this attempt carries the first row alone, and the rows after it are the next attempts' head, in order. Decided from the attempt's own
+ *  text, so the attempt, the blocked-repeat check and the clearing of it all see the same row. A group the seat cannot take as a short paste goes
+ *  whole, as before, and a message with no per-row bodies is left as it is. */
+function longGroupHead(message: SeatMessage, rows: Pick<HopRows, "nonceOf">, spool: SeatSpool | undefined): SeatMessage {
+  if (message.ids.length === 1 || message.bodies === undefined || spool === undefined || (spool.declaredVersion(message.seat) ?? 0) < SPOOL_GATE_VERSION) return message;
+  const whole = markedText(message, rows);
+  if (whole === null || Buffer.byteLength(whole) <= PASTE_LIMIT) return message;
+  const first = message.bodies[0]!;
+  return { ...message, ids: [message.ids[0]], body: first, bodies: [first] };
+}
+
 /** The note and the marker, under the label a message for the previous occupant carries on every attempt. */
 function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
   const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL}\n` : "";
@@ -214,7 +226,8 @@ export class ClaudeSeatHop implements LastHop {
       const seat = await readSeat(this.deps.client, message.seat, "claude-code", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
-      const text = prepareLongPaste(message, whole, this.deps.rows, this.deps.spool);
+      const one = longGroupHead(message, this.deps.rows, this.deps.spool);
+      const text = prepareLongPaste(one, one === message ? whole : markedText(one, this.deps.rows)!, this.deps.rows, this.deps.spool);
       const step = decideClaudeRetry({
         text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: false,
         atRest: seat.status !== null && AT_REST.has(seat.status), composer: readClaudeComposer(seat.screen),
@@ -229,7 +242,8 @@ export class ClaudeSeatHop implements LastHop {
   }
 
   /** M3: a blocked repeat comes back to the composer. Cleared only at rest, only when it holds exactly this text, only with `ctrl+c`. */
-  async afterReceived(message: SeatMessage): Promise<void> {
+  async afterReceived(sentMessage: SeatMessage): Promise<void> {
+    const message = longGroupHead(sentMessage, this.deps.rows, this.deps.spool);
     const whole = markedText(message, this.deps.rows);
     if (whole === null) return;
     const text = this.deps.rows.partsOf(message.ids[0]) === null ? whole : stagedLongPaste(message, this.deps.rows);
@@ -261,7 +275,8 @@ export class CodexSeatHop implements LastHop {
   private readonly hop: CodexPasteHop;
   constructor(private readonly deps: CodexHopDeps) { this.hop = new CodexPasteHop(deps.client, deps.input); }
 
-  attempt(message: SeatMessage): Promise<LastHopResult> {
+  attempt(whole: SeatMessage): Promise<LastHopResult> {
+    const message = longGroupHead(whole, this.deps.rows, this.deps.spool);
     const text = markedText(message, this.deps.rows);
     if (text === null) return Promise.resolve(unmarked);
     return guarded(this.deps.guard, message.seat, async () => {

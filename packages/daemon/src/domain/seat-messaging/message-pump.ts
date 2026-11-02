@@ -1,8 +1,8 @@
 import { partId } from "./long-message.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "./message-label.js";
 import { messageId, type GateLookup, type LastHopResult, type MessageId, type SeatGate, type SeatMessage } from "./ports.js";
-import type { MessageAcceptInput, MessageOutcome, MessageStore, StoredMessage } from "./message-store.js";
-import type { HeldMessages, SeatDirectory, SeatMessagingPorts, SenderReturn } from "./pump-ports.js";
+import { MESSAGE_LANES, type MessageAcceptInput, type MessageOutcome, type MessageStore, type StoredMessage } from "./message-store.js";
+import type { HeldMessages, MessageObligations, SeatDirectory, SeatMessagingPorts, SenderReturn } from "./pump-ports.js";
 
 /**
  * The pump (census-delivery-guarantees-20261101, part 2): the one retry owner. One timer; per seat, only the oldest open message, one
@@ -29,6 +29,8 @@ export interface MessagePumpDeps {
   directory: SeatDirectory;
   held: HeldMessages;
   senders: SenderReturn;
+  /** Absent: every message is wanted until a gate records it. */
+  obligations?: MessageObligations;
   clock?: () => number;
   timing?: Partial<MessagePumpTiming>;
   log?: (line: string) => void;
@@ -47,6 +49,8 @@ export class MessagePump {
   private readonly log: (line: string) => void;
   /** Seats with a pass running. It guards this process only: across a restart, the row's committed next time does the same job. */
   private readonly inFlight = new Set<string>();
+  /** Seats whose content lane is held, and by how many. In memory by design: see `MessageHandOff.holdContentLane`. */
+  private readonly contentLaneHolds = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
 
@@ -90,6 +94,20 @@ export class MessagePump {
   /** Ends a row nobody should still deliver. False when it was not open. */
   cancel(id: MessageId, reason: string): boolean {
     return this.deps.store.cancel(id, reason, new Date(this.clock()).toISOString());
+  }
+
+  /** Lane 2 waits on `seat` until the returned function is called. Calling it again changes nothing. */
+  holdContentLane(seat: string): () => void {
+    this.contentLaneHolds.set(seat, (this.contentLaneHolds.get(seat) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = this.contentLaneHolds.get(seat)! - 1;
+      if (left > 0) this.contentLaneHolds.set(seat, left);
+      else this.contentLaneHolds.delete(seat);
+      void this.tick();
+    };
   }
 
   /** One pass. A seat whose last pass is still running is skipped, so one slow hop holds up only its own seat. */
@@ -143,11 +161,14 @@ export class MessagePump {
     const lookup = await this.readGate(gate, message);
     // First, ahead of the seat's fate: a record means the message arrived, whatever became of the seat since.
     if (lookup.kind === "seen") {
+      // Read first: the seat was sent the whole group, and a blocked repeat in its composer is that text.
+      const sent = message.attempts > 1 ? this.deps.store.groupOf(message) : [];
       if (!this.deps.store.recordReceived(lookup.record, gate.version)) return "stop";
-      if (message.attempts > 1) await this.tidyAfterReceived(message);
+      if (sent.length > 0) await this.tidyAfterReceived(sent);
       this.forgetText(message.seat);
       return "next";
     }
+    if (this.endIfNoLongerWanted(message)) return "next";
     const fate = this.deps.directory.fate(message.seat);
     const bound = message.occupantGeneration;
     // Lifecycle text stays with the occupant it was for: a held copy goes back to its sender, never on to the new occupant.
@@ -167,11 +188,15 @@ export class MessagePump {
       this.deps.store.recordGateUnavailable(message.id, this.clock() + this.timing.pauseRecheckMs);
       return "stop";
     }
+    if (message.lane === MESSAGE_LANES.content && this.contentLaneHolds.has(message.seat)) {
+      this.deps.store.recordLaneHeld(message.id);
+      return "stop";
+    }
     // A part arrived: the next one is due now, on a fresh backoff, not at the end of the last one's.
     if (lookup.nextPart !== undefined && lookup.nextPart - 1 > message.partsDone) {
       return this.deps.store.recordPartsDone(message, lookup.nextPart - 1) ? "next" : "stop";
     }
-    return this.attempt(message, lookup.nextPart);
+    return this.attempt(gate, message, lookup.nextPart);
   }
 
   /** The message's own id, then, for a long message, each of its numbered parts. All of them seen is the message seen. */
@@ -185,6 +210,18 @@ export class MessagePump {
       if (last.kind === "unavailable") return last;
     }
     return last.kind === "seen" ? { kind: "seen", record: { ...last.record, id: message.id } } : last;
+  }
+
+  /** The obligation is read before every attempt. A check that throws proves nothing, so the message stays wanted. */
+  private endIfNoLongerWanted(message: StoredMessage): boolean {
+    let reason: string | null;
+    try {
+      reason = this.deps.obligations?.whyNoLongerWanted(message) ?? null;
+    } catch (error) {
+      this.log(`message ${message.id}: its obligation could not be read: ${(error as Error).message}`);
+      return false;
+    }
+    return reason !== null && this.cancel(message.id, reason);
   }
 
   /** Anything but a record of this very id proves nothing, so it never moves a row. */
@@ -201,28 +238,52 @@ export class MessagePump {
     return lookup;
   }
 
-  private async attempt(message: StoredMessage, part: number | undefined): Promise<Visit> {
+  /** The head and the rows of its group still to go. A row the gate recorded is settled here and stays out of the text: a copy of its id would
+   *  be a repeat, and the rest would go out without it. Null when a member's gate cannot be read: the text cannot be known, so nothing goes. */
+  private async rowsToSend(gate: SeatGate, head: StoredMessage): Promise<StoredMessage[] | null> {
+    const rows: StoredMessage[] = [];
+    for (const member of this.deps.store.groupOf(head)) {
+      if (member.id === head.id) { rows.push(member); continue; }
+      const lookup = await this.readGate(gate, member);
+      if (lookup.kind === "unavailable") {
+        this.deps.store.recordGateUnavailable(head.id, this.clock() + this.timing.pauseRecheckMs);
+        return null;
+      }
+      if (lookup.kind === "seen") this.deps.store.recordReceived(lookup.record, gate.version);
+      else if (!this.endIfNoLongerWanted(member)) rows.push(member);
+    }
+    return rows;
+  }
+
+  private async attempt(gate: SeatGate, message: StoredMessage, part: number | undefined): Promise<Visit> {
     const hop = this.deps.ports.hopFor(message.seat);
     if (!hop) return "stop";
     const now = this.clock();
     if (message.nextAttemptAtMs !== null && now < message.nextAttemptAtMs) return "stop";
-    if (!this.deps.store.claimAttempt(message, now + nextAttemptDelayMs(message.attempts + 1, this.timing.backoffMs))) return "stop";
+    const rows = await this.rowsToSend(gate, message);
+    if (rows === null || rows.length === 0) return "stop";
+    if (!this.deps.store.claimAttempts(rows, now + nextAttemptDelayMs(message.attempts + 1, this.timing.backoffMs))) return "stop";
     let result: LastHopResult;
     try {
-      result = await hop.attempt({ ...this.seatMessage(message), ...(part === undefined ? {} : { part }) });
+      result = await hop.attempt({ ...this.seatMessage(rows), ...(part === undefined ? {} : { part }) });
     } catch (error) {
       result = { kind: "refused", reason: `the hop threw: ${(error as Error).message}` };
     }
-    if (result.kind === "sent") this.deps.store.recordSent(message.id);
-    else if (result.kind === "refused") this.deps.store.recordRefusal(message.id, result.reason);
-    else this.deps.store.recordHopPause(message.id, result.reason, this.clock() + this.timing.pauseRecheckMs);
+    for (const { id } of rows) {
+      if (result.kind === "sent") this.deps.store.recordSent(id);
+      else if (result.kind === "refused") this.deps.store.recordRefusal(id, result.reason);
+      else this.deps.store.recordHopPause(id, result.reason, this.clock() + this.timing.pauseRecheckMs);
+    }
     return "stop";
   }
 
-  private seatMessage(message: StoredMessage): SeatMessage {
+  /** One text however many rows: the group's is every body in staging order, as a drain wrote it. */
+  private seatMessage(rows: readonly StoredMessage[]): SeatMessage {
+    const [head, ...rest] = rows as [StoredMessage, ...StoredMessage[]];
+    const text = (row: StoredMessage) => (row.previousOccupant === null ? row.body : `${PREVIOUS_OCCUPANT_LABEL} ${row.body}`);
     return {
-      ids: [message.id], seat: message.seat, body: message.previousOccupant === null ? message.body : `${PREVIOUS_OCCUPANT_LABEL} ${message.body}`,
-      occupantGeneration: message.occupantGeneration, messageClass: message.messageClass, lane: message.lane,
+      ids: [head.id, ...rest.map((row) => row.id)], seat: head.seat, body: rows.map(text).join("\n"), bodies: rows.map(text),
+      occupantGeneration: head.occupantGeneration, messageClass: head.messageClass, lane: head.lane,
     };
   }
 
@@ -234,9 +295,10 @@ export class MessagePump {
     }
   }
 
-  private async tidyAfterReceived(message: StoredMessage): Promise<void> {
+  private async tidyAfterReceived(rows: readonly StoredMessage[]): Promise<void> {
+    const message = rows[0]!;
     try {
-      await this.deps.ports.hopFor(message.seat)?.afterReceived?.(this.seatMessage(message));
+      await this.deps.ports.hopFor(message.seat)?.afterReceived?.(this.seatMessage(rows));
     } catch (error) {
       this.log(`message ${message.id}: tidying the seat after it arrived failed: ${(error as Error).message}`);
     }

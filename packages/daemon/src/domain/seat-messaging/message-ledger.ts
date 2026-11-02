@@ -4,6 +4,7 @@ import {
   isUnconfirmedHcSend, labelForTmuxSend, OutboxHandler, SEAT_MESSAGE_ID_PREFIX,
   type OutboxDeliveryPath, type SeatMessageClass, type SeatMessageLane,
 } from "../outbox-handler.js";
+import { defaultLane } from "./message-store.js";
 
 /**
  * The `Message` aggregate's write seam (Seat Messaging; design: census-delivery-guarantees-20261101, part 2). Two invariants live here:
@@ -71,7 +72,7 @@ export class MessageLedger {
           identityProvenance: input.identityProvenance,
           ...(input.auditPointer ? { auditPointer: input.auditPointer } : {}),
           ...(input.messageClass ? { messageClass: input.messageClass } : {}),
-          lane: input.lane ?? (input.messageClass === "lifecycle" ? 0 : input.messageClass === "command" ? null : 2),
+          lane: input.lane ?? (input.messageClass === "command" ? null : defaultLane(input.messageClass)),
           ...(input.occupantGeneration ? { occupantGeneration: input.occupantGeneration } : {}),
           // A Command is confirmed by effect and retried by its owner, so it is never the pump's.
           ...(input.messageClass === "command" ? {} : { messageState: "accepted" as const }),

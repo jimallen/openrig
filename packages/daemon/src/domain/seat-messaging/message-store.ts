@@ -20,17 +20,27 @@ export const MESSAGE_STATES = ["accepted", "attempting", "received", "undelivera
 export type MessageState = (typeof MESSAGE_STATES)[number];
 
 type HopPause = Extract<LastHopResult, { kind: "paused" }>["reason"];
-/** Why the pump is not attempting now. `gate_unavailable` is the pump's own: the gate cannot be read, which proves nothing. */
-export type MessagePauseReason = HopPause | "gate_unavailable";
+/** Why the pump is not attempting now. Two are the pump's own: `gate_unavailable`, the gate cannot be read, which proves nothing; `lane_held`,
+ *  the seat's startup or another lifecycle sequence has the content lane. */
+export type MessagePauseReason = HopPause | "gate_unavailable" | "lane_held";
 
 /** FIFO's unit (S4 design, N4). The lowest open lane goes first, so nothing lands between restore stages or ahead of a startup packet. */
 export const MESSAGE_LANES = { startup: 0, compaction: 1, content: 2 } as const satisfies Record<string, SeatMessageLane>;
+
+/** A message's lane when its caller named none. The compaction enforcer names its own. */
+export function defaultLane(messageClass: SeatMessageClass | undefined): SeatMessageLane {
+  return messageClass === "lifecycle" ? MESSAGE_LANES.startup : MESSAGE_LANES.content;
+}
 
 export interface StoredMessage {
   readonly id: MessageId;
   readonly seat: string;
   readonly body: string;
   readonly occupantGeneration: string | null;
+  /** The queue item or job this message stands for, when it has one. */
+  readonly auditPointer: string | null;
+  /** The wake group this row went out with. Null: a message on its own. */
+  readonly group: string | null;
   /** Set when a held row went to a new occupant: the occupant that held it. Every attempt then carries the label. */
   readonly previousOccupant: string | null;
   /** The pump took this row. Otherwise it is S1's bookkeeping on a seat the pump does not serve. */
@@ -92,6 +102,8 @@ interface MessageRow {
   message_pause_reason: string | null;
   message_last_refusal: string | null;
   occupant_generation: string | null;
+  audit_pointer: string | null;
+  message_group: string | null;
   message_previous_occupant: string | null;
   message_pump_owned: number | null;
   message_parts: number | null;
@@ -101,7 +113,7 @@ interface MessageRow {
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
 const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
-const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "gate_unavailable"];
+const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "gate_unavailable", "lane_held"];
 
 function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;
@@ -116,7 +128,7 @@ function iso(ms: number | null): string | null { return ms === null ? null : new
 function toMessage(row: MessageRow): StoredMessage {
   return {
     id: messageId(row.outbox_id), seat: row.destination_session, sender: row.sender_session, body: row.body,
-    occupantGeneration: row.occupant_generation, previousOccupant: row.message_previous_occupant, pumpOwned: row.message_pump_owned === 1,
+    occupantGeneration: row.occupant_generation, auditPointer: row.audit_pointer, group: row.message_group, previousOccupant: row.message_previous_occupant, pumpOwned: row.message_pump_owned === 1,
     state: row.message_state === "accepted" ? "accepted" : "attempting",
     lane: laneOf(row.lane), messageClass: classOf(row.class),
     attempts: row.attempts, nextAttemptAtMs: row.next_attempt_at === null ? null : Date.parse(row.next_attempt_at),
@@ -124,6 +136,9 @@ function toMessage(row: MessageRow): StoredMessage {
     parts: row.message_parts, partsDone: row.message_parts_done ?? 0,
   };
 }
+
+/** Rolls a group's claim back: another claim took one of its rows first. */
+class LostClaim extends Error {}
 
 export class MessageStore {
   private readonly outbox: OutboxHandler;
@@ -147,7 +162,7 @@ export class MessageStore {
         urgency: input.urgency, tags: input.tags, auditPointer: input.auditPointer, identityProvenance: input.identityProvenance,
       });
       this.db.prepare(`UPDATE outbox_entries SET message_state = 'accepted', message_id = coalesce(message_id, outbox_id), occupant_generation = ?, lane = ?, class = ?, next_attempt_at = ?
-        WHERE outbox_id = ? AND message_state IS NULL`).run(input.occupantGeneration ?? null, input.lane ?? MESSAGE_LANES.content, input.messageClass ?? null, iso(input.firstAttemptAtMs ?? null), input.id);
+        WHERE outbox_id = ? AND message_state IS NULL`).run(input.occupantGeneration ?? null, input.lane ?? defaultLane(input.messageClass), input.messageClass ?? null, iso(input.firstAttemptAtMs ?? null), input.id);
       this.db.prepare("UPDATE outbox_entries SET message_pump_owned = 1 WHERE outbox_id = ? AND message_state IN ('accepted', 'attempting')").run(input.id);
       return toMessage(this.read(input.id)!);
     })();
@@ -164,12 +179,35 @@ export class MessageStore {
     return row ? toMessage(row) : null;
   }
 
+  /** `message` and the rows that go out with it, in staging order, which is rowid. Only rows that can be one text: still open, and for the same
+   *  seat, lane and occupant. A member that left any of those goes on its own when its turn comes. */
+  groupOf(message: StoredMessage): StoredMessage[] {
+    if (message.group === null) return [message];
+    const rows = this.db.prepare(`SELECT * FROM outbox_entries WHERE message_group = ? AND destination_session = ? AND coalesce(lane, 2) = ? AND occupant_generation IS ? AND ${OPEN} ORDER BY rowid`)
+      .all(message.group, message.seat, message.lane, message.occupantGeneration) as MessageRow[];
+    return rows.map(toMessage);
+  }
+
   /** Write-ahead for an attempt: the count and the next time are committed before a byte leaves, so a crash mid-attempt resumes from
    *  here on the same schedule. The CAS on `attempts` means one claim per attempt. Leaves `accepted`. */
   claimAttempt(message: StoredMessage, nextAttemptAtMs: number): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', attempts = attempts + 1,
         next_attempt_at = ?, message_pause_reason = NULL, native_nonce = coalesce(native_nonce, ?)
       WHERE outbox_id = ? AND attempts = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), randomBytes(16).toString("hex"), message.id, message.attempts).changes === 1;
+  }
+
+  /** One attempt of one text: every row claims it, or none does. */
+  claimAttempts(messages: readonly StoredMessage[], nextAttemptAtMs: number): boolean {
+    const claimAll = this.db.transaction(() => {
+      for (const message of messages) if (!this.claimAttempt(message, nextAttemptAtMs)) throw new LostClaim();
+    });
+    try {
+      claimAll();
+      return true;
+    } catch (error) {
+      if (error instanceof LostClaim) return false;
+      throw error;
+    }
   }
 
   /** The nonce every attempt of this message carries, or null before its first. A gate's record is this message's only under it. */
@@ -224,6 +262,11 @@ export class MessageStore {
   recordGateUnavailable(id: MessageId, nextAttemptAtMs: number): void {
     this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', next_attempt_at = max(coalesce(next_attempt_at, ''), ?), message_pause_reason = 'gate_unavailable'
       WHERE outbox_id = ? AND ${OPEN}`).run(iso(nextAttemptAtMs), id);
+  }
+
+  /** Waiting its lane's turn: nothing is claimed and nothing is rescheduled, so it goes on the first pass after the hold lifts. */
+  recordLaneHeld(id: MessageId): void {
+    this.db.prepare(`UPDATE outbox_entries SET message_pause_reason = 'lane_held' WHERE outbox_id = ? AND ${OPEN}`).run(id);
   }
 
   recordRefusal(id: MessageId, reason: string): void {
@@ -298,11 +341,14 @@ export class MessageStore {
       WHERE outbox_id = ? AND delivery_state = 'retained' AND message_hold_released_at IS NULL`).run(atIso, previousOccupant, id).changes === 1;
   }
 
-  /** A row a drain claimed or still holds moves to the pump, whole. A nudge in the content lane, unless the row says otherwise. */
-  adoptClaimed(id: MessageId): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'pending', message_state = 'accepted', message_id = coalesce(message_id, outbox_id),
-        class = coalesce(class, 'nudge'), lane = coalesce(lane, ?), message_pump_owned = 1
-      WHERE outbox_id = ? AND delivery_state IN ('pending', 'sending') AND message_state IS NULL`).run(MESSAGE_LANES.content, id).changes === 1;
+  /** Rows a drain claimed or still holds move to the pump, whole and together. A nudge in the content lane, unless the row says otherwise.
+   *  More than one row is a wake group, named after its first: it goes out as one text. One row is no group, whatever an earlier run left. */
+  adoptClaimed(ids: readonly MessageId[]): void {
+    const group = ids.length > 1 ? ids[0]! : null;
+    const adopt = this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'pending', message_state = 'accepted', message_id = coalesce(message_id, outbox_id),
+        class = coalesce(class, 'nudge'), lane = coalesce(lane, ?), message_pump_owned = 1, message_group = ?
+      WHERE outbox_id = ? AND delivery_state IN ('pending', 'sending') AND message_state IS NULL`);
+    this.db.transaction(() => { for (const id of ids) adopt.run(MESSAGE_LANES.content, group, id); })();
   }
 
   /** One line per seat with an open message: how many, and the oldest. SELECT only. */

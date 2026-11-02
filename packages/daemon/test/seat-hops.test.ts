@@ -374,6 +374,40 @@ describe("the hops", () => {
           expect(spooled).toEqual([]);
         });
       }
+      describe("a wake group", () => {
+        const second = messageId("m-2");
+        beforeEach(() => {
+          store.accept({ id: second, seat: SEAT, sender: "lead@r", body: "second" });
+          store.claimAttempt({ ...store.headOf(SEAT)!, id: second, attempts: 0 }, T0 + 1);
+        });
+        const group = (first: string): SeatMessage => ({ ...message, ids: [ID, second], body: `${first}\nsecond`, bodies: [first, "second"] });
+
+        it("past the limit goes a row at a time: the first row's short paste, marker and spool, and nothing of the second", async () => {
+          const body = "y".repeat(PASTE_LIMIT);
+          await expect(hop().attempt(group(body))).resolves.toEqual({ kind: "sent" });
+          const sent = calls[0]!.replace("paste:", "");
+          expect(promptMarkers(sent)).toEqual([{ id: "m-1", nonce: store.nonceOf(ID), spooled: true }]);
+          expect(sent).not.toContain("second");
+          expect(spooled).toEqual([{ id: "m-1", text: body, after: 0 }]);
+        });
+        it("whose first row is short goes as that row alone, so the second is the next attempt's head", async () => {
+          await hop().attempt({ ...group("first"), body: `first\n${"y".repeat(PASTE_LIMIT)}`, bodies: ["first", "y".repeat(PASTE_LIMIT)] });
+          expect(calls).toEqual([`paste:first\n[openrig-msg m-1:${store.nonceOf(ID)}]`]);
+          expect(spooled).toEqual([]);
+        });
+        it("within the limit goes whole, one marker per row, and nothing is spooled", async () => {
+          await hop().attempt(group("first"));
+          expect(promptMarkers(calls[0]!.replace("paste:", "")).map((m) => m.id)).toEqual(["m-1", "m-2"]);
+          expect(calls[0]).toContain("second");
+          expect(spooled).toEqual([]);
+        });
+        it("goes whole to a seat whose relay declared 1: a short paste there would lose the text", async () => {
+          const body = "y".repeat(PASTE_LIMIT);
+          await hop({ ...spool, declaredVersion: () => 1 }).attempt(group(body));
+          expect(promptMarkers(calls[0]!.replace("paste:", "")).map((m) => m.id)).toEqual(["m-1", "m-2"]);
+          expect(spooled).toEqual([]);
+        });
+      });
       it("forgets its text when told", () => {
         const seats: string[] = [];
         hop({ ...spool, discardSpool: (seat) => { seats.push(seat); } }).forget(SEAT);
