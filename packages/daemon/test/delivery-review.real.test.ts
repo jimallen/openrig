@@ -555,7 +555,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         `context big.part2of3 ${sha(body.slice(9000, 18_000))} 9000`,
         `context big.part3of3 ${sha(body.slice(18_000))} 2000`,
       ]);
-      expect(s.read("big")).toMatchObject({ message_parts: 3, message_parts_done: 2, ack_evidence: "gate_seen" });
+      expect(s.read("big")).toMatchObject({ message_parts: 3, message_parts_done: 3, ack_evidence: "gate_seen" });
       await hopSaw(s, "claimed next");
     }, 70_000);
 
