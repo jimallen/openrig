@@ -337,9 +337,11 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     // enveloped send now DELIVERS with the explicit unknown-sender marker as its From: — the specimen-5
     // rule is preserved unweakened: the body claim is STILL never rendered; the recipient sees honest
     // "unknown", never an unverified name. Raw `rig broadcast` = no envelope.
+    // OF-196: with no identity the label is the configured workspace.operator_seat_name when one is set (a send from the operator's
+    // own shell), because seats read "<unknown sender>" as a possible injection. The actor below stays null: this is a label, not an identity.
     let envelopeSender: string | undefined = undefined;
     if (body.envelopeSender !== undefined && body.envelopeSender !== null) {
-      envelopeSender = derivedActor ?? UNKNOWN_SENDER_MARKER;
+      envelopeSender = derivedActor ?? operatorSeatName(c) ?? UNKNOWN_SENDER_MARKER;
     }
 
     const target: TargetSpec =

@@ -274,6 +274,52 @@ describe("Send CLI", () => {
     expect((lastSendBody as Record<string, unknown>).actorSession).toBeNull();
   });
 
+  // OF-196: seats read `From: <unknown sender>` as a possible injection and loop on each other. A send from the operator's own shell has no seat
+  // identity; its label is the configured operator seat. Only the label: the actor stays null.
+  it("OF-196: an env-less send carries workspace.operator_seat_name as its From:, with a null actor", async () => {
+    vi.stubEnv("OPENRIG_SESSION_NAME", "");
+    vi.stubEnv("RIGGED_SESSION_NAME", "");
+    vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "operator-jim@kernel");
+    const { exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello world"]);
+    });
+    expect(exitCode).toBeFalsy();
+    const text = String((lastSendBody as Record<string, unknown>).text);
+    expect(text).toContain("From: operator-jim@kernel");
+    expect(text).not.toContain("<unknown sender>");
+    expect((lastSendBody as Record<string, unknown>).actorSession).toBeNull();
+  });
+
+  it("OF-196: a padded operator seat name renders trimmed, so the reply hint names a seat", async () => {
+    vi.stubEnv("OPENRIG_SESSION_NAME", "");
+    vi.stubEnv("RIGGED_SESSION_NAME", "");
+    vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "  operator-jim@kernel \n");
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello world"]);
+    });
+    const text = String((lastSendBody as Record<string, unknown>).text);
+    expect(text).toContain("From: operator-jim@kernel\nTo:");
+    expect(text).toContain('↩ Reply: rig send operator-jim@kernel "..."');
+  });
+
+  it("OF-196: a seat's own identity wins over the operator seat name", async () => {
+    vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "operator-jim@kernel");
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello world"]);
+    });
+    expect(String((lastSendBody as Record<string, unknown>).text)).toContain("From: sender@my-rig");
+  });
+
+  it("OF-196: with no operator seat name set an env-less send still reads <unknown sender>", async () => {
+    vi.stubEnv("OPENRIG_SESSION_NAME", "");
+    vi.stubEnv("RIGGED_SESSION_NAME", "");
+    vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "");
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello world"]);
+    });
+    expect(String((lastSendBody as Record<string, unknown>).text)).toContain("From: <unknown sender>");
+  });
+
   it("hc-w41: a plain send waits out an answer that takes longer than the client's 5 s read default (hc's started-window), not 'UNCONFIRMED'", async () => {
     const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "slow-hc-session", "hello"]);

@@ -214,6 +214,17 @@ describe("send --host (http branch)", () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it("OF-196: an env-less http cross-host send carries workspace.operator_seat_name as its From:, with a null actor", async () => {
+    vi.stubEnv("OPENRIG_SESSION_NAME", "");
+    vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "operator-jim@kernel");
+    const h = mockClient(() => ({ status: 200, data: { ok: true } }));
+    await sendCommand(httpDeps(h)).parseAsync(["--host", "vps-b", "dev-impl@my-rig", "hello"], { from: "user" });
+    const body = h.calls[0]!.body as Record<string, unknown>;
+    expect(String(body.text)).toContain("From: operator-jim@kernel");
+    expect(String(body.text)).not.toContain("<unknown sender>");
+    expect(body.actorSession).toBeNull();
+  });
+
   // S3 wave-1 fix round 1 (r2 F2): the http cross-host leg cannot run the
   // pane-effect check from the origin host — with --verify it must say so
   // honestly instead of echoing the remote transport verdict as if verified.

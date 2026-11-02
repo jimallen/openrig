@@ -12,7 +12,7 @@ import { emitCrossHostError, emitCrossHostFailure, emitRemoteHttpFailure } from 
 import { resolveCrossHostTarget } from "../cross-host-target.js";
 import { runRemoteHttpOp } from "../remote-host-ops.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
-import { resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
+import { resolveOperatorLabel, resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
 import { COMPOSER_PROMPT_CLASS } from "@openrig/daemon/composer-prompts";
 import { transportFanoutBudgetMs, transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
@@ -544,7 +544,7 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
       if (refuseEmptyMessage(payload, "send", Boolean(opts.json))) return;
       // Send/broadcast header (ruling 03c35295): a directed `rig send` is a DM — stamp it at send-time
       // (Sent: MM-DD HH:MMZ) so transcripts are timestamped; the To line stays the single recipient.
-      const outboundText = raw ? payload : wrapSendBody(senderSession, session, payload, stampMeta(opts.id));
+      const outboundText = raw ? payload : wrapSendBody(senderSession ?? resolveOperatorLabel(), session, payload, stampMeta(opts.id));
       let res: { status: number; data: Record<string, unknown> };
       try {
         res = await client.post<Record<string, unknown>>("/api/transport/send", {
@@ -981,7 +981,7 @@ async function runHttpHostSend(
       ? `${senderSession}@${selfHostId}`
       : senderSession;
   const raw = Boolean(opts.raw || opts.dangerouslyInteract);
-  const outboundText = raw ? text : wrapSendBody(originSender, session, text, stampMeta(opts.id));
+  const outboundText = raw ? text : wrapSendBody(originSender ?? resolveOperatorLabel(), session, text, stampMeta(opts.id));
 
   // S4h: a plain send goes through this host's daemon, whose pump owns the hop. `verify`, `force`, `wait-for-idle` and raw text ask for what only
   // today's path can do, and they keep it.

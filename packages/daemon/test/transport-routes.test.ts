@@ -61,10 +61,13 @@ function mockTmux(overrides?: Partial<{
   } as unknown as TmuxAdapter;
 }
 
-function createApp(deps: { sessionTransport: SessionTransport; outboxHandler?: OutboxHandler }): Hono {
+function createApp(deps: { sessionTransport: SessionTransport; outboxHandler?: OutboxHandler; operatorSeatName?: string }): Hono {
   const app = new Hono();
   app.use("*", async (c, next) => {
     c.set("sessionTransport" as never, deps.sessionTransport);
+    if (deps.operatorSeatName !== undefined) {
+      c.set("settingsStore" as never, { resolveOne: (key: string) => ({ value: key === "workspace.operator_seat_name" ? deps.operatorSeatName : "" }) } as never);
+    }
     if (deps.outboxHandler) c.set("outboxHandler" as never, deps.outboxHandler);
     await next();
   });
@@ -1204,6 +1207,49 @@ describe("transport routes", () => {
     expect(res.status).toBe(200);
     expect(delivered.some((t) => t.includes("From: <unknown sender>"))).toBe(true);
     expect(delivered.every((t) => !t.includes("anyone@my-rig"))).toBe(true);
+  });
+
+  // OF-196: Pi seats read `From: <unknown sender>` as a possible injection and loop on each other. A send from the operator's shell carries no
+  // seat identity; the label is the configured operator seat, and only the label: the actor stays null and the body claim is still never rendered.
+  async function noIdentityFanOut(operatorSeatName: string | undefined): Promise<{ delivered: string[]; json: Record<string, unknown> }> {
+    seedRig();
+    migrate(db, [outboxEntriesSchema]); // createFullTestDb excludes 027, as for the A3 tests above
+    const delivered: string[] = [];
+    const tmux = mockTmux({ sendText: async (_t: string, text: string) => { delivered.push(text); return { ok: true as const }; } });
+    const app = createApp({ sessionTransport: new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux }), outboxHandler: new OutboxHandler(db), operatorSeatName });
+    const res = await app.request("/api/transport/broadcast", {
+      method: "POST", headers: { "Content-Type": "application/json" }, // NO X-OpenRig-Session
+      body: JSON.stringify({ sessions: ["dev-impl@my-rig"], text: "hi", force: true, envelopeSender: "anyone@my-rig" }),
+    });
+    expect(res.status).toBe(200);
+    return { delivered, json: await res.json() as Record<string, unknown> };
+  }
+
+  it("OF-196: a no-identity enveloped send carries workspace.operator_seat_name as its From:, not <unknown sender>", async () => {
+    const { delivered, json } = await noIdentityFanOut("operator-jim@kernel");
+    expect(delivered.some((t) => t.includes("From: operator-jim@kernel"))).toBe(true);
+    expect(delivered.every((t) => !t.includes("<unknown sender>") && !t.includes("anyone@my-rig"))).toBe(true);
+    expect(json.warning).toEqual(expect.stringContaining("no X-OpenRig-Session header")); // the sender is still told it was unattributed
+    expect(new Set(outboxRows().map((row) => row.sender_session))).toEqual(new Set(["unknown"])); // a label, not an identity: no actor is recorded
+  });
+
+  it("OF-196: an authenticated seat is never relabelled as the operator", async () => {
+    seedRig();
+    const delivered: string[] = [];
+    const tmux = mockTmux({ sendText: async (_t: string, text: string) => { delivered.push(text); return { ok: true as const }; } });
+    const app = createApp({ sessionTransport: new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux }), operatorSeatName: "operator-jim@kernel" });
+    const res = await app.request("/api/transport/broadcast", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ sessions: ["dev-impl@my-rig"], text: "hi", force: true, envelopeSender: "x" }),
+    });
+    expect(res.status).toBe(200);
+    expect(delivered.some((t) => t.includes("From: orch@my-rig"))).toBe(true);
+    expect(delivered.every((t) => !t.includes("operator-jim@kernel"))).toBe(true);
+  });
+
+  it.each([[undefined], [""], ["   "]])("OF-196: with the operator seat configured as %j the label stays <unknown sender>", async (configured) => {
+    const { delivered } = await noIdentityFanOut(configured);
+    expect(delivered.some((t) => t.includes("From: <unknown sender>"))).toBe(true);
   });
 
   it("P21 I4 → S2: --dangerously-interact with NO identity delivers; a non-needs_input target writes NO override audit row", async () => {

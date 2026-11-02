@@ -1,3 +1,4 @@
+import { ConfigStore } from "./config-store.js";
 import { readOpenRigEnv } from "./openrig-compat.js";
 
 /**
@@ -10,6 +11,21 @@ import { readOpenRigEnv } from "./openrig-compat.js";
  */
 export function resolveSenderSession(): string | undefined {
   return readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
+}
+
+/**
+ * The From: label for a send that carries no seat identity (OF-196): the configured `workspace.operator_seat_name` (a send from the
+ * operator's own shell), or `undefined` when none is set, which leaves the caller on `SENDER_FALLBACK`. A LABEL only: the actor stays
+ * null (`resolveSenderSession()` is still the identity), and nothing is invented when the setting is empty. Receiving seats read
+ * `<unknown sender>` as a possible injection and loop on it.
+ */
+export function resolveOperatorLabel(): string | undefined {
+  try {
+    const name = new ConfigStore().resolve().workspace.operatorSeatName;
+    return typeof name === "string" && name.trim().length > 0 ? name.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
