@@ -49,6 +49,9 @@ describe.skipIf(!HC)("a message in flight when the agent dies (OF-200), on a pri
   let n = 0;
 
   beforeAll(() => {
+    // zsh -l with no startup file in its HOME runs zsh-newuser-install on Linux, an interactive menu that swallows the typed launch line (measured
+    // on Sparky, zsh 5.9: "--- Type one of the keys in parentheses --- <the launch line>"); a seat's real HOME has startup files.
+    writeFileSync(join(env.HOME as string, ".zshrc"), "");
     core.start();
     client = core.client;
     input = new HcInput(client, new HcAttach(core.socketPath), { deliveryTimeoutMs: 8_000 });
@@ -107,14 +110,23 @@ describe.skipIf(!HC)("a message in flight when the agent dies (OF-200), on a pri
   // These offsets are inside the core's hold on a seat 0.3 s after its agent started (measured 0.45 s here, finding section 1b). Today
   // every one of them is a canary: the shell above the dead agent ran the message. The fix is for nothing to be left above the agent
   // (the agent as the terminal's own program), so the core refuses the send (`finished`) and types nothing. `fails` flips to `it` with it.
-  it.fails("OF-200 sweep: killing the agent while its message is in flight must not run the message in a shell", async () => {
-    const hits: number[] = [];
+  // `it.fails` passes when its body throws for ANY reason, so the trials run in a plain row that goes red if the harness breaks (a stub
+  // that never started, as on Linux when zsh asked its new-user questions, made the old single `it.fails` row pass vacuously), and the
+  // `it.fails` row only judges what that row recorded.
+  const sweep = { trials: 0, hits: [] as number[] };
+  it("sweep harness: at every kill offset a stub agent ran and the canary was looked for", async () => {
     for (const offset of [0, 100, 200, 300]) {
       const outcome = await race(offset);
-      if (outcome.canary) hits.push(offset);
+      sweep.trials += 1;
+      if (outcome.canary) sweep.hits.push(offset);
     }
-    expect(hits, "kill offsets (ms) at which the login shell ran the message").toEqual([]);
+    expect(sweep.trials).toBe(4);
   }, 120_000);
+
+  it.fails("OF-200 sweep: killing the agent while its message is in flight must not run the message in a shell", () => {
+    expect(sweep.trials, "the harness row above ran all its trials").toBe(4);
+    expect(sweep.hits, "kill offsets (ms) at which the login shell ran the message").toEqual([]);
+  });
 
   // What a seat crash does now. The agent exiting on its own leaves the login shell: the terminal is still live, so a seat that crashed
   // reads present, not lost, and the foreground is the shell. Under the fix (no shell above the agent) the terminal ends with the agent

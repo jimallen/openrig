@@ -45,7 +45,7 @@ export class PrivateCore {
   }
 
   /**
-   * The pid is this core's own process (or its holder): on Linux its environment names this core's session (/proc). Elsewhere `ps -Ewwo`
+   * The pid is this core's own process (or its holder): on Linux its environment names this core's session and its runtime dir (/proc). Elsewhere `ps -Ewwo`
    * shows the environment of an ordinary child, but not of hc 0.1.17's core, which is `hc --hc-launchd`, parent 1, and shows none; then the
    * process is identified by the socket it listens on (`lsof -U`): this core's own socket path exactly, or a holder socket in the same
    * directory under this session's name. A real core listens on the account's path, never on a path under this test's root, so no pid of
@@ -54,7 +54,11 @@ export class PrivateCore {
   isMine(pid: number): boolean {
     const entry = `HC_SESSION=${this.env.HC_SESSION}`;
     try {
-      if (existsSync("/proc/self/environ")) return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(entry);
+      if (existsSync("/proc/self/environ")) {
+        // The session name alone is not an identity: another core made by the same test run can share it. The runtime dir is this core's own.
+        const environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+        return environ.includes(entry) && environ.includes(`XDG_RUNTIME_DIR=${this.env.XDG_RUNTIME_DIR}`);
+      }
       const out = spawnSync("ps", ["-Ewwo", "command=", "-p", String(pid)], { encoding: "utf8" });
       if (out.status !== 0) return false;
       // The entry must be a whole word of the environment, and absent from the arguments `ps -o command` alone reports.
