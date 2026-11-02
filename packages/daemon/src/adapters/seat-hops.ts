@@ -49,7 +49,9 @@ function prepareLongPaste(message: SeatMessage, text: string, rows: Pick<HopRows
   if (Buffer.byteLength(text) <= PASTE_LIMIT || spool === undefined || (spool.declaredVersion(message.seat) ?? 0) < SPOOL_GATE_VERSION) return text;
   const id = message.ids[0];
   const nonce = rows.nonceOf(id)!;
-  const parts = splitLongMessage(message.body);
+  // Cut without the label: a label added between two parts (the seat changed hands after the first went) would shift every later cut and
+  // repeat or drop text. Every part's note carries the label (shortPaste), so the text the agent reads still says who it was sent to.
+  const parts = splitLongMessage(withoutPreviousOccupantLabel(message.body));
   const total = parts.length;
   if (rows.partsOf(id) !== total) rows.markParts(id, total);
   const index = Math.min(message.part ?? 1, total);
@@ -73,6 +75,11 @@ function pasteHead(message: SeatMessage, rows: Pick<HopRows, "nonceOf">): SeatMe
   if (whole === null || Buffer.byteLength(whole) <= PASTE_LIMIT) return message;
   const first = message.bodies[0]!;
   return { ...message, ids: [message.ids[0]], body: first, bodies: [first] };
+}
+
+/** The body as the sender wrote it: the pump's label for the previous occupant, when it leads the text, is not part of what is cut into parts. */
+function withoutPreviousOccupantLabel(body: string): string {
+  return body.startsWith(`${PREVIOUS_OCCUPANT_LABEL} `) ? body.slice(PREVIOUS_OCCUPANT_LABEL.length + 1) : body;
 }
 
 /** The note and the marker, under the label a message for the previous occupant carries on every attempt. */

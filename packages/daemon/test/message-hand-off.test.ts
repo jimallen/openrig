@@ -19,6 +19,7 @@ import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId, type LastHop, type SeatGate } from "../src/domain/seat-messaging/ports.js";
 import { NO_SEAT_MESSAGING_PORTS } from "../src/domain/seat-messaging/pump-ports.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
+import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
 
 const SEAT = "dev@hr";
 
@@ -56,7 +57,7 @@ describe("SessionTransport and the pump", () => {
     const hop: LastHop = { attempt: async (m) => { hopCalls.push(m.ids[0]); return { kind: "sent" }; } };
     const ports = gated ? { gateFor: () => gate, hopFor: () => hop } : NO_SEAT_MESSAGING_PORTS;
     const store = new MessageStore(db);
-    const pump = new MessagePump({ store, ports, directory: { fate: () => ({ kind: "live", occupantGeneration: null }) }, held: { status: () => "held" }, senders: { returnToSender: async () => ({ kind: "returned", qitemId: "q" }) } });
+    const pump = new MessagePump({ store, ports, directory: new DbSeatDirectory(db), held: { status: () => "held" }, senders: { returnToSender: async () => ({ kind: "returned", qitemId: "q" }) } });
     const tmuxAdapter = tmuxStub({
       hasSession: async () => true, probeSession: async () => ({ state: "present" as const }), capturePaneContent: async () => "idle\n❯ ",
       listSessions: async () => [], listWindows: async () => [], listPanes: async () => [], getPanePid: async () => null, getPaneCommand: async () => null,

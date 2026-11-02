@@ -22,6 +22,7 @@ import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId, type GateRecord, type LastHop, type LastHopResult, type SeatGate } from "../src/domain/seat-messaging/ports.js";
 import { MessageObligations, type SeatMessagingPorts } from "../src/domain/seat-messaging/pump-ports.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
+import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
 
 const SEAT = "dev@hr";
 const PLAIN = "plain@hr";
@@ -70,7 +71,7 @@ describe("a wake on a seat the pump serves", () => {
     const obligations = new MessageObligations();
     pump = new MessagePump({
       store, ports, obligations, clock: () => nowMs,
-      directory: { fate: () => (gone ? { kind: "gone", reason: "the rig is archived" } : { kind: "live", occupantGeneration: null }) },
+      directory: { fate: (seat) => (gone ? { kind: "gone", reason: "the rig is archived" } : new DbSeatDirectory(db).fate(seat)) },
       held: { status: () => "held" }, senders: { returnToSender: async () => ({ kind: "returned", qitemId: "returned-item" }) },
       timing: { backoffMs: [0], pauseRecheckMs: 0 }, log: () => undefined,
     });

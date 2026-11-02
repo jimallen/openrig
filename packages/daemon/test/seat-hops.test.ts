@@ -599,4 +599,54 @@ describe("the hops", () => {
       expect(calls).toEqual(["keys:Enter"]);
     });
   });
+  // Deliver, labelled: the pump gives a message for the previous occupant a body that starts with the label, on every attempt. Each runtime's hop
+  // must carry it to the seat (the pump is runtime-neutral; the typing is not).
+  describe("a message for the previous occupant carries its label to the seat, on every runtime", () => {
+    const labelled: SeatMessage = { ...message, body: `${PREVIOUS_OCCUPANT_LABEL} Do the thing` };
+    const labelledText = () => `${PREVIOUS_OCCUPANT_LABEL} Do the thing\n[openrig-msg m-1:${store.nonceOf(ID)}]`;
+    it("Claude, by socket", async () => {
+      await new ClaudeSeatHop({
+        rows: store, guard, client, input, now: () => now,
+        eligibility: async (): Promise<NativeEligibility> => ({ ok: true, nodeId: "n", endpoint }),
+        writeToSeat: async (_e, sender, text) => { writes.push({ sender, text }); return "all"; },
+      }).attempt(labelled);
+      expect(writes.map((w) => w.text)).toEqual([labelledText()]);
+    });
+    it("Claude, by paste", async () => {
+      eligible = false;
+      foreground = { pid: 1, name: "claude", argv: ["claude"], cwd: "/w" };
+      await new ClaudeSeatHop({
+        rows: store, guard, client, input, now: () => now,
+        eligibility: async (): Promise<NativeEligibility> => ({ ok: false, reason: "no" }),
+        writeToSeat: async () => "none",
+      }).attempt(labelled);
+      expect(calls).toEqual([`paste:${labelledText()}`]);
+    });
+    it("Codex", async () => {
+      foreground = { pid: 1, name: "sh", argv: ["/bin/sh", "/run/tmp/openrig-tmux-send-1-2"], cwd: "/w" };
+      screen = "› Ask Codex to do anything\n  GPT-6-Luna low · /work\n";
+      await new CodexSeatHop({ rows: store, guard, client, input }).attempt(labelled);
+      expect(calls).toEqual([`paste:${labelledText()}`]);
+    });
+    it("Pi", async () => {
+      foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
+      screen = "[pi-runner] READY\n";
+      const state: Partial<PiRunnerState> = { seatGate: 1 };
+      await new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null }).attempt(labelled);
+      expect(calls).toEqual([`paste:${labelledText()}`]);
+    });
+    it("a long message whose first part went to the old occupant is cut where it was, not where the label would move it", async () => {
+      foreground = { pid: 1, name: "sh", argv: ["/bin/sh", "/run/tmp/openrig-tmux-send-1-2"], cwd: "/w" };
+      screen = "› Ask Codex to do anything\n  GPT-6-Luna low · /work\n";
+      const spooled: Array<{ id: string; text: string }> = [];
+      const spool: SeatSpool = { declaredVersion: () => 2, spool: (_s, marker, text) => { spooled.push({ id: marker.id, text }); }, discardSpool: () => {} };
+      const body = "a".repeat(9000) + "b".repeat(9000) + "c";
+      const hop = new CodexSeatHop({ rows: store, guard, client, input, spool });
+      await hop.attempt({ ...message, body, part: 1 });
+      await hop.attempt({ ...message, body: `${PREVIOUS_OCCUPANT_LABEL} ${body}`, part: 2 });
+      expect(spooled.map((p) => [p.id, p.text.length, p.text[0]])).toEqual([["m-1.part1of3", 9000, "a"], ["m-1.part2of3", 9000, "b"]]);
+      expect(store.partsOf(ID)).toBe(3);
+      expect(calls[1]).toContain(`paste:${PREVIOUS_OCCUPANT_LABEL}\nOpenRig: long message`);
+    });
+  });
 });

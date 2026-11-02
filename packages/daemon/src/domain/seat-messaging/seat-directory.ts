@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { QueueRepositoryError, type QueueRepository } from "../queue-repository.js";
 import type { SeatDeliveryGuard } from "../seat-delivery-guard.js";
+import { seatRows } from "./seat-occupant.js";
 import type { HeldBinding, HeldMessages, HoldStatus, SeatDirectory, SeatFate, SenderReturn, SenderReturnResult } from "./pump-ports.js";
 
 /** The sender queue item's id, one per message, so a crash after the create repeats it on the same item (QueueRepository.create). */
@@ -18,11 +19,7 @@ export class DbSeatDirectory implements SeatDirectory {
   constructor(private readonly db: Database.Database) {}
 
   fate(seat: string): SeatFate {
-    const rows = this.db.prepare(`SELECT n.id AS nodeId, r.name AS rig, r.archived_at AS archivedAt,
-        (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id = n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant
-      FROM nodes n JOIN rigs r ON r.id = n.rig_id LEFT JOIN bindings b ON b.node_id = n.id
-      WHERE b.tmux_session = ? OR (b.tmux_session IS NULL AND replace(n.logical_id, '.', '-') || '@' || r.name = ?)`)
-      .all(seat, seat) as Array<{ nodeId: string; rig: string; archivedAt: string | null; occupant: string | null }>;
+    const rows = seatRows(this.db, seat);
     const live = rows.filter((row) => row.archivedAt === null);
     if (live.length === 1) return { kind: "live", occupantGeneration: live[0]!.occupant };
     if (live.length > 1) return { kind: "unknown" };

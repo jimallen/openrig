@@ -24,6 +24,7 @@ import { MESSAGE_STUCK_AFTER_MS, SeatMessagingHealthSource } from "../src/domain
 import { messageRoutes } from "../src/routes/messages.js";
 import { createTestApp } from "./helpers/test-app.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
+import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
 
 const FAR_SEAT = "dev@far";
 const LOCAL_SENDER = "lead@near";
@@ -58,7 +59,8 @@ function side(opts: { gated: boolean; pumpOff?: boolean; far?: FarDaemons; sende
   const store = new MessageStore(db);
   const own: SeatMessagingPorts = opts.gated ? { gateFor: () => gate, hopFor: () => hop } : NO_SEAT_MESSAGING_PORTS;
   const ports = opts.far ? withFarSeats(own, opts.far, (id) => store.senderOf(id)) : own;
-  const inner = { fate: () => ({ kind: "live" as const, occupantGeneration: null }) };
+  // The real directory, as the daemon builds it: a row is bound to the occupant the database names, and the pump reads the same one.
+  const inner = new DbSeatDirectory(db);
   const pump = new MessagePump({
     store, ports, directory: opts.far ? new FarSeatDirectory(inner) : inner, held: { status: () => "held" },
     senders: opts.senders ?? { returnToSender: async () => ({ kind: "returned", qitemId: "q" }) }, timing: FAST,

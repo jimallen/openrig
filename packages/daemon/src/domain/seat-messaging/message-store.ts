@@ -160,8 +160,9 @@ export class MessageStore {
       this.outbox.record({
         outboxId: input.id, senderSession: input.sender, destinationSession: input.seat, body: input.body,
         urgency: input.urgency, tags: input.tags, auditPointer: input.auditPointer, identityProvenance: input.identityProvenance,
+        ...(input.messageClass ? { messageClass: input.messageClass } : {}),
       });
-      this.db.prepare(`UPDATE outbox_entries SET message_state = 'accepted', message_id = coalesce(message_id, outbox_id), occupant_generation = ?, lane = ?, class = ?, next_attempt_at = ?
+      this.db.prepare(`UPDATE outbox_entries SET message_state = 'accepted', message_id = coalesce(message_id, outbox_id), occupant_generation = coalesce(?, occupant_generation), lane = ?, class = ?, next_attempt_at = ?
         WHERE outbox_id = ? AND message_state IS NULL`).run(input.occupantGeneration ?? null, input.lane ?? defaultLane(input.messageClass), input.messageClass ?? null, iso(input.firstAttemptAtMs ?? null), input.id);
       this.db.prepare("UPDATE outbox_entries SET message_pump_owned = 1 WHERE outbox_id = ? AND message_state IN ('accepted', 'attempting')").run(input.id);
       return toMessage(this.read(input.id)!);
