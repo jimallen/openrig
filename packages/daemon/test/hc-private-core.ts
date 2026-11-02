@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { hcScratchBase, HC_SOCKET_PATH_LIMIT } from "./helpers/hc-scratch.js";
 
@@ -45,8 +45,11 @@ export class PrivateCore {
   }
 
   /**
-   * The pid is this core's own process: its environment names this core's session. Read from /proc on Linux and from `ps -Ewwo`
-   * on macOS (which shows the environment of the core's own unprotected `hc` processes). False when unreadable.
+   * The pid is this core's own process (or its holder): on Linux its environment names this core's session (/proc). Elsewhere `ps -Ewwo`
+   * shows the environment of an ordinary child, but not of hc 0.1.17's core, which is `hc --hc-launchd`, parent 1, and shows none; then the
+   * process is identified by the socket it listens on (`lsof -U`): this core's own socket path exactly, or a holder socket in the same
+   * directory under this session's name. A real core listens on the account's path, never on a path under this test's root, so no pid of
+   * a real core can pass. False when unreadable.
    */
   isMine(pid: number): boolean {
     const entry = `HC_SESSION=${this.env.HC_SESSION}`;
@@ -56,10 +59,21 @@ export class PrivateCore {
       if (out.status !== 0) return false;
       // The entry must be a whole word of the environment, and absent from the arguments `ps -o command` alone reports.
       const argv = spawnSync("ps", ["-wwo", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout;
-      return ` ${out.stdout.trim()} `.includes(` ${entry} `) && !` ${argv.trim()} `.includes(` ${entry} `);
+      if (` ${out.stdout.trim()} `.includes(` ${entry} `) && !` ${argv.trim()} `.includes(` ${entry} `)) return true;
+      return this.listensOnMySocket(pid);
     } catch {
       return false;
     }
+  }
+
+  /** True when the process holds a listening unix socket that is this core's socket, or this session's holder socket beside it. */
+  private listensOnMySocket(pid: number): boolean {
+    const lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].find((candidate) => existsSync(candidate));
+    if (!lsof) return false;
+    const out = spawnSync(lsof, ["-nP", "-a", "-p", String(pid), "-U", "-Fn"], { encoding: "utf8" });
+    const names = out.stdout.split("\n").filter((line) => line.startsWith("n/")).map((line) => line.slice(1));
+    const session = this.env.HC_SESSION as string;
+    return names.some((name) => name === this.socketPath || (dirname(name) === dirname(this.socketPath) && basename(name).startsWith(`${session}.holder.`) && name.endsWith(".sock")));
   }
 
   async corePid(): Promise<number> {

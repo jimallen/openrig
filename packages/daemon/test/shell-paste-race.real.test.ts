@@ -9,16 +9,14 @@
 // Everything is measured against a private hc core (HC on PATH, else the suite skips), with a stub agent. No real agent, no daemon.
 // The canary is a file the message would create if a shell ran it.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HcAttach } from "../src/adapters/hc-attach.js";
-import { HcClient, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
+import type { HcClient, HcTerminal } from "../src/adapters/hc-client.js";
 import { HcHost, hcTerminalName } from "../src/adapters/hc-host.js";
 import { HcInput } from "../src/adapters/hc-input.js";
+import { HC, PrivateCore } from "./hc-private-core.js";
 
-const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const SHELL = ["/bin/zsh", "/bin/bash"].find((candidate) => existsSync(candidate)) ?? "/bin/sh";
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -39,11 +37,11 @@ while True:
 `;
 
 describe.skipIf(!HC)("a message in flight when the agent dies (OF-200), on a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "spr-"));
-  const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `x${process.pid}`,
-    XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),
-  };
+  // The shared private core: its root comes from hcScratchBase (the run's scratch root), its socket path is measured against the limit before
+  // hc is asked, and the isolation census knows its maker.
+  const core = new PrivateCore("spr");
+  const root = core.root;
+  const env = core.env;
   let client: HcClient;
   let host: HcHost;
   let input: HcInput;
@@ -51,20 +49,15 @@ describe.skipIf(!HC)("a message in flight when the agent dies (OF-200), on a pri
   let n = 0;
 
   beforeAll(() => {
-    for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
-    const socket = resolveHcSocket(env, env.HOME);
-    client = new HcClient(socket);
-    input = new HcInput(client, new HcAttach(socket), { deliveryTimeoutMs: 8_000 });
+    core.start();
+    client = core.client;
+    input = new HcInput(client, new HcAttach(core.socketPath), { deliveryTimeoutMs: 8_000 });
     host = new HcHost(client, { daemonEnv: { PATH: process.env.PATH, HOME: env.HOME, SHELL } });
     stubPath = join(root, "stub.py");
     writeFileSync(stubPath, STUB);
   }, 30_000);
 
-  afterAll(() => {
-    spawnSync(HC, ["server", "stop"], { env, stdio: "ignore" });
-    rmSync(root, { recursive: true, force: true });
-  });
+  afterAll(() => core.stop());
 
   interface Trial { seat: string; address: string; pid: number; canary: string; log: string; body: string }
 

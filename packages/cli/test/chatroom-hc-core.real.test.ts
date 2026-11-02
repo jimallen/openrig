@@ -74,8 +74,11 @@ describe.skipIf(!HC)("rig chatroom watch --terminal never starts or feeds a core
     rmSync(root, { recursive: true, force: true });
   });
 
+  // The program writes to a temporary name and renames it: `env > file` creates the file empty before `env` writes, and the tests poll for the
+  // file's existence, so a read could land in between and see '' (measured: a reader spinning on existsSync saw an empty file in 300 of 300
+  // trials of `env > f`, 0 of 300 with write-then-rename).
   /** The real hc seam, with the program replaced: `sh -c 'env > file' x` after `chatroom watch my-rig` lands in sh as $0 and arguments. */
-  const deps: ChatroomHcDeps = { ...realHcDeps, selfArgv: () => ["sh", "-c", `env > ${envFile}`, "x"] };
+  const deps: ChatroomHcDeps = { ...realHcDeps, selfArgv: () => ["sh", "-c", `env > ${envFile}.tmp && mv ${envFile}.tmp ${envFile}`, "x"] };
 
   async function watch(): Promise<number | undefined> {
     const prog = new Command();
@@ -124,7 +127,7 @@ describe.skipIf(!HC)("rig chatroom watch --terminal never starts or feeds a core
     try {
       expect(existsSync(resolveHcSocket(env2))).toBe(false);
       const callerEnv = { ...env2, ...Object.fromEntries(SECRETS.map((n) => [n, SECRET_VALUE(n)])) };
-      expect(spawnSync(HC, ["run", "--bg", "--name", "ctl", "--", "sh", "-c", `env > ${file2}`], { env: callerEnv, encoding: "utf8" }).status).toBe(0);
+      expect(spawnSync(HC, ["run", "--bg", "--name", "ctl", "--", "sh", "-c", `env > ${file2}.tmp && mv ${file2}.tmp ${file2}`], { env: callerEnv, encoding: "utf8" }).status).toBe(0);
       expect(existsSync(resolveHcSocket(env2))).toBe(true);
       const until = Date.now() + 10_000;
       while (!existsSync(file2) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));

@@ -225,6 +225,16 @@ describe("send --host (http branch)", () => {
     expect(body.actorSession).toBeNull();
   });
 
+  it("OF-196: a seat's own identity beats the operator seat name on the http cross-host path, and the operator name is not in the text", async () => {
+    vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "operator-jim@kernel");  // OPENRIG_SESSION_NAME is relay@my-rig (beforeEach)
+    const h = mockClient(() => ({ status: 200, data: { ok: true } }));
+    await sendCommand(httpDeps(h)).parseAsync(["--host", "vps-b", "dev-impl@my-rig", "hello"], { from: "user" });
+    const body = h.calls[0]!.body as Record<string, unknown>;
+    expect(String(body.text)).toContain("From: relay@my-rig");
+    expect(String(body.text)).not.toContain("operator-jim@kernel");
+    expect(body.actorSession).toBe("relay@my-rig");
+  });
+
   // S3 wave-1 fix round 1 (r2 F2): the http cross-host leg cannot run the
   // pane-effect check from the origin host — with --verify it must say so
   // honestly instead of echoing the remote transport verdict as if verified.
