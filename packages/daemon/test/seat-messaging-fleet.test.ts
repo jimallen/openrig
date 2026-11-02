@@ -195,6 +195,20 @@ describe("the fleet, as the pump reads it", () => {
       expect(row[0]).toContain("a1");
     });
 
+    it("names a long message with no socket at once, and old rows with a reason this build does not know read as no reason", () => {
+      const store = new MessageStore(db);
+      accept("long1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("long1"), "long_no_socket", 2);
+      expect(store.headOf("dev@r")!.pauseReason).toBe("long_no_socket");
+      const row = reasons();
+      expect(row).toHaveLength(1);
+      expect(row[0]).toContain("too long to paste");
+      expect(row[0]).toContain("long1");
+      db.prepare("UPDATE outbox_entries SET message_pause_reason = 'from_the_future' WHERE outbox_id = 'long1'").run();
+      expect(store.headOf("dev@r")!.pauseReason).toBeNull();
+    });
+
     it("a cleared part reopens its whole message", () => {
       const store = new MessageStore(db);
       accept("p1");

@@ -1,3 +1,4 @@
+import { SEAT_MESSAGE_ID_PREFIX } from "../outbox-handler.js";
 import { messageId, type MessageId } from "./ports.js";
 
 /**
@@ -13,6 +14,19 @@ export function splitLongMessage(body: string): string[] {
   const parts: string[] = [];
   for (let at = 0; at < chars.length; at += LONG_PART_CHARS) parts.push(chars.slice(at, at + LONG_PART_CHARS).join(""));
   return parts.length > 0 ? parts : [""];
+}
+
+const STARTUP_TEXT_PREFIX = `${SEAT_MESSAGE_ID_PREFIX}startup-`;
+
+/** A seat's startup text, by id, so a restart still knows it. Over the paste limit on a Claude seat with no socket it is the one text that pastes
+ *  whole (decision 35): a seat that cannot start is worse than a message that waits, and the body is in the prompt, so a gate record means it arrived.
+ *  If its Enter is lost a collapsed paste cannot be told from a person's, so nothing presses it: the startup's wait runs out and fails out loud. */
+export function startupTextId(occupantGeneration: string, startupAttemptId: string, sendOrder: number): string {
+  return `${STARTUP_TEXT_PREFIX}${occupantGeneration}-${startupAttemptId}-${sendOrder}`;
+}
+
+export function isStartupText(id: MessageId): boolean {
+  return id.startsWith(STARTUP_TEXT_PREFIX);
 }
 
 export function partId(id: MessageId, index: number, total: number): MessageId {

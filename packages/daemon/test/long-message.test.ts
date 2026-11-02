@@ -10,7 +10,7 @@ import { codexRolloutMarkers, reconcileCodexSeatGate } from "../src/adapters/cod
 import { HOOK_GATE_VERSION, SPOOL_GATE_VERSION } from "../src/adapters/hook-gate-version.js";
 import { HookSeenStore, reconcileSeen, seatGateFolder, seatGateRoot, transcriptHasPrompt, transcriptMarkers } from "../src/adapters/hook-seen-store.js";
 import { promptMarkers, spooledNote, trailingMarkers } from "../src/adapters/seat-gate-marker.js";
-import { LONG_PART_CHARS, messageOfPart, partId, splitLongMessage } from "../src/domain/seat-messaging/long-message.js";
+import { LONG_PART_CHARS, isStartupText, messageOfPart, partId, splitLongMessage, startupTextId } from "../src/domain/seat-messaging/long-message.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -182,5 +182,13 @@ describe("the gate hook adds the text", () => {
       const read = store().read(SEAT, { id: "m", nonce: NONCE });
       expect(read.kind === "seen" && read.record.durable).toBe(true);
     });
+  });
+});
+
+describe("startup text's id", () => {
+  it("is known by its id, so a restart still knows it", () => {
+    expect(isStartupText(messageId(startupTextId("g", "a", 2)))).toBe(true);
+    expect(isStartupText(messageId("seat-msg-handover-x-y"))).toBe(false);
+    expect(isStartupText(messageId("startup-g-a-2"))).toBe(false);
   });
 });

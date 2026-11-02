@@ -53,6 +53,11 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its screen shows no composer, such as a picker (oldest ${seat.oldestId}). Nothing is typed there; they go when it is closed.`));
         continue;
       }
+      // So is a message nothing can carry yet: it holds its lane, so the rest of that lane waits behind it.
+      if (seat.pauseReason === "long_no_socket") {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: the oldest (${seat.oldestId}) is too long to paste and the seat has no working socket. It is never pasted; it goes when the socket is back, and its lane waits behind it.`));
+        continue;
+      }
       if (seat.pauseReason === "seat_stopped") {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its terminal is not running (oldest ${seat.oldestId}). They go when the seat is back, or return to their senders if it is archived.`));
         continue;

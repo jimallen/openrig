@@ -12,7 +12,7 @@ import { CodexPasteHop, type CodexPasteInput } from "./codex-paste-hop.js";
 import type { PiRunnerState } from "./pi-runner-protocol.js";
 import { nativeMarker, type NativeEndpointRow, type NativeEligibility } from "../domain/claude-native-inbox.js";
 import { decideClaudeRetry } from "../domain/seat-messaging/claude-last-hop.js";
-import { partId, splitLongMessage } from "../domain/seat-messaging/long-message.js";
+import { isStartupText, partId, splitLongMessage } from "../domain/seat-messaging/long-message.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "../domain/seat-messaging/message-label.js";
 import type { LastHop, LastHopResult, MessageId, SeatMessage } from "../domain/seat-messaging/ports.js";
 import type { GuardTarget } from "../domain/seat-delivery-guard.js";
@@ -37,6 +37,11 @@ export interface SeatSpool {
  *  because a non-ASCII paste's count is unmeasured and bytes are never under characters. Claude's paste path takes the same limit, unmeasured. */
 export const PASTE_LIMIT = 1000;
 
+/** Decision 35: the spool route is off for Claude, because a record with the body lost is the failure Jim's rule forbids and `additionalContext` is
+ *  unmeasured on real Claude. Set this to true after the macOS Claude test: nothing else changes. While false, a Claude message over the paste
+ *  limit goes by socket only, and with no socket it pauses (`long_no_socket`) and goes when the socket is back. */
+export const CLAUDE_SPOOL_ROUTE = false;
+
 /** The short paste that stands for a long message, when one is due: the text this attempt types. The spool is written and the row marked first,
  *  so both are committed before a byte. A short message, or a seat whose relay cannot add the text, goes as it is: whole, its marker perhaps hidden,
  *  and a collapsed paste is then held as a draft, which loses nothing. The note, never the body, is what a staged attempt finds again. */
@@ -58,7 +63,12 @@ function prepareLongPaste(message: SeatMessage, text: string, rows: Pick<HopRows
  *  text, so the attempt, the blocked-repeat check and the clearing of it all see the same row. A group the seat cannot take as a short paste goes
  *  whole, as before, and a message with no per-row bodies is left as it is. */
 function longGroupHead(message: SeatMessage, rows: Pick<HopRows, "nonceOf">, spool: SeatSpool | undefined): SeatMessage {
-  if (message.ids.length === 1 || message.bodies === undefined || spool === undefined || (spool.declaredVersion(message.seat) ?? 0) < SPOOL_GATE_VERSION) return message;
+  if (spool === undefined || (spool.declaredVersion(message.seat) ?? 0) < SPOOL_GATE_VERSION) return message;
+  return pasteHead(message, rows);
+}
+
+function pasteHead(message: SeatMessage, rows: Pick<HopRows, "nonceOf">): SeatMessage {
+  if (message.ids.length === 1 || message.bodies === undefined) return message;
   const whole = markedText(message, rows);
   if (whole === null || Buffer.byteLength(whole) <= PASTE_LIMIT) return message;
   const first = message.bodies[0]!;
@@ -66,7 +76,7 @@ function longGroupHead(message: SeatMessage, rows: Pick<HopRows, "nonceOf">, spo
 }
 
 /** The note and the marker, under the label a message for the previous occupant carries on every attempt. */
-export function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
+function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
   const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL}\n` : "";
   return `${label}${spooledNote(total === 1 ? null : { index, total })}\n${nativeMarker(marker.id, marker.nonce)}`;
 }
@@ -195,6 +205,8 @@ export interface ClaudeHopDeps {
   spool?: SeatSpool;
   foregroundGroup?: ForegroundGroupOf;
   now?: () => number;
+  /** Tests of the on state. Everything else takes `CLAUDE_SPOOL_ROUTE`. */
+  spoolRoute?: boolean;
 }
 
 /** What a long message's last paste looked like, so a blocked repeat of it can be recognised. Writes nothing. */
@@ -207,7 +219,19 @@ function stagedLongPaste(message: SeatMessage, rows: Pick<HopRows, "nonceOf" | "
 /** The socket where a seat is eligible (a person's draft stays untouched, M3), the paste where it is not. `decideClaudeRetry` decides. */
 export class ClaudeSeatHop implements LastHop {
   private readonly now: () => number;
-  constructor(private readonly deps: ClaudeHopDeps) { this.now = deps.now ?? Date.now; }
+  private readonly spoolRoute: boolean;
+  constructor(private readonly deps: ClaudeHopDeps) {
+    this.now = deps.now ?? Date.now;
+    this.spoolRoute = deps.spoolRoute ?? CLAUDE_SPOOL_ROUTE;
+  }
+
+  /** The text of a paste this attempt may make, or null when it may make none. Off, the spool is never used, so a paste always carries its body
+   *  in the prompt: a group goes a row at a time, and a row over the limit does not go. Startup text alone may paste long: see `isStartupText`. */
+  private pasteable(message: SeatMessage): SeatMessage | null {
+    if (this.spoolRoute || isStartupText(message.ids[0])) return message;
+    const head = pasteHead(message, this.deps.rows);
+    return Buffer.byteLength(markedText(head, this.deps.rows)!) <= PASTE_LIMIT ? head : null;
+  }
 
   async attempt(message: SeatMessage): Promise<LastHopResult> {
     const text = markedText(message, this.deps.rows);
@@ -222,7 +246,9 @@ export class ClaudeSeatHop implements LastHop {
       const written = await this.deps.writeToSeat(eligible.endpoint, this.deps.rows.senderOf(id) ?? "unknown", text);
       if (written !== "none") return { kind: "sent" };
     }
-    return this.paste(message, text);
+    const pasted = this.pasteable(message);
+    if (pasted === null) return { kind: "paused", reason: "long_no_socket" };
+    return this.paste(pasted, markedText(pasted, this.deps.rows)!);
   }
 
   private paste(message: SeatMessage, whole: string): Promise<LastHopResult> {
@@ -230,8 +256,9 @@ export class ClaudeSeatHop implements LastHop {
       const seat = await readSeat(this.deps.client, message.seat, "claude-code", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
-      const one = longGroupHead(message, this.deps.rows, this.deps.spool);
-      const text = prepareLongPaste(one, one === message ? whole : markedText(one, this.deps.rows)!, this.deps.rows, this.deps.spool);
+      const spool = this.spoolRoute && !isStartupText(message.ids[0]) ? this.deps.spool : undefined;
+      const one = longGroupHead(message, this.deps.rows, spool);
+      const text = prepareLongPaste(one, one === message ? whole : markedText(one, this.deps.rows)!, this.deps.rows, spool);
       const step = decideClaudeRetry({
         text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: false,
         atRest: seat.status !== null && AT_REST.has(seat.status), composer: readClaudeComposer(seat.screen),
@@ -247,7 +274,7 @@ export class ClaudeSeatHop implements LastHop {
 
   /** M3: a blocked repeat comes back to the composer. Cleared only at rest, only when it holds exactly this text, only with `ctrl+c`. */
   async afterReceived(sentMessage: SeatMessage): Promise<void> {
-    const message = longGroupHead(sentMessage, this.deps.rows, this.deps.spool);
+    const message = this.spoolRoute ? longGroupHead(sentMessage, this.deps.rows, this.deps.spool) : pasteHead(sentMessage, this.deps.rows);
     const whole = markedText(message, this.deps.rows);
     if (whole === null) return;
     const text = this.deps.rows.partsOf(message.ids[0]) === null ? whole : stagedLongPaste(message, this.deps.rows);

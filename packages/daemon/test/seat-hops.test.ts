@@ -1,12 +1,14 @@
 // The last hops the pump drives on real seats. The store is real, so what crosses a restart is measured; the core client and the input are
 // fakes that record every call. Screens are as measured on Claude 2.1.316 and Codex 0.166.0 (s0 M1, M3, M4, M8).
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
-import { PASTE_LIMIT, ClaudeSeatHop, CodexSeatHop, PiSeatHop, foregroundHoldsAgent, isSeatAgent, markedText, readClaudeComposer, type HopGuard, type SeatSpool } from "../src/adapters/seat-hops.js";
-import { promptMarkers, type SeatMarker } from "../src/adapters/seat-gate-marker.js";
+import { CLAUDE_SPOOL_ROUTE, PASTE_LIMIT, ClaudeSeatHop, CodexSeatHop, PiSeatHop, foregroundHoldsAgent, isSeatAgent, markedText, readClaudeComposer, type HopGuard, type SeatSpool } from "../src/adapters/seat-hops.js";
+import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
+import { promptMarkers, spooledNote, type SeatMarker } from "../src/adapters/seat-gate-marker.js";
+import { startupTextId } from "../src/domain/seat-messaging/long-message.js";
 import type { NativeEligibility, NativeEndpointRow } from "../src/domain/claude-native-inbox.js";
 import { CLAUDE_SOCKET_REPEAT_WINDOW_MS } from "../src/domain/seat-messaging/claude-last-hop.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
@@ -251,20 +253,142 @@ describe("the hops", () => {
       await claude().afterReceived(message);
       expect(calls).toEqual(["keys:C-c"]);
     });
-    it("a long message on the paste path goes short, with its text in the spool; the socket still takes it whole", async () => {
-      const held: string[] = [];
-      const spool = { declaredVersion: () => 2, spool: (_s: string, _m: SeatMarker, t: string) => { held.push(t); }, discardSpool: () => {} };
-      const hop = new ClaudeSeatHop({ rows: store, guard, client, input, spool, eligibility: async () => ({ ok: false, reason: "no_endpoint" } as never), writeToSeat: async () => "none" });
-      const body = "y".repeat(PASTE_LIMIT);
-      screen = "❯ \n──────────────\n";
-      await expect(hop.attempt({ ...message, body })).resolves.toEqual({ kind: "sent" });
-      expect(held).toEqual([body]);
-      expect(calls[0]).not.toContain("yyy");
-      calls.length = 0;
-      const staged = "OpenRig: long message. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again.";
-      screen = `❯ ${staged}\n  [openrig-msg m-1:${store.nonceOf(ID)}]\n──────────────\n`;
-      await hop.afterReceived({ ...message, body });  // a blocked repeat of the short paste is cleared by what it was, not by the body
-      expect(calls).toEqual(["keys:C-c"]);
+    describe("a long message (decision 35)", () => {
+      const LONG = "y".repeat(PASTE_LIMIT);
+      const spooled: string[] = [];
+      const spool = { declaredVersion: () => 2 as number | null, spool: (_s: string, _m: SeatMarker, t: string) => { spooled.push(t); }, discardSpool: () => {} };
+      const hop = (over: { version?: number | null; spoolRoute?: boolean } = {}) => new ClaudeSeatHop({
+        rows: store, guard, client, input, now: () => now, spool: { ...spool, declaredVersion: () => (over.version === undefined ? 2 : over.version) }, ...(over.spoolRoute === undefined ? {} : { spoolRoute: over.spoolRoute }),
+        eligibility: async (): Promise<NativeEligibility> => (eligible ? { ok: true, nodeId: "n", endpoint } : { ok: false, reason: "no" }),
+        writeToSeat: async (_e, sender, text) => { writes.push({ sender, text }); return written; },
+      });
+      const group = (first: string, second: string): SeatMessage => ({ ...message, ids: [ID, messageId("m-2")], body: `${first}\n${second}`, bodies: [first, second] });
+      beforeEach(() => {
+        spooled.length = 0;
+        store.accept({ id: messageId("m-2"), seat: SEAT, sender: "lead@r", body: "x" });
+        store.claimAttempt(store.headOf(SEAT)!, 0);
+        db.prepare("UPDATE outbox_entries SET native_nonce = 'abcdef0123456789abcdef0123456789' WHERE outbox_id = 'm-2'").run();
+      });
+
+      it("the spool route is off for Claude, by one named switch", () => {
+        expect(CLAUDE_SPOOL_ROUTE).toBe(false);
+      });
+      it("goes whole by socket", async () => {
+        await expect(hop().attempt({ ...message, body: LONG })).resolves.toEqual({ kind: "sent" });
+        expect(writes[0]!.text).toContain(LONG);
+        expect(calls).toEqual([]);
+        expect(spooled).toEqual([]);
+      });
+      for (const version of [2, 1, null]) {
+        it(`with no socket it is never pasted, at gate version ${version}: paused under its own reason`, async () => {
+          eligible = false;
+          await expect(hop({ version }).attempt({ ...message, body: LONG })).resolves.toEqual({ kind: "paused", reason: "long_no_socket" });
+          expect(calls).toEqual([]);
+          expect(spooled).toEqual([]);
+          expect(store.partsOf(ID)).toBeNull();
+        });
+      }
+      it("a socket that wrote nothing is no socket", async () => {
+        written = "none";
+        await expect(hop().attempt({ ...message, body: LONG })).resolves.toEqual({ kind: "paused", reason: "long_no_socket" });
+        expect(calls).toEqual([]);
+      });
+      it("the limit is on what the paste would carry, marker included: one byte under still pastes", async () => {
+        eligible = false;
+        const fits = "z".repeat(PASTE_LIMIT - Buffer.byteLength(`\n[openrig-msg m-1:${store.nonceOf(ID)}]`));
+        await expect(hop().attempt({ ...message, body: fits })).resolves.toEqual({ kind: "sent" });
+        expect(calls[0]).toContain(fits);
+        calls.length = 0;
+        await expect(hop().attempt({ ...message, body: `${fits}z` })).resolves.toEqual({ kind: "paused", reason: "long_no_socket" });
+        expect(calls).toEqual([]);
+      });
+      it("a short message keeps the paste path", async () => {
+        eligible = false;
+        await expect(hop().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(calls).toEqual([`paste:${text()}`]);
+      });
+      it("a group over the limit goes whole by socket", async () => {
+        const body = "a".repeat(PASTE_LIMIT);
+        await expect(hop().attempt(group(body, "b"))).resolves.toEqual({ kind: "sent" });
+        expect(writes[0]!.text).toContain(`${body}\nb`);
+        expect(writes[0]!.text).toContain("[openrig-msg m-2:");
+        expect(calls).toEqual([]);
+      });
+      it("a group over the limit with no socket: its short first row pastes alone, body in the prompt", async () => {
+        eligible = false;
+        const rest = "b".repeat(PASTE_LIMIT);
+        await expect(hop().attempt(group("first", rest))).resolves.toEqual({ kind: "sent" });
+        expect(calls).toEqual([`paste:first\n[openrig-msg m-1:${store.nonceOf(ID)}]`]);
+      });
+      it("a group whose first row is itself long, with no socket: paused, nothing typed", async () => {
+        eligible = false;
+        await expect(hop().attempt(group("a".repeat(PASTE_LIMIT), "b"))).resolves.toEqual({ kind: "paused", reason: "long_no_socket" });
+        expect(calls).toEqual([]);
+      });
+      it("a blocked repeat of a group's first row is cleared by what was pasted", async () => {
+        eligible = false;
+        const sent = group("first", "b".repeat(PASTE_LIMIT));
+        screen = `❯ first\n  [openrig-msg m-1:${store.nonceOf(ID)}]\n──────────────\n`;
+        await hop({ version: 1 }).afterReceived(sent);  // whatever the relay declared
+        expect(calls).toEqual(["keys:C-c"]);
+      });
+      it("startup text is the one exception: with no socket it pastes whole, body in the prompt, and never as a note", async () => {
+        eligible = false;
+        const startup = messageId(startupTextId("gen", "attempt", 1));
+        store.accept({ id: startup, seat: SEAT, sender: "startup@system", body: "s" });
+        db.prepare("UPDATE outbox_entries SET native_nonce = 'abcdef0123456789abcdef0123456789' WHERE outbox_id = ?").run(startup);
+        for (const spoolRoute of [false, true]) {
+          calls.length = 0;
+          await expect(hop({ spoolRoute }).attempt({ ...message, ids: [startup], body: LONG, messageClass: "lifecycle" })).resolves.toEqual({ kind: "sent" });
+          expect(calls[0]).toContain(LONG);
+          expect(spooled).toEqual([]);
+        }
+      });
+
+      it("the pause ends by itself: the pump finds the socket back, with nobody asking", async () => {
+        eligible = false;
+        const gate = { version: 2, lookup: async (_s: string, id: ReturnType<typeof messageId>) => (writes.length > 0 ? { kind: "seen" as const, record: { id, recordedAt: "2026-11-02T00:00:00.000Z", nonce: null } } : { kind: "not_seen" as const }) };
+        db.prepare("UPDATE outbox_entries SET body = ?, message_state = 'accepted', attempts = 0, next_attempt_at = NULL WHERE outbox_id = 'm-1'").run(LONG);
+        const seatHop = hop();
+        const pump = new MessagePump({
+          store, ports: { gateFor: () => gate, hopFor: () => seatHop }, directory: { fate: () => ({ kind: "live", occupantGeneration: null }) } as never, held: { status: () => "held" },
+          senders: { returnToSender: async () => ({ kind: "no_return_path", reason: "none" }) }, timing: { tickMs: 2, pauseRecheckMs: 2, backoffMs: [100_000] }, log: () => undefined,
+        });
+        pump.start();
+        try {
+          await vi.waitFor(() => expect(store.headOf(SEAT)?.pauseReason).toBe("long_no_socket"));
+          expect(calls).toEqual([]);
+          eligible = true;
+          await vi.waitFor(() => expect(store.outcomeOf(ID)).toBe("received"));
+          expect(writes[0]!.text).toContain(LONG);
+          expect(calls).toEqual([]);
+        } finally { pump.stop(); }
+      });
+
+      describe("the on state: one line turns it on", () => {
+        const on = () => hop({ spoolRoute: true });
+        it("the paste path goes short, with its text in the spool; the socket still takes it whole", async () => {
+          eligible = false;
+          await expect(on().attempt({ ...message, body: LONG })).resolves.toEqual({ kind: "sent" });
+          expect(spooled).toEqual([LONG]);
+          expect(calls[0]).not.toContain("yyy");
+          calls.length = 0;
+          const staged = spooledNote(null);
+          screen = `❯ ${staged}\n  [openrig-msg m-1:${store.nonceOf(ID)}]\n──────────────\n`;
+          await on().afterReceived({ ...message, body: LONG });  // a blocked repeat is cleared by what it was, not by the body
+          expect(calls).toEqual(["keys:C-c"]);
+        });
+        it("a seat whose relay is older gets it whole, as Codex does", async () => {
+          eligible = false;
+          await expect(hop({ spoolRoute: true, version: 1 }).attempt({ ...message, body: LONG })).resolves.toEqual({ kind: "sent" });
+          expect(calls[0]).toContain(LONG);
+        });
+        it("a long group goes a row at a time", async () => {
+          eligible = false;
+          await on().attempt(group("a".repeat(PASTE_LIMIT), "b"));
+          expect(spooled).toEqual(["a".repeat(PASTE_LIMIT)]);
+        });
+      });
     });
     it("clears nothing on a person's draft, or while the seat works", async () => {
       screen = "❯ my own words\n──────────────\n";

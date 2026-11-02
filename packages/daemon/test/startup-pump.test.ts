@@ -297,31 +297,49 @@ describe("startup text through the pump", () => {
       expect(sendText).not.toHaveBeenCalled();
     });
 
-    describe("a long text, which reaches the seat as a short note that its gate hook completes (decision 33)", () => {
-      const NOTE = "OpenRig: long message. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again.";
-      const stagedBy = (staged: { text: string | null }, later: number) => (message: SeatMessage): LastHopResult => {
-        store.markParts(message.ids[0], 1);
-        setTimeout(() => { staged.text = `${NOTE}\n[openrig-msg ${message.ids[0]}:${store.nonceOf(message.ids[0])}]`; }, later);
-        return { kind: "sent" };
-      };
-      beforeEach(() => { contents["/long.txt"] = "L".repeat(3_000); });
+    describe("a long text with no socket: whole, so its body is in the prompt (decision 35)", () => {
+      const LONG = "L".repeat(3_000);
+      beforeEach(() => { contents["/long.txt"] = LONG; });
+      const marked = (message: SeatMessage) => `${message.body}\n[openrig-msg ${message.ids[0]}:${store.nonceOf(message.ids[0])}]`;
 
-      it("gets the guarded Enter on the note and its marker, never on the whole text", async () => {
-        const staged: { text: string | null } = { text: null };
-        onAttempt = stagedBy(staged, 700);
-        capture.mockImplementation(async () => (staged.text ? composerWith(staged.text) : ""));
-        sendKeys.mockImplementation(async () => { staged.text = null; seen.add(attempts[0]!.ids[0]); return { ok: true }; });
+      it("gets the guarded Enter on the whole text and its marker", async () => {
+        let staged: string | null = null;
+        onAttempt = (message) => { setTimeout(() => { staged = marked(message); }, 700); return { kind: "sent" }; };
+        capture.mockImplementation(async () => (staged ? composerWith(staged) : ""));
+        sendKeys.mockImplementation(async () => { staged = null; seen.add(attempts[0]!.ids[0]); return { ok: true }; });
         const result = await orchestrator(2_500).startNode(claude({ resolvedStartupFiles: [file("/long.txt")] }));
         expect(result.ok, JSON.stringify(result)).toBe(true);
         expect(sendKeys).toHaveBeenCalledTimes(1);
-        expect(sendKeys).toHaveBeenCalledWith(SEAT, ["Enter"]);
       });
-      it("is not given an Enter when the composer holds the whole text, which is not what the hop pasted", async () => {
-        onAttempt = (message) => { store.markParts(message.ids[0], 1); return { kind: "sent" }; };
-        capture.mockImplementation(async () => composerWith(`${"L".repeat(3_000)}\n[openrig-msg x:y]`));
+      it("one Enter is all it gets, however long the text still shows", async () => {
+        let staged: string | null = null;
+        onAttempt = (message) => { staged = marked(message); return { kind: "sent" }; };
+        capture.mockImplementation(async () => (staged ? composerWith(staged) : ""));
+        const result = await orchestrator(1_600).startNode(claude({ resolvedStartupFiles: [file("/long.txt")] }));
+        expect(result.ok).toBe(false);
+        expect(sendKeys).toHaveBeenCalledTimes(1);
+      });
+      it("collapsed by Claude, with its Enter lost: it cannot be told from a person's paste, so no Enter goes, and the startup fails out loud", async () => {
+        onAttempt = () => ({ kind: "sent" });
+        capture.mockImplementation(async () => composerWith("[Pasted text #1 +1 lines]"));
         const result = await orchestrator(700).startNode(claude({ resolvedStartupFiles: [file("/long.txt")] }));
         expect(result.ok).toBe(false);
+        expect(JSON.stringify(result)).toContain("did not record startup text");
         expect(sendKeys).not.toHaveBeenCalled();
+        expect(rows()).toMatchObject([{ message_state: "undeliverable" }]);
+      });
+      it("never records on a note: the hand-off has no short form to find", () => {
+        store.accept({ id: messageId("x"), seat: SEAT, sender: "startup@system", body: "b" });
+        store.claimAttempt(store.headOf(SEAT)!, 0);
+        store.markParts(messageId("x"), 1);
+        expect((tmux.messageHandOff as PumpHandOff).stagedPaste(messageId("x"), "b")).toBe(`b\n[openrig-msg x:${store.nonceOf(messageId("x"))}]`);
+      });
+      it("a socket that never comes and a paste that never lands fail the startup out loud, and the row ends", async () => {
+        onAttempt = () => ({ kind: "paused", reason: "long_no_socket" });
+        const result = await orchestrator(400).startNode(claude({ resolvedStartupFiles: [file("/long.txt")] }));
+        expect(result.ok).toBe(false);
+        expect(JSON.stringify(result)).toContain("did not record startup text");
+        expect(rows()).toMatchObject([{ message_state: "undeliverable" }]);
       });
     });
 

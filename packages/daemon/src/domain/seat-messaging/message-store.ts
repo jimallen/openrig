@@ -113,7 +113,7 @@ interface MessageRow {
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
 const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
-const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "gate_unavailable", "lane_held"];
+const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "long_no_socket", "gate_unavailable", "lane_held"];
 
 function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;
@@ -231,11 +231,6 @@ export class MessageStore {
 
   partsOf(id: MessageId): number | null {
     return (this.db.prepare("SELECT message_parts AS parts FROM outbox_entries WHERE outbox_id = ?").get(id) as { parts: number | null } | undefined)?.parts ?? null;
-  }
-
-  /** The numbered parts that have arrived: the part due is the next. */
-  partsDoneOf(id: MessageId): number {
-    return (this.db.prepare("SELECT message_parts_done AS done FROM outbox_entries WHERE outbox_id = ?").get(id) as { done: number | null } | undefined)?.done ?? 0;
   }
 
   /** A part arrived, so the next is due at once, on a backoff of its own. Compare-and-set: a restart that sees the same record changes nothing. */

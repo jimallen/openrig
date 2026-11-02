@@ -492,7 +492,27 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     const context = (s: F, id: string) => s.log().filter((l) => l.startsWith(`context ${id} `));
     const spoolFiles = (s: F) => (existsSync(join(s.gateDir, "spool")) ? readdirSync(join(s.gateDir, "spool")) : []);
 
-    for (const runtime of ["codex", "claude-code"]) {
+    it("claude-code, decision 35: with no socket it is never pasted, health names it at once, and the lane waits behind it", async () => {
+      const s = fixture([], "claude-code"); await s.launch();
+      s.accept("long", "x".repeat(1500)); s.accept("next"); daemon(s);
+      await until(() => s.read("long"), (r) => r?.message_pause_reason === "long_no_socket", "the pause");
+      await hopSaw(s, "booted");
+      expect(http(s, "/api/health").text).toContain("too long to paste");
+      await wait(1000);
+      expect(s.log().filter((l) => l.startsWith("agent") || l.startsWith("unmarked"))).toEqual([]);
+      expect(spoolFiles(s)).toEqual([]);
+      expect(s.read("long")).toMatchObject({ message_state: "attempting", delivery_state: "pending", message_parts: null });
+      expect(s.read("next").attempts).toBe(0);
+    }, 60_000);
+
+    it("claude-code: a short message still pastes", async () => {
+      const s = fixture([], "claude-code"); await s.launch();
+      s.accept("short"); daemon(s);
+      await state(s, "short", "received");
+      expect(agent(s, "short")).toHaveLength(1);
+    }, 40_000);
+
+    for (const runtime of ["codex"]) {
       it(`${runtime}: the agent gets the body from the hook, in the turn of a short paste, and that record is the arrival`, async () => {
         const s = fixture([], runtime); await s.launch();
         const body = "x".repeat(1500);

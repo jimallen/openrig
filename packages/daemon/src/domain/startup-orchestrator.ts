@@ -30,7 +30,7 @@ import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProce
 import { isResumeGoneCode, paneForegroundState, RESUME_SETTLE_MS, type PaneForegroundState, type PresentMemo } from "./resume-settle.js";
 import { readStoredJsonObject } from "./stored-json.js";
 import { registeredPaneOf } from "./binding-pane.js";
-import { SEAT_MESSAGE_ID_PREFIX } from "./outbox-handler.js";
+import { startupTextId } from "./seat-messaging/long-message.js";
 import { messageId, type MessageId } from "./seat-messaging/ports.js";
 
 // Expanded startup text can put the current input marker above 50 scrollback lines.
@@ -1118,7 +1118,7 @@ export class StartupOrchestrator {
   private async sendThroughPump(input: StartupDeliveryInput, text: string, occupantGeneration: string, sendOrder: number): Promise<StartupSendFailure | null> {
     const handOff = this.tmuxAdapter.messageHandOff!;
     const seat = input.binding.tmuxSession!;
-    const id = messageId(`${SEAT_MESSAGE_ID_PREFIX}startup-${occupantGeneration}-${input.startupAttemptId}-${sendOrder}`);
+    const id = messageId(startupTextId(occupantGeneration, input.startupAttemptId, sendOrder));
     const accepted = handOff.accept({ id, seat, sender: STARTUP_TEXT_SENDER, body: text, messageClass: "lifecycle", occupantGeneration, identityProvenance: "transport:v1" });
     if (accepted.kind === "conflict") return { error: `message ${id} already names other text` };
     if (accepted.kind === "ended") return accepted.received ? null : { error: `message ${id} ended without arriving` };
@@ -1133,17 +1133,16 @@ export class StartupOrchestrator {
   private async awaitStartupText(input: StartupDeliveryInput, id: MessageId, text: string): ReturnType<NonNullable<TmuxAdapter["messageHandOff"]>["awaitReceived"]> {
     const handOff = this.tmuxAdapter.messageHandOff!;
     const claude = input.adapter.runtime === "claude-code";
-    // What the last Enter went onto: a long message's parts are each pasted in a turn of their own and each wants its own Enter.
-    let submitted: string | null = null;
+    let entered = false;
     for (let left = this.startupTextWaitMs; ;) {
       const look = Math.min(STARTUP_TEXT_LOOK_MS, left);
       const outcome = await handOff.awaitReceived(id, look);
       left -= look;
       if (outcome !== "open" || left <= 0) return outcome;
-      // Claude collapses a paste, so the hop cannot tell ours from a person's and leaves it. Here the exact text is known, and the hand-off
-      // says what the paste carried: the text itself, or for a long one the short note its gate hook completes.
-      const staged = claude ? handOff.stagedPaste(id, text) : null;
-      if (staged !== null && staged !== submitted && await this.submitStagedPaste(input, staged)) submitted = staged;
+      // Claude collapses a paste, so the hop cannot tell ours from a person's and leaves it. Here the exact text is known. Startup text always
+      // pastes whole (decision 35), so the body is in the prompt however long it is.
+      const staged = claude && !entered ? handOff.stagedPaste(id, text) : null;
+      if (staged !== null) entered = await this.submitStagedPaste(input, staged);
       handOff.drive();
     }
   }
