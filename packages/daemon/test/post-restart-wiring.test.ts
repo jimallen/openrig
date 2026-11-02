@@ -203,6 +203,60 @@ describe("OF-184: a daemon restart inside the window does not lose the prompt", 
   });
 });
 
+describe("S4b: a restore the daemon never accepted is still the pump's after the window", () => {
+  // Production consequence: the post-restart text is how a resumed seat learns its background tasks and timers stopped (eztrack lost about 40
+  // minutes without it). On a seat the pump serves, the pump has no window: it carries a row until the gate records it. So a daemon that was
+  // down across the restore, for longer than the old loop's 30 minutes, must still commit the row on boot, or the seat is never told.
+  const gatedWiring = (w: ReturnType<typeof world>) => {
+    const accepted: Array<{ id: string; seat: string; sender: string; body: string }> = [];
+    const wiring = wirePostRestartPrompt({
+      db: w.db, eventBus: w.eventBus, outbox: w.outbox, readSwitch: () => true, log: (l) => w.logs.push(l),
+      send: async () => { throw new Error("a seat the pump serves is never sent to by this notifier"); },
+      handOff: () => ({ takes: () => true, accept: (input) => { accepted.push({ id: input.id, seat: input.seat, sender: input.sender, body: input.body }); return { kind: "accepted", id: input.id }; } }),
+      occupantGenerationOf: () => null,
+    });
+    return { wiring, accepted };
+  };
+  const age = (w: ReturnType<typeof world>, modifier: string) => w.db.prepare(`UPDATE events SET created_at = datetime('now', '${modifier}') WHERE type = 'restore.completed'`).run();
+
+  it("a restore 3 days old, never accepted, is accepted on boot under its fixed id, with the text", async () => {
+    const w = world();
+    const ev = w.emitRestore();
+    age(w, "-3 days");
+    w.db.prepare("UPDATE sessions SET created_at = datetime('now', '-4 days')").run(); // the resumed seat started before the restore
+    const { wiring, accepted } = gatedWiring(w);
+    const out = await wiring.rederiveFromLog();
+    expect(out.map((o) => o.outcome)).toEqual(["accepted"]);
+    expect(accepted.map((a) => [a.id, a.seat, a.sender])).toEqual([[postRestartDeliveryId(ev.seq, w.node.id), "dev-impl@wired-rig", "restore@system"]]);
+    expect(accepted[0]!.body).toContain("wired-rig");
+  });
+
+  it("an old restore whose seat was launched again since is still not told it resumed", async () => {
+    const w = world();
+    w.emitRestore();
+    age(w, "-3 days");
+    w.setSessionStart(new Date(Date.now() - 60_000).toISOString().replace("T", " ").slice(0, 19));
+    const { wiring, accepted } = gatedWiring(w);
+    expect((await wiring.rederiveFromLog()).map((o) => o.outcome)).toEqual(["replaced"]);
+    expect(accepted).toEqual([]);
+  });
+
+  it("a seat the pump does not serve keeps today's rule: an old restore is left alone, and no row of empty text is written", async () => {
+    const w = world();
+    w.emitRestore();
+    age(w, "-3 days");
+    const accepted: string[] = [];
+    const wiring = wirePostRestartPrompt({
+      db: w.db, eventBus: w.eventBus, outbox: w.outbox, readSwitch: () => true, log: (l) => w.logs.push(l),
+      send: async () => { throw new Error("not sent"); },
+      handOff: () => ({ takes: () => false, accept: (input) => { accepted.push(input.id); return { kind: "accepted", id: input.id }; } }),
+    });
+    expect((await wiring.rederiveFromLog()).map((o) => o.outcome)).toEqual([]);
+    expect(accepted).toEqual([]);
+    expect((w.db.prepare("SELECT count(*) AS n FROM outbox_entries").get() as { n: number }).n).toBe(0);
+  });
+});
+
 describe("sqliteUtcToIso", () => {
   it("reads SQLite datetime('now') text as UTC", () => {
     expect(sqliteUtcToIso("2026-10-30 17:58:12")).toBe("2026-10-30T17:58:12.000Z");

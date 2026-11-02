@@ -38,7 +38,7 @@ import { messageId } from "./domain/seat-messaging/ports.js";
 import { RuntimeSeatPorts } from "./domain/seat-messaging/runtime-ports.js";
 import { MessageObligations, NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
 import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
-import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
+import { watchdogDeliveryOutcome, watchdogWakeObligation } from "./domain/watchdog-delivery-status.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
@@ -2209,10 +2209,16 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       readSwitch: () => new ContextPackSettingsStore().resolveOne("recovery.post_restart_prompt").value === true,
       send: (sessionName, text, opts) => sessionTransport.send(sessionName, text, opts),
       outbox: outboxHandlerInstance,
+      handOff: () => tmuxAdapter.messageHandOff ?? null,
+      occupantGenerationOf: (s) => sessionRegistry.currentOccupantGenerationForSession(s),
       log: (line) => console.warn(line),
       timing: opts?.postRestartTiming,
     });
-    void postRestart.rederiveFromLog().catch((err) => console.warn(`[post-restart] ${err instanceof Error ? err.message : String(err)}`));
+    messageObligations.register("post-restart-", postRestart.notifier.whyNoLongerWanted);
+    messageObligations.register("guard-watchdog-", watchdogWakeObligation({
+      db, liveGenerationOf: (s) => sessionRegistry.currentOccupantGenerationForSession(s),
+      targetGenerationOf: (jobId) => watchdogJobsRepoInstance.getById(jobId)?.targetGeneration ?? null,
+    }));
     // Native comms step 3: the deadline sweeper (§8.1 R3). It reads the database, so rows a restart left `sending` are
     // settled too: delivered when the marker is in the seat's transcript, failed over to tmux after a proven non-take,
     // indeterminate (never re-sent) when no boundary came by the hard deadline. One sweep at a time.
@@ -2261,6 +2267,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       tmuxAdapter.messageHandOff = new PumpHandOff(seatMessages, messagePump, seatMessagingPorts);
       messagePump.start();
     }
+    // After the hand-off is wired, so a gated seat's prompt is re-accepted on the pump's path and never takes the ungated loop.
+    void postRestart.rederiveFromLog().catch((err) => console.warn(`[post-restart] ${err instanceof Error ? err.message : String(err)}`));
     queueRepoInstance.attachActivityReader((session) => {
       const nodeId = resolveSessionNodeId(db, session);
       return nodeId ? seatActivityService.getSeatState(nodeId) : null;
@@ -2269,6 +2277,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       jobsRepo: watchdogJobsRepoInstance,
       historyLog: watchdogHistoryLogInstance,
       eventBus,
+      pumpCarries: (session) => tmuxAdapter.messageHandOff?.takes(session) === true,
       deliver: async ({ targetSession, message, continuityAction }, source) => {
         let continuityActionCompleted = false;
         try {
