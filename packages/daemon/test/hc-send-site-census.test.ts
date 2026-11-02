@@ -29,7 +29,8 @@ const SITES: Array<{ file: string; calls: number; class: Class; id: string; note
 /** Text written past SessionTransport. Not S1's (Jim, via the lead, 2026-11-01): these 8 paths move in S4 and keep their own loops until
  *  then, with no row and no stable id. Census counts `.sendText(` in the file. */
 const DIRECT_TEXT: Array<{ file: string; kinds: string[]; sendText: number; stage: "S4" }> = [
-  { file: "domain/seat-handover-service.ts", kinds: ["handover-rebuild", "handover-restore"], sendText: 2, stage: "S4" },
+  // S4f: one shared paste, so one call. A seat the pump serves takes its packet through the pump; this is the ungated seat's path until S5.
+  { file: "domain/seat-handover-service.ts", kinds: ["handover-rebuild", "handover-restore"], sendText: 1, stage: "S4" },
   { file: "domain/startup-orchestrator.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
   { file: "domain/resume-metadata-refresher.ts", kinds: ["resume-probe"], sendText: 1, stage: "S4" },
   { file: "adapters/claude-code-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
@@ -86,6 +87,12 @@ describe("every daemon send into SessionTransport is classified", () => {
       expect(site.stage).toBe("S4");
       expect(source, site.file).not.toContain("seat-messaging/message-ledger");
     }
+  });
+
+  it("S4f: a gated seat's handover packet is the pump's: the paste is reached only when the pump does not take the seat", () => {
+    const source = readFileSync(join(SRC, "domain/seat-handover-service.ts"), "utf8");
+    expect(source).toMatch(/messageHandOff\?\.takes\(seat\) && occupants\.successor !== null\s*\? this\.deliverThroughPump\(/);
+    expect(source.match(/this\.pasteAndSubmit\(/g)).toHaveLength(1);
   });
 
   it("no other daemon file writes text to a seat past the transport (positive control: the population is the S4 sites plus the implementations)", () => {
