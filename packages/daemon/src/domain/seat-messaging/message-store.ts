@@ -254,7 +254,8 @@ export class MessageStore {
 
   private reopenRow(id: MessageId, nonce: string): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', delivery_state = 'pending', delivered_at = NULL, gate_recorded_at = NULL,
-        gate_nonce = NULL, message_gate_version = NULL, delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, next_attempt_at = NULL, message_id = coalesce(message_id, outbox_id), message_pump_owned = 1
+        gate_nonce = NULL, message_gate_version = NULL, delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, next_attempt_at = NULL, message_id = coalesce(message_id, outbox_id), message_pump_owned = 1,
+        message_parts_done = CASE WHEN message_parts IS NULL THEN message_parts_done ELSE 0 END
       WHERE outbox_id = ? AND native_nonce = ? AND delivery_state = 'delivered'`).run(id, nonce).changes === 1;
   }
 
@@ -296,7 +297,10 @@ export class MessageStore {
 
   /** The only way to `received` (invariant 3). A row that is no longer open is left as it is. */
   recordReceived(record: GateRecord, gateVersion: number): boolean {
+    // A long message is received only when every numbered part is (the pump reads them all), so its count is its total here: the counter alone
+    // moves when the pump sees a part arrive and the next is due, and read short at `received` (OF-203).
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'received', gate_recorded_at = ?, message_gate_version = ?, gate_nonce = ?,
+        message_parts_done = coalesce(message_parts, message_parts_done),
         next_attempt_at = NULL, message_pause_reason = NULL, delivery_state = 'delivered', delivered_at = ?,
         delivery_path = NULL, ack_evidence = ?, ack_detail = NULL
       WHERE outbox_id = ? AND ${OPEN}`).run(record.recordedAt, gateVersion, record.nonce, record.recordedAt, record.evidence ?? "gate_seen", record.id).changes === 1;

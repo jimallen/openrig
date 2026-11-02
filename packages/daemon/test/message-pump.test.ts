@@ -1204,6 +1204,67 @@ describe("the S4 review's pump rows", () => {
     expect(tidied).toEqual([]);
   });
 
+  // OF-203: `message_parts_done` read short at `received` on real Codex (3 of 4 on Sparky, 1 of 2 on the Mac) with every part in the seat's
+  // rollout. It is a counter the pump moves only when it sees a part arrive and the next one is due; the part that completes the message,
+  // and any parts that landed between two passes, never moved it. `received` already needs every numbered part (readParts), so the
+  // requirement is that the count agrees at `received`, and stays honestly short before it.
+  const partsHeld = (n: number) => {
+    const c = world();
+    c.store.accept({ id: messageId("L1"), seat: SEAT, sender: "lead@r", body: "x" });
+    c.store.markParts(messageId("L1"), n);
+    return c;
+  };
+  const recordParts = (w: World, store: MessageStore, upTo: number, total: number) => {
+    for (let i = 1; i <= upTo; i += 1) w.gate.record(partId(messageId("L1"), i, total), store.nonceOf(messageId("L1")));
+  };
+
+  it("OF-203: a long message whose parts all landed between two passes is received with every part counted", async () => {
+    const { db, store, w, pump } = partsHeld(4);
+    recordParts(w, store, 4, 4);
+    await pump.tick();
+    expect(store.outcomeOf(messageId("L1"))).toBe("received");
+    expect(row(db, "L1")).toMatchObject({ message_parts: 4, message_parts_done: 4 });
+  });
+
+  it("OF-203: the part that completes the message is counted when it arrives after the others were seen", async () => {
+    const { db, store, w, pump } = partsHeld(4);
+    await pump.tick();
+    recordParts(w, store, 3, 4);
+    w.now += 1000; await pump.tick();
+    expect(row(db, "L1")).toMatchObject({ message_state: "attempting", message_parts_done: 3 });
+    w.gate.record(partId(messageId("L1"), 4, 4), store.nonceOf(messageId("L1")));
+    w.now += 1000; await pump.tick();
+    expect(store.outcomeOf(messageId("L1"))).toBe("received");
+    expect(row(db, "L1")).toMatchObject({ message_parts_done: 4 });
+  });
+
+  it("OF-203: three of four parts is not received, and the count says three", async () => {
+    const { db, store, w, pump } = partsHeld(4);
+    recordParts(w, store, 3, 4);
+    await pump.tick();
+    expect(store.outcomeOf(messageId("L1"))).not.toBe("received");
+    expect(row(db, "L1")).toMatchObject({ message_state: "attempting", message_parts: 4, message_parts_done: 3 });
+  });
+
+  it("OF-203: a message that was never split keeps no count when it is received", async () => {
+    const { db, store, w, pump } = world();
+    store.accept({ id: messageId("S1"), seat: SEAT, sender: "lead@r", body: "x" });
+    await pump.tick();
+    w.gate.record(messageId("S1"), store.nonceOf(messageId("S1")));
+    w.now += 1000; await pump.tick();
+    expect(row(db, "S1")).toMatchObject({ message_state: "received", message_parts: null, message_parts_done: null });
+  });
+
+  it("OF-203: a message the hook cleared reopens with its count back at zero, not at the old total", async () => {
+    const { db, store, w, pump } = partsHeld(2);
+    await pump.tick();  // the first attempt mints the nonce the hook's record carries
+    recordParts(w, store, 2, 2);
+    w.now += 1000; await pump.tick();
+    expect(row(db, "L1")).toMatchObject({ message_state: "received", message_parts_done: 2 });
+    expect(store.reopenCleared(partId(messageId("L1"), 2, 2), store.nonceOf(messageId("L1")))).toBe(true);
+    expect(row(db, "L1")).toMatchObject({ message_state: "attempting", message_parts: 2, message_parts_done: 0 });
+  });
+
   it("QA F7: a pass asked for one seat leaves every other seat to its recheck", async () => {
     const { store, w, pump } = world();
     store.accept({ id: messageId("a"), seat: "other@r", sender: "lead@r", body: "x" });
