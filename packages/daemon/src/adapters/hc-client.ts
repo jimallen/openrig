@@ -1,5 +1,5 @@
 import { createConnection, type Socket } from "node:net";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join, resolve } from "node:path";
 
 /** The protocol generation this build speaks. A core on any other refuses `hello`, and the daemon must stop there. */
@@ -70,12 +70,15 @@ export interface HcTerminal {
 
 /** The core's socket, as hc itself finds it: HC_SOCKET, else the runtime dir (Linux), else the state dir (macOS, read
  *  from the live core's open files; `<state>/herdr-core/<session>/<session>.sock`). */
-export function resolveHcSocket(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+export function resolveHcSocket(env: NodeJS.ProcessEnv = process.env, home?: string): string {
   if (env.HC_SOCKET) return env.HC_SOCKET;
   const session = env.HC_SESSION || "default";
   if (env.XDG_RUNTIME_DIR) return join(env.XDG_RUNTIME_DIR, "herdr-core", `${session}.sock`);
-  const state = env.XDG_STATE_HOME || join(home, ".local", "state");
-  return join(state, "herdr-core", session, `${session}.sock`);
+  // The env names the location or there is none (OF-199): os.homedir() reads the passwd entry when HOME is unset, which is the
+  // account's real home, so a daemon started without a HOME joined the account's real core. An empty value is no value.
+  const base = env.XDG_STATE_HOME || (home || env.HOME ? join(home || env.HOME!, ".local", "state") : "");
+  if (!base) throw new HcUnavailableError("refusing to resolve an hc socket: none of HC_SOCKET, XDG_RUNTIME_DIR, XDG_STATE_HOME or HOME is set, so there is no named location (the account's home is not assumed)");
+  return join(base, "herdr-core", session, `${session}.sock`);
 }
 
 /** The account the process runs as: its uid names the host's runtime dir (`/run/user/<uid>`), its home the host's state dir. */

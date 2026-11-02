@@ -54,6 +54,22 @@ describe("resolveHcSocket", () => {
   it("uses the state dir without a runtime dir, as macOS has", () => {
     expect(resolveHcSocket({}, "/h")).toBe("/h/.local/state/herdr-core/default/default.sock");
   });
+  // OF-199: a daemon with no named location joined the account's real core, because the home came from os.homedir() (the passwd
+  // entry), not from the env. The env names the location, or there is no socket to talk to.
+  it("takes the home from the env's HOME", () => {
+    expect(resolveHcSocket({ HOME: "/envhome" })).toBe("/envhome/.local/state/herdr-core/default/default.sock");
+  });
+  it("takes XDG_STATE_HOME as the location without a HOME", () => {
+    expect(resolveHcSocket({ XDG_STATE_HOME: "/st" })).toBe("/st/herdr-core/default/default.sock");
+  });
+  it("refuses to resolve a socket when the env names no location, instead of asking the passwd entry for the account's home", () => {
+    const refusal = (env: NodeJS.ProcessEnv) => { try { resolveHcSocket(env); return null; } catch (e) { return e; } };
+    for (const env of [{}, { HOME: "" }, { PATH: "/usr/bin" }]) {
+      const error = refusal(env);
+      expect(error, JSON.stringify(env)).toBeInstanceOf(HcUnavailableError);
+      expect(String((error as Error).message)).toMatch(/HOME/);
+    }
+  });
 });
 
 describe("HcClient", () => {
