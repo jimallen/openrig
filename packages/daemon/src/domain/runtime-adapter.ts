@@ -139,6 +139,9 @@ export function resolveConcreteHint(
   return "send_text";
 }
 
+/** A send_text file reached an adapter with no send: only the orchestrator's pre-launch call has none, and it passes no send_text file. */
+export const NO_STARTUP_SEND = "startup text has no send: it cannot be typed before the harness is up";
+
 // -- Runtime adapter contract --
 
 /** OF-148: the `reason` of the needs_input a runner adapter answers while its pane editor holds a bracketed paste whose
@@ -241,6 +244,7 @@ export interface RuntimeAdapter {
 
   /** Deliver startup files. Claude's post-launch path can reuse the orchestrator's checked send.
    * The adapter still owns file reads, ordering, provisioning and required/optional errors. */
+  /** `sendInteractiveText` is the one way startup text reaches a seat. Absent before launch, when nothing here may be typed. */
   deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult>;
 
   /**

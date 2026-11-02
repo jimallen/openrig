@@ -26,17 +26,14 @@ const SITES: Array<{ file: string; calls: number; class: Class; id: string; note
   { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id. On a seat the pump serves both go to the pump, which owns their retries; the ladder reads the row and sends nothing (S4d)" },
 ];
 
-/** Text written past SessionTransport. Not S1's (Jim, via the lead, 2026-11-01): these 8 paths move in S4 and keep their own loops until
+/** Text written past SessionTransport. Not S1's (Jim, via the lead, 2026-11-01): these 4 paths are what S4 leaves, and keep their own loops until
  *  then, with no row and no stable id. Census counts `.sendText(` in the file. */
 const DIRECT_TEXT: Array<{ file: string; kinds: string[]; sendText: number; stage: "S4" }> = [
   // S4f: one shared paste, so one call. A seat the pump serves takes its packet through the pump; this is the ungated seat's path until S5.
   { file: "domain/seat-handover-service.ts", kinds: ["handover-rebuild", "handover-restore"], sendText: 1, stage: "S4" },
+  // S4g: the four adapters' direct legs are gone, so this is the one startup paste, and it is the ungated seat's path until S5.
   { file: "domain/startup-orchestrator.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
   { file: "domain/resume-metadata-refresher.ts", kinds: ["resume-probe"], sendText: 1, stage: "S4" },
-  { file: "adapters/claude-code-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
-  { file: "adapters/codex-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
-  { file: "adapters/pi-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
-  { file: "adapters/stub-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
 ];
 
 function sourceFiles(dir: string): string[] {
@@ -79,8 +76,8 @@ describe("every daemon send into SessionTransport is classified", () => {
     expect(startup).toMatch(/send: \(f\) => sessionTransport\.send\(f\.sessionName, f\.body, \{ forceTmux: true, ownsOutboxRow: true/);
   });
 
-  it("the 8 direct text paths are the classified ones, each stays S4's, and none has taken a row yet", () => {
-    expect(DIRECT_TEXT.reduce((a, d) => a + d.kinds.length, 0)).toBe(8); // handover 2, orchestrator 1, adapters 4, probe 1
+  it("the 4 direct text paths are the classified ones, each stays S4's, and none has taken a row yet", () => {
+    expect(DIRECT_TEXT.reduce((a, d) => a + d.kinds.length, 0)).toBe(4); // handover 2, orchestrator 1, probe 1
     for (const site of DIRECT_TEXT) {
       const source = readFileSync(join(SRC, site.file), "utf8");
       expect((source.match(/\.sendText\(/g) ?? []).length, site.file).toBe(site.sendText);
@@ -93,6 +90,16 @@ describe("every daemon send into SessionTransport is classified", () => {
     const source = readFileSync(join(SRC, "domain/seat-handover-service.ts"), "utf8");
     expect(source).toMatch(/messageHandOff\?\.takes\(seat\) && occupants\.successor !== null\s*\? this\.deliverThroughPump\(/);
     expect(source.match(/this\.pasteAndSubmit\(/g)).toHaveLength(1);
+  });
+
+  it("S4g: a gated seat's startup text is the pump's, bound to its occupant, and no adapter types it", () => {
+    const source = readFileSync(join(SRC, "domain/startup-orchestrator.ts"), "utf8");
+    expect(source).toMatch(/if \(input\.occupantGeneration && this\.tmuxAdapter\.messageHandOff\?\.takes\(tmuxSession\)\) return this\.sendThroughPump\(/);
+    for (const file of ["claude-code-adapter", "codex-runtime-adapter", "pi-runtime-adapter", "stub-runtime-adapter"]) {
+      const adapter = readFileSync(join(SRC, `adapters/${file}.ts`), "utf8");
+      expect(adapter, file).toContain("await sendInteractiveText(content);");
+      expect(adapter, file).not.toContain("inertStartupText");
+    }
   });
 
   it("no other daemon file writes text to a seat past the transport (positive control: the population is the S4 sites plus the implementations)", () => {

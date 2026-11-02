@@ -6,6 +6,7 @@
 
 import nodePath from "node:path";
 import { describe, it, expect, vi } from "vitest";
+import { NO_STARTUP_SEND } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { PiRuntimeAdapter, type PiAdapterFsOps } from "../src/adapters/pi-runtime-adapter.js";
 import { PiResumeAdapter } from "../src/adapters/pi-resume.js";
@@ -739,37 +740,29 @@ describe("durable catch-up cursor survives launch-attempt resets", () => {
   });
 });
 
-// OF-160 (z5): a Pi send_text startup file is operator-authored prose the adapter types into the
-// seat's pane inside a bracketed paste; a paste-end marker in it would close the paste early and
-// type the tail as keys. Strip both CSI forms before sendText.
-describe("OF-160: Pi send_text startup files never carry the paste-end marker into the pane", () => {
-  it("strips the paste-end marker (both CSI forms) before the paste", async () => {
-    const tmux = mockTmux();
-    const fs = memFs({ "/work/startup/pack.md": "alpha\u001b[201~beta \u009b201~gamma" });
-    const adapter = adapterWith(fs, tmux);
-    const file = {
-      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
-      deliveryHint: "send_text" as const, required: true, appliesOn: ["fresh_start"],
-    };
-    const result = await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never);
-    expect(result.failed).toEqual([]);
-    expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "alpha[201~beta 201~gamma");
-    expect(tmux.sendKeys).toHaveBeenCalledWith(SESSION, ["Enter"]);
-  });
-});
+// S4g: a Pi send_text startup file goes by the one send, the orchestrator's, which strips it (OF-160, OF-169: startup-pump.test.ts).
+describe("S4g: Pi send_text startup files go by the one send", () => {
+  const file = {
+    path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
+    deliveryHint: "send_text" as const, required: true, appliesOn: ["fresh_start"],
+  };
 
-// OF-169: startup text typed into the Pi seat loses every control except TAB/LF/CR.
-describe("OF-169: Pi send_text startup files lose C0/C1 controls but keep tab, newline and CR", () => {
-  it("strips controls before the paste", async () => {
+  it("hands the text to it and types nothing itself", async () => {
     const tmux = mockTmux();
-    const fs = memFs({ "/work/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" });
-    const adapter = adapterWith(fs, tmux);
-    const file = {
-      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
-      deliveryHint: "send_text" as const, required: true, appliesOn: ["fresh_start"],
-    };
-    await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never);
-    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "AB[31mCDEFG\tH\nI\rJ");
+    const adapter = adapterWith(memFs({ "/work/startup/pack.md": "text" }), tmux);
+    const send = vi.fn(async () => undefined);
+    const result = await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never, send);
+    expect(result).toMatchObject({ delivered: 1, failed: [] });
+    expect(send).toHaveBeenCalledWith("text");
+    expect(tmux.sendText).not.toHaveBeenCalled();
+    expect(tmux.sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("with no send, a required file fails and nothing is typed", async () => {
+    const tmux = mockTmux();
+    const adapter = adapterWith(memFs({ "/work/startup/pack.md": "text" }), tmux);
+    const result = await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never);
+    expect(result.failed).toEqual([{ path: "startup/pack.md", error: NO_STARTUP_SEND }]);
+    expect(tmux.sendText).not.toHaveBeenCalled();
   });
 });

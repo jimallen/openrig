@@ -73,6 +73,7 @@ function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, tot
 
 export interface HopGuard {
   operation<T>(name: string, fn: () => Promise<T>, held?: (target: GuardTarget) => Promise<T>): Promise<T>;
+  heldByAnotherLifecycle?(name: string): boolean;
 }
 
 export type HcHopInput = CodexPasteInput;
@@ -92,8 +93,11 @@ export function markedText(message: SeatMessage, rows: Pick<HopRows, "nonceOf">)
 
 const unmarked: LastHopResult = { kind: "refused", reason: "no_nonce" };
 
-/** A typed attempt under the delivery guard. A held seat pauses; a changed target is a reason to come back, never a failure. */
-function guarded(guard: HopGuard, seat: string, fn: () => Promise<LastHopResult>): Promise<LastHopResult> {
+/** A typed attempt under the delivery guard. A held seat pauses; a changed target is a reason to come back, never a failure. So does a seat under
+ *  someone else's lifecycle lease: a pass that queued for that lease would hold the seat's pass, and the startup or handover inside the lease
+ *  could never get its own text to the seat. */
+export function guarded(guard: HopGuard, seat: string, fn: () => Promise<LastHopResult>): Promise<LastHopResult> {
+  if (guard.heldByAnotherLifecycle?.(seat)) return Promise.resolve({ kind: "paused", reason: "busy" });
   return guard.operation<LastHopResult>(seat, fn, async () => ({ kind: "paused", reason: "guard_held" }))
     .catch((error: unknown) => {
       if ((error as { code?: string }).code === "typing_guard_enabled") return { kind: "paused", reason: "guard_held" } as const;

@@ -1,3 +1,4 @@
+import { nativeMarker } from "../claude-native-inbox.js";
 import { OutboxHandlerError } from "../outbox-handler.js";
 import type { MessagePump } from "./message-pump.js";
 import type { MessageAcceptInput, MessageOutcome, MessageStore } from "./message-store.js";
@@ -26,6 +27,10 @@ export interface MessageHandOff {
   awaitReceived(id: MessageId, waitMs: number): Promise<MessageOutcome>;
   /** Ends a row nobody should still deliver, with no notice. False when it was not open. */
   cancel(id: MessageId, reason: string): boolean;
+  /** A pass now, in the caller's context, so a caller waiting under a lifecycle lease has its own retries made under that lease. */
+  drive(): void;
+  /** The marker line a paste of this message carries, or null when no paste went: nothing was attempted, or it went by socket. */
+  pastedMarker(id: MessageId): string | null;
   /** Lane 2 waits on this seat until the returned function is called, for a sequence of lower-lane messages that each wait for the last, so
    *  nothing lands between two of them. Call it in a `finally`. It lives and dies with this process: a daemon that died mid-sequence is not
    *  still running it, and a hold on disk would wedge the seat's queue for good. */
@@ -61,6 +66,15 @@ export class PumpHandOff implements MessageHandOff {
 
   cancel(id: MessageId, reason: string): boolean {
     return this.pump.cancel(id, reason);
+  }
+
+  drive(): void {
+    void this.pump.tick();
+  }
+
+  pastedMarker(id: MessageId): string | null {
+    const nonce = this.store.nonceOf(id);
+    return nonce === null || this.store.lastSocketWriteMs(id) !== null ? null : nativeMarker(id, nonce);
   }
 
   holdContentLane(seat: string): () => void {

@@ -1,7 +1,6 @@
 import { answerDialogKeys } from "./hc-dialog-input.js";
 import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
-import { inertStartupText } from "../domain/packet-text.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,7 +12,7 @@ import type {
   InstalledResource, ProjectionResult, StartupDeliveryResult, ReadinessResult,
   HarnessLaunchResult,
 } from "../domain/runtime-adapter.js";
-import { resolveConcreteHint } from "../domain/runtime-adapter.js";
+import { NO_STARTUP_SEND, resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
 import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
@@ -223,18 +222,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           }
           case "send_text": {
             if (binding.tmuxSession) {
-              if (sendInteractiveText) {
-                await sendInteractiveText(content);
-                break;
-              }
-              // OF-160 (z5): the direct leg pastes operator-authored file content bracketed;
-              // strip the paste-end marker so it can never close the paste early. The callback
-              // leg is stripped inside the orchestrator's sendInteractiveText.
-              const textResult = await this.tmux.sendText(binding.tmuxSession, inertStartupText(content));
-              if (!textResult.ok) throw new Error(textResult.message);
-              await this.sleep(200);
-              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
-              if (!submitResult.ok) throw new Error(submitResult.message);
+              // One send for every runtime: the orchestrator's, which strips the paste-end marker and picks the pump or the paste.
+              if (!sendInteractiveText) throw new Error(NO_STARTUP_SEND);
+              await sendInteractiveText(content);
             }
             break;
           }
