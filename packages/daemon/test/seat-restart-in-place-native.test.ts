@@ -100,7 +100,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
   const work = nodePath.join(root, "work");
   const launchPath = `${bin}:/usr/bin:/bin`;
 
-  async function setup(shape: "shell_backed" | "direct_native", opts: { running?: { networkOverride: boolean; daemonOptOut: boolean; addDirs: string[] }; quiet?: boolean; prelude?: string;
+  async function setup(shape: "shell_backed" | "direct_native" | "script_backed", opts: { running?: { networkOverride: boolean; daemonOptOut: boolean; addDirs: string[] }; quiet?: boolean; prelude?: string;
     /** Shell-backed: type the launch the way OpenRig does (the host adapter's staged `/bin/sh <script>`). */
     staged?: boolean;
     /** Start the Codex by hand, without the flag a managed launch carries. */
@@ -121,7 +121,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     const resolved = execFileSync("/bin/sh", ["-c", "command -v codex"], { env: { PATH: launchPath }, encoding: "utf8" }).trim();
     if (resolved !== stub) throw new Error(`Refusing to run: codex on the pinned PATH is ${resolved}, not the stub.`);
     expect(home).not.toBe(nodePath.join(os.homedir(), ".codex"));
-    const seat = `dev-codex@${shape === "shell_backed" ? "shell" : "native"}-rig`;
+    const seat = `dev-codex@${shape === "shell_backed" ? "shell" : shape === "script_backed" ? "script" : "native"}-rig`;
     sessions.push(seat);
     // The shared fixture leaves out the guard's tables, so a guarded seat runs on the whole schema.
     const db = opts.guarded ? new Database(":memory:") : createFullTestDb();
@@ -159,7 +159,14 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
       argv, name: hcTerminalName(seat), labels: { ...sessionEnvLabels({ CODEX_HOME: home }), [SEAT_LABEL]: seat }, cwd: work,
       no_parent: true, no_notify: true, outlive_parent: true,
     });
-    if (shape === "shell_backed") {
+    if (shape === "script_backed") {
+      // OF-200: the launch as the daemon makes it for an hc seat: a shell terminal first, then OpenRig's staged script REPLACES that shell
+      // (`exec /bin/sh <script>`), so the script is the terminal's own process and the stub is its child.
+      await startTerminal(cleanStart);
+      await sleep(200);
+      const sent = await realTmux.sendShellCommand(seat, `${preflight} && ${built.command} || echo PREFLIGHT-REFUSED`, undefined, { asTerminalProgram: true });
+      if (!sent.ok) throw new Error(sent.message);
+    } else if (shape === "shell_backed") {
       await startTerminal(cleanStart);
       await sleep(200);
       const command = opts.withoutDaemonFlag ? built.command.replace(" --no-daemon", "") : built.command;
@@ -242,6 +249,36 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
       expect(stubPids(), `round ${round}: only the replacement stub runs`).toEqual([result.body.newProcess.pid]);
       expect(await panePid(pane), "same terminal shell").toBe(shell);
     }
+  }, 90_000);
+
+  it("script-backed (OF-200): a Codex launched as its terminal's program is the staged script's child; the restart stops Codex, the terminal ends, and the resume is the new terminal's program", async () => {
+    const { seat, pane, post } = await setup("script_backed");
+    const [oldStub] = stubPids();
+    const parentOf = (pid: number) => Number(fs.readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /, "").split(" ")[1]);
+    const script = parentOf(oldStub!);
+    expect(script, "OpenRig's staged script is the terminal's own process: no login shell is above Codex").toBe((await terminalOf(seat)).pid);
+    expect(fs.readFileSync(`/proc/${script}/cmdline`, "utf8")).toMatch(/openrig-tmux-send-\d+-[0-9a-f-]+\.txt/);
+
+    const plan = await post("restart-plan");
+    expect(plan.body, JSON.stringify(plan.body)).toMatchObject({ ok: true, planOnly: true, paneShape: "script_backed", pane, oldProcess: { pid: oldStub } });
+    const result = await post("restart", { reason: "native harness script-backed" });
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body).toMatchObject({ outcome: "restarted_account_unverified", paneShape: "script_backed", oldProcess: { pid: oldStub } });
+    for (const pid of stubPids()) pids.add(pid);
+    expect(stubPids(), "only the replacement stub runs").toEqual([result.body.newProcess.pid]);
+    expect(result.body.newProcess.pid).not.toBe(oldStub);
+    expect((await scratch().client().call<HcTerminal>("terminal.get", { terminal: pane })).state, "the first terminal ended with its Codex").toBe("finished");
+    const now = await terminalOf(seat);
+    expect(now.state).toBe("live");
+    expect(now.address, "a respawn mints a new address; the binding follows the label").not.toBe(pane);
+    expect(result.body.pane).toBe(now.address);
+    const screen = (await host().capturePaneContent(seat, 300)) ?? "";
+    expect(screen).toContain(`stub conversation ${TOKEN} pid ${result.body.newProcess.pid}`);
+    // The seat is reachable by the next restart: the replacement is a direct-native pane now.
+    const again = await post("restart", { reason: "native harness script-backed round 2" });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body).toMatchObject({ outcome: "restarted_account_unverified" });
+    for (const pid of stubPids()) pids.add(pid);
   }, 90_000);
 
   it("security review N1: a Codex running without --no-daemon is not restarted in place on hc, and nothing is stopped", async () => {
