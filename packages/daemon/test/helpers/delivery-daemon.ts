@@ -11,6 +11,7 @@ if (!db || !dir) throw new Error("MPD_DB and MPD_DIR are required");
 const note = (line: string) => appendFileSync(join(dir, "hop.log"), `${line}\n`);
 const hang = () => new Promise<never>(() => undefined);
 const noted = (hop: LastHop): LastHop => ({
+  forget: (seat) => hop.forget?.(seat),
   attempt: async (message) => {
     const id = message.ids[0];
     note(`claimed ${id}`);

@@ -309,12 +309,12 @@ export function seatCommand(depsOverride?: SeatDeps & { readStdin?: () => Promis
   };
   const readStdin = depsOverride?.readStdin ?? defaultReadStdin;
 
-  const guardRequest = async (method: "GET" | "POST", path: string, body: Record<string, unknown> | undefined, json?: boolean, plain?: (data: Record<string, unknown>) => string) => {
+  const guardRequest = async (method: "GET" | "POST", path: string, body: Record<string, unknown> | undefined, json?: boolean) => {
     const deps = getDeps(); const daemon = await getDaemonStatus(deps.lifecycleDeps);
     if (!daemonStatusGuard(daemon)) return;
     const client = deps.clientFactory(getDaemonUrl(daemon));
     const result = method === "GET" ? await client.get<Record<string, unknown>>(path) : await client.post<Record<string, unknown>>(path, body ?? {});
-    console.log(plain && result.status < 400 ? plain(result.data) : JSON.stringify(result.data, null, json ? undefined : 2));
+    console.log(JSON.stringify(result.data, null, json ? undefined : 2));
     // OF-136: held entries the daemon served flagged `unreadable`, and those it could not attribute to any seat.
     if (result.status < 400 && path.startsWith("/api/seat/held-messages/")) {
       warnDamagedRows("outbox entry", damagedRowsIn(result.data, "items"));
@@ -359,12 +359,6 @@ process writing directly to the terminal. Disable deliberately before lifecycle 
     .action(async (seat: string, id: string, opts: {reason: string; json?: boolean}) => {
       await guardRequest("POST", `/api/seat/retire-held-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}`, { reason: opts.reason }, opts.json);
     });
-  cmd.command("read-message").argument("<seat>").argument("<id>").option("--json").option("--operator", "Read it from a shell with no seat identity. This does not deliver it.")
-    .description("Print a message that reached its seat as a pointer. Run by that seat, this is what delivers it.")
-    .action(async (seat: string, id: string, opts: { json?: boolean; operator?: boolean }) => {
-      await guardRequest("GET", `/api/transport/read-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}${opts.operator ? "?operator=1" : ""}`, undefined, opts.json, opts.json ? undefined : (data) => String(data["body"]));
-    });
-
   cmd.command("cancel-message").argument("<seat>").argument("<id>").requiredOption("--reason <text>")
     .description("End a message that will never arrive. It is not sent, and its seat's queue goes on.")
     .action(async (seat: string, id: string, opts: { reason: string }) => {

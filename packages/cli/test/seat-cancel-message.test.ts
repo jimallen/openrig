@@ -11,7 +11,7 @@ vi.mock("../src/daemon-lifecycle.js", async () => {
   };
 });
 
-/** `rig seat cancel-message` ends a message nothing can deliver, and `rig seat read-message` prints one too long to paste. */
+/** `rig seat cancel-message` ends a message nothing can deliver. */
 interface Call { method: string; path: string; body?: unknown }
 let out: string[];
 let calls: Call[];
@@ -61,25 +61,12 @@ describe("rig seat cancel-message", () => {
 });
 
 describe("rig seat read-message", () => {
-  it("prints the body alone, so an agent reads the message and not JSON", async () => {
-    await run(["seat", "read-message", "dev@my-rig", "m1"], { status: 200, data: { id: "m1", body: "the whole long message" } });
-    expect(calls).toEqual([{ method: "GET", path: "/api/transport/read-message/dev%40my-rig/m1" }]);
-    expect(out).toEqual(["the whole long message"]);
-  });
-
-  it("--json keeps the record", async () => {
-    await run(["seat", "read-message", "dev@my-rig", "m1", "--json"], { status: 200, data: { id: "m1", body: "x" } });
-    expect(JSON.parse(out[0]!)).toMatchObject({ id: "m1", body: "x" });
-  });
-
-  it("--operator asks as an operator, so the daemon knows the read settles nothing", async () => {
-    await run(["seat", "read-message", "dev@my-rig", "m1", "--operator"], { status: 200, data: { id: "m1", body: "x" } });
-    expect(calls).toEqual([{ method: "GET", path: "/api/transport/read-message/dev%40my-rig/m1?operator=1" }]);
-  });
-
-  it("a refusal is not printed as a body", async () => {
-    await run(["seat", "read-message", "dev@my-rig", "m1"], { status: 404, data: { error: "No message m1 for dev@my-rig" } });
-    expect(out.join("\n")).toContain("No message m1");
-    expect(process.exitCode).toBe(1);
+  it("is gone: a long message reaches its seat through the gate hook, so there is nothing to read", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as typeof process.exit);
+    await expect(run(["seat", "read-message", "dev@my-rig", "m1"], { status: 200, data: {} })).rejects.toThrow(/exit 1/);
+    expect(calls).toEqual([]);
+    exit.mockRestore();
+    stderr.mockRestore();
   });
 });

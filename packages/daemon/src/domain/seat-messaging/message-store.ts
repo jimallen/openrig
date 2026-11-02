@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import { OutboxHandler, OutboxHandlerError, type OutboxRecordInput } from "../outbox-handler.js";
+import { messageOfPart } from "./long-message.js";
 import { messageId, type GateRecord, type LastHopResult, type MessageId, type SeatMessageClass, type SeatMessageLane } from "./ports.js";
 import type { HeldBinding } from "./pump-ports.js";
 
@@ -44,6 +45,10 @@ export interface StoredMessage {
   readonly pauseReason: MessagePauseReason | null;
   readonly lastRefusal: string | null;
   readonly acceptedAt: string;
+  /** How many numbered parts it goes in, or null when it goes as one. */
+  readonly parts: number | null;
+  /** How many of them have arrived, as far as the pump has seen. */
+  readonly partsDone: number;
 }
 
 export interface MessageAcceptInput extends Pick<OutboxRecordInput, "urgency" | "tags" | "auditPointer" | "identityProvenance"> {
@@ -71,8 +76,6 @@ export interface OpenSeatSummary {
   pauseReason: string | null;
   lastRefusal: string | null;
   state: string;
-  /** The oldest open message went as a pointer that has landed at least once and has not been read. */
-  unreadPointer: boolean;
 }
 
 interface MessageRow {
@@ -91,6 +94,8 @@ interface MessageRow {
   occupant_generation: string | null;
   message_previous_occupant: string | null;
   message_pump_owned: number | null;
+  message_parts: number | null;
+  message_parts_done: number | null;
 }
 
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
@@ -116,6 +121,7 @@ function toMessage(row: MessageRow): StoredMessage {
     lane: laneOf(row.lane), messageClass: classOf(row.class),
     attempts: row.attempts, nextAttemptAtMs: row.next_attempt_at === null ? null : Date.parse(row.next_attempt_at),
     pauseReason: pauseReasonOf(row.message_pause_reason), lastRefusal: row.message_last_refusal, acceptedAt: row.ts_dispatched,
+    parts: row.message_parts, partsDone: row.message_parts_done ?? 0,
   };
 }
 
@@ -180,37 +186,32 @@ export class MessageStore {
     this.db.prepare("UPDATE outbox_entries SET message_socket_written_ms = ? WHERE outbox_id = ?").run(atMs, id);
   }
 
-  /** Committed before the paste: from here this row ends only when its seat reads the body. */
-  markPointer(id: MessageId): void {
-    this.db.prepare("UPDATE outbox_entries SET message_pointer = 1 WHERE outbox_id = ?").run(id);
+  /** Committed before the paste: from here the row is `received` when all its numbered parts are. */
+  markParts(id: MessageId, parts: number): void {
+    this.db.prepare(`UPDATE outbox_entries SET message_parts = ?, message_parts_done = 0 WHERE outbox_id = ? AND ${OPEN}`).run(parts, id);
   }
 
-  isPointer(id: MessageId): boolean {
-    return this.db.prepare("SELECT 1 FROM outbox_entries WHERE outbox_id = ? AND message_pointer = 1").get(id) !== undefined;
+  partsOf(id: MessageId): number | null {
+    return (this.db.prepare("SELECT message_parts AS parts FROM outbox_entries WHERE outbox_id = ?").get(id) as { parts: number | null } | undefined)?.parts ?? null;
   }
 
-  attemptsOf(id: MessageId): number {
-    return (this.db.prepare("SELECT attempts FROM outbox_entries WHERE outbox_id = ?").get(id) as { attempts: number } | undefined)?.attempts ?? 0;
-  }
-
-  /** A pointer row's arrival: the seat read the body. A pointer's own gate record says only that the pointer landed. False for any other row. */
-  recordPointerRead(id: MessageId, atIso: string): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'received', gate_recorded_at = ?, next_attempt_at = NULL, message_pause_reason = NULL,
-        delivery_state = 'delivered', delivered_at = ?, delivery_path = NULL, ack_evidence = 'pointer_read', ack_detail = NULL
-      WHERE outbox_id = ? AND message_pointer = 1 AND ${OPEN}`).run(atIso, atIso, id).changes === 1;
+  /** A part arrived, so the next is due at once, on a backoff of its own. Compare-and-set: a restart that sees the same record changes nothing. */
+  recordPartsDone(message: StoredMessage, done: number): boolean {
+    return this.db.prepare(`UPDATE outbox_entries SET message_parts_done = ?, attempts = 0, next_attempt_at = NULL, message_pause_reason = NULL
+      WHERE outbox_id = ? AND coalesce(message_parts_done, 0) = ? AND ${OPEN}`).run(done, message.id, message.partsDone).changes === 1;
   }
 
   lastSocketWriteMs(id: MessageId): number | null {
     return (this.db.prepare("SELECT message_socket_written_ms AS at FROM outbox_entries WHERE outbox_id = ?").get(id) as { at: number | null } | undefined)?.at ?? null;
   }
 
-  /** Reconcile cleared this (id, nonce): the hook recorded it and the agent died before persisting it (M5), so the message did not
+  /** Reconcile cleared this (id, nonce), a part's id naming its message: the hook recorded it and the agent died before persisting it (M5), so the message did not
    *  arrive, whatever the row says. It opens again, keeping its id, nonce, body and place in the queue. The one way out of `received`, and
    *  only for the nonce the gate cleared. A row that is still open needs nothing: its next attempt now passes the gate. */
   reopenCleared(id: MessageId, nonce: string): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', delivery_state = 'pending', delivered_at = NULL, gate_recorded_at = NULL,
         gate_nonce = NULL, message_gate_version = NULL, delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, next_attempt_at = NULL, message_id = coalesce(message_id, outbox_id), message_pump_owned = 1
-      WHERE outbox_id = ? AND native_nonce = ? AND delivery_state = 'delivered'`).run(id, nonce).changes === 1;
+      WHERE outbox_id = ? AND native_nonce = ? AND delivery_state = 'delivered'`).run(messageOfPart(id), nonce).changes === 1;
   }
 
   /** The hop did not send, so the claim gives its attempt back: a pause spends no step of the backoff. */
@@ -311,7 +312,7 @@ export class MessageStore {
     return rows.map((r) => {
       const head = this.headOf(r.seat)!;
       return { seat: r.seat, open: r.open, oldestId: head.id, oldestAcceptedAt: head.acceptedAt, attempts: head.attempts,
-        pauseReason: head.pauseReason, lastRefusal: head.lastRefusal, state: head.state, unreadPointer: head.attempts > 0 && this.isPointer(head.id) };
+        pauseReason: head.pauseReason, lastRefusal: head.lastRefusal, state: head.state };
     });
   }
 

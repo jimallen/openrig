@@ -10,7 +10,7 @@ import fs from "node:fs";
 import type { MessageId, SeatGate } from "../domain/seat-messaging/ports.js";
 import { hookSeatGate } from "./hook-seat-gate.js";
 import { reconcileSeen, type HookSeenStore, type SeenReconcile } from "./hook-seen-store.js";
-import { seatMarkerKey, trailingMarkers, type SeatMarker } from "./seat-gate-marker.js";
+import { promptMarkers, seatMarkerKey, type SeatMarker } from "./seat-gate-marker.js";
 
 /** The markers of a rollout's user prompts: empty when the file does not exist (Codex writes it with the first prompt), null when it
  *  cannot be read, which proves nothing either way. A torn last line does not parse, so it is a prompt not yet durable. */
@@ -30,7 +30,7 @@ export function codexRolloutMarkers(rolloutPath: string): Map<string, SeatMarker
     if (type !== "response_item" || payload?.type !== "message" || payload.role !== "user" || !Array.isArray(payload.content)) continue;
     for (const part of payload.content as Array<{ type?: unknown; text?: unknown } | null>) {
       if (part?.type !== "input_text" || typeof part.text !== "string") continue;
-      for (const marker of trailingMarkers(part.text)) found.set(seatMarkerKey(marker), marker);
+      for (const marker of promptMarkers(part.text)) found.set(seatMarkerKey(marker), marker);
     }
   }
   return found;
@@ -40,7 +40,8 @@ function rolloutIncludes(path: string, needle: string): boolean | null {
   const markers = codexRolloutMarkers(path);
   if (markers === null) return null;
   const key = /^\[openrig-msg (.+)\]$/.exec(needle)?.[1];
-  return key !== undefined && markers.has(key);
+  const marker = key === undefined ? undefined : markers.get(key);
+  return marker !== undefined && marker.spooled !== true;
 }
 
 export interface CodexSeatGateDeps {

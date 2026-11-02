@@ -3,7 +3,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HcAttach } from "../src/adapters/hc-attach.js";
@@ -487,69 +487,85 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     }, 40_000);
   });
 
-  describe("a long Codex message goes by pointer, and only reading it delivers it", () => {
-    const read = (s: F, id: string, as: string | null, operator = false) => http(s, `/api/transport/read-message/${encodeURIComponent(s.name)}/${id}${operator ? "?operator=1" : ""}`, undefined, as);
+  describe("a long message: a short paste, and the gate hook adds its text", () => {
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    const context = (s: F, id: string) => s.log().filter((l) => l.startsWith(`context ${id} `));
+    const spoolFiles = (s: F) => (existsSync(join(s.gateDir, "spool")) ? readdirSync(join(s.gateDir, "spool")) : []);
 
-    it("the pointer landing is an attempt: the row stays open, health says so, the pointer is resent past the gate, and the seat's own read settles it", async () => {
+    for (const runtime of ["codex", "claude-code"]) {
+      it(`${runtime}: the agent gets the body from the hook, in the turn of a short paste, and that record is the arrival`, async () => {
+        const s = fixture([], runtime); await s.launch();
+        const body = "x".repeat(1500);
+        s.accept("long", body); s.accept("next"); daemon(s);
+        await state(s, "long", "received");
+        const seen = agent(s, "long");
+        expect(seen).toHaveLength(1);
+        expect(seen[0]!.length).toBeLessThan(400);
+        expect(seen[0]).not.toContain("xxxx");
+        expect(context(s, "long")).toEqual([`context long ${sha(body)} 1500`]);
+        expect(s.read("long")).toMatchObject({ delivery_state: "delivered", ack_evidence: "gate_seen", message_parts: 1 });
+        await hopSaw(s, "claimed next");
+        await state(s, "next", "received");
+        expect(spoolFiles(s)).toEqual([]);  // its text does not stay on disk
+        expect(http(s, `/api/transport/read-message/${encodeURIComponent(s.name)}/long`, undefined, s.name).status).toBe(404);
+      }, 60_000);
+
+      it(`${runtime}: a hook that crashed let only the note run: the row stays open though the prompt is on file, and the next attempt carries the body`, async () => {
+        const s = fixture(["hook-crash"], runtime); await s.launch();
+        const body = "y".repeat(1500);
+        s.accept("long", body); daemon(s);
+        await until(() => agent(s, "long"), (l) => l.length === 1, "the note ran");
+        await wait(800);
+        expect(s.read("long").message_state).toBe("attempting");
+        expect(context(s, "long")).toEqual([]);
+        await state(s, "long", "received", 30_000);
+        expect(context(s, "long")).toEqual([`context long ${sha(body)} 1500`]);
+        expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+      }, 70_000);
+    }
+
+    it("past 9000 characters: numbered parts, each its own id and turn, in order, whole, and received only when all are", async () => {
       const s = fixture(); await s.launch();
-      const body = "x".repeat(1500);
-      s.accept("long", body); s.accept("next"); daemon(s);
-      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p1 ")), "the first pointer");
-      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p2 ")), "a resend, past the gate", 20_000);
-      const seen = s.log().find((x) => x.startsWith("agent long.p1 "))!;
-      expect(seen.length).toBeLessThan(600);
-      expect(seen).not.toContain("xxxx");
-      expect(seen).toContain(`rig seat read-message ${s.name} long`);
-      expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
-      expect(s.read("long")).toMatchObject({ message_state: "attempting", delivery_state: "pending", message_pointer: 1 });
-      expect(s.hop()).not.toContain("claimed next");  // FIFO holds
-      await hopSaw(s, "booted");
-      expect(http(s, "/api/health").text).toContain("has not read it");
-
-      const answer = read(s, "long", s.name);
-      expect(answer.status).toBe(200);
-      expect((JSON.parse(answer.text) as { body: string }).body).toBe(body);
-      expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "pointer_read" });
-      expect(answer.text).not.toContain(String(s.read("long").native_nonce));
+      const body = Array.from({ length: 20_000 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+      s.accept("big", body); s.accept("next"); daemon(s);
+      await state(s, "big", "received", 40_000);
+      const turns = s.log().filter((l) => l.startsWith("context "));
+      expect(turns).toEqual([
+        `context big.part1of3 ${sha(body.slice(0, 9000))} 9000`,
+        `context big.part2of3 ${sha(body.slice(9000, 18_000))} 9000`,
+        `context big.part3of3 ${sha(body.slice(18_000))} 2000`,
+      ]);
+      expect(s.read("big")).toMatchObject({ message_parts: 3, message_parts_done: 2, ack_evidence: "gate_seen" });
       await hopSaw(s, "claimed next");
-      const attempts = s.read("long").attempts;
-      await wait(700);
-      expect(s.read("long").attempts).toBe(attempts);  // the pump has stopped
-      expect(read(s, "long", s.name).status).toBe(200);  // a second read is the same answer
     }, 70_000);
 
-    it("anyone else is refused and settles nothing; an operator reads, and that settles nothing either", async () => {
+    it("a part that has not arrived holds the message open, and the parts before it are not sent again", async () => {
       const s = fixture(); await s.launch();
-      s.accept("long", "x".repeat(1500)); daemon(s);
-      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p1 ")), "the pointer");
-      await hopSaw(s, "booted");
-      const refused = read(s, "long", "other@rig");
-      expect(refused.status).toBe(403);
-      expect(refused.text).not.toContain("xxxx");
-      expect(read(s, "long", "other@rig", true).status).toBe(403);  // the flag is not a way round a seat's identity
-      expect(read(s, "long", null).status).toBe(403);
-      const operator = read(s, "long", null, true);
-      expect(operator.status).toBe(200);
-      expect((JSON.parse(operator.text) as { body: string }).body).toHaveLength(1500);
-      expect(s.read("long").message_state).toBe("attempting");
-    }, 60_000);
+      const body = "z".repeat(10_000);
+      s.accept("big", body); s.flag("hook-crash-after", "big.part1of2"); daemon(s);
+      await until(() => agent(s, "big.part2of2"), (l) => l.length === 1, "the second part's note");
+      await wait(800);
+      expect(s.read("big").message_state).toBe("attempting");
+      await state(s, "big", "received", 30_000);
+      expect(context(s, "big.part1of2")).toHaveLength(1);
+      expect(context(s, "big.part2of2")).toHaveLength(1);
+    }, 70_000);
 
-    it("only a pointer row can be read: a short message, and another seat's row, are not there", async () => {
-      const s = fixture(); await s.launch();
-      s.accept("short"); daemon(s);
-      await state(s, "short", "received");
-      await hopSaw(s, "booted");
-      expect(read(s, "short", s.name).status).toBe(404);
-      expect(read(s, "short", null, true).status).toBe(404);
-      expect(http(s, `/api/transport/read-message/${encodeURIComponent("other@rig")}/short`, undefined, "other@rig").status).toBe(404);
-    }, 60_000);
-
-    it("a pointer staged with its Enter lost is finished with Enter alone, though its attempt number has moved on", async () => {
+    it("staged with its Enter lost, it is finished with Enter alone", async () => {
       const s = fixture(["lose-enter"]); await s.launch();
       s.accept("long", "x".repeat(1500)); daemon(s);
-      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p1 ")), "Enter alone on the first pointer", 20_000);
+      await state(s, "long", "received", 30_000);
       expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
-      expect(s.read("long").message_pause_reason).not.toBe("draft");
+      expect(context(s, "long")).toHaveLength(1);
+    }, 60_000);
+
+    it("a seat whose relay declared an older gate gets the message whole: a short paste there would lose the text", async () => {
+      const s = fixture(); await s.launch();
+      writeFileSync(join(s.gateDir, "gate.json"), JSON.stringify({ version: 1 }));
+      s.accept("long", "x".repeat(1500)); daemon(s);
+      await state(s, "long", "received");
+      expect(agent(s, "long")[0]).toContain("x".repeat(1500));
+      expect(context(s, "long")).toEqual([]);
     }, 60_000);
   });
 

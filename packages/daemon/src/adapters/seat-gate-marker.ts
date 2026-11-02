@@ -6,7 +6,12 @@
 // A marker is a claim, not a proof: a runner cannot tell a real nonce from a forged one, only the daemon holds it. So a gate treats
 // (id, nonce) as the identity. A forged pair is then a different message: it can neither confirm the real id nor stand in the way of it.
 
-export interface SeatMarker { id: string; nonce: string }
+export interface SeatMarker {
+  id: string;
+  nonce: string;
+  /** This prompt is a long message's short paste: its text came from the hook, so the prompt alone proves nothing (see `spooledNote`). */
+  spooled?: boolean;
+}
 
 /** Written to a runner's sidecar: the gate this runner carries. Absent from a runner older than S2, which has none. */
 export const SEAT_GATE_VERSION = 1;
@@ -34,6 +39,24 @@ export function trailingMarkers(prompt: string): SeatMarker[] {
     end -= 1;
   }
   return markers;
+}
+
+/** The line above the marker of a long message's short paste. Its body is not in the prompt: the gate hook adds it as `additionalContext`, from
+ *  the seat's spool. activity-relay.cjs reads the same line. A hook that crashed let that prompt run with no body, so such a prompt in a
+ *  transcript is no proof of arrival, and only the hook's own record is. */
+export function spooledNote(part: { index: number; total: number } | null): string {
+  return `OpenRig: long message${part === null ? "" : `, part ${part.index} of ${part.total}`}. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again.`;
+}
+const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\.$/;
+
+/** `trailingMarkers`, each saying whether its prompt is a long message's short paste. A record of a prompt uses this one. */
+export function promptMarkers(prompt: string): SeatMarker[] {
+  const markers = trailingMarkers(prompt);
+  if (markers.length !== 1) return markers;
+  const lines = prompt.split("\n").map((line) => line.replace(/\r$/, "").trim());
+  let end = lines.length;
+  while (end > 0 && (lines[end - 1] === "" || WRAPPER_CLOSE.test(lines[end - 1]!))) end -= 1;
+  return SPOOLED_NOTE.test(lines[end - 2] ?? "") ? [{ ...markers[0]!, spooled: true }] : markers;
 }
 
 /** The text a gate passes on, and the markers it found. Only the block's trailing lines count: a marker quoted inside a message is

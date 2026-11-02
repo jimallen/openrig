@@ -247,7 +247,7 @@ function buildNativeAckPayload(providerPayload, env = process.env) {
 //
 // Keep this small and first. A hook that crashes or times out fails OPEN: the prompt runs with no record (M4). What this code can catch
 // fails closed; what it cannot, the daemon's reconcile finds in the transcript.
-const SEAT_GATE_VERSION = 1;
+const SEAT_GATE_VERSION = 2;
 const SEAT_GATE_RUNTIMES = new Set(["claude-code", "codex"]);
 const SEAT_GATE_UNAVAILABLE_REASON =
   "OpenRig: this message could not record its delivery, so it was not shown to the agent; OpenRig will send it again.";
@@ -280,6 +280,57 @@ function recordSeen(seenDir, marker, record) {
   } finally {
     fs.rmSync(tmp, { force: true });
   }
+}
+
+// A long message on a paste path: the prompt is a short note and its marker, and the text waits in the seat's spool, written by the pump before
+// the paste. Adapters/seat-gate-marker.ts `spooledNote` writes the same line. Nothing here touches the daemon, and no tool call is needed.
+//
+// The order is the crash rule. The record is written LAST, after the text has gone to stdout, so a record proves the agent was given the text. A
+// hook that crashes or times out before that leaves no record, and the prompt ran with only the note: the row stays open and the next attempt
+// passes. A crash after the text and before the record gives a second copy, the safe way round. The agent sees nothing until this process ends.
+const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\.$/;
+
+function spooledMarker(prompt) {
+  const markers = trailingMarkers(prompt);
+  if (markers.length !== 1) return null;
+  const lines = prompt.split("\n").map((line) => line.replace(/\r$/, "").trim());
+  let end = lines.length;
+  while (end > 0 && (lines[end - 1] === "" || WRAPPER_CLOSE.test(lines[end - 1]))) end -= 1;
+  return SPOOLED_NOTE.test(lines[end - 2] || "") ? markers[0] : null;
+}
+
+// null: not a long message's paste. Otherwise what the gate says of it, with the text when it may pass.
+function readSpooled(providerPayload, env = process.env) {
+  if (hookEventOf(providerPayload) !== "UserPromptSubmit" || typeof providerPayload.prompt !== "string") return null;
+  const marker = spooledMarker(providerPayload.prompt);
+  const dir = marker ? seatGateDir(env) : null;
+  if (!dir) return null;
+  const name = crypto.createHash("sha256").update(`${marker.id}:${marker.nonce}`).digest("hex");
+  try {
+    const seenDir = path.join(dir, "seen");
+    if (fs.existsSync(path.join(seenDir, name))) return { gate: "repeat" };
+    fs.mkdirSync(seenDir, { recursive: true, mode: 0o700 });
+    const text = fs.readFileSync(path.join(dir, "spool", name), "utf8");
+    if (text.length === 0) return { gate: "unrecorded" };
+    return { gate: "pass", marker, seenDir, text };
+  } catch {
+    return { gate: "unrecorded" };  // no text to give: the note must not run as if it were the message
+  }
+}
+
+async function deliverSpooled(spooled, providerPayload, env = process.env, now = () => new Date()) {
+  const output = { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: spooled.text } };
+  await new Promise((resolve) => process.stdout.write(JSON.stringify(output) + "\n", resolve));
+  const agentPid = Number(firstString(env.CLAUDE_PID));
+  try {
+    recordSeen(spooled.seenDir, spooled.marker, {
+      ...spooled.marker, recordedAt: now().toISOString(), via: "hook", durable: false,
+      agentPid: Number.isInteger(agentPid) && agentPid > 0 ? agentPid : null,
+      transcriptPath: firstString(providerPayload.transcript_path),
+    });
+    const dirFd = fs.openSync(spooled.seenDir, "r");
+    try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+  } catch { /* the text went and the record did not: a second copy, never a lost one */ }
 }
 
 // `pass`: the agent may see it. `repeat`: every marker was seen before. `unrecorded`: the store failed, so the prompt must not run and
@@ -386,7 +437,8 @@ function uid() {
 
 async function main() {
   const providerPayload = parseJson(await readStdin());
-  const gate = runSeatGate(providerPayload);
+  const spooled = readSpooled(providerPayload);
+  const gate = spooled ? spooled.gate : runSeatGate(providerPayload);
   if (gate !== "pass") writeBlock(gate === "repeat" ? NATIVE_DUPLICATE_BLOCK_REASON : SEAT_GATE_UNAVAILABLE_REASON);
   declareSeatGate(providerPayload);
   const payload = buildOpenRigPayload(providerPayload);
@@ -401,7 +453,8 @@ async function main() {
   }
   const endpoint = buildNativeEndpointPayload(providerPayload);
   if (endpoint) await postNativeJson("/api/activity/native-endpoint", endpoint);
-  const ack = gate === "unrecorded" ? null : buildNativeAckPayload(providerPayload);
+  // A spooled prompt is settled by its own record alone, written below.
+  const ack = gate === "unrecorded" || spooled ? null : buildNativeAckPayload(providerPayload);
   if (ack) {
     // A copy the gate recorded is the first, and the agent must have it, even if the daemon read the record meanwhile and calls the row
     // delivered: a block here would lose the message with the row saying received. On a seat with no gate the daemon's word is the only
@@ -409,6 +462,8 @@ async function main() {
     const reply = await postNativeJson("/api/activity/native-ack", ack);
     if (reply && reply.block === true && gate === "pass" && seatGateDir(process.env) === null) writeBlock(NATIVE_DUPLICATE_BLOCK_REASON);
   }
+  // Last of all, so a daemon that is slow to answer above cannot time the hook out with a record already written.
+  if (spooled && spooled.gate === "pass") await deliverSpooled(spooled, providerPayload);
 }
 
 function writeBlock(reason) {

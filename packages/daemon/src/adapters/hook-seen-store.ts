@@ -5,13 +5,14 @@
 //
 // A hook's record and a durable prompt are two facts, and either can exist alone (M5, and a hook that crashes fails open):
 //   - record, no prompt: the hook ran and the agent died before persisting. Reconcile clears it, so a resend passes.
-//   - prompt, no record: the hook crashed or timed out and the prompt ran. Reconcile records it, so a resend is refused.
+//   - prompt, no record: the hook crashed or timed out and the prompt ran. Reconcile records it, so a resend is refused. Not for a long message's
+//     short paste: its body comes from the hook, so a crashed hook let only the note run, and the row stays open (`SeatMarker.spooled`).
 // Reconcile acts only on a record whose agent process is proven dead: a live agent's transcript lags its hook, always (M5).
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import nodePath from "node:path";
-import { seatMarkerKey, trailingMarkers, type SeatMarker } from "./seat-gate-marker.js";
+import { promptMarkers as markersOfPrompt, seatMarkerKey, type SeatMarker } from "./seat-gate-marker.js";
 
 export const SEEN_RECORD_NAME = /^[a-f0-9]{64}$/;
 
@@ -48,6 +49,7 @@ export class HookSeenStore {
 
   private seatDir(seat: string): string { return nodePath.join(this.root, seatGateFolder(seat)); }
   private seenDir(seat: string): string { return nodePath.join(this.seatDir(seat), "seen"); }
+  private spoolDir(seat: string): string { return nodePath.join(this.seatDir(seat), "spool"); }
   private recordPath(seat: string, marker: SeatMarker): string {
     return nodePath.join(this.seenDir(seat), createHash("sha256").update(seatMarkerKey(marker)).digest("hex"));
   }
@@ -66,6 +68,24 @@ export class HookSeenStore {
       const value = JSON.parse(fs.readFileSync(nodePath.join(this.seatDir(seat), "gate.json"), "utf8")) as { transcriptPath?: unknown };
       return typeof value.transcriptPath === "string" ? value.transcriptPath : null;
     } catch { return null; }
+  }
+
+  /** Holds a long message's text for the seat's gate hook, under its (id, nonce). Whole and on disk before this returns, so it is there before a
+   *  byte of the paste. A seat has one message in flight, so anything older goes: the spool never grows. */
+  spool(seat: string, marker: SeatMarker, text: string): void {
+    const dir = this.spoolDir(seat);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const name = createHash("sha256").update(seatMarkerKey(marker)).digest("hex");
+    const tmp = nodePath.join(dir, `.${name}.${process.pid}.tmp`);
+    const fd = fs.openSync(tmp, "w", 0o600);
+    try { fs.writeSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, nodePath.join(dir, name));
+    for (const other of fs.readdirSync(dir)) if (other !== name) fs.rmSync(nodePath.join(dir, other), { force: true });
+  }
+
+  /** The message left the seat: its text does not stay on disk. */
+  discardSpool(seat: string): void {
+    fs.rmSync(this.spoolDir(seat), { recursive: true, force: true });
   }
 
   /** The record of this exact (id, nonce). The file's contents are compared too: a name only says what was asked for. */
@@ -121,10 +141,10 @@ export class HookSeenStore {
  *  So a peer record is read again without its last paragraph, whatever that paragraph says. A person's prompt has no such leeway: text after
  *  a marker means the marker was quoted. */
 function promptMarkers(text: string, peer: boolean): SeatMarker[] {
-  const markers = trailingMarkers(text);
+  const markers = markersOfPrompt(text);
   if (markers.length > 0 || !peer) return markers;
   const cut = text.lastIndexOf("\n\n");
-  return cut < 0 ? [] : trailingMarkers(text.slice(0, cut));
+  return cut < 0 ? [] : markersOfPrompt(text.slice(0, cut));
 }
 
 /** The markers of the prompts Claude took. Only two records mean that (key census of real transcripts, Claude 2.1.310 to 2.1.316): a `user`
@@ -135,7 +155,7 @@ function claudeRecordMarkers(line: string): SeatMarker[] {
   let record: { type?: unknown; isSidechain?: unknown; origin?: { kind?: unknown } | null; message?: { role?: unknown; content?: unknown }; attachment?: { type?: unknown; prompt?: unknown } };
   try { record = JSON.parse(line) as typeof record; } catch { return []; }
   if (record.isSidechain === true) return [];
-  if (record.type === "attachment") return record.attachment?.type === "queued_command" && typeof record.attachment.prompt === "string" ? trailingMarkers(record.attachment.prompt) : [];
+  if (record.type === "attachment") return record.attachment?.type === "queued_command" && typeof record.attachment.prompt === "string" ? markersOfPrompt(record.attachment.prompt) : [];
   if (record.type !== "user" || record.message?.role !== "user") return [];
   const { content } = record.message;
   const peer = record.origin?.kind === "peer";
@@ -173,7 +193,8 @@ export function transcriptHasPrompt(path: string, needle: string): boolean | nul
   const found = transcriptMarkers(path);
   if (found === null) return null;
   const key = /^\[openrig-msg (.+)\]$/.exec(needle)?.[1];
-  return key !== undefined && found.has(key);
+  const marker = key === undefined ? undefined : found.get(key);
+  return marker !== undefined && marker.spooled !== true;
 }
 
 export interface SeenReconcile { received: SeatMarker[]; cleared: SeatMarker[]; unsettled: SeatMarker[] }
@@ -204,6 +225,7 @@ export function reconcileSeen(input: {
   for (const [key, marker] of present) {
     const record = held.get(key);
     if (record?.durable) continue;
+    if (!record && marker.spooled) continue;  // the hook never ran, so its body never reached the agent
     input.store.markReceived(input.seat, marker);
     if (!record) result.received.push(marker);
   }

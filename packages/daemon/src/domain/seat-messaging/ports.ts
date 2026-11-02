@@ -33,6 +33,8 @@ export interface SeatMessage {
   readonly messageClass: SeatMessageClass;
   readonly lane: SeatMessageLane;
   readonly occupantGeneration?: string | null;
+  /** A long message goes one numbered part per turn: the first (from 1) still to arrive. Absent: the first. */
+  readonly part?: number;
 }
 
 /** The seat's record that an id arrived, written before the agent saw the text. Only this moves a row to `received`
@@ -71,4 +73,6 @@ export interface LastHop {
   attempt(message: SeatMessage): Promise<LastHopResult>;
   /** The gate recorded the id after more than one attempt: a blocked repeat may sit in a composer. Best effort, and it changes no row. */
   afterReceived?(message: SeatMessage): Promise<void>;
+  /** The seat's oldest message left: anything of its text held on disk for the seat goes. Best effort. */
+  forget?(seat: string): void;
 }

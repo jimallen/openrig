@@ -8,6 +8,7 @@ import { piSeatGate } from "../../adapters/seat-gate-readers.js";
 import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, type ForegroundGroupOf, type HcHopInput, type HopGuard, type HopRows } from "../../adapters/seat-hops.js";
 import type { HcClient } from "../../adapters/hc-client.js";
 import type { ClaudeNativeInbox } from "../claude-native-inbox.js";
+import { messageOfPart } from "./long-message.js";
 import type { LastHop, MessageId, SeatGate } from "./ports.js";
 import type { SeatMessagingPorts } from "./pump-ports.js";
 
@@ -36,12 +37,12 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
   constructor(private readonly deps: RuntimeSeatPortsDeps) {
     const { rows, guard, client, input } = deps;
     this.claudeHop = new ClaudeSeatHop({
-      rows, guard, client, input,
+      rows, guard, client, input, spool: deps.hookStore,
       foregroundGroup: deps.foregroundGroup,
       eligibility: (seat) => deps.inbox().eligibility(seat),
       writeToSeat: (endpoint, sender, text) => deps.inbox().writeToSeat(endpoint, sender, text),
     });
-    this.codexHop = new CodexSeatHop({ rows, guard, client, input, foregroundGroup: deps.foregroundGroup });
+    this.codexHop = new CodexSeatHop({ rows, guard, client, input, spool: deps.hookStore, foregroundGroup: deps.foregroundGroup });
     this.piHop = new PiSeatHop({ rows, guard, client, input, runnerState: (seat) => this.runnerState(seat) });
   }
 
@@ -67,7 +68,7 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
   gateFor(seat: string): SeatGate | null {
     const runtime = this.runtimeOf(seat);
     const { hookStore: store, rows } = this.deps;
-    const nonce = (id: MessageId) => rows.nonceOf(id);
+    const nonce = (id: MessageId) => rows.nonceOf(messageOfPart(id));
     if (runtime === "claude-code") {
       if (store.declaredVersion(seat) === null) return null;
       return hookSeatGate({

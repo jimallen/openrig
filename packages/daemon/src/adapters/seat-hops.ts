@@ -6,10 +6,13 @@
 
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcClient, type HcTerminal } from "./hc-client.js";
 import { hcTerminalName } from "./hc-host.js";
+import { SPOOL_GATE_VERSION } from "./hook-gate-version.js";
+import { spooledNote, type SeatMarker } from "./seat-gate-marker.js";
 import { CodexPasteHop, type CodexPasteInput } from "./codex-paste-hop.js";
 import type { PiRunnerState } from "./pi-runner-protocol.js";
 import { nativeMarker, type NativeEndpointRow, type NativeEligibility } from "../domain/claude-native-inbox.js";
 import { decideClaudeRetry } from "../domain/seat-messaging/claude-last-hop.js";
+import { partId, splitLongMessage } from "../domain/seat-messaging/long-message.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "../domain/seat-messaging/message-label.js";
 import type { LastHop, LastHopResult, MessageId, SeatMessage } from "../domain/seat-messaging/ports.js";
 import type { GuardTarget } from "../domain/seat-delivery-guard.js";
@@ -19,8 +22,41 @@ export interface HopRows {
   senderOf(id: MessageId): string | null;
   lastSocketWriteMs(id: MessageId): number | null;
   recordSocketWrite(id: MessageId, atMs: number): void;
-  markPointer(id: MessageId): void;
-  attemptsOf(id: MessageId): number;
+  partsOf(id: MessageId): number | null;
+  markParts(id: MessageId, parts: number): void;
+}
+
+/** Where a long message's text waits for the seat's gate hook. */
+export interface SeatSpool {
+  declaredVersion(seat: string): number | null;
+  spool(seat: string, marker: SeatMarker, text: string): void;
+  discardSpool(seat: string): void;
+}
+
+/** Past this a paste may collapse on screen, hiding its marker. Measured on Codex (a paste of 1000 characters or fewer shows whole). Bytes,
+ *  because a non-ASCII paste's count is unmeasured and bytes are never under characters. Claude's paste path takes the same limit, unmeasured. */
+export const PASTE_LIMIT = 1000;
+
+/** The short paste that stands for a long message, when one is due: the text this attempt types. The spool is written and the row marked first,
+ *  so both are committed before a byte. A short message, or a seat whose relay cannot add the text, goes as it is: whole, its marker perhaps hidden,
+ *  and a collapsed paste is then held as a draft, which loses nothing. The note, never the body, is what a staged attempt finds again. */
+function prepareLongPaste(message: SeatMessage, text: string, rows: Pick<HopRows, "nonceOf" | "partsOf" | "markParts">, spool: SeatSpool | undefined): string {
+  if (Buffer.byteLength(text) <= PASTE_LIMIT || spool === undefined || (spool.declaredVersion(message.seat) ?? 0) < SPOOL_GATE_VERSION) return text;
+  const id = message.ids[0];
+  const nonce = rows.nonceOf(id)!;
+  const parts = splitLongMessage(message.body);
+  const total = parts.length;
+  if (rows.partsOf(id) !== total) rows.markParts(id, total);
+  const index = Math.min(message.part ?? 1, total);
+  const marker = { id: total === 1 ? id : partId(id, index, total), nonce };
+  spool.spool(message.seat, marker, parts[index - 1]!);
+  return shortPaste(message, marker, index, total);
+}
+
+/** The note and the marker, under the label a message for the previous occupant carries on every attempt. */
+function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
+  const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL}\n` : "";
+  return `${label}${spooledNote(total === 1 ? null : { index, total })}\n${nativeMarker(marker.id, marker.nonce)}`;
 }
 
 export interface HopGuard {
@@ -140,8 +176,16 @@ export interface ClaudeHopDeps {
   input: HcHopInput;
   eligibility(seat: string): Promise<NativeEligibility>;
   writeToSeat(endpoint: NativeEndpointRow, sender: string, text: string): Promise<"none" | "all" | "partial">;
+  spool?: SeatSpool;
   foregroundGroup?: ForegroundGroupOf;
   now?: () => number;
+}
+
+/** What a long message's last paste looked like, so a blocked repeat of it can be recognised. Writes nothing. */
+function stagedLongPaste(message: SeatMessage, rows: Pick<HopRows, "nonceOf" | "partsOf">): string {
+  const id = message.ids[0];
+  const total = rows.partsOf(id) ?? 1;
+  return shortPaste(message, { id: total === 1 ? id : partId(id, total, total), nonce: rows.nonceOf(id)! }, total, total);
 }
 
 /** The socket where a seat is eligible (a person's draft stays untouched, M3), the paste where it is not. `decideClaudeRetry` decides. */
@@ -165,11 +209,12 @@ export class ClaudeSeatHop implements LastHop {
     return this.paste(message, text);
   }
 
-  private paste(message: SeatMessage, text: string): Promise<LastHopResult> {
+  private paste(message: SeatMessage, whole: string): Promise<LastHopResult> {
     return guarded(this.deps.guard, message.seat, async () => {
       const seat = await readSeat(this.deps.client, message.seat, "claude-code", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
+      const text = prepareLongPaste(message, whole, this.deps.rows, this.deps.spool);
       const step = decideClaudeRetry({
         text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: false,
         atRest: seat.status !== null && AT_REST.has(seat.status), composer: readClaudeComposer(seat.screen),
@@ -185,8 +230,9 @@ export class ClaudeSeatHop implements LastHop {
 
   /** M3: a blocked repeat comes back to the composer. Cleared only at rest, only when it holds exactly this text, only with `ctrl+c`. */
   async afterReceived(message: SeatMessage): Promise<void> {
-    const text = markedText(message, this.deps.rows);
-    if (text === null) return;
+    const whole = markedText(message, this.deps.rows);
+    if (whole === null) return;
+    const text = this.deps.rows.partsOf(message.ids[0]) === null ? whole : stagedLongPaste(message, this.deps.rows);
     await guarded(this.deps.guard, message.seat, async () => {
       const seat = await readSeat(this.deps.client, message.seat, "claude-code", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
@@ -198,29 +244,17 @@ export class ClaudeSeatHop implements LastHop {
       return { kind: "sent" };
     });
   }
+
+  forget(seat: string): void { this.deps.spool?.discardSpool(seat); }
 }
 
 export interface CodexHopDeps {
-  rows: Pick<HopRows, "nonceOf" | "markPointer" | "attemptsOf">;
+  rows: Pick<HopRows, "nonceOf" | "partsOf" | "markParts">;
   guard: HopGuard;
   client: HopClient;
   input: HcHopInput;
+  spool?: SeatSpool;
   foregroundGroup?: ForegroundGroupOf;
-}
-
-/** Real Codex: a paste of 1000 characters or fewer shows whole, and a longer one collapses, hiding its marker, so a lost Enter on it could not be
- *  told from a person's paste. So a long message never goes as itself. Bytes, because Codex's count of a non-ASCII paste is unmeasured, and a
- *  byte count is never under a character count. */
-export const CODEX_PASTE_LIMIT = 1000;
-
-/** A long message's stand-in: short, with a marker, naming the command that prints its body. */
-function codexPointer(message: SeatMessage, nonce: string, attempt: number): string {
-  const id = message.ids[0];
-  // A marker of its own per attempt. The gate drops a repeat of an (id, nonce), and an unread pointer must reach the agent again. So the row's own
-  // id is never recorded by a pointer: its arrival is the seat reading the body, and nothing else.
-  const markers = nativeMarker(`${id}.p${attempt}`, nonce);
-  const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL} ` : "";
-  return `${label}A message too long to paste is waiting for you. Read it with: rig seat read-message ${message.seat} ${id}\n${markers}`;
 }
 
 export class CodexSeatHop implements LastHop {
@@ -233,12 +267,11 @@ export class CodexSeatHop implements LastHop {
     return guarded(this.deps.guard, message.seat, async () => {
       const seat = await readSeat(this.deps.client, message.seat, "codex", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
-      if (Buffer.byteLength(text) <= CODEX_PASTE_LIMIT) return this.hop.attempt({ ...message, body: text });
-      const id = message.ids[0];
-      this.deps.rows.markPointer(id);
-      return this.hop.attempt({ ...message, body: codexPointer(message, this.deps.rows.nonceOf(id)!, this.deps.rows.attemptsOf(id)) });
+      return this.hop.attempt({ ...message, body: prepareLongPaste(message, text, this.deps.rows, this.deps.spool) });
     });
   }
+
+  forget(seat: string): void { this.deps.spool?.discardSpool(seat); }
 }
 
 export interface PiHopDeps {

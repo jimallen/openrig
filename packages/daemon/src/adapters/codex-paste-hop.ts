@@ -53,14 +53,12 @@ export function composerHoldsMessage(lines: readonly string[], body: string): bo
   const marker = lastMarkerLine(body);
   if (marker === null) return false;
   // Whole lines only: a draft quoting a marker mid-line is a person's. Lines join only to undo a narrow seat's wrap.
-  // A pointer's marker carries its attempt (`<id>.p<n>`), and a staged one may be an earlier attempt's: it is still this message.
-  const anyAttempt = (text: string) => text.replace(/\.p\d+:/, ":");
-  const whole = anyAttempt(marker.replace(/\s+/g, ""));
+  const whole = marker.replace(/\s+/g, "");
   return lines.some((_, start) => {
     let joined = "";
     for (const line of lines.slice(start)) {
       joined += line.replace(/\s+/g, "");
-      if (anyAttempt(joined).length >= whole.length) return anyAttempt(joined) === whole;
+      if (joined.length >= whole.length) return joined === whole;
     }
     return false;
   });

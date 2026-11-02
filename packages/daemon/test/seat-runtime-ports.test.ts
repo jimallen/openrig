@@ -59,7 +59,7 @@ describe("the seats the pump serves", () => {
       expect(ports.gateFor(name)).toBeNull();
       expect(ports.hopFor(name)).toBeNull();
       declareHook(name);
-      expect(ports.gateFor(name)?.version).toBe(1);
+      expect(ports.gateFor(name)?.version).toBe(2);
       expect(ports.hopFor(name)).toBeInstanceOf(hop);
     }
   });
@@ -98,7 +98,7 @@ describe("the seats the pump serves", () => {
     const { name, rigId } = seat("claude-code");
     declareHook(name);
     db.prepare("UPDATE rigs SET archived_at = 'x' WHERE id = ?").run(rigId);
-    expect(ports.gateFor(name)?.version).toBe(1);
+    expect(ports.gateFor(name)?.version).toBe(2);
   });
 
   it("a live seat beats an archived one of the same name, and two live ones prove nothing", () => {
@@ -108,7 +108,7 @@ describe("the seats the pump serves", () => {
     const node = rigs.addNode(rigs.createRig("fresh").id, "dev", { role: "worker", runtime: "codex" });
     new SessionRegistry(db).updateBinding(node.id, { attachmentType: "hc", tmuxSession: old.name });
     declareHook(old.name);
-    expect(ports.gateFor(old.name)?.version).toBe(1);
+    expect(ports.gateFor(old.name)?.version).toBe(2);
     const other = rigs.addNode(rigs.createRig("twin").id, "dev", { role: "worker", runtime: "codex" });
     new SessionRegistry(db).updateBinding(other.id, { attachmentType: "hc", tmuxSession: old.name });
     expect(ports.gateFor(old.name)).toBeNull();

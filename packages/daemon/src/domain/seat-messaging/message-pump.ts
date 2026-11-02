@@ -1,3 +1,4 @@
+import { partId } from "./long-message.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "./message-label.js";
 import { messageId, type GateLookup, type LastHopResult, type MessageId, type SeatGate, type SeatMessage } from "./ports.js";
 import type { MessageAcceptInput, MessageOutcome, MessageStore, StoredMessage } from "./message-store.js";
@@ -144,6 +145,7 @@ export class MessagePump {
     if (lookup.kind === "seen") {
       if (!this.deps.store.recordReceived(lookup.record, gate.version)) return "stop";
       if (message.attempts > 1) await this.tidyAfterReceived(message);
+      this.forgetText(message.seat);
       return "next";
     }
     const fate = this.deps.directory.fate(message.seat);
@@ -165,24 +167,41 @@ export class MessagePump {
       this.deps.store.recordGateUnavailable(message.id, this.clock() + this.timing.pauseRecheckMs);
       return "stop";
     }
-    return this.attempt(message);
+    // A part arrived: the next one is due now, on a fresh backoff, not at the end of the last one's.
+    if (lookup.nextPart !== undefined && lookup.nextPart - 1 > message.partsDone) {
+      return this.deps.store.recordPartsDone(message, lookup.nextPart - 1) ? "next" : "stop";
+    }
+    return this.attempt(message, lookup.nextPart);
+  }
+
+  /** The message's own id, then, for a long message, each of its numbered parts. All of them seen is the message seen. */
+  private async readGate(gate: SeatGate, message: StoredMessage): Promise<GateLookup & { nextPart?: number }> {
+    const whole = await this.readOne(gate, message, message.id);
+    if (whole.kind !== "not_seen" || message.parts === null || message.parts < 2) return whole;
+    let last: GateLookup = whole;
+    for (let index = 1; index <= message.parts; index += 1) {
+      last = await this.readOne(gate, message, partId(message.id, index, message.parts));
+      if (last.kind === "not_seen") return { kind: "not_seen", nextPart: index };
+      if (last.kind === "unavailable") return last;
+    }
+    return last.kind === "seen" ? { kind: "seen", record: { ...last.record, id: message.id } } : last;
   }
 
   /** Anything but a record of this very id proves nothing, so it never moves a row. */
-  private async readGate(gate: SeatGate, message: StoredMessage): Promise<GateLookup> {
+  private async readOne(gate: SeatGate, message: StoredMessage, id: MessageId): Promise<GateLookup> {
     let lookup: GateLookup;
     try {
-      lookup = await gate.lookup(message.seat, message.id);
+      lookup = await gate.lookup(message.seat, id);
     } catch (error) {
       return { kind: "unavailable", cause: (error as Error).message };
     }
-    if (lookup.kind === "seen" && lookup.record.id !== message.id) return { kind: "unavailable", cause: `the gate answered with a record of ${lookup.record.id}` };
+    if (lookup.kind === "seen" && lookup.record.id !== id) return { kind: "unavailable", cause: `the gate answered with a record of ${lookup.record.id}` };
     // A marker with another nonce is forged: the real message has not arrived.
     if (lookup.kind === "seen" && lookup.record.nonce !== null && lookup.record.nonce !== this.deps.store.nonceOf(message.id)) return { kind: "not_seen" };
     return lookup;
   }
 
-  private async attempt(message: StoredMessage): Promise<Visit> {
+  private async attempt(message: StoredMessage, part: number | undefined): Promise<Visit> {
     const hop = this.deps.ports.hopFor(message.seat);
     if (!hop) return "stop";
     const now = this.clock();
@@ -190,7 +209,7 @@ export class MessagePump {
     if (!this.deps.store.claimAttempt(message, now + nextAttemptDelayMs(message.attempts + 1, this.timing.backoffMs))) return "stop";
     let result: LastHopResult;
     try {
-      result = await hop.attempt(this.seatMessage(message));
+      result = await hop.attempt({ ...this.seatMessage(message), ...(part === undefined ? {} : { part }) });
     } catch (error) {
       result = { kind: "refused", reason: `the hop threw: ${(error as Error).message}` };
     }
@@ -205,6 +224,14 @@ export class MessagePump {
       ids: [message.id], seat: message.seat, body: message.previousOccupant === null ? message.body : `${PREVIOUS_OCCUPANT_LABEL} ${message.body}`,
       occupantGeneration: message.occupantGeneration, messageClass: message.messageClass, lane: message.lane,
     };
+  }
+
+  private forgetText(seat: string): void {
+    try {
+      this.deps.ports.hopFor(seat)?.forget?.(seat);
+    } catch (error) {
+      this.log(`seat ${seat}: clearing its spool failed: ${(error as Error).message}`);
+    }
   }
 
   private async tidyAfterReceived(message: StoredMessage): Promise<void> {
@@ -227,6 +254,7 @@ export class MessagePump {
     const closed = returned.kind === "returned"
       ? this.deps.store.recordUndeliverable(message.id, reason, returned.qitemId, at)
       : this.deps.store.recordUndeliverable(message.id, `${reason}; not returned: ${returned.reason}`, null, at);
+    if (closed) this.forgetText(message.seat);
     return closed ? "next" : "stop";
   }
 }

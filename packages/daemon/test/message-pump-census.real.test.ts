@@ -145,7 +145,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     handle.close();
     const gateDir = join(seatGateRoot(HOME), seatGateFolder(name));
     mkdirSync(gateDir, { recursive: true });
-    writeFileSync(join(gateDir, "gate.json"), JSON.stringify({ version: 1 }));
+    writeFileSync(join(gateDir, "gate.json"), JSON.stringify({ version: 2 }));
     const seen = join(gateDir, "seen");
     const address = hcTerminalName(name);
     const launch = async () => {
@@ -222,19 +222,18 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       expect(lines(s, "dropped")).toEqual([]);  // Enter alone: no second copy was typed
     }, 90_000);
 
-    it("P1, a long message with its Enter lost: it went as a short pointer, so its marker shows, and the restart presses Enter alone, once", async () => {
+    it("P1, a long message with its Enter lost: it went as a short paste, so its marker shows, and the restart presses Enter alone, once", async () => {
       const s = await seatFixture(["lose-enter"]);
       s.acceptBody("long", "x".repeat(1500));
       const first = daemon(s, "after_bytes");
       await hopSaw(s, "sent long");
-      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[openrig-msg long.p1:"), "the staged marker");
+      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[openrig-msg long:"), "the staged marker");
       await kill(first);
       expect(s.log()).toEqual([]);
       daemon(s);
-      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p")), "the pointer", 30_000);
+      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long ")), "the short paste", 30_000);
       expect(lines(s, "ctrl-u")).toEqual([]);
       expect(lines(s, "dropped")).toEqual([]);
-      expect(s.read("long").message_state).toBe("attempting");  // only reading it delivers it
     }, 90_000);
 
     it("a person's collapsed paste of exactly that size, with no paste of ours behind it, is left alone", async () => {

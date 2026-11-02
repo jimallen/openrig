@@ -5,7 +5,8 @@ import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
-import { CODEX_PASTE_LIMIT, ClaudeSeatHop, CodexSeatHop, PiSeatHop, foregroundHoldsAgent, isSeatAgent, markedText, readClaudeComposer, type HopGuard } from "../src/adapters/seat-hops.js";
+import { PASTE_LIMIT, ClaudeSeatHop, CodexSeatHop, PiSeatHop, foregroundHoldsAgent, isSeatAgent, markedText, readClaudeComposer, type HopGuard, type SeatSpool } from "../src/adapters/seat-hops.js";
+import { promptMarkers, type SeatMarker } from "../src/adapters/seat-gate-marker.js";
 import type { NativeEligibility, NativeEndpointRow } from "../src/domain/claude-native-inbox.js";
 import { CLAUDE_SOCKET_REPEAT_WINDOW_MS } from "../src/domain/seat-messaging/claude-last-hop.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
@@ -250,6 +251,21 @@ describe("the hops", () => {
       await claude().afterReceived(message);
       expect(calls).toEqual(["keys:C-c"]);
     });
+    it("a long message on the paste path goes short, with its text in the spool; the socket still takes it whole", async () => {
+      const held: string[] = [];
+      const spool = { declaredVersion: () => 2, spool: (_s: string, _m: SeatMarker, t: string) => { held.push(t); }, discardSpool: () => {} };
+      const hop = new ClaudeSeatHop({ rows: store, guard, client, input, spool, eligibility: async () => ({ ok: false, reason: "no_endpoint" } as never), writeToSeat: async () => "none" });
+      const body = "y".repeat(PASTE_LIMIT);
+      screen = "❯ \n──────────────\n";
+      await expect(hop.attempt({ ...message, body })).resolves.toEqual({ kind: "sent" });
+      expect(held).toEqual([body]);
+      expect(calls[0]).not.toContain("yyy");
+      calls.length = 0;
+      const staged = "OpenRig: long message. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again.";
+      screen = `❯ ${staged}\n  [openrig-msg m-1:${store.nonceOf(ID)}]\n──────────────\n`;
+      await hop.afterReceived({ ...message, body });  // a blocked repeat of the short paste is cleared by what it was, not by the body
+      expect(calls).toEqual(["keys:C-c"]);
+    });
     it("clears nothing on a person's draft, or while the seat works", async () => {
       screen = "❯ my own words\n──────────────\n";
       await claude().afterReceived(message);
@@ -292,51 +308,77 @@ describe("the hops", () => {
       await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "agent_absent" });
       expect(calls).toEqual([]);
     });
-    it("a message past the paste limit goes as a short pointer with its own marker, so it can never collapse", async () => {
-      screen = `› Ask Codex to do anything\n${FOOTER}`;
-      const long = { ...message, body: "y".repeat(CODEX_PASTE_LIMIT) };
-      await expect(codex().attempt(long)).resolves.toEqual({ kind: "sent" });
-      const sent = calls[0]!.replace("paste:", "");
-      expect(Buffer.byteLength(sent)).toBeLessThanOrEqual(CODEX_PASTE_LIMIT);
-      expect(sent).not.toContain("yyy");
-      expect(sent).toContain(`rig seat read-message ${SEAT} m-1`);
-      expect(splitMarkedBlock(sent).markers).toEqual([{ id: "m-1.p1", nonce: store.nonceOf(ID) }]);
-      expect(store.isPointer(ID)).toBe(true);
-    });
-    it("each pointer has its own attempt id, so a resend is not a repeat at the gate", async () => {
-      screen = `› Ask Codex to do anything\n${FOOTER}`;
-      const long = { ...message, body: "y".repeat(CODEX_PASTE_LIMIT) };
-      await codex().attempt(long);
-      store.claimAttempt(store.headOf(SEAT)!, 0);
-      await codex().attempt(long);
-      expect(calls.map((c) => splitMarkedBlock(c.replace("paste:", "")).markers[0]!.id)).toEqual(["m-1.p1", "m-1.p2"]);
-    });
-    it("a short message is no pointer row", async () => {
-      screen = `› Ask Codex to do anything\n${FOOTER}`;
-      await codex().attempt(message);
-      expect(store.isPointer(ID)).toBe(false);
-    });
-    it("a staged pointer of an earlier attempt is this message's: Enter alone, never a draft", async () => {
-      store.markPointer(ID);
-      screen = `› A message too long to paste is waiting for you.\n  [openrig-msg m-1.p1:${store.nonceOf(ID)}]\n${FOOTER}`;
-      store.claimAttempt(store.headOf(SEAT)!, 0);
-      await expect(codex().attempt({ ...message, body: "y".repeat(CODEX_PASTE_LIMIT) })).resolves.toEqual({ kind: "sent" });
-      expect(calls).toEqual(["keys:Enter"]);
-    });
-    it("at the limit it goes whole; a multi-byte body is judged by its bytes", async () => {
-      screen = `› Ask Codex to do anything\n${FOOTER}`;
-      const marker = `\n[openrig-msg m-1:${store.nonceOf(ID)}]`;
-      const fits = "z".repeat(CODEX_PASTE_LIMIT - Buffer.byteLength(marker));
-      await codex().attempt({ ...message, body: fits });
-      expect(calls[0]).toContain(fits);
-      calls.length = 0;
-      await codex().attempt({ ...message, body: "é".repeat(CODEX_PASTE_LIMIT / 2) });
-      expect(calls[0]).toContain("read-message");
-    });
-    it("a pointer keeps the label of a message sent to the previous occupant", async () => {
-      screen = `› Ask Codex to do anything\n${FOOTER}`;
-      await codex().attempt({ ...message, body: `${PREVIOUS_OCCUPANT_LABEL} ${"y".repeat(CODEX_PASTE_LIMIT)}` });
-      expect(calls[0]).toContain(`paste:${PREVIOUS_OCCUPANT_LABEL} A message too long`);
+    describe("a long message", () => {
+      const spooled: Array<{ id: string; text: string; after: number }> = [];
+      const spool = { declaredVersion: () => 2 as number | null, spool: (_s: string, m: SeatMarker, text: string) => { spooled.push({ id: m.id, text, after: calls.length }); }, discardSpool: () => {} };
+      const hop = (s: SeatSpool = spool) => new CodexSeatHop({ rows: store, guard, client, input, spool: s });
+      beforeEach(() => { spooled.length = 0; screen = `› Ask Codex to do anything\n${FOOTER}`; });
+
+      it("goes as a short paste with the message's own marker, and its text is in the spool before a byte", async () => {
+        const body = "y".repeat(PASTE_LIMIT);
+        await expect(hop().attempt({ ...message, body })).resolves.toEqual({ kind: "sent" });
+        const sent = calls[0]!.replace("paste:", "");
+        expect(Buffer.byteLength(sent)).toBeLessThanOrEqual(PASTE_LIMIT);
+        expect(sent).not.toContain("yyy");
+        expect(promptMarkers(sent)).toEqual([{ id: "m-1", nonce: store.nonceOf(ID), spooled: true }]);
+        expect(spooled).toEqual([{ id: "m-1", text: body, after: 0 }]);
+        expect(store.partsOf(ID)).toBe(1);
+      });
+      it("the limit is the 1000 measured on real Codex", async () => {
+        expect(PASTE_LIMIT).toBe(1000);
+        await hop().attempt({ ...message, body: "y".repeat(1100) });
+        expect(calls[0]).not.toContain("yyy");
+      });
+      it("a repeat is the same paste: the gate drops it", async () => {
+        const long = { ...message, body: "y".repeat(PASTE_LIMIT) };
+        await hop().attempt(long);
+        await hop().attempt(long);
+        expect(calls[0]).toBe(calls[1]);
+      });
+      it("a short message is none of this", async () => {
+        await hop().attempt(message);
+        expect(store.partsOf(ID)).toBeNull();
+        expect(spooled).toEqual([]);
+        expect(calls).toEqual([`paste:${text()}`]);
+      });
+      it("at the limit it goes whole; a multi-byte body is judged by its bytes", async () => {
+        const fits = "z".repeat(PASTE_LIMIT - Buffer.byteLength(`\n[openrig-msg m-1:${store.nonceOf(ID)}]`));
+        await hop().attempt({ ...message, body: fits });
+        expect(calls[0]).toContain(fits);
+        calls.length = 0;
+        await hop().attempt({ ...message, body: "é".repeat(PASTE_LIMIT / 2) });
+        expect(calls[0]).toContain("long message");
+      });
+      it("past 9000 characters each part has its own marker, and the pump says which is due", async () => {
+        const body = "a".repeat(9000) + "b".repeat(9000) + "c";
+        await hop().attempt({ ...message, body, part: 2 });
+        expect(spooled).toEqual([{ id: "m-1.part2of3", text: "b".repeat(9000), after: 0 }]);
+        expect(calls[0]).toContain("part 2 of 3");
+        expect(store.partsOf(ID)).toBe(3);
+      });
+      it("a part staged with its Enter lost gets Enter alone, and its text is still there", async () => {
+        screen = `› OpenRig: long message.\n  [openrig-msg m-1:${store.nonceOf(ID)}]\n${FOOTER}`;
+        await expect(hop().attempt({ ...message, body: "y".repeat(PASTE_LIMIT) })).resolves.toEqual({ kind: "sent" });
+        expect(calls).toEqual(["keys:Enter"]);
+        expect(spooled).toHaveLength(1);
+      });
+      it("keeps the label of a message sent to the previous occupant", async () => {
+        await hop().attempt({ ...message, body: `${PREVIOUS_OCCUPANT_LABEL} ${"y".repeat(PASTE_LIMIT)}` });
+        expect(calls[0]).toContain(`paste:${PREVIOUS_OCCUPANT_LABEL}\nOpenRig: long message`);
+      });
+      for (const version of [1, null]) {
+        it(`goes whole to a seat whose relay declared ${version}: a short paste there would lose the text`, async () => {
+          const body = "y".repeat(PASTE_LIMIT);
+          await hop({ ...spool, declaredVersion: () => version }).attempt({ ...message, body });
+          expect(calls[0]).toContain(body);
+          expect(spooled).toEqual([]);
+        });
+      }
+      it("forgets its text when told", () => {
+        const seats: string[] = [];
+        hop({ ...spool, discardSpool: (seat) => { seats.push(seat); } }).forget(SEAT);
+        expect(seats).toEqual([SEAT]);
+      });
     });
     it("a sourced Codex seat: the agent is found in the foreground group", async () => {
       foreground = { pid: 900, name: "bash", argv: ["/bin/bash", "-l"], cwd: "/w" };

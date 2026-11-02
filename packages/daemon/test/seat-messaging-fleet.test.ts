@@ -195,24 +195,14 @@ describe("the fleet, as the pump reads it", () => {
       expect(row[0]).toContain("a1");
     });
 
-    it("says a pointer landed and nobody read it: that is not delivered", () => {
+    it("a cleared part reopens its whole message", () => {
       const store = new MessageStore(db);
       accept("p1");
       store.claimAttempt(store.headOf("dev@r")!, 1);
-      store.markPointer(messageId("p1"));
-      const row = reasons();
-      expect(row).toHaveLength(1);
-      expect(row[0]).toContain("has not read it");
-      expect(store.recordPointerRead(messageId("p1"), new Date(NOW.getTime() - 10).toISOString())).toBe(true);
-      expect(reasons()[0]).toBe("1 message(s) received and 0 returned to their senders as undeliverable, in the last 24 h.");
-      expect(store.recordPointerRead(messageId("p1"), "1999-01-01T00:00:00.000Z")).toBe(false);
-    });
-
-    it("a read settles only a pointer row", () => {
-      const store = new MessageStore(db);
-      accept("n1");
-      expect(store.recordPointerRead(messageId("n1"), "1999-01-01T00:00:00.000Z")).toBe(false);
-      expect(store.outcomeOf(messageId("n1"))).toBe("open");
+      const nonce = store.nonceOf(messageId("p1"))!;
+      store.recordReceived({ id: messageId("p1"), recordedAt: "1999-01-01T00:00:00.000Z", nonce }, 2);
+      expect(store.reopenCleared(messageId("p1.part2of3"), nonce)).toBe(true);
+      expect(store.outcomeOf(messageId("p1"))).toBe("open");
     });
 
     it("names a screen with no composer, and a stopped terminal, at once", () => {

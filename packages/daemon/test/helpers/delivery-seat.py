@@ -10,6 +10,7 @@ rollout = base + "/rollout.jsonl"
 MARK = re.compile(rb"\n\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]\s*$")
 composer = b""
 lost = False
+seen_ids = []
 flag = lambda n: os.path.exists(base + "/" + n)
 transcript = rollout if runtime == "codex" else base + "/transcript.jsonl"
 def hook(payload):
@@ -71,8 +72,13 @@ def submit():
         log.write(b"enqueued " + mid + b"\n")
         while not flag("take"):
             time.sleep(0.02)
-    if flag("hook-crash"):
-        os.remove(base + "/hook-crash")
+    crash_next = flag("hook-crash-after") and open(base + "/hook-crash-after").read() in seen_ids
+    if crash_next:
+        os.remove(base + "/hook-crash-after")
+    seen_ids.append(mid.decode())
+    if flag("hook-crash") or crash_next:
+        if not crash_next:
+            os.remove(base + "/hook-crash")
         log.write(b"agent " + mid + b" " + text + b"\n")
         if runtime == "codex":
             with open(rollout, "a") as f:
@@ -96,6 +102,12 @@ def submit():
             composer = b""
         return
     log.write(b"agent " + mid + b" " + text + b"\n")
+    try:
+        added = json.loads(ran.stdout.decode().strip().split("\n")[-1]).get("hookSpecificOutput", {}).get("additionalContext")
+    except Exception:
+        added = None
+    if added is not None:
+        log.write(b"context " + mid + b" " + hashlib.sha256(added.encode()).hexdigest().encode() + b" " + str(len(added)).encode() + b"\n")
     if runtime == "codex":
         with open(rollout, "a") as f:
             f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": composer.decode()}]}}) + "\n")
