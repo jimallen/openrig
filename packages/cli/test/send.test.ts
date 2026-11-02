@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { sendCommand, type SendDeps } from "../src/commands/send.js";
-import { DaemonClient } from "../src/client.js";
+import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
 
@@ -540,6 +540,115 @@ describe("Send CLI", () => {
     };
     await captureLogs(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--host", "vm-test", "--id", "job-2"]); });
     expect(captured[captured.indexOf("--id") + 1]).toBe("job-2");
+  });
+
+  describe("S4h: a send to an http host", () => {
+    const FAR = "http://sparky:7433";
+    const httpRegistry = { hostRegistryLoader: () => ({ ok: true as const, registry: { hosts: [{ id: "sparky", transport: "http" as const, url: FAR }] } }) };
+    type Post = { base: string; path: string; body: Record<string, unknown> };
+    /** The local daemon answers `local`, which may throw; the far daemon's `/api/transport/send` records and answers ok. */
+    function wired(local: () => { status: number; data: Record<string, unknown> }) {
+      const posts: Post[] = [];
+      const factory = (base: string) => ({
+        post: async (path: string, body: Record<string, unknown>) => {
+          posts.push({ base, path, body });
+          return base === FAR ? { status: 200, data: { ok: true, sessionName: "dev@rig" } } : local();
+        },
+        get: async () => ({ status: 200, data: {} }),
+      } as unknown as DaemonClient);
+      return { posts, deps: { ...runningDeps(port, factory), ...httpRegistry } as SendDeps, far: () => posts.filter((p) => p.base === FAR), near: () => posts.filter((p) => p.path === "/api/messages/send-far") };
+    }
+    const send = async (deps: SendDeps, ...args: string[]) => {
+      const out = await captureChannels(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev@rig", "hello", "--host", "sparky", ...args]); });
+      return { stdout: out.stdout.join("\n"), stderr: out.stderr.join("\n"), exitCode: out.exitCode };
+    };
+
+    it("posts to this host's daemon, never the far one, and says held, not delivered", async () => {
+      const w = wired(() => ({ status: 200, data: { outcome: "held", messageId: "m1", host: "sparky" } }));
+      const out = await send(w.deps);
+      expect(w.far()).toEqual([]);
+      expect(w.near()[0]!.body).toMatchObject({ host: "sparky", session: "dev@rig" });
+      expect(out.stdout).toContain("Held by sparky (m1)");
+      expect(out.stdout).not.toMatch(/^Sent to/m);
+      expect(out.exitCode).toBeFalsy();
+    });
+
+    it("says accepted while the row is on its way, and carries --id", async () => {
+      const w = wired(() => ({ status: 200, data: { outcome: "accepted", messageId: "job-1", host: "sparky" } }));
+      const out = await send(w.deps, "--id", "job-1");
+      expect(w.near()[0]!.body["deliveryId"]).toBe("job-1");
+      expect(out.stdout).toContain("Accepted for dev@rig (job-1)");
+      expect(w.far()).toEqual([]);
+    });
+
+    it("far_legacy runs today's path and tells the sender it is at most once", async () => {
+      const w = wired(() => ({ status: 200, data: { outcome: "far_legacy", reason: "sparky has no accept route" } }));
+      const out = await send(w.deps);
+      expect(w.far().map((p) => p.path)).toEqual(["/api/transport/send"]);
+      expect(out.stdout).toContain("at most once");
+      expect(out.stdout).toContain("sparky has no accept route");
+      expect(out.stdout).toContain("Sent to dev@rig");
+    });
+
+    it("far_legacy under --json says so on the one JSON line", async () => {
+      const w = wired(() => ({ status: 200, data: { outcome: "far_legacy", reason: "old" } }));
+      const out = await send(w.deps, "--json");
+      expect(JSON.parse(out.stdout.trim())).toMatchObject({ guarantee: "at_most_once", guaranteeReason: "old" });
+    });
+
+    it("a local daemon with no such route (an older build) runs today's path, with no advisory", async () => {
+      const w = wired(() => { throw new DaemonResponseError(404, "404 Not Found"); });
+      const out = await send(w.deps);
+      expect(w.far().length).toBe(1);
+      expect(out.stdout).not.toContain("at most once");
+    });
+
+    it("a local daemon that refuses the connection runs today's path: it never needed one", async () => {
+      const w = wired(() => { throw new DaemonConnectionError("Cannot connect", "ECONNREFUSED"); });
+      await send(w.deps);
+      expect(w.far().length).toBe(1);
+    });
+
+    it.each([
+      ["a timeout", () => new DaemonTimeoutError("slow")],
+      ["a lost connection", () => new DaemonConnectionError("reset", "ECONNRESET")],
+      ["a lost body", () => new DaemonResponseError(200, "")],
+    ])("%s may have left a row here, so nothing goes direct", async (_name, error) => {
+      const w = wired(() => { throw error(); });
+      const out = await send(w.deps);
+      expect(w.far()).toEqual([]);
+      expect(out.exitCode).toBe(1);
+      expect(out.stderr).toContain("may hold the message");
+    });
+
+    it("a local refusal is the sender's, and nothing goes direct", async () => {
+      const w = wired(() => ({ status: 409, data: { reason: "delivery_identity_conflict", error: "Delivery ID names different content/identity." } }));
+      const out = await send(w.deps, "--id", "x");
+      expect(w.far()).toEqual([]);
+      expect(out.exitCode).toBe(1);
+      expect(out.stderr).toContain("different content");
+    });
+
+    it("a local refusal under --json is the one JSON line, and exits 1", async () => {
+      const w = wired(() => ({ status: 409, data: { reason: "message_already_ended" } }));
+      const out = await send(w.deps, "--json");
+      expect(JSON.parse(out.stdout.trim())).toMatchObject({ result: { ok: false, status: 409, data: { reason: "message_already_ended" } } });
+      expect(w.far()).toEqual([]);
+      expect(out.exitCode).toBe(1);
+    });
+
+    it("a JSON 404 from a local daemon with no such route runs today's path", async () => {
+      const w = wired(() => ({ status: 404, data: { error: "not found" } }));
+      await send(w.deps);
+      expect(w.far().length).toBe(1);
+    });
+
+    it.each([[["--verify"]], [["--raw"]], [["--force"]], [["--wait-for-idle", "1"]]])("%j keeps today's path", async (flags) => {
+      const w = wired(() => { throw new Error("no local post"); });
+      await send(w.deps, ...flags);
+      expect(w.near()).toEqual([]);
+      expect(w.far().length).toBe(1);
+    });
   });
 
   it("send without wait-for-idle waits 45 s, not the client's 5 s read default (hc holds a send ~5 s; hc-w41)", async () => {

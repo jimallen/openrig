@@ -101,6 +101,8 @@ export const OUTBOX_ACK_EVIDENCE = [
   "gate_seen", "seat_gone",
   // Seat Messaging: a message that went as a pointer, and its seat read the body.
   "pointer_read",
+  // Seat Messaging S4h: the far daemon committed the row. It holds the message; nothing is known yet of the seat.
+  "far_accepted",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
 

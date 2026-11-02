@@ -104,7 +104,8 @@ import { deriveSelfHostIdSource, SeatIdentityReconciler, reconcileSelfHostIdenti
 import { SeatIdentityStore, SelfHostIdentityStore } from "./domain/seat-identity-store.js";
 import { DaemonLifecycleStore } from "./domain/daemon-lifecycle-store.js";
 import { randomUUID } from "node:crypto";
-import { setSelfHostId, setSelfHostIdSource } from "./domain/hosts/fanout-contract.js";
+import { getSelfHostId, setSelfHostId, setSelfHostIdSource } from "./domain/hosts/fanout-contract.js";
+import { CrossHostSenderReturn, FarDaemons, FarSeatDirectory, withFarSeats } from "./domain/seat-messaging/far-daemon.js";
 import { UpCommandRouter } from "./domain/up-command-router.js";
 import { RigTeardownOrchestrator } from "./domain/rig-teardown.js";
 import { ResumeMetadataRefresher } from "./domain/resume-metadata-refresher.js";
@@ -1289,7 +1290,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
   const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
   // Seat Messaging: one setting, read at boot, default on. Off, no pump and no health source exist, and every path is as it was.
-  const realSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
+  const localSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
     db, rows: seatMessages, hookStore: new HookSeenStore(seatGateRoot(OPENRIG_HOME)), stateRoots: { pi: piStateRoot, omp: ompStateRoot },
     foregroundGroup: foregroundGroupPrograms, client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: transcriptHasPrompt,
     rolloutOf: (seat) => {
@@ -1307,6 +1308,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       },
     },
   }) : NO_SEAT_MESSAGING_PORTS);
+  const farDaemons = new FarDaemons({ selfHost: getSelfHostId });
+  const realSeatMessagingPorts = withFarSeats(localSeatMessagingPorts, farDaemons, (id) => seatMessages.senderOf(id));
   const seatMessagingPorts = opts?.wrapSeatMessagingPorts?.(realSeatMessagingPorts) ?? realSeatMessagingPorts;
   const heldMessages = new GuardHeldMessages(deliveryGuard);
   const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(seatMessages, seatMessagingPorts)] : [];
@@ -2260,8 +2263,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // Started at boot and driven by the database. It serves seats with a gate; SessionTransport hands it their messages.
     if (messagePumpEnabled) {
       const messagePump = new MessagePump({
-        store: seatMessages, ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
-        senders: new QueueSenderReturn(queueRepoInstance), obligations: messageObligations, timing: opts?.messagePumpTiming,
+        store: seatMessages, ports: seatMessagingPorts, directory: new FarSeatDirectory(new DbSeatDirectory(db)), held: heldMessages,
+        senders: new CrossHostSenderReturn(new QueueSenderReturn(queueRepoInstance), farDaemons), obligations: messageObligations, timing: opts?.messagePumpTiming,
       });
       // Before the first pass and before any route: from here no SessionTransport sends a message to a gated seat itself.
       tmuxAdapter.messageHandOff = new PumpHandOff(seatMessages, messagePump, seatMessagingPorts);
@@ -2824,6 +2827,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   deps.webUiEnabled = opts?.webUiEnabled ?? new ContextPackSettingsStore().resolveOne("ui.enabled").value === true;
   // /api browser boundary: this machine's exact Tailscale MagicDNS name, looked up on demand.
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
+  deps.farDaemons = farDaemons;
   if (hcAdapter) deps.hcTerminal = { client: hcAdapter.client, ...(deliveryGuard ? { guard: deliveryGuard } : {}) };
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 

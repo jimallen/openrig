@@ -30,6 +30,7 @@ const CLASSIFIED: Record<string, Row> = {
   "domain/startup-orchestrator.ts": { sendText: 1, send: 1, cls: "stripped (typed text) + constant (guarded retry sends no text)" },
   "routes/terminal-ws.ts": { sendText: 1, send: 0, cls: "person (a text frame typed at the live terminal, sent with blocked: allow: someone at the broker may answer a dialog)" },
   "routes/transport.ts": { sendText: 0, send: 1, cls: "person" },
+  "routes/messages.ts": { sendText: 0, send: 1, cls: "person (the far half of rig send --host; the text is the sender's own, framed where it was sent)" },
   "startup.ts": { sendText: 0, send: 6, cls: "stripped (watchdog, model monitor, native comms step 3's delivery notice via nativeNoticeText, OF-182's post-restart prompt via postRestartText) + constant (attention probe) + replay (native comms step 3: the sweeper's tmux fallback re-sends a native message's accepted text through the same transport, so it keeps that message's class)" },
   "terminal/TerminalSessionBroker.ts": { sendText: 1, send: 0, cls: "person" },
 };

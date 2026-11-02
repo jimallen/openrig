@@ -46,6 +46,8 @@ export interface GateRecord {
   readonly id: MessageId;
   readonly recordedAt: string;
   readonly nonce: string | null;
+  /** What the record rests on, when it is not the seat's own gate: `far_accepted`, a far daemon holds the row (cross-host). */
+  readonly evidence?: "far_accepted";
 }
 
 /** `unavailable`: the gate could not be read now (the seat is down, a file is missing), which proves nothing either way. */

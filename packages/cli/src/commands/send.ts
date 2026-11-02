@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { resolveEffectiveHost } from "../host-selection.js";
-import { DaemonClient, DaemonConnectionError, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
+import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, fetchSelfHostId, resolveOriginSelfHostId } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
@@ -888,6 +888,57 @@ async function runCrossHostSend(
 }
 
 /**
+ * S4h: posts a cross-host send to THIS host's daemon, which commits a row and carries it to the far daemon. `direct` means nothing is held here and
+ * the caller runs today's path: the local daemon said `far_legacy` (with why, which the sender is told), or it is down or older than this CLI
+ * (no reason: today's `rig send --host` never needed it). A request that may have reached the daemon is never followed by a direct send, which could
+ * deliver the message twice: only a refused connection, or a daemon with no such route, proves nothing was held.
+ */
+async function sendThroughLocalDaemon(
+  host: HttpHostEntry,
+  session: string,
+  text: string,
+  opts: { id?: string; json?: boolean },
+  deps: SendDeps,
+): Promise<{ kind: "done" } | { kind: "direct"; reason?: string }> {
+  let res: { status: number; data: Record<string, unknown> };
+  try {
+    const client = deps.clientFactory(await resolveLocalDaemonUrl(deps));
+    res = await client.post<Record<string, unknown>>("/api/messages/send-far", {
+      host: host.id, session, text, ...(opts.id !== undefined ? { deliveryId: opts.id } : {}),
+    }, transportRequestOptions(undefined));
+  } catch (err) {
+    if (err instanceof DaemonResponseError && err.status === 404) return { kind: "direct" };
+    if (err instanceof DaemonTimeoutError || err instanceof DaemonResponseError || (err instanceof DaemonConnectionError && err.causeCode !== "ECONNREFUSED")) {
+      const fact = `This host's daemon may hold the message for ${session}: its answer was lost (${(err as Error).message}).`;
+      if (opts.json) console.log(JSON.stringify({ cross_host: { host: host.id, target: hostDisplayTarget(host), transport: "http" }, error: { fact } }));
+      else console.error(fact);
+      process.exitCode = 1;
+      return { kind: "done" };
+    }
+    return { kind: "direct" };
+  }
+  const data = res.data ?? {};
+  if (data["outcome"] === "far_legacy") return { kind: "direct", reason: String(data["reason"] ?? "the far daemon has no accept route") };
+  if (res.status === 404 && data["outcome"] === undefined) return { kind: "direct" };
+  if (opts.json) {
+    console.log(JSON.stringify({ cross_host: { host: host.id, target: hostDisplayTarget(host), transport: "http" }, result: { ok: res.status < 400, status: res.status, data } }));
+    if (res.status >= 400) process.exitCode = 1;
+    return { kind: "done" };
+  }
+  if (res.status >= 400) {
+    console.error(String(data["error"] ?? data["reason"] ?? `Send failed (HTTP ${res.status})`));
+    process.exitCode = 1;
+    return { kind: "done" };
+  }
+  console.log(`[via host=${host.id} (${hostDisplayTarget(host)})]`);
+  const id = String(data["messageId"] ?? "");
+  console.log(data["outcome"] === "held"
+    ? `Held by ${host.id} (${id}): it carries the message until ${session}'s gate records it. Not yet delivered.`
+    : `Accepted for ${session} (${id}): this host carries it to ${host.id}. Not yet delivered.`);
+  return { kind: "done" };
+}
+
+/**
  * OPR.0.4.6.MH4 C1 — cross-host send over http, CLI-DIRECT to the remote
  * daemon's shipped POST /api/transport/send (zero daemon-side changes).
  * Wrap parity BY CONSTRUCTION: the body is built exactly as the LOCAL path
@@ -930,6 +981,13 @@ async function runHttpHostSend(
   const raw = Boolean(opts.raw || opts.dangerouslyInteract);
   const outboundText = raw ? text : wrapSendBody(originSender, session, text, stampMeta(opts.id));
 
+  // S4h: a plain send goes through this host's daemon, whose pump owns the hop. `verify`, `force`, `wait-for-idle` and raw text ask for what only
+  // today's path can do, and they keep it.
+  const plain = !raw && !opts.verify && !opts.force && waitForIdleMs === undefined;
+  const local = plain ? await sendThroughLocalDaemon(host, session, outboundText, opts, deps) : { kind: "direct" as const };
+  if (local.kind === "done") return;
+  const atMostOnce = local.kind === "direct" ? local.reason : undefined;
+
   const result = await runRemoteHttpOp(host.id, "POST", "/api/transport/send", {
     session, text: outboundText, deliveryId: opts.id ?? randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
     dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
@@ -953,11 +1011,13 @@ async function runHttpHostSend(
       // check on a remote seat — say so, never imply effect verification.
       ...(opts.verify ? { effectCheck: { checked: false, why: "cross-host http — the pane-effect check does not run cross-host" } } : {}),
       ...(!result.ok && hint ? { hint } : {}),
+      ...(atMostOnce ? { guarantee: "at_most_once", guaranteeReason: atMostOnce } : {}),
     }));
     if (!result.ok) process.exitCode = 1;
     return;
   }
 
+  if (atMostOnce) console.log(`Advisory: sent at most once, not carried until it arrives: ${atMostOnce}.`);
   if (!result.ok) {
     emitRemoteHttpFailure(host.id, hostDisplayTarget(host), shown, false, hint);
     if (unconfirmed) {

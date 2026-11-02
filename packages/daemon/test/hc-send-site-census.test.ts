@@ -23,6 +23,7 @@ const SITES: Array<{ file: string; calls: number; class: Class; id: string; note
   { file: "domain/claude-compaction-enforcer.ts", calls: 5, class: "transport-commits-row", id: "seat-msg-compaction-<attempt>-<prep|compact|turn_boundary|restore_prompt|compliance_prompt>", note: "the three post-compact stages and prep (on a gated seat, handed to the pump, and the next stage follows the gate record: S4e), /compact (a Command: no message state, the enforcer keeps it)" },
   { file: "domain/session-transport.ts", calls: 1, class: "transport-commits-row", id: "<id>:<seat>, or minted per recipient", note: "broadcast's per-recipient send" },
   { file: "domain/post-restart-notifier.ts", calls: 1, class: "pump-owns-row", id: "post-restart-<seq>-<node>; gated: accepted at the restore. ungated: the row stays open between its own retries", note: "the wiring in startup.ts" },
+  { file: "routes/messages.ts", calls: 1, class: "transport-commits-row", id: "seat-msg-xh-<hash of origin host and sender's id>; only for a seat the pump takes, so it hands off and writes nothing", note: "the far daemon's cross-host accept" },
   { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id. On a seat the pump serves both go to the pump, which owns their retries; the ladder reads the row and sends nothing (S4d)" },
 ];
 
@@ -55,9 +56,9 @@ describe("every daemon send into SessionTransport is classified", () => {
     expect([...found.entries()].sort()).toEqual([...known.entries()].sort());
   });
 
-  it("has a positive control: the population is not empty and sums to the classified total (17)", () => {
-    expect([...found.values()].reduce((a, b) => a + b, 0)).toBe(17);
-    expect(SITES.reduce((a, s) => a + s.calls, 0)).toBe(17);
+  it("has a positive control: the population is not empty and sums to the classified total (18)", () => {
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBe(18);
+    expect(SITES.reduce((a, s) => a + s.calls, 0)).toBe(18);
   });
 
   it("every class is one the rule names", () => {

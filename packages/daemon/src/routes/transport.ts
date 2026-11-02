@@ -26,9 +26,14 @@ const UNKNOWN_SENDER_MARKER = wrapPaneEnvelope(undefined, "", "").split("\n")[0]
 /** A caller's message id reaches a native marker (`[openrig-msg <id>:<nonce>]`), so it is held to that marker's alphabet. */
 const CALLER_MESSAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
+/** True when `id` is outside the marker alphabet. */
+export function requireSeatMessageId(id: string): boolean {
+  return !CALLER_MESSAGE_ID.test(id);
+}
+
 /** Why a caller may not name this id, or null. A daemon prefix is refused because the row now commits before the send: a caller's
  *  `wake-intent-x` left pending would be executed by the boot drain. */
-function refusedMessageId(id: unknown): string | null {
+export function refusedMessageId(id: unknown): string | null {
   if (id === undefined) return null;
   if (typeof id !== "string" || !CALLER_MESSAGE_ID.test(id)) return "deliveryId must be 1-128 characters of letters, digits, '.', '_', ':' or '-', starting with a letter or digit. No text was sent.";
   if (DAEMON_OUTBOX_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return `deliveryId may not start with a daemon-reserved prefix (${DAEMON_OUTBOX_ID_PREFIXES.join(", ")}). No text was sent.`;

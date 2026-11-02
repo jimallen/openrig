@@ -1018,6 +1018,11 @@ function isPumpMessage(text: string, opts?: SendOpts): boolean {
     && !startsLikeCommand(text) && !startsLikeShellEscape(text) && (opts?.deliveryId === undefined || MARKABLE_ID.test(opts.deliveryId));
 }
 
+/** Text a retry can repeat at all, for a route that must answer before it commits. */
+export function isPumpableText(text: string): boolean {
+  return isPumpMessage(text) && !containsPasteTerminator(text) && splitMarkedBlock(text).text.trim() !== "";
+}
+
 export interface SendOpts {
   /** Internal managed lifecycle prerequisite; never accepted from HTTP send options. */
   beforeWrite?: () => void;
@@ -1296,6 +1301,8 @@ export class SessionTransport {
   private rigRepo: RigRepository;
   private sessionRegistry: SessionRegistry;
   private tmuxAdapter: TmuxAdapter;
+  /** Absent: the pump is off. */
+  get messageHandOff(): MessageHandOff | undefined { return this.tmuxAdapter.messageHandOff; }
   private agentActivityStore?: AgentActivityStore;
   private nativeInbox?: ClaudeNativeInbox;
   private eventBus?: EventBus;

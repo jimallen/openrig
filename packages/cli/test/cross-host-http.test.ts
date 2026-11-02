@@ -90,6 +90,8 @@ function mockClient(respond: (call: RecordedCall) => { status: number; data: unk
   const calls: RecordedCall[] = [];
   const clientFactory = (url: string) => ({
     post: async (path: string, body?: unknown, options?: RecordedCall["options"]) => {
+      // These pin today's path, which a plain send takes when this host's daemon has no such route. S4h's own path is in send.test.ts.
+      if (path === "/api/messages/send-far") throw new DaemonResponseError(404, "404 Not Found");
       const call: RecordedCall = { url, method: "POST", path, body, options };
       calls.push(call);
       const res = respond(call);
@@ -367,6 +369,8 @@ describe("send --host (http branch)", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      // This client is real, so this host's daemon is named too: this server, which has no send-far route. Unnamed, a real daemon on the default port would be asked.
+      vi.stubEnv("OPENRIG_URL", url);
       const deps = httpDeps(mockClient(() => ({ status: 200, data: {} })), {
         clientFactory: (u: string) => new DaemonClient(u) as never,
         hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "slow-b", transport: "http", url }] } }),
