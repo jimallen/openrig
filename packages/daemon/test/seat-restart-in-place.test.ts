@@ -560,7 +560,7 @@ describe("OF-200: a Codex launched as its hc terminal's program (the staged laun
     expect(result).toMatchObject({ ok: true, outcome: "restarted_account_unverified", paneShape: "script_backed", pane: "t2", newProcess: { pid: 300 } });
     expect(w.calls.filter((call) => call.startsWith("signalPid"))).toEqual(["signalPid 200 TERM"]);
     expect(w.calls.some((call) => call.startsWith("signalPaneProcess")), "the pane's own process is the script: signalling it would leave Codex running").toBe(false);
-    expect(w.calls.filter((call) => call.startsWith("respawn"))).toEqual([expect.stringMatching(/^respawn env CODEX_HOME='.*' codex .* resume '019a0000-/)]);
+    expect(w.calls.filter((call) => call.startsWith("respawn"))).toEqual([expect.stringMatching(/^respawn exec env CODEX_HOME='.*' codex .* resume '019a0000-/)]);
     expect(w.launches, "no resume is typed: there is no shell").toEqual([]);
     expect(w.calls).toContain("verifyResumeInPane");
     expect(w.respawnCwds).toEqual(["/work"]);

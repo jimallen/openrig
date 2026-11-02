@@ -229,7 +229,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     expect(verified.body).toMatchObject({ ok: true, outcome: "restarted_account_unverified", accountEvidence: { state: "not_requested" } });
   }, 60_000);
 
-  it("a Codex launched the way OpenRig launches it (staged sh script), restarted twice in the same terminal", async () => {
+  it("a Codex launched the old way (a login shell above the staged script), restarted three times: shell-backed, then script-backed, then direct-native", async () => {
     const { pane, post } = await setup("shell_backed", { staged: true });
     const shell = await panePid(pane);
     const [oldStub] = stubPids();
@@ -239,17 +239,28 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     expect(parentOf(script)).toBe(shell);
     expect(fs.readFileSync(`/proc/${script}/cmdline`, "utf8")).toMatch(/openrig-tmux-send-\d+-[0-9a-f-]+\.txt/);
 
-    for (const round of [1, 2]) {
+    // OF-200: the first restart types the resume into the surviving shell, and that line is a program launch now (`exec /bin/sh <script>`), so the shell is
+    // REPLACED (same process, same terminal): a seat launched the old way is converted by its first restart. The second finds the staged script as the pane
+    // root (script_backed) and respawns; the third finds Codex itself (direct_native).
+    let current = pane;
+    for (const [round, shape] of [[1, "shell_backed"], [2, "script_backed"], [3, "direct_native"]] as const) {
       const plan = await post("restart-plan");
-      expect(plan.body, `round ${round}: ${JSON.stringify(plan.body)}`).toMatchObject({ ok: true, paneShape: "shell_backed" });
+      expect(plan.body, `round ${round}: ${JSON.stringify(plan.body)}`).toMatchObject({ ok: true, paneShape: shape, pane: current });
       const result = await post("restart", { reason: `native harness staged round ${round}` });
       expect(result.status, JSON.stringify(result.body)).toBe(200);
-      expect(result.body).toMatchObject({ outcome: "restarted_account_unverified", pane, paneShape: "shell_backed" });
+      expect(result.body, `round ${round}: ${JSON.stringify(result.body)}`).toMatchObject({ outcome: "restarted_account_unverified", paneShape: shape });
       for (const pid of stubPids()) pids.add(pid);
       expect(stubPids(), `round ${round}: only the replacement stub runs`).toEqual([result.body.newProcess.pid]);
-      expect(await panePid(pane), "same terminal shell").toBe(shell);
+      if (shape === "shell_backed") {
+        expect(result.body.pane).toBe(pane);
+        expect(await panePid(pane), "same terminal process: the shell was replaced by the launch, not left above it").toBe(shell);
+        expect(parentOf(result.body.newProcess.pid), "the replacement is the script's child").toBe(shell);
+      } else {
+        expect(result.body.pane, `round ${round}: a respawn moves the address`).not.toBe(current);
+      }
+      current = result.body.pane;
     }
-  }, 90_000);
+  }, 120_000);
 
   it("script-backed (OF-200): a Codex launched as its terminal's program is the staged script's child; the restart stops Codex, the terminal ends, and the resume is the new terminal's program", async () => {
     const { seat, pane, post } = await setup("script_backed");
@@ -277,7 +288,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     // The seat is reachable by the next restart: the replacement is a direct-native pane now.
     const again = await post("restart", { reason: "native harness script-backed round 2" });
     expect(again.status, JSON.stringify(again.body)).toBe(200);
-    expect(again.body).toMatchObject({ outcome: "restarted_account_unverified" });
+    expect(again.body, JSON.stringify(again.body)).toMatchObject({ outcome: "restarted_account_unverified", paneShape: "direct_native" });
     for (const pid of stubPids()) pids.add(pid);
   }, 90_000);
 

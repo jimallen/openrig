@@ -291,7 +291,10 @@ export class CodexInPlaceRestart {
           message: "Signals were sent, but the terminal could not be observed afterwards; no resume was attempted." };
       }
       progress.stage = "respawn";
-      const respawned = await this.deps.tmux.respawnPane(pane, relaunch.command, { cwd });
+      // `exec`: the respawn runs the command under `/bin/sh -c`, and a sh that does not exec a lone command (dash) would stay the terminal's root with
+      // Codex as its child, a pane the next restart cannot tell from a shell (measured on Sparky: the second restart stopped Codex and reported
+      // it still running). The resume command is a simple command, so the replacement is the terminal's own process, the direct_native shape.
+      const respawned = await this.deps.tmux.respawnPane(pane, `exec ${relaunch.command}`, { cwd });
       if (!respawned.ok) {
         return { ...report, outcome: "incomplete", recoveryCommand,
           remainingStep: "The original Codex exited and its terminal ended, but the resume could not be started. Resume the conversation for this seat with the recovery command; nothing was retried.",

@@ -259,7 +259,7 @@ describe("the paths that make a terminal", () => {
   it("respawns in two files: the successor, with the hint, and Codex's restart in place (two sites: a pane that is Codex itself, and OF-200's script-backed pane), which cannot declare Remote Control", () => {
     const found = callers("respawnPane");
     expect(found).toHaveLength(3);
-    expect(found[0]).toMatch(/^domain\/seat-restart-in-place\.ts: pane, relaunch\.command, \{ cwd \}/);
+    expect(found[0]).toMatch(/^domain\/seat-restart-in-place\.ts: pane, `exec \$\{relaunch\.command\}`, \{ cwd \}/);
     expect(found[1]).toMatch(/^domain\/seat-restart-in-place\.ts: pane, relaunch\.command, \{ cwd \}/);
     expect(found[2]).toMatch(/^domain\/successor-session-launcher\.ts: .*remoteControl/);
   });
