@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
 import { HcHost, SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-host.js";
 import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
 import { SeatLaunchRecords } from "../src/adapters/hc-seat.js";
@@ -252,6 +253,16 @@ describe.skipIf(!HC)("HcLifecycle against a private hc core", () => {
       expect(again).toContain("OPENRIG_NODE_ID=named-node");
       expect(again, "the caller's env replaced the creation env; it did not merge with it").not.toContain("OF200_ONLY_IN_SEAT_ENV=");
       await expect(mine.killSession("env3@rig")).resolves.toEqual({ ok: true });
+    });
+
+    it("through the adapter the daemon builds: its host's createSession and its lifecycle's respawn share the record", async () => {
+      const adapter = new HcAdapter(core.client);
+      await adapter.createSession("env4@rig", core.root, SEAT_ENV);
+      const out = join(core.root, "env-adapter.txt");
+      await expect(adapter.respawnPane("env4@rig", `env > ${out}; exec sleep 120`)).resolves.toEqual({ ok: true });
+      const env = await seen(out);
+      expect(env).toContain(`OF200_ONLY_IN_SEAT_ENV=${SEAT_ENV.OF200_ONLY_IN_SEAT_ENV}`);
+      await expect(adapter.killSession("env4@rig")).resolves.toEqual({ ok: true });
     });
 
     it("labels carry only the names a launch is allowed to write, so no credential rides a respawn from them", () => {

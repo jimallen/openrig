@@ -145,7 +145,8 @@ function world(options: WorldOptions = {}) {
       if (options.hc && pane !== livePane) return null;  // a finished terminal's address names no live process
       return shape === "shell_backed" || (shape === "script_backed" && !rowsAfterRespawn) ? 100 : rows[0]?.pid ?? null;
     },
-    getPaneCommand: async () => paneCommand,
+    // A terminal that ended has no foreground command: hc answers null, as the real adapter does (a shell is never "back").
+    getPaneCommand: async () => (shape === "script_backed" && dead ? null : paneCommand),
     getSessionEnv: async (_s: string, key: string) => (key === "CODEX_HOME" ? HOME : undefined),
     signalPid: async (pid: number, signal: string): Promise<TmuxResult> => {
       calls.push(`signalPid ${pid} ${signal}`);
@@ -577,6 +578,7 @@ describe("OF-200: a Codex launched as its hc terminal's program (the staged laun
   it("a respawn that fails after Codex ended is reported unknown, with the recovery command, never as a restart", async () => {
     const w = world({ shape: "script_backed", hc: {}, throwAt: "respawnPane" });
     expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ ok: true, outcome: "native_unknown", recoveryCommand: expect.stringContaining("codex") });
+    expect(w.calls.filter((call) => call.startsWith("respawn")), "the stop had finished, so the respawn was reached and is what failed").toHaveLength(1);
   });
 
   it("a script that is not OpenRig's staged launch script is still the shell shape it was (an arbitrary sh with Codex under it)", async () => {
