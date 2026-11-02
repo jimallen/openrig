@@ -233,6 +233,11 @@ export class MessageStore {
     return (this.db.prepare("SELECT message_parts AS parts FROM outbox_entries WHERE outbox_id = ?").get(id) as { parts: number | null } | undefined)?.parts ?? null;
   }
 
+  /** The numbered parts that have arrived: the part due is the next. */
+  partsDoneOf(id: MessageId): number {
+    return (this.db.prepare("SELECT message_parts_done AS done FROM outbox_entries WHERE outbox_id = ?").get(id) as { done: number | null } | undefined)?.done ?? 0;
+  }
+
   /** A part arrived, so the next is due at once, on a backoff of its own. Compare-and-set: a restart that sees the same record changes nothing. */
   recordPartsDone(message: StoredMessage, done: number): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_parts_done = ?, attempts = 0, next_attempt_at = NULL, message_pause_reason = NULL

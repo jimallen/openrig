@@ -271,6 +271,34 @@ describe("startup text through the pump", () => {
       expect(sendText).not.toHaveBeenCalled();
     });
 
+    describe("a long text, which reaches the seat as a short note that its gate hook completes (decision 33)", () => {
+      const NOTE = "OpenRig: long message. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again.";
+      const stagedBy = (staged: { text: string | null }, later: number) => (message: SeatMessage) => {
+        store.markParts(message.ids[0], 1);
+        setTimeout(() => { staged.text = `${NOTE}\n[openrig-msg ${message.ids[0]}:${store.nonceOf(message.ids[0])}]`; }, later);
+        return { kind: "sent" } as const;
+      };
+      beforeEach(() => { contents["/long.txt"] = "L".repeat(3_000); });
+
+      it("gets the guarded Enter on the note and its marker, never on the whole text", async () => {
+        const staged = { text: null as string | null };
+        onAttempt = stagedBy(staged, 700);
+        capture.mockImplementation(async () => (staged.text ? composerWith(staged.text) : ""));
+        sendKeys.mockImplementation(async () => { staged.text = null; seen.add(attempts[0]!.ids[0]); return { ok: true }; });
+        const result = await orchestrator(2_500).startNode(claude({ resolvedStartupFiles: [file("/long.txt")] }));
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+        expect(sendKeys).toHaveBeenCalledTimes(1);
+        expect(sendKeys).toHaveBeenCalledWith(SEAT, ["Enter"]);
+      });
+      it("is not given an Enter when the composer holds the whole text, which is not what the hop pasted", async () => {
+        onAttempt = (message) => { store.markParts(message.ids[0], 1); return { kind: "sent" }; };
+        capture.mockImplementation(async () => composerWith(`${"L".repeat(3_000)}\n[openrig-msg x:y]`));
+        const result = await orchestrator(700).startNode(claude({ resolvedStartupFiles: [file("/long.txt")] }));
+        expect(result.ok).toBe(false);
+        expect(sendKeys).not.toHaveBeenCalled();
+      });
+    });
+
     it("what is in the composer is not ours when it is not exactly this text: no Enter", async () => {
       onAttempt = () => ({ kind: "sent" });
       capture.mockImplementation(async () => composerWith("a person's draft"));

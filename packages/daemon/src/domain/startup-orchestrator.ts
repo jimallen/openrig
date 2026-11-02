@@ -1132,15 +1132,18 @@ export class StartupOrchestrator {
 
   private async awaitStartupText(input: StartupDeliveryInput, id: MessageId, text: string): ReturnType<NonNullable<TmuxAdapter["messageHandOff"]>["awaitReceived"]> {
     const handOff = this.tmuxAdapter.messageHandOff!;
-    let enterLeft = input.adapter.runtime === "claude-code";
+    const claude = input.adapter.runtime === "claude-code";
+    // What the last Enter went onto: a long message's parts are each pasted in a turn of their own and each wants its own Enter.
+    let submitted: string | null = null;
     for (let left = this.startupTextWaitMs; ;) {
       const look = Math.min(STARTUP_TEXT_LOOK_MS, left);
       const outcome = await handOff.awaitReceived(id, look);
       left -= look;
       if (outcome !== "open" || left <= 0) return outcome;
-      // Claude collapses a paste, so the hop cannot tell ours from a person's and leaves it. Here the exact text is known.
-      const marker = enterLeft ? handOff.pastedMarker(id) : null;
-      if (marker !== null) enterLeft = !(await this.submitStagedPaste(input, `${text}\n${marker}`));
+      // Claude collapses a paste, so the hop cannot tell ours from a person's and leaves it. Here the exact text is known, and the hand-off
+      // says what the paste carried: the text itself, or for a long one the short note its gate hook completes.
+      const staged = claude ? handOff.stagedPaste(id, text) : null;
+      if (staged !== null && staged !== submitted && await this.submitStagedPaste(input, staged)) submitted = staged;
       handOff.drive();
     }
   }

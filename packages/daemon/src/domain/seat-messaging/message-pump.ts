@@ -200,12 +200,20 @@ export class MessagePump {
   }
 
   /** The message's own id, then, for a long message, each of its numbered parts. All of them seen is the message seen. */
-  private async readGate(gate: SeatGate, message: StoredMessage): Promise<GateLookup & { nextPart?: number }> {
+  private readGate(gate: SeatGate, message: StoredMessage): Promise<GateLookup & { nextPart?: number }> {
+    // A message in one piece is one look, returned as it comes: no step is added before the pass reaches its attempt. S4g's startup wait
+    // starts its own pass from `accept`, which is skipped while the timer's pass on that seat is still running, so how soon a pass ends
+    // decides whether the startup text goes at once (startup-pump.test.ts, "a message queued during the launch").
+    if (message.parts === null || message.parts < 2) return this.readOne(gate, message, message.id);
+    return this.readParts(gate, message, message.parts);
+  }
+
+  private async readParts(gate: SeatGate, message: StoredMessage, parts: number): Promise<GateLookup & { nextPart?: number }> {
     const whole = await this.readOne(gate, message, message.id);
-    if (whole.kind !== "not_seen" || message.parts === null || message.parts < 2) return whole;
+    if (whole.kind !== "not_seen") return whole;
     let last: GateLookup = whole;
-    for (let index = 1; index <= message.parts; index += 1) {
-      last = await this.readOne(gate, message, partId(message.id, index, message.parts));
+    for (let index = 1; index <= parts; index += 1) {
+      last = await this.readOne(gate, message, partId(message.id, index, parts));
       if (last.kind === "not_seen") return { kind: "not_seen", nextPart: index };
       if (last.kind === "unavailable") return last;
     }

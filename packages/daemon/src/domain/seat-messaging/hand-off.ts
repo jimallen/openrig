@@ -1,4 +1,6 @@
+import { shortPaste } from "../../adapters/seat-hops.js";
 import { nativeMarker } from "../claude-native-inbox.js";
+import { partId } from "./long-message.js";
 import { OutboxHandlerError } from "../outbox-handler.js";
 import type { MessagePump } from "./message-pump.js";
 import type { MessageAcceptInput, MessageOutcome, MessageStore } from "./message-store.js";
@@ -29,8 +31,10 @@ export interface MessageHandOff {
   cancel(id: MessageId, reason: string): boolean;
   /** A pass now, in the caller's context, so a caller waiting under a lifecycle lease has its own retries made under that lease. */
   drive(): void;
-  /** The marker line a paste of this message carries, or null when no paste went: nothing was attempted, or it went by socket. */
-  pastedMarker(id: MessageId): string | null;
+  /** What a paste of this message put in the composer, given the text it was accepted with: the text and its marker, or, for a long message
+   *  the gate hook completes, the short note and the marker of the part now due. Null when no paste went: nothing was attempted, or it went
+   *  by socket. */
+  stagedPaste(id: MessageId, text: string): string | null;
   /** Lane 2 waits on this seat until the returned function is called, for a sequence of lower-lane messages that each wait for the last, so
    *  nothing lands between two of them. Call it in a `finally`. It lives and dies with this process: a daemon that died mid-sequence is not
    *  still running it, and a hold on disk would wedge the seat's queue for good. */
@@ -72,9 +76,14 @@ export class PumpHandOff implements MessageHandOff {
     void this.pump.tick();
   }
 
-  pastedMarker(id: MessageId): string | null {
+  stagedPaste(id: MessageId, text: string): string | null {
     const nonce = this.store.nonceOf(id);
-    return nonce === null || this.store.lastSocketWriteMs(id) !== null ? null : nativeMarker(id, nonce);
+    if (nonce === null || this.store.lastSocketWriteMs(id) !== null) return null;
+    const total = this.store.partsOf(id);
+    // Marked for parts only when the last hop spooled its text: a message that went whole was never marked.
+    if (total === null) return `${text}\n${nativeMarker(id, nonce)}`;
+    const index = Math.min(this.store.partsDoneOf(id) + 1, total);
+    return shortPaste({ ids: [id], seat: "", body: text, messageClass: "lifecycle", lane: 0 }, { id: total === 1 ? id : partId(id, index, total), nonce }, index, total);
   }
 
   holdContentLane(seat: string): () => void {

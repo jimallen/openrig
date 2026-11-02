@@ -66,7 +66,7 @@ function longGroupHead(message: SeatMessage, rows: Pick<HopRows, "nonceOf">, spo
 }
 
 /** The note and the marker, under the label a message for the previous occupant carries on every attempt. */
-function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
+export function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
   const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL}\n` : "";
   return `${label}${spooledNote(total === 1 ? null : { index, total })}\n${nativeMarker(marker.id, marker.nonce)}`;
 }
