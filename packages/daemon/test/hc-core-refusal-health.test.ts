@@ -28,7 +28,8 @@ describe("HcCoreRefusalHealthSource", () => {
     expect(reason).toContain("the running core is hc 9.9.9; this build is pinned to 0.1.15");  // the reason, verbatim
     expect(reason).toContain("until the daemon restarts");
     expect(reason).toMatch(/after the new version is tested/);                                  // the fix: a tested pin move ...
-    expect(reason).toContain("rig daemon stop && rig daemon start");                            // ... then a daemon restart
+    expect(reason).toContain("have the operator restart the daemon");                           // ... then a daemon restart, by the operator
+    expect(reason, "a seat is never told to run it").not.toMatch(/rig daemon (stop|start|restart)/);
   });
 
   it("reads the refusal each time, so it appears when the refusal arrives and never flaps", () => {

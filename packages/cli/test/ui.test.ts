@@ -266,7 +266,8 @@ describe("rig ui open", () => {
     expect(execFn).not.toHaveBeenCalled();
     expect(logs).toContain(UI_DISABLED_GUIDANCE);
     expect(UI_DISABLED_GUIDANCE).toContain("rig config set ui.enabled true");
-    expect(UI_DISABLED_GUIDANCE).toMatch(/rig daemon stop.*rig daemon start/);
+    expect(UI_DISABLED_GUIDANCE).toContain("ask the operator to restart the daemon");
+    expect(UI_DISABLED_GUIDANCE, "a seat is never told to run it").not.toMatch(/rig daemon (stop|start|restart)/);
     expect(logs).not.toContain("http://127.0.0.1:8888");
   });
 

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
-import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
+import { HC_GENERATION, HcClient, coreRuntimeLocationRefusal, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
 import { OPERATOR_SECRET_ENV_NAMES } from "./hc-seat.js";
 import { judgeHcVersion, type HcVersionJudgement } from "./hc-version.js";
 
@@ -89,9 +89,12 @@ export async function probeCore(socketPath: string, options: { helloTimeoutMs?: 
 /** Starts a core with the hc CLI, which is the one thing that does. The core's env is the env given here without the operator
  *  secrets, whatever env that is, and every terminal on the core inherits it (design section 4), so pass the env a core should
  *  have. `hc run` on that core goes through no launch wrapper, so what the core never held is the only thing it cannot pass on. */
-export function startCoreWithCli(options: { env?: NodeJS.ProcessEnv; hcPath?: string; timeoutMs?: number } = {}): () => Promise<void> {
+export function startCoreWithCli(options: { env?: NodeJS.ProcessEnv; hcPath?: string; timeoutMs?: number; platform?: NodeJS.Platform } = {}): () => Promise<void> {
   return () => new Promise<void>((resolve, reject) => {
     const env = { ...(options.env ?? process.env) };
+    // Never start a core that names no runtime location of its own: it would take the host's (see coreRuntimeLocationRefusal).
+    const refusal = coreRuntimeLocationRefusal(env, options.platform);
+    if (refusal) { reject(new HcUnavailableError(refusal)); return; }
     for (const name of OPERATOR_SECRET_ENV_NAMES) delete env[name];
     execFile(options.hcPath ?? "hc", ["server", "start"], { env, timeout: options.timeoutMs ?? 30_000 }, (err) => {
       if (err) reject(new HcUnavailableError(`hc server start failed: ${err.message}`, err));
@@ -624,13 +627,24 @@ export function pinCallsToCore(socketPath: string, watch: Pick<HcCoreWatch, "pin
   return () => setHcHelloCheck(socketPath, null);
 }
 
+/** The watch keeps retrying when a core will not start and says nothing: the daemon log must name why (a refusal to start one, or hc's own failure). One line per distinct
+ *  reason, so the retries do not repeat it. */
+function loggingRefusals(start: () => Promise<void>, log: (message: string) => void): () => Promise<void> {
+  let last: string | null = null;
+  return () => start().catch((err: unknown) => {
+    const why = err instanceof Error ? err.message : String(err);
+    if (why !== last) { last = why; log(JSON.stringify({ kind: "core_start_failed", why })); }
+    throw err;
+  });
+}
+
 /** The daemon's link to the seat host: pins the core's generation and version at startup and keeps watching. A refused core
  *  stops the daemon's start, here, before any seat is touched. A core that is simply down is not refused: the watch keeps
  *  trying, seats read transport_unavailable, and nothing is archived (OF-177). */
 export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCoreWatch> {
   const env = options.env ?? process.env;
   const log = options.log ?? ((message: string) => console.warn(`[hc] ${message}`));
-  const startCore = env.OPENRIG_HC_NO_START_CORE === "1" ? undefined : options.startCore ?? startCoreWithCli({ env });
+  const startCore = env.OPENRIG_HC_NO_START_CORE === "1" ? undefined : options.startCore ?? loggingRefusals(startCoreWithCli({ env }), log);
   const watch = new HcCoreWatch({
     socketPath: options.socketPath,
     ...(startCore ? { startCore } : {}),

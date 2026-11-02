@@ -11,7 +11,7 @@ export interface UiDeps {
 }
 
 export const UI_DISABLED_GUIDANCE =
-  "The OpenRig web UI is off on this daemon. To turn it on, run `rig config set ui.enabled true`, then stop and start the daemon (`rig daemon stop`, `rig daemon start`).";
+  "The OpenRig web UI is off on this daemon. To turn it on, run `rig config set ui.enabled true`, then ask the operator to restart the daemon (a seat does not restart it).";
 
 export const UI_MAINTENANCE_NOTICE =
   "The OpenRig UI is experimental and in maintenance mode. It is not under active development; support is best-effort. The CLI is the primary supported interface. Contributions welcome.";

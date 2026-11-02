@@ -19,7 +19,7 @@ const names = () => readFileSync(out, "utf8").split("\n").map((line) => line.spl
 
 describe("startCoreWithCli", () => {
   it("starts a core without the operator secrets from an env it is given, and keeps the rest", async () => {
-    const env = { PATH: process.env.PATH, KEEP_ME: "kept", ...Object.fromEntries(OPERATOR_NAMES.map((n) => [n, "fake"])) };
+    const env = { PATH: process.env.PATH, XDG_RUNTIME_DIR: "/run/fake", KEEP_ME: "kept", ...Object.fromEntries(OPERATOR_NAMES.map((n) => [n, "fake"])) };
     await startCoreWithCli({ env, hcPath: fakeHc })();
     const seen = names();
     for (const name of OPERATOR_NAMES) expect(seen, name).not.toContain(name);
@@ -29,6 +29,7 @@ describe("startCoreWithCli", () => {
   it("does the same with the daemon's own env when given none", async () => {
     for (const name of OPERATOR_NAMES) vi.stubEnv(name, "fake");
     vi.stubEnv("KEEP_ME", "kept");
+    vi.stubEnv("XDG_RUNTIME_DIR", "/run/fake");  // a core names its runtime dir (hc-core-start-guard.test.ts); the hermetic setup removes the host's
     await startCoreWithCli({ hcPath: fakeHc })();
     const seen = names();
     for (const name of OPERATOR_NAMES) expect(seen, name).not.toContain(name);
@@ -36,7 +37,7 @@ describe("startCoreWithCli", () => {
     expect(process.env.SLACK_BOT_TOKEN).toBe("fake");  // the daemon keeps its own
   });
   it("does not change the env object it was given", async () => {
-    const env = { PATH: process.env.PATH, SLACK_APP_TOKEN: "fake" };
+    const env = { PATH: process.env.PATH, XDG_RUNTIME_DIR: "/run/fake", SLACK_APP_TOKEN: "fake" };
     await startCoreWithCli({ env, hcPath: fakeHc })();
     expect(env.SLACK_APP_TOKEN).toBe("fake");
   });

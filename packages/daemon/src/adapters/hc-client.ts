@@ -78,6 +78,24 @@ export function resolveHcSocket(env: NodeJS.ProcessEnv = process.env, home: stri
   return join(state, "herdr-core", session, `${session}.sock`);
 }
 
+/** Why a core must not be started with this env, or null when it names where its runtime lives. A core started with no named runtime
+ *  location takes the host's: on Linux hc asks the user manager and uses `/run/user/<uid>`, where a core with a fresh state dir adopts
+ *  every holder it finds and ends the programs its own registry does not know (incident 2026-11-02, every terminal under the host's
+ *  holder ended). On macOS there is no runtime dir: the socket and the holders live under the state dir, `XDG_STATE_HOME` or else
+ *  `$HOME/.local/state` (see resolveHcSocket), so HOME names the location and an env without one is the refusal. `HC_SOCKET` and
+ *  `XDG_RUNTIME_DIR` name it on both. An empty value is no value, as for resolveHcSocket. Never makes `resolveHcSocket` fall back to
+ *  `/run/user/<uid>`: a scratch daemon would then talk to the host's core. */
+export function coreRuntimeLocationRefusal(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string | null {
+  if (env.HC_SOCKET || env.XDG_RUNTIME_DIR) return null;
+  if (platform === "linux") {
+    return "refusing to start an hc core: neither XDG_RUNTIME_DIR nor HC_SOCKET is set, so hc would use the host's runtime dir (/run/user/<uid>) "
+      + "and could take over, or end the programs of, a core that is not this instance's. Set XDG_RUNTIME_DIR to this instance's runtime dir (or HC_SOCKET to its socket) and start again.";
+  }
+  if (env.XDG_STATE_HOME || env.HOME) return null;
+  return "refusing to start an hc core: none of HC_SOCKET, XDG_RUNTIME_DIR, XDG_STATE_HOME or HOME is set, so hc would take the account's own home for "
+    + "its state dir and could take over a core that is not this instance's. Set HOME (or XDG_STATE_HOME, or HC_SOCKET) to this instance's and start again.";
+}
+
 /** A check every `hello` this build makes to a socket must pass, beyond the generation: the daemon's pin on the core's version and
  *  identity (hc-core-watch.ts `pinCallsToCore`). It lives here, keyed by socket, because three places say `hello` (HcClient, the
  *  attach wire, the size watch) and all three must refuse a core that is no longer the one the daemon pinned (security review F5).

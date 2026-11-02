@@ -24,6 +24,8 @@ describe("SWEEP-c — boot-only config keys warn while the daemon runs", () => {
     await runSet("daemon.port", "9999", true);
     const out = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(out).toMatch(/next daemon restart|restart the daemon/i);
+    expect(out, "a seat is never told to run it").not.toMatch(/rig daemon (stop|start|restart)/);
+    expect(out).toContain("operator");
   });
 
   it("a non-boot key prints NO notice; boot key with daemon down prints NO notice", async () => {

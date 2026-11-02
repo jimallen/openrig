@@ -215,6 +215,11 @@ node "$SKILL_DIR/scripts/migrate-telemetry-state-0.5.9.mjs" \
 This is a decision guide, not a command recipe. Adapt paths and checks to the
 host in front of you.
 
+Steps 6 and 7 below are the person's or the host operator's, run from a shell outside any seat: the CLI
+refuses `rig daemon stop|start` where a seat's identity (`OPENRIG_SESSION_NAME`, `OPENRIG_NODE_ID`, or their
+`RIGGED_` aliases) is set, because a restart from a seat can end other seats' terminals. A seat that reaches
+them stops, reports where the upgrade stands, and asks the operator.
+
 1. Inspect the current CLI, daemon, nodes, and plugins with the helper.
 2. Checkpoint active work and record the exact protected hc terminal/session census.
 3. Run `rig snapshot <rig-id>` for each protected rig.

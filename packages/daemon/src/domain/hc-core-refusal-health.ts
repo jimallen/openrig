@@ -27,8 +27,8 @@ export class HcCoreRefusalHealthSource implements HealthObservationSource {
       status: "notice",
       partial: false,
       reason: `The hc core is refused, so every call to an hc seat fails as an unavailable core until the daemon restarts (a seat is not gone, and nothing is ended): ${why}. `
-        + "Fix: if the core was changed on purpose, change the accepted hc versions (hc-version.ts) only after the new version is tested, then restart the daemon (`rig daemon stop && rig daemon start`); "
-        + "otherwise put an accepted hc core back and restart the daemon. Seats in the core keep running meanwhile.",
+        + "Fix: if the core was changed on purpose, change the accepted hc versions (hc-version.ts) only after the new version is tested, then have the operator restart the daemon (a seat reports this and does not restart it); "
+        + "otherwise put an accepted hc core back and have the operator restart the daemon. Seats in the core keep running meanwhile.",
     }];
   }
 }

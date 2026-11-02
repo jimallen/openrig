@@ -214,8 +214,11 @@ export const OMP_PROVIDER_EXTRA_ENV_VARS: Record<string, readonly string[]> = {
   litellm: ["LITELLM_BASE_URL"],
 };
 
-// Baseline process needs. No host credential families or shell customization.
-export const PI_ENV_BASELINE_VARS = ["PATH", "HOME", "USER", "LOGNAME", "TERM", "LANG", "LC_ALL", "SHELL", "TMPDIR"] as const;
+// Baseline process needs. No host credential families or shell customization. XDG_RUNTIME_DIR is the seat pane's own value, never a
+// default: without it a `rig` or `hc` run by the seat resolves the host's runtime dir (incident 2026-11-02). It is the one XDG name here:
+// the other XDG dirs derive from HOME, and the session bus, ssh agent and display stay out. Note it also lets the seat's tools find the
+// user bus (`systemctl --user`), as a Codex or Claude seat's whole pane env already does.
+export const PI_ENV_BASELINE_VARS = ["PATH", "HOME", "USER", "LOGNAME", "TERM", "LANG", "LC_ALL", "SHELL", "TMPDIR", "XDG_RUNTIME_DIR"] as const;
 
 // NodeLauncher supplies identity and instance routing on both fresh and resumed
 // seats. Pi's shell tools inherit this child env: dropping these values makes

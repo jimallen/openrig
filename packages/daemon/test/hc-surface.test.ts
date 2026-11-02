@@ -18,7 +18,7 @@ describe("the hc surface exports", () => {
     expect(Object.keys(surface).sort()).toEqual([
       "HC_GENERATION", "HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError",
       "KERNEL_RIG", "KERNEL_TAB", "SEAT_LABEL", "SPACE_LABEL", "TAB_ID_SEPARATOR", "TAB_LABEL",
-      "hcTerminalName", "judgeHcVersion", "parseHcVersionOutput", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "resolveHcSocket",
+      "coreRuntimeLocationRefusal", "hcTerminalName", "judgeHcVersion", "parseHcVersionOutput", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "resolveHcSocket",
       "rigOfSeat", "rigSpaceId", "rigTabId",
     ]);
   });

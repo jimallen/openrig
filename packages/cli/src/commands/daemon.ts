@@ -3,6 +3,8 @@ import fs from "node:fs";
 import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
 import { acquireDaemonStartLock } from "../daemon-start-lock.js";
+import { coreRuntimeLocationRefusal } from "@openrig/daemon/hc";
+import { seatDaemonControlRefusal, seatIdentityNames } from "../seat-daemon-guard.js";
 import { formatDaemonHostForUrl } from "../client.js";
 import { execFileSync, spawn } from "node:child_process";
 import { fetchWithTimeout } from "../fetch-with-timeout.js";
@@ -156,6 +158,15 @@ export function realDeps(): LifecycleDeps {
   };
 }
 
+/** A seat does not control the daemon (seat-daemon-guard.ts). True, with the refusal printed and the exit code set, when this shell is a seat's. */
+function refusedInSeat(verb: string): boolean {
+  const refusal = seatDaemonControlRefusal(verb);
+  if (refusal === null) return false;
+  console.error(refusal);
+  process.exitCode = 1;
+  return true;
+}
+
 export function daemonCommand(depsOverride?: LifecycleDeps): Command {
   const getDeps = () => depsOverride ?? realDeps();
   const cmd = new Command("daemon").description("Manage the OpenRig daemon");
@@ -182,7 +193,16 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
     .option("--wait-for-kernel", "After daemon binds, also wait for kernel-agent readiness (default timeout 60s)")
     .option("--wait-for-kernel-ms <ms>", "Override --wait-for-kernel timeout in milliseconds")
     .action(async (opts: { port?: string; host?: string; db?: string; kernel?: boolean; waitForKernel?: boolean; waitForKernelMs?: string }) => {
+      if (refusedInSeat("start")) return;
       try {
+        // The daemon starts the hc core when none runs, and a core with no named runtime location takes the host's. Refuse here, with the
+        // cause, rather than start a daemon that then cannot (the daemon's own start refuses too: hc-core-watch.ts startCoreWithCli).
+        const noLocation = process.env["OPENRIG_HC_NO_START_CORE"] === "1" ? null : coreRuntimeLocationRefusal(process.env);
+        if (noLocation !== null) {
+          console.error(noLocation);
+          process.exitCode = 1;
+          return;
+        }
         const { ConfigStore } = await import("../config-store.js");
         const { SystemPreflight, quietPreflightExec } = await import("../system-preflight.js");
         const configStore = new ConfigStore();
@@ -293,6 +313,7 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
     .description("Stop the daemon (10s shutdown budget; 12s process wait; incomplete drain exits nonzero)")
     .addHelpText("after", "\nSends at most one SIGTERM to a live target and verifies the original PID and listener. Repeated signals join shutdown.\nFor a recorded target, missing/stale receipts and incomplete drains exit nonzero, including retries.\nTarget state is retained until a matching clean receipt; status reads preserve unverified state.\nNo target is a distinct no-op, never clean-drain certification; unbound incomplete evidence stays unverified.\nInspect OPENRIG_HOME/daemon-shutdown.json and daemon.log for the phase and outcome.\nThe bound covers asynchronous shutdown; an event-loop wedge still requires operator recovery.\n")
     .action(async () => {
+      if (refusedInSeat("stop")) return;
       try {
         const outcome = await stopDaemon(getDeps());
         console.log(outcome === "stopped" ? "Daemon stopped" : "No daemon target recorded; listener refused. Nothing to stop; prior drain not certified.");
@@ -327,7 +348,9 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
                 + `utilization ${(el.utilization * 100).toFixed(0)}%, last-tick age ${el.lastTickAgeMs.toFixed(0)}ms`,
               );
             }
-            console.log("  Recovery: restart the daemon only (`rig daemon stop && rig daemon start`) — this preserves the tmux seats.");
+            console.log(seatIdentityNames(process.env).length > 0
+              ? "  Recovery: report this to the operator, with what you saw above; a seat does not restart the daemon."
+              : "  Recovery: restart the daemon only (`rig daemon stop && rig daemon start`, from a shell outside any seat) — this preserves the seats' hc terminals.");
           } else {
             console.log(`Daemon running on port ${status.port}${pidSuffix}`);
           }

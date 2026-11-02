@@ -178,7 +178,7 @@ Precedence: CLI flag > environment variable > config file > default`)
         console.log(`${key} = ${store.get(key)}`);
         // SWEEP-c: boot-only key + running daemon = stale-until-restart; say so loudly.
         if (isBootOnlyKey(key) && (await probeDaemonRunning())) {
-          console.error(`note: '${key}' is read at daemon BOOT — the running daemon keeps its current value; this takes effect on the next daemon restart (rig daemon stop && rig daemon start).`);
+          console.error(`note: '${key}' is read at daemon BOOT — the running daemon keeps its current value; this takes effect on the next daemon restart, which the operator does from a shell outside any seat (a seat reports to the operator instead).`);
         }
       } catch (err) {
         console.error((err as Error).message);

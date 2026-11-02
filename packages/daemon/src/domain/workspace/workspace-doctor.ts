@@ -294,7 +294,7 @@ export function checkDaemonWorkspace(opts: CheckDaemonWorkspaceInput): DoctorChe
     status: "fail",
     message: `daemon resolved workspace root '${normDaemon}' but caller expected '${normExpected}'`,
     fixHint:
-      "restart the daemon (`rig daemon restart`) in a shell where OPENRIG_WORKSPACE_ROOT matches the expected workspace, or unset OPENRIG_WORKSPACE_ROOT to fall through to config + default",
+      "ask the operator to restart the daemon (a seat does not restart it) in a shell where OPENRIG_WORKSPACE_ROOT matches the expected workspace, or unset OPENRIG_WORKSPACE_ROOT to fall through to config + default",
     evidence: { daemonResolvedRoot: normDaemon, expectedRoot: normExpected },
   };
 }
@@ -350,7 +350,7 @@ export function checkDaemonReload(opts: CheckDaemonReloadInput): DoctorCheck {
       check: "daemon_reload_needed",
       status: "warn",
       message: `config file mtime ${stat.mtime.toISOString()} is newer than daemon start ${daemonStartTime.toISOString()}`,
-      fixHint: "run `rig daemon restart` to pick up the latest config",
+      fixHint: "ask the operator to restart the daemon (a seat does not restart it) to pick up the latest config",
       evidence: {
         configFilePath,
         configMtime: stat.mtime.toISOString(),

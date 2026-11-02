@@ -302,7 +302,8 @@ describe("FR-5 check #4 — daemon points at this workspace", () => {
       expect(result.status).toBe("fail");
       expect(result.message).toContain(otherDir);
       expect(result.message).toContain(dir);
-      expect(result.fixHint).toContain("rig daemon restart");
+      expect(result.fixHint).toContain("ask the operator to restart the daemon");
+      expect(result.fixHint, "a seat is never told to run it (and `rig daemon restart` is no command)").not.toMatch(/rig daemon (stop|start|restart)/);
       expect(result.fixHint).toContain("OPENRIG_WORKSPACE_ROOT");
     } finally {
       fs.rmSync(otherDir, { recursive: true, force: true });
@@ -343,7 +344,8 @@ describe("FR-5 check #5 — daemon reload needed", () => {
     const start = new Date(Date.now() - 60_000);
     const result = checkDaemonReload({ configFilePath: cfg, daemonStartTime: start });
     expect(result.status).toBe("warn");
-    expect(result.fixHint).toContain("rig daemon restart");
+    expect(result.fixHint).toContain("ask the operator to restart the daemon");
+      expect(result.fixHint, "a seat is never told to run it (and `rig daemon restart` is no command)").not.toMatch(/rig daemon (stop|start|restart)/);
     expect(result.evidence?.staleMs).toBeGreaterThan(0);
   });
 

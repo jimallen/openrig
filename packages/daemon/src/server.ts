@@ -412,7 +412,7 @@ function resolveDefaultUiDistDir(): string {
 }
 
 export const WEB_UI_OFF_MESSAGE =
-  "The OpenRig web UI is off. To turn it on, run `rig config set ui.enabled true`, then stop and start the daemon (`rig daemon stop`, `rig daemon start`).\n";
+  "The OpenRig web UI is off. To turn it on, run `rig config set ui.enabled true`, then ask the operator to restart the daemon (a seat does not restart it).\n";
 
 function safeResolveUiPath(uiDistDir: string, requestPath: string): string | null {
   const relativePath = requestPath.replace(/^\/+/, "") || "index.html";

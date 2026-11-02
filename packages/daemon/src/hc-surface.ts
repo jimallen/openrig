@@ -7,7 +7,7 @@
 // here imports only Node builtins (net, os, path, crypto) and each other; hc-surface.test.ts pins that.
 export { SEAT_LABEL, hcTerminalName } from "./adapters/hc-seat.js";
 export {
-  HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, resolveHcSocket,
+  HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, coreRuntimeLocationRefusal, resolveHcSocket,
   type HcHello, type HcTerminal,
 } from "./adapters/hc-client.js";
 export {
