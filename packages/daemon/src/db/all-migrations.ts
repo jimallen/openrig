@@ -124,6 +124,7 @@ import { nativeNameEnvelopeSchema } from "./migrations/119_native_name_envelope.
 import { nodeEnvPassthroughSchema } from "./migrations/120_node_env_passthrough.js";
 import { seatMessageStateSchema } from "./migrations/123_seat_message_state.js";
 import { seatMessageGroupSchema } from "./migrations/124_seat_message_group.js";
+import { occupantConversationSchema } from "./migrations/125_occupant_conversation.js";
 import { bindingTerminalAddressSchema } from "./migrations/121_binding_terminal_address.js";
 import { seatMessageSchema } from "./migrations/122_seat_message.js";
 
@@ -260,4 +261,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   seatMessageSchema,
   seatMessageStateSchema,
   seatMessageGroupSchema,
+  occupantConversationSchema,
 ];

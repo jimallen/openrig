@@ -1279,7 +1279,13 @@ export class RestoreOrchestrator {
     }
 
     // Attempt launch — compensate ONLY if launch itself fails
-    const launchResult = await this.nodeLauncher.launchNode(rigId, node.logicalId, freshRequested ? { ...launchOpts, freshStart: true } : launchOpts);
+    // A restore that resumes the saved conversation launches the same agent again: the generation is new, the conversation is not, and a message
+    // waiting for the seat is for that agent (it is labelled only when the conversation changes: a fresh start, a handover). The one predicate for
+    // "resumes" (snapshotSeatResumes) is the pre-launch decision's and the post-launch resume's; a resume that then fails rolls the seat back to no session.
+    const resumes = snapshotSeatResumes(occupantResolution.kind === "resolved" ? occupantResolution.session : null, freshRequested);
+    const launchResult = await this.nodeLauncher.launchNode(rigId, node.logicalId, freshRequested || resumes
+      ? { ...launchOpts, ...(freshRequested ? { freshStart: true } : {}), ...(resumes ? { continuesConversation: true } : {}) }
+      : launchOpts);
     progress.launchReturned = true;
     if (!launchResult.ok) {
       progress.launchResultFailed = true;

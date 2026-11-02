@@ -3,7 +3,7 @@ import { RowColumnReader } from "./unreadable-row.js";
 import { namedRows } from "./named-rows.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { HC_UNSETTLED_ESCALATE_AFTER_MS } from "./hc-unsettled-health.js";
-import { currentOccupantOfSeat } from "./seat-messaging/seat-occupant.js";
+import { currentConversationOfSeat } from "./seat-messaging/seat-occupant.js";
 import type { SeatMessageClass, SeatMessageLane } from "./seat-messaging/ports.js";
 
 /**
@@ -300,13 +300,13 @@ export class OutboxHandler {
     return { sql: ", delivery_path = ?, ack_evidence = ?, ack_detail = ?", values: [label.path, label.evidence, label.detail ?? null] };
   }
 
-  /** The occupant an ordinary message is sent to: the seat's occupant now, so the pump can tell, at the attempt, that a different one has it and
-   *  label the message (Jim: deliver, labelled). Not for a lifecycle message, whose producer binds it to the occupant that asked for it (an
+  /** The agent an ordinary message is sent to: the seat's conversation now (not its generation: a launch that resumes it is the same agent), so the
+   *  pump can tell, at the attempt, that a different one has it and label the message (Jim: deliver, labelled). Not for a lifecycle message, whose producer binds it to the occupant that asked for it (an
    *  unbound one is for no occupant in particular), nor a Command, which the pump never carries, nor an audit row. A seat on another host, or
    *  with no occupant yet, binds to nothing. */
   private occupantSentTo(input: OutboxRecordInput): string | null {
     if (input.messageClass === "lifecycle" || input.messageClass === "command" || input.origin === "manual-record") return null;
-    return currentOccupantOfSeat(this.db, input.destinationSession);
+    return currentConversationOfSeat(this.db, input.destinationSession);
   }
 
   record(input: OutboxRecordInput): OutboxEntry {

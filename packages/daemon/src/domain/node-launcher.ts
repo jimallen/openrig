@@ -43,6 +43,9 @@ interface LaunchOpts {
   occupantKind?: OccupantKind;
   /** The operator asked for this seat to start fresh (a restore with `--fresh <seat>`); recorded on the session row. */
   freshStart?: boolean;
+  /** The launch resumes the seat's saved conversation (a restore with its resume token): the occupant is new, the conversation is the one before's,
+   *  so a message waiting for it is not labelled as sent to someone else. Absent: a launch starts a conversation. */
+  continuesConversation?: boolean;
 }
 
 interface NodeLauncherDeps {
@@ -271,6 +274,7 @@ export class NodeLauncher {
           opts?.occupantKind ?? "initial",
           occupantGeneration,
           opts?.freshStart === true,
+          opts?.continuesConversation === true,
         );
         createdSessionId = session.id;
         this.sessionRegistry.updateStatus(session.id, "running");

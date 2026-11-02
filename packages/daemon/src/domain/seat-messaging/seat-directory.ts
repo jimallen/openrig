@@ -21,7 +21,7 @@ export class DbSeatDirectory implements SeatDirectory {
   fate(seat: string): SeatFate {
     const rows = seatRows(this.db, seat);
     const live = rows.filter((row) => row.archivedAt === null);
-    if (live.length === 1) return { kind: "live", occupantGeneration: live[0]!.occupant };
+    if (live.length === 1) return { kind: "live", occupantGeneration: live[0]!.occupant, conversation: live[0]!.conversation };
     if (live.length > 1) return { kind: "unknown" };
     if (rows.length > 0) return { kind: "gone", reason: `rig ${rows[0]!.rig} is archived` };
     return { kind: "gone", reason: `no seat ${seat} exists` };

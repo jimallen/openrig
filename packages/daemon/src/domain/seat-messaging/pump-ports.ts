@@ -17,7 +17,9 @@ export const NO_SEAT_MESSAGING_PORTS: SeatMessagingPorts = { gateFor: () => null
 /** `live` covers a stopped seat: it can come back. `gone` is for good (Jim's decision 1: the rig is archived, or its record is gone).
  *  `unknown` proves nothing, so the pump does nothing on it. */
 export type SeatFate =
-  | { readonly kind: "live"; readonly occupantGeneration: string | null }
+  /** `occupantGeneration` is minted at every launch (lifecycle text is bound to it); `conversation` is the agent's, which a launch that resumes does not change
+   *  (ordinary text is bound to it). Absent: the same as the generation. */
+  | { readonly kind: "live"; readonly occupantGeneration: string | null; readonly conversation?: string | null }
   | { readonly kind: "successor"; readonly seat: string }
   | { readonly kind: "gone"; readonly reason: string }
   | { readonly kind: "unknown" };

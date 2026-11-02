@@ -112,6 +112,14 @@ describe.each(RUNTIMES)("a message waiting across an occupant change: %s seat", 
       expect(row(db, "c1").occupant_generation).toBeNull();
       expect(row(db, "a1").occupant_generation).toBeNull();
     });
+    it("not when two live nodes answer to the seat's name: which agent it is for cannot be told (review F2)", () => {
+      const other = new RigRepository(db).addNode(db.prepare("SELECT id FROM rigs WHERE name = 'r'").pluck().get() as string, "other.node", { runtime });
+      registry.mintOccupantTenure(other.id, "initial", "native-Z");
+      registry.updateBinding(other.id, { tmuxSession: SEAT });
+      expect(new DbSeatDirectory(db).fate(SEAT).kind).toBe("unknown");
+      store.accept({ id: messageId("two1"), seat: SEAT, sender: "lead@r", body: "x" });
+      expect(row(db, "two1").occupant_generation).toBeNull();
+    });
     it("not for a seat in an archived rig", () => {
       db.prepare("UPDATE rigs SET archived_at = '2026-01-01 00:00:00' WHERE name = 'r'").run();
       store.accept({ id: messageId("arch1"), seat: SEAT, sender: "lead@r", body: "x" });
@@ -209,14 +217,15 @@ describe.each(RUNTIMES)("a message waiting across an occupant change: %s seat", 
       expect(bodies()).toEqual(["body of m1", "body of m1", "body of m1"]);
       expect(row(db, "m1").message_previous_occupant).toBeNull();
     });
-    it("a relaunch that continues the same native session is the same occupant", async () => {
+    it("a relaunch that resumes the conversation is the same agent: a new generation, no label (the launch path passes no native session id; see occupant-conversation.test.ts)", async () => {
       send("m1");
       await tick();
-      expect(newOccupant("native-A")).toBe(first);
+      registry.registerSession(nodeId, SEAT, "initial", null, false, true);
+      expect(registry.currentOccupantTenure(nodeId)!.generationUuid).not.toBe(first);
       now += 2 * MIN;
       await tick();
       expect(bodies()).toEqual(["body of m1", "body of m1"]);
-      expect(row(db, "m1")).toMatchObject({ message_previous_occupant: null, occupant_generation: first });
+      expect(row(db, "m1")).toMatchObject({ message_previous_occupant: null });
     });
     it("a message sent to the new occupant is not labelled by the change before it", async () => {
       newOccupant();

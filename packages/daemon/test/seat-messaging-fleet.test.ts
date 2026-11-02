@@ -39,7 +39,8 @@ describe("the fleet, as the pump reads it", () => {
       const s = seat("r1");
       tenure(s.nodeId, 10, "g1");
       tenure(s.nodeId, 11, "g2");
-      expect(new DbSeatDirectory(db).fate(s.name)).toEqual({ kind: "live", occupantGeneration: "g2" });
+      // Each tenure is its own conversation unless its launch resumed the one before (occupant-conversation.test.ts).
+      expect(new DbSeatDirectory(db).fate(s.name)).toEqual({ kind: "live", occupantGeneration: "g2", conversation: "g2" });
     });
 
     it("an archived rig's seat is gone for good, and the reason names the rig", () => {

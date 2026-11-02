@@ -6231,4 +6231,49 @@ describe("RestoreOrchestrator", () => {
       expect(result.result.nodes[0]!.nodeId).not.toBe(oldNode.id);
     });
   });
+  // Deliver, labelled (review of 84a26669, F1): a restore that resumes the saved conversation launches the same agent again. The launch mints a new
+  // generation (a restart supersedes what is bound to the one before) but must say it continues the conversation, or a message waiting for the seat
+  // is labelled as sent to someone else. Read at the launch call, for each runtime's resume type; the seat is then rolled back or resumed by the
+  // resume adapter, which is not the subject.
+  describe("whether a restore's launch continues the conversation", () => {
+    const launchOptsOf = async (opts: { runtime: string; resumeType?: string; resumeToken?: string; restorePolicy?: string; fresh?: boolean }) => {
+      const snap = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: opts.runtime }], edges: [],
+        ...(opts.resumeType ? { resumeType: opts.resumeType, resumeToken: opts.resumeToken ?? "tok" } : {}),
+        ...(opts.restorePolicy ? { restorePolicy: opts.restorePolicy } : {}),
+        withBinding: "worker",
+      });
+      const tmux = mockTmux();
+      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const launchSpy = vi.spyOn(nodeLauncher, "launchNode");
+      const orch = new RestoreOrchestrator({
+        db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore, nodeLauncher, tmuxAdapter: tmux,
+        claudeResume: mockClaudeResume(), codexResume: mockCodexResume(),
+      });
+      await orch.restore(snap.id, opts.fresh ? { freshLogicalIds: ["worker"] } : undefined);
+      return launchSpy.mock.calls.map((call) => call[2]);
+    };
+
+    it.each([
+      ["claude-code", "claude_id"],
+      ["claude-code", "claude_name"],
+      ["codex", "codex_id"],
+      ["pi", "pi_session_file"],
+      ["omp", "omp_session_file"],
+    ])("%s, resuming by %s: the launch continues the conversation", async (runtime, resumeType) => {
+      const calls = await launchOptsOf({ runtime, resumeType });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ continuesConversation: true });
+      expect(calls[0]).not.toHaveProperty("freshStart");
+    });
+    it.each([
+      ["a seat listed with --fresh", { runtime: "claude-code", resumeType: "claude_id", fresh: true }],
+      ["a seat whose policy is not to resume", { runtime: "claude-code", resumeType: "claude_id", restorePolicy: "checkpoint_only" }],
+      ["a seat that records no resume source", { runtime: "claude-code" }],
+    ] as const)("%s: the launch starts a conversation", async (_label, opts) => {
+      const calls = await launchOptsOf(opts);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).not.toHaveProperty("continuesConversation");
+    });
+  });
 });

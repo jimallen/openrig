@@ -200,7 +200,11 @@ export class MessagePump {
       return this.end(message, `occupant ${message.previousOccupant} of ${message.seat} has ended`);
     }
     if (bound !== null) {
-      const changed = fate.kind === "successor" || fate.kind === "gone" || (fate.kind === "live" && fate.occupantGeneration !== null && fate.occupantGeneration !== bound);
+      // Lifecycle text is for one occupant, and every launch is a new one. Anything else is for the agent it was sent to: a launch that resumes the
+      // conversation changes the generation and not the conversation, so it is not a different agent and gets no label. A row bound to a generation
+      // by its producer (not a conversation) is judged by the generation, as before.
+      const sameAgent = fate.kind === "live" && (message.messageClass === "lifecycle" ? [fate.occupantGeneration] : [fate.conversation ?? fate.occupantGeneration, fate.occupantGeneration]).includes(bound);
+      const changed = fate.kind === "successor" || fate.kind === "gone" || (fate.kind === "live" && fate.occupantGeneration !== null && !sameAgent);
       if (fate.kind === "live" && fate.occupantGeneration === null) return "stop";
       if (changed && message.messageClass === "lifecycle") return this.end(message, `occupant ${bound} of ${message.seat} has ended`);
       // Only lifecycle text stays with its occupant (Jim's rule): the rest goes on, labelled.

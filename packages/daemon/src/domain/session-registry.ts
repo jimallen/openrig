@@ -20,6 +20,8 @@ export interface OccupantTenure {
   kind: OccupantKind;
   nativeSessionIdAtBoot: string | null;
   bootAt: string;
+  /** The conversation this tenure belongs to: its own generation unless the launch resumed its predecessor's (see `mintOccupantTenure`). */
+  conversationUuid: string;
 }
 interface OccupantTenureRow {
   id: string;
@@ -29,6 +31,7 @@ interface OccupantTenureRow {
   kind: string;
   native_session_id_at_boot: string | null;
   boot_at: string;
+  conversation_uuid?: string | null;
 }
 
 interface BindingFields {
@@ -138,6 +141,15 @@ export class SessionRegistry {
     return this.restorePolicyInheritable;
   }
 
+  private conversationColumn?: boolean;
+  /** Every migrated database carries `occupant_tenures.conversation_uuid` (125); a database from before it keeps every tenure its own conversation. */
+  private tenuresHaveConversationColumn(): boolean {
+    if (this.conversationColumn === undefined) {
+      this.conversationColumn = (this.db.prepare("PRAGMA table_info(occupant_tenures)").all() as Array<{ name: string }>).some((c) => c.name === "conversation_uuid");
+    }
+    return this.conversationColumn;
+  }
+
   private freshStartColumn?: boolean;
   /** Every migrated database carries `sessions.fresh_start`; reduced-schema fixtures stop short of it. */
   private sessionsHaveFreshStartColumn(): boolean {
@@ -157,6 +169,9 @@ export class SessionRegistry {
     kind: OccupantKind = "initial",
     reservedGeneration?: string | null,
     freshStart = false,
+    /** The launch resumes the seat's saved conversation: the generation is new (a restart supersedes what is bound to the one before), the
+     *  conversation is the predecessor's. False for every launch that starts one: a first boot, `--fresh`, a rebuild, a handover. */
+    continuesConversation = false,
   ): Session {
     if (!validateSessionName(sessionName)) {
       throw new Error(
@@ -186,7 +201,7 @@ export class SessionRegistry {
     if ((kind === "fresh" || freshStart) && this.sessionsHaveFreshStartColumn()) {
       this.db.prepare("UPDATE sessions SET fresh_start = 1 WHERE id = ?").run(id);
     }
-    this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
+    this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration, continuesConversation); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
     return this.rowToSession(
       this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow
@@ -251,9 +266,10 @@ export class SessionRegistry {
     nodeId: string,
     kind: OccupantKind,
     reservedGeneration?: string | null,
+    continuesConversation = false,
   ): void {
     try {
-      this.mintOccupantTenure(nodeId, kind, null, reservedGeneration);
+      this.mintOccupantTenure(nodeId, kind, null, reservedGeneration, continuesConversation);
     } catch (e) {
       if (!SessionRegistry.tenureMintWarned) {
         SessionRegistry.tenureMintWarned = true;
@@ -329,6 +345,7 @@ export class SessionRegistry {
     kind: OccupantKind,
     nativeSessionIdAtBoot?: string | null,
     reservedGeneration?: string | null,
+    continuesConversation = false,
   ): OccupantTenure {
     if (nativeSessionIdAtBoot != null && nativeSessionIdAtBoot !== "") {
       const existing = this.db
@@ -349,6 +366,16 @@ export class SessionRegistry {
         "INSERT INTO occupant_tenures (id, node_id, generation_ordinal, generation_uuid, kind, native_session_id_at_boot) VALUES (?, ?, ?, ?, ?, ?)"
       )
       .run(id, nodeId, nextOrdinal, generationUuid, kind, nativeSessionIdAtBoot ?? null);
+    // A resume continues its predecessor's conversation (a first launch has none, so the column stays NULL); any other launch leaves it NULL, which reads
+    // as the tenure's own generation.
+    // The generation is new either way: lifecycle text bound to the one before still ends.
+    if (continuesConversation && this.tenuresHaveConversationColumn()) {
+      this.db.prepare(
+        `UPDATE occupant_tenures SET conversation_uuid = (
+           SELECT coalesce(p.conversation_uuid, p.generation_uuid) FROM occupant_tenures p WHERE p.node_id = ? AND p.generation_ordinal = ?
+         ) WHERE id = ?`
+      ).run(nodeId, nextOrdinal - 1, id);
+    }
     return this.rowToTenure(
       this.db.prepare("SELECT * FROM occupant_tenures WHERE id = ?").get(id) as OccupantTenureRow
     );
@@ -386,6 +413,7 @@ export class SessionRegistry {
       kind: row.kind as OccupantKind,
       nativeSessionIdAtBoot: row.native_session_id_at_boot,
       bootAt: row.boot_at,
+      conversationUuid: row.conversation_uuid ?? row.generation_uuid,
     };
   }
 
