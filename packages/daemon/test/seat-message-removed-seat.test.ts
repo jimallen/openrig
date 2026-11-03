@@ -28,6 +28,7 @@ import { transportRoutes } from "../src/routes/transport.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { rigHadSeat } from "../src/domain/seat-messaging/seat-history.js";
 import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "../src/domain/seat-messaging/message-label.js";
 import { messageId, type GateLookup, type GateRecord, type LastHop, type MessageId, type LastHopResult, type SeatGate, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
@@ -240,6 +241,13 @@ describe("a seat removed from a live rig (OF-209)", () => {
     });
   });
 
+  describe("a schema with no event log", () => {
+    it("reads as 'the rig never had the seat' instead of throwing (a curated schema keeps no history)", () => {
+      const bare = createDb();  // no migrations: no events table
+      try { expect(rigHadSeat(bare, "r1", "dev@r")).toBe(false); } finally { bare.close(); }
+    });
+  });
+
   describe("rig remove", () => {
     it("reports the messages still waiting for the seat it removed, and does not close them", async () => {
       send("m1"); send("m2");
@@ -261,6 +269,8 @@ describe("a seat removed from a live rig (OF-209)", () => {
       new OutboxHandler(db).retain({ outboxId: "h1", senderSession: "exec-cos@eztrack", destinationSession: SEAT, body: "held" }, { nodeId, session: SEAT, occupant: first, pane: null });
       new OutboxHandler(db).retain({ outboxId: "h2", senderSession: "exec-cos@eztrack", destinationSession: SEAT, body: "released" }, { nodeId, session: SEAT, occupant: first, pane: null });
       db.prepare("UPDATE outbox_entries SET message_hold_released_at = '2026-11-03T09:00:00.000Z' WHERE outbox_id = 'h2'").run();  // the guard let it go: not held any more
+      new OutboxHandler(db).retain({ outboxId: "h3", senderSession: "exec-cos@eztrack", destinationSession: SEAT, body: "/compact" }, { nodeId, session: SEAT, occupant: first, pane: null });
+      db.prepare("UPDATE outbox_entries SET class = 'command' WHERE outbox_id = 'h3'").run();  // a command is the guard owner's own, not a message
       send("m1");
       const result = await lifecycle.removeNode(liveRigId, "verify.ops");
       expect(result).toMatchObject({ ok: true, pendingMessageIds: ["m1"], heldMessageIds: ["h1"] });
