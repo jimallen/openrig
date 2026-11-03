@@ -156,6 +156,14 @@ export function linuxExecFromProcLink(target: string): string | null {
   return target.endsWith(" (deleted)") ? null : target;
 }
 
+/** OF-212: where `lsof` is. On macOS it is /usr/sbin/lsof, and the daemon's own PATH has no /usr/sbin (measured 2026-11-03: the release's
+ *  `env -i` restart gave it /opt/homebrew/..., /usr/local/bin, /usr/bin, /bin), so by name it was never found and every registration
+ *  since that restart failed `exec_path_unresolved`. The absolute path is used where the file exists; the bare name otherwise (Linux
+ *  does not use lsof here: it reads /proc). */
+export function lsofCommand(platform: string = process.platform, exists: (path: string) => boolean = existsSync): string {
+  return platform === "darwin" && exists("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
+}
+
 /** ncomms-3c: the executable a running process was started from. Linux: /proc/<pid>/exe (a " (deleted)" target means the
  *  file was replaced or removed since: null). macOS: the txt entry lsof reports. Null when it cannot be found or does
  *  not exist as a file now (a replaced binary on macOS shows a bare name, measured). */
@@ -167,7 +175,7 @@ export async function resolveClaudeExecPath(pid: number): Promise<string | null>
     } catch { path = null; }
   } else {
     try {
-      const { stdout } = await execFileAsync("lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { timeout: 10_000 });
+      const { stdout } = await execFileAsync(lsofCommand(), ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { timeout: 10_000 });
       path = parseLsofTxtPath(stdout);
     } catch { path = null; }
   }

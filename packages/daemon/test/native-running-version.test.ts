@@ -1,11 +1,12 @@
 // OF-212: the two OS reads behind a replaced Claude binary: the running version from the process's own transcript, and
 // `claude` found on a PATH. Real files in a private temp dir; nothing reaches a live seat or process.
 import { afterEach, describe, expect, it } from "vitest";
+import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { claudeOnPath, transcriptRunningVersion } from "../src/adapters/native-inbox-os.js";
+import { claudeOnPath, lsofCommand, resolveClaudeExecPath, transcriptRunningVersion } from "../src/adapters/native-inbox-os.js";
 
 const dirs: string[] = [];
 function tmp(): string { const d = mkdtempSync(join(tmpdir(), "of212-")); dirs.push(d); return d; }
@@ -116,3 +117,27 @@ describe("claudeOnPath", () => {
 });
 
 function realpathOf(p: string): string { return realpathSync(p); }
+
+// OF-212 (live cause, found by the coordinator): the daemon's PATH has no /usr/sbin, where macOS keeps lsof, so lsof by name never ran.
+describe("lsof is found without /usr/sbin on the daemon's PATH", () => {
+  it("macOS: the absolute path when the file exists; the bare name when it does not; Linux never needs it", () => {
+    expect([lsofCommand("darwin", () => true), lsofCommand("darwin", () => false), lsofCommand("linux", () => true)]).toEqual(["/usr/sbin/lsof", "lsof", "lsof"]);
+  });
+
+  it("macOS: it asks about /usr/sbin/lsof itself, not any other path", () => {
+    const asked: string[] = [];
+    lsofCommand("darwin", (p) => { asked.push(p); return false; });
+    expect(asked).toEqual(["/usr/sbin/lsof"]);
+  });
+
+  // The daemon's PATH, as measured on the live daemon: homebrew, /usr/local/bin, /usr/bin, /bin; no /usr/sbin, no /sbin.
+  it.skipIf(process.platform !== "darwin" || !existsSync("/usr/sbin/lsof"))("macOS: a live process's executable resolves with PATH lacking /usr/sbin", async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin";
+    try {
+      const found = await resolveClaudeExecPath(process.pid);
+      expect(found).not.toBeNull();
+      expect(found!.startsWith("/")).toBe(true);
+    } finally { process.env.PATH = saved; }
+  });
+});
