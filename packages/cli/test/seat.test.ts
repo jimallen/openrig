@@ -260,7 +260,7 @@ describe("rig seat status", () => {
       await makeCommand(deps).parseAsync(["node", "rig", "seat", "status", "dev-impl@seat-rig"]);
     });
 
-    expect(logs.join("\n")).toContain("Reason: tmux session missing; resume with rig up --existing seat-rig (refused while any seat is live), or start only this seat fresh with rig seat launch 'dev.impl@seat-rig' --fresh --reason \"<why>\"");
+    expect(logs.join("\n")).toContain("Reason: session missing (its agent ended and its terminal with it); bring it back on its own conversation with rig launch rig-1 dev.impl, or start only this seat fresh with rig seat launch 'dev.impl@seat-rig' --fresh --reason \"<why>\"");
   });
 
   // OF-135: the daemon names the rig as advice should (its id when another rig shares the name); an older daemon sends no
@@ -275,7 +275,7 @@ describe("rig seat status", () => {
       await makeCommand(deps).parseAsync(["node", "rig", "seat", "status", "dev-impl@seat-rig"]);
     });
 
-    expect(logs.join("\n")).toContain("Reason: tmux session missing; resume with rig up --existing 01RIGIDFORSEATRIG000000000 (refused while any seat is live), or start only this seat fresh with rig seat launch 'dev.impl@01RIGIDFORSEATRIG000000000'");
+    expect(logs.join("\n")).toContain("Reason: session missing (its agent ended and its terminal with it); bring it back on its own conversation with rig launch rig-1 dev.impl, or start only this seat fresh with rig seat launch 'dev.impl@01RIGIDFORSEATRIG000000000'");
   });
 
   it("returns a nonzero status for an unknown seat", async () => {

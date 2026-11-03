@@ -21,10 +21,12 @@ export function freshSeatLaunchCommand(logicalId: string, rig: string, startupFr
   return `rig seat launch ${seat} --fresh${startupFrom && startupFrom !== "spec" ? ` --startup-from ${startupFrom}` : ""} --reason "<why>"`;
 }
 
-/** OF-53: the per-seat hint for a seat whose tmux session is missing. Both ways back are real commands: restore
- *  resumes the conversation (and is refused while any seat of the rig is live); `rig seat launch --fresh` starts this
- *  seat alone on a new conversation. */
-export function missingSessionAdvice(logicalId: string, rigHandle: string): string {
-  const rig = /^[A-Za-z0-9._@:-]+$/.test(rigHandle) ? rigHandle : `'${rigHandle.replace(/'/g, `'"'"'`)}'`;
-  return `tmux session missing; resume with rig up --existing ${rig} (refused while any seat is live), or start only this seat fresh with ${freshSeatLaunchCommand(logicalId, rigHandle)}`;
+/** OF-53, reworded for OF-200: the per-seat hint for a seat whose session is gone. On hc the agent is its terminal's own program, so a crashed
+ *  agent takes the terminal with it (on tmux, the tmux session); the text no longer says tmux. Both ways back are real commands, and both touch
+ *  this seat alone: `rig launch <rig id> <seat>` brings it back on its own conversation (`rig up --existing` would not: it is refused while any
+ *  seat of the rig is live, which is the usual case for one lost seat), and `rig seat launch --fresh` starts it on a new one. `rig launch` takes
+ *  the rig's id, never its name. */
+export function missingSessionAdvice(logicalId: string, rigHandle: string, rigId: string = rigHandle): string {
+  const word = (value: string) => (/^[A-Za-z0-9._@:-]+$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`);
+  return `session missing (its agent ended and its terminal with it); bring it back on its own conversation with rig launch ${word(rigId)} ${word(logicalId)}, or start only this seat fresh with ${freshSeatLaunchCommand(logicalId, rigHandle)}`;
 }

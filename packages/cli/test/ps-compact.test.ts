@@ -607,7 +607,7 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
       const { logs } = await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--session", "ops-missing@openrig-build", ...extra]);
       });
-      expect(logs.join("\n")).toContain("tmux session missing; resume with rig up --existing openrig-build (refused while any seat is live), or start only this seat fresh with rig seat launch 'ops.missing@openrig-build' --fresh --reason \"<why>\"");
+      expect(logs.join("\n")).toContain("session missing (its agent ended and its terminal with it); bring it back on its own conversation with rig launch rig-a ops.missing, or start only this seat fresh with rig seat launch 'ops.missing@openrig-build' --fresh --reason \"<why>\"");
     }
   });
 
@@ -624,7 +624,7 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
       const { logs } = await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--session", "ops-missing@openrig-build"]);
       });
-      expect(logs.join("\n")).toContain(`tmux session missing; resume with rig up --existing ${handle} (refused while any seat is live), or start only this seat fresh with rig seat launch 'ops.missing@${handle}'`);
+      expect(logs.join("\n")).toContain(`session missing (its agent ended and its terminal with it); bring it back on its own conversation with rig launch rig-a ops.missing, or start only this seat fresh with rig seat launch 'ops.missing@${handle}'`);
     } finally {
       PS_DATA.pop();
     }

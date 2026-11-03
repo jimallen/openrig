@@ -614,7 +614,7 @@ function hasCurrentUsageLimit(node: NodeEntry): boolean {
 function missingSessionGuidance(node: NodeEntry, rigs: readonly AdviceRig[] | null): string | null {
   return node.identityVerdict?.reason === "session_missing"
     // OF-135/OF-152: the rig by name while that reaches it alone, else by id, over every rig (archived ids included).
-    ? missingSessionAdvice(node.logicalId, rigAdviceHandle(node.rigId, node.rigName, rigs))
+    ? missingSessionAdvice(node.logicalId, rigAdviceHandle(node.rigId, node.rigName, rigs), node.rigId)
     : null;
 }
 

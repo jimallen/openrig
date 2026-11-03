@@ -156,7 +156,7 @@ function display(value: string | null | undefined, empty = "none"): string {
 }
 
 function sessionReason(status: SeatStatusResponse): string | null {
-  return status.session_reason === "session_missing" ? missingSessionAdvice(status.logical_id, status.rig_handle ?? status.rig_name) : null;
+  return status.session_reason === "session_missing" ? missingSessionAdvice(status.logical_id, status.rig_handle ?? status.rig_name, status.rig_id) : null;
 }
 
 function printHuman(status: SeatStatusResponse): void {
