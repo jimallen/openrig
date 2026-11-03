@@ -13,7 +13,7 @@ import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { HealthProjectionService } from "../src/domain/health-detectors.js";
 import { SeatLostHealthSource, inventoryOfLiveRigs } from "../src/domain/seat-lost-health.js";
-import { DEFAULT_HEALTH_POLICY } from "../src/domain/health-policy.js";
+import { DEFAULT_HEALTH_POLICY, HEALTH_DETECTORS, validateHealthPolicy } from "../src/domain/health-policy.js";
 import { createDaemon } from "../src/startup.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -193,9 +193,19 @@ describe("what is not a lost seat", () => {
     expect(records()).toEqual([]);
   });
 
-  it("a policy that disables seat.lost hides it", () => {
+  it("a policy that disables seat.lost hides it, and the source does not even read the inventory then", () => {
     seed();
+    let reads = 0;
+    source = new SeatLostHealthSource({ inventory: () => { reads += 1; return inventoryOfLiveRigs(db); }, waiting: () => null, now: () => NOW });
     expect(records({ disabled: ["seat.lost"] })).toEqual([]);
+    expect(reads, "a disabled detector's source is skipped, not read and filtered").toBe(0);
+    expect(records()).toHaveLength(1);
+    expect(reads).toBe(1);
+  });
+
+  it("an operator can disable it by name: seat.lost is a known detector id, so the policy that names it is valid", () => {
+    expect(HEALTH_DETECTORS as readonly string[]).toContain("seat.lost");
+    expect(validateHealthPolicy({ ...DEFAULT_HEALTH_POLICY, disabledDetectors: ["seat.lost"] })).toMatchObject({ disabledDetectors: ["seat.lost"] });
   });
 });
 

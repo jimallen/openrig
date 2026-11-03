@@ -10,6 +10,7 @@ import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { NativeProcessLister, NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { paneForegroundState } from "../src/domain/resume-settle.js";
 
 const T0 = "Wed Oct 28 08:00:00 2026";
 const row = (pid: number, ppid: number, executableName: string, command: string): NativeProcessRow =>
@@ -90,6 +91,31 @@ describe("OF-200: a resumed runtime whose terminal ends inside the settle window
   it("Codex's TUI was drawn and its terminal ends: retry_fresh, not held", async () => {
     const c = clock();
     expect(await codex(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "codex", upPane: CODEX_TUI, afterPane: CODEX_TUI }))).toMatchObject({ ok: false, code: "retry_fresh" });
+  });
+
+  it("a terminal that ended with nothing left on its screen is still gone (an empty capture is not 'could not read' once the host says the terminal ended)", async () => {
+    const c = clock();
+    const result = await claude(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: "" }));
+    expect(result).toEqual({ ok: false, code: "retry_fresh", message: "Claude resume failed: pane returned to shell instead of entering Claude" });
+  });
+
+  // The orchestrator asks the same question before it types startup text into a resumed seat (OF-161): there the answer decides "nothing was typed".
+  describe("paneForegroundState on hc", () => {
+    const ask = (tmux: TmuxAdapter, session: string | null = "seat") => paneForegroundState("claude", { session, tmux, listProcesses: async () => [CLAUDE_PANE] });
+    const ended = (o: Partial<Parameters<typeof hcEndedTmux>[1]> = {}) => { const c = clock(); c.elapsed = 5000; return hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: "", ...o }); };
+
+    it("a terminal the host reports ended is gone: the resumed runtime went with it", async () => {
+      expect(await ask(ended())).toBe("gone");
+    });
+    it("a core that cannot be asked, a tmux host and no session at all stay unreadable: only the host's own word is proof", async () => {
+      expect(await ask(ended({ probe: { state: "transport_unavailable", cause: "down" } }))).toBe("unreadable");
+      expect(await ask(ended({ hostKind: "tmux" }))).toBe("unreadable");
+      expect(await ask(ended(), null)).toBe("unreadable");
+    });
+    it("a terminal whose runtime is still its foreground is the runtime", async () => {
+      const c = clock();
+      expect(await ask(hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: "" }))).toBe("runtime");
+    });
   });
 
   it("a core that cannot be asked is not proof: the resume is kept with the unreadable warning, as before", async () => {
