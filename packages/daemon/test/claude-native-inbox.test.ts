@@ -280,6 +280,159 @@ describe("OF-191: a re-registration of the process that already passed keeps its
   });
 });
 
+// OF-212 (2026-11-03): all five eztrack Claude seats registered `fail:exec_path_unresolved`, a Claude message over the paste limit goes
+// by socket only (decision 35), so each seat's queue stopped behind its first long message. A launch races the binary being rewritten
+// (npm install --global ... 2.1.317 ran at 10:55, 11:00 and 11:01Z), and nothing ever looked at the endpoint again.
+describe("OF-212: a failed endpoint is probed again, and a replaced binary is vouched for by the process itself", () => {
+  const HOUR = 3_600_000;
+  const PATH_A = "/opt/claude/bin/claude.exe";
+  const good = { version: "2.1.317", literal: true, replacedSinceStart: false, nameEnvelope: true };
+
+  /** A seat that registered while its binary could not be named, with every probe call counted. */
+  async function failedAtLaunch(over?: Partial<NativeInboxDeps>) {
+    const st = { resolves: null as string | null, probe: { ...good } as Awaited<ReturnType<NativeInboxDeps["probeBinary"]>>, probes: 0 };
+    const f = make({
+      resolveExecPath: async () => st.resolves,
+      probeBinary: async () => { st.probes += 1; return st.probe; },
+      processStartedAt: async () => new Date(f.clock.t - HOUR),
+      ...over,
+    });
+    const first = await register(f, { execPath: null });
+    expect(first?.probe_result).toBe("fail:exec_path_unresolved");
+    return { f, st, first: first! };
+  }
+
+  it("the symptom: a seat that failed to resolve its binary at launch is socket-ineligible", async () => {
+    const { f } = await failedAtLaunch();
+    expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason: "probe_fail:exec_path_unresolved" });
+  });
+
+  it("the next send after the interval probes again: a binary that can be read now heals the seat, and registered_at stays the first registration's", async () => {
+    const { f, st, first } = await failedAtLaunch();
+    st.resolves = PATH_A;
+    f.clock.t += 31_000;
+    expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason: "probe_fail:exec_path_unresolved" }); // the asking send does not wait for the probe
+    await f.inbox.idle();
+    expect((await f.inbox.eligibility(SEAT)).ok).toBe(true);
+    expect(f.inbox.endpointFor("node-a")).toMatchObject({ probe_result: "pass", claude_version: "2.1.317", exec_path: PATH_A, name_envelope: 1, registered_at: first.registered_at });
+  });
+
+  it("at most one probe per interval per seat: a pump retrying every 15 s does not run --version each time", async () => {
+    const { f, st } = await failedAtLaunch();
+    const ask = async () => { const e = await f.inbox.eligibility(SEAT); await f.inbox.idle(); return e.ok; };
+    const before = st.probes;
+    f.clock.t += 31_000;
+    await ask();                               // the binary still cannot be named: one look, --version never runs
+    st.resolves = PATH_A;
+    f.clock.t += 15_000;
+    expect(await ask()).toBe(false);           // inside the interval: no look, so not healed yet
+    f.clock.t += 14_999;
+    expect(await ask()).toBe(false);           // 29.999 s after the look
+    expect(st.probes).toBe(before);
+    f.clock.t += 1;                            // exactly 30 s after the look
+    await ask();
+    expect(st.probes).toBe(before + 1);
+    expect(await ask()).toBe(true);
+  });
+
+  it.each([
+    ["inject_format_absent", { version: "2.1.317", literal: false, replacedSinceStart: false }],
+  ] as const)("a failure about the binary itself (%s) is never probed again", async (_label, bad) => {
+    const st = { probes: 0 };
+    const f = make({ resolveExecPath: async () => PATH_A, probeBinary: async () => { st.probes += 1; return bad; } });
+    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:inject_format_absent");
+    st.probes = 0;
+    f.clock.t += HOUR;
+    expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason: "probe_fail:inject_format_absent" });
+    await f.inbox.idle();
+    expect(st.probes).toBe(0);
+  });
+
+  it("a healed seat still has to be the process in its pane: a dead pid is refused after the re-probe", async () => {
+    const { f, st } = await failedAtLaunch();
+    st.resolves = PATH_A;
+    f.clock.t += 31_000;
+    await f.inbox.eligibility(SEAT);
+    await f.inbox.idle();
+    f.procs = [{ pid: 100, ppid: 1, args: "-zsh" }];
+    expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason: "claude_pid_dead" });
+  });
+
+  describe("a file replaced since the process started (lsof then names a bare /claude)", () => {
+    async function replaced(runningVersion: NativeInboxDeps["runningVersion"], probe = { ...good, replacedSinceStart: true }) {
+      const seen: Array<[string | null, number]> = [];
+      const f = make({
+        resolveExecPath: async () => PATH_A,
+        probeBinary: async () => probe,
+        processStartedAt: async () => new Date(f.clock.t - HOUR),
+        runningVersion: (t, since) => { seen.push([t, since.getTime()]); return runningVersion!(t, since); },
+      });
+      return { f, seen, r: await register(f, { execPath: null }) };
+    }
+
+    it("the process's own transcript names the version the file now has → pass (the file is the running version)", async () => {
+      const { f, seen, r } = await replaced(() => "2.1.317");
+      expect(r?.probe_result).toBe("pass");
+      expect(seen).toEqual([[TRANSCRIPT, f.clock.t - HOUR]]); // asked for this seat's transcript, since this process's start
+    });
+
+    it.each([
+      ["a different version", () => "2.1.316"],
+      ["no record since the start", () => null],
+    ] as const)("%s → fail:binary_replaced_since_start", async (_label, rv) => {
+      expect((await replaced(rv)).r?.probe_result).toBe("fail:binary_replaced_since_start");
+    });
+
+    it("without the transcript reader wired, nothing is vouched for", async () => {
+      const f = make({ resolveExecPath: async () => PATH_A, probeBinary: async () => ({ ...good, replacedSinceStart: true }), processStartedAt: async () => new Date(f.clock.t - HOUR) });
+      expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:binary_replaced_since_start");
+    });
+
+    it("a vouched version does not excuse a binary without the inject format", async () => {
+      expect((await replaced(() => "2.1.317", { ...good, literal: false, replacedSinceStart: true })).r?.probe_result).toBe("fail:inject_format_absent");
+    });
+
+    it("an unknown process start vouches for nothing", async () => {
+      const f = make({ resolveExecPath: async () => PATH_A, probeBinary: async () => ({ ...good, replacedSinceStart: true }), processStartedAt: async () => null, runningVersion: () => "2.1.317" });
+      expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:binary_replaced_since_start");
+    });
+  });
+
+  describe("a binary the pid cannot name falls back to claude on the daemon's PATH", () => {
+    const FALLBACK = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe";
+    async function viaPath(runningVersion: NativeInboxDeps["runningVersion"], fallback: (() => string | null) | undefined = () => FALLBACK) {
+      const probed: string[] = [];
+      const f = make({
+        resolveExecPath: async () => null, fallbackExecPath: fallback,
+        probeBinary: async (p) => { probed.push(p); return good; }, // mtime is older than the start: the file-age rule alone would pass
+        processStartedAt: async () => new Date(f.clock.t - HOUR), runningVersion,
+      });
+      return { probed, r: await register(f, { execPath: null }) };
+    }
+
+    it("the process's own transcript names that file's version → pass, with the fallback path recorded", async () => {
+      const { probed, r } = await viaPath(() => "2.1.317");
+      expect([r?.probe_result, r?.exec_path, probed]).toEqual(["pass", FALLBACK, [FALLBACK]]);
+    });
+
+    it.each([["a different version", () => "2.1.316"], ["no record since the start", () => null]] as const)(
+      "%s → fail:exec_path_unresolved: a file found only by name is not taken on its age", async (_label, rv) => {
+        expect((await viaPath(rv)).r?.probe_result).toBe("fail:exec_path_unresolved");
+      });
+
+    it("no claude on PATH → fail:exec_path_unresolved, nothing probed", async () => {
+      const { probed, r } = await viaPath(() => "2.1.317", () => null);
+      expect([r?.probe_result, probed]).toEqual(["fail:exec_path_unresolved", []]);
+    });
+
+    it("the pid's own path and the relay's are preferred to the PATH", async () => {
+      const probed: string[] = [];
+      const f = make({ resolveExecPath: async () => PATH_A, fallbackExecPath: () => FALLBACK, probeBinary: async (p) => { probed.push(p); return good; } });
+      expect([(await register(f, { execPath: null }))?.probe_result, probed]).toEqual(["pass", [PATH_A]]);
+    });
+  });
+});
+
 describe("ncomms-3d: the sender-name envelope", () => {
   it.each([
     ["the probe passes and finds the parser", { version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: true }, 1],

@@ -90,6 +90,15 @@ export interface NativeInboxDeps {
   /** OF-191: when the process with this pid started (null when unknown). Lets a re-registration of the same process keep
    *  its earlier pass when the binary file can no longer be read; absent, nothing is kept. */
   processStartedAt?: (pid: number) => Promise<Date | null>;
+  /** OF-212: a `claude` binary found by name (the daemon's PATH, symlinks resolved), for a process whose own path the OS cannot
+   *  name (macOS lsof shows a bare `/claude` once the file was replaced). A candidate only: it passes the probe solely when
+   *  `runningVersion` proves the process runs that file's version. */
+  fallbackExecPath?: () => string | null;
+  /** OF-212: the version the running process wrote into its own transcript on or after `since` (its start), or null. The one
+   *  evidence of what a process runs that survives its binary being replaced on disk. */
+  runningVersion?: (transcriptPath: string | null, since: Date) => string | null;
+  /** OF-212: the least time between two re-probes of one seat's failed endpoint (default 30 s). */
+  reprobeIntervalMs?: number;
   /** The node's live occupant generation, or null when unknown. */
   liveGeneration: (nodeId: string) => string | null;
   now?: () => Date;
@@ -193,24 +202,8 @@ export class ClaudeNativeInbox {
   async registerEndpoint(input: { nodeId: string; sessionName: string; generation: string | null; socketPath: string; transcriptPath: string | null; claudePid: number | null; execPath: string | null }): Promise<NativeEndpointRow | null> {
     if (!this.hasTables()) return null;
     const prior = this.endpointFor(input.nodeId);
-    let version: string | null = null;
-    let probe = input.claudePid ? "fail:exec_path_unresolved" : "fail:no_claude_pid";
-    let execPath: string | null = null;
-    let envelope = false;
-    if (input.claudePid) {
-      try { execPath = (await this.deps.resolveExecPath?.(input.claudePid)) ?? input.execPath; } catch { execPath = input.execPath; }
-    }
-    if (execPath && input.claudePid) {
-      try {
-        const p = await this.deps.probeBinary(execPath, input.claudePid);
-        version = p.version;
-        probe = !p.version ? "fail:version_unknown" : p.replacedSinceStart ? "fail:binary_replaced_since_start"
-          : !p.literal ? "fail:inject_format_absent" : "pass";
-        envelope = probe === "pass" && p.nameEnvelope === true;
-      } catch {
-        probe = "fail:probe_error";
-      }
-    }
+    const { execPath: probedPath, version: probedVersion, probe: probed, envelope: probedEnvelope } = await this.probeProcess(input);
+    let execPath = probedPath, version = probedVersion, probe = probed, envelope = probedEnvelope;
     const kept = REINSPECTION_FAILURES.has(probe) ? await this.provenSameProcess(input) : null;
     if (kept) { execPath = kept.exec_path; version = kept.claude_version; probe = "pass"; envelope = kept.name_envelope === 1; }
     const row: NativeEndpointRow = {
@@ -225,6 +218,81 @@ export class ClaudeNativeInbox {
         probe_result=excluded.probe_result, name_envelope=excluded.name_envelope, registered_at=excluded.registered_at`).run(row);
     if (input.claudePid !== null && prior?.claude_pid !== input.claudePid) this.reconcileGate(input.sessionName, [prior?.transcript_path ?? null, input.transcriptPath]);
     return row;
+  }
+
+  /** The launch probe of one claude process: find its binary, run the probe, and say what it found. OF-212: a binary the pid
+   *  cannot name falls back to `claude` on the daemon's PATH, and a file replaced since the process started (or found only by
+   *  that fallback) is accepted only when the process's own transcript shows it runs the file's version. The checks that
+   *  gate writing into the socket are unchanged: a version, the inject-format literal, and a file that is the running one. */
+  private async probeProcess(input: { claudePid: number | null; execPath: string | null; transcriptPath: string | null }): Promise<{ execPath: string | null; version: string | null; probe: string; envelope: boolean }> {
+    let probe = input.claudePid ? "fail:exec_path_unresolved" : "fail:no_claude_pid";
+    let version: string | null = null;
+    let execPath: string | null = null;
+    let envelope = false;
+    let fromFallback = false;
+    if (input.claudePid) {
+      try { execPath = (await this.deps.resolveExecPath?.(input.claudePid)) ?? input.execPath; } catch { execPath = input.execPath; }
+      if (!execPath) {
+        try { execPath = this.deps.fallbackExecPath?.() ?? null; } catch { execPath = null; }
+        fromFallback = execPath !== null;
+      }
+    }
+    if (execPath && input.claudePid) {
+      try {
+        const p = await this.deps.probeBinary(execPath, input.claudePid);
+        version = p.version;
+        // A file the pid did not name is the running one only on the process's own word; a file replaced since the start is the
+        // running version only on the same word.
+        const doubtful = p.replacedSinceStart || fromFallback;
+        const vouched = doubtful && await this.runsVersion(input, p.version);
+        probe = !p.version ? "fail:version_unknown"
+          : doubtful && !vouched ? (p.replacedSinceStart ? "fail:binary_replaced_since_start" : "fail:exec_path_unresolved")
+          : !p.literal ? "fail:inject_format_absent" : "pass";
+        envelope = probe === "pass" && p.nameEnvelope === true;
+      } catch {
+        probe = "fail:probe_error";
+      }
+    }
+    return { execPath, version, probe, envelope };
+  }
+
+  /** Whether the process itself wrote `version` into its transcript since it started. */
+  private async runsVersion(input: { claudePid: number | null; transcriptPath: string | null }, version: string | null): Promise<boolean> {
+    if (!version || !input.claudePid || !this.deps.processStartedAt || !this.deps.runningVersion) return false;
+    try {
+      const started = await this.deps.processStartedAt(input.claudePid);
+      return started !== null && this.deps.runningVersion(input.transcriptPath, started) === version;
+    } catch { return false; }
+  }
+
+  private readonly lastReprobeMs = new Map<string, number>();
+  private readonly reprobing = new Set<Promise<void>>();
+
+  /** OF-212: an endpoint whose probe failed for a reason that is about reading the binary file (not about the binary) is
+   *  probed again, in the background, at most once per interval, when a send asks about the seat. A launch can race the binary
+   *  being rewritten (measured 2026-11-03: five seats registered `fail:exec_path_unresolved` and nothing ever looked again).
+   *  The send that asked does not wait (`--version` and the file scans can outlast the CLI's 5 s request): it is refused as
+   *  before, and the next one finds the row healed. Only a pass changes the row; `registered_at` stays, so OF-191's
+   *  start-time rule still reads the first registration. */
+  private reprobeSoon(endpoint: NativeEndpointRow): void {
+    if (!endpoint.claude_pid || !REINSPECTION_FAILURES.has(endpoint.probe_result ?? "")) return;
+    const nowMs = this.now().getTime();
+    const last = this.lastReprobeMs.get(endpoint.node_id);
+    if (last !== undefined && nowMs - last < (this.deps.reprobeIntervalMs ?? 30_000)) return;
+    this.lastReprobeMs.set(endpoint.node_id, nowMs);
+    const run = this.reprobe(endpoint).catch((err) => console.warn(`[native-inbox] re-probe of ${endpoint.session_name} failed: ${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => this.reprobing.delete(run));
+    this.reprobing.add(run);
+  }
+
+  /** Resolves when no re-probe is running (tests, and a clean shutdown). */
+  async idle(): Promise<void> { while (this.reprobing.size > 0) await Promise.all([...this.reprobing]); }
+
+  private async reprobe(endpoint: NativeEndpointRow): Promise<void> {
+    const found = await this.probeProcess({ claudePid: endpoint.claude_pid, execPath: endpoint.exec_path, transcriptPath: endpoint.transcript_path });
+    if (found.probe !== "pass") return;
+    this.deps.db.prepare("UPDATE seat_native_endpoints SET exec_path=@exec_path, claude_version=@claude_version, probe_result='pass', name_envelope=@name_envelope WHERE node_id=@node_id AND claude_pid=@claude_pid AND probe_result=@was")
+      .run({ exec_path: found.execPath, claude_version: found.version, name_envelope: found.envelope ? 1 : 0, node_id: endpoint.node_id, claude_pid: endpoint.claude_pid, was: endpoint.probe_result });
   }
 
   /** S2, a new agent process on the seat: the crash window (M5) and a hook that crashed both leave the seen store and the transcript
@@ -310,6 +378,7 @@ export class ClaudeNativeInbox {
     const endpoint = this.endpointFor(seat.nodeId);
     if (!endpoint || !endpoint.socket_path || !endpoint.claude_pid) return { ok: false, reason: "no_endpoint" };
     if (endpoint.session_name !== sessionName) return { ok: false, reason: "endpoint_session_mismatch" };
+    this.reprobeSoon(endpoint);
     if (endpoint.probe_result !== "pass") return { ok: false, reason: `probe_${endpoint.probe_result ?? "missing"}` };
     const live = this.deps.liveGeneration(seat.nodeId);
     if (live !== null && endpoint.generation !== null && live !== endpoint.generation) return { ok: false, reason: "endpoint_generation_stale" };

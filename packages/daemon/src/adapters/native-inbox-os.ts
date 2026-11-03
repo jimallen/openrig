@@ -1,7 +1,8 @@
 // Native comms step 3: the operating-system side of ClaudeNativeInbox (domain/claude-native-inbox.ts), kept apart so the
 // domain logic is tested with fakes and nothing in a test reaches a live seat, socket or process.
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, openSync, readlinkSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import { INJECT_FORMAT_LITERAL, type ProcessRow } from "../domain/claude-native-inbox.js";
@@ -177,4 +178,48 @@ export async function resolveClaudeExecPath(pid: number): Promise<string | null>
  *  measured, which does not exist). */
 export function execPathIfFile(path: string | null): string | null {
   try { return path && statSync(path).isFile() ? path : null; } catch { return null; }
+}
+
+/** OF-212: `claude` as the daemon's PATH names it, symlinks resolved, when that is a file. The name a Claude seat is started
+ *  by (argv[0] is the bare `claude`, measured), so the candidate for a process whose own path the OS cannot give. */
+export function claudeOnPath(pathEnv: string | undefined = process.env.PATH): string | null {
+  for (const dir of (pathEnv ?? "").split(delimiter)) {
+    if (!dir) continue;
+    try { return execPathIfFile(realpathSync(join(dir, "claude"))) ?? null; } catch { /* next directory */ }
+  }
+  return null;
+}
+
+/** How much of a transcript's end is read for the running version: a few hundred lines, never the whole file. */
+const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+
+/** OF-212: the `version` field of the newest transcript record the process wrote on or after `since`, read from the file's
+ *  tail. Claude Code stamps every record with the version of the process that wrote it (measured: 2.1.314 → 2.1.316 → 2.1.317
+ *  across resumes of one transcript), so a record newer than the process's start names the version it runs, whatever happened
+ *  to its binary file since. Null when there is none, or the file cannot be read. */
+export function transcriptRunningVersion(transcriptPath: string | null, since: Date): string | null {
+  if (!transcriptPath) return null;
+  let fd: number;
+  try { fd = openSync(transcriptPath, "r"); } catch { return null; }
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+    const buf = Buffer.alloc(length);
+    readSync(fd, buf, 0, length, size - length);
+    const lines = buf.toString("utf8").split("\n");
+    if (size > length) lines.shift(); // the first line of a tail is cut
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let record: { version?: unknown; timestamp?: unknown };
+      try { record = JSON.parse(lines[i]!) as typeof record; } catch { continue; }
+      if (typeof record.version !== "string" || !/^\d+\.\d+\.\d+$/.test(record.version) || typeof record.timestamp !== "string") continue;
+      const at = Date.parse(record.timestamp);
+      if (Number.isFinite(at) && at >= since.getTime()) return record.version;
+      return null; // the newest stamped record predates the start: nothing of this process yet
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }

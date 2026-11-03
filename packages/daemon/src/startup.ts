@@ -133,7 +133,7 @@ import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
 import { nativeClaudeFlag } from "./domain/native-claude-setting.js";
 import { HookSeenStore, nativeSeatGate, seatGateRoot, transcriptHasPrompt } from "./adapters/hook-seen-store.js";
 import { createNativeSettlementHandler, failOverToTmux } from "./domain/native-inbox-settlement.js";
-import { fileIncludes, foregroundGroupPrograms, listProcesses as listProcessesForNative, processIsAlive, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
+import { claudeOnPath, fileIncludes, foregroundGroupPrograms, listProcesses as listProcessesForNative, processIsAlive, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, transcriptRunningVersion, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
 import { ClassifierLeaseManager } from "./domain/classifier-lease-manager.js";
 import { ClassificationAttemptLedger } from "./domain/classification-attempts.js";
@@ -1440,6 +1440,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     probeBinary: probeClaudeBinary,
     resolveExecPath: resolveClaudeExecPath,
     processStartedAt: processStart,
+    fallbackExecPath: () => claudeOnPath(),
+    runningVersion: transcriptRunningVersion,
     liveGeneration: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.generationUuid ?? null,
   });
   const deps: AppDeps = {

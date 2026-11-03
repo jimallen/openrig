@@ -685,3 +685,14 @@ describe("OF-191: the start-time lookup the daemon wires into the inbox", () => 
     expect(construction).toContain("processStartedAt: processStart,");
   });
 });
+
+// OF-212: the PATH fallback and the transcript reader are inert unless the daemon wires them into the inbox it constructs.
+describe("OF-212: the binary fallback the daemon wires into the inbox", () => {
+  it("startup.ts passes claudeOnPath and transcriptRunningVersion to the ClaudeNativeInbox it constructs", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(fileURLToPath(new URL("../src/startup.ts", import.meta.url)), "utf8");
+    const construction = /new ClaudeNativeInbox\(\{[\s\S]*?\n  \}\);/.exec(source)?.[0] ?? "";
+    expect(construction).toContain("fallbackExecPath: () => claudeOnPath(),");
+    expect(construction).toContain("runningVersion: transcriptRunningVersion,");
+  });
+});
