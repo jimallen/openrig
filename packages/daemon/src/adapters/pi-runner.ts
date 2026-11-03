@@ -28,7 +28,7 @@ import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js"
 import { createRunnerHcStatusSink, hcAppNameForSeat, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
 import { createRunnerHcTitleSink, seatBannerLine } from "./runner-hc-title.js";
 import { installPaneGuard, paneGuard, rawWriterOf, sanitizeForPane } from "./runner-pane-guard.js";
-import { createPaneFrame, type PaneFrame } from "./runner-pane-frame.js";
+import { createPaneFrame, type FrameStream, type PaneFrame } from "./runner-pane-frame.js";
 import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
 import { SeatGateStore, seatGateLogPath, userMessageText, type GateIntent } from "./seat-gate-store.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
@@ -976,7 +976,7 @@ export function wirePiRunnerInput(
 /** OF-213: the pane's console. On the runner's own pane (a TTY whose stdout the pane guard wraps) the output scrolls above a rule naming the seat
  *  and an input line; elsewhere (a pipe, a test, a pane too small) nothing changes and this returns null. Every exit road gives the pane back:
  *  the editor closing (the runner's own exit), the process exiting, and a SIGTERM or SIGHUP, which is then raised again with its default effect. */
-export function openPaneFrame(ruleLabel: string, stdout: NodeJS.WriteStream = process.stdout, stderr: NodeJS.WriteStream = process.stderr, stdin: NodeJS.ReadStream = process.stdin): PaneFrame | null {
+export function openPaneFrame(ruleLabel: string, stdout: FrameStream = process.stdout, stderr: Pick<FrameStream, "write"> = process.stderr, stdin: { isTTY?: boolean } = process.stdin): PaneFrame | null {
   const raw = rawWriterOf(stdout);
   if (!raw || !stdin.isTTY) return null;
   const frame = createPaneFrame({ stdout, raw, ruleLabel });
