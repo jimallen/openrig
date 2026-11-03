@@ -21,7 +21,7 @@ import type { SessionRegistry } from "./session-registry.js";
 import { queryUsageSeries } from "./usage-series.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { RSI_FINDING_CATEGORY, RSI_FINDING_SEVERITY } from "./rsi/detector-ids.js";
-import { freshSeatLaunchCommand } from "./active-occupant.js";
+import { freshSeatLaunchCommand, shellWord } from "./active-occupant.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -426,9 +426,10 @@ function evaluateSeatLost(observation: Extract<HealthDetectorObservation, { kind
       + `OpenRig does not restart it on its own. `
       + (waiting ? `${waiting}, the oldest ${observation.waiting?.oldestId ?? "unknown"}: they are held, not lost, and go once the seat is back. ` : "No message is waiting for it. ")
       + `A seat stopped on purpose is not reported.`,
-    suggestedInspection: `Bring it back on its own conversation: rig launch ${observation.rigId} ${observation.logicalId}. `
-      + `That resumes from the rig's latest snapshot (taken periodically and at rig down): if it answers that there is no usable snapshot, a rig that only just started has none yet. `
-      + `Or start only this seat fresh, on a new conversation: ${freshSeatLaunchCommand(observation.logicalId, observation.rigName)}.`,
+    // Each command is on its own line with nothing after it, so a copy carries no sentence punctuation, and every id goes through the shared quote rule.
+    suggestedInspection: `Bring it back on its own conversation (run this):\n  rig launch ${shellWord(observation.rigId)} ${shellWord(observation.logicalId)}\n`
+      + `That resumes from the rig's latest snapshot (taken periodically and at rig down): if it answers that there is no usable snapshot, a rig that only just started has none yet.\n`
+      + `Or start only this seat fresh, on a new conversation (run this):\n  ${freshSeatLaunchCommand(observation.logicalId, observation.rigName)}`,
   })];
 }
 

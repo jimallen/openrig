@@ -30,9 +30,10 @@ let db: Database.Database;
 let sessions: SessionRegistry;
 let waiting: Record<string, { open: number; oldestId: string | null }>;
 
-function seed(opts: { rigName?: string; logicalId?: string; sessionName?: string; status?: "running" | "exited"; stopped?: boolean; verdict?: "session_missing" | "none" | "pane_pid_gone" | "tmux_unavailable" } = {}): void {
-  db.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run(RIG, opts.rigName ?? "lost-rig");
-  db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime, cwd) VALUES (?, ?, ?, 'pi', '/tmp')").run(NODE, RIG, opts.logicalId ?? "dev.impl");
+function seed(opts: { rigId?: string; rigName?: string; logicalId?: string; sessionName?: string; status?: "running" | "exited"; stopped?: boolean; verdict?: "session_missing" | "none" | "pane_pid_gone" | "tmux_unavailable" } = {}): void {
+  const rigId = opts.rigId ?? RIG;
+  db.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run(rigId, opts.rigName ?? "lost-rig");
+  db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime, cwd) VALUES (?, ?, ?, 'pi', '/tmp')").run(NODE, rigId, opts.logicalId ?? "dev.impl");
   const sessionName = opts.sessionName ?? SESSION;
   db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES ('s-1', ?, ?, 'running', '2026-11-02 12:00:00')").run(NODE, sessionName);
   db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session, terminal_address) VALUES ('b-1', ?, 'hc', ?, 't7')").run(NODE, sessionName);
@@ -90,6 +91,27 @@ describe("a seat whose terminal is gone is a finding in rig health", () => {
     expect(text).toContain("rig seat launch 'dev.impl@lost-rig' --fresh");
     expect(text).toMatch(/nothing restarts it|does not restart/i);
     expect(text, "the resume needs a snapshot; the finding says what to do when there is none").toMatch(/no usable snapshot/);
+  });
+
+  it("each command stands alone on its own line: no sentence punctuation is glued to the seat id, so a copy carries none", () => {
+    seed();
+    const lines = records()[0]!.suggestedInspection.split("\n");
+    expect(lines).toContain(`  rig launch ${RIG} dev.impl`);
+    expect(lines).toContain(`  rig seat launch 'dev.impl@lost-rig' --fresh --reason "<why>"`);
+    expect(records()[0]!.suggestedInspection).not.toMatch(/dev\.impl\.(\s|$)/);
+  });
+
+  it("an id that is not only name characters is quoted in the command, never printed as shell: a hostile logical id and a hostile rig id stay one word each", () => {
+    seed({ logicalId: "x;touch X #", rigId: "r$(id)`z`" });
+    const text = records()[0]!.suggestedInspection;
+    expect(text).toContain(`  rig launch 'r$(id)\`z\`' 'x;touch X #'\n`);
+    expect(text, "no unquoted metacharacter reaches the command line").not.toMatch(/rig launch [^'\n]*[;$`#]/);
+    expect(text).toContain(`'x;touch X #@lost-rig'`);
+  });
+
+  it("an id with a single quote is closed and reopened, as the CLI does", () => {
+    seed({ logicalId: "it's" });
+    expect(records()[0]!.suggestedInspection).toContain(`rig launch ${RIG} 'it'"'"'s'`);
   });
 
   it("with messages waiting it is critical and says how many and which is oldest", () => {
