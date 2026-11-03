@@ -101,7 +101,7 @@ describe("OF-200: a resumed runtime whose terminal ends inside the settle window
 
   // The orchestrator asks the same question before it types startup text into a resumed seat (OF-161): there the answer decides "nothing was typed".
   describe("paneForegroundState on hc", () => {
-    const ask = (tmux: TmuxAdapter, session: string | null = "seat") => paneForegroundState("claude", { session, tmux, listProcesses: async () => [CLAUDE_PANE] });
+    const ask = (tmux: TmuxAdapter, session: string | null = "seat") => paneForegroundState("claude-code", { session, tmux, listProcesses: async () => [CLAUDE_PANE] });
     const ended = (o: Partial<Parameters<typeof hcEndedTmux>[1]> = {}) => { const c = clock(); c.elapsed = 5000; return hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: "", ...o }); };
 
     it("a terminal the host reports ended is gone: the resumed runtime went with it", async () => {
