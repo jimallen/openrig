@@ -74,7 +74,7 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
       }
       // The seat's runner has the oldest message and shows it when its turn's tool calls end: nothing is sent again meanwhile (OF-214).
       if (seat.pauseReason === "runner_held" && ageMs > MESSAGE_STUCK_AFTER_MS) {
-        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its runner holds the oldest (${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min) and shows it when the running turn's tool calls end. It is not sent again; the rest wait behind it.`));
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its runner holds the oldest (${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min) and shows it when the running turn's tool calls end. It is not sent again; the rest wait behind it. It stays held until Pi's current turn ends. If that turn has ended or the seat looks idle, the hold is stuck: restarting the seat's runner settles it against the session file, or \`rig seat cancel-message ${seat.seat} ${seat.oldestId} --reason <why>\` ends it (it is then not delivered).`));
         continue;
       }
       if (!(ageMs > MESSAGE_STUCK_AFTER_MS)) continue;

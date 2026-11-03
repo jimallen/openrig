@@ -2,7 +2,7 @@
 // Pi showed it at 14:29:51Z, when the turn's one tool call (a bash run) ended. The gate log held the intent from 13:58:59 to then. Meanwhile the pump,
 // which saw no record, pasted the same text again at attempts 2, 3 and 4 (backoff 2, 5, 15 min): each copy printed in the pane and the runner
 // answered "repeat dropped". This runs that sequence through the pump, the real wiring (RuntimeSeatPorts) and the runner's own gate store.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -135,6 +135,33 @@ describe("a Pi seat that holds a message through a long turn (OF-214)", () => {
     accept("m-fresh", "first ever");
     await pump.tick();
     expect(typed).toHaveLength(1);
+  });
+
+  // F2 of the review. The pump never reaches the hop for these (the gate lookup answers unavailable and the message waits), so the hop is asked
+  // directly: a log that exists and cannot be read proves nothing about the runner, and the hop types as it did before OF-214.
+  const heldBy = (id: string) => {
+    store.accept({ id: messageId(id), seat: SEAT, sender: "exec-cos@eztrack", body: "x" });
+    const head = store.headOf(SEAT)!;
+    store.claimAttempt(head, 0);
+    return { ids: [messageId(id)] as [ReturnType<typeof messageId>], seat: SEAT, body: "x", messageClass: "content" as const, lane: 2 as const };
+  };
+  it("a gate log that exists but is a directory is not held: the hop types", async () => {
+    const log = seatGateLogPath(piSeatPaths(join(home, "pi"), SEAT).seatRoot);
+    rmSync(log);
+    mkdirSync(log);
+    gate = SeatGateStore.open(join(home, "elsewhere.log"));  // the simulated runner keeps its own log; the daemon's path is the directory
+    await expect(ports.hopFor(SEAT)!.attempt(heldBy("m-dir"))).resolves.toEqual({ kind: "sent" });
+    expect(typed).toHaveLength(1);
+  });
+  it("a gate log that exists but cannot be read (mode 000) is not held: the hop types", async () => {
+    const log = seatGateLogPath(piSeatPaths(join(home, "pi"), SEAT).seatRoot);
+    const message = heldBy("m-000");
+    gate.admit([{ id: "m-000", nonce: store.nonceOf(message.ids[0])! }], "x", null);  // the intent is in the file: only the unreadable mode hides it
+    chmodSync(log, 0o000);
+    try {
+      await expect(ports.hopFor(SEAT)!.attempt(message)).resolves.toEqual({ kind: "sent" });
+      expect(typed).toHaveLength(1);
+    } finally { chmodSync(log, 0o600); }
   });
 
   it("the second message waits behind the first, as the pump always keeps a seat's order, and goes when the first is received", async () => {

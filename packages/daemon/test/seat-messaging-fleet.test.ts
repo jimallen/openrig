@@ -263,6 +263,10 @@ describe("the fleet, as the pump reads it", () => {
       expect(row[0]).toContain("its runner holds the oldest (h1");
       expect(row[0]).toContain("not sent again");
       expect(row[0]).not.toContain("keeps trying");
+      // F1 of the review: a stuck hold names its way out, with this row's own seat and id in the command.
+      expect(row[0]).toContain("stays held until Pi's current turn ends");
+      expect(row[0]).toContain("restarting the seat's runner settles it against the session file");
+      expect(row[0]).toContain("`rig seat cancel-message dev@r h1 --reason <why>`");
     });
 
     it("names a dialog at once: nothing moves until a person answers it", () => {
