@@ -9,8 +9,8 @@
 // Jim's rule (2026-11-01): a message for a seat that is gone goes to its successor, labelled, and is returned only once its rig is archived,
 // with a true reason. The pump has no time bound ("a row leaves only on a gate record, or when its seat is gone for good"), so none is added.
 // Deployed entrypoint: startup.ts constructs MessagePump with DbSeatDirectory; server.ts constructs RigLifecycleService behind `rig remove`.
-// Real database, directory, store and pump; the gate and the hop are stubs.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Real database, directory, store and pump; the gate and the hop are stubs; no tmux adapter, so removal kills nothing.
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -21,7 +21,6 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
@@ -54,7 +53,6 @@ describe("a seat removed from a live rig (OF-209)", () => {
   let now: number;
   let hop: StubHop;
   let returned: Array<{ id: string; sender: string; reason: string }>;
-  let killSession: ReturnType<typeof vi.fn>;
   let lifecycle: RigLifecycleService;
 
   const senders: SenderReturn = { returnToSender: async (m, reason) => { returned.push({ id: m.id, sender: m.sender, reason }); return { kind: "returned", qitemId: "qitem-back" }; } };
@@ -94,11 +92,9 @@ describe("a seat removed from a live rig (OF-209)", () => {
     store = new MessageStore(db);
     now = T0; hop = new StubHop(); returned = [];
     const eventBus = new EventBus(db);
-    killSession = vi.fn(async () => ({ ok: true as const }));
     lifecycle = new RigLifecycleService({
       db, rigRepo: rigs, sessionRegistry: registry, discoveryRepo: new DiscoveryRepository(db), eventBus,
       queueRepo: new QueueRepository(db, eventBus, { validateRig: () => true }),
-      tmuxAdapter: { killSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter,
     });
   });
   afterEach(() => db.close());
