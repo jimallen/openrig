@@ -1,9 +1,10 @@
 // OF-212: the two OS reads behind a replaced Claude binary: the running version from the process's own transcript, and
 // `claude` found on a PATH. Real files in a private temp dir; nothing reaches a live seat or process.
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { claudeOnPath, transcriptRunningVersion } from "../src/adapters/native-inbox-os.js";
 
 const dirs: string[] = [];
@@ -45,6 +46,43 @@ describe("transcriptRunningVersion", () => {
   });
 });
 
+describe("transcriptRunningVersion: the path is reported by the relay, so it is read with care (OF-212 review F2, F3, F4)", () => {
+  const good = (): string => rec("2.1.317", "2026-11-03T09:30:00.000Z") + "\n";
+  function file(content = good()): string { const p = join(tmp(), "t.jsonl"); writeFileSync(p, content); return p; }
+
+  it("a FIFO with no writer is refused without blocking the daemon", () => {
+    const p = join(tmp(), "fifo");
+    execFileSync("mkfifo", [p]);
+    expect(transcriptRunningVersion(p, START)).toBeNull();
+  });
+
+  it("a directory is refused", () => {
+    expect(transcriptRunningVersion(tmp(), START)).toBeNull();
+  });
+
+  it("a file the daemon's user does not own vouches for nothing; one it owns does", () => {
+    const p = file();
+    const me = process.getuid!();
+    expect([transcriptRunningVersion(p, START, me + 1), transcriptRunningVersion(p, START, me)]).toEqual([null, "2.1.317"]);
+  });
+
+  it("a symlink is followed to the regular file it names, and judged there", () => {
+    const real = file(); const link = join(tmp(), "link.jsonl"); symlinkSync(real, link);
+    const dirLink = join(tmp(), "dirlink"); symlinkSync(tmp(), dirLink);
+    expect([transcriptRunningVersion(link, START), transcriptRunningVersion(dirLink, START)]).toEqual(["2.1.317", null]);
+  });
+
+  it("two versions written since the start name nothing: a second process on the same session may be the writer of one", () => {
+    const p = file(rec("2.1.316", "2026-11-03T09:29:00.000Z") + "\n" + rec("2.1.317", "2026-11-03T09:30:00.000Z") + "\n");
+    expect(transcriptRunningVersion(p, START)).toBeNull();
+  });
+
+  it("the same version written twice since the start is one version; an older version before the start does not count", () => {
+    const p = file(rec("2.1.316", "2026-11-03T08:00:00.000Z") + "\n" + rec("2.1.317", "2026-11-03T09:29:00.000Z") + "\n" + rec("2.1.317", "2026-11-03T09:30:00.000Z") + "\n");
+    expect(transcriptRunningVersion(p, START)).toBe("2.1.317");
+  });
+});
+
 describe("claudeOnPath", () => {
   function install(dir: string, exec = true): string {
     const bin = join(dir, "pkg", "bin"); mkdirSync(bin, { recursive: true });
@@ -62,6 +100,13 @@ describe("claudeOnPath", () => {
   it("the first directory that has one wins", () => {
     const a = tmp(), b = tmp(); const ra = install(a); install(b);
     expect(claudeOnPath(`${join(a, "bin")}:${join(b, "bin")}`)).toBe(realpathOf(ra));
+  });
+
+  it("a relative PATH entry is skipped: it would resolve against the daemon's working directory", () => {
+    const d = tmp(); const real = install(d);
+    const relativeEntry = relative(process.cwd(), join(d, "bin"));
+    expect(relativeEntry.startsWith("/")).toBe(false);
+    expect([claudeOnPath(relativeEntry), claudeOnPath(`${relativeEntry}:${join(d, "bin")}`)]).toEqual([null, realpathSync(real)]);
   });
 
   it("no PATH, no claude on it, or a dangling link → null", () => {

@@ -1,6 +1,6 @@
 // Native comms step 3 (design-native-comms-20261030 §8.1): ClaudeNativeInbox with every OS dependency faked. Nothing
 // here reaches a live seat, socket, process or tmux server.
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -346,6 +346,36 @@ describe("OF-212: a failed endpoint is probed again, and a replaced binary is vo
     expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason: "probe_fail:inject_format_absent" });
     await f.inbox.idle();
     expect(st.probes).toBe(0);
+  });
+
+  it("a re-probe that finishes after the row changed under it does not overwrite the newer answer (review F1)", async () => {
+    const st = { resolves: null as string | null, calls: 0, probe: { ...good } as Awaited<ReturnType<NativeInboxDeps["probeBinary"]>>, release: null as (() => void) | null };
+    const f = make({
+      resolveExecPath: async () => st.resolves,
+      probeBinary: async () => { const mine = { ...st.probe }; if (++st.calls === 1) await new Promise<void>((r) => { st.release = r; }); return mine; },
+      processStartedAt: async () => new Date(f.clock.t - HOUR),
+    });
+    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+    st.resolves = PATH_A;
+    f.clock.t += 31_000;
+    await f.inbox.eligibility(SEAT);                       // the re-probe starts and waits inside --version
+    await vi.waitFor(() => expect(st.release).not.toBeNull());
+    st.probe = { ...good, literal: false };                // meanwhile the seat re-registers on a binary without the inject format
+    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:inject_format_absent");
+    st.release!();                                         // the old re-probe now finishes with a pass
+    await f.inbox.idle();
+    expect(f.inbox.endpointFor("node-a")?.probe_result).toBe("fail:inject_format_absent");
+  });
+
+  it("the throttle remembers only seats looked at within the interval (review F5)", async () => {
+    const { f } = await failedAtLaunch();
+    await f.inbox.registerEndpoint({ nodeId: "node-b", sessionName: SENDER, generation: "gen-1", socketPath: "/tmp/cc-socks/4343.sock", transcriptPath: null, claudePid: 4343, execPath: null });
+    const ask = async (seat: string) => { await f.inbox.eligibility(seat); await f.inbox.idle(); };
+    f.clock.t += 31_000; await ask(SEAT);
+    f.clock.t += 10_000; await ask(SENDER);
+    expect(f.inbox.throttledSeats).toBe(2);
+    f.clock.t += 40_000; await ask(SEAT);                  // both earlier looks are over 30 s old; only this one is kept
+    expect(f.inbox.throttledSeats).toBe(1);
   });
 
   it("a healed seat still has to be the process in its pane: a dead pid is refused after the re-probe", async () => {

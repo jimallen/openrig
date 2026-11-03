@@ -1,8 +1,8 @@
 // Native comms step 3: the operating-system side of ClaudeNativeInbox (domain/claude-native-inbox.ts), kept apart so the
 // domain logic is tested with fakes and nothing in a test reaches a live seat, socket or process.
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, fstatSync, openSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
 import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import { INJECT_FORMAT_LITERAL, type ProcessRow } from "../domain/claude-native-inbox.js";
@@ -180,11 +180,11 @@ export function execPathIfFile(path: string | null): string | null {
   try { return path && statSync(path).isFile() ? path : null; } catch { return null; }
 }
 
-/** OF-212: `claude` as the daemon's PATH names it, symlinks resolved, when that is a file. The name a Claude seat is started
+/** OF-212: `claude` as the daemon's PATH names it, symlinks resolved, when that is a file. Relative PATH entries are skipped. The name a Claude seat is started
  *  by (argv[0] is the bare `claude`, measured), so the candidate for a process whose own path the OS cannot give. */
 export function claudeOnPath(pathEnv: string | undefined = process.env.PATH): string | null {
   for (const dir of (pathEnv ?? "").split(delimiter)) {
-    if (!dir) continue;
+    if (!dir || !isAbsolute(dir)) continue; // a relative entry would resolve against the daemon's cwd
     try { return execPathIfFile(realpathSync(join(dir, "claude"))) ?? null; } catch { /* next directory */ }
   }
   return null;
@@ -193,33 +193,43 @@ export function claudeOnPath(pathEnv: string | undefined = process.env.PATH): st
 /** How much of a transcript's end is read for the running version: a few hundred lines, never the whole file. */
 const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 
-/** OF-212: the `version` field of the newest transcript record the process wrote on or after `since`, read from the file's
- *  tail. Claude Code stamps every record with the version of the process that wrote it (measured: 2.1.314 → 2.1.316 → 2.1.317
- *  across resumes of one transcript), so a record newer than the process's start names the version it runs, whatever happened
- *  to its binary file since. Null when there is none, or the file cannot be read. */
-export function transcriptRunningVersion(transcriptPath: string | null, since: Date): string | null {
+/** OF-212: the version the process itself wrote into its transcript: the `version` of every stamped record written on or after
+ *  `since`, read from the file's tail, and only when they all agree. Claude Code stamps every record with the version of the
+ *  process that wrote it (measured: 2.1.314 → 2.1.316 → 2.1.317 across resumes of one transcript), so a record newer than the
+ *  process's start names the version it runs, whatever happened to its binary file since. Records carry a session id but no pid, so
+ *  a second process writing the same session cannot be told apart; two versions in the window name nothing (review F4).
+ *  The path is reported by the SessionStart relay, so it is read with care (review F2, F3): it must be (after following links) a regular file
+ *  owned by `uid` (the daemon's), checked before it is opened, and it is opened non-blocking, so a FIFO or a directory cannot hold
+ *  the daemon. The seat's Claude projects directory is NOT checked: a seat may run under its own CLAUDE_CONFIG_DIR (rig-claude uses
+ *  ~/.rig/claude) and the daemon does not know which. Null when nothing is vouched, or on any error. */
+export function transcriptRunningVersion(transcriptPath: string | null, since: Date, uid: number | undefined = process.getuid?.()): string | null {
   if (!transcriptPath) return null;
-  let fd: number;
-  try { fd = openSync(transcriptPath, "r"); } catch { return null; }
+  let fd: number | null = null;
   try {
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+    const before = statSync(transcriptPath); // follows a symlink: the file it names is what is judged
+    if (!before.isFile() || (uid !== undefined && before.uid !== uid)) return null;
+    fd = openSync(transcriptPath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    const st = fstatSync(fd);
+    if (!st.isFile() || (uid !== undefined && st.uid !== uid)) return null;
+    const length = Math.min(st.size, TRANSCRIPT_TAIL_BYTES);
     const buf = Buffer.alloc(length);
-    readSync(fd, buf, 0, length, size - length);
+    readSync(fd, buf, 0, length, st.size - length);
     const lines = buf.toString("utf8").split("\n");
-    if (size > length) lines.shift(); // the first line of a tail is cut
+    if (st.size > length) lines.shift(); // the first line of a tail is cut
+    const versions = new Set<string>();
     for (let i = lines.length - 1; i >= 0; i--) {
       let record: { version?: unknown; timestamp?: unknown };
       try { record = JSON.parse(lines[i]!) as typeof record; } catch { continue; }
       if (typeof record.version !== "string" || !/^\d+\.\d+\.\d+$/.test(record.version) || typeof record.timestamp !== "string") continue;
       const at = Date.parse(record.timestamp);
-      if (Number.isFinite(at) && at >= since.getTime()) return record.version;
-      return null; // the newest stamped record predates the start: nothing of this process yet
+      if (!Number.isFinite(at)) continue;
+      if (at < since.getTime()) break; // records are in time order: nothing of this process further up
+      versions.add(record.version);
     }
-    return null;
+    return versions.size === 1 ? [...versions][0]! : null;
   } catch {
     return null;
   } finally {
-    closeSync(fd);
+    if (fd !== null) closeSync(fd);
   }
 }

@@ -279,11 +279,16 @@ export class ClaudeNativeInbox {
     const nowMs = this.now().getTime();
     const last = this.lastReprobeMs.get(endpoint.node_id);
     if (last !== undefined && nowMs - last < (this.deps.reprobeIntervalMs ?? 30_000)) return;
+    // An entry older than the interval no longer throttles anything, so it is dropped: the map holds only seats looked at lately.
+    for (const [node, at] of this.lastReprobeMs) if (nowMs - at >= (this.deps.reprobeIntervalMs ?? 30_000)) this.lastReprobeMs.delete(node);
     this.lastReprobeMs.set(endpoint.node_id, nowMs);
     const run = this.reprobe(endpoint).catch((err) => console.warn(`[native-inbox] re-probe of ${endpoint.session_name} failed: ${err instanceof Error ? err.message : String(err)}`))
       .finally(() => this.reprobing.delete(run));
     this.reprobing.add(run);
   }
+
+  /** How many seats are being throttled (tests). */
+  get throttledSeats(): number { return this.lastReprobeMs.size; }
 
   /** Resolves when no re-probe is running (tests, and a clean shutdown). */
   async idle(): Promise<void> { while (this.reprobing.size > 0) await Promise.all([...this.reprobing]); }
