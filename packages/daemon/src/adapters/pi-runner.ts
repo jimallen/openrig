@@ -26,6 +26,7 @@ import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
 import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
+import { createRunnerHcTitleSink, seatBannerLine } from "./runner-hc-title.js";
 import { installPaneGuard, paneGuard, sanitizeForPane } from "./runner-pane-guard.js";
 import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
 import { SeatGateStore, seatGateLogPath, userMessageText, type GateIntent } from "./seat-gate-store.js";
@@ -1211,6 +1212,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     forkRef: args.forkRef,
     runtime,
   });
+
+  // OF-213: the seat names itself first, on every start (a restart is a new runner process): the terminal's title for the pane
+  // header and the listing, and one banner line on the pane. Neither depends on Pi, which runs behind this runner over RPC.
+  createRunnerHcTitleSink(process.env, (text) => { paneGuard.statusWrite(text); }, args.sessionName)?.();
+  console.log(sanitizeForPane(seatBannerLine({ sessionName: args.sessionName, runtime, model: args.model })));
 
   if (runtime === "pi") {
     console.log(`[pi-runner] seat ${args.sessionName}: ${piCredentialNotice({
