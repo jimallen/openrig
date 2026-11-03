@@ -31,6 +31,11 @@ export class HcAdapter extends TmuxAdapter {
     this.capture = new HcCapture(client);
   }
 
+  /** The daemon tells the host how to rebuild a seat's launch env after its own restart (see SeatLaunchRecords.rebuildFrom). */
+  rebuildSeatEnvFrom(rebuild: Parameters<SeatLaunchRecords["rebuildFrom"]>[0]): void { this.launches.rebuildFrom(rebuild); }
+  /** The env a respawn of a seat gets when this daemon kept no record of its launch and only `identity` (the labels' names) survives. */
+  restartEnvOf(identity: Record<string, string>): Record<string, string> { return this.launches.restartEnv(identity); }
+
   /** startup sets deliveryGuard after construction, as it does on the tmux adapter, so the guarded parts follow it. */
   private parts(): NonNullable<HcAdapter["wired"]> {
     const guard = this.deliveryGuard;

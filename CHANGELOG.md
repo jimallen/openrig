@@ -20,6 +20,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   the agent ends, the terminal ends, and the core refuses the send as `finished` instead of typing it.
 - A crashed seat now reads as a lost seat (`rig ps` shows it detached; restore relaunches it and resumes its conversation, as after a reboot) instead of a
   seat with an idle shell that a person had to decide about. Nobody gets a prompt in a seat's pane after its agent exits.
+- OpenRig does not restart a lost seat on its own. `rig health --instance` now lists it as a `seat.lost` finding (critical when a message waits for it, warning
+  otherwise), naming the seat, how many messages wait, and the command that brings it back on its own conversation, `rig launch <rig id> <logical id>`, or
+  starts only that seat fresh. A seat stopped on purpose (`rig down`, `rig seat stop`), held by a restore, or in an archived rig raises nothing. `rig ps` and
+  `rig seat status` no longer say "tmux session missing" for it: they say the agent and its terminal ended and give the same two commands.
+- A resumed Claude or Codex whose terminal ends inside the resume settle window is reported gone (the seat is relaunched fresh when its conversation is
+  missing), not unreadable or held.
+- A seat respawned after the daemon restarted (`rig seat restart --keep-conversation` on a Codex launched this way) keeps its activity-hook token and the
+  worktree shim first on PATH: the daemon rebuilds them from its own launch env, as a label cannot hold a token.
 - `rig seat restart --keep-conversation` on a Codex launched this way reports pane shape `script_backed`: it stops Codex, waits for the terminal to end and
   respawns it with the resume command. A respawn carries the seat's own launch env. Seats launched before this build keep their login shell until they are
   launched again.

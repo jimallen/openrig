@@ -7,6 +7,7 @@ import { HcAdapter } from "../src/adapters/hc-adapter.js";
 import { HcHost, SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-host.js";
 import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
 import { SeatLaunchRecords } from "../src/adapters/hc-seat.js";
+import { seatRestartEnv } from "../src/domain/seat-restart-env.js";
 import { HcLifecycle, PROBE_LABEL } from "../src/adapters/hc-lifecycle.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
 
@@ -238,6 +239,26 @@ describe.skipIf(!HC)("HcLifecycle against a private hc core", () => {
       for (const key of ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "CODEX_HOME"] as const) expect(env, key).toContain(`${key}=${SEAT_ENV[key]}`);
       expect(env, "a name that is not a label is not invented").not.toContain("OF200_ONLY_IN_SEAT_ENV=");
       await expect(new HcLifecycle(core.client, { daemonEnv }).killSession("env2@rig")).resolves.toEqual({ ok: true });
+    });
+
+    // OF-200 review F3, measured on a real Codex on Sparky at 34bae43a (kit of200cx, case env-names): after a daemon restart the in-place restart's new Codex had
+    // no OPENRIG_ACTIVITY_HOOK_TOKEN, so the seat's activity reports to the daemon would no longer authenticate. The daemon rebuilds what the labels cannot hold.
+    it("after a daemon restart, from the labels plus what the daemon rebuilds: the activity-hook token and the shim PATH are back, and the labels' identity wins over the daemon's", async () => {
+      const TOKEN = `tok-of200-${process.pid}`;
+      const OPENRIG_HOME = join(core.root, "orhome");
+      const launches = new SeatLaunchRecords();
+      launches.rebuildFrom((identity) => seatRestartEnv(identity, { sessionEnv: { PATH: process.env.PATH, OPENRIG_HOME, OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN, CODEX_HOME: "/the/shared/home" }, runtimeSessionEnv: {} }));
+      await host.createSession("env5@rig", core.root, SEAT_ENV);          // a host with no record: the daemon "restarted" since
+      const out = join(core.root, "env-rebuilt.txt");
+      const mine = new HcLifecycle(core.client, { daemonEnv, launches });
+      await expect(mine.respawnPane("env5@rig", `env > ${out}; exec sleep 120`)).resolves.toEqual({ ok: true });
+      const env = await seen(out);
+      expect(env, "the activity-hook token the daemon holds again").toContain(`OPENRIG_ACTIVITY_HOOK_TOKEN=${TOKEN}`);
+      expect(env, "the worktree shim at the head of PATH").toContain(`PATH=${OPENRIG_HOME}/rig-bin:`);
+      expect(env, "the seat's own CODEX_HOME (a label) beats the daemon's shared one").toContain(`CODEX_HOME=${CODEX_HOME}`);
+      expect(env).not.toContain("CODEX_HOME=/the/shared/home");
+      expect(env, "a name no launch wrote and no daemon source holds is not invented").not.toContain("OF200_ONLY_IN_SEAT_ENV=");
+      await expect(mine.killSession("env5@rig")).resolves.toEqual({ ok: true });
     });
 
     it("an env the caller names wins, and is what the next respawn keeps", async () => {

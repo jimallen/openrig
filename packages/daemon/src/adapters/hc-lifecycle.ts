@@ -186,7 +186,7 @@ export class HcLifecycle {
     // that made it), else the identity names its launch wrote as labels. hc starts the new program from the env it is given alone, so
     // a respawn that named none would lose the seat's own names that the first launch carried.
     const recalled = this.options.launches?.recall(seat);
-    const seatEnv = opts?.env ?? recalled?.env ?? sessionEnvFromLabels(before.labels);
+    const seatEnv = opts?.env ?? recalled?.env ?? (this.options.launches?.restartEnv(sessionEnvFromLabels(before.labels)) ?? sessionEnvFromLabels(before.labels));
     const hints: SeatLaunchHints = { ...(recalled?.hints ?? {}), ...(opts?.remoteControl !== undefined ? { remoteControl: opts.remoteControl } : {}) };
     let launch: ReturnType<typeof seatEnvironment>;
     try {

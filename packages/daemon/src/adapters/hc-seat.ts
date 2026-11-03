@@ -67,6 +67,12 @@ export interface SeatLaunchRecord { cwd?: string; env?: Readonly<Record<string, 
 
 export class SeatLaunchRecords {
   private readonly records = new Map<string, SeatLaunchRecord>();
+  private rebuild: ((identity: Readonly<Record<string, string>>) => Record<string, string>) | undefined;
+
+  /** What the daemon can say of a seat's launch env when it kept no record (it restarted since): given the identity names the launch wrote as labels, the
+   *  env to respawn with (OF-200 review F3: the activity-hook token and the shim PATH are the daemon's, not a label's). Set once by the daemon at startup. */
+  rebuildFrom(rebuild: (identity: Readonly<Record<string, string>>) => Record<string, string>): void { this.rebuild = rebuild; }
+  restartEnv(identity: Record<string, string>): Record<string, string> { return this.rebuild ? this.rebuild(identity) : identity; }
   remember(seat: string, record: SeatLaunchRecord): void { this.records.set(seat, record); }
   recall(seat: string): SeatLaunchRecord | undefined { return this.records.get(seat); }
 }

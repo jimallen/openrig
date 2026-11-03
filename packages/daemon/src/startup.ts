@@ -27,6 +27,7 @@ import { resolveExternal } from "./domain/gateway/external-admission.js";
 import { loadHumanRegistry } from "./domain/gateway/human-registry.js";
 import { EventBus } from "./domain/event-bus.js";
 import { NodeLauncher } from "./domain/node-launcher.js";
+import { seatRestartEnv } from "./domain/seat-restart-env.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
@@ -658,6 +659,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     },
   });
   const { SeatLaunchEnvironment } = await import("./domain/seat-launch-environment.js");
+  // OF-200 review F3: a seat respawned after this daemon restarted keeps the activity-hook token and the shim PATH, which a label cannot hold.
+  hcAdapter?.rebuildSeatEnvFrom((identity) => seatRestartEnv(identity, { sessionEnv: launchSessionEnv, runtimeSessionEnv }));
   const seatLaunchEnvironment = new SeatLaunchEnvironment(tmuxAdapter, launchSessionEnv, process.cwd(), undefined, configuredCodexHome);
   // OF-183: only the host's installed daemon may change the shared ~/.codex/config.toml (see codex-config-write-policy.ts).
   const { startupCodexConfigWritePolicy } = await import("./domain/codex-config-write-policy.js");
