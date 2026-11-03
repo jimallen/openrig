@@ -73,11 +73,12 @@ export interface SeatGate {
  *  a failure: the seat is busy, blocked on a dialog, held by the typing guard, or stopped, or its composer holds text that may be a person's
  *  (`draft`, Jim's rule: never touched, and the message goes the moment it clears), or the process in its terminal is not its agent
  *  (`agent_absent`: a paste into a login shell runs each line as a command, so nothing is typed until the agent is back), or its screen shows no composer at all, such as a picker (`screen_unreadable`), or the message is too long to paste and the seat has no socket
- *  (`long_no_socket`: decision 35, it goes when the socket is back). */
+ *  (`long_no_socket`: decision 35, it goes when the socket is back), or a Pi or OMP runner already holds every id of the text (`runner_held`, OF-214:
+ *  its gate log has the intent and no record yet, so a copy would only print in the pane and be dropped). */
 export type LastHopResult =
   /** `carried`: the ids this attempt put in the text, when that is fewer than it was given. The rest were not attempted. */
   | { readonly kind: "sent"; readonly carried?: readonly MessageId[] }
-  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" | "agent_absent" | "screen_unreadable" | "long_no_socket" | "far_not_gated" }
+  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" | "agent_absent" | "screen_unreadable" | "long_no_socket" | "far_not_gated" | "runner_held" }
   /** The seat is gone for good, by the word of whoever owns it. */
   | { readonly kind: "gone"; readonly reason: string }
   | { readonly kind: "refused"; readonly reason: string };

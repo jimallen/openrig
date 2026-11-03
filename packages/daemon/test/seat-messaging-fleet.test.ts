@@ -249,6 +249,22 @@ describe("the fleet, as the pump reads it", () => {
       expect(reasons()[0]).toContain("its terminal is not running");
     });
 
+    it("OF-214: a message the seat's runner holds through a long turn is named once it is old, and is not described as retried", () => {
+      const store = new MessageStore(db);
+      accept("h1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("h1"), "runner_held", 2);
+      expect(store.headOf("dev@r")!.pauseReason).toBe("runner_held");
+      age("h1", MESSAGE_STUCK_AFTER_MS - 60_000);
+      expect(reasons()).toEqual([]);
+      age("h1", MESSAGE_STUCK_AFTER_MS + 60_000);
+      const row = reasons();
+      expect(row).toHaveLength(1);
+      expect(row[0]).toContain("its runner holds the oldest (h1");
+      expect(row[0]).toContain("not sent again");
+      expect(row[0]).not.toContain("keeps trying");
+    });
+
     it("names a dialog at once: nothing moves until a person answers it", () => {
       const store = new MessageStore(db);
       accept("b1");

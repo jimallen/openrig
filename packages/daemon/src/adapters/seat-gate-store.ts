@@ -75,6 +75,13 @@ export function gateLogRecord(text: string, marker: SeatMarker): { at: string } 
   return at === undefined ? null : { at };
 }
 
+/** Whether a log's text says this (id, nonce) is in flight: the runner wrote its intent and no later line settled it, so Pi holds it, or the
+ *  runner died with it open and a restart will settle it. A repeat sent now is dropped by the gate, and printed in the pane on its way (OF-214),
+ *  so the daemon's pump asks before it pastes one. The daemon's reading of the store; nothing here writes. */
+export function gateLogInFlight(text: string, marker: SeatMarker): boolean {
+  return replay(text).state.get(seatMarkerKey(marker)) === "intent";
+}
+
 /** The sha of every user message in a Pi session file past `offset`, oldest first: [] when the file does not exist (Pi writes it with
  *  the first message), null when it cannot be read (the answer is then unknown, not "absent"). Only whole lines count. */
 export function sessionUserTextShas(sessionFile: string, offset: number): string[] | null {

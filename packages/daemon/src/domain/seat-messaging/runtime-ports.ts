@@ -5,6 +5,8 @@ import { hookSeatGate } from "../../adapters/hook-seat-gate.js";
 import type { HookSeenStore } from "../../adapters/hook-seen-store.js";
 import { parsePiRunnerState, piSeatPaths, type PiRunnerState } from "../../adapters/pi-runner-protocol.js";
 import { piSeatGate } from "../../adapters/seat-gate-readers.js";
+import type { SeatMarker } from "../../adapters/seat-gate-marker.js";
+import { gateLogInFlight, seatGateLogPath } from "../../adapters/seat-gate-store.js";
 import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, type ForegroundGroupOf, type HcHopInput, type HopGuard, type HopRows } from "../../adapters/seat-hops.js";
 import type { HcClient } from "../../adapters/hc-client.js";
 import type { ClaudeNativeInbox } from "../claude-native-inbox.js";
@@ -42,7 +44,7 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
       writeToSeat: (endpoint, sender, text) => deps.inbox().writeToSeat(endpoint, sender, text),
     });
     this.codexHop = new CodexSeatHop({ rows, guard, client, input, spool: deps.hookStore, foregroundGroup: deps.foregroundGroup });
-    this.piHop = new PiSeatHop({ rows, guard, client, input, runnerState: (seat) => this.runnerState(seat) });
+    this.piHop = new PiSeatHop({ rows, guard, client, input, runnerState: (seat) => this.runnerState(seat), inFlight: (seat, marker) => this.inFlight(seat, marker) });
   }
 
   private runtimeOf(seat: string): string | null {
@@ -62,6 +64,13 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
     const root = this.stateRoot(this.runtimeOf(seat));
     if (root === null) return null;
     try { return parsePiRunnerState(fs.readFileSync(piSeatPaths(root, seat).runnerStatePath, "utf8")); } catch { return null; }
+  }
+
+  /** The seat's gate log holds this marker's intent and nothing after it. A log that cannot be read proves nothing: false, and the attempt goes as before. */
+  private inFlight(seat: string, marker: SeatMarker): boolean {
+    const root = this.stateRoot(this.runtimeOf(seat));
+    if (root === null) return false;
+    try { return gateLogInFlight(fs.readFileSync(seatGateLogPath(piSeatPaths(root, seat).seatRoot), "utf8"), marker); } catch { return false; }
   }
 
   gateFor(seat: string): SeatGate | null {

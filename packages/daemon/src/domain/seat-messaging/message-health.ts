@@ -72,6 +72,11 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its agent is not running in its terminal (oldest ${seat.oldestId}). Nothing is typed there; they go when the agent is back, or return to their senders if the seat is archived.`));
         continue;
       }
+      // The seat's runner has the oldest message and shows it when its turn's tool calls end: nothing is sent again meanwhile (OF-214).
+      if (seat.pauseReason === "runner_held" && ageMs > MESSAGE_STUCK_AFTER_MS) {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its runner holds the oldest (${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min) and shows it when the running turn's tool calls end. It is not sent again; the rest wait behind it.`));
+        continue;
+      }
       if (!(ageMs > MESSAGE_STUCK_AFTER_MS)) continue;
       const age = `${seat.open} message(s) to ${seat.seat} not received (oldest ${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min`;
       if (!this.ports.gateFor(seat.seat)) { rows.push(notice(`${age}): the seat declares no gate, so the pump does not serve it.`)); continue; }

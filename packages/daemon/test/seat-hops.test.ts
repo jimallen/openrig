@@ -561,8 +561,12 @@ describe("the hops", () => {
 
   describe("Pi and OMP", () => {
     let state: Partial<PiRunnerState> | null;
-    const pi = () => new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null });
+    // The ids (with the nonce the row holds) whose gate log says in flight: the runner has them.
+    let held: Set<string>;
+    const asked: Array<{ seat: string; marker: SeatMarker }> = [];
+    const pi = () => new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null, inFlight: (seat, marker) => { asked.push({ seat, marker }); return held.has(`${marker.id}:${marker.nonce}`); } });
     beforeEach(() => {
+      held = new Set(); asked.length = 0;
       state = { seatGate: 1 }; screen = "[pi-runner] READY\n";
       foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
     });
@@ -588,6 +592,44 @@ describe("the hops", () => {
       status = "idle"; state = null;
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "seat_stopped" });
       expect(calls).toEqual([]);
+    });
+    // OF-214: verify-sec@eztrack took a message mid-turn (the runner steered it), Pi showed it 31 minutes later when the turn's one tool call
+    // ended, and the pump pasted the same text again at 2, 7 and 22 minutes: each copy printed in the pane before the gate dropped it.
+    describe("a message the runner already holds (OF-214)", () => {
+      it("is not typed again: the pump waits under its own reason, and asks about this row's id and nonce", async () => {
+        held.add(`m-1:${store.nonceOf(ID)}`);
+        await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "runner_held" });
+        expect(calls).toEqual([]);
+        expect(asked).toEqual([{ seat: SEAT, marker: { id: "m-1", nonce: store.nonceOf(ID)! } }]);
+      });
+      it("goes the moment the runner no longer holds it (Pi refused it, or a restart found no trace): that resend is the answer", async () => {
+        held.add(`m-1:${store.nonceOf(ID)}`);
+        const hop = pi();
+        await hop.attempt(message);
+        held.clear();
+        await expect(hop.attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(calls).toEqual([`paste:${text()}`]);
+      });
+      it("is held only under its own nonce: a forged marker of the same id in flight does not hold the real one", async () => {
+        held.add("m-1:ffffffffffffffff");
+        await expect(pi().attempt(message)).resolves.toEqual({ kind: "sent" });
+      });
+      it("a stopped seat is still reported as stopped, not as held", async () => {
+        held.add(`m-1:${store.nonceOf(ID)}`);
+        state = null;
+        await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "seat_stopped" });
+      });
+      it("a wake group goes while any of its ids is new to the runner, and waits only when every one is held", async () => {
+        store.accept({ id: messageId("m-2"), seat: SEAT, sender: "lead@r", body: "x" });
+        store.claimAttempt(store.headOf(SEAT)!, 0);
+        db.prepare("UPDATE outbox_entries SET native_nonce = 'abcdef0123456789abcdef0123456789' WHERE outbox_id = 'm-2'").run();
+        const group: SeatMessage = { ...message, ids: [ID, messageId("m-2")], body: "a\nb", bodies: ["a", "b"] };
+        held.add(`m-1:${store.nonceOf(ID)}`);
+        await expect(pi().attempt(group)).resolves.toEqual({ kind: "sent" });
+        held.add("m-2:abcdef0123456789abcdef0123456789");
+        await expect(pi().attempt(group)).resolves.toEqual({ kind: "paused", reason: "runner_held" });
+        expect(calls).toHaveLength(1);
+      });
     });
     it("a leftover line with this marker gets Enter alone (M8); any other leftover holds", async () => {
       state = { seatGate: 1, pasteLeftover: true };
@@ -632,7 +674,7 @@ describe("the hops", () => {
       foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
       screen = "[pi-runner] READY\n";
       const state: Partial<PiRunnerState> = { seatGate: 1 };
-      await new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null }).attempt(labelled);
+      await new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null, inFlight: () => false }).attempt(labelled);
       expect(calls).toEqual([`paste:${labelledText()}`]);
     });
     it("a long message whose first part went to the old occupant is cut where it was, not where the label would move it", async () => {

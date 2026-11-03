@@ -338,6 +338,8 @@ export interface PiHopDeps {
   guard: HopGuard;
   client: HopClient;
   input: HcHopInput;
+  /** The runner has this marker in flight (OF-214): its gate holds it, so a copy typed now is dropped and only noise. False when the log cannot be read. */
+  inFlight(seat: string, marker: SeatMarker): boolean;
   /** The runner's sidecar, null when it cannot be read. */
   runnerState(seat: string): PiRunnerState | null;
 }
@@ -356,6 +358,9 @@ export class PiSeatHop implements LastHop {
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
       const state = this.deps.runnerState(message.seat);
       if (state === null) return { kind: "paused", reason: "seat_stopped" };
+      // OF-214: the runner already holds every id of this text (Pi took it mid-turn and shows it when the turn's tool calls end, which can be
+      // a long while). A copy would print in the pane and be dropped: wait without typing. A text with one id the runner has not met still goes.
+      if (message.ids.every((id) => this.deps.inFlight(message.seat, { id, nonce: this.deps.rows.nonceOf(id)! }))) return { kind: "paused", reason: "runner_held" };
       if (state.pasteOpen) return { kind: "paused", reason: "busy" };
       if (state.pasteLeftover) {
         // Staged text with its Enter lost (M8): this message's marker on the line means Enter alone. Anything else is not ours to send.

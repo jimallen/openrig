@@ -113,7 +113,7 @@ interface MessageRow {
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
 const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
-const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "long_no_socket", "far_not_gated", "far_held", "far_no_state", "gate_unavailable", "lane_held"];
+const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "long_no_socket", "far_not_gated", "runner_held", "far_held", "far_no_state", "gate_unavailable", "lane_held"];
 
 function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;

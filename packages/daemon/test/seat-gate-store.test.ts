@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { piSeatGate } from "../src/adapters/seat-gate-readers.js";
-import { gateLogRecord, gateTextSha, seatGateLogPath, sessionUserTextShas, SeatGateStore, userMessageText } from "../src/adapters/seat-gate-store.js";
+import { gateLogInFlight, gateLogRecord, gateTextSha, seatGateLogPath, sessionUserTextShas, SeatGateStore, userMessageText } from "../src/adapters/seat-gate-store.js";
 
 const M = { id: "m1", nonce: "0123456789abcdef" };
 const N = { id: "m2", nonce: "fedcba9876543210" };
@@ -130,6 +130,40 @@ describe("SeatGateStore", () => {
     expect(gateLogRecord(fs.readFileSync(log, "utf8"), { ...M, nonce: "bbbbbbbbbbbbbbbb" })).toBeNull();
     store.clear(store.admit([N], "y", null)!, "t");
     expect(gateLogRecord(fs.readFileSync(log, "utf8"), N)).toBeNull();
+  });
+});
+
+describe("gateLogInFlight, the daemon's read of a held message (OF-214)", () => {
+  let dir: string;
+  let log: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "gate-")); log = seatGateLogPath(dir); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  const text = () => fs.readFileSync(log, "utf8");
+
+  it("is true from the intent until a record settles it, and only under the row's own nonce", () => {
+    const store = SeatGateStore.open(log);
+    expect(gateLogInFlight(text(), M)).toBe(false);
+    const intent = store.admit([M], "x", null)!;
+    expect(gateLogInFlight(text(), M)).toBe(true);
+    expect(gateLogInFlight(text(), { ...M, nonce: "bbbbbbbbbbbbbbbb" })).toBe(false);
+    expect(gateLogInFlight(text(), N)).toBe(false);
+    store.seen(intent, "message_start");
+    expect(gateLogInFlight(text(), M)).toBe(false);
+  });
+  it("is false again once Pi refused it or a restart found no trace of it (cleared), so the resend passes", () => {
+    const store = SeatGateStore.open(log);
+    store.clear(store.admit([M], "x", null)!, "refused_by_runtime");
+    expect(gateLogInFlight(text(), M)).toBe(false);
+    expect(SeatGateStore.open(log).admit([M], "x", null)).not.toBeNull();
+  });
+  it("agrees with the runner's own gate: in flight exactly when admit would drop a repeat and no record is seen", () => {
+    const store = SeatGateStore.open(log);
+    const intent = store.admit([M], "x", null)!;
+    expect(store.admit([M], "x", null)).toBeNull();
+    expect(gateLogInFlight(text(), M)).toBe(true);
+    store.seen(intent, "t");
+    expect(store.admit([M], "x", null)).toBeNull();
+    expect(gateLogInFlight(text(), M)).toBe(false);
   });
 });
 
