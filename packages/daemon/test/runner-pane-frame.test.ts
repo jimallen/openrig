@@ -179,6 +179,22 @@ describe("the frame's writes", () => {
     expect(frame.active).toBe(true);
     expect(log).toHaveLength(1);
   });
+  it("giving the pane back erases from the first stale row, not from the top of the pane (review F2): a frame drawn at 32 columns, a pane resized to 23x40", () => {
+    const { stream, log, frame } = rig();
+    stream.rows = 40; stream.columns = 32;
+    frame.start(); log.length = 0;
+    stream.columns = 23; stream.emit("resize");
+    // the rule drawn 32 wide is 2 rows at 23 columns, the input row 1: 3 stale rows, the first at 40 - 3 + 1 = 38
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[38;1H${ESC}[J${ESC}[r${ESC}[38;1H`)}`]);
+    expect(frame.active).toBe(false);
+  });
+  it("at exactly three stale rows the first stale row is the region's last row, and output continues there without opening a line (review F3)", () => {
+    const { stream, log, frame } = rig();
+    frame.start(); log.length = 0;
+    stream.columns = 40; stream.emit("resize");
+    // rule 80 wide is 2 rows at 40 columns, input 1: 3 stale rows, top = 24 - 3 + 1 = 22 = rows - 2
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[1;22r${ESC}[22;1H${ESC}[J${ESC}[22;1H${ESC}7${paint(24, 40, L, "", 0)}`)}`]);
+  });
   it("a pane still below the minimum on the next resize changes nothing", () => {
     const { stream, log, frame } = rig();
     frame.start();
