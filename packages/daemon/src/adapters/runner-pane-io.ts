@@ -22,6 +22,7 @@ import { PassThrough } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { formatDaemonHostForUrl } from "./daemon-url.js";
 import { rawWriterOf } from "./runner-pane-guard.js";
+import type { PaneFrame } from "./runner-pane-frame.js";
 
 // Canonical TTY buffers can overflow before Node sees even the paste terminator.
 // Use Node's line editor in raw mode, with only paste framing handled here.
@@ -61,6 +62,9 @@ export interface RunnerInputOptions {
   /** Called before the editor handles bytes that arrived. The editor's redraw starts at column 0 of the cursor's row and
    *  clears everything below, so a runner that leaves its own text on an unfinished row (a streamed reply) moves off it here. */
   beforeInput?: () => void;
+  /** OF-213: the pane's console frame (runner-pane-frame.ts), already started. The editor's echo then goes to the frame's sink and the frame
+   *  draws the input row from the editor's line and cursor; messages the editor prints itself still go to `output`, now the output region. */
+  frame?: PaneFrame;
 }
 
 /** The part of a tty's input stream the editor uses. `setRawMode` is reached only when both ends report a tty. */
@@ -89,9 +93,18 @@ export function createRunnerInput(
   }
 
   const keys = new PassThrough();
+  const frame = options.frame?.active ? options.frame : undefined;
   const editor = readline.createInterface({
-    input: keys, output, terminal: true, prompt: "", historySize: 0, crlfDelay: Infinity,
+    input: keys, output: frame ? frame.editorSink : output, terminal: true, prompt: "", historySize: 0, crlfDelay: Infinity,
   });
+  // The input row follows the editor: every echo the editor writes (an insert, a delete, a cursor move, a redraw) says its line or cursor
+  // changed, and readline has updated both before it writes. A paste or Ctrl-C sets the line itself (`setLine`) and repaints there.
+  const showInput = () => { try { frame?.setInput(editor.line, editor.cursor); } catch { /* the pane's own drawing must not break the editor */ } };
+  if (frame) {
+    const sink = frame.editorSink;
+    const write = sink.write.bind(sink) as (...args: unknown[]) => boolean;
+    sink.write = ((...args: unknown[]): boolean => { const result = write(...args); showInput(); return result; }) as typeof sink.write;
+  }
   // Node forces dumb-terminal mode without editing if TERM=dumb. When terminal: true
   // was requested, remove the dumb-mode override so VT100 line editing is preserved.
   if (Object.prototype.hasOwnProperty.call(editor, "_ttyWrite")) {
@@ -137,6 +150,7 @@ export function createRunnerInput(
     // typings mark them readonly, so assign this pair through one explicit seam.
     Object.assign(editor, { line, cursor });
     editor.prompt(true);
+    showInput();
   };
   const clear = () => setLine("", 0);
   const consume = (text: string) => {
@@ -225,7 +239,8 @@ export function createRunnerInput(
   };
   input.on("data", onData);
   input.once("end", end);
-  editor.on("line", submit);
+  // A submit echoes before it empties the line, so the row is drawn again once the line is gone.
+  editor.on("line", (line: string) => { submit(line); showInput(); });
   editor.once("close", () => {
     disarmPasteHint();
     reportPasteLeftover(false);
@@ -235,6 +250,7 @@ export function createRunnerInput(
     input.pause();
     keys.destroy();
     modeWrite("\u001b[?2004l");
+    frame?.stop();
   });
   return editor;
 }

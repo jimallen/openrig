@@ -27,7 +27,8 @@ import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
 import { createRunnerHcStatusSink, hcAppNameForSeat, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
 import { createRunnerHcTitleSink, seatBannerLine } from "./runner-hc-title.js";
-import { installPaneGuard, paneGuard, sanitizeForPane } from "./runner-pane-guard.js";
+import { installPaneGuard, paneGuard, rawWriterOf, sanitizeForPane } from "./runner-pane-guard.js";
+import { createPaneFrame, type PaneFrame } from "./runner-pane-frame.js";
 import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
 import { SeatGateStore, seatGateLogPath, userMessageText, type GateIntent } from "./seat-gate-store.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
@@ -960,14 +961,34 @@ export function wirePiRunnerInput(
   core: Pick<RunnerCore, "handleUserBlock"> & Partial<Pick<RunnerCore, "setPasteOpen" | "setPasteLeftover">>,
   input: NodeJS.ReadStream,
   output: NodeJS.WriteStream,
+  frame?: PaneFrame | null,
 ) {
   return createRunnerInput(input, output, (block) => core.handleUserBlock(block), {
     interruptInsidePaste: "content",
+    ...(frame ? { frame } : {}),
     // OF-148: `rig send` refuses while this is true (PiRuntimeAdapter.sendReadiness).
     onPasteOpenChange: (open) => core.setPasteOpen?.(open),
     // OF-153: `rig send` also refuses while the line holds a recovered lost paste (PiRuntimeAdapter.sendReadiness).
     onPasteLeftoverChange: (held) => core.setPasteLeftover?.(held),
   });
+}
+
+/** OF-213: the pane's console. On the runner's own pane (a TTY whose stdout the pane guard wraps) the output scrolls above a rule naming the seat
+ *  and an input line; elsewhere (a pipe, a test, a pane too small) nothing changes and this returns null. Every exit road gives the pane back:
+ *  the editor closing (the runner's own exit), the process exiting, and a SIGTERM or SIGHUP, which is then raised again with its default effect. */
+export function openPaneFrame(ruleLabel: string, stdout: NodeJS.WriteStream = process.stdout, stderr: NodeJS.WriteStream = process.stderr, stdin: NodeJS.ReadStream = process.stdin): PaneFrame | null {
+  const raw = rawWriterOf(stdout);
+  if (!raw || !stdin.isTTY) return null;
+  const frame = createPaneFrame({ stdout, raw, ruleLabel });
+  if (!frame) return null;
+  frame.start();
+  frame.wrap(stdout);
+  frame.wrap(stderr);
+  process.once("exit", () => frame.stop());
+  for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+    process.once(signal, () => { frame.stop(); process.kill(process.pid, signal); });
+  }
+  return frame;
 }
 
 export function parseRunnerArgs(argv: string[]): RunnerArgs {
@@ -1216,7 +1237,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // OF-213: the seat names itself first, on every start (a restart is a new runner process): the terminal's title for the pane
   // header and the listing, and one banner line on the pane. Neither depends on Pi, which runs behind this runner over RPC.
   createRunnerHcTitleSink(process.env, (text) => { paneGuard.statusWrite(text); }, args.sessionName)?.();
-  console.log(sanitizeForPane(seatBannerLine({ sessionName: args.sessionName, runtime, model: args.model })));
+  const banner = sanitizeForPane(seatBannerLine({ sessionName: args.sessionName, runtime, model: args.model }));
+  const frame = openPaneFrame(banner);
+  console.log(banner);
 
   if (runtime === "pi") {
     console.log(`[pi-runner] seat ${args.sessionName}: ${piCredentialNotice({
@@ -1411,7 +1434,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
     }
   });
-  const input = wirePiRunnerInput(core, process.stdin, process.stdout);
+  const input = wirePiRunnerInput(core, process.stdin, process.stdout, frame);
 
   if (runtime === "pi") {
     child.on("error", (err) => {

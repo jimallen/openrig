@@ -105,7 +105,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     // The symptom: before the fix this is "".
     expect((await get("verify-qa")).title).toBe("verify-qa");
     const pane = await screen("verify-qa");
-    expect(pane.split("\n")[0]!.trim()).toBe("── verify-qa · pi · openai-codex/gpt-6-luna:medium ──");
+    expect(pane.split("\n").map((l) => l.trim()), "the banner is on the pane").toContain("── verify-qa · pi · openai-codex/gpt-6-luna:medium ──");
     expect(pane, "the title record is consumed by the core, never drawn").not.toMatch(/\u001b|\]2;/);
 
     const sent = await scratch.client().call<{ started: boolean | null }>("terminal.send", { terminal: "verify-qa", text: "run one" }, { timeoutMs: 20_000 });
@@ -127,14 +127,16 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     // The symptom (reopened): the header read "pi-runner", the detected program, whatever the title was.
     expect(await until(detected, (a) => a !== "sh", "the first status record", 10_000)).toBe("verify-qa.eztrack");
     expect((await getApp("ot-pane")).status?.app).toBe("verify-qa.eztrack");
-    expect(await screen("ot-pane")).toContain("── verify-qa@eztrack · pi ·");
+    expect((await screen("ot-pane")).split("\n").map((l) => l.trim())).toContain("── verify-qa@eztrack · pi · openai-codex/gpt-6-luna:medium ──");
 
     const sent = await scratch.client().call<{ started: boolean | null }>("terminal.send", { terminal: "ot-pane", text: "flood the pane" }, { timeoutMs: 20_000 });
     expect(sent.started).toBe(true);
     await until(() => get("ot-pane"), (t) => t.status?.state === "idle" && t.turn === 1, "the flooding turn to end idle");
     const pane = await screen("ot-pane");
     expect(pane, "positive control: the flood reached the pane").toContain("flood line 299");
-    expect(pane, "the banner has scrolled off the screen").not.toContain("── verify-qa@eztrack");
+    const rows = pane.split("\n");
+    expect(rows.map((l) => l.trim()), "the banner line has scrolled off the screen").not.toContain("── verify-qa@eztrack · pi · openai-codex/gpt-6-luna:medium ──");
+    expect(rows[rows.length - 2], "but the rule naming the seat is the pane's second-last row").toContain("── verify-qa@eztrack · pi ·");
     expect(await detected(), "the detected program still names the seat").toBe("verify-qa.eztrack");
     expect((await get("ot-pane")).title).toBe("verify-qa@eztrack");
   }, 90_000);
@@ -146,6 +148,6 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     await startRunner("verify-qa");
     const pane = await until(() => screen("verify-qa"), (t) => t.includes(PI_RUNNER_READY_MARKER), "the READY marker after restart");
     expect((await get("verify-qa")).title).toBe("verify-qa");
-    expect(pane.split("\n")[0]!.trim()).toBe("── verify-qa · pi · openai-codex/gpt-6-luna:medium ──");
+    expect(pane.split("\n").map((l) => l.trim())).toContain("── verify-qa · pi · openai-codex/gpt-6-luna:medium ──");
   }, 90_000);
 });
