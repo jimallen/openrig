@@ -33,7 +33,8 @@ import { probePresence } from "./session-liveness.js";
 import { carriesDeliveryToken, deliveryKeyOf, deliveryTokenFor, withDeliveryToken } from "../adapters/hc-delivery-token.js";
 import type { DialogInput } from "../adapters/hc-dialog-input.js";
 import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
-import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
+import { findLatestSessionNameMatch, isNodeInArchivedRig } from "./latest-session-name-match.js";
+import { liveRigsNamedBy, rigHadSeat } from "./seat-messaging/seat-history.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity, BindingAttachmentType } from "./types.js";
 import { RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON, type RunnerSendReadinessSource } from "./runtime-adapter.js";
@@ -1455,6 +1456,16 @@ export class SessionTransport {
         code: "not_found",
         error: `Session '${sessionName}' not found. Check session names with: rig ps --nodes`,
       };
+    }
+
+    // OF-209 (Jim, "Refuse at send"): the name is only an ARCHIVED rig's seat. If a live rig carries the seat's rig name and never had this seat itself
+    // (its own history; other rigs of the same name prove nothing), the seat does not exist there and nothing will ever answer: refuse, queue nothing.
+    // A seat the live rig had and lost (`rig remove`) is not refused: it may get a successor.
+    if (isNodeInArchivedRig(this.db, sessionRows[0]!.node_id)) {
+      const liveRigs = liveRigsNamedBy(this.db, sessionName);
+      if (liveRigs.length > 0 && !liveRigs.some((rig) => rigHadSeat(this.db, rig.id, sessionName))) {
+        return { ok: false, code: "not_found", error: `no seat ${sessionName} in rig ${liveRigs[0]!.name} (only an archived rig of that name had it). Nothing was queued. Check seat names with: rig ps --nodes` };
+      }
     }
 
     // Ambiguity is counted over distinct rig IDS: two live rigs may share a rig NAME.

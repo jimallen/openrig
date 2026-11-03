@@ -285,7 +285,13 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     it("a message to a seat whose record was deleted waits for a successor, and goes back only when the rig is archived", async () => {
       const s = fixture(["hold"]); await s.launch();
       s.accept("m1"); daemon(s); await hopSaw(s, "claimed m1");
-      s.withDb((c) => { c.pragma("foreign_keys = OFF"); c.prepare("DELETE FROM bindings WHERE node_id = ?").run(s.nodeId); c.prepare("DELETE FROM nodes WHERE id = ?").run(s.nodeId); });
+      s.withDb((c) => {
+        // What `rig remove` leaves in the append-only event log: the launch that named the node, and its removal. This is how the pump knows the rig HAD the seat.
+        const log = c.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)");
+        log.run(s.rigId, s.nodeId, "node.launched", JSON.stringify({ type: "node.launched", rigId: s.rigId, nodeId: s.nodeId, logicalId: "x", sessionName: s.name }));
+        log.run(s.rigId, s.nodeId, "node.removed", JSON.stringify({ type: "node.removed", rigId: s.rigId, nodeId: s.nodeId }));
+        c.pragma("foreign_keys = OFF"); c.prepare("DELETE FROM bindings WHERE node_id = ?").run(s.nodeId); c.prepare("DELETE FROM nodes WHERE id = ?").run(s.nodeId);
+      });
       await wait(12_000);  // more than two pump ticks (5 s each): a premature return would show by now
       expect(s.read("m1").message_state).not.toBe("undeliverable");
       expect(queueItems(s)).toEqual([]);

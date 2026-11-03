@@ -8,7 +8,7 @@ import type { HeldMessages, MessageObligations, SeatDirectory, SeatMessagingPort
  * The pump (census-delivery-guarantees-20261101, part 2): the one retry owner. One timer; per seat, only the oldest open message, one
  * attempt at a time; every decision read from the row, so a restart resumes where the database says. An attempt is free because the
  * gate drops a repeat, so nothing here works out what happened to a send, and nothing here ever needs a person: a row leaves only on a
- * gate record, or when its seat is gone for good (Jim's decision 1).
+ * gate record, or when its seat is gone for good (Jim, 2026-11-01: it goes to a successor if there is one, labelled; it is returned only after the rig is archived, or when no live rig ever had the seat, with a true reason).
  *
  * The values are the design's, to be tuned on M7.
  */
@@ -176,7 +176,7 @@ export class MessagePump {
   private async visit(message: StoredMessage, asked: boolean): Promise<Visit> {
     const gate = this.deps.ports.gateFor(message.seat);
     if (!gate) {
-      // A row the pump took whose seat has no gate now: the seat's record went with its rig (decision 1). Any other row on a gateless seat is
+      // A row the pump took whose seat has no gate now: the seat's rig was archived, or never had the seat (Jim, 2026-11-01). Any other row on a gateless seat is
       // not the pump's, in any fate: nothing here can know what reached it. It stays as it is, and shows on health.
       const fate = message.pumpOwned ? this.deps.directory.fate(message.seat) : null;
       return fate?.kind === "gone" ? this.end(message, fate.reason) : "stop";

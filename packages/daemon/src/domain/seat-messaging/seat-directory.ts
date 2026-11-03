@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { QueueRepositoryError, type QueueRepository } from "../queue-repository.js";
 import type { SeatDeliveryGuard } from "../seat-delivery-guard.js";
 import { seatRows } from "./seat-occupant.js";
+import { liveRigsNamedBy, rigHadSeat } from "./seat-history.js";
 import type { HeldBinding, HeldMessages, HoldStatus, SeatDirectory, SeatFate, SenderReturn, SenderReturnResult } from "./pump-ports.js";
 
 /** The sender queue item's id, one per message, so a crash after the create repeats it on the same item (QueueRepository.create). */
@@ -14,8 +15,9 @@ export function returnQitemId(id: string): string {
  * A seat's fate, read from the rig records. Unarchived wins: a rig recreated under the same names is the seat's successor at the same
  * address, so it reads `live` and a message simply goes there. This build keeps no record of a successor under a different name, so
  * `successor` is never returned from here; the port carries it for when one exists.
- * With no live row, the seat's rig decides (OF-209): a live rig of that name means the seat was removed from it (`rig remove`), so the seat is `vacant`
- * and its messages wait for a successor; only when no live rig carries the name is it `gone`, and the reason then names an archived rig of that name.
+ * With no live row, the seat's rig decides (OF-209, Jim 2026-11-01): a live rig of that name that had the seat (its own event history, seat-history.ts) means
+ * it was removed (`rig remove`), so the seat is `vacant` and its messages wait for a successor; a live rig that never had it makes the seat `gone` with
+ * "no seat ... in rig ...". Only when no live rig carries the name does an archived rig of that name make it `gone` as "archived".
  */
 export class DbSeatDirectory implements SeatDirectory {
   constructor(private readonly db: Database.Database) {}
@@ -25,8 +27,13 @@ export class DbSeatDirectory implements SeatDirectory {
     const live = rows.filter((row) => row.archivedAt === null);
     if (live.length === 1) return { kind: "live", occupantGeneration: live[0]!.occupant, conversation: live[0]!.conversation };
     if (live.length > 1) return { kind: "unknown" };
-    const rig = seat.slice(seat.lastIndexOf("@") + 1);
-    if (seat.includes("@") && this.db.prepare("SELECT 1 FROM rigs WHERE name = ? AND archived_at IS NULL").get(rig) !== undefined) return { kind: "vacant", rig };
+    const liveRigs = liveRigsNamedBy(this.db, seat);
+    if (liveRigs.length > 0) {
+      // The seat's rig runs but nobody answers to the seat. If that rig had the seat it was removed, and a successor may come; if it never did (a typo, or
+      // a seat only an archived rig of the same name had), nothing will ever arrive, and the reason says so.
+      if (liveRigs.some((rig) => rigHadSeat(this.db, rig.id, seat))) return { kind: "vacant", rig: liveRigs[0]!.name };
+      return { kind: "gone", reason: `no seat ${seat} in rig ${liveRigs[0]!.name}` };
+    }
     if (rows.length > 0) return { kind: "gone", reason: `rig ${rows[0]!.rig} is archived` };
     return { kind: "gone", reason: `no seat ${seat} exists` };
   }

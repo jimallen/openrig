@@ -14,7 +14,7 @@ export interface SeatMessagingPorts {
 /** Nothing gated: the daemon's default until a gate is wired, so turning the setting on before then drives nothing. */
 export const NO_SEAT_MESSAGING_PORTS: SeatMessagingPorts = { gateFor: () => null, hopFor: () => null };
 
-/** `live` covers a stopped seat: it can come back. `gone` is for good (Jim's decision 1: the rig is archived, or its record is gone).
+/** `live` covers a stopped seat: it can come back. `gone` is for good (Jim, 2026-11-01: a message for a seat that is gone goes to its successor if there is one, labelled; it is returned to its sender only after the rig is archived, or when the seat never existed in a live rig, and the reason is true).
  *  `unknown` proves nothing, so the pump does nothing on it. */
 export type SeatFate =
   /** `occupantGeneration` is minted at every launch (lifecycle text is bound to it); `conversation` is the agent's, which a launch that resumes does not change

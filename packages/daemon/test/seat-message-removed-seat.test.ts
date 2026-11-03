@@ -21,6 +21,10 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
+import { Hono } from "hono";
+import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { SessionTransport } from "../src/domain/session-transport.js";
+import { transportRoutes } from "../src/routes/transport.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
@@ -63,7 +67,13 @@ describe("a seat removed from a live rig (OF-209)", () => {
   });
   const send = (id: string) => store.accept({ id: messageId(id), seat: SEAT, sender: "exec-cos@eztrack", body: `body of ${id}` });
   /** What the live rig did: `rig remove`'s node deletion. */
-  const removeSeat = () => rigs.deleteNode(nodeId);
+  const removeSeat = () => { recordHistory(liveRigId, nodeId, "verify.ops", SEAT); rigs.deleteNode(nodeId); };
+  /** What the daemon's event log keeps of a node after `deleteNode` (it survives on purpose): the launch that named it, and its removal. */
+  const recordHistory = (rigId: string, node: string, logicalId: string, sessionName: string) => {
+    const insert = db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)");
+    insert.run(rigId, node, "node.launched", JSON.stringify({ type: "node.launched", rigId, nodeId: node, logicalId, sessionName }));
+    insert.run(rigId, node, "node.removed", JSON.stringify({ type: "node.removed", rigId, nodeId: node }));
+  };
   /** The successor: `rig add` of the same logical id, bound to the same session name, a new occupant. */
   const addSuccessor = () => {
     const node = rigs.addNode(liveRigId, "verify.ops", { runtime: "pi" });
@@ -81,6 +91,10 @@ describe("a seat removed from a live rig (OF-209)", () => {
     for (let i = 0; i < 2; i++) {
       const old = rigs.createRig("eztrack");
       rigs.addNode(old.id, "verify.ops", { runtime: "codex" });
+      // A seat only the archived rigs ever had: one of them even removed it, so the event log names it, under THEIR rig id.
+      const ghost = rigs.addNode(old.id, "dev.ghost", { runtime: "codex" });
+      registry.registerSession(ghost.id, "dev-ghost@eztrack");
+      recordHistory(old.id, ghost.id, "dev.ghost", "dev-ghost@eztrack");
       db.prepare("UPDATE rigs SET archived_at = '2026-10-09 07:35:58' WHERE id = ?").run(old.id);
     }
     liveRigId = rigs.createRig("eztrack").id;
@@ -113,6 +127,19 @@ describe("a seat removed from a live rig (OF-209)", () => {
       removeSeat();
       db.prepare("UPDATE rigs SET archived_at = '2026-11-03 08:40:00' WHERE id = ?").run(liveRigId);
       expect(new DbSeatDirectory(db).fate(SEAT)).toEqual({ kind: "gone", reason: "rig eztrack is archived" });
+    });
+    it("is gone, 'no seat ... in rig ...', when the live rig never had the seat even though archived rigs of that name did (their history is not this rig's)", () => {
+      expect(new DbSeatDirectory(db).fate("dev-ghost@eztrack")).toEqual({ kind: "gone", reason: "no seat dev-ghost@eztrack in rig eztrack" });
+    });
+    it("is gone, 'no seat ... in rig ...', for a seat no rig ever had, with the live rig running", () => {
+      expect(new DbSeatDirectory(db).fate("typo-seat@eztrack")).toEqual({ kind: "gone", reason: "no seat typo-seat@eztrack in rig eztrack" });
+    });
+    it("is vacant when the seat's removal is recorded only by its logical id (a node.added event, no session name)", () => {
+      const node = rigs.addNode(liveRigId, "dev.byid", { runtime: "codex" });
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, 'node.added', ?)").run(liveRigId, node.id, JSON.stringify({ type: "node.added", rigId: liveRigId, nodeId: node.id, logicalId: "dev.byid" }));
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, 'node.removed', ?)").run(liveRigId, node.id, JSON.stringify({ type: "node.removed", rigId: liveRigId, nodeId: node.id }));
+      rigs.deleteNode(node.id);
+      expect(new DbSeatDirectory(db).fate("dev-byid@eztrack").kind).toBe("vacant");
     });
     it("is gone when no rig of that name exists at all", () => {
       expect(new DbSeatDirectory(db).fate("verify-ops@nowhere")).toEqual({ kind: "gone", reason: "no seat verify-ops@nowhere exists" });
@@ -151,6 +178,31 @@ describe("a seat removed from a live rig (OF-209)", () => {
       db.prepare("UPDATE rigs SET archived_at = '2026-11-03 08:40:00' WHERE id = ?").run(liveRigId);
       await pump.tick();
       expect(returned).toEqual([{ id: "m1", sender: "exec-cos@eztrack", reason: "rig eztrack is archived" }]);
+    });
+  });
+
+  describe("rig send refuses a seat the live rig never had, and queues nothing", () => {
+    const route = () => {
+      const transport = new SessionTransport({ db, rigRepo: rigs, sessionRegistry: registry, tmuxAdapter: new TmuxAdapter(async () => { throw new Error("no server running on /x"); }) });
+      const app = new Hono();
+      app.use("*", async (c, next) => { c.set("sessionTransport" as never, transport); await next(); });
+      app.route("/api/transport", transportRoutes());
+      return (session: string) => app.request("/api/transport/send", { method: "POST", headers: { "content-type": "application/json", "x-openrig-session": "exec-cos@eztrack" }, body: JSON.stringify({ session, text: "hello" }) });
+    };
+    const outboxRows = () => (db.prepare("SELECT count(*) AS n FROM outbox_entries").get() as { n: number }).n;
+
+    it("a seat only archived rigs of that name had: 404 'no seat ... in rig ...', nothing queued", async () => {
+      const res = await route()("dev-ghost@eztrack");
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as { error: string }).error).toContain("no seat dev-ghost@eztrack in rig eztrack");
+      expect(outboxRows()).toBe(0);
+    });
+    it("a seat the live rig had and lost is not refused at the name: it may get a successor", async () => {
+      // The archived twins also hold sessions under this name, as in the live database, so the name resolves.
+      for (const archived of db.prepare("SELECT n.id AS id FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE r.archived_at IS NOT NULL AND n.logical_id = 'verify.ops'").all() as Array<{ id: string }>) registry.registerSession(archived.id, SEAT);
+      removeSeat();
+      const res = await route()(SEAT);
+      expect(res.status).not.toBe(404);
     });
   });
 
