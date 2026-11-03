@@ -1317,9 +1317,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const realSeatMessagingPorts = withFarSeats(localSeatMessagingPorts, farDaemons, (id) => seatMessages.senderOf(id));
   const seatMessagingPorts = opts?.wrapSeatMessagingPorts?.(realSeatMessagingPorts) ?? realSeatMessagingPorts;
   const heldMessages = new GuardHeldMessages(deliveryGuard);
-  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(seatMessages, seatMessagingPorts)] : [];
-  // OF-200: a seat whose agent ended its terminal is a finding (read-only; it restarts nothing).
   const { SeatLostHealthSource, inventoryOfLiveRigs } = await import("./domain/seat-lost-health.js");
+  const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(seatMessages, seatMessagingPorts, undefined, (seat) => {
+    // The restart command a stuck hold names needs the seat's rig id and logical id, which the node inventory holds against its session name.
+    const entry = inventoryOfLiveRigs(db).find((e) => e.canonicalSessionName === seat);
+    return entry ? { rigId: entry.rigId, logicalId: entry.logicalId } : null;
+  })] : [];
+  // OF-200: a seat whose agent ended its terminal is a finding (read-only; it restarts nothing).
   const seatLostHealth = new SeatLostHealthSource({
     inventory: () => inventoryOfLiveRigs(db),
     waiting: (seat) => { const open = seatMessages.openBySeat().find((row) => row.seat === seat); return open ? { open: open.open, oldestId: open.oldestId } : null; },

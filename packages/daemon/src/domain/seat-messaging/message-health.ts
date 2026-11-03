@@ -1,4 +1,5 @@
 import type { HealthDetectorObservation, HealthObservationSource, HealthSourceCoverage } from "../health-detectors.js";
+import { shellWord } from "../active-occupant.js";
 import { parseSqliteUtcMs } from "../sqlite-time.js";
 import type { MessageStore } from "./message-store.js";
 import type { SeatMessagingPorts } from "./pump-ports.js";
@@ -18,6 +19,8 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
     private readonly store: MessageStore,
     private readonly ports: SeatMessagingPorts,
     private readonly clock: () => Date = () => new Date(),
+    /** The rig id and logical id of a seat's session, for the restart command a stuck hold names; null or absent when they are not known. */
+    private readonly seatRef: (seat: string) => { rigId: string; logicalId: string } | null = () => null,
   ) {}
 
   read(): readonly HealthDetectorObservation[] { return []; }
@@ -74,7 +77,8 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
       }
       // The seat's runner has the oldest message and shows it when its turn's tool calls end: nothing is sent again meanwhile (OF-214).
       if (seat.pauseReason === "runner_held" && ageMs > MESSAGE_STUCK_AFTER_MS) {
-        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its runner holds the oldest (${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min) and shows it when the running turn's tool calls end. It is not sent again; the rest wait behind it. It stays held until Pi's current turn ends. If that turn has ended or the seat looks idle, the hold is stuck: restarting the seat's runner settles it against the session file, or \`rig seat cancel-message ${seat.seat} ${seat.oldestId} --reason <why>\` ends it (it is then not delivered).`));
+        const ref = this.seatRef(seat.seat);
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its runner holds the oldest (${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min) and shows it when the running turn's tool calls end. It is not sent again; the rest wait behind it. It stays held until Pi's current turn ends. If that turn has ended or the seat looks idle, the hold is stuck. Restart the seat's runner on its own conversation, which settles the message against the session file (run these, in order):\n  rig seat stop ${shellWord(seat.seat)} --reason "<why>"\n  rig launch ${ref ? `${shellWord(ref.rigId)} ${shellWord(ref.logicalId)}` : "<rig id> <logical id>"}\nOr end the message, which is then not delivered (run this):\n  rig seat cancel-message ${shellWord(seat.seat)} ${shellWord(seat.oldestId)} --reason "<why>"`));
         continue;
       }
       if (!(ageMs > MESSAGE_STUCK_AFTER_MS)) continue;

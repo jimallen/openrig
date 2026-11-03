@@ -263,10 +263,36 @@ describe("the fleet, as the pump reads it", () => {
       expect(row[0]).toContain("its runner holds the oldest (h1");
       expect(row[0]).toContain("not sent again");
       expect(row[0]).not.toContain("keeps trying");
-      // F1 of the review: a stuck hold names its way out, with this row's own seat and id in the command.
+      // F1 of the review: a stuck hold names its way out. Each command is on its own line, with this row's own seat and id filled in.
       expect(row[0]).toContain("stays held until Pi's current turn ends");
-      expect(row[0]).toContain("restarting the seat's runner settles it against the session file");
-      expect(row[0]).toContain("`rig seat cancel-message dev@r h1 --reason <why>`");
+      expect(row[0]).toContain('\n  rig seat stop dev@r --reason "<why>"\n  rig launch <rig id> <logical id>\n');
+      expect(row[0]).toContain('\n  rig seat cancel-message dev@r h1 --reason "<why>"');
+      expect(row[0]).toContain("then not delivered");
+    });
+
+    it("OF-214: the restart command is filled from the seat's rig id and logical id, quoted as the seat.lost advice quotes them", () => {
+      const store = new MessageStore(db);
+      accept("h2");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("h2"), "runner_held", 2);
+      age("h2", MESSAGE_STUCK_AFTER_MS + 60_000);
+      const asked: string[] = [];
+      const ref = (seat: string) => { asked.push(seat); return { rigId: "01 RIG", logicalId: "it's odd" }; };
+      const row = new SeatMessagingHealthSource(new MessageStore(db), gated, () => NOW, ref).coverage().map((c) => (c as { reason: string }).reason);
+      expect(asked).toEqual(["dev@r"]);
+      expect(row[0]).toContain("\n  rig seat stop dev@r --reason \"<why>\"\n  rig launch '01 RIG' 'it'\"'\"'s odd'\n");
+    });
+
+    it("OF-214: a seat name that is not plain name characters is quoted in both commands, as a pasted line must not run it", () => {
+      const store = new MessageStore(db);
+      const odd = "a b@r";
+      accept("h3", odd);
+      store.claimAttempt(store.headOf(odd)!, 1);
+      store.recordHopPause(messageId("h3"), "runner_held", 2);
+      age("h3", MESSAGE_STUCK_AFTER_MS + 60_000);
+      const [row] = reasons();
+      expect(row).toContain("\n  rig seat stop 'a b@r' --reason");
+      expect(row).toContain("\n  rig seat cancel-message 'a b@r' h3 --reason");
     });
 
     it("names a dialog at once: nothing moves until a person answers it", () => {
