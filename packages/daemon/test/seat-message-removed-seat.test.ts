@@ -259,6 +259,8 @@ describe("a seat removed from a live rig (OF-209)", () => {
     });
     it("reports the messages the typing guard holds for the seat separately, and they wait too", async () => {
       new OutboxHandler(db).retain({ outboxId: "h1", senderSession: "exec-cos@eztrack", destinationSession: SEAT, body: "held" }, { nodeId, session: SEAT, occupant: first, pane: null });
+      new OutboxHandler(db).retain({ outboxId: "h2", senderSession: "exec-cos@eztrack", destinationSession: SEAT, body: "released" }, { nodeId, session: SEAT, occupant: first, pane: null });
+      db.prepare("UPDATE outbox_entries SET message_hold_released_at = '2026-11-03T09:00:00.000Z' WHERE outbox_id = 'h2'").run();  // the guard let it go: not held any more
       send("m1");
       const result = await lifecycle.removeNode(liveRigId, "verify.ops");
       expect(result).toMatchObject({ ok: true, pendingMessageIds: ["m1"], heldMessageIds: ["h1"] });
