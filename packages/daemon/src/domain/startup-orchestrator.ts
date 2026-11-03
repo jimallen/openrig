@@ -30,6 +30,7 @@ import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProce
 import { isResumeGoneCode, paneForegroundState, RESUME_SETTLE_MS, type PaneForegroundState, type PresentMemo } from "./resume-settle.js";
 import { readStoredJsonObject } from "./stored-json.js";
 import { registeredPaneOf } from "./binding-pane.js";
+import { runnerTerminalEnded } from "../adapters/runner-terminal-ended.js";
 import { startupTextId } from "./seat-messaging/long-message.js";
 import { messageId, type MessageId } from "./seat-messaging/ports.js";
 
@@ -555,6 +556,14 @@ export class StartupOrchestrator {
         await this.sleep(RESUME_SETTLE_MS);
         const held = await input.adapter.checkReady(input.binding);
         if (!held.ready) {
+          if (await runnerTerminalEnded(this.tmuxAdapter, input.binding.tmuxSession ?? "")) {
+            // OF-200: on hc the resumed runtime took its terminal with it when it exited inside the settle window: positive evidence, as the surviving
+            // shell with no runtime under it was before. Nothing is typed into a seat that has no terminal.
+            const native = await this.paneTail(input.binding.tmuxSession);
+            const who = resumedRuntime === "codex" ? "Codex" : "Claude";
+            errors.push(`${who} resume failed: the resumed ${who} exited right after it launched and its terminal ended with it${native ? ` — ${native}` : ""}`);
+            return this.fail(input, "failed", errors, native || undefined, false, "retry_fresh", false);
+          }
           if (isResumeGoneCode(resumedRuntime, held.code)) {
             // The phrase also appears in a healthy resumed pane whose repainted history mentions it, so it counts only
             // when the foreground is a shell with no process of the runtime under the pane. An unreadable pane proves

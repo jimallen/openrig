@@ -6,6 +6,7 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import { assessNativeResumeProbe } from "./native-resume-probe.js";
 import { nativePaneOccupancy, type NativeProcessLister, type NativeRuntime } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
+import { runnerTerminalEnded, type TerminalEndedHost } from "../adapters/runner-terminal-ended.js";
 
 /** How long a resumed runtime is given to exit. Unmeasured: a heuristic window, so typing also re-checks. */
 export const RESUME_SETTLE_MS = 2500;
@@ -19,7 +20,7 @@ export const PRESENT_MEMO_TTL_MS = 2000;
 /** One startup's remembered positive answer; mutated by paneForegroundState. */
 export interface PresentMemo { presentUntil?: number }
 
-type PaneReader = Pick<TmuxAdapter, "getPaneCommand" | "getPanePid">;
+type PaneReader = Pick<TmuxAdapter, "getPaneCommand" | "getPanePid"> & TerminalEndedHost;
 
 /** Is the resumed runtime still in this pane? A non-shell foreground command is taken as running. A shell-named
  *  foreground is not evidence either way (Claude under a launcher shell shows `zsh`; Codex shows `sh`/`bash` above
@@ -36,7 +37,9 @@ export async function paneForegroundState(runtime: NativeRuntime, input: {
   if (!input.session) return "unreadable";
   try {
     const command = await input.tmux.getPaneCommand(input.session);
-    if (!command) return "unreadable";
+    // OF-200: on hc a resumed runtime that exits takes its terminal with it, so a terminal the host positively reports gone is the runtime gone (it was a
+    // shell with no runtime under it before). A host that cannot say, or a core that cannot be asked, still reads unreadable.
+    if (!command) return (await runnerTerminalEnded(input.tmux, input.session)) ? "gone" : "unreadable";
     if (!isShellForeground(command.trim().toLowerCase())) return "runtime";
     const clock = input.now ?? Date.now;
     if (input.memo?.presentUntil !== undefined && clock() < input.memo.presentUntil) return "runtime";
@@ -62,7 +65,7 @@ export type SettledResume =
  *  agrees. An unreadable pane is `unreadable`, never `gone`. */
 export async function settleResume(runtime: NativeRuntime, input: {
   session: string;
-  tmux: Pick<TmuxAdapter, "getPaneCommand" | "getPanePid" | "capturePaneContent">;
+  tmux: Pick<TmuxAdapter, "getPaneCommand" | "getPanePid" | "capturePaneContent"> & TerminalEndedHost;
   listProcesses?: NativeProcessLister;
   sleep: (ms: number) => Promise<void>;
   settleMs?: number;
@@ -71,13 +74,21 @@ export async function settleResume(runtime: NativeRuntime, input: {
     await input.sleep(input.settleMs ?? RESUME_SETTLE_MS);
     const paneCommand = await input.tmux.getPaneCommand(input.session);
     const paneContent = (await input.tmux.capturePaneContent(input.session, 40)) ?? "";
+    const ended = await runnerTerminalEnded(input.tmux, input.session);
     // Nothing came back from either read: that is an unreadable pane, not a pane that says nothing is wrong.
-    if (!paneCommand?.trim() && !paneContent.trim()) {
+    if (!ended && !paneCommand?.trim() && !paneContent.trim()) {
       return { outcome: "unreadable", reason: "the pane could not be read at the settle check (empty pane command and capture)" };
     }
     const probe = assessNativeResumeProbe({ runtime, paneCommand, paneContent });
     if (probe.status === "attention_required") {
       return { outcome: "attention", detail: probe.detail, evidence: paneContent.split("\n").slice(-12).join("\n") };
+    }
+    // OF-200: a terminal that ended inside the settle window ended with the runtime, whatever was drawn before it went (a TUI, or the runtime's own
+    // "not found" message): positive evidence, and the same outcome the surviving shell used to give.
+    if (ended) {
+      const code = isResumeGoneCode(runtime, probe.code) ? probe.code : "returned_to_shell";
+      const tail = paneContent.split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" | ").slice(0, 400);
+      return { outcome: "gone", code, missing: code === (runtime === "codex" ? "no_saved_session" : "no_conversation_found"), tail };
     }
     // A drawn TUI above a shell prompt probes as "resumed" (the screen wins over the command), so a pane whose foreground
     // is a shell is checked against the process tree whatever the text says. The text is evidence only when it names the

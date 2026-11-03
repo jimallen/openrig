@@ -48,6 +48,64 @@ function tmuxFor(c: Clock, o: { exitsAtMs: number; upCommand: string; upPane: st
   }));
 }
 
+/** OF-200: an hc seat's resumed runtime is its terminal's own program, so when it exits the terminal ends: the foreground and the pane pid read null, the finished
+ *  terminal's screen stays readable, and the host answers `absent`. `probe` says what the host answers after the exit. */
+function hcEndedTmux(c: Clock, o: { exitsAtMs: number; upCommand: string; upPane: string; afterPane: string; hostKind?: "hc" | "tmux"; probe?: { state: "absent" } | { state: "transport_unavailable"; cause: string } }): TmuxAdapter {
+  const up = () => c.elapsed < o.exitsAtMs;
+  return mockShellCommand(Object.assign(new TmuxAdapter(async () => ""), {
+    hostKind: o.hostKind ?? "hc",
+    sendText: vi.fn(async () => ({ ok: true as const })),
+    sendKeys: vi.fn(async () => ({ ok: true as const })),
+    getPaneCommand: vi.fn(async () => up() ? o.upCommand : null),
+    capturePaneContent: vi.fn(async () => up() ? o.upPane : o.afterPane),
+    getPanePid: vi.fn(async () => up() ? 100 : null),
+    probeSession: vi.fn(async () => up() ? { state: "present" as const } : (o.probe ?? { state: "absent" as const })),
+  }));
+}
+
+describe("OF-200: a resumed runtime whose terminal ends inside the settle window is gone (hc)", () => {
+  const claude = (c: Clock, tmux: TmuxAdapter, listProcesses: NativeProcessLister = async () => [CLAUDE_PANE]) =>
+    new ClaudeResumeAdapter(tmux, { sleep: c.sleep, listProcesses }).resume("seat", "claude_id", "tok-1", "/repo");
+  const codex = (c: Clock, tmux: TmuxAdapter) =>
+    new CodexResumeAdapter(tmux, { sleep: c.sleep, listProcesses: async () => [CODEX_PANE] }).resume("seat", "codex_id", "tok-1", "/repo", undefined, undefined, "seat");
+
+  it("Claude prints 'No conversation found' and its terminal ends: retry_fresh with the native reason, not unreadable", async () => {
+    const c = clock();
+    const result = await claude(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: CLAUDE_MISSING }));
+    expect(result).toEqual({ ok: false, code: "retry_fresh", message: "Claude resume failed: no conversation found for the requested session" });
+  });
+
+  it("Claude's TUI was drawn and its terminal ends: retry_fresh, not held", async () => {
+    const c = clock();
+    const result = await claude(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: CLAUDE_TUI }));
+    expect(result).toEqual({ ok: false, code: "retry_fresh", message: "Claude resume failed: pane returned to shell instead of entering Claude" });
+  });
+
+  it("Codex prints 'No saved session found' and its terminal ends: retry_fresh with the native reason", async () => {
+    const c = clock();
+    const result = await codex(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "codex", upPane: CODEX_TUI, afterPane: CODEX_MISSING }));
+    expect(result).toMatchObject({ ok: false, code: "retry_fresh", message: expect.stringContaining("no saved session") });
+  });
+
+  it("Codex's TUI was drawn and its terminal ends: retry_fresh, not held", async () => {
+    const c = clock();
+    expect(await codex(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "codex", upPane: CODEX_TUI, afterPane: CODEX_TUI }))).toMatchObject({ ok: false, code: "retry_fresh" });
+  });
+
+  it("a core that cannot be asked is not proof: the resume is kept with the unreadable warning, as before", async () => {
+    const c = clock();
+    const result = await claude(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: CLAUDE_MISSING, probe: { state: "transport_unavailable", cause: "down" } }));
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.warnings?.join("\n")).toContain("could not be read at the settle check");
+  });
+
+  it("a tmux host that reads null is not an hc terminal that ended: the old answer stands", async () => {
+    const c = clock();
+    const result = await claude(c, hcEndedTmux(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterPane: CLAUDE_MISSING, hostKind: "tmux" }));
+    expect(result).toMatchObject({ ok: true });
+  });
+});
+
 describe("OF-167: ClaudeResumeAdapter believes 'resumed' only if Claude is still there after the settle window", () => {
   const resume = (c: Clock, tmux: TmuxAdapter, listProcesses: NativeProcessLister, opts: { settleMs?: number } = {}) =>
     new ClaudeResumeAdapter(tmux, { sleep: c.sleep, listProcesses, ...opts }).resume("seat", "claude_id", "tok-1", "/repo");

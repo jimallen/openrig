@@ -1600,6 +1600,25 @@ describe("StartupOrchestrator", () => {
       expect(t.sendText).not.toHaveBeenCalled();
     });
 
+    // OF-200: on hc the resumed Claude is its terminal's own program, so when it exits inside the settle window the terminal ends: the adapter's readiness
+    // is `not ready` with no code (the session is gone), the foreground reads null, and the host answers `absent`. That is the runtime gone, as the surviving
+    // shell with no Claude under it was; before this row it fell through and startup went on to a seat with no terminal.
+    it("hc: a resumed Claude whose terminal ended inside the settle window is failed with retry_fresh, and nothing is typed", async () => {
+      const seed = seedSession();
+      let elapsed = 0;
+      const ended = () => elapsed >= 1000;
+      const t = Object.assign(mockTmux({ capturePaneContent: vi.fn(async () => (ended() ? `${NATIVE_MESSAGE}\n` : "")), getPaneCommand: vi.fn(async () => (ended() ? null : "claude")) }),
+        { hostKind: "hc" as const, probeSession: vi.fn(async () => (ended() ? { state: "absent" as const } : { state: "present" as const })) });
+      const adapter = mockAdapter({ checkReady: vi.fn(async () => (ended() ? { ready: false, reason: "tmux session not responsive" } : { ready: true })) });
+      const orch = createOrchestrator({ tmux: t, sleep: async (ms) => { elapsed += ms; }, listProcesses: async () => PANE_WITHOUT_CLAUDE });
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("its terminal ended with it");
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
     it("reports a pane that fell back to its shell without a native message as failed, keeping the pane output", async () => {
       const seed = seedSession();
       const { adapter, orch } = exitingClaude("claude: command crashed\n$ ");

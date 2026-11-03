@@ -6,8 +6,8 @@ export interface TerminalEndedHost {
   probeSession?: (name: string) => Promise<SessionProbe>;
 }
 
-/** OF-200: on hc an agent is its terminal's own program, so the end of the runner IS the end of its terminal and readiness can no longer
- *  see "the pane is back at a shell". True only on positive evidence from an hc host (`absent`: the core answered and the terminal is
+/** OF-200: on hc an agent is its terminal's own program, so the end of the agent (a runner, or a resumed Claude or Codex) IS the end of its terminal and
+ *  readiness can no longer see "the pane is back at a shell". True only on positive evidence from an hc host (`absent`: the core answered and the terminal is
  *  finished or gone); an unreachable core, a tmux host, or a host that cannot be asked is false, so the caller keeps the answer it had. */
 export async function runnerTerminalEnded(host: TerminalEndedHost, session: string): Promise<boolean> {
   if (host.hostKind !== "hc" || typeof host.probeSession !== "function") return false;
