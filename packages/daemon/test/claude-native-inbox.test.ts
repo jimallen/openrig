@@ -407,8 +407,8 @@ describe("OF-212: a failed endpoint is probed again, and a replaced binary is vo
     });
 
     it.each([
-      ["a different version", () => "2.1.316"],
-      ["no record since the start", () => null],
+      ["a different version", (): string | null => "2.1.316"],
+      ["no record since the start", (): string | null => null],
     ] as const)("%s → fail:binary_replaced_since_start", async (_label, rv) => {
       expect((await replaced(rv)).r?.probe_result).toBe("fail:binary_replaced_since_start");
     });
@@ -445,7 +445,7 @@ describe("OF-212: a failed endpoint is probed again, and a replaced binary is vo
       expect([r?.probe_result, r?.exec_path, probed]).toEqual(["pass", FALLBACK, [FALLBACK]]);
     });
 
-    it.each([["a different version", () => "2.1.316"], ["no record since the start", () => null]] as const)(
+    it.each([["a different version", (): string | null => "2.1.316"], ["no record since the start", (): string | null => null]] as const)(
       "%s → fail:exec_path_unresolved: a file found only by name is not taken on its age", async (_label, rv) => {
         expect((await viaPath(rv)).r?.probe_result).toBe("fail:exec_path_unresolved");
       });
