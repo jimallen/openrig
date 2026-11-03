@@ -51,6 +51,10 @@ export function removeCommand(depsOverride?: StatusDeps): Command {
       }
 
       console.log(`Removed node ${res.data["logicalId"]} from rig ${res.data["rigId"]} (${res.data["sessionsKilled"]} session killed)`);
+      const pendingMessageIds = Array.isArray(res.data["pendingMessageIds"]) ? res.data["pendingMessageIds"] as string[] : [];
+      if (pendingMessageIds.length > 0) {
+        console.log(`${pendingMessageIds.length} message(s) still waiting for ${res.data["logicalId"]}: ${pendingMessageIds.join(", ")}. They stay open and go, labelled, to a seat added later at the same address; they go back to their senders only if rig ${res.data["rigId"]} is archived first.`);
+      }
       if (Array.isArray(res.data["warnings"])) {
         for (const warning of res.data["warnings"] as unknown[]) console.log(`Warning: ${String(warning)}`);
       }

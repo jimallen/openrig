@@ -194,6 +194,8 @@ export class MessagePump {
     }
     if (this.endIfNoLongerWanted(message)) return "next";
     const fate = this.deps.directory.fate(message.seat);
+    // A vacant seat (its node was removed from a live rig) has nobody to type to and is not gone: the message waits for a successor.
+    if (fate.kind === "vacant") return "stop";
     const bound = message.occupantGeneration;
     // Lifecycle text stays with the occupant it was for: a held copy goes back to its sender, never on to the new occupant.
     if (message.messageClass === "lifecycle" && message.previousOccupant !== null) {

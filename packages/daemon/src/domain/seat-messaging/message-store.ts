@@ -140,6 +140,13 @@ function toMessage(row: MessageRow): StoredMessage {
 /** Rolls a group's claim back: another claim took one of its rows first. */
 class LostClaim extends Error {}
 
+/** The ids of the open messages (those the pump still owes a delivery) addressed to any of these seat names, oldest first. */
+export function openMessageIdsFor(db: Database.Database, seats: readonly string[]): string[] {
+  if (seats.length === 0) return [];
+  const marks = seats.map(() => "?").join(", ");
+  return (db.prepare(`SELECT outbox_id AS id FROM outbox_entries WHERE destination_session IN (${marks}) AND ${OPEN} ORDER BY rowid`).all(...seats) as Array<{ id: string }>).map((r) => r.id);
+}
+
 export class MessageStore {
   private readonly outbox: OutboxHandler;
   constructor(private readonly db: Database.Database) { this.outbox = new OutboxHandler(db); }

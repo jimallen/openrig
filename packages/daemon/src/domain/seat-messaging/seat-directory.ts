@@ -14,6 +14,8 @@ export function returnQitemId(id: string): string {
  * A seat's fate, read from the rig records. Unarchived wins: a rig recreated under the same names is the seat's successor at the same
  * address, so it reads `live` and a message simply goes there. This build keeps no record of a successor under a different name, so
  * `successor` is never returned from here; the port carries it for when one exists.
+ * With no live row, the seat's rig decides (OF-209): a live rig of that name means the seat was removed from it (`rig remove`), so the seat is `vacant`
+ * and its messages wait for a successor; only when no live rig carries the name is it `gone`, and the reason then names an archived rig of that name.
  */
 export class DbSeatDirectory implements SeatDirectory {
   constructor(private readonly db: Database.Database) {}
@@ -23,6 +25,8 @@ export class DbSeatDirectory implements SeatDirectory {
     const live = rows.filter((row) => row.archivedAt === null);
     if (live.length === 1) return { kind: "live", occupantGeneration: live[0]!.occupant, conversation: live[0]!.conversation };
     if (live.length > 1) return { kind: "unknown" };
+    const rig = seat.slice(seat.lastIndexOf("@") + 1);
+    if (seat.includes("@") && this.db.prepare("SELECT 1 FROM rigs WHERE name = ? AND archived_at IS NULL").get(rig) !== undefined) return { kind: "vacant", rig };
     if (rows.length > 0) return { kind: "gone", reason: `rig ${rows[0]!.rig} is archived` };
     return { kind: "gone", reason: `no seat ${seat} exists` };
   }

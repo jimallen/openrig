@@ -21,6 +21,9 @@ export type SeatFate =
    *  (ordinary text is bound to it). Absent: the same as the generation. */
   | { readonly kind: "live"; readonly occupantGeneration: string | null; readonly conversation?: string | null }
   | { readonly kind: "successor"; readonly seat: string }
+  /** No seat answers to the name now, but its rig is live (OF-209: `rig remove` took the node out). A successor can still be added at the same
+   *  address, and until the rig is archived the message waits for it: it is neither attempted nor returned. */
+  | { readonly kind: "vacant"; readonly rig: string }
   | { readonly kind: "gone"; readonly reason: string }
   | { readonly kind: "unknown" };
 
