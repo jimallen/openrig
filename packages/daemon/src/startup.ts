@@ -1315,7 +1315,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const seatMessagingPorts = opts?.wrapSeatMessagingPorts?.(realSeatMessagingPorts) ?? realSeatMessagingPorts;
   const heldMessages = new GuardHeldMessages(deliveryGuard);
   const seatMessagingHealth = messagePumpEnabled ? [new SeatMessagingHealthSource(seatMessages, seatMessagingPorts)] : [];
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, ...seatMessagingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // OF-200: a seat whose agent ended its terminal is a finding (read-only; it restarts nothing).
+  const { SeatLostHealthSource, inventoryOfLiveRigs } = await import("./domain/seat-lost-health.js");
+  const seatLostHealth = new SeatLostHealthSource({
+    inventory: () => inventoryOfLiveRigs(db),
+    waiting: (seat) => { const open = seatMessages.openBySeat().find((row) => row.seat === seat); return open ? { open: open.open, oldestId: open.oldestId } : null; },
+  });
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, seatLostHealth, ...seatMessagingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),

@@ -21,6 +21,7 @@ import type { SessionRegistry } from "./session-registry.js";
 import { queryUsageSeries } from "./usage-series.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { RSI_FINDING_CATEGORY, RSI_FINDING_SEVERITY } from "./rsi/detector-ids.js";
+import { freshSeatLaunchCommand } from "./active-occupant.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -83,6 +84,16 @@ export type HealthDetectorObservation =
       continuity: string | null;
       warningPercent?: number;
       criticalPercent?: number;
+    })
+  /** A seat recorded running whose terminal is gone, with no supported stop behind it (OF-200: the agent is the terminal's own program, so a
+   *  crash ends the terminal and leaves no pane to look at). `waiting` is what the message pump holds for it. */
+  | (ObservationBase & {
+      kind: "seat-lost";
+      rigId: string;
+      rigName: string;
+      logicalId: string;
+      sessionName: string;
+      waiting: { open: number; oldestId: string | null } | null;
     })
   /** One counted telemetry finding. Counts and class live in the `telemetry-span` evidence;
    * `fingerprint` is the finding's stable identity (rsi/fingerprint.ts). */
@@ -396,7 +407,28 @@ function evaluateObservation(observation: HealthDetectorObservation, policy: Hea
     case "scope-admission": return evaluateAdmission(observation);
     case "context-pressure": return evaluateContext(observation);
     case "telemetry-finding": return evaluateTelemetryFinding(observation);
+    case "seat-lost": return evaluateSeatLost(observation);
   }
+}
+
+/** The prompt for a lost seat. Nothing restarts it, so the finding says so, names the seat and what waits for it, and gives the two commands. */
+function evaluateSeatLost(observation: Extract<HealthDetectorObservation, { kind: "seat-lost" }>): HealthRecord[] {
+  const seat = `${observation.logicalId}@${observation.rigName}`;
+  const open = observation.waiting?.open ?? 0;
+  const waiting = open > 0 ? `${open} message(s) waiting` : null;
+  return [record(observation, {
+    detector: "seat.lost",
+    category: "process",
+    severity: open > 0 ? "critical" : "warning",
+    summary: `Seat ${seat} lost its terminal: its agent ended and nothing restarts it${waiting ? `; ${waiting}` : ""}.`,
+    threshold: "a session recorded running whose terminal the identity reconciler found missing, with no supported stop (rig down, rig seat stop) behind it",
+    explanation: `${seat} (session ${observation.sessionName}) is recorded running, but its terminal is gone: its agent ended (a crash, an exit or a kill) and a seat's agent is its terminal's own program, so the terminal ended with it. `
+      + `OpenRig does not restart it on its own. `
+      + (waiting ? `${waiting}, the oldest ${observation.waiting?.oldestId ?? "unknown"}: they are held, not lost, and go once the seat is back. ` : "No message is waiting for it. ")
+      + `A seat stopped on purpose is not reported.`,
+    suggestedInspection: `Bring it back on its own conversation: rig launch ${observation.rigId} ${observation.logicalId}. `
+      + `Or start only this seat fresh, on a new conversation: ${freshSeatLaunchCommand(observation.logicalId, observation.rigName)}.`,
+  })];
 }
 
 /** The single evaluator for every RSI telemetry detector. Category and severity are fixed
