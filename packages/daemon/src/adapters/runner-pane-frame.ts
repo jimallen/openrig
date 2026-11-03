@@ -24,6 +24,14 @@
 // guarded writer, so nothing the model, Pi's stderr or a pasted message carries can build one. The text drawn on the two bottom rows is
 // the runner's own (the seat name, the runtime, the model) and the editor's line, with every control character replaced first.
 //
+// Resize (OF-216). The core reflows the screen BEFORE the runner hears of it (SIGWINCH): a rule drawn 200 columns wide becomes 7 rows at 32
+// columns, bottom-anchored, directly above where the new frame is painted. Measured on a private core (hc 0.1.17, through an observer
+// attach, which is painted the physical rows): the stale rows are exactly the old frame reflowed, `ceil(width / columns)` rows for the rule
+// and for the input row, ending at the last row. So on every resize the frame erases that many rows (a cursor move and `ESC[J`), sets the
+// region again, puts the output cursor on the first row it freed, and paints at the new bottom. Output above is never touched, and the
+// scrollback is not (an erase does not scroll). A pane resized below MIN_ROWS x MIN_COLUMNS is given back (region reset, frame erased,
+// writes unframed, as before the frame existed) and taken again when it is large enough.
+//
 // Not a TTY, or a pane under MIN_ROWS x MIN_COLUMNS: the frame is inactive and the runner behaves as before.
 //
 // Only node builtins and local runner helpers, so a compiled runner entry stays runnable with no daemon dependencies.
@@ -119,6 +127,13 @@ export function ruleText(label: string, columns: number): string {
   return chars.join("") + (used < columns ? ` ${"─".repeat(Math.max(0, columns - used - 1))}` : "");
 }
 
+/** Columns a drawn string takes (the rule and the input row hold no control characters). */
+function textWidth(text: string): number {
+  let width = 0;
+  for (const char of text) width += charWidth(char.codePointAt(0)!);
+  return width;
+}
+
 const CUP = (row: number, column: number) => `\u001b[${row};${column}H`;
 
 export class PaneFrame {
@@ -129,6 +144,10 @@ export class PaneFrame {
   private cursor = 0;
   private started = false;
   private stopped = false;
+  /** The pane is smaller than the frame needs: it was given back and is taken again when the pane is large enough. */
+  private suspended = false;
+  /** What the last paint put on the screen: the widths of the rule and of the input row, as logical lines. Null when nothing is drawn. */
+  private painted: { ruleWidth: number; inputWidth: number } | null = null;
   private geometry = { rows: 0, columns: 0 };
   private readonly onResize = () => { try { this.resize(); } catch { /* a closed pane is the runner's other handlers' business */ } };
   /** Where the line editor's echo goes: nowhere. The input row is drawn from the editor's line and cursor, never from its output. */
@@ -150,7 +169,7 @@ export class PaneFrame {
     return this.stdout.isTTY === true && (this.stdout.rows ?? 0) >= MIN_ROWS && (this.stdout.columns ?? 0) >= MIN_COLUMNS;
   }
 
-  get active(): boolean { return this.started && !this.stopped; }
+  get active(): boolean { return this.started && !this.stopped && !this.suspended; }
 
   /** Take the pane: what is on the screen goes up into the scrollback, the output region is set, and the rule and input row are drawn. */
   start(): void {
@@ -193,13 +212,43 @@ export class PaneFrame {
 
   private regionSequence(rows: number): string { return `\u001b[1;${rows - 2}r`; }
 
-  /** The pane changed size: the region is set again for the new height, the output cursor goes to the bottom of it, the block is redrawn. */
+  /** The pane changed size. The core has already reflowed the old frame; see the header. */
   private resize(): void {
-    if (!this.active) return;
+    if (!this.started || this.stopped) return;
     const { rows, columns } = this.measure();
-    if (rows < MIN_ROWS || columns < MIN_COLUMNS) return;
+    const fits = rows >= MIN_ROWS && columns >= MIN_COLUMNS;
+    if (!fits) {
+      if (this.suspended) return;
+      this.suspended = true;
+      this.geometry = { rows, columns };
+      // Give the pane back: the frame's rows are erased, the region is reset, the cursor is left where output will continue.
+      const top = this.firstStaleRow(rows, columns);
+      this.painted = null;
+      this.raw(`${CUP(top, 1)}\u001b[J\u001b[r${CUP(top, 1)}`);
+      return;
+    }
+    const resuming = this.suspended;
+    this.suspended = false;
     this.geometry = { rows, columns };
-    this.raw(`${this.regionSequence(rows)}${CUP(rows - 2, 1)}\u001b7${this.paint()}`);
+    const top = this.firstStaleRow(rows, columns);
+    // A pane taken again has nothing of the frame on it: three rows are scrolled up, two for the frame and one for the output to continue on.
+    // Otherwise the stale rows are erased and output continues on the first of them. When the old frame took only its own two rows (the pane
+    // only changed height, or grew wider than the frame was drawn), a line is opened at the bottom of the region so the last output line
+    // is not written over.
+    const place = resuming || this.painted === null
+      ? `${CUP(rows, 1)}\n\n\n${this.regionSequence(rows)}${CUP(rows - 2, 1)}`
+      : top <= rows - 2
+        ? `${this.regionSequence(rows)}${CUP(top, 1)}\u001b[J${CUP(top, 1)}`
+        : `${this.regionSequence(rows)}${CUP(top, 1)}\u001b[J${CUP(rows - 2, 1)}\n`;
+    this.painted = null;
+    this.raw(`${place}\u001b7${this.paint()}`);
+  }
+
+  /** The first screen row of the old frame after the core reflowed it to `columns`: its rows end at the last row. */
+  private firstStaleRow(rows: number, columns: number): number {
+    const old = this.painted;
+    const stale = old === null ? 0 : Math.max(1, Math.ceil(old.ruleWidth / columns)) + Math.max(1, Math.ceil(old.inputWidth / columns));
+    return Math.max(1, rows - stale + 1);
   }
 
   /** The rule and the input row, and the cursor on the input row. Autowrap is off while they are drawn, so a long line is clipped by the
@@ -209,6 +258,7 @@ export class PaneFrame {
     const view = inputView(this.line, this.cursor, Math.max(1, columns - INPUT_PROMPT.length - 1));
     const rule = ruleText(this.label, columns);
     const inputRow = `${INPUT_PROMPT}${view.text}`;
+    this.painted = { ruleWidth: textWidth(rule), inputWidth: textWidth(inputRow) };
     return `\u001b[?7l${CUP(rows - 1, 1)}\u001b[2K\u001b[2m${rule}\u001b[0m${CUP(rows, 1)}\u001b[2K${inputRow}${CUP(rows, INPUT_PROMPT.length + view.cursorColumn + 1)}\u001b[?7h`;
   }
 

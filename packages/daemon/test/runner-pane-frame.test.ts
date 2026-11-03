@@ -108,19 +108,93 @@ describe("the frame's writes", () => {
     frame.setInput("abc", 1);
     expect(log).toEqual([`RAW ${JSON.stringify(paint(24, 80, "── s@r · pi · m ──", "abc", 1))}`]);
   });
-  it("a resize sets the region again for the new height, puts the output cursor at its bottom, and draws the rows there", () => {
+  // OF-216. The core reflows the old frame before the runner hears of the resize; the stale rows are the old rule and input row at their
+  // old logical widths, ceil(width / newColumns) rows each, ending at the last row. The frame erases them and paints at the new bottom.
+  const L = "── s@r · pi · m ──";
+  it("a shrink erases the reflowed old frame (80 columns at 32: 3 rows for the rule, 1 for the input), opens the region again, continues output on the first freed row, and paints at the new bottom", () => {
     const { stream, log, frame } = rig();
     frame.start(); log.length = 0;
-    stream.rows = 30; stream.columns = 100;
+    stream.rows = 17; stream.columns = 32;
     stream.emit("resize");
-    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[1;28r${ESC}[28;1H${ESC}7${paint(30, 100, "── s@r · pi · m ──", "", 0)}`)}`]);
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[1;15r${ESC}[14;1H${ESC}[J${ESC}[14;1H${ESC}7${paint(17, 32, L, "", 0)}`)}`]);
   });
-  it("a resize to a pane too small for the frame changes nothing", () => {
+  it("a shrink counts the input row's own width: a typed line of 40 characters at 32 columns is 2 rows more", () => {
+    const { stream, log, frame } = rig();
+    frame.start(); frame.setInput("x".repeat(40), 40); log.length = 0;
+    stream.rows = 17; stream.columns = 32;
+    stream.emit("resize");
+    // rule 80 -> 3 rows, input "❯ " + 40 = 42 -> 2 rows: 5 stale rows, the first at row 13
+    expect(log[0]!.startsWith(`RAW ${JSON.stringify(`${ESC}[1;15r${ESC}[13;1H${ESC}[J${ESC}[13;1H${ESC}7`).slice(0, -1)}`)).toBe(true);
+  });
+  it("a growth in width (the frame was drawn at 32 columns, one row each) erases two rows and opens a line at the bottom of the region so the last output line is kept", () => {
+    const { stream, log, frame } = rig();
+    stream.columns = 32; stream.rows = 17;
+    frame.start(); log.length = 0;
+    stream.columns = 80; stream.rows = 24;
+    stream.emit("resize");
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[1;22r${ESC}[23;1H${ESC}[J${ESC}[22;1H\n${ESC}7${paint(24, 80, L, "", 0)}`)}`]);
+  });
+  it("a height change alone does the same at the new bottom", () => {
     const { stream, log, frame } = rig();
     frame.start(); log.length = 0;
-    stream.rows = 4;
+    stream.rows = 30;
     stream.emit("resize");
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[1;28r${ESC}[29;1H${ESC}[J${ESC}[28;1H\n${ESC}7${paint(30, 80, L, "", 0)}`)}`]);
+  });
+  it("two resizes in a row model the frame each time was drawn at (the second erases what the first painted, not the original)", () => {
+    const { stream, log, frame } = rig();
+    frame.start();
+    stream.rows = 17; stream.columns = 32; stream.emit("resize");
+    log.length = 0;
+    stream.rows = 24; stream.columns = 80; stream.emit("resize");
+    // drawn at 32 columns: one row for each of the rule and the input: top = 24 - 2 + 1 = 23
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[1;22r${ESC}[23;1H${ESC}[J${ESC}[22;1H\n${ESC}7${paint(24, 80, L, "", 0)}`)}`]);
+  });
+  it("a pane resized below the minimum is given back: the frame is erased, the region reset, the cursor left where output continues, and writes are unframed", () => {
+    const { stream, log, frame } = rig();
+    frame.start(); log.length = 0;
+    stream.rows = 5; stream.columns = 20;
+    stream.emit("resize");
+    // the frame drawn at 80 columns is 4 + 1 rows at 20, the whole 5-row pane
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[1;1H${ESC}[J${ESC}[r${ESC}[1;1H`)}`]);
+    expect(frame.active).toBe(false);
+    log.length = 0;
+    frame.write(() => { log.push("EMIT"); return true; });
+    frame.setInput("x", 1);
+    expect(log).toEqual(["EMIT"]);
+  });
+  it.each([
+    ["too few rows only (5 rows, 80 columns)", 5, 80],
+    ["too few columns only (24 rows, 23 columns)", 24, 23],
+  ])("%s: the pane is given back", (_name, rows, columns) => {
+    const { stream, frame } = rig();
+    frame.start();
+    stream.rows = rows; stream.columns = columns; stream.emit("resize");
+    expect(frame.active).toBe(false);
+  });
+  it("the smallest pane that holds the frame (6 rows, 24 columns) keeps it after a resize", () => {
+    const { stream, log, frame } = rig();
+    frame.start(); log.length = 0;
+    stream.rows = 6; stream.columns = 24; stream.emit("resize");
+    expect(frame.active).toBe(true);
+    expect(log).toHaveLength(1);
+  });
+  it("a pane still below the minimum on the next resize changes nothing", () => {
+    const { stream, log, frame } = rig();
+    frame.start();
+    stream.rows = 5; stream.columns = 20; stream.emit("resize");
+    log.length = 0;
+    stream.rows = 4; stream.emit("resize");
     expect(log).toEqual([]);
+  });
+  it("a pane taken again scrolls three rows up (two for the frame, one for the output), sets the region and paints", () => {
+    const { stream, log, frame } = rig();
+    frame.start();
+    stream.rows = 5; stream.columns = 20; stream.emit("resize");
+    log.length = 0;
+    stream.rows = 24; stream.columns = 80; stream.emit("resize");
+    expect(log).toEqual([`RAW ${JSON.stringify(`${ESC}[24;1H\n\n\n${ESC}[1;22r${ESC}[22;1H${ESC}7${paint(24, 80, L, "", 0)}`)}`]);
+    expect(frame.active).toBe(true);
   });
   it("stop: the region is reset and the cursor goes to the last row, once", () => {
     const { log, frame } = rig();
