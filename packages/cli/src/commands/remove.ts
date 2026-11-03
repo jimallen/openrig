@@ -55,6 +55,10 @@ export function removeCommand(depsOverride?: StatusDeps): Command {
       if (pendingMessageIds.length > 0) {
         console.log(`${pendingMessageIds.length} message(s) still waiting for ${res.data["logicalId"]}: ${pendingMessageIds.join(", ")}. They stay open and go, labelled, to a seat added later at the same address; they go back to their senders only if rig ${res.data["rigId"]} is archived first.`);
       }
+      const heldMessageIds = Array.isArray(res.data["heldMessageIds"]) ? res.data["heldMessageIds"] as string[] : [];
+      if (heldMessageIds.length > 0) {
+        console.log(`${heldMessageIds.length} message(s) held by the typing guard for ${res.data["logicalId"]}: ${heldMessageIds.join(", ")}. They wait for a seat added later at the same address, as the others do.`);
+      }
       if (Array.isArray(res.data["warnings"])) {
         for (const warning of res.data["warnings"] as unknown[]) console.log(`Warning: ${String(warning)}`);
       }

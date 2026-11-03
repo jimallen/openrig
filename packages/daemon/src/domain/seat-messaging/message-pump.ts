@@ -141,7 +141,9 @@ export class MessagePump {
     }
   }
 
-  /** No message stays held waiting for a person: it leaves the guard when the guard lifts, and at once when its seat is gone for good.
+  /** No message stays held waiting for a person: it leaves the guard when the guard lifts, and at once when its seat is gone for good (its rig is archived,
+   *  or no live rig ever had the seat; Jim, 2026-11-01). A VACANT seat (removed from a live rig, no successor yet) is not gone: its held copies wait with the
+   *  rest, and rejoin the pump, labelled, once a successor exists.
    *  A seat with no gate keeps its held rows while it lives, as it keeps everything else. */
   private rejoinHeld(): void {
     const at = new Date(this.clock()).toISOString();
@@ -195,6 +197,9 @@ export class MessagePump {
     if (this.endIfNoLongerWanted(message)) return "next";
     const fate = this.deps.directory.fate(message.seat);
     // A vacant seat (its node was removed from a live rig) has nobody to type to and is not gone: the message waits for a successor.
+    // This line comes before the lifecycle ends below, on purpose: lifecycle-class text and a previous-occupant copy for a vacant seat also WAIT (they are
+    // returned once a successor exists, as an ended occupant's text is, or once the rig is archived), rather than going back at once as they did when a
+    // removed seat read as gone. Not a time bound: none exists (the pump has none). Unconfirmed with Jim.
     if (fate.kind === "vacant") return "stop";
     const bound = message.occupantGeneration;
     // Lifecycle text stays with the occupant it was for: a held copy goes back to its sender, never on to the new occupant.

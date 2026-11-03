@@ -10,10 +10,10 @@ import type { StatusDeps } from "../src/commands/status.js";
 
 const RESPONSES: Record<string, unknown> = {
   "DELETE /api/rigs/rig-1/nodes/verify.ops": {
-    ok: true, rigId: "rig-1", nodeId: "node-9", logicalId: "verify.ops", sessionsKilled: 1, reroutedQitemIds: [], pendingMessageIds: ["1d1c6820", "5a7d140b"],
+    ok: true, rigId: "rig-1", nodeId: "node-9", logicalId: "verify.ops", sessionsKilled: 1, reroutedQitemIds: [], pendingMessageIds: ["1d1c6820", "5a7d140b"], heldMessageIds: ["h1"],
   },
   "DELETE /api/rigs/rig-1/nodes/dev.impl": {
-    ok: true, rigId: "rig-1", nodeId: "node-1", logicalId: "dev.impl", sessionsKilled: 1, reroutedQitemIds: [], pendingMessageIds: [],
+    ok: true, rigId: "rig-1", nodeId: "node-1", logicalId: "dev.impl", sessionsKilled: 1, reroutedQitemIds: [], pendingMessageIds: [], heldMessageIds: [],
   },
 };
 
@@ -76,6 +76,7 @@ describe("OF-209 rig remove reports the seat messages still waiting", () => {
     expect(output).toContain("2 message(s) still waiting for verify.ops: 1d1c6820, 5a7d140b.");
     expect(output).toContain("go, labelled, to a seat added later at the same address");
     expect(output).toContain("only if rig rig-1 is archived first");
+    expect(output).toContain("1 message(s) held by the typing guard for verify.ops: h1.");
   });
 
   it("control: says nothing about messages when none wait", async () => {

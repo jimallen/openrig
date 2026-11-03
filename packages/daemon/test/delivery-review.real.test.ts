@@ -292,13 +292,16 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         log.run(s.rigId, s.nodeId, "node.removed", JSON.stringify({ type: "node.removed", rigId: s.rigId, nodeId: s.nodeId }));
         c.pragma("foreign_keys = OFF"); c.prepare("DELETE FROM bindings WHERE node_id = ?").run(s.nodeId); c.prepare("DELETE FROM nodes WHERE id = ?").run(s.nodeId);
       });
-      await wait(12_000);  // more than two pump ticks (5 s each): a premature return would show by now
-      expect(s.read("m1").message_state).not.toBe("undeliverable");
+      // Absence cannot be waited for, only watched: poll for 12 s (more than two pump ticks of 5 s) and fail the moment it is returned.
+      for (let waited = 0; waited < 12_000; waited += 250) {
+        expect(s.read("m1").message_state, "returned while its rig runs").not.toBe("undeliverable");
+        await wait(250);
+      }
       expect(queueItems(s)).toEqual([]);
       archive(s);
       await state(s, "m1", "undeliverable");
       expect(queueItems(s).map((q) => q.d)).toEqual([s.lead]);
-    }, 40_000);
+    }, 60_000);
 
     it("a held message on an archived seat goes back, with the guard still on", async () => {
       const s = fixture(); await s.launch();

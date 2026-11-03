@@ -25,11 +25,12 @@ import { Hono } from "hono";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { transportRoutes } from "../src/routes/transport.js";
+import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "../src/domain/seat-messaging/message-label.js";
-import { messageId, type GateLookup, type LastHop, type LastHopResult, type SeatGate, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
+import { messageId, type GateLookup, type GateRecord, type LastHop, type MessageId, type LastHopResult, type SeatGate, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
 import type { HeldMessages, SenderReturn } from "../src/domain/seat-messaging/pump-ports.js";
 
 const T0 = 7_000_000;
@@ -39,7 +40,22 @@ const row = (db: Database.Database, id: string) => db.prepare("SELECT * FROM out
 
 class StubGate implements SeatGate {
   readonly version = 3;
-  async lookup(): Promise<GateLookup> { return { kind: "not_seen" }; }
+  readonly seen = new Map<string, GateRecord>();
+  record(id: string): void { this.seen.set(id, { id: messageId(id), recordedAt: "1970-01-01T02:00:00.000Z", nonce: null }); }
+  async lookup(_seat: string, id: MessageId): Promise<GateLookup> {
+    const record = this.seen.get(id);
+    return record ? { kind: "seen", record } : { kind: "not_seen" };
+  }
+}
+/** Counts how often the pump asks for a seat's head: a pump that spins on a vacant seat (answers "next" forever) would hang the suite, because its loop
+ *  only awaits microtasks and so no test timeout can fire. This one throws past a bound, which ends the loop, and the test asserts the count. */
+class CountingStore extends MessageStore {
+  headCalls = 0;
+  override headOf(seat: string): ReturnType<MessageStore["headOf"]> {
+    this.headCalls += 1;
+    if (this.headCalls > 200) throw new Error("the pump spun on a seat that should wait");
+    return super.headOf(seat);
+  }
 }
 class StubHop implements LastHop {
   readonly calls: SeatMessage[] = [];
@@ -50,7 +66,8 @@ describe("a seat removed from a live rig (OF-209)", () => {
   let db: Database.Database;
   let rigs: RigRepository;
   let registry: SessionRegistry;
-  let store: MessageStore;
+  let store: CountingStore;
+  let gate: StubGate;
   let liveRigId: string;
   let nodeId: string;
   let first: string;
@@ -63,7 +80,7 @@ describe("a seat removed from a live rig (OF-209)", () => {
   const held: HeldMessages = { status: () => "held" };
   const pumpWith = (hasGate: boolean) => new MessagePump({
     store, directory: new DbSeatDirectory(db), held, senders, clock: () => now, log: () => undefined,
-    ports: { gateFor: () => (hasGate ? new StubGate() : null), hopFor: () => (hasGate ? hop : null) },
+    ports: { gateFor: () => (hasGate ? gate : null), hopFor: () => (hasGate ? hop : null) },
   });
   const send = (id: string) => store.accept({ id: messageId(id), seat: SEAT, sender: "exec-cos@eztrack", body: `body of ${id}` });
   /** What the live rig did: `rig remove`'s node deletion. */
@@ -103,7 +120,8 @@ describe("a seat removed from a live rig (OF-209)", () => {
     registry.registerSession(nodeId, SEAT);
     registry.updateBinding(nodeId, { attachmentType: "hc", tmuxSession: SEAT });
     first = registry.mintOccupantTenure(nodeId, "initial", "native-A").generationUuid;
-    store = new MessageStore(db);
+    store = new CountingStore(db);
+    gate = new StubGate();
     now = T0; hop = new StubHop(); returned = [];
     const eventBus = new EventBus(db);
     lifecycle = new RigLifecycleService({
@@ -162,7 +180,8 @@ describe("a seat removed from a live rig (OF-209)", () => {
       expect(row(db, "m1")).toMatchObject({ message_state: "accepted", message_closed_reason: null });
       expect(row(db, "m2")).toMatchObject({ message_state: "accepted", message_closed_reason: null });
       expect(hop.calls).toEqual([]);
-    });
+      expect(store.headCalls, "the pump looked at the head a bounded number of times: it did not spin").toBeLessThan(20);
+    }, 20_000);
     it("hands them to the successor, in order, labelled, when it is added", async () => {
       send("m1"); send("m2");
       removeSeat();
@@ -174,7 +193,13 @@ describe("a seat removed from a live rig (OF-209)", () => {
       await pump.tick();
       expect(hop.calls.map((c) => c.body)).toEqual([`${PREVIOUS_OCCUPANT_LABEL} body of m1`]);
       expect(row(db, "m1")).toMatchObject({ message_previous_occupant: first });
-    });
+      // One open message per seat: the second goes only after the first is received, and it is labelled too, in order.
+      gate.record("m1");
+      await pump.tick();
+      expect(hop.calls.map((c) => c.body)).toEqual([`${PREVIOUS_OCCUPANT_LABEL} body of m1`, `${PREVIOUS_OCCUPANT_LABEL} body of m2`]);
+      expect(row(db, "m1").message_state).toBe("received");
+      expect(row(db, "m2")).toMatchObject({ message_previous_occupant: first });
+    }, 20_000);
     it("returns them to their senders, with the true reason, only when the rig is archived", async () => {
       send("m1");
       removeSeat();
@@ -231,6 +256,14 @@ describe("a seat removed from a live rig (OF-209)", () => {
       registry.registerSession(named.id, "dev-alias@eztrack");
       store.accept({ id: messageId("n1"), seat: "dev-alias@eztrack", sender: "exec-cos@eztrack", body: "x" });
       expect(await lifecycle.removeNode(liveRigId, named.id)).toMatchObject({ ok: true, pendingMessageIds: ["n1"] });
+    });
+    it("reports the messages the typing guard holds for the seat separately, and they wait too", async () => {
+      new OutboxHandler(db).retain({ outboxId: "h1", senderSession: "exec-cos@eztrack", destinationSession: SEAT, body: "held" }, { nodeId, session: SEAT, occupant: first, pane: null });
+      send("m1");
+      const result = await lifecycle.removeNode(liveRigId, "verify.ops");
+      expect(result).toMatchObject({ ok: true, pendingMessageIds: ["m1"], heldMessageIds: ["h1"] });
+      await pumpWith(true).tick();
+      expect(returned).toEqual([]);
     });
     it("reports none when nothing waits", async () => {
       const result = await lifecycle.removeNode(liveRigId, "verify.ops");

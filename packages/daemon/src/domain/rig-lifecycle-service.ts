@@ -7,7 +7,7 @@ import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { QueueRepository } from "./queue-repository.js";
 import { findOtherSessionOwner } from "./session-owner.js";
-import { openMessageIdsFor } from "./seat-messaging/message-store.js";
+import { heldMessageIdsFor, openMessageIdsFor } from "./seat-messaging/message-store.js";
 import { probePresence, type SessionPresence } from "./session-liveness.js";
 
 type ClaimedSessionRow = {
@@ -78,6 +78,8 @@ export type RemoveNodeResult =
       /** OF-209: seat messages still open for the removed seat. They are not closed: they wait for a successor at the same address and go back to
        *  their senders only if the rig is archived first. */
       pendingMessageIds: string[];
+      /** OF-209 review F2: messages the typing guard holds for the removed seat. They wait too (the pump keeps a held copy for a vacant seat). */
+      heldMessageIds: string[];
     }
   | {
       ok: false;
@@ -448,10 +450,12 @@ export class RigLifecycleService {
     }
 
     // OF-209: the seat messages still open for this seat. Removal leaves them as they are; the pump holds them for a successor (SeatFate `vacant`).
-    const pendingMessageIds = openMessageIdsFor(this.db, [...new Set([
+    const seatNames = [...new Set([
       ...(node.latest_session_name ? [node.latest_session_name] : []),
       `${node.logical_id.replace(/\./g, "-")}@${rig.rig.name}`,
-    ])]);
+    ])];
+    const pendingMessageIds = openMessageIdsFor(this.db, seatNames);
+    const heldMessageIds = heldMessageIdsFor(this.db, seatNames);
 
     const preserveDetachedClaimedSession = node.latest_session_origin === "claimed" && node.latest_session_status === "detached";
     // OF-155 (Jim, 2026-10-28): a live adopted session is not OpenRig's to kill, here as in rig down and rig seat stop.
@@ -574,6 +578,7 @@ export class RigLifecycleService {
       ...(fallbackDestination !== undefined ? { fallbackDestination } : {}),
       reroutedQitemIds: activeQitemIds,
       pendingMessageIds,
+      heldMessageIds,
     };
   }
 

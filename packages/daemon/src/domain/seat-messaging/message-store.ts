@@ -153,6 +153,18 @@ export function openMessageIdsFor(db: Database.Database, seats: readonly string[
   }
 }
 
+/** The ids of the messages the typing guard still holds for these seat names (retained, hold not released; commands are the guard's own), oldest first. */
+export function heldMessageIdsFor(db: Database.Database, seats: readonly string[]): string[] {
+  if (seats.length === 0) return [];
+  const marks = seats.map(() => "?").join(", ");
+  try {
+    return (db.prepare(`SELECT outbox_id AS id FROM outbox_entries WHERE destination_session IN (${marks}) AND delivery_state = 'retained' AND message_hold_released_at IS NULL AND class IS NOT 'command' ORDER BY rowid`).all(...seats) as Array<{ id: string }>).map((r) => r.id);
+  } catch (error) {
+    if ((error as Error).message.includes("no such table: outbox_entries")) return [];
+    throw error;
+  }
+}
+
 export class MessageStore {
   private readonly outbox: OutboxHandler;
   constructor(private readonly db: Database.Database) { this.outbox = new OutboxHandler(db); }
