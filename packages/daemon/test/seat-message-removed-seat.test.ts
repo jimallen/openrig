@@ -141,6 +141,12 @@ describe("a seat removed from a live rig (OF-209)", () => {
       rigs.deleteNode(node.id);
       expect(new DbSeatDirectory(db).fate("dev-byid@eztrack").kind).toBe("vacant");
     });
+    it("is vacant when the seat's session name is not what its logical id composes to (recorded by the session name alone)", () => {
+      const node = rigs.addNode(liveRigId, "dev.aliased", { runtime: "codex" });
+      recordHistory(liveRigId, node.id, "dev.aliased", "other-name@eztrack");
+      rigs.deleteNode(node.id);
+      expect(new DbSeatDirectory(db).fate("other-name@eztrack").kind).toBe("vacant");
+    });
     it("is gone when no rig of that name exists at all", () => {
       expect(new DbSeatDirectory(db).fate("verify-ops@nowhere")).toEqual({ kind: "gone", reason: "no seat verify-ops@nowhere exists" });
     });
@@ -196,6 +202,9 @@ describe("a seat removed from a live rig (OF-209)", () => {
       expect(res.status).toBe(404);
       expect(((await res.json()) as { error: string }).error).toContain("no seat dev-ghost@eztrack in rig eztrack");
       expect(outboxRows()).toBe(0);
+    });
+    it("control: a live seat resolves as before", async () => {
+      expect(((await (await route()(SEAT)).json()) as { error?: string }).error ?? "").not.toContain("no seat");
     });
     it("a seat the live rig had and lost is not refused at the name: it may get a successor", async () => {
       // The archived twins also hold sessions under this name, as in the live database, so the name resolves.
