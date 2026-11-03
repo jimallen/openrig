@@ -286,7 +286,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       const s = fixture(["hold"]); await s.launch();
       s.accept("m1"); daemon(s); await hopSaw(s, "claimed m1");
       s.withDb((c) => { c.pragma("foreign_keys = OFF"); c.prepare("DELETE FROM bindings WHERE node_id = ?").run(s.nodeId); c.prepare("DELETE FROM nodes WHERE id = ?").run(s.nodeId); });
-      await wait(1_500);
+      await wait(12_000);  // more than two pump ticks (5 s each): a premature return would show by now
       expect(s.read("m1").message_state).not.toBe("undeliverable");
       expect(queueItems(s)).toEqual([]);
       archive(s);
