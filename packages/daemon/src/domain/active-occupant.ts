@@ -156,6 +156,12 @@ export function absentSeatResumeHistory<T extends { id: string; nodeId: string; 
   return rows.find((session) => !!session.resumeToken?.trim() && !!session.resumeType && session.resumeType !== "none") ?? null;
 }
 
+/** One word of a command line shown to an operator: bare when it is only name characters, else single-quoted, as the CLI's missing-session advice does
+ *  (packages/cli/src/fresh-seat-advice.ts, the same rule). A member id only has to be non-empty, so a copy-pasted command must not carry one as shell. */
+export function shellWord(value: string): string {
+  return /^[A-Za-z0-9._@:-]+$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 /** The ONE command every fresh-start suggestion names for a seat that could not be resumed. It is the
  *  per-seat door: `rig seat launch` touches only that seat and works whether its siblings are live or not.
  *  `rig up --existing <rig> --fresh <seat>` is NOT offered: restore refuses a rig with any live seat
@@ -164,12 +170,6 @@ export function absentSeatResumeHistory<T extends { id: string; nodeId: string; 
  *  (The one place `rig up --existing` is named is not a fresh-start suggestion but a measured non-recommendation: the
  *  malformed-startup-context guidance in seat-startup-source.ts says why `rig down` + `rig up --existing --fresh` does not
  *  reliably heal an unreadable saved row.) */
-/** One word of a command line shown to an operator: bare when it is only name characters, else single-quoted, as the CLI's missing-session advice does
- *  (packages/cli/src/fresh-seat-advice.ts, the same rule). A member id only has to be non-empty, so a copy-pasted command must not carry one as shell. */
-export function shellWord(value: string): string {
-  return /^[A-Za-z0-9._@:-]+$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
 export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: import("./seat-startup-source.js").StartupFrom): string {
   const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
   // OF-32: a fresh seat re-reads its rig's spec by default. An operator who chose `--startup-from stored` for this

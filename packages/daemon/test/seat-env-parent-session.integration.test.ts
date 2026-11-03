@@ -8,7 +8,7 @@
 // alone, by design. hc-host.real.test.ts (PrivateCore, CLAUDECODE and HERDR_PANE_ID in the core's env, removed by the launch wrapper)
 // pins that half.
 import { describe, it, expect, afterEach } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
@@ -60,8 +60,15 @@ describe.skipIf(!findHc())("seat environment from a daemon started inside Claude
     };
     const staged = stageTopologyRoot(join(HERE, "fixtures", "scenarios", "topo-stub-baton.yaml"), join(scaffold.root, "topology"));
 
+    // The seat's terminal starts as the daemon's SHELL, run as a login shell, and the agent then replaces it in the same process (OF-200), so the process
+    // read below inherits whatever that login shell exported. A host's /etc/profile (Sparky's /etc/profile.d puts /usr/local/cuda/bin and /opt/bin on
+    // PATH) would be read as the daemon's own PATH. This login shell reads no profile, so the PATH below is exactly what the daemon handed the terminal.
+    const plainLoginShell = join(scaffold.root, "plain-login-shell");
+    writeFileSync(plainLoginShell, '#!/bin/sh\n[ "$1" = "-l" ] && shift\nexec /bin/sh "$@"\n');
+    chmodSync(plainLoginShell, 0o755);
+
     // The daemon's environment (the scaffold's) carries the parent identity; the core's does not, the daemon is the only way it gets in.
-    const daemon = await spawnScenarioDaemon({ ...scaffold, env: { ...scaffold.env, HC_SOCKET: scratch.socketPath } }, { rigBin });
+    const daemon = await spawnScenarioDaemon({ ...scaffold, env: { ...scaffold.env, SHELL: plainLoginShell, HC_SOCKET: scratch.socketPath } }, { rigBin });
     try {
       const up = await runRig(["up", staged.topologyPath, "--json", "--yes"], daemon.readEnv, rigBin, 120_000);
       expect(up.code).toBe(0);
