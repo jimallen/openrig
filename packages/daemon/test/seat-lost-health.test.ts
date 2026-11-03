@@ -89,6 +89,7 @@ describe("a seat whose terminal is gone is a finding in rig health", () => {
     expect(text).toContain(`rig launch ${RIG} dev.impl`);
     expect(text).toContain("rig seat launch 'dev.impl@lost-rig' --fresh");
     expect(text).toMatch(/nothing restarts it|does not restart/i);
+    expect(text, "the resume needs a snapshot; the finding says what to do when there is none").toMatch(/no usable snapshot/);
   });
 
   it("with messages waiting it is critical and says how many and which is oldest", () => {

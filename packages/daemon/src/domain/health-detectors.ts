@@ -427,6 +427,7 @@ function evaluateSeatLost(observation: Extract<HealthDetectorObservation, { kind
       + (waiting ? `${waiting}, the oldest ${observation.waiting?.oldestId ?? "unknown"}: they are held, not lost, and go once the seat is back. ` : "No message is waiting for it. ")
       + `A seat stopped on purpose is not reported.`,
     suggestedInspection: `Bring it back on its own conversation: rig launch ${observation.rigId} ${observation.logicalId}. `
+      + `That resumes from the rig's latest snapshot (taken periodically and at rig down): if it answers that there is no usable snapshot, a rig that only just started has none yet. `
       + `Or start only this seat fresh, on a new conversation: ${freshSeatLaunchCommand(observation.logicalId, observation.rigName)}.`,
   })];
 }
