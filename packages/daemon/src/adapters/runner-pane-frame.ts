@@ -40,7 +40,8 @@ const ELLIPSIS = "…";
 
 /** The part of a tty output stream the frame uses. A test hands a fake. */
 export interface FrameStream {
-  write: NodeJS.WriteStream["write"];
+  /** Any `write` of a stream: a pane's stdout, or a test's fake. */
+  write: (...args: never[]) => boolean;
   rows?: number;
   columns?: number;
   isTTY?: boolean;
@@ -212,7 +213,7 @@ export class PaneFrame {
   }
 
   /** Route a stream's writes into the output region. Text still passes through the stream's current (guarded) write. */
-  wrap(stream: Pick<NodeJS.WriteStream, "write">): void {
+  wrap(stream: Pick<FrameStream, "write">): void {
     const inner = stream.write.bind(stream) as (...args: unknown[]) => boolean;
     stream.write = ((...args: unknown[]): boolean => this.write(() => inner(...args))) as typeof stream.write;
   }

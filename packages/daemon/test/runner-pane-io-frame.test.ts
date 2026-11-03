@@ -1,17 +1,16 @@
 // OF-213 (widened): the line editor and the pane console together, without a core. The editor (Node's readline) still edits; with a frame its
 // echo goes nowhere and the frame draws the input row from the editor's line and cursor. Production consequence (OF-214): a pasted rig message
 // was echoed into the pane BEFORE the seat gate decided, so a refused repeat stayed visible; and a typed line was overwritten by the next output.
-import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { PaneFrame, type FrameStream } from "../src/adapters/runner-pane-frame.js";
-import { createRunnerInput, type RunnerInputStream, type RunnerOutputStream } from "../src/adapters/runner-pane-io.js";
+import { PaneFrame } from "../src/adapters/runner-pane-frame.js";
+import { createRunnerInput } from "../src/adapters/runner-pane-io.js";
 
 const ESC = "\u001b";
 
-class FakeOut extends EventEmitter {
+class FakeOut extends Writable {
   rows = 24; columns = 80; isTTY = true; writes: string[] = [];
-  write = ((chunk: unknown) => { this.writes.push(String(chunk)); return true; }) as unknown as FrameStream["write"];
+  override _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void { this.writes.push(String(chunk)); callback(); }
 }
 class FakeIn extends PassThrough {
   isTTY = true; isRaw = false;
@@ -21,11 +20,11 @@ class FakeIn extends PassThrough {
 function rig() {
   const out = new FakeOut();
   const raw: string[] = [];
-  const frame = new PaneFrame({ stdout: out as unknown as FrameStream, raw: (t) => raw.push(t), ruleLabel: "── s@r · pi ──" });
+  const frame = new PaneFrame({ stdout: out, raw: (t) => raw.push(t), ruleLabel: "── s@r · pi ──" });
   frame.start();
   const input = new FakeIn();
   const submitted: string[] = [];
-  const editor = createRunnerInput(input as unknown as RunnerInputStream, out as unknown as RunnerOutputStream, (block) => submitted.push(block), { frame });
+  const editor = createRunnerInput(input, out, (block) => submitted.push(block), { frame });
   raw.length = 0;
   out.writes.length = 0;                  // the editor's own bracketed-paste mode switch, written when it was made
   const tick = () => new Promise<void>((r) => setTimeout(r, 20));
@@ -81,7 +80,7 @@ describe("the editor with a pane console", () => {
   it("without a frame the editor echoes into the output as before", async () => {
     const out = new FakeOut();
     const input = new FakeIn();
-    createRunnerInput(input as unknown as RunnerInputStream, out as unknown as RunnerOutputStream, () => undefined);
+    createRunnerInput(input, out, () => undefined);
     input.write("hello");
     await new Promise((r) => setTimeout(r, 20));
     expect(out.writes.join("")).toContain("hello");

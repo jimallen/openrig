@@ -4,21 +4,20 @@
 // real-core proof is runner-pane-frame.real.test.ts. The escape sequences below are restated here, not imported.
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { charWidth, inputView, PaneFrame, ruleText, type FrameStream } from "../src/adapters/runner-pane-frame.js";
+import { charWidth, inputView, PaneFrame, ruleText } from "../src/adapters/runner-pane-frame.js";
 
 const ESC = "\u001b";
 
 class FakeStream extends EventEmitter {
   rows = 24; columns = 80; isTTY = true;
   writes: unknown[][] = [];
-  write = ((...args: unknown[]) => { this.writes.push(args); return true; }) as unknown as FrameStream["write"];
-  off(event: "resize", listener: () => void): this { return super.off(event, listener); }
+  write = (...args: unknown[]): boolean => { this.writes.push(args); return true; };
 }
 
 function rig(label = "── s@r · pi · m ──") {
   const stream = new FakeStream();
   const log: string[] = [];
-  const frame = new PaneFrame({ stdout: stream as unknown as FrameStream, raw: (t) => log.push(`RAW ${JSON.stringify(t)}`), ruleLabel: label });
+  const frame = new PaneFrame({ stdout: stream, raw: (t) => log.push(`RAW ${JSON.stringify(t)}`), ruleLabel: label });
   return { stream, log, frame };
 }
 // The two bottom rows for 80 columns, 24 rows, and `input` on the input line with the cursor `col` columns into it.
@@ -92,8 +91,8 @@ describe("the frame's writes", () => {
     const { stream, log, frame } = rig();
     const original = stream.write;
     const seen: unknown[][] = [];
-    stream.write = ((...a: unknown[]) => { seen.push(a); log.push("EMIT"); return true; }) as unknown as FrameStream["write"];
-    frame.start(); frame.wrap(stream as unknown as Pick<NodeJS.WriteStream, "write">); log.length = 0;
+    stream.write = (...a: unknown[]): boolean => { seen.push(a); log.push("EMIT"); return true; };
+    frame.start(); frame.wrap(stream); log.length = 0;
     const cb = () => undefined;
     stream.write("reply\n", "utf8", cb);
     expect(seen).toEqual([["reply\n", "utf8", cb]]);

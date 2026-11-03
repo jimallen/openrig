@@ -55,7 +55,7 @@ describe.skipIf(!findHc())("a Pi seat's pane is a console, through a private hc 
     expect(pi.received()).toEqual([["prompt", "hello there"]]);
     const after = await until(() => bottom("seat"), (b) => b.input.trim() === "❯", "the input line to empty");
     expect(after.input.trim()).toBe("❯");
-    await until(() => get("seat"), (t) => t.status?.state === "idle" && t.turn === 1, "the turn to end");
+    await until(() => get("seat"), (t) => t.status?.state === "idle" && (t.turn ?? 0) === 1, "the turn to end");
     const history = await pi.history("seat");
     expect(count(history, "you ▸ hello there"), "the message shows once, as the runner's own line").toBe(1);
     expect(count(history, "❯ hello there"), "the typed line was never written into the output").toBe(0);
@@ -63,7 +63,7 @@ describe.skipIf(!findHc())("a Pi seat's pane is a console, through a private hc 
 
   it("the rule and the input line stay at the bottom while 300 lines scroll past; the scrollback keeps every line once", async () => {
     await scratch.client().call("terminal.send", { terminal: "seat", text: "flood the pane" }, { timeoutMs: 20_000 });
-    await until(() => get("seat"), (t) => t.status?.state === "idle" && t.turn === 2, "the flooding turn to end");
+    await until(() => get("seat"), (t) => t.status?.state === "idle" && (t.turn ?? 0) === 2, "the flooding turn to end");
     const screen = await pi.screen("seat");
     expect(screen.some((l) => l.includes("flood line 299")), "the last flood line is on the screen").toBe(true);
     expect(screen.some((l) => l.includes("flood line 0\n") || l.endsWith("flood line 0")), "the first has scrolled off the screen").toBe(false);
@@ -80,12 +80,12 @@ describe.skipIf(!findHc())("a Pi seat's pane is a console, through a private hc 
     await pi.keys("seat", ["d", "r", "a", "f", "t"]);
     await until(() => bottom("seat"), (b) => b.input.includes("draft"), "the draft");
     await scratch.client().call("terminal.send", { terminal: "seat", text: "ping" }, { timeoutMs: 20_000 }).catch(() => undefined);
-    await until(() => get("seat"), (t) => t.status?.state === "idle" && t.turn >= 3, "the turn to end");
+    await until(() => get("seat"), (t) => t.status?.state === "idle" && (t.turn ?? 0) >= 3, "the turn to end");
     expect((await bottom("seat")).input.trim()).toBe("❯");
   }, 60_000);
 
   const paste = (id: string, body: string) => scratch.client().call("terminal.send", { terminal: "seat", text: `${body}\n${MARKER(id)}` }, { timeoutMs: 30_000 });
-  const idle = (turn: number) => until(() => get("seat"), (t) => t.status?.state === "idle" && t.turn >= turn, `idle at turn ${turn}`, 40_000);
+  const idle = (turn: number) => until(() => get("seat"), (t) => t.status?.state === "idle" && (t.turn ?? 0) >= turn, `idle at turn ${turn}`, 40_000);
 
   it("a rig message pasted through the gate is taken once and leaves no copy in the input line or the output; a refused repeat leaves nothing visible", async () => {
     const turnBefore = (await get("seat")).turn ?? 0;
