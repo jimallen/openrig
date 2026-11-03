@@ -68,6 +68,49 @@ export function sameProcess(id: ProcessIdentity): boolean {
 /** Epoch ms of a `ps lstart` string (second resolution, local time). */
 export const startedAtMs = (lstart: string): number => Date.parse(lstart);
 
+/**
+ * When a process started, in epoch ms, from the kernel's own clock: `starttime` (field 22 of /proc/<pid>/stat, in ticks of
+ * 1/100 s since boot, the same CLOCK_BOOTTIME that /proc/uptime reports) set against `uptimeSeconds` read at `nowMs`. This
+ * never goes through the boot time. `ps -o lstart=` does: it is /proc/stat `btime` (whole seconds, truncated) plus the same
+ * start tick, cut to whole seconds again, so on Linux it can name a moment up to two seconds BEFORE the process started, by
+ * an amount fixed for the boot (OF-219: 0.2 s on Sparky after its reboot onto kernel 7.0.0-1024-nvidia). null when `stat`
+ * does not parse. The command name (field 2) may hold spaces and parentheses, so fields are counted after the LAST ")".
+ */
+export function procStartedAtMs(stat: string, uptimeSeconds: number, nowMs: number): number | null {
+  const close = stat.lastIndexOf(")");
+  if (close < 0) return null;
+  const fields = stat.slice(close + 2).split(" "); // fields[0] is field 3 (state), so field 22 is fields[19]
+  const ticks = Number(fields[19]);
+  if (fields.length < 20 || !Number.isInteger(ticks) || ticks < 0 || !Number.isFinite(uptimeSeconds)) return null;
+  return nowMs - (uptimeSeconds - ticks / 100) * 1000;
+}
+
+/** Read /proc for `pid`'s start (see `procStartedAtMs`); null off Linux, when the process is gone, or when it cannot be read. */
+export function procStartedAtMsOf(pid: number): number | null {
+  if (!hasProcFs()) return null;
+  try {
+    const before = Date.now();
+    const uptime = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+    const after = Date.now();
+    return procStartedAtMs(readFileSync(`/proc/${pid}/stat`, "utf8"), uptime, (before + after) / 2);
+  } catch { return null; }
+}
+
+/** Error in `procStartedAtMs`: its 10 ms tick, the uptime read, and the clock moving between the two reads. */
+const PROC_START_SLACK_MS = 50;
+
+/**
+ * Whether the process `id` started between `fromMs` and `toMs` (epoch ms). On Linux the answer comes from /proc, to within
+ * `PROC_START_SLACK_MS`. Elsewhere only `ps`'s whole-second start is known (macOS reads it from the kernel's own process
+ * record, with no boot time in between), so the window opens at the start of the second in which it began.
+ */
+export function startedWithin(id: ProcessIdentity, fromMs: number, toMs: number): boolean {
+  const precise = procStartedAtMsOf(id.pid);
+  if (precise !== null) return precise >= fromMs - PROC_START_SLACK_MS && precise <= toMs + PROC_START_SLACK_MS;
+  const startedMs = startedAtMs(id.started);
+  return startedMs >= Math.floor(fromMs / 1000) * 1000 && startedMs <= toMs;
+}
+
 /** Pids listening on a TCP port (lsof; present on Linux and macOS). Throws if it cannot be asked: never "none" by default. */
 export function listenerPids(port: number): number[] {
   try {

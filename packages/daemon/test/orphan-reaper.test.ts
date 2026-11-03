@@ -14,8 +14,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import {
-  hasProcFs, identityOf, ownedDefaultSocket, ownedTmuxServer, processAlive, reapWhenOwnerDies, sameProcess, stopOwnedTmuxServer,
-  stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, type ProcessIdentity, type TmuxStopOptions,
+  hasProcFs, identityOf, ownedDefaultSocket, ownedTmuxServer, procStartedAtMs, processAlive, reapWhenOwnerDies, sameProcess, startedWithin,
+  stopOwnedTmuxServer, stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, type ProcessIdentity, type TmuxStopOptions,
 } from "./helpers/orphan-reaper.js";
 import { spawnScenarioDaemon } from "./helpers/scenario-daemon.js";
 import { runScenarioFile, ScenarioTeardownError } from "./helpers/scenario-pipeline.js";
@@ -89,6 +89,30 @@ describe("recorded process identity", () => {
     process.kill(-pid, "SIGKILL");
     expect(await waitGone(pid, 10_000)).toBe(true);
     expect(sameProcess(id), "dead").toBe(false);
+  }, 30_000);
+
+  // OF-219: the start time a window test uses. These rows restate the /proc recipe on their own numbers.
+  it("procStartedAtMs: field 22 of /proc/<pid>/stat in 1/100 s of uptime, counted after the LAST ')' of a command name that holds spaces and parentheses", () => {
+    const stat = (comm: string, ticks: number) => `4242 (${comm}) S 1 4242 4242 0 -1 4194304 100 0 0 0 1 2 0 0 20 0 1 0 ${ticks} 1000000 100 18446744073709551615`;
+    // uptime 1000.5 s, started at tick 99050 (990.5 s): 10 s ago.
+    expect(procStartedAtMs(stat("sleep", 99050), 1000.5, 1_700_000_000_000)).toBe(1_700_000_000_000 - 10_000);
+    expect(procStartedAtMs(stat("a b) (c d", 99050), 1000.5, 1_700_000_000_000), "a command name with spaces and a ')' in it").toBe(1_700_000_000_000 - 10_000);
+    expect(procStartedAtMs(stat("sleep", 100050), 1000.5, 1_700_000_000_000), "a process that started in the same tick").toBeCloseTo(1_700_000_000_000 - 0, -2);
+    expect(procStartedAtMs("garbage", 1000.5, 1_700_000_000_000)).toBeNull();
+    expect(procStartedAtMs(stat("sleep", 99050).split(" ").slice(0, 15).join(" "), 1000.5, 1_700_000_000_000), "too few fields").toBeNull();
+  });
+
+  it.skipIf(!hasProcFs())("startedWithin: a window holds only what started inside it, to the tick, not to the second (Linux)", async () => {
+    const before = Date.now();
+    const pid = longSleeper();
+    const id = identity(pid);
+    const after = Date.now();
+    expect(startedWithin(id, before, after), "the window that spans the start").toBe(true);
+    expect(startedWithin(id, before - 60_000, after + 60_000), "a wide window").toBe(true);
+    await sleep(1200);
+    // Started 1.2 s ago: a window that opens now excludes it, though ps (whole seconds) could not tell 1.2 s from 0.2 s.
+    expect(startedWithin(id, Date.now(), Date.now() + 60_000), "a window that opened after the start").toBe(false);
+    expect(startedWithin(id, before - 60_000, before - 1_000), "a window that closed before the start").toBe(false);
   }, 30_000);
 
   it("terminateIdentified signals only a pid that is still the recorded process", async () => {
@@ -506,6 +530,48 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
       expect(watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon"), "the watchdog is disarmed after a verified stop").toEqual([]);
     }, 60_000);
   }
+
+  // OF-219. On Linux `ps -o lstart=` is the kernel's boot time (/proc/stat btime, whole seconds, truncated) plus the process's
+  // start tick, then cut to whole seconds: it can name a moment up to two seconds BEFORE the process really started, by an
+  // amount that is fixed for the boot (measured on Sparky, kernel 7.0.0-1024-nvidia: 0.2 s, so a daemon started in the first
+  // fifth of any second was read as older than the `rig daemon start` that started it). The helper then found no daemon
+  // ("started on port N but cannot be identified") and left the real one running. This stand-in `ps` makes every start time
+  // two seconds early, the worst case, on every boot.
+  function earlyStartPs(dir: string, secondsEarly: number): string {
+    const shimDir = path.join(dir, "early-ps");
+    fs.mkdirSync(shimDir);
+    const realPs = execFileSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).trim();
+    fs.writeFileSync(path.join(shimDir, "ps"), `#!/bin/sh
+out=$('${realPs}' "$@") || exit $?
+case "$*" in
+  *lstart=*) printf '%s\\n' "$(date -d "$out ${secondsEarly} seconds ago" '+%a %b %e %H:%M:%S %Y')" ;;
+  *) printf '%s\\n' "$out" ;;
+esac
+`, { mode: 0o755 });
+    return shimDir;
+  }
+
+  it.skipIf(!hasProcFs())("identifies and stops the daemon it started when ps reports process start times up to two seconds early (Linux boot-time truncation)", async () => {
+    const dir = tempDir();
+    const shimDir = earlyStartPs(dir, 2);
+    const { bin, pidFile } = fakeRig(dir, {});
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    const realPath = process.env.PATH;
+    const realPs = execFileSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).trim();
+    cleanups.push(() => { process.env.PATH = realPath; });
+    process.env.PATH = `${shimDir}:${realPath}`;
+    const startOf = (ps: string) => execFileSync(ps, ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8" }).trim();
+    const truth = startOf(realPs);
+    expect(startOf("ps"), "positive control: the helper's ps is the stand-in, and it names an earlier start than the real one").not.toBe(truth);
+    const daemon = await spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 500 });
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    killGroup(pid);
+    expect(processAlive(pid), "positive control: the fake daemon runs before stop").toBe(true);
+    await daemon.stop();
+    expect(processAlive(pid), "the daemon was identified as started by this helper and stopped").toBe(false);
+    expect(fs.existsSync(scaffold.root), "the scaffold is removed").toBe(false);
+  }, 60_000);
 
   it("stop() verifies against what is found now (the listening port), not only daemon.json: a daemon daemon.json does not name is still stopped", async () => {
     const dir = tempDir();

@@ -18,7 +18,7 @@ import net from "node:net";
 import { join } from "node:path";
 import { assertNoForeignDaemon, type HermeticScaffold } from "./hermetic-env.js";
 import {
-  hasEnvEntry, hasProcFs, identityOf, listenerPids, pidsWithEnv, reapWhenOwnerDies, startedAtMs, stopOwnedTmuxServer, terminateIdentified,
+  hasEnvEntry, hasProcFs, identityOf, listenerPids, pidsWithEnv, reapWhenOwnerDies, startedWithin, stopOwnedTmuxServer, terminateIdentified,
   waitNotSame, type ProcessIdentity,
 } from "./orphan-reaper.js";
 
@@ -192,11 +192,8 @@ export async function spawnScenarioDaemon(
   const homeEntry = `OPENRIG_HOME=${scaffold.openrigHome}`;
   // Bounds for stopping the scaffold's tmux server: each tmux command gets at least 5 s, so a loaded host is not read as a starved one.
   const tmuxStop = { commandTimeoutMs: Math.max(5_000, 2 * stopGraceMs), graceMs: stopGraceMs };
-  const inWindow = (id: ProcessIdentity) => {
-    // ps start times have one-second resolution: a window opens at the start of the second in which its call began.
-    const startedMs = startedAtMs(id.started);
-    return windows.some((w) => startedMs >= Math.floor(w.from / 1000) * 1000 && startedMs <= w.to);
-  };
+  // The start time comes from /proc where there is one, not from ps: ps's can be up to two seconds early on Linux (OF-219).
+  const inWindow = (id: ProcessIdentity) => windows.some((w) => startedWithin(id, w.from, w.to));
   const discover = (envScan: boolean): ProcessIdentity[] => {
     const named = new Set<number>(), carrying = new Set<number>();
     try {
