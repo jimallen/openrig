@@ -98,7 +98,7 @@ export function createRunnerInput(
     input: keys, output: frame ? frame.editorSink : output, terminal: true, prompt: "", historySize: 0, crlfDelay: Infinity,
   });
   // The input row follows the editor: every echo the editor writes (an insert, a delete, a cursor move, a redraw) says its line or cursor
-  // changed, and readline has updated both before it writes. A paste or Ctrl-C sets the line itself (`setLine`) and repaints there.
+  // changed, and readline has updated both before it writes. A paste or Ctrl-C sets the line itself (`setLine`), and its redraw is one more echo.
   const showInput = () => { try { frame?.setInput(editor.line, editor.cursor); } catch { /* the pane's own drawing must not break the editor */ } };
   if (frame) {
     const sink = frame.editorSink;
@@ -149,8 +149,7 @@ export function createRunnerInput(
     // Node documents changing rl.line together with rl.cursor. The installed
     // typings mark them readonly, so assign this pair through one explicit seam.
     Object.assign(editor, { line, cursor });
-    editor.prompt(true);
-    showInput();
+    editor.prompt(true);   // redraws the line: an echo, so the input row follows
   };
   const clear = () => setLine("", 0);
   const consume = (text: string) => {
