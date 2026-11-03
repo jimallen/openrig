@@ -279,10 +279,17 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       expect(queueItems(s)).toEqual([]);
     }, 40_000);
 
-    it("a message to a seat whose record was deleted goes back too", async () => {
+    // OF-209 (Jim, 2026-11-01): a seat removed from a LIVE rig (`rig remove` deletes the node) is not gone for good: a successor can be added at the
+    // same address, so its messages wait, and go back to their senders only once the rig is archived. This row said "goes back too" at once, which
+    // returned three of exec-cos's messages as "rig eztrack is archived" while the rig ran.
+    it("a message to a seat whose record was deleted waits for a successor, and goes back only when the rig is archived", async () => {
       const s = fixture(["hold"]); await s.launch();
       s.accept("m1"); daemon(s); await hopSaw(s, "claimed m1");
       s.withDb((c) => { c.pragma("foreign_keys = OFF"); c.prepare("DELETE FROM bindings WHERE node_id = ?").run(s.nodeId); c.prepare("DELETE FROM nodes WHERE id = ?").run(s.nodeId); });
+      await wait(1_500);
+      expect(s.read("m1").message_state).not.toBe("undeliverable");
+      expect(queueItems(s)).toEqual([]);
+      archive(s);
       await state(s, "m1", "undeliverable");
       expect(queueItems(s).map((q) => q.d)).toEqual([s.lead]);
     }, 40_000);
