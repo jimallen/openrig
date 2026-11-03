@@ -20,6 +20,21 @@ describe("the title record", () => {
   it.each(["", "a\u001bb", "a\u0007b", "a\nb", "a\u009cb", "a\u007fb", "x".repeat(129)])("refuses a title a terminal parser would cut or reinterpret (%j)", (title) => {
     expect(() => hcTitleRecord(title)).toThrow();
   });
+  it("writes a non-ASCII session name as UTF-8, unchanged", () => {
+    const record = hcTitleRecord("prüfer@team");
+    expect(record).toBe(OSC2("prüfer@team"));
+    // Restated bytes: ESC ] 2 ; p r <c3 bc> f e r @ t e a m ESC \
+    expect(Buffer.from(record, "utf8").toString("hex")).toBe("1b5d323b70" + "72c3bc" + "66657240" + "7465616d" + "1b5c");
+  });
+  it.each([
+    ["U+202A", "\u202a"], ["U+202B", "\u202b"], ["U+202C", "\u202c"], ["U+202D", "\u202d"], ["U+202E", "\u202e"],
+    ["U+2066", "\u2066"], ["U+2067", "\u2067"], ["U+2068", "\u2068"], ["U+2069", "\u2069"], ["U+2028", "\u2028"], ["U+2029", "\u2029"],
+  ])("refuses a title with %s, which reorders or breaks what a person reads", (_name, ch) => {
+    expect(() => hcTitleRecord(`seat${ch}name`)).toThrow();
+  });
+  it.each(["\u2027", "\u202f", "\u2065", "\u206a"])("accepts the neighbours of those ranges (%j)", (ch) => {
+    expect(hcTitleRecord(`a${ch}b`)).toBe(OSC2(`a${ch}b`));
+  });
   it("accepts the longest title", () => {
     expect(hcTitleRecord("x".repeat(128))).toBe(OSC2("x".repeat(128)));
   });

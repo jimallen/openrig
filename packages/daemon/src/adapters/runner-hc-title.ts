@@ -16,9 +16,11 @@
 export const MAX_RUNNER_TITLE_CHARS = 128;
 
 /** The OSC 2 record that sets the terminal's title: ESC ] 2 ; <title> ESC \. A title with a control byte, a C1 byte, DEL, or
- *  no characters at all is refused, because a terminal parser would end or reinterpret the record at it. */
+ *  no characters at all is refused, because a terminal parser would end or reinterpret the record at it. A Unicode bidi control
+ *  (U+202A-202E, U+2066-2069) or a line or paragraph separator (U+2028-2029) is refused too: the title is shown to a person in the pane
+ *  header, and these reorder or break what they read. Other non-ASCII text is written as is, in UTF-8. */
 export function hcTitleRecord(title: string): string {
-  if (title.length === 0 || title.length > MAX_RUNNER_TITLE_CHARS || /[\u0000-\u001f\u007f-\u009f]/.test(title)) {
+  if (title.length === 0 || title.length > MAX_RUNNER_TITLE_CHARS || /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(title)) {
     throw new Error("hc terminal title must be 1-128 printable characters");
   }
   return `\u001b]2;${title}\u001b\\`;
