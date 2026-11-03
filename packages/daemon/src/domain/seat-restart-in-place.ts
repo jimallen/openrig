@@ -345,7 +345,9 @@ export class CodexInPlaceRestart {
     if (!terminated.ok) return this.afterFailedStop(target, report, observed, held, recoveryCommand, terminated.message, progress);
     // Respawn the dead pane WITHOUT -k (scrollback stays) with the resume command as its own command.
     progress.stage = "respawn";
-    const respawned = await this.deps.tmux.respawnPane(pane, relaunch.command, { cwd });
+    // `exec` for the reason given at the script-backed respawn: on a sh that does not exec a lone command (dash) the replacement would sit under a `sh -c`
+    // root, and the restart after this one would take that pane for a shell with Codex under it (OF-200, review F4).
+    const respawned = await this.deps.tmux.respawnPane(pane, `exec ${relaunch.command}`, { cwd });
     if (!respawned.ok) {
       return this.afterFailedStop(target, report, observed, held, recoveryCommand, `the pane could not be respawned: ${respawned.message}`, progress);
     }
@@ -586,7 +588,8 @@ export class CodexInPlaceRestart {
       if (rows.length === 0) return null;
       if (rows.some((row) => row.pid === pid && (row.startedAt ?? null) === startedAt)) return false;
       // The launch script is the terminal's program: it ends with Codex, and the terminal with it. Only a positive "ended" counts.
-      if (until === "terminal_ends") return this.deps.tmux.isPaneDead(pane);
+      // Codex is gone; if its terminal is still there the stop is not finished, and it is not "still running" either: that is not knowing yet.
+      if (until === "terminal_ends") return (await this.deps.tmux.isPaneDead(pane)) ? true : null;
       const command = await this.deps.tmux.getPaneCommand(pane);
       const root = rows.find((row) => row.pid === panePid);
       return command !== null && isShellForeground(command) && !!root;

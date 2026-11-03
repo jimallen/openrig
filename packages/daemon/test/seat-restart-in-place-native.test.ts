@@ -229,7 +229,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     expect(verified.body).toMatchObject({ ok: true, outcome: "restarted_account_unverified", accountEvidence: { state: "not_requested" } });
   }, 60_000);
 
-  it("a Codex launched the old way (a login shell above the staged script), restarted three times: shell-backed, then script-backed, then direct-native", async () => {
+  it("a Codex launched the old way (a login shell above the staged script), restarted five times: shell-backed, script-backed, then direct-native three times", async () => {
     const { pane, post } = await setup("shell_backed", { staged: true });
     const shell = await panePid(pane);
     const [oldStub] = stubPids();
@@ -243,7 +243,8 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     // REPLACED (same process, same terminal): a seat launched the old way is converted by its first restart. The second finds the staged script as the pane
     // root (script_backed) and respawns; the third finds Codex itself (direct_native).
     let current = pane;
-    for (const [round, shape] of [[1, "shell_backed"], [2, "script_backed"], [3, "direct_native"]] as const) {
+    // Rounds 4 and 5 are the ones the second-restart bug on dash would have broken: a respawned Codex that is not the terminal's own process is read as a shell.
+    for (const [round, shape] of [[1, "shell_backed"], [2, "script_backed"], [3, "direct_native"], [4, "direct_native"], [5, "direct_native"]] as const) {
       const plan = await post("restart-plan");
       expect(plan.body, `round ${round}: ${JSON.stringify(plan.body)}`).toMatchObject({ ok: true, paneShape: shape, pane: current });
       const result = await post("restart", { reason: `native harness staged round ${round}` });
@@ -260,7 +261,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
       }
       current = result.body.pane;
     }
-  }, 120_000);
+  }, 180_000);
 
   it("script-backed (OF-200): a Codex launched as its terminal's program is the staged script's child; the restart stops Codex, the terminal ends, and the resume is the new terminal's program", async () => {
     const { seat, pane, post } = await setup("script_backed");

@@ -52,6 +52,8 @@ interface WorldOptions {
   daemonStartedAt?: Date;
   /** The pane hold fails: the remain-on-exit write errors, or it doesn't read back as on. */
   holdFails?: "write" | "readback";
+  /** Script-backed: the terminal is still live for this many reads of `isPaneDead` after Codex is gone (`Infinity`: it never ends). */
+  terminalLingers?: number;
   /** The pane disappears when its process is signalled, and tmux doesn't report it dead (review-r2's case). */
   paneVanishes?: boolean;
   /** What the (fake) folder check says about the cwd the relaunch would be handed; default: a usable directory. */
@@ -113,6 +115,8 @@ function world(options: WorldOptions = {}) {
       ? [scriptRow(100), codexRow(200, 100, runningArgs, LSTART, 100)]
       : [codexRow(100, 1, runningArgs, LSTART, 100)];
   let rowsAfterRespawn = false;
+  let lingering = options.terminalLingers ?? 0;
+  const paneDeadReads: boolean[] = [];
   let paneCommand = shape === "script_backed" ? "sh" : "codex";
   let dead = false;
   let paneGone = false;
@@ -171,7 +175,12 @@ function world(options: WorldOptions = {}) {
       }
       return { ok: true };
     },
-    isPaneDead: async () => dead,
+    isPaneDead: async () => {
+      paneDeadReads.push(dead && lingering === 0);
+      if (!dead) return false;
+      if (lingering > 0) { lingering -= 1; return false; }
+      return true;
+    },
     setRemainOnExit: async (_pane: string, on: boolean): Promise<TmuxResult> => {
       calls.push(`remain-on-exit ${on ? "on" : "off"}`);
       if (options.holdFails === "write") return { ok: false, code: "unknown", message: "injected write failure" } as TmuxResult;
@@ -237,7 +246,7 @@ function world(options: WorldOptions = {}) {
   });
   const events = () => (db.prepare("SELECT type, payload FROM events WHERE type LIKE 'seat.restart_in_place%' ORDER BY seq").all() as Array<{ type: string; payload: string }>)
     .map((row) => ({ type: row.type, ...JSON.parse(row.payload) }));
-  return { db, service, node, session, calls, respawnCwds, launches, builds, events, sessionRegistry, paneAsked,
+  return { db, service, node, session, calls, paneDeadReads, respawnCwds, launches, builds, events, sessionRegistry, paneAsked,
     setRows: (next: NativeProcessRow[]) => { rows = next; },
     print: (text: string) => { paneLines.push(...text.split("\n").filter(Boolean)); } };
 }
@@ -484,7 +493,7 @@ describe("rig seat restart --keep-conversation: outcomes", () => {
     const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });
     expect(result).toMatchObject({ ok: true, outcome: "restarted_account_unverified", paneShape: "direct_native" });
     expect(result).not.toHaveProperty("paneHeld");
-    expect(w.calls).toEqual(["remain-on-exit on", "remain-on-exit on", "signalPaneProcess TERM", `respawn env CODEX_HOME='${HOME}' codex -m 'gpt-5.5' -s workspace-write resume '${TOKEN}'`,
+    expect(w.calls).toEqual(["remain-on-exit on", "remain-on-exit on", "signalPaneProcess TERM", `respawn exec env CODEX_HOME='${HOME}' codex -m 'gpt-5.5' -s workspace-write resume '${TOKEN}'`,
       "verifyResumeInPane", "restore remain-on-exit null"]);
   });
 
@@ -566,6 +575,21 @@ describe("OF-200: a Codex launched as its hc terminal's program (the staged laun
     expect(w.respawnCwds).toEqual(["/work"]);
     expect(bindingOf(w)).toMatchObject({ attachmentType: "hc", tmuxPane: null, terminalAddress: "t2" });
     expect(await w.service.verifyRestartInPlace({ seatRef: SEAT })).toMatchObject({ ok: true, outcome: "restarted_account_unverified" });
+  });
+
+  // The terminal ends a moment after Codex: the restart waits for that, reading the terminal until it reads ended, and respawns only then. A wait that
+  // returned at once would respawn over a live terminal (hc would kill and re-run it anyway, so nothing visible breaks; the order is what is pinned).
+  it("waits for the terminal to end: it is read until it reads ended, and the respawn comes after the last read", async () => {
+    const w = world({ shape: "script_backed", hc: {}, terminalLingers: 1 });
+    expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ ok: true, outcome: "restarted_account_unverified", paneShape: "script_backed" });
+    expect(w.paneDeadReads.slice(0, 2)).toEqual([false, true]);
+    expect(w.calls.indexOf(w.calls.find((call) => call.startsWith("respawn"))!)).toBeGreaterThan(w.calls.indexOf("signalPid 200 TERM"));
+  });
+
+  it("a terminal that never ends is reported unknown, and nothing is respawned over it", async () => {
+    const w = world({ shape: "script_backed", hc: {}, terminalLingers: Infinity });
+    expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ ok: true, outcome: "native_unknown", message: expect.stringContaining("terminal could not be observed") });
+    expect(w.calls.some((call) => call.startsWith("respawn"))).toBe(false);
   });
 
   it("a Codex that ignores TERM and KILL is reported still running, and nothing is respawned over it", async () => {
