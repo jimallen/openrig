@@ -144,7 +144,13 @@ class LostClaim extends Error {}
 export function openMessageIdsFor(db: Database.Database, seats: readonly string[]): string[] {
   if (seats.length === 0) return [];
   const marks = seats.map(() => "?").join(", ");
-  return (db.prepare(`SELECT outbox_id AS id FROM outbox_entries WHERE destination_session IN (${marks}) AND ${OPEN} ORDER BY rowid`).all(...seats) as Array<{ id: string }>).map((r) => r.id);
+  try {
+    return (db.prepare(`SELECT outbox_id AS id FROM outbox_entries WHERE destination_session IN (${marks}) AND ${OPEN} ORDER BY rowid`).all(...seats) as Array<{ id: string }>).map((r) => r.id);
+  } catch (error) {
+    // A curated schema with no outbox has no messages to report (as currentConversationOfSeat reads a missing table); anything else is a real fault.
+    if ((error as Error).message.includes("no such table: outbox_entries")) return [];
+    throw error;
+  }
 }
 
 export class MessageStore {
