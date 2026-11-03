@@ -99,6 +99,7 @@ data:{sessionFile:${JSON.stringify(sessionFile)},sessionId:'offline'}}));
       const by = Date.now() + 20_000;
       while (!output.includes(PI_RUNNER_READY_MARKER) && !output.includes(PI_RUNNER_ERROR_MARKER) && Date.now() < by) await new Promise((r) => setTimeout(r, 20));
       expect(output).toContain(PI_RUNNER_READY_MARKER);
+      await new Promise((r) => setTimeout(r, 400));     // the idle status record follows the READY line
       return output;
     } finally {
       child.kill("SIGTERM");
@@ -111,6 +112,12 @@ data:{sessionFile:${JSON.stringify(sessionFile)},sessionId:'offline'}}));
     const out = await runnerOutput({ HC_TERMINAL_ID: "t9" }, "verify-qa@eztrack");
     expect(out.startsWith(`${OSC2("verify-qa@eztrack")}── verify-qa@eztrack · pi · openai-codex/gpt-6-luna:medium ──\n[pi-runner] seat verify-qa@eztrack:`), JSON.stringify(out.slice(0, 200))).toBe(true);
     expect(out.split("\u001b]2;").length - 1, "the title is written once").toBe(1);
+  }, 40_000);
+
+  it("in an hc terminal: the status record names the seat as its app, not \"pi-runner\" (what the pane header shows)", async () => {
+    const out = await runnerOutput({ HC_TERMINAL_ID: "t9" }, "verify-qa@eztrack");
+    expect(out).toContain("\u001b]7501;state=idle:app=verify-qa.eztrack\u001b\\");
+    expect(out).not.toContain("app=pi-runner");
   }, 40_000);
 
   it("outside an hc terminal: the banner, and no escape bytes at all", async () => {

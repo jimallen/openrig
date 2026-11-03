@@ -25,7 +25,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
-import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
+import { createRunnerHcStatusSink, hcAppNameForSeat, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
 import { createRunnerHcTitleSink, seatBannerLine } from "./runner-hc-title.js";
 import { installPaneGuard, paneGuard, sanitizeForPane } from "./runner-pane-guard.js";
 import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
@@ -1305,7 +1305,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     },
     mirrorLine: (line) => process.stdout.write(`${sanitizeForPane(line)}\n`),
     mirrorAppend: (text) => process.stdout.write(sanitizeForPane(text)),
-    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { paneGuard.statusWrite(text); }, runtime === "omp" ? "omp-runner" : "pi-runner"),
+    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { paneGuard.statusWrite(text); },
+      // OF-213: the status record carries the seat's name as its app, which hc and the Herdr pane header show as the detected program.
+      hcAppNameForSeat(args.sessionName, runtime === "omp" ? "omp-runner" : "pi-runner")),
     postActivity: (payload) => {
       if (!endpoint || typeof fetch !== "function") return;
       const controller = new AbortController();

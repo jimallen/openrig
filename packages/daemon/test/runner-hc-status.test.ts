@@ -3,7 +3,7 @@
 // (hc-delivery.ts rows 3 and 5), so every Pi send ends `waiting`. The real-core proof is runner-hc-status.real.test.ts.
 import { describe, expect, it } from "vitest";
 import { RunnerCore, type RunnerIo } from "../src/adapters/pi-runner.js";
-import { createRunnerHcStatusSink, hcStateForActivity, hcStatusRecord, type RunnerHcState } from "../src/adapters/runner-hc-status.js";
+import { createRunnerHcStatusSink, hcAppNameForSeat, hcStateForActivity, hcStatusRecord, type RunnerHcState } from "../src/adapters/runner-hc-status.js";
 import { makeRig, runEnd, runStart, snapshotEvent } from "./helpers/pda-runner-rig.js";
 
 // Restated here on purpose (not imported from the module): the wire form hc was measured to accept, spike-hc-1-2 section 2.3.
@@ -16,6 +16,45 @@ describe("the OSC 7501 record", () => {
   });
   it.each(["a:b", "a;b", "a b", "", "a\u001b"])("refuses an app name hc would parse differently (%j)", (app) => {
     expect(() => hcStatusRecord("idle", app)).toThrow();
+  });
+});
+
+// OF-213 (reopened): the Herdr pane header shows hc's detected program, which is the `app` of the last OSC 7501 record. The grammar
+// below was measured on a private core (hc 0.1.17, Linux and macOS): letters of either case, digits and . _ + - , at most 32; any other character
+// drops the app (the state is kept); 33 or more drops the whole record, so the seat would read reported:false.
+describe("the app a seat reports (what the pane header shows)", () => {
+  it.each([
+    ["verify-qa@eztrack", "verify-qa.eztrack"],
+    ["build-arch@eztrack", "build-arch.eztrack"],
+    ["d-a@ot", "d-a.ot"],
+    ["Verify-QA@EzTrack", "Verify-QA.EzTrack"],
+    ["prüfer@team", "pr-fer.team"],
+    ["a b/c%d", "a-b-c-d"],
+    ["x_y+z.w", "x_y+z.w"],
+  ])("names the seat %j as %j", (session, app) => {
+    expect(hcAppNameForSeat(session, "pi-runner")).toBe(app);
+  });
+  it("cuts a long name to 32 characters, keeping its head", () => {
+    const app = hcAppNameForSeat("reviewer-security@a-very-long-rig-name-indeed", "pi-runner");
+    expect(app).toBe("reviewer-security.a-very-long-ri");
+    expect(app).toHaveLength(32);
+  });
+  it("falls back to the runner's own name when nothing is left", () => {
+    expect(hcAppNameForSeat("", "pi-runner")).toBe("pi-runner");
+  });
+  it("is always a record hc keeps whole: 1-32 of A-Z a-z 0-9 . _ + -", () => {
+    for (const session of ["verify-qa@eztrack", "Ünï@çödé", "x".repeat(200), "@", "A".repeat(40) + "@" + "B".repeat(40)]) {
+      expect(hcAppNameForSeat(session, "pi-runner")).toMatch(/^[A-Za-z0-9._+-]{1,32}$/);
+    }
+  });
+  it.each(["a@b", "a b", "x".repeat(33), "a/b", "a%b", "prüfer"])("refuses an app hc would drop or take the whole record down for (%j)", (app) => {
+    expect(() => hcStatusRecord("idle", app)).toThrow();
+  });
+  it("accepts an uppercase app (measured: hc keeps it)", () => {
+    expect(hcStatusRecord("idle", "Verify-QA.EzTrack")).toBe(OSC("idle", "Verify-QA.EzTrack"));
+  });
+  it("accepts the longest app", () => {
+    expect(hcStatusRecord("idle", "x".repeat(32))).toBe(OSC("idle", "x".repeat(32)));
   });
 });
 
