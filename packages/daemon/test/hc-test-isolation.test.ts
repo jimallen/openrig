@@ -249,7 +249,7 @@ describe("census: no test reaches the account's real home or a hard-coded scratc
     const scaffold = text(join(repoRoot, "packages/daemon/test/helpers/trusted-scaffold.ts"));
     expect(scaffold).not.toMatch(/return\s+accountHome\(\)/);
     expect(scaffold.match(/accountHome\(\)/g) ?? []).toHaveLength(1);
-    expect(scaffold).toMatch(/const home = accountHome\(\);[\s\S]*mkdtempSync\(join\(home, TRUSTED_RUN_ROOT_PREFIX\)\)/);
+    expect(scaffold).toMatch(/const home = accountHome\(\);[\s\S]*mkdtempSync\(join\(home, `\$\{TRUSTED_RUN_ROOT_PREFIX\}\$\{process\.pid\}-`\)\)/);
     // Positive control: the scan reached the file that makes the run root.
     expect(files.map(rel)).toContain("packages/daemon/test/helpers/trusted-scaffold.ts");
   });
