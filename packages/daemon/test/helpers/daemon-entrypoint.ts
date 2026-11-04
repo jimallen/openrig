@@ -48,6 +48,8 @@ export interface SpawnDaemonEntrypointOptions {
   nodeArgs?: string[];
   /** Upper bound on one attempt becoming healthy. */
   readyTimeoutMs: number;
+  /** Test seam: where each attempt's port comes from (default: a fresh loopback reservation). */
+  portSource?: () => Promise<number>;
   /** Attempts when the port was lost between reservation and bind (EADDRINUSE). Default 4. */
   attempts?: number;
 }
@@ -59,10 +61,10 @@ async function waitHealthy(port: number, child: ChildProcess, stderr: () => stri
   while (Date.now() < deadline) {
     if (exited) return "exited";
     try {
-      const res = await fetch(`http://${TEST_DAEMON_BIND_HOST}:${port}/healthz`);
+      const res = await fetch(`http://${TEST_DAEMON_BIND_HOST}:${port}/healthz`, { signal: AbortSignal.timeout(2_000) });
       if (res.status === 200) return "ready";
     } catch {
-      // not up yet
+      // not up yet, or something else holds the port and never answers (a lost race): the loop re-checks the child's exit
     }
     await new Promise((r) => setTimeout(r, 150));
   }
@@ -74,7 +76,7 @@ export async function spawnDaemonEntrypoint(opts: SpawnDaemonEntrypointOptions):
   const attempts = opts.attempts ?? 4;
   let lastStderr = "";
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const port = await getFreeLoopbackPort();
+    const port = await (opts.portSource ?? getFreeLoopbackPort)();
     const env: Record<string, string | undefined> = {
       ...process.env,
       ...opts.env,

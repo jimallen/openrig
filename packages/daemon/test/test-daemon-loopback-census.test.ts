@@ -14,6 +14,7 @@
 //     naming 100.64.0.1, which proves the instrument sees the tailnet attempt. The scenario-daemon route (`rig daemon start`
 //     under the hermetic scaffold) is checked the same way where the CLI and an hc binary exist.
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,7 +23,7 @@ import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
-import { killIfRunning, spawnDaemonEntrypoint, TEST_DAEMON_BIND_HOST } from "./helpers/daemon-entrypoint.js";
+import { getFreeLoopbackPort, killIfRunning, spawnDaemonEntrypoint, TEST_DAEMON_BIND_HOST } from "./helpers/daemon-entrypoint.js";
 import { spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -150,6 +151,24 @@ describe("B. a test daemon binds loopback only, on a host that looks like it has
     expect(health.bind?.mode).toBe("explicit");
     expect(health.bind?.hosts.filter((h) => !LOOPBACK(h))).toEqual([]);
     expect(daemon.stderr()).not.toContain(FAKE_TAILNET_ADDRESS);
+  }, CEILING_MS);
+
+  it("a port lost between reservation and bind (EADDRINUSE) is retried on another port instead of failing the test", async () => {
+    // A listener holds the first port the helper is offered, on loopback: the daemon's loopback bind to it fails with EADDRINUSE.
+    const holder = createServer();
+    await new Promise<void>((resolve) => holder.listen(0, TEST_DAEMON_BIND_HOST, resolve));
+    running.push(() => holder.close());
+    const held = (holder.address() as { port: number }).port;
+    const offered: number[] = [];
+    const daemon = await spawnDaemonEntrypoint({
+      home: tempDir(),
+      readyTimeoutMs: CEILING_MS - 20_000,
+      portSource: async () => { const port = offered.length === 0 ? held : await getFreeLoopbackPort(); offered.push(port); return port; },
+    });
+    running.push(() => killIfRunning(daemon.child));
+    expect(offered.length).toBe(2);
+    expect(daemon.port).toBe(offered[1]);
+    expect(daemon.port).not.toBe(held);
   }, CEILING_MS);
 
   it("CONTROL: the same child without the pin takes the default plan and tries the tailnet address (the instrument sees it)", async () => {
