@@ -225,6 +225,28 @@ describe("TanStack Query hooks", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"] });
   });
 
+  // OF-226: the harness passes { yaml }; what the daemon receives is the raw yaml as the body of a text/yaml POST (not "[object Object]",
+  // not JSON, not undefined), with no X-Rig-Root header when no rigRoot was given.
+  it("useImportRig POSTs the yaml text as the raw text/yaml body", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ rigId: "new-rig", specName: "test", nodes: [] }),
+    });
+
+    render(<Wrapper><ImportHarness /></Wrapper>);
+    act(() => { screen.getByTestId("import").click(); });
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("success"));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith("/api/rigs/import", {
+      method: "POST",
+      headers: { "Content-Type": "text/yaml" },
+      body: "yaml content",
+    });
+    // toHaveBeenCalledWith treats an undefined property as absent; the header must not be sent at all.
+    expect(Object.keys((mockFetch.mock.calls[0][1] as RequestInit).headers as Record<string, string>)).toEqual(["Content-Type"]);
+  });
+
   // slice-04 qitem-20260721000001-ps-stall-driver — U2 (regression pin; genuine RED
   // at the test-only gate, green now): both the ps and default-summary queryFns
   // forward the TanStack AbortSignal to fetch, and cancelQueries aborts it. Pre-fix,

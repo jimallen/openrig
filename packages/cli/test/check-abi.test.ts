@@ -13,7 +13,7 @@ describe("postinstall ABI check", () => {
       nodeVersion: "v22.22.1",
       loadNativeAddon: () => {},
     });
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ ok: true });
   });
 
   it("refuses Node 20 before loading the native addon", () => {
@@ -24,7 +24,6 @@ describe("postinstall ABI check", () => {
     });
     expect(result.ok).toBe(false);
     expect(addonCalled).toBe(false);
-    if (result.ok) return;
     expect(messageOf(result)).toContain("requires Node.js 22 or 24");
     expect(messageOf(result)).toContain("Node 20 is no longer supported");
     expect(messageOf(result)).toContain("v20.20.2");
@@ -36,7 +35,7 @@ describe("postinstall ABI check", () => {
       nodeVersion: "v24.0.0",
       loadNativeAddon: () => {},
     });
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ ok: true });
   });
 
   it("fails on odd-numbered Node 25 with honest error + fix command", () => {
@@ -133,10 +132,9 @@ describe("postinstall ABI check", () => {
       loadNativeAddon: () => {},
       openNativeDatabase: () => ({ ok: true }),
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.warning).toContain("Node 26 is untested");
-    expect(result.warning).toContain("Supported: Node.js 22 and 24");
+    // The whole ok result, not a narrowed field: an ok:true that lost or changed its warning fails here.
+    expect(result).toEqual({ ok: true, warning: expect.stringContaining("Node 26 is untested") });
+    expect(result).toEqual({ ok: true, warning: expect.stringContaining("Supported: Node.js 22 and 24") });
   });
 
   it("does not warn on supported majors", () => {
@@ -155,7 +153,6 @@ describe("postinstall ABI check", () => {
       openNativeDatabase: () => ({ ok: false, detail: "database open was killed by SIGSEGV" }),
     });
     expect(result.ok).toBe(false);
-    if (result.ok) return;
     expect(messageOf(result)).toContain("could not open a database");
     expect(messageOf(result)).toContain("SIGSEGV");
     expect(messageOf(result)).toContain("npm rebuild better-sqlite3");
@@ -183,10 +180,8 @@ describe("openInChildProcess", () => {
 
   it("reports a non-zero exit with the tail of stderr", () => {
     const out = openInChildProcess("/x/better-sqlite3", fake({ status: 1, stderr: "a\nb\nError: boom" }));
-    expect(out.ok).toBe(false);
-    if (out.ok) return;
-    expect(out.detail).toContain("exited 1");
-    expect(out.detail).toContain("Error: boom");
+    expect(out).toEqual({ ok: false, detail: expect.stringContaining("exited 1") });
+    expect(out).toEqual({ ok: false, detail: expect.stringContaining("Error: boom") });
   });
 
   it("passes the resolved addon path to a fresh Node process", () => {
