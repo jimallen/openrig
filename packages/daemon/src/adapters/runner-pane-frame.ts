@@ -27,7 +27,7 @@
 // Resize (OF-216). The core reflows the screen BEFORE the runner hears of it (SIGWINCH): a rule drawn 200 columns wide becomes 7 rows at 32
 // columns, bottom-anchored, directly above where the new frame is painted. Measured on a private core (hc 0.1.17, through an observer
 // attach, which is painted the physical rows): the stale rows are exactly the old frame reflowed, `ceil(width / columns)` rows for the rule
-// and for the input row, ending at the last row. So on every resize the frame erases that many rows (a cursor move and `ESC[J`), sets the
+// and for the input row, ending at the last row (OF-218: for wide characters, which cannot split at the wrap, and for the cursor's cell at the end of a line, the rows are counted cell by cell: `reflowedRows`). So on every resize the frame erases that many rows (a cursor move and `ESC[J`), sets the
 // region again, puts the output cursor on the first row it freed, and paints at the new bottom. Output above is never touched, and the
 // scrollback is not (an erase does not scroll). A pane resized below MIN_ROWS x MIN_COLUMNS is given back (region reset, frame erased,
 // writes unframed, as before the frame existed) and taken again when it is large enough.
@@ -127,11 +127,28 @@ export function ruleText(label: string, columns: number): string {
   return chars.join("") + (used < columns ? ` ${"─".repeat(Math.max(0, columns - used - 1))}` : "");
 }
 
-/** Columns a drawn string takes (the rule and the input row hold no control characters). */
+/** Cells a drawn string takes (the rule and the input row hold no control characters). */
 function textWidth(text: string): number {
   let width = 0;
   for (const char of text) width += charWidth(char.codePointAt(0)!);
   return width;
+}
+
+/** The rows a drawn string reflows to when the core wraps it at `columns` (OF-218). The core fills a row cell by cell and moves a character to
+ *  the next row when it does not fit, so a 2-column character that would straddle the edge leaves that cell blank and wraps early:
+ *  60 あ at 31 columns are 14 characters on the first row after a 2-column prompt, then 15 per row, not ceil(width / 31). A character of width 0
+ *  takes no cell. The widths are `charWidth`'s: wherever it differs from the core's (see its note) this count can be off, by a row at most per
+ *  disagreement, in the same cosmetic way as before. The rule and the input row hold no control characters. */
+export function reflowedRows(text: string, columns: number): number {
+  let rows = 1;
+  let used = 0;
+  for (const char of text) {
+    const width = charWidth(char.codePointAt(0)!);
+    if (width === 0) continue;
+    if (used + width > columns) { rows++; used = 0; }
+    used += width;
+  }
+  return rows;
 }
 
 const CUP = (row: number, column: number) => `\u001b[${row};${column}H`;
@@ -146,8 +163,9 @@ export class PaneFrame {
   private stopped = false;
   /** The pane is smaller than the frame needs: it was given back and is taken again when the pane is large enough. */
   private suspended = false;
-  /** What the last paint put on the screen: the widths of the rule and of the input row, as logical lines. Null when nothing is drawn. */
-  private painted: { ruleWidth: number; inputWidth: number } | null = null;
+  /** What the last paint put on the screen: the text of the rule and of the input row, as logical lines (the core reflows them by their cells on
+   *  a resize, see `reflowedRows`). Null when nothing is drawn. */
+  private painted: { rule: string; input: string } | null = null;
   private geometry = { rows: 0, columns: 0 };
   private readonly onResize = () => { try { this.resize(); } catch { /* a closed pane is the runner's other handlers' business */ } };
   /** Where the line editor's echo goes: nowhere. The input row is drawn from the editor's line and cursor, never from its output. */
@@ -247,7 +265,7 @@ export class PaneFrame {
   /** The first screen row of the old frame after the core reflowed it to `columns`: its rows end at the last row. */
   private firstStaleRow(rows: number, columns: number): number {
     const old = this.painted;
-    const stale = old === null ? 0 : Math.max(1, Math.ceil(old.ruleWidth / columns)) + Math.max(1, Math.ceil(old.inputWidth / columns));
+    const stale = old === null ? 0 : reflowedRows(old.rule, columns) + reflowedRows(old.input, columns);
     return Math.max(1, rows - stale + 1);
   }
 
@@ -258,7 +276,10 @@ export class PaneFrame {
     const view = inputView(this.line, this.cursor, Math.max(1, columns - INPUT_PROMPT.length - 1));
     const rule = ruleText(this.label, columns);
     const inputRow = `${INPUT_PROMPT}${view.text}`;
-    this.painted = { ruleWidth: textWidth(rule), inputWidth: textWidth(inputRow) };
+    // The core reflows the input row together with the cursor's cell (measured, OF-218): a cursor past the end of the text is one more cell.
+    const cursorCell = INPUT_PROMPT.length + view.cursorColumn;
+    const drawn = textWidth(inputRow);
+    this.painted = { rule, input: cursorCell >= drawn ? inputRow + " ".repeat(cursorCell - drawn + 1) : inputRow };
     return `\u001b[?7l${CUP(rows - 1, 1)}\u001b[2K\u001b[2m${rule}\u001b[0m${CUP(rows, 1)}\u001b[2K${inputRow}${CUP(rows, INPUT_PROMPT.length + view.cursorColumn + 1)}\u001b[?7h`;
   }
 

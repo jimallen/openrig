@@ -115,3 +115,64 @@ describe.skipIf(!findHc())("a Pi seat's pane console across resizes, through a p
     expect(history.filter((l) => l.trimEnd() === "[pi:err] flood line 150")).toHaveLength(1);
   }, 120_000);
 });
+
+// OF-218 (review of216 F1, measured). The old frame's rows are counted by walking cell widths at the new column count, because the core cannot
+// split a 2-column character at the wrap: it leaves the last cell of the row blank and wraps early. The reviewer's exact case: 60 あ typed into
+// the input row at 200x40, resized to 31x20. The input row (2 + 120 = 122 columns) reflows to 5 rows (14 characters, then 15 per row), not
+// ceil(122 / 31) = 4, so counting 4 left one rule row on the screen (row 9). Clean at 32 columns and with ASCII input at base too: the odd
+// width is what makes a wide character straddle the edge.
+function typedLineAcrossResizes(title: string, typed: string, mark: string, first: readonly [number, number], then: ReadonlyArray<readonly [number, number]>) {
+describe.skipIf(!findHc())(title, () => {
+  let scratch: HcScratch;
+  let attachment: HcAttachment;
+  const get = () => scratch.client().call<HcTerminal>("terminal.get", { terminal: "seat" });
+  const settle = () => new Promise((r) => setTimeout(r, 1200));
+  const resize = async (columns: number, rows: number) => {
+    attachment.resize(columns, rows);
+    await until(get, (t) => t.cols === columns && t.rows === rows, `the pane to be ${columns}x${rows}`, 10_000);
+    await settle();
+  };
+  /** The rule on the second-last row, the input row on the last (with the typed line's tail), and nothing of an old frame above them. */
+  async function expectFrameWithInput(columns: number, rows: number) {
+    const screen = await physicalRows(scratch.socketPath, "seat");
+    const at = `${columns}x${rows}`;
+    expect(screen, `${at}: the screen has the pane's rows`).toHaveLength(rows);
+    expect(screen[rows - 2], `${at}: the rule, one unwrapped row, on the second-last row`).toBe(ruleFor(columns));
+    expect(screen[rows - 1]!.startsWith("❯ "), `${at}: the input row on the last row`).toBe(true);
+    expect(screen[rows - 1]!.includes(mark), `${at}: the typed line is still on the input row`).toBe(true);
+    const above = screen.slice(0, rows - 2);
+    expect(above.filter((r) => /^─+$/.test(r) || r.startsWith("── verify-qa")), `${at}: no stale rule row above the frame`).toEqual([]);
+    expect(above.filter((r) => r.startsWith("❯") || r.includes(mark)), `${at}: no stale input row above the frame`).toEqual([]);
+  }
+
+  beforeAll(async () => {
+    scratch = startHcScratch();
+    const pi = panePi(scratch, fs.mkdtempSync(path.join(scratch.root, "wz-")));
+    await pi.start("seat", "verify-qa@eztrack");
+    await until(() => pi.screen("seat"), (s) => s.some((l) => l.includes(PI_RUNNER_READY_MARKER)), "the READY marker");
+    attachment = await new HcAttach(scratch.socketPath).open({ terminal: "seat", cols: 200, rows: 40 }, { onData: () => undefined, onEnd: () => undefined });
+    await settle();
+    attachment.write(typed);
+    await settle();
+  }, 90_000);
+  afterAll(async () => { await attachment?.detach().catch(() => undefined); scratch?.cleanup(); });
+
+  it(`typed at 200x40, resized to ${first[0]}x${first[1]}: one rule, one input row, nothing stale above them`, async () => {
+    await expectFrameWithInput(200, 40);
+    await resize(first[0], first[1]);
+    await expectFrameWithInput(first[0], first[1]);
+  }, 60_000);
+
+  it(`and through ${then.map(([c, r]) => `${c}x${r}`).join(", ")}, and back to 200x40`, async () => {
+    for (const [c, r] of [...then, [200, 40]] as const) {
+      await resize(c, r);
+      await expectFrameWithInput(c, r);
+    }
+  }, 120_000);
+});
+}
+
+typedLineAcrossResizes("60 あ in the input line across resizes to odd widths, through a private hc core (OF-218, wide characters)", "あ".repeat(60), "あ", [31, 20], [[27, 20], [45, 25], [32, 20], [31, 20]]);
+// The second cause (measured): the core reflows the input row with the cursor's cell. 29 x at 32 columns fill 31 cells, the cursor is the 32nd, and
+// at 31 columns the row is two. ASCII only; the same stale rule row as the wide case, and the frame had counted one row.
+typedLineAcrossResizes("29 x in the input line across resizes to 32 and 31 columns, through a private hc core (OF-218, the cursor's cell)", "x".repeat(29), "x", [32, 20], [[31, 20], [32, 20], [31, 20]]);

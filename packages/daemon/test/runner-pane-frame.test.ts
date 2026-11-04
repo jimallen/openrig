@@ -4,7 +4,7 @@
 // real-core proof is runner-pane-frame.real.test.ts. The escape sequences below are restated here, not imported.
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { charWidth, inputView, PaneFrame, ruleText } from "../src/adapters/runner-pane-frame.js";
+import { charWidth, inputView, PaneFrame, reflowedRows, ruleText } from "../src/adapters/runner-pane-frame.js";
 
 const ESC = "\u001b";
 
@@ -59,6 +59,25 @@ describe("what the input line shows", () => {
     const view = inputView(staged, staged.length, 80 - 2 - 1);
     expect(view.text.replace(/\s+/g, "")).toContain(marker.replace(/\s+/g, ""));
     expect(view.text.endsWith(marker)).toBe(true);
+  });
+});
+
+describe("the rows a drawn line reflows to (OF-218)", () => {
+  it("ASCII is ceil(width / columns), and a line that exactly fills the columns is one row", () => {
+    expect(reflowedRows("", 31)).toBe(1);
+    expect(reflowedRows("x".repeat(31), 31)).toBe(1);
+    expect(reflowedRows("x".repeat(32), 31)).toBe(2);
+    expect(reflowedRows("x".repeat(62), 31)).toBe(2);
+    expect(reflowedRows("x".repeat(63), 31)).toBe(3);
+  });
+  it("a wide character that does not fit at the edge moves whole to the next row, leaving a blank cell (60 あ after a 2-column prompt at 31: 5 rows; at 32: 4)", () => {
+    expect(reflowedRows(`❯ ${"あ".repeat(60)}`, 31)).toBe(5);
+    expect(reflowedRows(`❯ ${"あ".repeat(60)}`, 32)).toBe(4);
+    expect(reflowedRows("あ".repeat(2), 3)).toBe(2);
+  });
+  it("a zero-width character (a combining mark) takes no cell, even at the edge", () => {
+    expect(reflowedRows("e\u0301".repeat(31), 31)).toBe(1);
+    expect(reflowedRows(`${"x".repeat(30)}e\u0301`, 31)).toBe(1);
   });
 });
 
@@ -125,6 +144,39 @@ describe("the frame's writes", () => {
     stream.emit("resize");
     // rule 80 -> 3 rows, input "❯ " + 40 = 42 -> 2 rows: 5 stale rows, the first at row 13
     expect(log[0]!.startsWith(`RAW ${JSON.stringify(`${ESC}[1;15r${ESC}[13;1H${ESC}[J${ESC}[13;1H${ESC}7`).slice(0, -1)}`)).toBe(true);
+  });
+  // OF-218 (review of216 F1). A wide character cannot split at the wrap: the core leaves the last cell of the row blank and moves it to the next
+  // row, so a row of wide characters reflows to MORE rows than ceil(width / columns). Measured on a private core (hc 0.1.17): 60 あ typed at
+  // 200x40 (the input row is "❯ " and 120 columns), resized to 31x20: the input row reflows to 5 rows (14 characters, then 15 per row), not
+  // ceil(122 / 31) = 4. Counted by the old frame as 4, the erase started one row too low and one rule row stayed on the screen.
+  it("a shrink counts the rows a line of wide characters reflows to (60 あ at 31 columns is 5 rows, not ceil(122/31)): the erase starts at the first stale row", () => {
+    const { stream, log, frame } = rig();
+    stream.rows = 40; stream.columns = 200;
+    frame.start(); frame.setInput("あ".repeat(60), 60); log.length = 0;
+    stream.rows = 20; stream.columns = 31;
+    stream.emit("resize");
+    // rule 200 columns -> 7 rows, input row 5 rows: 12 stale rows, the first at row 20 - 12 + 1 = 9
+    expect(log[0]!.startsWith(`RAW ${JSON.stringify(`${ESC}[1;18r${ESC}[9;1H${ESC}[J${ESC}[9;1H${ESC}7`).slice(0, -1)}`)).toBe(true);
+  });
+  // OF-218, second cause (measured on the same core, ASCII only): the core reflows the input row together with the cursor cell. A line that fills
+  // the row to columns-1 with the cursor at its end occupies `columns` cells, so at one column less it is two rows; with the cursor inside the line
+  // it stays one. 29 x typed at 32 columns, resized to 31x20: the frame counted 1 row for the input and left one rule row.
+  it("a shrink counts the cursor's cell at the end of the input row: 29 characters at 32 columns, resized to 31, are 2 rows (and 2 for the rule)", () => {
+    const { stream, log, frame } = rig();
+    stream.rows = 20; stream.columns = 32;
+    frame.start(); frame.setInput("x".repeat(29), 29); log.length = 0;
+    stream.columns = 31;
+    stream.emit("resize");
+    // rule 32 columns -> 2 rows, input row ("❯ " + 29 + the cursor cell = 32 cells) 2 rows: 4 stale rows, the first at row 17
+    expect(log[0]!.startsWith(`RAW ${JSON.stringify(`${ESC}[1;18r${ESC}[17;1H${ESC}[J${ESC}[17;1H${ESC}7`).slice(0, -1)}`)).toBe(true);
+  });
+  it("a cursor inside the line adds no cell: the same line with the cursor at column 5 is 1 row at 31 columns (3 stale rows, the first at row 18)", () => {
+    const { stream, log, frame } = rig();
+    stream.rows = 20; stream.columns = 32;
+    frame.start(); frame.setInput("x".repeat(29), 5); log.length = 0;
+    stream.columns = 31;
+    stream.emit("resize");
+    expect(log[0]!.startsWith(`RAW ${JSON.stringify(`${ESC}[1;18r${ESC}[18;1H${ESC}[J${ESC}[18;1H${ESC}7`).slice(0, -1)}`)).toBe(true);
   });
   it("a growth in width (the frame was drawn at 32 columns, one row each) erases two rows and opens a line at the bottom of the region so the last output line is kept", () => {
     const { stream, log, frame } = rig();
