@@ -507,6 +507,71 @@ describe("OF-208 SimulatorLifecycle", () => {
     });
   });
 
+  describe("two rigs from one spec (live data shape, OF-208 blocked round)", () => {
+    // The 8 seats of jims-team and the 8 real devices of 2026-11-04 (names, states, sizes), as measured on the Mac.
+    const SEATS = ["exec.cos", "build.arch", "build.impl", "build.ux", "verify.ops", "verify.qa", "verify.screen", "verify.sec"];
+    const LIVE_DEVICES: FakeDevice[] = [
+      { udid: U(1), name: "arch-duo2-271", state: "Shutdown", dataPathSize: 18_337_792 },
+      { udid: U(2), name: "cos-build-duo", state: "Shutdown", dataPathSize: 18_337_792 },
+      { udid: U(3), name: "impl-xedd-duo-271", state: "Booted", dataPathSize: 21_000_000_000 },
+      { udid: U(4), name: "ops-duo-271", state: "Shutdown", dataPathSize: 18_337_792 },
+      { udid: U(5), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }, // made big and shut down to be erasable
+      { udid: U(6), name: "screen-duo-271", state: "Shutdown", dataPathSize: 5_142_749_184 },
+      { udid: U(7), name: "sec-duo-271", state: "Shutdown", dataPathSize: 9_859_563_520 },
+      { udid: U(8), name: "ux-duo-271", state: "Shutdown", dataPathSize: 25 * GB },
+    ];
+
+    it("with two live rigs built from the same spec every device is ambiguous: the cap erases nothing, and a seat's removal erases nothing", async () => {
+      const a = seedRig("eztrack", SEATS);
+      seedRig("ezhome", SEATS);
+      const fake = fakeSimctl(LIVE_DEVICES.map((d) => ({ ...d })));
+      const sim = make(fake, () => 20);
+      const res = await sim.sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes.every((o) => o.reason === "ambiguous")).toBe(true);
+      expect(res.outcomes).toHaveLength(8);
+
+      const removed = sim.seatsForRemoval(a.rig.id, a.nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(a.nodes["verify.qa"]!.id);
+      await sim.eraseForRemovedSeats(removed, "seat_removed");
+      expect(fake.erased()).toEqual([]); // ezhome's verify.qa could own it too
+    });
+
+    it("once one of the two rigs is archived, the other's seats own the devices and the over-cap shut-down ones are erased", async () => {
+      const a = seedRig("eztrack", SEATS);
+      const b = seedRig("ezhome", SEATS);
+      db.prepare("UPDATE rigs SET archived_at = datetime('now') WHERE id = ?").run(b.rig.id);
+      const fake = fakeSimctl(LIVE_DEVICES.map((d) => ({ ...d })));
+      const res = await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased().sort()).toEqual([U(5), U(8)]); // qa 30 GB and ux 25 GB; impl is Booted (21 GB), screen/sec under 20
+      expect(res.outcomes.find((o) => o.udid === U(3))).toMatchObject({ action: "skipped", reason: "not_shut_down:Booted" });
+      expect(events().map((e) => [e.p["seat"], e.rig_id])).toEqual([["verify.qa", a.rig.id], ["build.ux", a.rig.id]]);
+    });
+
+    it("planOverCap shows the decision and the attributed seat per device and runs only `list`", async () => {
+      const a = seedRig("eztrack", SEATS);
+      const fake = fakeSimctl(LIVE_DEVICES.map((d) => ({ ...d })));
+      const plan = await make(fake, () => 20).planOverCap();
+      expect(plan.status).toBe("ok");
+      expect(fake.calls.map((c) => c[0])).toEqual(["list"]);
+      const byName = Object.fromEntries(plan.rows.map((r) => [r.device.name, r]));
+      expect(byName["qa-duo-271"]).toMatchObject({ verdict: "erase", seat: "verify.qa", rigId: a.rig.id });
+      expect(byName["impl-xedd-duo-271"]).toMatchObject({ verdict: "not_shut_down:Booted", seat: "build.impl", rigId: a.rig.id });
+      expect(byName["sec-duo-271"]).toMatchObject({ verdict: "under_cap", seat: "verify.sec" });
+      expect(events()).toEqual([]);
+    });
+
+    it("planOverCap on a disabled service, a zero cap or an unreadable cap does nothing", async () => {
+      seedRig("eztrack", SEATS);
+      const noExec = new SimulatorLifecycle({ db, eventBus, capGb: () => 20, log: () => {} });
+      expect(await noExec.planOverCap()).toEqual({ status: "disabled", rows: [] });
+      const fake = fakeSimctl([]);
+      expect(await make(fake, () => 0).planOverCap()).toEqual({ status: "disabled", rows: [] });
+      expect(await make(fake, () => { throw new Error("bad config"); }).planOverCap()).toEqual({ status: "unavailable", rows: [] });
+      expect(fake.calls).toEqual([]);
+    });
+  });
+
   describe("event", () => {
     it("records udid, name, size, reason (and the cap) for every erase, on the seat's rig and node", async () => {
       const { rig, nodes } = seedRig();

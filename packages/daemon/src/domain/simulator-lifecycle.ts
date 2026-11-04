@@ -69,6 +69,15 @@ export interface SimulatorOutcome {
   sizeBytes: number | null;
 }
 
+export interface SimulatorPlanRow {
+  device: SimulatorDevice;
+  /** "erase", or why the sweep would leave it alone. */
+  verdict: string;
+  /** The seat the device is attributed to (also when the verdict is a skip for state or size); absent when unattributed or ambiguous. */
+  seat?: string;
+  rigId?: string;
+}
+
 export interface SimulatorRunResult {
   /** "unavailable": simctl absent, failing or unparseable; "disabled": the cap is 0 or real simctl is not enabled in this process. Nothing was done in either case. */
   status: "ok" | "unavailable" | "disabled";
@@ -223,6 +232,40 @@ export class SimulatorLifecycle {
     return this.enqueue({ kind: "cap", capBytes: gb * BYTES_PER_GB });
   }
 
+  /**
+   * What the cap sweep WOULD do, device by device, without erasing anything: `simctl list` only. The same `decide` the sweep
+   * uses. For diagnosis (and the OF-208 dry run against a copy of the live database). Needs an enabled exec like the sweep.
+   */
+  async planOverCap(): Promise<{ status: "ok" | "unavailable" | "disabled"; rows: SimulatorPlanRow[] }> {
+    if (this.simctl === null) return { status: "disabled", rows: [] };
+    let gb: number;
+    try {
+      gb = this.capGb();
+    } catch {
+      return { status: "unavailable", rows: [] };
+    }
+    if (!Number.isFinite(gb) || gb <= 0) return { status: "disabled", rows: [] };
+    let devices: SimulatorDevice[];
+    try {
+      devices = await this.list();
+    } catch {
+      return { status: "unavailable", rows: [] };
+    }
+    const trigger: Trigger = { kind: "cap", capBytes: gb * BYTES_PER_GB };
+    return {
+      status: "ok",
+      rows: devices.map((device) => {
+        const verdict = this.decide(device, trigger);
+        const seat = verdict.seat;
+        return {
+          device,
+          verdict: "skip" in verdict ? verdict.skip : ("erase" as const),
+          ...(seat ? { seat: seat.logicalId, rigId: seat.rigId } : {}),
+        };
+      }),
+    };
+  }
+
   /** Starts the periodic cap sweep (boot sweep, then every interval). Null where there are no simulators (not darwin). */
   startSweepTimer(intervalMs: number = SIMULATOR_SWEEP_INTERVAL_MS): ReturnType<typeof setInterval> | null {
     if (this.simctl === null || this.platform !== "darwin") return null;
@@ -253,7 +296,7 @@ export class SimulatorLifecycle {
   }
 
   /** Why this device must be left alone, or the seat it belongs to for this trigger. */
-  private decide(device: SimulatorDevice, trigger: Trigger): { skip: string } | { seat: NodeRow | RemovedSeat } {
+  private decide(device: SimulatorDevice, trigger: Trigger): { skip: string; seat?: NodeRow | RemovedSeat } | { seat: NodeRow | RemovedSeat } {
     const owners = this.allNodes().filter((n) => nameIsForSeat(device.name, n.logicalId));
     let seat: NodeRow | RemovedSeat;
     if (trigger.kind === "removal") {
@@ -266,11 +309,12 @@ export class SimulatorLifecycle {
       if (owners.length > 1) return { skip: "ambiguous" };
       seat = owners[0]!;
     }
-    if (!device.isAvailable) return { skip: "unavailable" };
-    if (device.state !== "Shutdown") return { skip: `not_shut_down:${device.state}` };
+    // From here the device IS attributed to `seat`; the skip says why it is still left alone.
+    if (!device.isAvailable) return { skip: "unavailable", seat };
+    if (device.state !== "Shutdown") return { skip: `not_shut_down:${device.state}`, seat };
     if (trigger.kind === "cap") {
-      if (device.sizeBytes === null) return { skip: "size_unknown" };
-      if (device.sizeBytes <= trigger.capBytes) return { skip: "under_cap" };
+      if (device.sizeBytes === null) return { skip: "size_unknown", seat };
+      if (device.sizeBytes <= trigger.capBytes) return { skip: "under_cap", seat };
     }
     return { seat };
   }
