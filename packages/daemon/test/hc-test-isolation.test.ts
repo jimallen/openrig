@@ -1,7 +1,8 @@
 // Isolation of the test harness (hc cutover, W34). A contained run (one that sets OPENRIG_TEST_SCRATCH_ROOT and a run HOME) must
 // find every private core, every scaffold and every account lookup inside its own root. These rows pin that consequence: a core
 // made outside the run root, or a scaffold in the account's real home, is a machine-level leak the end-of-run tripwire cannot see.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,7 +10,7 @@ import { resolveHcSocket } from "../src/adapters/hc-client.js";
 import { HC_SCRATCH_ROOT_ENV, HC_SOCKET_PATH_LIMIT, HcSocketTooLongError, hcScratchBase, startHcScratch } from "./helpers/hc-scratch.js";
 import { PrivateCore as RootPrivateCore } from "./hc-private-core.js";
 import { PrivateCore as HelperPrivateCore } from "./helpers/hc-private-core.js";
-import { TRUSTED_BASE_ENV, TRUSTED_RUN_ROOT_PREFIX, TrustedBaseRefusedError, trustedBaseFolder } from "./helpers/trusted-scaffold.js";
+import { TRUSTED_BASE_ENV, TRUSTED_RUN_ROOT_PREFIX, TrustedBaseRefusedError, removeTrustedRunRoots, sweepAbandonedRunRoots, trustedBaseFolder } from "./helpers/trusted-scaffold.js";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 
@@ -112,6 +113,87 @@ describe("where a trusted scaffold is made", () => {
       cleanup();
       expect(existsSync(base)).toBe(false);
       expect(readdirSync(home)).toEqual([]);
+    });
+  });
+
+  // OF-225(a). The 'exit' hook above is only the fallback: measured on Sparky (vitest 3.2.4, one passing test that made a root), a vitest
+  // worker ends with no 'exit' event in both the forks and the threads pool, so every run left an empty root in the account's real home
+  // (123 of them). Production consequence if this regresses: every suite run leaves one more `~/.openrig-test-run-*` in the real home.
+  it("removeTrustedRunRoots removes the run root and the scaffolds in it without any process exit, and the root is made again on next use", () => {
+    withFakeAccount((home, hooks) => {
+      const base = trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); });
+      mkdirSync(join(base, ".of103-e2e-AbCdEf", "home"), { recursive: true });
+      writeFileSync(join(base, ".of103-e2e-AbCdEf", "home", "left-behind"), "x");
+      removeTrustedRunRoots();
+      expect(existsSync(base)).toBe(false);
+      expect(readdirSync(home)).toEqual([]);
+      removeTrustedRunRoots(); // twice is fine
+      const again = trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); });
+      expect(existsSync(again)).toBe(true);
+      removeTrustedRunRoots();
+      expect(readdirSync(home)).toEqual([]);
+    });
+  });
+
+  it("the daemon suite's setup removes the run roots in an afterAll (the per-file end of a vitest worker), and the config loads that setup", () => {
+    const setup = readFileSync(join(import.meta.dirname, "helpers", "trusted-run-root.setup.ts"), "utf8");
+    expect(setup).toMatch(/afterAll\(\(\) => \{ removeTrustedRunRoots\(\); \}\);/);
+    expect(readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8")).toMatch(/setupFiles: \[[^\]]*"\.\/test\/helpers\/trusted-run-root\.setup\.ts"/);
+  });
+
+  it("a run root's name carries its creating pid, `<prefix><pid>-XXXXXX`", () => {
+    withFakeAccount((home, hooks) => {
+      const base = trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); });
+      expect(basename(base)).toMatch(new RegExp(`^${TRUSTED_RUN_ROOT_PREFIX.replace(".", "\\.")}${process.pid}-[A-Za-z0-9]{6}$`));
+      removeTrustedRunRoots();
+    });
+  });
+
+  // A SIGKILLed run cannot remove its root. The sweep must remove only what is provably abandoned: exact name, real directory, EMPTY,
+  // creator's pid not alive. Each row below is one way a folder could be wrongly removed.
+  describe("sweepAbandonedRunRoots removes only an empty, exactly-named root whose creating process is gone", () => {
+    const P = TRUSTED_RUN_ROOT_PREFIX;
+    const DEAD = 4000001;
+    const LIVE = 4000002;
+    const alive = (pid: number) => pid === LIVE;
+
+    it("sweeps the dead, empty, exact one and keeps every look-alike", () => {
+      withFakeAccount((home) => {
+        const mk = (name: string, inside?: string) => { mkdirSync(join(home, name)); if (inside) writeFileSync(join(home, name, inside), "x"); };
+        mk(`${P}${DEAD}-AbCdEf`);                     // swept
+        mk(`${P}${LIVE}-AbCdEf`);                     // creator alive: kept
+        mk(`${P}${DEAD}-GhIjKl`, "a-scaffold-file");  // non-empty: kept (rmdir refuses)
+        mk(`${P}AbCdEf`);                             // the pre-pid name (123 on Sparky): never matched
+        mk(`${P}${DEAD}-AbCdE`);                      // five characters: kept
+        mk(`${P}${DEAD}-AbCdEfg`);                    // seven characters: kept
+        mk(`${P}${DEAD}-AbC-Ef`);                     // not mkdtemp characters: kept
+        mk(`x${P}${DEAD}-AbCdEf`);                    // not the exact prefix: kept
+        mk(`${P}${DEAD}-AbCdEf.bak`);                 // suffix: kept
+        mk(`${P.slice(0, -1)}${DEAD}-AbCdEf`);        // prefix without its last dash: kept
+        mk(`${P}${process.pid}-AbCdEf`);              // this process's own: kept
+        writeFileSync(join(home, `${P}${DEAD}-FileXY`), "");                          // a file, not a directory: kept
+        mkdirSync(join(home, "target"));
+        symlinkSync(join(home, "target"), join(home, `${P}${DEAD}-LinkXY`));          // a link to an empty folder: kept, target kept
+        const before = readdirSync(home).sort();
+        expect(sweepAbandonedRunRoots(home, alive)).toEqual([`${P}${DEAD}-AbCdEf`]);
+        expect(readdirSync(home).sort()).toEqual(before.filter((n) => n !== `${P}${DEAD}-AbCdEf`));
+        expect(existsSync(join(home, "target"))).toBe(true);
+        expect(existsSync(join(home, `${P}${DEAD}-GhIjKl`, "a-scaffold-file"))).toBe(true);
+      });
+    });
+
+    it("making a run root sweeps the abandoned one (a real dead pid) and keeps the one of a live process (this test's parent)", () => {
+      withFakeAccount((home, hooks) => {
+        const child = spawnSync(process.execPath, ["-e", ""]);
+        expect(child.pid).toBeGreaterThan(0);
+        const dead = `${P}${child.pid}-AbCdEf`;
+        const live = `${P}${process.ppid}-AbCdEf`;
+        mkdirSync(join(home, dead));
+        mkdirSync(join(home, live));
+        const base = trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); });
+        expect(readdirSync(home).sort()).toEqual([live, basename(base)].sort());
+        removeTrustedRunRoots();
+      });
     });
   });
 
