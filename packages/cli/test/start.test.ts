@@ -49,7 +49,7 @@ describe("rig start (OPR.0.3.4.1)", () => {
   let upBodies: Array<Record<string, unknown>> = [];
   let seatPosts: Array<{ path: string; body: Record<string, unknown> }> = [];
   let seatAnswer: { status: number; data: Record<string, unknown> } = { status: 200, data: { ok: true } };
-  let routes: Record<string, (req: http.IncomingMessage, body: Record<string, unknown>) => Record<string, unknown>>;
+  let routes: Record<string, (req: http.IncomingMessage, body: Record<string, unknown>) => unknown>;
 
   beforeAll(async () => {
     server = http.createServer((req, res) => {
@@ -473,7 +473,7 @@ describe("rig start (OPR.0.3.4.1)", () => {
     const throwClient = new DaemonClient(`http://127.0.0.1:${port}`);
     const origPost = throwClient.post.bind(throwClient);
     let planCallCount = 0;
-    throwClient.post = async (path: string, body?: unknown, opts?: unknown) => {
+    throwClient.post = async (path: string, body?: unknown, opts?: Parameters<DaemonClient["post"]>[2]) => {
       const b = body as Record<string, unknown> | undefined;
       // Apply now uses the id-based route; throw on any non-plan POST to /api/rigs/:id/up.
       if (path.match(/^\/api\/rigs\/[^/]+\/up$/) && b?.plan !== true) {

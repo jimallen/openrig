@@ -3,11 +3,12 @@ import { createProgram } from "../src/index.js";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { HC_GENERATION, HC_TESTED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
+import { stubConfigStore } from "./helpers/stub-config-store.js";
 
 const defaultConfig = {
   daemon: { port: 7433, host: "127.0.0.1" },
   db: { path: "/tmp/openrig/openrig.sqlite" },
-  transcripts: { enabled: true, path: "/tmp/openrig/transcripts" },
+  transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 },
 };
 
 function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
@@ -20,7 +21,7 @@ function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
       return "";
     },
     checkPort: async () => true,
-    configStore: { resolve: () => defaultConfig },
+    configStore: stubConfigStore(defaultConfig),
     platform: "darwin",
     mkdirp: () => {},
     checkWritable: () => {},
@@ -375,7 +376,7 @@ describe("rig doctor", () => {
     const checkPortArgs: unknown[] = [];
     const fetchUrls: string[] = [];
     const deps = makeDeps({
-      configStore: { resolve: () => ({ ...defaultConfig, daemon: { port: 8999, host: "10.0.0.5" } }) },
+      configStore: stubConfigStore({ ...defaultConfig, daemon: { port: 8999, host: "10.0.0.5" } }),
       // Widened test double (test-only): capture ALL args so we can prove the configured
       // HOST is passed, not only the port. Cast to the current (port)-only dep type.
       checkPort: ((...args: unknown[]) => {

@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../src/mcp-server.js";
 import { DaemonClient, type DaemonResponse } from "../src/client.js";
+import { must } from "./helpers/must.js";
 
 function mockClient(overrides?: {
   get?: (path: string) => Promise<DaemonResponse>;
@@ -10,9 +11,9 @@ function mockClient(overrides?: {
   postText?: (path: string, text: string, contentType?: string, extraHeaders?: Record<string, string>) => Promise<DaemonResponse>;
 }): DaemonClient {
   const client = new DaemonClient("http://127.0.0.1:9999");
-  client.get = overrides?.get ?? vi.fn(async () => ({ status: 200, data: { status: "ok" } }));
-  client.post = overrides?.post ?? vi.fn(async () => ({ status: 200, data: { status: "ok" } }));
-  client.postText = overrides?.postText ?? vi.fn(async () => ({ status: 200, data: { valid: true, errors: [] } }));
+  client.get = (overrides?.get ?? vi.fn(async () => ({ status: 200, data: { status: "ok" } }))) as DaemonClient["get"];
+  client.post = (overrides?.post ?? vi.fn(async () => ({ status: 200, data: { status: "ok" } }))) as DaemonClient["post"];
+  client.postText = (overrides?.postText ?? vi.fn(async () => ({ status: 200, data: { valid: true, errors: [] } }))) as DaemonClient["postText"];
   return client;
 }
 
@@ -69,7 +70,7 @@ describe("MCP Server", () => {
 
   // rig_add: posts the member fragment to the pod-members route.
   it("rig_add posts to the pod-members route and returns the added node", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 201,
       data: {
         ok: true,
@@ -91,7 +92,7 @@ describe("MCP Server", () => {
 
     expect(postFn).toHaveBeenCalledWith("/api/rigs/rig-1/pods/infra/members", { member });
     const content = result.content as Array<{ type: string; text: string }>;
-    const parsed = JSON.parse(content[0].text);
+    const parsed = JSON.parse(must(content[0], "the first content block").text);
     expect(parsed.ok).toBe(true);
     expect(parsed.result.node.logicalId).toBe("infra.server2");
     expect(result.isError).toBeFalsy();
@@ -99,7 +100,7 @@ describe("MCP Server", () => {
   });
 
   it("rig_add forwards optional pod-local edges in the request body", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 201,
       data: { ok: true, result: { podId: "pod-1", podNamespace: "infra", node: { logicalId: "infra.server2", nodeId: "n2", status: "launched" }, edges: [{ from: "infra.server2", to: "infra.server", kind: "delegates_to" }] } },
     }));
@@ -115,7 +116,7 @@ describe("MCP Server", () => {
 
   // `rig add --culture` parity: a seat added to a running rig gets the rig's own culture file.
   it("rig_add forwards an absolute cultureFile as the request body's cultureFile", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 201,
       data: { ok: true, result: { podId: "pod-1", podNamespace: "infra", node: { logicalId: "infra.server2", nodeId: "n2", status: "launched" } } },
     }));
@@ -133,7 +134,7 @@ describe("MCP Server", () => {
   });
 
   it("rig_add refuses a relative cultureFile before any request, since an MCP caller has no cwd the daemon shares", async () => {
-    const postFn = vi.fn(async () => ({ status: 201, data: { ok: true } }));
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 201, data: { ok: true } }));
     await setup({ post: postFn });
 
     for (const cultureFile of ["CULTURE.md", "./my-rig/CULTURE.md", ""]) {
@@ -143,14 +144,14 @@ describe("MCP Server", () => {
       });
       expect(result.isError).toBe(true);
       const content = result.content as Array<{ type: string; text: string }>;
-      expect(content[0].text).toContain("cultureFile must be an absolute path");
+      expect(must(content[0], "the first content block").text).toContain("cultureFile must be an absolute path");
     }
     expect(postFn).not.toHaveBeenCalled();
     await cleanup();
   });
 
   it("rig_add surfaces a member_conflict (HTTP 409) as isError", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 409,
       data: { ok: false, code: "member_conflict", message: 'Member "infra.server" already exists' },
     }));
@@ -163,12 +164,12 @@ describe("MCP Server", () => {
 
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
-    expect(JSON.parse(content[0].text).code).toBe("member_conflict");
+    expect(JSON.parse(must(content[0], "the first content block").text).code).toBe("member_conflict");
     await cleanup();
   });
 
   it("rig_add flags a persisted-but-not-launched node as isError", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 201,
       data: {
         ok: true,
@@ -192,7 +193,7 @@ describe("MCP Server", () => {
 
   // T2: rig_up calls POST /api/up
   it("rig_up calls POST /api/up with correct params", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 201,
       data: { runId: "run-1", status: "completed", rigId: "rig-1", stages: [], errors: [] },
     }));
@@ -214,7 +215,7 @@ describe("MCP Server", () => {
       { timeoutMs: 120_000 },
     );
     const content = result.content as Array<{ type: string; text: string }>;
-    const parsed = JSON.parse(content[0].text);
+    const parsed = JSON.parse(must(content[0], "the first content block").text);
     expect(parsed.status).toBe("completed");
     expect(result.isError).toBeFalsy();
     await cleanup();
@@ -222,7 +223,7 @@ describe("MCP Server", () => {
 
   // T3: rig_down calls POST /api/down
   it("rig_down calls POST /api/down with correct params", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { rigId: "rig-1", sessionsKilled: 2, deleted: false, deleteBlocked: false, alreadyStopped: false, errors: [] },
     }));
@@ -240,7 +241,7 @@ describe("MCP Server", () => {
       snapshot: false,
     });
     const content = result.content as Array<{ type: string; text: string }>;
-    const parsed = JSON.parse(content[0].text);
+    const parsed = JSON.parse(must(content[0], "the first content block").text);
     expect(parsed.sessionsKilled).toBe(2);
     expect(result.isError).toBeFalsy();
     await cleanup();
@@ -258,7 +259,7 @@ describe("MCP Server", () => {
 
     expect(getFn).toHaveBeenCalledWith("/api/ps");
     const content = result.content as Array<{ type: string; text: string }>;
-    const parsed = JSON.parse(content[0].text);
+    const parsed = JSON.parse(must(content[0], "the first content block").text);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0].rigId).toBe("rig-1");
     expect(result.isError).toBeFalsy();
@@ -287,7 +288,7 @@ describe("MCP Server", () => {
 
   // T6: HTTP 404 -> isError:true
   it("HTTP error maps to isError:true", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 404,
       data: { error: "Rig not found" },
     }));
@@ -300,14 +301,14 @@ describe("MCP Server", () => {
 
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
-    const parsed = JSON.parse(content[0].text);
+    const parsed = JSON.parse(must(content[0], "the first content block").text);
     expect(parsed.error).toBe("Rig not found");
     await cleanup();
   });
 
   // T7: In-body errors -> isError:true
   it("in-body errors map to isError:true", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { rigId: "rig-1", sessionsKilled: 1, deleted: false, deleteBlocked: false, alreadyStopped: false, errors: ["Kill failed"] },
     }));
@@ -350,7 +351,7 @@ describe("MCP Server", () => {
 
   // T9: bundle inspect integrityResult.passed=false -> isError:true
   it("bundle inspect integrity failure maps to isError:true", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: {
         manifest: { name: "test", version: "1.0.0", packages: [] },
@@ -367,7 +368,7 @@ describe("MCP Server", () => {
 
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
-    const parsed = JSON.parse(content[0].text);
+    const parsed = JSON.parse(must(content[0], "the first content block").text);
     expect(parsed.integrityResult.passed).toBe(false);
     await cleanup();
   });
@@ -409,7 +410,7 @@ describe("MCP Server", () => {
 
   // T11: MCP tools URL-encode path parameters
   it("snapshot_create URL-encodes rigId in path", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 201,
       data: { id: "snap-1", rigId: "rig/with/slashes", kind: "manual", status: "complete" },
     }));
@@ -420,7 +421,7 @@ describe("MCP Server", () => {
       arguments: { rigId: "rig/with/slashes" },
     });
 
-    const calledPath = postFn.mock.calls[0][0] as string;
+    const calledPath = must(postFn.mock.calls[0], "the post call")[0];
     expect(calledPath).toBe(`/api/rigs/${encodeURIComponent("rig/with/slashes")}/snapshots`);
     expect(calledPath).toContain("rig%2Fwith%2Fslashes");
     await cleanup();
@@ -458,7 +459,7 @@ describe("MCP Server", () => {
 
   // T14: rig_send returns structured result
   it("rig_send returns structured result", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { ok: true, sessionName: "dev-impl@my-rig" },
     }));
@@ -479,7 +480,7 @@ describe("MCP Server", () => {
   });
 
   it("rig_send with waitForIdleSeconds extends request timeout", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { ok: true, sessionName: "dev-impl@my-rig" },
     }));
@@ -504,7 +505,7 @@ describe("MCP Server", () => {
   });
 
   it("rig_send rejects waitForIdleSeconds with force before daemon contact", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { ok: true },
     }));
@@ -528,7 +529,7 @@ describe("MCP Server", () => {
       status: 200,
       data: [{ id: "rig-1", name: "my-rig", nodeCount: 2 }],
     }));
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 201,
       data: { id: "msg-1", rigId: "rig-1", sender: "mcp", kind: "message", body: "hello", topic: null, createdAt: "2026-03-31T10:00:00Z" },
     }));
@@ -603,7 +604,7 @@ describe("MCP Server", () => {
 
   // T15: rig_capture returns structured result
   it("rig_capture returns structured result", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { ok: true, sessionName: "dev-impl@my-rig", content: "pane output", lines: 20 },
     }));

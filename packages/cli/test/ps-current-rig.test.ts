@@ -5,6 +5,7 @@ import { psCommand } from "../src/commands/ps.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { must } from "./helpers/must.js";
 
 function mockLifecycleDeps(overrides?: Partial<LifecycleDeps>): LifecycleDeps {
   return {
@@ -340,7 +341,7 @@ describe("OPR.0.4.0.34 — rig ps current-rig default", () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json"]);
     });
     const nodes = nodesOf(logs);
-    const driver = nodes.find((n: Record<string, unknown>) => n.canonicalSessionName === "dev1-driver@openrig-delivery");
+    const driver = must(nodes.find((n: Record<string, unknown>) => n.canonicalSessionName === "dev1-driver@openrig-delivery"), "the dev1-driver node");
     expect(driver).toBeDefined();
     expect(driver.resumeType).toBe("codex_id");
     expect(driver.resumeTokenPresent).toBe(true);
@@ -358,7 +359,7 @@ describe("OPR.0.4.0.34 — rig ps current-rig default", () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json"]);
     });
     const nodes = nodesOf(logs);
-    const driver = nodes.find((n: Record<string, unknown>) => n.canonicalSessionName === "dev1-driver@openrig-delivery");
+    const driver = must(nodes.find((n: Record<string, unknown>) => n.canonicalSessionName === "dev1-driver@openrig-delivery"), "the dev1-driver node");
     expect(driver).toBeDefined();
     // Required FR-4 orch identity + state fields, all present in the compact row.
     for (const key of [
@@ -389,7 +390,7 @@ describe("OPR.0.4.0.34 — rig ps current-rig default", () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "--json", "--full"]);
     });
     const nodes = nodesOf(logs);
-    const driver = nodes.find((n: Record<string, unknown>) => n.canonicalSessionName === "dev1-driver@openrig-delivery");
+    const driver = must(nodes.find((n: Record<string, unknown>) => n.canonicalSessionName === "dev1-driver@openrig-delivery"), "the dev1-driver node");
     expect(driver.resumeToken).toBe("019e376e-secret-token-do-not-leak");
     expect(driver.resumeCommand).toBe("codex resume 019e376e-secret-token-do-not-leak");
   });
