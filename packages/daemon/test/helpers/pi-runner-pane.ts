@@ -20,7 +20,7 @@ export async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, wh
 
 export interface PanePi {
   /** Start the runner as terminal `terminal` for seat `session`. */
-  start(terminal: string, session: string, options?: { noPi?: boolean }): Promise<void>;
+  start(terminal: string, session: string, options?: { noPi?: boolean; keep?: boolean }): Promise<void>;
   /** What the pane shows now (the screen only). */
   screen(terminal: string): Promise<string[]>;
   /** The screen and `lines` of scrollback above it. */
@@ -62,7 +62,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
         argv: [process.execPath, "--import", "tsx", path.join(RUNNERS, "pi-runner.ts"), "--session-name", session, "--state-root", path.join(temp, "state"),
           "--cwd", temp, "--launch-id", "of213", "--no-approve", "--model", "openai-codex/gpt-6-luna:medium"],
         name: terminal, cwd: PACKAGE_DIR, env: { PATH: options.noPi ? path.dirname(process.execPath) : `${bin}${path.delimiter}${path.dirname(process.execPath)}`, OPENRIG_HOME: path.join(temp, "home") },
-        labels: { "openrig.seat": terminal }, no_parent: true, no_notify: true, outlive_parent: true,
+        labels: { "openrig.seat": terminal }, ...(options.keep ? { keep: true } : {}), no_parent: true, no_notify: true, outlive_parent: true,
       });
     },
     screen: (terminal) => lines(terminal, 0),
