@@ -17,7 +17,7 @@ import { CodexThreadIdResolver, lstartToMinTs } from "../src/domain/codex-thread
 import { isClaudeSidecarFromEarlierProcess } from "../src/domain/resume-token-capture.js";
 import { readNativeEffort } from "../src/domain/seat-effort.js";
 import {
-  CLOCK_START_MAX_AFTER_PS_MS, clockStartForPsStart, formatPsLstart, installProcessStartClock, parsePsLstartMs,
+  clockStartForPsStart, formatPsLstart, installProcessStartClock, parsePsLstartMs,
   withTrueStartTimes, type ProcessStartClock,
 } from "../src/domain/process-start-clock.js";
 import { processStart } from "../src/adapters/native-inbox-os.js";
@@ -70,15 +70,15 @@ describe.each(LISTERS)("%s dates a process by the boot clock", (_name, list) => 
     installEarlyPs();
     installProcessStartClock(clockOf({ 101: TRUE_START_MS }));
     const dated = await list();
-    expect(dated.filter((r) => r.pid !== 101).every((r) => r.startedAt === PS_SAYS)).toBe(true);
+    expect(dated.map((r) => [r.pid, r.startedAt])).toEqual([[101, TRUE_SECOND], [102, PS_SAYS], [103, PS_SAYS]]);
     installProcessStartClock(null);
-    expect((await list()).every((r) => r.startedAt === PS_SAYS)).toBe(true);
+    expect((await list()).map((r) => [r.pid, r.startedAt])).toEqual([[101, PS_SAYS], [102, PS_SAYS], [103, PS_SAYS]]);
   });
 
   it("keeps ps's start when the clock fails", async () => {
     installEarlyPs();
     installProcessStartClock({ startedAtMs: async () => { throw new Error("proc unreadable"); } });
-    expect((await list()).every((r) => r.startedAt === PS_SAYS)).toBe(true);
+    expect((await list()).map((r) => [r.pid, r.startedAt])).toEqual([[101, PS_SAYS], [102, PS_SAYS], [103, PS_SAYS]]);
   });
 
   it("does not date a pid the clock read as a newcomer (reused between the ps read and the clock read)", async () => {
@@ -103,7 +103,8 @@ describe("the clock's reading is accepted only as the same process", () => {
     const L = PS_SECOND_MS;
     expect(clockStartForPsStart(L, L + 1_999)).toBe(L + 1_999);
     expect(clockStartForPsStart(L, L)).toBe(L);
-    expect(clockStartForPsStart(L, L + CLOCK_START_MAX_AFTER_PS_MS)).toBeNull();
+    expect(clockStartForPsStart(L, L + 2_049)).toBe(L + 2_049); // literals: a pin must not import the bound it pins
+    expect(clockStartForPsStart(L, L + 2_050)).toBeNull();
     expect(clockStartForPsStart(L, L - 100)).toBeNull();
     expect(clockStartForPsStart(L, undefined)).toBeNull();
     expect(clockStartForPsStart(Number.NaN, L)).toBeNull();
@@ -177,6 +178,15 @@ describe("what a start time 1 s early would have attributed to a reused pid", ()
     expect(readNativeEffort("claude-code", transcript, identity).state).toBe("not_verified");
     fs.writeFileSync(transcript, `${turn(TRUE_START_MS + 100)}\n`);
     expect(readNativeEffort("claude-code", transcript, identity).state).toBe("observed");
+  });
+});
+
+describe("the deployed entrypoint", () => {
+  it("installs the platform's clock before it builds the daemon (packages/daemon/src/index.ts constructs it; nothing else does)", () => {
+    const text = fs.readFileSync(path.join(import.meta.dirname, "../src/index.ts"), "utf8");
+    const install = text.indexOf("installProcessStartClock(createProcessStartClock());");
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(text.indexOf("await createDaemon({"));
   });
 });
 
