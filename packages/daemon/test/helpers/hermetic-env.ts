@@ -414,6 +414,11 @@ process.exit(result.status ?? 1);
   env.PATH = `${tmuxWrapperDir}${delimiter}${originalPath}`;
   // Forced-local: never resolve/attach the shared fleet kernel.
   env.OPENRIG_NO_KERNEL = "1";
+  // OF-232: a scenario daemon binds loopback only. With no bind intent the daemon takes its DEFAULT plan, loopback plus the host's own
+  // Tailscale address, which made every scenario daemon reachable on the tailnet (unauthenticated) and gave it a second address to
+  // collide on. OPENRIG_BIND_HOST is the daemon's dedicated bind-intent env; set here, after the inherited env was copied, it also
+  // overrides an ambient value. The CLI passes it to the daemon it starts (daemon-lifecycle.ts buildDaemonEnv).
+  env.OPENRIG_BIND_HOST = "127.0.0.1";
   // A3-R3 injected clock: the ONLY sanctioned way OPENRIG_TEST_CLOCK_NOW is set —
   // the scaffold's own value, never an inherited one. Omitted => unset => the bridge
   // stamps real-time (production behavior).

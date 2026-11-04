@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
-import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { killIfRunning, spawnDaemonEntrypoint } from "./helpers/daemon-entrypoint.js";
 
 // These two pins start a real node process (tsx + the whole daemon module graph). Under heavy host load
 // that start-up alone has exceeded 20-30 s. Both wait on events (healthz, child exit), never on a clock,
@@ -108,29 +108,14 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     // file-backed recorder. A real signal crosses THAT handler — not a test
     // handler — and the clean drain must yield exit 0.
     const home = tempDir();
-    const port = await getFreePort();
-    const indexPath = path.resolve(import.meta.dirname, "../src/index.ts");
-    const child = spawn(process.execPath, ["--import", "tsx", indexPath], {
-      env: {
-        ...process.env,
-        OPENRIG_NO_KERNEL: "1",
-        OPENRIG_HOME: home,
-        OPENRIG_DB: path.join(home, "openrig.sqlite"),
-        OPENRIG_PORT: String(port),
-        OPENRIG_URL: "",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stderr = "";
-    child.stderr!.setEncoding("utf8");
-    child.stderr!.on("data", (c: string) => { stderr += c; });
+    // The helper pins the bind host to loopback and retries a port lost between reservation and bind (OF-232).
+    const { child, stderr } = await spawnDaemonEntrypoint({ home, readyTimeoutMs: HEAVY_LOAD_CEILING_MS - 20_000 });
     try {
-      await waitForHealthz(port, child, () => stderr);
       child.kill("SIGINT");
       const [code] = (await once(child, "exit")) as [number | null];
-      expect(code, `daemon should exit 0 after a clean drain; stderr=${stderr}`).toBe(0);
+      expect(code, `daemon should exit 0 after a clean drain; stderr=${stderr()}`).toBe(0);
     } finally {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      killIfRunning(child);
     }
   }, HEAVY_LOAD_CEILING_MS);
 
@@ -165,32 +150,3 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     }
   }, HEAVY_LOAD_CEILING_MS);
 });
-
-function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-async function waitForHealthz(port: number, child: ReturnType<typeof spawn>, stderr: () => string): Promise<void> {
-  const deadline = Date.now() + (HEAVY_LOAD_CEILING_MS - 20_000);
-  let exited = false;
-  child.once("exit", () => { exited = true; });
-  while (Date.now() < deadline) {
-    if (exited) throw new Error(`daemon exited before ready: ${stderr()}`);
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/healthz`);
-      if (res.status === 200) return;
-    } catch {
-      // not up yet
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error(`daemon never became healthy: ${stderr()}`);
-}
