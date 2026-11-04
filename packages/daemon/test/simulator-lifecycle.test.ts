@@ -342,6 +342,29 @@ describe("OF-208 SimulatorLifecycle", () => {
       expect(fake.erased()).toEqual([U(1)]);
     });
 
+    it("a throwing cap read (corrupt config.json) makes the sweep unavailable and logged, not an exception", async () => {
+      seedRig();
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }]);
+      const sim = make(fake, () => { throw new Error("Unexpected token } in JSON at position 12"); });
+      await expect(Promise.resolve().then(() => sim.sweepOverCap())).resolves.toEqual({ status: "unavailable", outcomes: [] });
+      expect(log.some((l) => l.includes("cap could not be read") && l.includes("Unexpected token"))).toBe(true);
+      expect(fake.calls).toEqual([]);
+    });
+
+    it("the timer callback survives a throwing cap read: no exception escapes a tick", async () => {
+      seedRig();
+      vi.useFakeTimers();
+      try {
+        const sim = make(fakeSimctl([]), () => { throw new Error("config unreadable"); });
+        const timer = sim.startSweepTimer(1000)!;
+        await vi.advanceTimersByTimeAsync(2500); // boot tick + two interval ticks; an escaped throw fails the test
+        clearInterval(timer);
+        expect(log.filter((l) => l.includes("cap could not be read")).length).toBe(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("the daemon setting defaults to 20 GB and an override reaches the sweep", async () => {
       seedRig();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "of208-cfg-"));

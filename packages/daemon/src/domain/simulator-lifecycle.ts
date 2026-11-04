@@ -210,7 +210,15 @@ export class SimulatorLifecycle {
 
   /** Trigger (b): erase attributed, shut-down simulators bigger than the cap. Never throws. */
   sweepOverCap(): Promise<SimulatorRunResult> {
-    const gb = this.capGb();
+    // The cap is read from config.json, which can be corrupt or mid-edit while the daemon runs. This is the timer's callback:
+    // a throw here would be uncaught and take the daemon down, so an unreadable cap is "unavailable", logged.
+    let gb: number;
+    try {
+      gb = this.capGb();
+    } catch (err) {
+      this.log(`[simulators] cap could not be read, sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
+      return Promise.resolve({ status: "unavailable", outcomes: [] });
+    }
     if (!Number.isFinite(gb) || gb <= 0) return Promise.resolve({ status: "disabled", outcomes: [] });
     return this.enqueue({ kind: "cap", capBytes: gb * BYTES_PER_GB });
   }

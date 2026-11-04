@@ -281,6 +281,20 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
     }
   });
 
+  it("simulators.size_cap_gb (OF-208) defaults to 20, accepts 0 (off) and whole GB, and refuses a negative or non-integer value", () => {
+    const store = new ConfigStore(configPath);
+    expect(store.resolveWithSource("simulators.size_cap_gb")).toMatchObject({ value: 20, source: "default" });
+    store.set("simulators.size_cap_gb", "0");
+    expect(store.resolve().simulators.sizeCapGb).toBe(0);
+    store.set("simulators.size_cap_gb", "35");
+    expect(store.resolve().simulators.sizeCapGb).toBe(35);
+    expect(() => store.set("simulators.size_cap_gb", "ten")).toThrow(/simulators\.size_cap_gb.*expected a number/);
+    for (const value of ["-1", "-20", "2.5", "5gb"]) {
+      expect(() => store.set("simulators.size_cap_gb", value), value).toThrow(/simulators\.size_cap_gb.*integer >= 0/);
+    }
+    expect(store.resolve().simulators.sizeCapGb).toBe(35); // a refused value changes nothing
+  });
+
   it("exposes mutable 95/99 context-pressure thresholds with strict ordering and provenance", () => {
     const store = new ConfigStore(configPath);
     expect(store.resolveWithSource("health.context_pressure.warning_percent")).toMatchObject({
