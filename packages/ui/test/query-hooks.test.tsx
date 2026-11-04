@@ -244,7 +244,7 @@ describe("TanStack Query hooks", () => {
       body: "yaml content",
     });
     // toHaveBeenCalledWith treats an undefined property as absent; the header must not be sent at all.
-    expect(Object.keys((mockFetch.mock.calls[0][1] as RequestInit).headers as Record<string, string>)).toEqual(["Content-Type"]);
+    expect(Object.keys((mockFetch.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>)).toEqual(["Content-Type"]);
   });
 
   // slice-04 qitem-20260721000001-ps-stall-driver — U2 (regression pin; genuine RED
