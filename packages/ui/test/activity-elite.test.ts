@@ -5,8 +5,8 @@ import {
   formatRollupLabel,
   isHookGradeNeedsInput,
   getActivityStateWithSource,
-  type AgentActivitySummary,
 } from "../src/lib/activity-visuals.js";
+import type { AgentActivitySummary } from "../src/hooks/useNodeInventory.js";
 import {
   isSyntheticFeedCard,
   eventDerivedSeqsForPrune,

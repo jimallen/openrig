@@ -75,13 +75,14 @@ interface RenderTreeOpts {
   workspaceRoot: string | null;
   settingsAvailable?: boolean;
   // Files API mocks.
-  roots: Array<{ name: string; path: string }>;
+  roots?: Array<{ name: string; path: string }>;
   // Map "<root>:<path>" → directory entries.
   listings?: Record<string, Array<{ name: string; type: "dir" | "file" }>>;
   // Map "<root>:<path>" → file content.
   reads?: Record<string, { content: string; mtime?: string }>;
   // useSlices response.
-  slices?: Array<{ name: string; missionId?: string | null; displayName: string; railItem: string | null; status: string; rawStatus: string | null; qitemCount: number; hasProofPacket: boolean; lastActivityAt: string | null }>;
+  // mission, slicePath, missionPath: wire fields the daemon payload carries that SliceListEntry does not model.
+  slices?: Array<{ name: string; missionId?: string | null; mission?: string; slicePath?: string; missionPath?: string; displayName: string; railItem: string | null; status: string; rawStatus: string | null; qitemCount: number; hasProofPacket: boolean; lastActivityAt: string | null }>;
 }
 
 function setupFetch(opts: RenderTreeOpts) {
@@ -318,6 +319,8 @@ describe("ProjectTreeView P5-5/P5-6 mission discovery", () => {
       slices: [
         {
           name: "density-slice",
+          displayName: "density-slice",
+          railItem: null,
           mission: "release-proof",
           slicePath: "/Users/example/workspace/missions/release-proof/slices/density-slice",
           missionPath: "/Users/example/workspace/missions/release-proof",

@@ -214,7 +214,6 @@ describe("Library page taxonomy", () => {
           ok: true,
           json: async () => ({
             skillId: "openrig-managed:openrig-user",
-            path: "",
             ...fileList([{ name: "SKILL.md", type: "file" }]),
           }),
         };
@@ -269,7 +268,6 @@ describe("Library page taxonomy", () => {
           ok: true,
           json: async () => ({
             skillId: "workspace:workspace:operator-skill",
-            path: "",
             ...fileList([
               { name: "SKILL.md", type: "file" },
               { name: "DETAILS.md", type: "file" },

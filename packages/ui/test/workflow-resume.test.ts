@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { postResume } from "../src/components/workflow/WorkflowInstancePage.js";
+import { at } from "./helpers/at.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -20,11 +21,11 @@ describe("WF-4 guard blocker 1: web Resume sends a structured actorSession", () 
     await postResume("01ABC");
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toContain("/api/workflow/01ABC/resume");
-    expect(calls[0].init.method).toBe("POST");
+    expect(at(calls, 0).url).toContain("/api/workflow/01ABC/resume");
+    expect(at(calls, 0).init.method).toBe("POST");
     // The body must be JSON with a NON-empty actorSession — the exact contract
     // the route enforces (empty/absent → 400).
-    const body = JSON.parse(String(calls[0].init.body));
+    const body = JSON.parse(String(at(calls, 0).init.body));
     expect(typeof body.actorSession).toBe("string");
     expect(body.actorSession.length).toBeGreaterThan(0);
   });

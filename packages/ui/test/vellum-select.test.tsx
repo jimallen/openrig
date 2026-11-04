@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { VellumSelect } from "../src/components/ui/vellum-select";
 import * as React from "react";
+import { at } from "./helpers/at.js";
 
 describe("VellumSelect (Phase 1 primitive)", () => {
   it("renders a <select>", () => {
@@ -24,7 +25,7 @@ describe("VellumSelect (Phase 1 primitive)", () => {
     );
     const opts = container.querySelectorAll("option");
     expect(opts.length).toBe(2);
-    expect(opts[0].textContent).toBe("Alpha");
+    expect(at(opts, 0).textContent).toBe("Alpha");
   });
 
   it("applies vellum form classes", () => {

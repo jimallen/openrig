@@ -230,7 +230,7 @@ describe("NeedsYouAccordion showApprove (slice-terminal act stays at slice altit
   const ctx = { root: null, relPath: null, slicePath: null };
 
   it("showApprove=false hides the approve button; CHAT remains", () => {
-    renderWithClient(<NeedsYouAccordion band={nyBand} slice="rig" actorSession="human@host" ctx={ctx} showApprove={false} />);
+    renderWithClient(<NeedsYouAccordion band={nyBand} slice="rig" missionId={null} actorSession="human@host" ctx={ctx} showApprove={false} />);
     fireEvent.click(screen.getByTestId("needs-you-row-q-1"));
     expect(screen.queryByTestId("needs-you-approve")).toBeNull();
     expect(screen.getByTestId("needs-you-chat")).toBeTruthy();
@@ -241,6 +241,7 @@ describe("NeedsYouAccordion showApprove (slice-terminal act stays at slice altit
       <NeedsYouAccordion
         band={{ ...nyBand, items: [{ ...nyBand.items[0]!, evidenceRef: "proof/evidence.md" }] }}
         slice="rig"
+        missionId={null}
         actorSession="human@host"
         ctx={ctx}
         showApprove={false}
@@ -258,7 +259,7 @@ describe("NeedsYouAccordion showApprove (slice-terminal act stays at slice altit
   });
 
   it("default keeps approve (P2 pages unchanged)", () => {
-    renderWithClient(<NeedsYouAccordion band={nyBand} slice="20-x" actorSession="human@host" ctx={ctx} />);
+    renderWithClient(<NeedsYouAccordion band={nyBand} slice="20-x" missionId={null} actorSession="human@host" ctx={ctx} />);
     fireEvent.click(screen.getByTestId("needs-you-row-q-1"));
     expect(screen.getByTestId("needs-you-approve")).toBeTruthy();
   });

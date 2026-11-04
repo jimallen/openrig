@@ -24,6 +24,7 @@ import path from "node:path";
 import { createMockEventSourceClass } from "./helpers/mock-event-source.js";
 import { createAppTestRouter } from "./helpers/test-router.js";
 import { AppShell } from "../src/components/AppShell.js";
+import { at } from "./helpers/at.js";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -369,7 +370,7 @@ describe("AppShell — Phase 2 chrome", () => {
       const checkSource = (src: string, label: string) => {
         const lines = src.split("\n");
         for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
+          const line = at(lines, i);
           if (!line.includes("45rem")) continue;
           // Permitted only when the line is a JS/TS line comment ("//") or
           // an active block-comment context ("/*", "*"). We scan backward
@@ -380,8 +381,8 @@ describe("AppShell — Phase 2 chrome", () => {
           if (!isLineComment) {
             // Look backward up to 30 lines for a /* without an intervening */.
             for (let j = i - 1; j >= Math.max(0, i - 30); j--) {
-              if (lines[j].includes("*/")) break;
-              if (lines[j].includes("/*")) {
+              if (at(lines, j).includes("*/")) break;
+              if (at(lines, j).includes("/*")) {
                 isInsideBlockComment = true;
                 break;
               }

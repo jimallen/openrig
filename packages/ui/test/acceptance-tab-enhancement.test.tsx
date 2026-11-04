@@ -25,6 +25,7 @@ function makeAcceptance(items: SliceDetail["acceptance"]["items"]): SliceDetail[
     percentage: items.length === 0 ? 0 : Math.round((done / items.length) * 100),
     items,
     closureCallout: null,
+    currentStep: null,
   };
 }
 

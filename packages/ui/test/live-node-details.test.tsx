@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { createTestRouter } from "./helpers/test-router.js";
 import { LiveNodeDetails } from "../src/components/LiveNodeDetails.js";
-import { DrawerSelectionContext, type DrawerSelection } from "../src/components/AppShell.js";
+import { DrawerSelectionContext } from "../src/components/AppShell.js";
+import type { DrawerSelection } from "../src/components/SharedDetailDrawer.js";
 import {
   resetTopologyActivityStoreForTests,
   useTopologyActivity,

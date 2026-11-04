@@ -115,6 +115,7 @@ describe("PL-slice-story-view-v1 TimelineTab", () => {
       tier: "mode2",
       tags: ["demo"],
       body: "Implement the observability body-first story view.\nInclude acceptance evidence.",
+      summary: null,
     };
     renderStory(
       <TimelineTab

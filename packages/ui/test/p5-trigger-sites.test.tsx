@@ -22,6 +22,7 @@ import {
   createRoute,
   Outlet,
 } from "@tanstack/react-router";
+import { at } from "./helpers/at.js";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // SubSpecPreview internally uses TanStack Link when entryId is present; in
@@ -148,7 +149,7 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
     const trigger = await findByTestId(`feed-card-show-context-${card.id}`);
     fireEvent.click(trigger);
     expect(setSelection).toHaveBeenCalledOnce();
-    const arg = setSelection.mock.calls[0][0];
+    const arg = at(setSelection.mock.calls, 0)[0];
     expect(arg.type).toBe("qitem");
     expect(arg.data.qitemId).toBe("qitem-20260506-test");
     expect(arg.data.source).toBe("orch-lead@openrig-velocity");
@@ -184,7 +185,7 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
     const trigger = await findByTestId(`feed-card-show-context-${card.id}`);
     fireEvent.click(trigger);
     expect(setSelection).toHaveBeenCalledOnce();
-    const arg = setSelection.mock.calls[0][0];
+    const arg = at(setSelection.mock.calls, 0)[0];
     expect(arg.type).toBe("qitem");
     expect(arg.data.qitemId).toBe("qitem-20260507-daemon");
     expect(arg.data.source).toBe("orch-lead@openrig-velocity");
@@ -222,6 +223,7 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
           tier: "fast",
           tags: ["idea-ledger-triage-ideas-cycle-4"],
           body: "Review the completed proof packet and screenshots for the triage slice.",
+          summary: null,
         }}
         proofPreview={{
           sliceName: "idea-ledger-triage-ideas-cycle-4",
@@ -253,6 +255,7 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
           tier: "fast",
           tags: ["human-review"],
           body: "Review this proof packet and choose a queue action.",
+          summary: null,
         }}
       />,
     );
@@ -288,6 +291,7 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
           tier: "fast",
           tags: ["approval"],
           body: "Review this proof packet and choose a queue action.",
+          summary: null,
         }}
         actionOutcome={{
           verb: "approve",
@@ -340,6 +344,7 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
           tier: "fast",
           tags: ["approval"],
           body: "Review this proof packet and choose a queue action.",
+          summary: null,
           closureReason: "handed_off_to",
           closureTarget: "driver@openrig-velocity",
           handedOffTo: "driver@openrig-velocity",
@@ -379,6 +384,7 @@ describe("FeedCard P5-1 wiring: show-context QueueItemTrigger", () => {
           tier: "fast",
           tags: ["proof"],
           body: "Completed proof packet.",
+          summary: null,
         }}
       />,
     );

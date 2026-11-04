@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { RigSpecDisplay } from "../src/components/RigSpecDisplay.js";
 import { AgentSpecDisplay } from "../src/components/AgentSpecDisplay.js";
-import { DrawerSelectionContext, type DrawerSelection } from "../src/components/AppShell.js";
+import { DrawerSelectionContext } from "../src/components/AppShell.js";
+import type { DrawerSelection } from "../src/components/SharedDetailDrawer.js";
 import type { RigSpecReview, AgentSpecReview } from "../src/hooks/useSpecReview.js";
 
 afterEach(() => cleanup());

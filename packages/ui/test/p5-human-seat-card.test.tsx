@@ -16,15 +16,16 @@ beforeEach(() => {
 
 function makeRow(state: CompactStatusRow["state"]): CompactStatusRow {
   return {
-    session: `seat-${state}@test`,
-    role: "qa",
-    pod: "test",
-    rigName: "test",
-    rigId: "rig-1",
-    logicalId: `seat-${state}`,
-    runtime: "claude-code",
+    rigOrMissionName: `seat-${state}@test`,
+    currentPhase: null,
     state,
-  } as CompactStatusRow;
+    nextAction: null,
+    pendingHumanDecision: null,
+    readCost: null,
+    lastUpdate: "2026-05-01T00:00:00.000Z",
+    confidenceFreshness: null,
+    evidenceLink: null,
+  };
 }
 
 describe("HumanSeatCard P5-8 VellumCard composition", () => {

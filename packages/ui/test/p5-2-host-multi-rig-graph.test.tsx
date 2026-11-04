@@ -154,7 +154,10 @@ function setupFetchOk(opts: {
 
 describe("multi-rig-layout: prefixRigData (P5.2-3 cross-rig prefixing)", () => {
   it("prefixes node IDs with `${rigId}::` and threads data.rigId", () => {
-    const { nodes, edges } = prefixRigData(
+    const { nodes, edges } = prefixRigData<
+      { id: string; data?: Record<string, unknown> },
+      { id: string; source: string; target: string }
+    >(
       "rig-1",
       [
         { id: "n1", data: {} },

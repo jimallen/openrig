@@ -4,6 +4,7 @@ import {
   formatStoryDate,
   type StoryQitemInput,
 } from "../src/lib/story-graph-model.js";
+import { at } from "./helpers/at.js";
 
 // OPR.0.4.1.19 — the qitems -> forest-of-DAGs reconstruction is the load-bearing
 // core of the Story tab. Edges are REAL lineage (chain_of_record tail / handedOffFrom),
@@ -111,11 +112,11 @@ describe("buildStoryForest", () => {
 
   it("degrades summary to the first body line when no summary field is present", () => {
     const withSummary = buildStoryForest([qitem({ qitemId: "A", summary: "Merged the harness." })]);
-    expect(withSummary.nodes[0].summary).toBe("Merged the harness.");
+    expect(at(withSummary.nodes, 0).summary).toBe("Merged the harness.");
     const noSummary = buildStoryForest([
       qitem({ qitemId: "A", summary: null, body: "first body line\nsecond line" }),
     ]);
-    expect(noSummary.nodes[0].summary).toBe("first body line");
+    expect(at(noSummary.nodes, 0).summary).toBe("first body line");
   });
 
   it("orders nodes most-recent-first (top of the upward-growing graph)", () => {
@@ -123,8 +124,8 @@ describe("buildStoryForest", () => {
       qitem({ qitemId: "old", chainOfRecord: null, tsCreated: "2026-06-23T01:00:00.000Z" }),
       qitem({ qitemId: "new", chainOfRecord: ["old"], tsCreated: "2026-06-23T05:00:00.000Z" }),
     ]);
-    expect(forest.nodes[0].qitemId).toBe("new");
-    expect(forest.nodes[forest.nodes.length - 1].qitemId).toBe("old");
+    expect(at(forest.nodes, 0).qitemId).toBe("new");
+    expect(at(forest.nodes, forest.nodes.length - 1).qitemId).toBe("old");
   });
 });
 

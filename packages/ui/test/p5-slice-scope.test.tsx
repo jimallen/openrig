@@ -111,6 +111,8 @@ function makeQueueItem(qitemId: string, body: string) {
 function makeDetail(overrides: Partial<SliceDetail> = {}): SliceDetail {
   return {
     name: "idea-ledger",
+    missionId: null,
+    slicePath: "",
     displayName: "Idea Ledger",
     railItem: null,
     status: "active",

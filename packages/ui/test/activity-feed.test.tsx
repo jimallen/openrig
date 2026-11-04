@@ -26,7 +26,6 @@ function createTestQueryClient() {
 function makeEvent(overrides: Partial<ActivityEvent> & { type: string }): ActivityEvent {
   return {
     seq: Math.floor(Math.random() * 100000),
-    type: overrides.type,
     payload: { type: overrides.type, ...overrides.payload },
     createdAt: new Date().toISOString(),
     receivedAt: Date.now(),

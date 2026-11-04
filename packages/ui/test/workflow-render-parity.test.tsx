@@ -108,7 +108,7 @@ function renderAccordion(band: NeedsYouBand) {
     getParentRoute: () => rootRoute,
     path: "/",
     component: () => (
-      <NeedsYouAccordion band={band} slice="acme" actorSession="floor-lead@acme-factory" ctx={{} as EvidenceContext} />
+      <NeedsYouAccordion band={band} slice="acme" missionId={null} actorSession="floor-lead@acme-factory" ctx={{} as EvidenceContext} />
     ),
   });
   const instRoute = createRoute({

@@ -22,10 +22,8 @@ import { render, fireEvent, cleanup, screen, within } from "@testing-library/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 
-import {
-  DrawerSelectionContext,
-  type DrawerSelection,
-} from "../src/components/AppShell.js";
+import { DrawerSelectionContext } from "../src/components/AppShell.js";
+import type { DrawerSelection } from "../src/components/SharedDetailDrawer.js";
 import { QueueItemViewer } from "../src/components/drawer-viewers/QueueItemViewer.js";
 import { FileViewer } from "../src/components/drawer-viewers/FileViewer.js";
 import { SubSpecPreview } from "../src/components/drawer-viewers/SubSpecPreview.js";

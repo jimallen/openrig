@@ -219,7 +219,7 @@ describe("flagship attempt-0003 Review polish", () => {
         {
           slice: "01-foundation",
           title: "Foundation",
-          phase: "planned",
+          phase: "spec",
           laneLabel: "PLAN",
           agentsCount: 2,
           stageCell: "planned",

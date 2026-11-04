@@ -64,6 +64,7 @@ describe("usePlugins (list)", () => {
         runtimes: ["claude", "codex"],
         path: "/x/openrig-core",
         lastSeenAt: null,
+        skillCount: 0,
       },
     ];
     mockFetch.mockResolvedValue(new Response(JSON.stringify(sample), { status: 200 }));
@@ -113,6 +114,7 @@ describe("usePlugin (detail)", () => {
         runtimes: ["claude", "codex"],
         path: "/x",
         lastSeenAt: null,
+        skillCount: 0,
       },
       claudeManifest: {
         raw: { name: "openrig-core" },
@@ -126,6 +128,7 @@ describe("usePlugin (detail)", () => {
       codexManifest: null,
       skills: [{ name: "openrig-user", relativePath: "skills/openrig-user" }],
       hooks: [{ runtime: "claude", relativePath: "hooks/claude.json", events: ["SessionStart"] }],
+      mcpServers: [],
     };
     mockFetch.mockResolvedValue(new Response(JSON.stringify(sample), { status: 200 }));
     render(<Wrapper><DetailHarness id="openrig-core" /></Wrapper>);

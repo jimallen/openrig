@@ -7,8 +7,9 @@ import { execSync } from "node:child_process";
 // Import globals.css — same import as main.tsx
 import "../src/globals.css";
 
-const mockFetch = vi.fn(() =>
-  Promise.resolve({ ok: true, json: async () => [] })
+const mockFetch = vi.fn<typeof fetch>(() =>
+  // Minimal Response stand-in: the components under test read only ok and json().
+  Promise.resolve({ ok: true, json: async () => [] } as Response)
 );
 globalThis.fetch = mockFetch;
 

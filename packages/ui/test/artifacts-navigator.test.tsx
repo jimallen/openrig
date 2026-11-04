@@ -10,6 +10,7 @@ import { ArtifactsNavigator } from "../src/components/project/ArtifactsNavigator
 import { EvidenceOpener, type EvidenceContext } from "../src/components/review/EvidenceOpener.js";
 import { DrawerSelectionContext } from "../src/components/AppShell.js";
 import { SharedDetailDrawer, type DrawerSelection } from "../src/components/SharedDetailDrawer.js";
+import { at } from "./helpers/at.js";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch as unknown as typeof fetch;
@@ -142,7 +143,7 @@ describe("OPR.0.4.1.21 — Artifacts navigator", () => {
     expect(screen.getByTestId("artifacts-file-badge-README.md").textContent).toBe("MD");
     expect(screen.getByTestId("artifacts-file-size-README.md").textContent).toBe("4.0 KB");
     // mtime sourced from the /list entry (formatted in local time), not fabricated.
-    const fileMtime = TREE["missions/release-0.4.1"][0]!.mtime!;
+    const fileMtime = at(TREE["missions/release-0.4.1"] ?? [], 0).mtime!;
     const d = new Date(fileMtime);
     const expectedDate = new RegExp(`${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
     expect(screen.getByTestId("artifacts-file-mtime-README.md").textContent).toMatch(expectedDate);

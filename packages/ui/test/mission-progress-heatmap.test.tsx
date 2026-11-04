@@ -26,7 +26,7 @@ import {
 } from "@tanstack/react-router";
 import { MissionProgressHeatmap } from "../src/components/project/MissionProgressHeatmap.js";
 import { MissionScopePage } from "../src/components/project/ScopePages.js";
-import type { SliceDetail, SliceListEntry } from "../src/hooks/useSlices.js";
+import type { SliceDetail, SliceListEntry, SliceStatus } from "../src/hooks/useSlices.js";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -39,12 +39,14 @@ afterEach(() => {
   cleanup();
 });
 
-function makeRow(name: string, status: SliceListEntry["status"]): SliceListEntry {
+function makeRow(name: string, status: string): SliceListEntry {
   return {
     name,
+    missionId: null,
     displayName: name,
     railItem: "RELEASE-PROOF",
-    status,
+    // Deliberately a raw string: HG-2 feeds a capitalized status the typed union forbids.
+    status: status as SliceStatus,
     rawStatus: status,
     qitemCount: 0,
     hasProofPacket: false,

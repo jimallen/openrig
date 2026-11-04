@@ -87,7 +87,7 @@ function ImportHarness() {
   const mutation = useImportRig();
   return (
     <div>
-      <button data-testid="import" onClick={() => mutation.mutate("yaml content")}>Import</button>
+      <button data-testid="import" onClick={() => mutation.mutate({ yaml: "yaml content" })}>Import</button>
       <span data-testid="status">{mutation.isPending ? "pending" : mutation.isSuccess ? "success" : "idle"}</span>
     </div>
   );
