@@ -1,6 +1,7 @@
 // OPR.0.3.4.11 — CLI rig launch --seats tests.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { asDaemonClient } from "./helpers/mock-daemon-client.js";
 import { launchCommand } from "../src/commands/launch.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +16,7 @@ function mockClient(responses: Record<string, { status: number; data: unknown }>
       }
       return { status: 404, data: { ok: false, error: "not found" } };
     }),
-    get: vi.fn(async () => ({ status: 200, data: {} })),
+    get: vi.fn(async (_path: string): Promise<{ status: number; data: unknown }> => ({ status: 200, data: {} })),
   };
 }
 
@@ -34,7 +35,7 @@ function makeDeps(clientResponses: Record<string, { status: number; data: unknow
       openForAppend: vi.fn(() => 1),
       isProcessAlive: vi.fn(() => true),
     },
-    clientFactory: () => client,
+    clientFactory: () => asDaemonClient(client),
     _client: client,
   };
 }

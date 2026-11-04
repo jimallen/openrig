@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { asDaemonClient } from "./helpers/mock-daemon-client.js";
 import { skillCommand } from "../src/commands/skill.js";
 
 function makeDeps(auditResponse: { status: number; data: unknown }) {
@@ -19,7 +20,7 @@ function makeDeps(auditResponse: { status: number; data: unknown }) {
       openForAppend: vi.fn(() => 1),
       isProcessAlive: vi.fn(() => true),
     },
-    clientFactory: () => client,
+    clientFactory: () => asDaemonClient(client),
   };
 }
 
