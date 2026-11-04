@@ -19,10 +19,11 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
+import { PodRepository } from "../src/domain/pod-repository.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
 import { Hono } from "hono";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { TmuxAdapter, type TmuxResult } from "../src/adapters/tmux.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { transportRoutes } from "../src/routes/transport.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
@@ -61,6 +62,12 @@ class CountingStore extends MessageStore {
 class StubHop implements LastHop {
   readonly calls: SeatMessage[] = [];
   async attempt(message: SeatMessage): Promise<LastHopResult> { this.calls.push(message); return { kind: "sent" }; }
+}
+
+/** A seat host that ends nothing: every kill is refused, so a removal that must kill a session fails there. */
+class KillRefusingHost extends TmuxAdapter {
+  constructor() { super(async () => { throw new Error("stand-in: no exec"); }, undefined, async () => { throw new Error("stand-in: no exec"); }); }
+  override async killSession(): Promise<TmuxResult> { return { ok: false, code: "kill_refused", message: "kill refused" }; }
 }
 
 describe("a seat removed from a live rig (OF-209)", () => {
@@ -280,6 +287,98 @@ describe("a seat removed from a live rig (OF-209)", () => {
     it("reports none when nothing waits", async () => {
       const result = await lifecycle.removeNode(liveRigId, "verify.ops");
       expect(result).toMatchObject({ ok: true, pendingMessageIds: [] });
+    });
+  });
+
+  // OF-211: `rig shrink` deletes its pod's nodes through removeNode, so it leaves their messages vacant exactly as `rig remove` does, and said nothing of them.
+  // `rig release --delete` is a different path (it deletes the rig's record, not nodes through removeNode): a deleted rig has no seat for a successor, so
+  // its open messages go back to their senders. Both now report the ids; the wording of what happens next is the CLI's (remove-pending-messages.test.ts).
+  // Deployed entrypoints: routes/rigs.ts `DELETE /:rigId/pods/:podRef` -> RigLifecycleService.shrinkPod, `POST /:id/release` -> releaseRig.
+  describe("rig shrink", () => {
+    const POD_SEATS = ["dev-a@eztrack", "dev-b@eztrack"];
+    const shrinkFixture = () => {
+      const pod = new PodRepository(db).createPod(liveRigId, "crew", "Crew");
+      for (const member of ["a", "b"]) {
+        const node = rigs.addNode(liveRigId, `dev.${member}`, { runtime: "codex", podId: pod.id });
+        // What the launch left in the event log (the removal itself is written by shrinkPod, through removeNode).
+        db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, 'node.launched', ?)").run(liveRigId, node.id, JSON.stringify({ type: "node.launched", rigId: liveRigId, nodeId: node.id, logicalId: `dev.${member}`, sessionName: `dev-${member}@eztrack` }));
+      }
+      return pod;
+    };
+    it("reports the messages still waiting for every member it removed, and does not close them", async () => {
+      const pod = shrinkFixture();
+      for (const [id, seat] of [["a1", POD_SEATS[0]!], ["b1", POD_SEATS[1]!], ["a2", POD_SEATS[0]!]] as const) store.accept({ id: messageId(id), seat, sender: "exec-cos@eztrack", body: id });
+      db.prepare("UPDATE outbox_entries SET message_state = 'received' WHERE outbox_id = 'a2'").run();  // delivered: not waiting
+      send("keep");  // verify.ops is not in the pod
+      const result = await lifecycle.shrinkPod(liveRigId, pod.id);
+      expect(result).toMatchObject({ ok: true, status: "ok", removedLogicalIds: ["dev.a", "dev.b"], pendingMessageIds: ["a1", "b1"], heldMessageIds: [] });
+      expect(row(db, "a1")).toMatchObject({ message_state: "accepted", message_closed_reason: null });
+      expect(new DbSeatDirectory(db).fate(POD_SEATS[0]!).kind).toBe("vacant");
+      await pumpWith(true).tick();
+      expect(returned).toEqual([]);
+    });
+    it("reports the messages the typing guard holds for a removed member separately", async () => {
+      const pod = shrinkFixture();
+      const member = db.prepare("SELECT id FROM nodes WHERE logical_id = 'dev.a'").get() as { id: string };
+      new OutboxHandler(db).retain({ outboxId: "h1", senderSession: "exec-cos@eztrack", destinationSession: POD_SEATS[0]!, body: "held" }, { nodeId: member.id, session: POD_SEATS[0]!, occupant: first, pane: null });
+      const result = await lifecycle.shrinkPod(liveRigId, pod.id);
+      expect(result).toMatchObject({ ok: true, pendingMessageIds: [], heldMessageIds: ["h1"] });
+    });
+    it("a partial shrink still reports what waits for the members it did remove", async () => {
+      const pod = shrinkFixture();
+      const b = db.prepare("SELECT id FROM nodes WHERE logical_id = 'dev.b'").get() as { id: string };
+      registry.registerSession(b.id, POD_SEATS[1]!);  // dev.b has a session its host will not kill; dev.a (removed first) has none
+      store.accept({ id: messageId("a1"), seat: POD_SEATS[0]!, sender: "exec-cos@eztrack", body: "a1" });
+      store.accept({ id: messageId("b1"), seat: POD_SEATS[1]!, sender: "exec-cos@eztrack", body: "b1" });
+      const stuck = new KillRefusingHost();
+      const eventBus = new EventBus(db);
+      const partial = new RigLifecycleService({ db, rigRepo: rigs, sessionRegistry: registry, discoveryRepo: new DiscoveryRepository(db), eventBus,
+        queueRepo: new QueueRepository(db, eventBus, { validateRig: () => true }), tmuxAdapter: stuck });
+      const result = await partial.shrinkPod(liveRigId, pod.id);
+      expect(result).toMatchObject({ ok: true, status: "partial", removedLogicalIds: ["dev.a"], pendingMessageIds: ["a1"], heldMessageIds: [] });
+    });
+    it("reports none when nothing waits", async () => {
+      const pod = shrinkFixture();
+      expect(await lifecycle.shrinkPod(liveRigId, pod.id)).toMatchObject({ ok: true, pendingMessageIds: [], heldMessageIds: [] });
+    });
+  });
+
+  describe("rig release --delete", () => {
+    const releaseFixture = (name: string) => {
+      const rig = rigs.createRig(name);
+      const node = rigs.addNode(rig.id, "dev.a", { runtime: "codex" });
+      const session = registry.registerSession(node.id, `dev-a@${name}`);
+      db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(session.id);
+      return { rig, node };
+    };
+    it("reports the messages open for the rig's seats, which go back to their senders because the rig is gone", async () => {
+      const { rig } = releaseFixture("rel");
+      store.accept({ id: messageId("r1"), seat: "dev-a@rel", sender: "exec-cos@eztrack", body: "r1" });
+      const result = await lifecycle.releaseRig(rig.id, { delete: true });
+      expect(result).toMatchObject({ ok: true, status: "ok", deleted: true, pendingMessageIds: ["r1"], heldMessageIds: [] });
+      expect(new DbSeatDirectory(db).fate("dev-a@rel")).toEqual({ kind: "gone", reason: "no seat dev-a@rel exists" });
+      await pumpWith(true).tick();
+      expect(returned.map((r) => r.id)).toEqual(["r1"]);
+    });
+    it("finds them by the seat's logical address when the node has no session row, and by its session name when that differs", async () => {
+      const { rig } = releaseFixture("rel2");
+      rigs.addNode(rig.id, "dev.bare", { runtime: "codex" });
+      const named = rigs.addNode(rig.id, "dev.named", { runtime: "codex" });
+      const s = registry.registerSession(named.id, "alias-n@rel2");
+      db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(s.id);
+      store.accept({ id: messageId("b1"), seat: "dev-bare@rel2", sender: "exec-cos@eztrack", body: "b1" });
+      store.accept({ id: messageId("n1"), seat: "alias-n@rel2", sender: "exec-cos@eztrack", body: "n1" });
+      expect(await lifecycle.releaseRig(rig.id, { delete: true })).toMatchObject({ ok: true, deleted: true, pendingMessageIds: ["b1", "n1"] });
+    });
+    it("reports the messages the typing guard holds for the rig's seats separately", async () => {
+      const { rig, node } = releaseFixture("rel3");
+      new OutboxHandler(db).retain({ outboxId: "h1", senderSession: "exec-cos@eztrack", destinationSession: "dev-a@rel3", body: "held" }, { nodeId: node.id, session: "dev-a@rel3", occupant: first, pane: null });
+      expect(await lifecycle.releaseRig(rig.id, { delete: true })).toMatchObject({ ok: true, pendingMessageIds: [], heldMessageIds: ["h1"] });
+    });
+    it("reports none when the rig is kept (nothing is deleted, so nothing is returned)", async () => {
+      const { rig } = releaseFixture("kept");
+      store.accept({ id: messageId("k1"), seat: "dev-a@kept", sender: "exec-cos@eztrack", body: "k1" });
+      expect(await lifecycle.releaseRig(rig.id)).toMatchObject({ ok: true, deleted: false, pendingMessageIds: [], heldMessageIds: [] });
     });
   });
 });

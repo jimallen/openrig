@@ -14,6 +14,8 @@ type ShrinkResponse = {
   sessionsKilled?: number;
   fallbackDestination?: string;
   reroutedQitemIds?: string[];
+  pendingMessageIds?: string[];
+  heldMessageIds?: string[];
   nodes?: Array<{
     logicalId: string;
     nodeId: string;
@@ -24,6 +26,18 @@ type ShrinkResponse = {
   }>;
   error?: string;
 };
+
+/** OF-211: the seat messages still open for the removed members, as `rig remove` reports them (OF-209). */
+function reportWaitingMessages(data: ShrinkResponse): void {
+  const pending = data.pendingMessageIds ?? [];
+  if (pending.length > 0) {
+    console.log(`${pending.length} message(s) still waiting for the removed seats of pod ${data.namespace}: ${pending.join(", ")}. They stay open and go, labelled, to a seat added later at the same address; they go back to their senders only if rig ${data.rigId} is archived first.`);
+  }
+  const held = data.heldMessageIds ?? [];
+  if (held.length > 0) {
+    console.log(`${held.length} message(s) held by the typing guard for the removed seats of pod ${data.namespace}: ${held.join(", ")}. They wait for a seat added later at the same address, as the others do.`);
+  }
+}
 
 export function shrinkCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("shrink").description("Remove an entire pod from a running rig");
@@ -78,6 +92,7 @@ export function shrinkCommand(depsOverride?: StatusDeps): Command {
           const kept = node.sessionKeptFor ? ` (session kept: owned by ${node.sessionKeptFor})` : "";
           console.log(`  [${icon}] ${node.logicalId}${kept}${error}`);
         }
+        reportWaitingMessages(res.data);
         process.exitCode = 1;
         return;
       }
@@ -88,6 +103,7 @@ export function shrinkCommand(depsOverride?: StatusDeps): Command {
       for (const node of res.data.nodes ?? []) {
         if (node.sessionKeptFor) console.log(`  ${node.logicalId}: session kept, owned by ${node.sessionKeptFor}`);
       }
+      reportWaitingMessages(res.data);
     });
 
   return cmd;

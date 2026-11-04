@@ -6,9 +6,30 @@ import { Command } from "commander";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type DaemonState } from "../src/daemon-lifecycle.js";
 import { removeCommand } from "../src/commands/remove.js";
+import { shrinkCommand } from "../src/commands/shrink.js";
+import { releaseCommand } from "../src/commands/release.js";
 import type { StatusDeps } from "../src/commands/status.js";
 
 const RESPONSES: Record<string, unknown> = {
+  "DELETE /api/rigs/rig-1/pods/crew": {
+    ok: true, status: "ok", rigId: "rig-1", podId: "pod-1", namespace: "crew", removedLogicalIds: ["dev.a", "dev.b"], sessionsKilled: 2, reroutedQitemIds: [],
+    pendingMessageIds: ["a1", "b1"], heldMessageIds: ["h1"], nodes: [],
+  },
+  "DELETE /api/rigs/rig-1/pods/empty": {
+    ok: true, status: "ok", rigId: "rig-1", podId: "pod-2", namespace: "empty", removedLogicalIds: ["dev.c"], sessionsKilled: 1, reroutedQitemIds: [],
+    pendingMessageIds: [], heldMessageIds: [], nodes: [],
+  },
+  "DELETE /api/rigs/rig-1/pods/half": {
+    ok: true, status: "partial", rigId: "rig-1", podId: "pod-3", namespace: "half", removedLogicalIds: ["dev.a"], sessionsKilled: 1, reroutedQitemIds: [],
+    pendingMessageIds: ["a1"], heldMessageIds: [], nodes: [{ nodeId: "n1", logicalId: "dev.a", status: "removed", sessionsKilled: 1 }, { nodeId: "n2", logicalId: "dev.b", status: "failed", sessionsKilled: 0, error: "kill failed" }],
+  },
+  "POST /api/rigs/rig-1/release": {
+    ok: true, status: "ok", rigId: "rig-1", deleted: true, released: [{ nodeId: "n1", logicalId: "dev.a", sessionId: "s1", sessionName: "dev-a@rig-1" }], failed: [],
+    pendingMessageIds: ["r1"], heldMessageIds: ["h9"],
+  },
+  "POST /api/rigs/rig-2/release": {
+    ok: true, status: "ok", rigId: "rig-2", deleted: false, released: [], failed: [], pendingMessageIds: [], heldMessageIds: [],
+  },
   "DELETE /api/rigs/rig-1/nodes/verify.ops": {
     ok: true, rigId: "rig-1", nodeId: "node-9", logicalId: "verify.ops", sessionsKilled: 1, reroutedQitemIds: [], pendingMessageIds: ["1d1c6820", "5a7d140b"], heldMessageIds: ["h1"],
   },
@@ -82,6 +103,40 @@ describe("OF-209 rig remove reports the seat messages still waiting", () => {
   it("control: says nothing about messages when none wait", async () => {
     const { output } = await run(removeCommand(deps()), ["remove", "rig-1", "dev.impl"]);
     expect(output).toContain("Removed node dev.impl from rig rig-1");
+    expect(output).not.toContain("message(s)");
+  });
+
+  // OF-211: the same report for `rig shrink` (members removed through the same path, so their messages wait too) and `rig release --delete`
+  // (a deleted rig keeps no seat for a successor, so its messages are returned: the words differ, the ids are reported).
+  it("shrink names the pending and held messages and says they wait for a successor", async () => {
+    const { output, exitCode } = await run(shrinkCommand(deps()), ["shrink", "rig-1", "crew"]);
+    expect(exitCode).toBeUndefined();
+    expect(output).toContain("Removed pod crew from rig rig-1");
+    expect(output).toContain("2 message(s) still waiting for the removed seats of pod crew: a1, b1.");
+    expect(output).toContain("go, labelled, to a seat added later at the same address");
+    expect(output).toContain("only if rig rig-1 is archived first");
+    expect(output).toContain("1 message(s) held by the typing guard for the removed seats of pod crew: h1.");
+  });
+  it("shrink names them on a partial result too", async () => {
+    const { output, exitCode } = await run(shrinkCommand(deps()), ["shrink", "rig-1", "half"]);
+    expect(exitCode).toBe(1);
+    expect(output).toContain("1 message(s) still waiting for the removed seats of pod half: a1.");
+  });
+  it("shrink control: says nothing about messages when none wait", async () => {
+    const { output } = await run(shrinkCommand(deps()), ["shrink", "rig-1", "empty"]);
+    expect(output).toContain("Removed pod empty from rig rig-1");
+    expect(output).not.toContain("message(s)");
+  });
+  it("release --delete names the open messages and says they go back to their senders", async () => {
+    const { output, exitCode } = await run(releaseCommand(deps()), ["release", "rig-1", "--delete"]);
+    expect(exitCode).toBeUndefined();
+    expect(output).toContain("1 message(s) were still open for the seats of rig rig-1: r1.");
+    expect(output).toContain("they go back to their senders");
+    expect(output).toContain("1 message(s) held by the typing guard for the seats of rig rig-1: h9.");
+  });
+  it("release control: says nothing about messages when none were open", async () => {
+    const { output } = await run(releaseCommand(deps()), ["release", "rig-2"]);
+    expect(output).toContain("Released 0 claimed session(s) from rig rig-2");
     expect(output).not.toContain("message(s)");
   });
 });

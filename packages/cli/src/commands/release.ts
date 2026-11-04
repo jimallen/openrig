@@ -68,6 +68,15 @@ Notes:
       for (const entry of released) {
         console.log(`  ${entry["logicalId"]} <- ${entry["sessionName"]}`);
       }
+      // OF-211: a deleted rig has no seat left for a successor, so its open messages go back to their senders (a removed seat's wait instead, `rig remove`).
+      const pendingMessageIds = Array.isArray(res.data["pendingMessageIds"]) ? res.data["pendingMessageIds"] as string[] : [];
+      if (pendingMessageIds.length > 0) {
+        console.log(`${pendingMessageIds.length} message(s) were still open for the seats of rig ${rigId}: ${pendingMessageIds.join(", ")}. The rig record is deleted, so no seat is left to take them: they go back to their senders.`);
+      }
+      const heldMessageIds = Array.isArray(res.data["heldMessageIds"]) ? res.data["heldMessageIds"] as string[] : [];
+      if (heldMessageIds.length > 0) {
+        console.log(`${heldMessageIds.length} message(s) held by the typing guard for the seats of rig ${rigId}: ${heldMessageIds.join(", ")}. They go back to their senders too.`);
+      }
     });
 
   return cmd;

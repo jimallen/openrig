@@ -110,6 +110,12 @@ export type ReleaseRigResult =
         sessionName: string | null;
         error: string;
       }>;
+      /** OF-211: with `delete`, the seat messages still open for the rig's seats when its record was deleted. Unlike a removed seat (`rig remove`,
+       *  `rig shrink`), a deleted rig has no seat left for a successor to take: the pump returns each to its sender ("no seat ... exists"). Empty when
+       *  the rig was kept. */
+      pendingMessageIds: string[];
+      /** OF-211: the typing guard's held messages for those seats; they are returned the same way. */
+      heldMessageIds: string[];
     }
   | {
       ok: false;
@@ -129,6 +135,11 @@ export type ShrinkPodResult =
       sessionsKilled: number;
       fallbackDestination?: string;
       reroutedQitemIds: string[];
+      /** OF-211: the seat messages still open for the removed members (each removal reports its own, as `rig remove` does, OF-209). They are not
+       *  closed: they wait for a successor at the same address and go back to their senders only if the rig is archived first. */
+      pendingMessageIds: string[];
+      /** OF-211: messages the typing guard holds for the removed members; they wait too. */
+      heldMessageIds: string[];
       nodes: Array<{
         nodeId: string;
         logicalId: string;
@@ -364,7 +375,16 @@ export class RigLifecycleService {
     }
 
     let deleted = false;
+    let pendingMessageIds: string[] = [];
+    let heldMessageIds: string[] = [];
     if (failed.length === 0 && opts?.delete) {
+      // OF-211: read what is still open for the rig's seats before the record goes (the same seat names `removeNode` reads, OF-209).
+      const seatNames = [...new Set(rows.flatMap((row) => [
+        ...(row.session_name ? [row.session_name] : []),
+        `${row.logical_id.replace(/\./g, "-")}@${rig.rig.name}`,
+      ]))];
+      pendingMessageIds = openMessageIdsFor(this.db, seatNames);
+      heldMessageIds = heldMessageIdsFor(this.db, seatNames);
       const removedSeats = this.simulatorLifecycle?.seatsForRemoval(rigId) ?? [];
       let persistedSeq = 0;
       let persistedAt = "";
@@ -396,6 +416,8 @@ export class RigLifecycleService {
       deleted,
       released,
       failed,
+      pendingMessageIds,
+      heldMessageIds,
     };
   }
 
@@ -662,6 +684,8 @@ export class RigLifecycleService {
 
     let sessionsKilled = 0;
     const removedLogicalIds: string[] = [];
+    const pendingMessageIds: string[] = [];
+    const heldMessageIds: string[] = [];
     const nodeOutcomes: Array<{
       nodeId: string;
       logicalId: string;
@@ -695,6 +719,8 @@ export class RigLifecycleService {
             sessionsKilled,
             fallbackDestination,
             reroutedQitemIds: activeQitemIds,
+            pendingMessageIds,
+            heldMessageIds,
             nodes: nodeOutcomes,
           };
         }
@@ -727,6 +753,8 @@ export class RigLifecycleService {
       }
       sessionsKilled += removed.sessionsKilled;
       removedLogicalIds.push(removed.logicalId);
+      pendingMessageIds.push(...removed.pendingMessageIds);
+      heldMessageIds.push(...removed.heldMessageIds);
       nodeOutcomes.push({
         nodeId: removed.nodeId,
         logicalId: removed.logicalId,
@@ -768,6 +796,8 @@ export class RigLifecycleService {
       sessionsKilled,
       ...(fallbackDestination !== undefined ? { fallbackDestination } : {}),
       reroutedQitemIds: activeQitemIds,
+      pendingMessageIds,
+      heldMessageIds,
       nodes: nodeOutcomes,
     };
   }
