@@ -1,0 +1,4 @@
+{
+  "//": "Editor-only: lets the TypeScript language server open daemon tests in their real project (tsconfig.test.json, the one lint's typecheck:daemon-tests uses) instead of an inferred one. Lint and the build do not read this file.",
+  "extends": "../tsconfig.test.json"
+}

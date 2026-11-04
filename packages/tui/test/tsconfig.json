@@ -1,0 +1,13 @@
+{
+  "//": "Editor-only: lets the TypeScript language server open this package's tests in a real project (the package tsconfig, widened to src + test) instead of an inferred one. Lint and the build do not read this file.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../../..",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["../src", "."],
+  "exclude": ["../dist"]
+}
