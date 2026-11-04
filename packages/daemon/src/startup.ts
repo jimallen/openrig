@@ -92,7 +92,7 @@ import { routeBundleContents } from "./domain/bundle-content-routing.js";
 import { DiscoveryRepository } from "./domain/discovery-repository.js";
 import { SessionReconciler } from "./domain/session-reconciler.js";
 import { RigLifecycleService } from "./domain/rig-lifecycle-service.js";
-import { SimulatorLifecycle } from "./domain/simulator-lifecycle.js";
+import { buildSimulatorLifecycle } from "./domain/simulator-lifecycle.js";
 import { RigExpansionService } from "./domain/rig-expansion-service.js";
 // TODO: AS-T12 — migrate to pod-aware bundle source resolver
 import { LegacyBundleSourceResolver as BundleSourceResolver } from "./domain/bundle-source-resolver.js";
@@ -1353,11 +1353,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     ompRunnerStateStore: ompAdapter,
   });
   // OF-208: iOS simulator lifecycle. The cap is read fresh from the settings store on every sweep.
-  const simulatorLifecycle = new SimulatorLifecycle({
-    db, eventBus,
-    capGb: () => Number(new ContextPackSettingsStore().resolveOne("simulators.size_cap_gb").value),
-    claimDirs: () => String(new ContextPackSettingsStore().resolveOne("simulators.claim_dirs").value).split(",").map((d) => d.trim()).filter((d) => d.length > 0),
-  });
+  const simulatorLifecycle = buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore() });
   const rigLifecycleService = new RigLifecycleService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter, simulatorLifecycle,
   });

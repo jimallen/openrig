@@ -189,6 +189,25 @@ export interface SimulatorLifecycleDeps {
   log?: (line: string) => void;
 }
 
+/** What the builder needs of the settings store (the real `SettingsStore` satisfies it). */
+export interface SimulatorSettings {
+  resolveOne(key: "simulators.size_cap_gb" | "simulators.claim_dirs"): { value: unknown };
+}
+
+/**
+ * The one place the daemon's settings are wired into the service: the cap and the claim directories, each read fresh from a new
+ * store on every use. startup.ts builds the service through this, so a test can build it from a store holding claim_dirs and
+ * see the directories the sweep would read.
+ */
+export function buildSimulatorLifecycle(deps: { db: Database.Database; eventBus: EventBus; settings: () => SimulatorSettings }): SimulatorLifecycle {
+  return new SimulatorLifecycle({
+    db: deps.db,
+    eventBus: deps.eventBus,
+    capGb: () => Number(deps.settings().resolveOne("simulators.size_cap_gb").value),
+    claimDirs: () => String(deps.settings().resolveOne("simulators.claim_dirs").value).split(",").map((d) => d.trim()).filter((d) => d.length > 0),
+  });
+}
+
 export class SimulatorLifecycle {
   private readonly db: Database.Database;
   private readonly eventBus: EventBus;
@@ -208,6 +227,12 @@ export class SimulatorLifecycle {
     this.claimDirs = deps.claimDirs ?? (() => []);
     this.platform = deps.platform ?? process.platform;
     this.log = deps.log ?? ((line) => console.warn(line));
+  }
+
+  /** The UDIDs claimed right now in the configured directories, or null when they cannot be read. Read-only; for diagnosis and tests. */
+  claimedUdids(): string[] | null {
+    const c = this.readClaims();
+    return c.unreadable === null ? [...c.udids].sort() : null;
   }
 
   /** Turns the real `xcrun simctl` on. Called by the real launch path only, and only when `realSimctlAllowed`. */
@@ -324,7 +349,7 @@ export class SimulatorLifecycle {
    * stale claim keeps its device un-erased. A directory that does not exist claims nothing; one that cannot be listed, or has more
    * than 2000 entries, makes the answer `unreadable` and nothing attributed is erased. Read-only.
    */
-  private readClaims(): Claims {
+  private readClaims(missingSeen: Set<string> = new Set()): Claims {
     const udids = new Set<string>();
     let dirs: string[];
     try {
@@ -337,19 +362,29 @@ export class SimulatorLifecycle {
       try {
         names = readdirSync(dir);
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          // A guard's dir may legitimately be absent between runs, so it claims nothing; but a typo looks the same, so say so once per run.
+          if (!missingSeen.has(dir)) {
+            missingSeen.add(dir);
+            this.log(`[simulators] claim dir does not exist (it claims nothing): ${dir}`);
+          }
+          continue;
+        }
         return { udids, unreadable: `${dir}: ${err instanceof Error ? err.message : String(err)}` };
       }
       if (names.length > MAX_CLAIM_ENTRIES) return { udids, unreadable: `${dir}: more than ${MAX_CLAIM_ENTRIES} entries` };
       for (const name of names) {
         if (UDID_RE.test(name)) { udids.add(name.toUpperCase()); continue; }
+        const path = joinPath(dir, name);
         try {
-          const path = joinPath(dir, name);
           const st = statSync(path);
           if (!st.isFile() || st.size === 0 || st.size > MAX_CLAIM_FILE_BYTES) continue;
           for (const m of readFileSync(path, "utf8").matchAll(UDID_GLOBAL_RE)) udids.add(m[0].toUpperCase());
-        } catch {
-          // an entry that vanished between readdir and read (a claim being released) claims nothing now
+        } catch (err) {
+          // An entry that vanished between readdir and read (a claim being released) claims nothing now; any other failure (EACCES,
+          // EIO) may be a claim we cannot see, so nothing is erased this run.
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+          return { udids, unreadable: `${path}: ${err instanceof Error ? err.message : String(err)}` };
         }
       }
     }
@@ -400,7 +435,9 @@ export class SimulatorLifecycle {
     }
     const reason: SimulatorEraseReason = trigger.kind === "cap" ? "over_size_cap" : trigger.reason;
     const outcomes: SimulatorOutcome[] = [];
-    const claims = this.readClaims();
+    const missingSeen = new Set<string>(); // one "claim dir missing" line per run, however many times the claims are read
+    const claims = this.readClaims(missingSeen);
+    if (claims.unreadable !== null) this.log(`[simulators] claims unreadable, nothing is erased this run: ${claims.unreadable}`);
     for (const first of devices) {
       const verdict = this.decide(first, trigger, claims);
       if ("skip" in verdict) {
@@ -420,7 +457,7 @@ export class SimulatorLifecycle {
         continue;
       }
       // The claims are re-read with the state: a claim granted since the first read protects the device too.
-      const again = fresh ? this.decide(fresh, trigger, this.readClaims()) : { skip: "gone" };
+      const again = fresh ? this.decide(fresh, trigger, this.readClaims(missingSeen)) : { skip: "gone" };
       if (!fresh || "skip" in again) {
         outcomes.push({ udid: first.udid, name: first.name, action: "skipped", reason: fresh ? (again as { skip: string }).skip : "gone", sizeBytes: first.sizeBytes });
         continue;

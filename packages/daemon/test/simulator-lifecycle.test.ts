@@ -11,7 +11,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import {
   SimulatorLifecycle, nameIsForSeat, seatToken, parseSimctlDevices,
-  BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, realSimctlAllowed, enableRealSimctlIfAllowed, type SimctlExec,
+  BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, realSimctlAllowed, enableRealSimctlIfAllowed, buildSimulatorLifecycle, type SimctlExec,
 } from "../src/domain/simulator-lifecycle.js";
 
 const GB = BYTES_PER_GB;
@@ -492,6 +492,91 @@ describe("OF-208 SimulatorLifecycle", () => {
       const res2 = await make(fake2, () => 20, "darwin", () => { throw new Error("config unreadable"); }).sweepOverCap();
       expect(fake2.erased()).toEqual([]);
       expect(res2.outcomes[0]).toMatchObject({ reason: "claims_unreadable" });
+    });
+
+    it("a claim file that cannot be read fails closed: nothing is erased this run, and the reason is logged", async () => {
+      seedRig();
+      const f = path.join(queue, "9.sim");
+      fs.writeFileSync(f, `${UD(1)}\n`);
+      fs.chmodSync(f, 0o000);
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "impl-duo-1")]);
+      const res = await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes.every((o) => o.reason === "claims_unreadable")).toBe(true);
+      expect(log.some((l) => l.includes("claims unreadable") && l.includes(f))).toBe(true);
+    });
+
+    it("a claim file that vanishes between the listing and the read (a claim being released) claims nothing and does not stop the sweep", async () => {
+      seedRig();
+      fs.writeFileSync(path.join(queue, "1.sim"), UD(1));
+      const fake = fakeSimctl([big(1, "qa-duo-271")]);
+      // A claim dir listing that names an entry which no longer exists.
+      const sim = make(fake, () => 20, "darwin", () => [queue]);
+      fs.rmSync(path.join(queue, "1.sim"));
+      fs.symlinkSync(path.join(queue, "gone-target"), path.join(queue, "dangling.sim")); // statSync -> ENOENT, like a vanished entry
+      await sim.sweepOverCap();
+      expect(fake.erased()).toEqual([UD(1)]);
+    });
+
+    it("a lower-case UDID inside a claim file claims it", async () => {
+      seedRig();
+      fs.writeFileSync(path.join(queue, "5.sim"), `${UD(1).toLowerCase()}\n`);
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "impl-duo-1")]);
+      await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([UD(2)]);
+    });
+
+    it("a configured claim dir that does not exist claims nothing and is logged once per run, naming the path", async () => {
+      seedRig();
+      const typo = path.join(claims, "lock.queuee");
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "impl-duo-1"), big(3, "ux-duo-1")]);
+      const sim = make(fake, () => 20, "darwin", () => [typo, queue]);
+      await sim.sweepOverCap();
+      expect(fake.erased()).toEqual([UD(1), UD(2), UD(3)]); // missing claims nothing
+      // three devices means the claims were read four times (the start and a re-read each); the line appears once
+      expect(log.filter((l) => l.includes("claim dir does not exist") && l.includes(typo))).toHaveLength(1);
+      await sim.sweepOverCap();
+      expect(log.filter((l) => l.includes("claim dir does not exist"))).toHaveLength(2); // once per run, not once per process
+    });
+
+    it("an existing claim dir logs no missing-dir line", async () => {
+      seedRig();
+      const fake = fakeSimctl([big(1, "qa-duo-271")]);
+      await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(log.filter((l) => l.includes("does not exist"))).toEqual([]);
+    });
+
+    it("the service built the way startup builds it reads claim_dirs from the settings store (and the cap)", () => {
+      seedRig();
+      fs.mkdirSync(path.join(claims, UD(4)));
+      fs.writeFileSync(path.join(queue, "2.sim"), UD(5));
+      const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), "of222-startup-cfg-"));
+      const saved = process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
+      delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
+      try {
+        const store = new SettingsStore(path.join(cfgDir, "config.json"));
+        store.set("simulators.claim_dirs", ` ${claims} , ${queue},`);
+        const sim = buildSimulatorLifecycle({ db, eventBus, settings: () => store });
+        expect(sim.claimedUdids()).toEqual([UD(4), UD(5)].sort());
+        // read fresh on every use: a claim added later is seen, and an emptied setting claims nothing
+        fs.mkdirSync(path.join(claims, UD(6)));
+        expect(sim.claimedUdids()).toContain(UD(6));
+        store.set("simulators.claim_dirs", "");
+        expect(sim.claimedUdids()).toEqual([]);
+        // the cap comes through the same store
+        store.set("simulators.size_cap_gb", "0");
+        return sim.sweepOverCap().then((r) => expect(r.status).toBe("disabled"));
+      } finally {
+        if (saved === undefined) delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"]; else process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"] = saved;
+        fs.rmSync(cfgDir, { recursive: true, force: true });
+      }
+    });
+
+    it("startup.ts builds the service through buildSimulatorLifecycle with the settings store, and nowhere constructs it bare", () => {
+      const startup = fs.readFileSync(path.resolve(import.meta.dirname, "../src/startup.ts"), "utf8");
+      expect(startup).toContain("buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore() })");
+      expect(startup).not.toMatch(/new SimulatorLifecycle\(/);
+      expect(startup).toMatch(/simulatorLifecycle,\n\s+rigExpansionService,/); // handed to the app deps
     });
 
     it("a claim granted between the first read and the erase protects the device (claims are re-read with the state)", async () => {

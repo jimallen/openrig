@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { Command } from "commander";
 import { ConfigStore, VALID_KEYS, type ResolvedSetting, type ValidKey } from "../config-store.js";
 import { initWorkspaceCommand } from "./config-init-workspace.js";
@@ -16,6 +17,12 @@ const BOOT_ONLY_PREFIXES = ["transcripts.enabled", "transcripts.path"];
 
 function isBootOnlyKey(key: string): boolean {
   return BOOT_ONLY_KEYS.includes(key) || BOOT_ONLY_PREFIXES.some((p) => key.startsWith(p));
+}
+
+/** Warnings for a `simulators.claim_dirs` value: each listed directory that does not exist now. Warn only; a guard's directory may be absent between runs. */
+export function claimDirWarnings(value: string, exists: (p: string) => boolean = existsSync): string[] {
+  return value.split(",").map((d) => d.trim()).filter((d) => d.length > 0 && !exists(d))
+    .map((d) => `warning: simulators.claim_dirs lists '${d}', which does not exist; it claims nothing until it does (a typo here switches that protection off).`);
 }
 
 export function configCommand(
@@ -178,6 +185,7 @@ Precedence: CLI flag > environment variable > config file > default`)
       try {
         store.set(key, value);
         console.log(`${key} = ${store.get(key)}`);
+        if (key === "simulators.claim_dirs") for (const w of claimDirWarnings(value)) console.error(w);
         // SWEEP-c: boot-only key + running daemon = stale-until-restart; say so loudly.
         if (isBootOnlyKey(key) && (await probeDaemonRunning())) {
           console.error(`note: '${key}' is read at daemon BOOT — the running daemon keeps its current value; this takes effect on the next daemon restart, which the operator does from a shell outside any seat (a seat reports to the operator instead).`);

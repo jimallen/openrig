@@ -21,7 +21,7 @@ import {
   parseNamedPairs,
   deriveWorkspaceDefault,
 } from "../src/config-store.js";
-import { configCommand } from "../src/commands/config.js";
+import { configCommand, claimDirWarnings } from "../src/commands/config.js";
 import { initWorkspaceCommand, runInitWorkspace } from "../src/commands/config-init-workspace.js";
 
 // P6/D12-residue: config-store captures DEFAULT_WORKSPACE_ROOT at MODULE-LOAD from
@@ -289,6 +289,39 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
     expect(store.resolve().simulators.claimDirs).toBe("/p/.ui-run.lock.sim,/p/.ui-run.lock.queue");
     expect(() => store.set("simulators.claim_dirs", "/ok,not/absolute")).toThrow(/absolute directory path/);
     expect(store.resolve().simulators.claimDirs).toBe("/p/.ui-run.lock.sim,/p/.ui-run.lock.queue");
+  });
+
+  it("rig config set simulators.claim_dirs warns about a listed directory that does not exist, and still sets it", async () => {
+    const present = mkdtempSync(join(tmpdir(), "claim-present-"));
+    const missing = join(present, "no-such-dir");
+    try {
+      const cmd = new Command("rig");
+      cmd.exitOverride();
+      cmd.addCommand(configCommand(configPath));
+      const errs: string[] = [];
+      const origErr = console.error;
+      const origLog = console.log;
+      console.error = (m?: unknown) => { errs.push(String(m)); };
+      console.log = () => {};
+      try {
+        await cmd.parseAsync(["node", "rig", "config", "set", "simulators.claim_dirs", `${present},${missing}`]);
+      } finally {
+        console.error = origErr;
+        console.log = origLog;
+      }
+      expect(errs.filter((e) => e.startsWith("warning:"))).toHaveLength(1);
+      expect(errs.join("\n")).toContain(missing);
+      expect(errs.join("\n")).not.toContain(`'${present}'`);
+      expect(new ConfigStore(configPath).resolve().simulators.claimDirs).toBe(`${present},${missing}`); // warned, not refused
+    } finally {
+      rmSync(present, { recursive: true, force: true });
+    }
+  });
+
+  it("claimDirWarnings names each missing directory and none that exist", () => {
+    expect(claimDirWarnings("/a,/b, /c", (p) => p === "/b")).toHaveLength(2);
+    expect(claimDirWarnings("", () => false)).toEqual([]);
+    expect(claimDirWarnings("/a", () => true)).toEqual([]);
   });
 
   it("simulators.size_cap_gb (OF-208) defaults to 20, accepts 0 (off) and whole GB, and refuses a negative or non-integer value", () => {
