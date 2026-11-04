@@ -51,6 +51,10 @@ function fakeSimctl(devices: FakeDevice[]) {
   return { exec, calls, state, erased };
 }
 
+class ThrowingEventBus extends EventBus {
+  override emit(): never { throw new Error("db locked"); }
+}
+
 const U = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 
 describe("OF-208 simulator naming", () => {
@@ -380,7 +384,7 @@ describe("OF-208 SimulatorLifecycle", () => {
     it("an event write failure after an erase does not throw", async () => {
       seedRig();
       const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }]);
-      const sim = new SimulatorLifecycle({ db, eventBus: { emit: () => { throw new Error("db locked"); } } as unknown as EventBus, simctl: fake.exec, capGb: () => 20, log: (l) => log.push(l) });
+      const sim = new SimulatorLifecycle({ db, eventBus: new ThrowingEventBus(db), simctl: fake.exec, capGb: () => 20, log: (l) => log.push(l) });
       const res = await sim.sweepOverCap();
       expect(res.outcomes[0]).toMatchObject({ action: "erased" });
       expect(log.some((l) => l.includes("event could not be written"))).toBe(true);
