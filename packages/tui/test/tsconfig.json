@@ -1,5 +1,5 @@
 {
-  "//": "Editor-only: lets the TypeScript language server open this package's tests in a real project (the package tsconfig, widened to src + test) instead of an inferred one. Lint and the build do not read this file.",
+  "//": "The type-check project for this package's tests (the package tsconfig, widened to src + test). Lint gates it at 0 errors through typecheck:tui-tests, and the TypeScript language server uses it so editors open tests in their real project instead of an inferred one. The build does not read this file.",
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
