@@ -11,6 +11,9 @@ export interface TerminalEndedHost {
  *  finished or gone); an unreachable core, a tmux host, or a host that cannot be asked is false, so the caller keeps the answer it had. */
 export async function runnerTerminalEnded(host: TerminalEndedHost, session: string): Promise<boolean> {
   if (host.hostKind !== "hc" || typeof host.probeSession !== "function") return false;
+  // OF-205 (nit): no name is no evidence. An empty session name hashes to a terminal hc does not have, which probes as `absent`, so it would read as a
+  // terminal that ended.
+  if (!session.trim()) return false;
   try {
     return (await host.probeSession(session)).state === "absent";
   } catch {

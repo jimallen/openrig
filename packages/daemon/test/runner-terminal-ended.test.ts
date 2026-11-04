@@ -28,6 +28,12 @@ describe("runnerTerminalEnded", () => {
   ])("is false for %s", async (_name, h) => {
     expect(await runnerTerminalEnded(h, "s")).toBe(false);
   });
+  // OF-205 (nit): an empty session name hashes to a terminal hc does not have, which probes as absent, so a binding with no session read as "its terminal ended".
+  it.each(["", "   "])("is false, and asks nothing, for the session name %j", async (name) => {
+    const h = host("hc", { state: "absent" });
+    expect(await runnerTerminalEnded(h, name)).toBe(false);
+    expect(h.probeSession).not.toHaveBeenCalled();
+  });
   it("asks about the session it was given", async () => {
     const h = host("hc", { state: "absent" });
     await runnerTerminalEnded(h, "dev@rig");

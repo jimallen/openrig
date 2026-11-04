@@ -1619,6 +1619,38 @@ describe("StartupOrchestrator", () => {
       expect(t.sendText).not.toHaveBeenCalled();
     });
 
+    // OF-205 (c): the pod-aware settle passed `missing=false` for every ended terminal, so a resume whose runtime printed its own "not found" and ended its
+    // terminal was reported as a plain failure, where the legacy settle (resume-settle.ts) reports a missing conversation, which restore rolls back to a
+    // zero session (restore-orchestrator reads `missingConversation`). The finished terminal's last screen is what tells them apart.
+    function endedHcTerminal(runtime: "claude-code" | "codex", screen: string) {
+      let elapsed = 0;
+      const ended = () => elapsed >= 1000;
+      const t = Object.assign(mockTmux({ capturePaneContent: vi.fn(async () => (ended() ? screen : "")), getPaneCommand: vi.fn(async () => (ended() ? null : runtime === "codex" ? "codex" : "claude")) }),
+        { hostKind: "hc" as const, probeSession: vi.fn(async () => (ended() ? { state: "absent" as const } : { state: "present" as const })) });
+      const adapter = mockAdapter({ runtime, checkReady: vi.fn(async () => (ended() ? { ready: false, reason: "tmux session not responsive" } : { ready: true })) });
+      const orch = createOrchestrator({ tmux: t, sleep: async (ms) => { elapsed += ms; }, listProcesses: async () => PANE_WITHOUT_CLAUDE });
+      return { t, adapter, orch };
+    }
+    it.each([
+      ["claude-code", "claude_id", `${NATIVE_MESSAGE}\n`],
+      ["codex", "codex_id", "No saved session found with ID 0199-abc\n"],
+    ] as const)("hc: a resumed %s whose terminal ended after printing its own 'not found' is a missing conversation (restore rolls it back)", async (runtime, resumeType, screen) => {
+      const seed = seedSession();
+      const { t, adapter, orch } = endedHcTerminal(runtime, screen);
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType, allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh", missingConversation: true });
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+    it("hc control: a terminal that ended with some other last screen is a plain failure, not a missing conversation", async () => {
+      const seed = seedSession();
+      const { adapter, orch } = endedHcTerminal("claude-code", "claude: command crashed\n");
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.missingConversation).toBeUndefined();
+      expect(result.errors.join("\n")).toContain("its terminal ended with it");
+    });
+
     it("reports a pane that fell back to its shell without a native message as failed, keeping the pane output", async () => {
       const seed = seedSession();
       const { adapter, orch } = exitingClaude("claude: command crashed\n$ ");

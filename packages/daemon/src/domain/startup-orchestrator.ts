@@ -27,6 +27,7 @@ import { SettingsStore } from "./user-settings/settings-store.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProcessLister, type NativeRuntime } from "./native-process-lineage.js";
+import { assessNativeResumeProbe } from "./native-resume-probe.js";
 import { isResumeGoneCode, paneForegroundState, RESUME_SETTLE_MS, type PaneForegroundState, type PresentMemo } from "./resume-settle.js";
 import { readStoredJsonObject } from "./stored-json.js";
 import { registeredPaneOf } from "./binding-pane.js";
@@ -167,6 +168,12 @@ export function serializeStartupContext(
 type StartupSendFailure = { error: string };
 
 /** The runtimes whose resume is held by the settle read and the pre-type guard (OF-161 Claude, OF-167 Codex). */
+/** Does the pane say the resumed runtime's own "the requested session does not exist" (Claude's "No conversation found", Codex's "No saved session found")? */
+function resumeMessageSaysMissing(runtime: NativeRuntime, paneContent: string): boolean {
+  const probe = assessNativeResumeProbe({ runtime, paneCommand: null, paneContent });
+  return probe.code === (runtime === "codex" ? "no_saved_session" : "no_conversation_found");
+}
+
 function nativeResumeRuntime(runtime: string): NativeRuntime | null {
   return runtime === "claude-code" || runtime === "codex" ? runtime : null;
 }
@@ -561,8 +568,11 @@ export class StartupOrchestrator {
             // shell with no runtime under it was before. Nothing is typed into a seat that has no terminal.
             const native = await this.paneTail(input.binding.tmuxSession);
             const who = resumedRuntime === "codex" ? "Codex" : "Claude";
+            // OF-205 (c): when what the finished terminal left says the runtime's own "not found" (the finished record stays readable), the conversation is
+            // missing and restore rolls the seat back to zero session, as the legacy settle (settleResume) reports it; any other end stays a plain failure.
+            const missing = resumeMessageSaysMissing(resumedRuntime, await this.paneContent(input.binding.tmuxSession));
             errors.push(`${who} resume failed: the resumed ${who} exited right after it launched and its terminal ended with it${native ? ` — ${native}` : ""}`);
-            return this.fail(input, "failed", errors, native || undefined, false, "retry_fresh", false);
+            return this.fail(input, "failed", errors, native || undefined, false, "retry_fresh", missing);
           }
           if (isResumeGoneCode(resumedRuntime, held.code)) {
             // The phrase also appears in a healthy resumed pane whose repainted history mentions it, so it counts only
@@ -812,10 +822,13 @@ export class StartupOrchestrator {
 
   /** The last non-empty lines of the pane, for a failure that should quote what the runtime itself said. */
   private async paneTail(session: string | null | undefined): Promise<string> {
+    return (await this.paneContent(session)).split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" | ").slice(0, 400);
+  }
+
+  private async paneContent(session: string | null | undefined): Promise<string> {
     if (!session) return "";
     try {
-      const content = (await this.tmuxAdapter.capturePaneContent(session, 40)) ?? "";
-      return content.split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" | ").slice(0, 400);
+      return (await this.tmuxAdapter.capturePaneContent(session, 40)) ?? "";
     } catch { return ""; }
   }
 
