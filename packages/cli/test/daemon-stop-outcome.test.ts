@@ -54,7 +54,7 @@ it("an unavailable final probe cannot certify shutdown", async () => {
 });
 it.each(["failed", "timed-out"])("a %s drain is not success even after process and listener exit", async (outcome) => {
   vi.useFakeTimers(); const now = new Date().toISOString();
-  const result = await stop(fixture({ receipt: JSON.stringify({ schema: "openrig.daemon-shutdown/v1",
+  const result = await stop(fixture({ receipt: JSON.stringify({ schema: "openrig.daemon-shutdown/v1", pid: 987,
     startedAt: now, completedAt: now, outcome, phase: "watchdog", failures: [{ phase: "watchdog", error: "incomplete" }] }) }));
   expect(result.code).toBe(1); expect(result.err).toContain(outcome); expect(result.err).toContain("phase=watchdog");
 });
@@ -68,7 +68,7 @@ it.each([null, { pid: 123 }, { pid: 987, startedAt: "2020-01-01T00:00:00Z" }])("
 
 it.each(["failed", "timed-out"])("retains an already-exited %s outcome and identity on repeated stop", async outcome => {
   vi.useFakeTimers(); const now = new Date().toISOString();
-  const deps = fixture({ exited: true, receipt: JSON.stringify({ schema: "openrig.daemon-shutdown/v1",
+  const deps = fixture({ exited: true, receipt: JSON.stringify({ schema: "openrig.daemon-shutdown/v1", pid: 987,
     startedAt: now, completedAt: now, outcome, phase: "health-diagnosis", failures: [{ phase: "health-diagnosis", error: "incomplete" }] }) });
   for (let i = 0; i < 2; i++) {
     const result = await stop(deps);
@@ -110,7 +110,7 @@ it.each(["malformed", JSON.stringify({ outcome: "failed", pid: 123 })])("no-stat
 });
 it.each([{pid: 123}, {startedAt: "2020-01-01T00:00:00Z"}])("an exited target cannot borrow unrelated clean evidence: %s", async override => {
   vi.useFakeTimers(); const now = new Date().toISOString();
-  const deps = fixture({ exited: true, receipt: JSON.stringify({ schema: "openrig.daemon-shutdown/v1",
+  const deps = fixture({ exited: true, receipt: JSON.stringify({ schema: "openrig.daemon-shutdown/v1", pid: 987,
     startedAt: now, completedAt: now, outcome: "clean", phase: "complete", failures: [], ...override }) });
   const result = await stop(deps); expect(result.code).toBe(1); expect(result.err).toContain("unverified");
   expect(deps.exists(STATE_FILE)).toBe(true); expect(deps.kill).not.toHaveBeenCalled();

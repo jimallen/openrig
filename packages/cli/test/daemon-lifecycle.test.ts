@@ -230,7 +230,7 @@ describe("Daemon Lifecycle", () => {
   it("start: no state and a hanging initial probe still starts and verifies its own child", async () => {
     vi.useFakeTimers();
     const deps = startableDeps({ fetch: vi.fn().mockImplementationOnce(neverFetch).mockResolvedValue(startupHealth()) });
-    const pending = rejectionOf(startDaemon({ port: 7433 }, deps));
+    const pending = startDaemon({ port: 7433 }, deps).catch((error) => error as Error);
     await vi.runAllTimersAsync();
 
     expect(await pending).toMatchObject({ pid: 12345, port: 7433 });
