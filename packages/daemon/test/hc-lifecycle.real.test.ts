@@ -247,7 +247,7 @@ describe.skipIf(!HC)("HcLifecycle against a private hc core", () => {
       const TOKEN = `tok-of200-${process.pid}`;
       const OPENRIG_HOME = join(core.root, "orhome");
       const launches = new SeatLaunchRecords();
-      launches.rebuildFrom((identity) => seatRestartEnv(identity, { sessionEnv: { PATH: process.env.PATH, OPENRIG_HOME, OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN, CODEX_HOME: "/the/shared/home" }, runtimeSessionEnv: {} }));
+      launches.rebuildFrom((identity) => seatRestartEnv(identity, { sessionEnv: { PATH: process.env.PATH, OPENRIG_HOME, OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN, CODEX_HOME: "/the/shared/home" }, runtimeSessionEnv: {}, runtimeOf: () => undefined }));
       await host.createSession("env5@rig", core.root, SEAT_ENV);          // a host with no record: the daemon "restarted" since
       const out = join(core.root, "env-rebuilt.txt");
       const mine = new HcLifecycle(core.client, { daemonEnv, launches });

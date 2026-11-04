@@ -12,17 +12,22 @@ export interface SeatRestartEnvSources {
   sessionEnv: Readonly<Record<string, string | undefined>>;
   /** Extra env per runtime (startup.ts `runtimeSessionEnv`). */
   runtimeSessionEnv: Readonly<Record<string, Readonly<Record<string, string | undefined>>>>;
+  /** OF-205 (a): the runtime of the seat these identity labels name, from the daemon's own node record (startup.ts reads `nodes.runtime`, the value
+   *  NodeLauncher picks the same layer by). A label can be written by anything that can run `hc` as the same user, so the label's `OPENRIG_RUNTIME`
+   *  never chooses a layer: a seat the record does not know gets no runtime layer. */
+  runtimeOf(identity: Readonly<Record<string, string>>): string | undefined;
 }
 
 /** The env a seat's respawn is given when only its identity labels survive: the launch composition of NodeLauncher, then the labels' names on top. */
 export function seatRestartEnv(identity: Readonly<Record<string, string>>, sources: SeatRestartEnvSources): Record<string, string> {
   const env: Record<string, string> = {};
-  const runtime = identity["OPENRIG_RUNTIME"];
+  const runtime = sources.runtimeOf(identity);
   for (const layer of [sources.sessionEnv, runtime ? sources.runtimeSessionEnv[runtime] : undefined]) {
     for (const [key, value] of Object.entries(layer ?? {})) if (value !== undefined && value.trim() !== "") env[key] = value;
   }
   // The same home NodeLauncher gives the shim: the seat's own OPENRIG_HOME, else the daemon's, else the default.
   const home = sources.sessionEnv["OPENRIG_HOME"] ?? process.env["OPENRIG_HOME"] ?? path.join(os.homedir(), ".openrig");
   withWorktreeShimPath(env, home);
-  return { ...env, ...identity };
+  // The identity the labels kept wins over the daemon's values, except the runtime: that is the record's, so a label cannot say it.
+  return { ...env, ...identity, ...(runtime ? { OPENRIG_RUNTIME: runtime } : {}) };
 }

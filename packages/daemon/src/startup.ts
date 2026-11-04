@@ -661,7 +661,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   });
   const { SeatLaunchEnvironment } = await import("./domain/seat-launch-environment.js");
   // OF-200 review F3: a seat respawned after this daemon restarted keeps the activity-hook token and the shim PATH, which a label cannot hold.
-  hcAdapter?.rebuildSeatEnvFrom((identity) => seatRestartEnv(identity, { sessionEnv: launchSessionEnv, runtimeSessionEnv }));
+  // OF-205 (a): the runtime that picks the extra env layer is the node record's, found by the seat's node id AND session name together, not the label's.
+  const seatRuntimeStmt = db.prepare("SELECT n.runtime AS runtime FROM nodes n JOIN sessions s ON s.node_id = n.id WHERE n.id = ? AND s.session_name = ? LIMIT 1");
+  hcAdapter?.rebuildSeatEnvFrom((identity) => seatRestartEnv(identity, {
+    sessionEnv: launchSessionEnv,
+    runtimeSessionEnv,
+    runtimeOf: (labels) => {
+      const nodeId = labels["OPENRIG_NODE_ID"], sessionName = labels["OPENRIG_SESSION_NAME"];
+      if (!nodeId || !sessionName) return undefined;
+      return (seatRuntimeStmt.get(nodeId, sessionName) as { runtime: string | null } | undefined)?.runtime ?? undefined;
+    },
+  }));
   const seatLaunchEnvironment = new SeatLaunchEnvironment(tmuxAdapter, launchSessionEnv, process.cwd(), undefined, configuredCodexHome);
   // OF-183: only the host's installed daemon may change the shared ~/.codex/config.toml (see codex-config-write-policy.ts).
   const { startupCodexConfigWritePolicy } = await import("./domain/codex-config-write-policy.js");
