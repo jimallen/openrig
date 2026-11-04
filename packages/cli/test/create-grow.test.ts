@@ -27,7 +27,7 @@ function lifecycleDeps(): LifecycleDeps {
   };
 }
 
-function captureLogs(run: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
+function captureLogs(run: () => Promise<unknown>): Promise<{ logs: string[]; exitCode: number | undefined }> {
   return new Promise(async (resolve) => {
     const logs: string[] = [];
     const oldLog = console.log;

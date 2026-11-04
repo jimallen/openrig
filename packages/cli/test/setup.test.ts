@@ -29,7 +29,7 @@ function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
   };
 }
 
-function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
+function captureLogs(fn: () => Promise<unknown>): Promise<{ logs: string[]; exitCode: number | undefined }> {
   const logs: string[] = [];
   const orig = console.log;
   let exitCode: number | undefined;

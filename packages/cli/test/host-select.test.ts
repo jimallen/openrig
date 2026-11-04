@@ -54,7 +54,7 @@ describe("rig host select (OPR.0.4.6.MH1 FR-1 command path)", () => {
     }
   });
 
-  function capture(fn: () => Promise<void>): Promise<{ out: string[]; err: string[]; exitCode: number | undefined }> {
+  function capture(fn: () => Promise<unknown>): Promise<{ out: string[]; err: string[]; exitCode: number | undefined }> {
     return new Promise(async (resolve) => {
       const out: string[] = []; const err: string[] = [];
       const ol = console.log; const oe = console.error; const oc = process.exitCode;

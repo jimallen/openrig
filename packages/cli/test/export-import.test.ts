@@ -23,7 +23,7 @@ function mockLifecycleDeps(overrides?: Partial<LifecycleDeps>): LifecycleDeps {
   };
 }
 
-function captureLogs(fn: () => Promise<void>): Promise<string[]> {
+function captureLogs(fn: () => Promise<unknown>): Promise<string[]> {
   return new Promise(async (resolve) => {
     const logs: string[] = [];
     const origLog = console.log;

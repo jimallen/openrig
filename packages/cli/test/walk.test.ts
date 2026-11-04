@@ -59,7 +59,7 @@ function tmpFile(name: string, content: string): string {
   return p;
 }
 
-function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; errLogs: string[]; exitCode: number | undefined }> {
+function captureLogs(fn: () => Promise<unknown>): Promise<{ logs: string[]; errLogs: string[]; exitCode: number | undefined }> {
   return new Promise(async (resolve) => {
     const logs: string[] = []; const errLogs: string[] = [];
     const origLog = console.log; const origErr = console.error; const origExit = process.exitCode;

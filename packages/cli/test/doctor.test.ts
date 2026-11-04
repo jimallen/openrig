@@ -303,7 +303,7 @@ describe("runDoctorChecks", () => {
 });
 
 describe("rig doctor", () => {
-  function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
+  function captureLogs(fn: () => Promise<unknown>): Promise<{ logs: string[]; exitCode: number | undefined }> {
     return new Promise(async (resolve) => {
       const logs: string[] = [];
       const origLog = console.log;
