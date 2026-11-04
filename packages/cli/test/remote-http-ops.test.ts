@@ -600,7 +600,7 @@ describe("SSH fallback", () => {
     const result = await runCrossHostCommand(
       { id: "ssh-host", transport: "ssh", target: "nonexistent.local" },
       ["rig", "ps"],
-      { connectTimeout: 1, spawn: (() => {
+      { connectTimeoutSeconds: 1, spawn: (() => {
         const { EventEmitter } = require("node:events");
         const proc = new EventEmitter();
         proc.stdout = new EventEmitter();

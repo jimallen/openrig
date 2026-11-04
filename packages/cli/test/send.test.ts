@@ -9,6 +9,7 @@ import { sendCommand, type SendDeps } from "../src/commands/send.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { must } from "./helpers/must.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -83,6 +84,9 @@ describe("Send CLI", () => {
   let port: number;
   let lastSendBody: Record<string, unknown> | null = null;
   let lastBroadcastBody: Record<string, unknown> | null = null;
+  // Read through a function: a direct read after `lastBroadcastBody = null` is narrowed to `never`.
+  const lastBody = (): Record<string, unknown> | null => lastBroadcastBody;
+  const lastSent = (): Record<string, unknown> | null => lastSendBody;
   // S3 (OPR.0.5.4.6): every /send body in order, so the no-double-delivery
   // proof can count plain-text sends vs submit-path requests.
   let sendBodies: Array<Record<string, unknown>> = [];
@@ -233,7 +237,7 @@ describe("Send CLI", () => {
     });
     const output = logs.join("\n");
     expect(exitCode).toBe(1);
-    expect(lastSendBody).toBeNull();
+    expect(lastSent()).toBeNull();
     expect(output).toMatch(/empty or whitespace-only/i);
     expect(output).toMatch(/backtick|\$\(\)/i);
     expect(output).toMatch(/--body-file|stdin/i);
@@ -268,7 +272,7 @@ describe("Send CLI", () => {
       await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello world"]);
     });
     expect(exitCode).toBeFalsy(); // DELIVERED, not refused
-    expect(lastSendBody).not.toBeNull(); // dispatch reached the wire
+    expect(lastSent()).not.toBeNull(); // dispatch reached the wire
     // Honest label on the rendered envelope; NO forged actor identity on the record.
     expect((lastSendBody as Record<string, unknown>).text).toContain("From: <unknown sender>");
     expect((lastSendBody as Record<string, unknown>).actorSession).toBeNull();
@@ -330,7 +334,7 @@ describe("Send CLI", () => {
   }, 20_000);
 
   it("hc-w45/46: a fan-out to a list waits for its WAVES of eight: 3 seats are one wave, 30 s bound + 15 s margin (3 no-run seats took 15.6 s serially)", async () => {
-    const postFn = vi.fn(async () => ({ status: 200, data: { total: 3, sent: 3, failed: 0, results: [] } }));
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 200, data: { total: 3, sent: 3, failed: 0, results: [] } }));
     const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
     await captureLogs(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "--to", "a@r,b@r,c@r", "hello", "--json"]);
@@ -340,7 +344,7 @@ describe("Send CLI", () => {
   });
 
   it("hc-w45/46: a fan-out the client cannot count (--rig) is budgeted as 32 seats: four waves, 135 s", async () => {
-    const postFn = vi.fn(async () => ({ status: 200, data: { total: 1, sent: 1, failed: 0, results: [] } }));
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 200, data: { total: 1, sent: 1, failed: 0, results: [] } }));
     const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
     await captureLogs(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "--rig", "my-rig", "hello", "--json"]);
@@ -355,7 +359,7 @@ describe("Send CLI", () => {
       await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello world"]);
     });
     expect(exitCode).toBeFalsy(); // sent (not refused)
-    expect(lastSendBody).not.toBeNull(); // dispatch reached the wire
+    expect(lastSent()).not.toBeNull(); // dispatch reached the wire
     expect((lastSendBody as Record<string, unknown>)["actorSession"]).toBe("driver@my-rig");
   });
 
@@ -524,7 +528,7 @@ describe("Send CLI", () => {
   });
 
   it("send --wait-for-idle posts waitForIdleMs and extends request timeout", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { ok: true, sessionName: "dev-impl@my-rig" },
     }));
@@ -551,7 +555,7 @@ describe("Send CLI", () => {
 
   // Seat Messaging S1: `--id` names the message. A repeat must be the same bytes, or the daemon refuses it as a different message.
   it("send --id names the message: the id goes to the daemon, and two runs post the same bytes (no Sent stamp)", async () => {
-    const postFn = vi.fn(async () => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
     const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
     vi.useFakeTimers({ now: new Date("2031-05-06T07:08:00Z"), toFake: ["Date"] });
     try {
@@ -566,7 +570,7 @@ describe("Send CLI", () => {
   });
 
   it("send without --id keeps its Sent stamp and a fresh id per run", async () => {
-    const postFn = vi.fn(async () => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
     const deps = runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient));
     for (let i = 0; i < 2; i++) await captureLogs(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--json"]); });
     const bodies = postFn.mock.calls.map((c) => (c as unknown as [string, { deliveryId: string; text: string }])[1]);
@@ -575,14 +579,14 @@ describe("Send CLI", () => {
   });
 
   it("send --id reaches a fan-out, and the ssh relay's remote argv", async () => {
-    const postFn = vi.fn(async () => ({ status: 200, data: { total: 0, sent: 0, failed: 0, results: [] } }));
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 200, data: { total: 0, sent: 0, failed: 0, results: [] } }));
     await captureLogs(async () => { await makeCmd(runningDeps(port, () => ({ post: postFn } as unknown as DaemonClient))).parseAsync(["node", "rig", "send", "--to", "a@r,b@r", "hello", "--id", "fan-1", "--json"]); });
     expect((postFn.mock.calls[0] as unknown as [string, { deliveryId?: string }])[1].deliveryId).toBe("fan-1");
     let captured: readonly string[] = [];
     const deps: SendDeps = {
       ...runningDeps(port),
       hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
-      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "remote ok", stderr: "" }; },
+      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, failedStep: "none", stdout: "remote ok", stderr: "", remoteExitCode: 0 }; },
     };
     await captureLogs(async () => { await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--host", "vm-test", "--id", "job-2"]); });
     expect(captured[captured.indexOf("--id") + 1]).toBe("job-2");
@@ -698,7 +702,7 @@ describe("Send CLI", () => {
   });
 
   it("send without wait-for-idle waits 45 s, not the client's 5 s read default (hc holds a send ~5 s; hc-w41)", async () => {
-    const postFn = vi.fn(async () => ({
+    const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({
       status: 200,
       data: { ok: true, sessionName: "dev-impl@my-rig" },
     }));
@@ -747,7 +751,7 @@ describe("Send CLI", () => {
     });
     expect(logs.join("\n")).toContain("positive number");
     expect(exitCode).toBe(1);
-    expect(lastSendBody).toBeNull();
+    expect(lastSent()).toBeNull();
   });
 
   it("send rejects wait-for-idle with force before contacting daemon", async () => {
@@ -756,7 +760,7 @@ describe("Send CLI", () => {
     });
     expect(logs.join("\n")).toContain("cannot be combined");
     expect(exitCode).toBe(1);
-    expect(lastSendBody).toBeNull();
+    expect(lastSent()).toBeNull();
   });
 
   // OPR.0.4.1.10 — --raw sends exact text with NO messaging envelope (still guarded server-side).
@@ -764,17 +768,17 @@ describe("Send CLI", () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "/compact", "--raw"]);
     });
-    expect(lastSendBody?.text).toBe("/compact");
-    expect(String(lastSendBody?.text)).not.toContain("To: dev-impl@my-rig");
-    expect(String(lastSendBody?.text)).not.toContain("↩ Reply");
+    expect(lastSent()?.text).toBe("/compact");
+    expect(String(lastSent()?.text)).not.toContain("To: dev-impl@my-rig");
+    expect(String(lastSent()?.text)).not.toContain("↩ Reply");
   });
 
   it("default send (no --raw) wraps the From/To messaging envelope", async () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]);
     });
-    expect(String(lastSendBody?.text)).toContain("To: dev-impl@my-rig");
-    expect(String(lastSendBody?.text)).toContain("---\nhello\n---");
+    expect(String(lastSent()?.text)).toContain("To: dev-impl@my-rig");
+    expect(String(lastSent()?.text)).toContain("---\nhello\n---");
   });
 
   // P21 I4 (specimen-5 security fix, REVERSES ba41fea2): --from is DEPRECATED + IGNORED. The rendered
@@ -788,9 +792,9 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--from", "orch-lead@rig-a"]);
       });
-      expect(String(lastSendBody?.text)).toContain("From: seat@my-rig");
-      expect(String(lastSendBody?.text)).not.toContain("orch-lead@rig-a"); // the forged origin never renders
-      expect(lastSendBody?.actorSession).toBe("seat@my-rig");
+      expect(String(lastSent()?.text)).toContain("From: seat@my-rig");
+      expect(String(lastSent()?.text)).not.toContain("orch-lead@rig-a"); // the forged origin never renders
+      expect(lastSent()?.actorSession).toBe("seat@my-rig");
     } finally {
       vi.unstubAllEnvs();
     }
@@ -800,9 +804,9 @@ describe("Send CLI", () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "1", "--dangerously-interact", "--reason", "unblock stuck prompt"]);
     });
-    expect(lastSendBody?.dangerouslyInteract).toBe(true);
-    expect(lastSendBody?.reason).toBe("unblock stuck prompt");
-    expect(lastSendBody?.text).toBe("1"); // implies --raw: no envelope
+    expect(lastSent()?.dangerouslyInteract).toBe(true);
+    expect(lastSent()?.reason).toBe("unblock stuck prompt");
+    expect(lastSent()?.text).toBe("1"); // implies --raw: no envelope
     expect("actorSession" in (lastSendBody ?? {})).toBe(true);
   });
 
@@ -812,7 +816,7 @@ describe("Send CLI", () => {
     });
     expect(logs.join("\n")).toContain("requires --reason");
     expect(exitCode).toBe(1);
-    expect(lastSendBody).toBeNull();
+    expect(lastSent()).toBeNull();
   });
 
   it("send --dangerously-interact + --wait-for-idle is rejected before contacting the daemon", async () => {
@@ -821,7 +825,7 @@ describe("Send CLI", () => {
     });
     expect(logs.join("\n")).toContain("cannot be combined with --wait-for-idle");
     expect(exitCode).toBe(1);
-    expect(lastSendBody).toBeNull();
+    expect(lastSent()).toBeNull();
   });
 
   // OPR.0.4.1.10 — cross-host argv must forward the new flags so the remote rig applies the same guard.
@@ -830,7 +834,7 @@ describe("Send CLI", () => {
     const deps: SendDeps = {
       ...runningDeps(port),
       hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
-      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "remote ok", stderr: "" }; },
+      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, failedStep: "none", stdout: "remote ok", stderr: "", remoteExitCode: 0 }; },
     };
     await captureLogs(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "1", "--host", "vm-test", "--raw", "--dangerously-interact", "--reason", "why now"]);
@@ -853,7 +857,7 @@ describe("Send CLI", () => {
     const deps: SendDeps = {
       ...runningDeps(port),
       hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
-      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "", stderr: "" }; },
+      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, failedStep: "none", stdout: "", stderr: "", remoteExitCode: 0 }; },
     };
     const { stderr, exitCode } = await captureChannels(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig@vm-test", "--context", "packs/x"]);
@@ -868,7 +872,7 @@ describe("Send CLI", () => {
     const deps: SendDeps = {
       ...runningDeps(port),
       hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
-      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "", stderr: "" }; },
+      crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, failedStep: "none", stdout: "", stderr: "", remoteExitCode: 0 }; },
     };
     const { exitCode } = await captureChannels(async () => {
       await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig@vm-test", "msg", "--context", "packs/x"]);
@@ -882,9 +886,9 @@ describe("Send CLI", () => {
     const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig,dev-qa@my-rig", "hello team"]);
     });
-    expect(lastSendBody).toBeNull(); // NOT the single-seat path
-    expect(lastBroadcastBody?.sessions).toEqual(["dev-impl@my-rig", "dev-qa@my-rig"]);
-    expect(lastBroadcastBody?.text).toBe("hello team"); // bare — daemon wraps per recipient
+    expect(lastSent()).toBeNull(); // NOT the single-seat path
+    expect(lastBody()?.sessions).toEqual(["dev-impl@my-rig", "dev-qa@my-rig"]);
+    expect(lastBody()?.text).toBe("hello team"); // bare — daemon wraps per recipient
     const output = logs.join("\n");
     expect(output).toContain("dev-impl@my-rig: sent");
     expect(output).toContain("dev-qa@my-rig: sent");
@@ -897,7 +901,7 @@ describe("Send CLI", () => {
       await makeCmd().parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig", " \t"]);
     });
     expect(exitCode).toBe(1);
-    expect(lastBroadcastBody).toBeNull();
+    expect(lastBody()).toBeNull();
     expect(logs.join("\n")).toMatch(/empty or whitespace-only/i);
   });
 
@@ -905,18 +909,18 @@ describe("Send CLI", () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig", "--to", "dev-qa@my-rig", "hi"]);
     });
-    expect(lastBroadcastBody?.sessions).toEqual(["dev-impl@my-rig", "dev-qa@my-rig"]);
+    expect(lastBody()?.sessions).toEqual(["dev-impl@my-rig", "dev-qa@my-rig"]);
     // Non-raw fan-out: the daemon wraps per recipient, so the CLI passes a sender + BARE text.
-    expect(typeof lastBroadcastBody?.envelopeSender).toBe("string");
-    expect(String(lastBroadcastBody?.text)).not.toContain("To:");
+    expect(typeof lastBody()?.envelopeSender).toBe("string");
+    expect(String(lastBody()?.text)).not.toContain("To:");
   });
 
   it("send --pod posts a pod target to /broadcast", async () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "--pod", "dev", "pod message"]);
     });
-    expect(lastBroadcastBody?.pod).toBe("dev");
-    expect(lastBroadcastBody?.text).toBe("pod message");
+    expect(lastBody()?.pod).toBe("dev");
+    expect(lastBody()?.text).toBe("pod message");
     expect(logs.join("\n")).toContain("2/2 delivered");
   });
 
@@ -924,7 +928,7 @@ describe("Send CLI", () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "--rig", "my-rig", "rig message"]);
     });
-    expect(lastBroadcastBody?.rig).toBe("my-rig");
+    expect(lastBody()?.rig).toBe("my-rig");
     expect(logs.join("\n")).toContain("2/2 delivered");
   });
 
@@ -1118,7 +1122,7 @@ describe("Send CLI", () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig,dev-qa@my-rig", "/compact", "--raw"]);
     });
-    expect(lastBroadcastBody?.text).toBe("/compact");
+    expect(lastBody()?.text).toBe("/compact");
     expect("envelopeSender" in (lastBroadcastBody ?? {})).toBe(false);
   });
 
@@ -1126,9 +1130,9 @@ describe("Send CLI", () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig,dev-qa@my-rig", "1", "--dangerously-interact", "--reason", "drive stuck prompts"]);
     });
-    expect(lastBroadcastBody?.dangerouslyInteract).toBe(true);
-    expect(lastBroadcastBody?.reason).toBe("drive stuck prompts");
-    expect(lastBroadcastBody?.text).toBe("1");
+    expect(lastBody()?.dangerouslyInteract).toBe(true);
+    expect(lastBody()?.reason).toBe("drive stuck prompts");
+    expect(lastBody()?.text).toBe("1");
     expect("envelopeSender" in (lastBroadcastBody ?? {})).toBe(false);
   });
 
@@ -1138,8 +1142,8 @@ describe("Send CLI", () => {
     });
     expect(logs.join("\n")).toContain("cannot be combined with --to/--pod/--rig");
     expect(exitCode).toBe(1);
-    expect(lastBroadcastBody).toBeNull();
-    expect(lastSendBody).toBeNull();
+    expect(lastBody()).toBeNull();
+    expect(lastSent()).toBeNull();
   });
 
   it("rejects more than one fan-out mode at once", async () => {
@@ -1148,7 +1152,7 @@ describe("Send CLI", () => {
     });
     expect(logs.join("\n")).toContain("exactly ONE target");
     expect(exitCode).toBe(1);
-    expect(lastBroadcastBody).toBeNull();
+    expect(lastBody()).toBeNull();
   });
 
   it("rejects --wait-for-idle with a multi/pod/rig target", async () => {
@@ -1157,16 +1161,16 @@ describe("Send CLI", () => {
     });
     expect(logs.join("\n")).toContain("not supported with a multi/pod/rig target");
     expect(exitCode).toBe(1);
-    expect(lastBroadcastBody).toBeNull();
+    expect(lastBody()).toBeNull();
   });
 
   it("single-seat send is UNCHANGED — still posts to /send, byte-identical envelope, no /broadcast", async () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]);
     });
-    expect(lastBroadcastBody).toBeNull();
-    expect(lastSendBody?.session).toBe("dev-impl@my-rig");
-    expect(String(lastSendBody?.text)).toContain("To: dev-impl@my-rig");
+    expect(lastBody()).toBeNull();
+    expect(lastSent()?.session).toBe("dev-impl@my-rig");
+    expect(String(lastSent()?.text)).toContain("To: dev-impl@my-rig");
   });
 
   it("send --help includes rediscovery examples + the new guard flags", () => {
@@ -1220,7 +1224,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "body\n", "--raw"]);
       });
-      expect(lastSendBody?.text).toBe("body\n");
+      expect(lastSent()?.text).toBe("body\n");
     });
 
     it("reads a real file (no seam): hostile text passes byte for byte, trailing newline kept, no shell involved", async () => {
@@ -1228,7 +1232,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--raw"]);
       });
-      expect(lastSendBody?.text).toBe(HOSTILE);
+      expect(lastSent()?.text).toBe(HOSTILE);
     });
 
     it("the default envelope wraps the file text unmodified; a leading --- body is not an option and renders literally", async () => {
@@ -1236,7 +1240,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file]);
       });
-      expect(String(lastSendBody?.text)).toContain("\n---\n---\nbody starts with dashes\n---\n↩ Reply");
+      expect(String(lastSent()?.text)).toContain("\n---\n---\nbody starts with dashes\n---\n↩ Reply");
     });
 
     it("--file - reads stdin: hostile text passes literally, trailing newline kept", async () => {
@@ -1244,7 +1248,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", "-", "--raw"]);
       });
-      expect(lastSendBody?.text).toBe(HOSTILE);
+      expect(lastSent()?.text).toBe(HOSTILE);
     });
 
     it("preserves non-ASCII UTF-8 and CRLF exactly", async () => {
@@ -1253,7 +1257,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--raw"]);
       });
-      expect(lastSendBody?.text).toBe(text);
+      expect(lastSent()?.text).toBe(text);
     });
 
     it("preserves a leading UTF-8 BOM (bytes in, bytes out)", async () => {
@@ -1262,7 +1266,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--raw"]);
       });
-      expect(lastSendBody?.text).toBe(text);
+      expect(lastSent()?.text).toBe(text);
     });
 
     it("rejects a file that is not valid UTF-8 and sends nothing", async () => {
@@ -1272,7 +1276,7 @@ describe("Send CLI", () => {
       });
       expect(exitCode).toBe(1);
       expect(logs.join("\n")).toContain("Cannot read message");
-      expect(lastSendBody).toBeNull();
+      expect(lastSent()).toBeNull();
     });
 
     it("positional text AND --file is an error naming both, nothing sent (single seat)", async () => {
@@ -1282,7 +1286,7 @@ describe("Send CLI", () => {
       });
       expect(exitCode).toBe(1);
       expect(logs.join("\n")).toContain("EITHER as a positional argument OR with --file");
-      expect(lastSendBody).toBeNull();
+      expect(lastSent()).toBeNull();
     });
 
     it("positional message AND --file is an error on fan-out too, nothing broadcast", async () => {
@@ -1292,7 +1296,7 @@ describe("Send CLI", () => {
       });
       expect(exitCode).toBe(1);
       expect(logs.join("\n")).toContain("EITHER as a positional argument OR with --file");
-      expect(lastBroadcastBody).toBeNull();
+      expect(lastBody()).toBeNull();
     });
 
     it("an empty file is an error and nothing is sent", async () => {
@@ -1302,7 +1306,7 @@ describe("Send CLI", () => {
       });
       expect(exitCode).toBe(1);
       expect(logs.join("\n")).toContain("is empty or whitespace-only; nothing was sent");
-      expect(lastSendBody).toBeNull();
+      expect(lastSent()).toBeNull();
     });
 
     it("a whitespace-only file and empty stdin are errors and nothing is sent", async () => {
@@ -1317,7 +1321,7 @@ describe("Send CLI", () => {
       });
       expect(second.exitCode).toBe(1);
       expect(second.logs.join("\n")).toContain("(stdin)");
-      expect(lastSendBody).toBeNull();
+      expect(lastSent()).toBeNull();
     });
 
     it("a missing file is an error naming the path and nothing is sent", async () => {
@@ -1327,7 +1331,7 @@ describe("Send CLI", () => {
       });
       expect(exitCode).toBe(1);
       expect(logs.join("\n")).toContain(`Cannot read message from --file ${missing}`);
-      expect(lastSendBody).toBeNull();
+      expect(lastSent()).toBeNull();
     });
 
     it("an empty fan-out file broadcasts nothing", async () => {
@@ -1336,7 +1340,7 @@ describe("Send CLI", () => {
         await makeCmd().parseAsync(["node", "rig", "send", "--to", "a,b", "--file", file]);
       });
       expect(exitCode).toBe(1);
-      expect(lastBroadcastBody).toBeNull();
+      expect(lastBody()).toBeNull();
     });
 
     it("--to a,b with --file broadcasts the exact file text to both recipients", async () => {
@@ -1344,8 +1348,8 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "--to", "a@my-rig,b@my-rig", "--file", file, "--raw"]);
       });
-      expect(lastBroadcastBody?.text).toBe(HOSTILE);
-      expect(lastBroadcastBody?.sessions).toEqual(["a@my-rig", "b@my-rig"]);
+      expect(lastBody()?.text).toBe(HOSTILE);
+      expect(lastBody()?.sessions).toEqual(["a@my-rig", "b@my-rig"]);
     });
 
     it("--pod and --rig with --file (stdin) broadcast the exact file text", async () => {
@@ -1353,14 +1357,14 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd(deps).parseAsync(["node", "rig", "send", "--pod", "dev", "--file", "-", "--raw"]);
       });
-      expect(lastBroadcastBody?.text).toBe(HOSTILE);
-      expect(lastBroadcastBody?.pod).toBe("dev");
+      expect(lastBody()?.text).toBe(HOSTILE);
+      expect(lastBody()?.pod).toBe("dev");
       lastBroadcastBody = null;
       await captureLogs(async () => {
         await makeCmd(deps).parseAsync(["node", "rig", "send", "--rig", "my-rig", "--file", "-", "--raw"]);
       });
-      expect(lastBroadcastBody?.text).toBe(HOSTILE);
-      expect(lastBroadcastBody?.rig).toBe("my-rig");
+      expect(lastBody()?.text).toBe(HOSTILE);
+      expect(lastBody()?.rig).toBe("my-rig");
     });
 
     it("--dangerously-interact takes its keystrokes from --file as well (same text path, still requires --reason)", async () => {
@@ -1368,8 +1372,8 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--dangerously-interact", "--reason", "unblock"]);
       });
-      expect(lastSendBody?.text).toBe("1");
-      expect(lastSendBody?.dangerouslyInteract).toBe(true);
+      expect(lastSent()?.text).toBe("1");
+      expect(lastSent()?.dangerouslyInteract).toBe(true);
       const { exitCode } = await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--dangerously-interact"]);
       });
@@ -1381,7 +1385,7 @@ describe("Send CLI", () => {
       const deps: SendDeps = {
         ...runningDeps(port),
         hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
-        crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "", stderr: "" }; },
+        crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, failedStep: "none", stdout: "", stderr: "", remoteExitCode: 0 }; },
       };
       const file = writeTmp("remote.md", HOSTILE);
       await captureLogs(async () => {
@@ -1403,7 +1407,7 @@ describe("Send CLI", () => {
       const deps: SendDeps = {
         ...runningDeps(port),
         hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
-        crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "", stderr: "" }; },
+        crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, failedStep: "none", stdout: "", stderr: "", remoteExitCode: 0 }; },
       };
       const file = writeTmp("dash.md", text);
       await captureLogs(async () => {
@@ -1419,7 +1423,7 @@ describe("Send CLI", () => {
       });
       expect(logs.join("\n")).not.toContain("unknown option");
       expect(exitCode).toBeUndefined();
-      expect(String(lastSendBody?.text)).toContain(`\n---\n${text}\n---\n`);
+      expect(String(lastSent()?.text)).toContain(`\n---\n${text}\n---\n`);
     });
 
     it("a whitespace-only file with --context is refused before the context is fetched (the early check is the only guard here)", async () => {
@@ -1429,7 +1433,7 @@ describe("Send CLI", () => {
       });
       expect(exitCode).toBe(1);
       expect(logs.join("\n")).toContain("is empty or whitespace-only; nothing was sent");
-      expect(lastSendBody).toBeNull();
+      expect(lastSent()).toBeNull();
     });
 
     it("--help teaches --file - with a quoted heredoc", () => {
@@ -1489,7 +1493,7 @@ describe("Send CLI", () => {
     function probeCountingDeps(clientFactory: StatusDeps["clientFactory"]): {
       deps: StatusDeps; probeCalls: () => number; probeUrls: () => string[];
     } {
-      const fetchSpy = vi.fn(async (): Promise<{ ok: boolean }> => { throw new Error("probe should not be needed"); });
+      const fetchSpy = vi.fn(async (_url: string): Promise<{ ok: boolean }> => { throw new Error("probe should not be needed"); });
       return {
         deps: {
           lifecycleDeps: {
@@ -1526,7 +1530,7 @@ describe("Send CLI", () => {
       });
       expect(logs.join("\n")).toContain("Sent to dev-impl@my-rig");
       expect(rc.seen()).toBe(`http://127.0.0.1:${port}`);
-      expect(String(lastSendBody?.text)).toContain("To: dev-impl@my-rig");
+      expect(String(lastSent()?.text)).toContain("To: dev-impl@my-rig");
     });
 
     it("R2 RED: fan-out --to + OPENRIG_URL + probe-stopped -> actual /broadcast lands with per-recipient results", async () => {
@@ -1537,7 +1541,7 @@ describe("Send CLI", () => {
       const { logs } = await captureLogs(async () => {
         await makeCmd(probeFailNoStateDeps(rc.factory)).parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig,dev-qa@my-rig", "hi team"]);
       });
-      expect(lastBroadcastBody).not.toBeNull();
+      expect(lastBody()).not.toBeNull();
       expect(logs.join("\n")).toContain("dev-impl@my-rig");
       expect(rc.seen()).toBe(`http://127.0.0.1:${port}`);
     });
@@ -1588,7 +1592,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd(unhealthyProbeDeps(rc2.factory)).parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig,dev-qa@my-rig", "hi"]);
       });
-      expect(lastBroadcastBody).not.toBeNull();
+      expect(lastBody()).not.toBeNull();
     });
 
     const rcHolder = { seenUrl: null as string | null, factory: ((baseUrl: string) => { rcHolder.seenUrl = baseUrl; return new DaemonClient(baseUrl); }) as StatusDeps["clientFactory"], seen: () => rcHolder.seenUrl };
@@ -1629,7 +1633,7 @@ describe("Send CLI", () => {
       // daemon config, so the configured target resolves to the default.
       vi.stubEnv("OPENRIG_HOME", "/nonexistent/send-r6b-home");
       let seenUrl: string | null = null;
-      const postFn = vi.fn(async () => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
+      const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
       const stubFactory = ((baseUrl: string) => { seenUrl = baseUrl; return { post: postFn } as unknown as DaemonClient; }) as StatusDeps["clientFactory"];
       const { logs } = await captureLogs(async () => {
         await makeCmd(probeFailNoStateDeps(stubFactory)).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]);
@@ -1652,7 +1656,7 @@ describe("Send CLI", () => {
         fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ daemon: { host: "127.0.0.9", port: 7599 } }));
         vi.stubEnv("OPENRIG_HOME", home);
         let seenUrl: string | null = null;
-        const postFn = vi.fn(async () => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
+        const postFn = vi.fn(async (..._args: Parameters<DaemonClient["post"]>) => ({ status: 200, data: { ok: true, sessionName: "dev-impl@my-rig" } }));
         const stubFactory = ((baseUrl: string) => { seenUrl = baseUrl; return { post: postFn } as unknown as DaemonClient; }) as StatusDeps["clientFactory"];
         const { logs } = await captureLogs(async () => {
           await makeCmd(probeFailNoStateDeps(stubFactory)).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]);
@@ -1750,7 +1754,7 @@ describe("Send CLI", () => {
       // exactly one stdout record, parseable, exact structured envelope shape
       // (no top-level ok, no discrete target field — just error:{f,c,a}).
       expect(stdout).toHaveLength(1);
-      expect(JSON.parse(stdout[0])).toEqual({
+      expect(JSON.parse(must(stdout[0], "the stdout record"))).toEqual({
         error: {
           fact: expect.stringContaining("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:"),
           consequence: "The message was not sent.",
@@ -1771,7 +1775,7 @@ describe("Send CLI", () => {
       });
       expect(exitCode).toBe(1);
       expect(stdout).toHaveLength(1);
-      expect(JSON.parse(stdout[0])).toEqual({
+      expect(JSON.parse(must(stdout[0], "the stdout record"))).toEqual({
         error: {
           fact: expect.stringContaining("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:"),
           consequence: "The message was not sent.",
@@ -1829,7 +1833,7 @@ describe("Send CLI", () => {
       });
       expect(logs.join("\n")).toContain("Sent to dev-impl@my-rig");
       expect(rc.seen()).toBe(`http://127.0.0.1:${port}`);
-      expect(lastSendBody).not.toBeNull();
+      expect(lastSent()).not.toBeNull();
       // SUPERSEDED 2026-08-06 (merge-desk sanction + the arch/planner 1-GET trade-off ruling,
       // 51-09 incr-3): ff13bcdf's zero-probe guarantee targeted the EXPENSIVE 5-attempt
       // STATUS-PROBE BURN, not a single bounded self-id read. A single-seat send now renders
@@ -1851,7 +1855,7 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd(deps).parseAsync(["node", "rig", "send", "--to", "dev-impl@my-rig,dev-qa@my-rig", "hi team"]);
       });
-      expect(lastBroadcastBody).not.toBeNull();
+      expect(lastBody()).not.toBeNull();
       expect(rc.seen()).toBe(`http://127.0.0.1:${port}`);
       expect(probeCalls()).toBe(0);
     });
@@ -1888,12 +1892,12 @@ describe("Send CLI", () => {
             "--to", "dev-impl@my-rig,dev-qa@my-rig", "hi team",
           ]);
         });
-        expect(lastBroadcastBody).not.toBeNull();
+        expect(lastBody()).not.toBeNull();
         // P21 I4: --from ("origin@my-rig") is the forgeable surface — it is IGNORED. Both attribution
         // fields resolve to the ambient transport identity; the daemon then re-derives them from the
         // X-OpenRig-Session header regardless, so a forged --from can never name the From:.
-        expect(lastBroadcastBody?.actorSession).toBe("ambient-relay@my-rig");
-        expect(lastBroadcastBody?.envelopeSender).toBe("ambient-relay@my-rig");
+        expect(lastBody()?.actorSession).toBe("ambient-relay@my-rig");
+        expect(lastBody()?.envelopeSender).toBe("ambient-relay@my-rig");
       } finally {
         vi.unstubAllEnvs();
       }
@@ -1911,9 +1915,9 @@ describe("Send CLI", () => {
             "node", "rig", "send", "--to", "dev-impl@my-rig,dev-qa@my-rig", "hi team",
           ]);
         });
-        expect(lastBroadcastBody).not.toBeNull();
-        expect(lastBroadcastBody?.actorSession).toBe("ambient-relay@my-rig");
-        expect(lastBroadcastBody?.envelopeSender).toBe("ambient-relay@my-rig");
+        expect(lastBody()).not.toBeNull();
+        expect(lastBody()?.actorSession).toBe("ambient-relay@my-rig");
+        expect(lastBody()?.envelopeSender).toBe("ambient-relay@my-rig");
       } finally {
         vi.unstubAllEnvs();
       }
