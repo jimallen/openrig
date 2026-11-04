@@ -9,6 +9,12 @@ vi.mock("@hono/node-server", () => ({
   serve: serveMock,
 }));
 
+// OF-208: the real helper, wrapped in a spy so a test can see what startServer hands it.
+vi.mock("../src/domain/simulator-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/domain/simulator-lifecycle.js")>();
+  return { ...actual, enableRealSimctlIfAllowed: vi.fn(actual.enableRealSimctlIfAllowed) };
+});
+
 vi.mock("../src/startup.js", () => ({
   createDaemon: createDaemonMock,
 }));
@@ -98,16 +104,21 @@ describe("daemon startServer", () => {
       expect(enable).not.toHaveBeenCalled();
     });
 
-    it("the request is granted only when the daemon's home is the account's default (OPENRIG_HOME as resolved at import)", async () => {
-      delete process.env["VITEST"];
-      vi.stubEnv("NODE_ENV", "production");
+    it("startServer hands the helper its own request flag and the daemon's resolved home (the decision itself is unit-tested)", async () => {
       const { startServer } = await import("../src/index.js");
       const { OPENRIG_HOME } = await import("../src/openrig-compat.js");
-      const os = await import("node:os");
-      const path = await import("node:path");
+      const lifecycle = await import("../src/domain/simulator-lifecycle.js");
+      const spy = vi.mocked(lifecycle.enableRealSimctlIfAllowed);
+
+      spy.mockClear();
       await startServer(7441, { realSimctl: true });
-      const isDefaultHome = path.resolve(OPENRIG_HOME) === path.resolve(path.join(os.userInfo().homedir, ".openrig"));
-      expect(enable).toHaveBeenCalledTimes(isDefaultHome ? 1 : 0);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![1]).toMatchObject({ requested: true, openrigHome: OPENRIG_HOME, userHome: expect.any(String) });
+      expect(spy.mock.calls[0]![0]).toHaveProperty("enableRealSimctl", enable);
+
+      spy.mockClear();
+      await startServer(7441);
+      expect(spy.mock.calls[0]![1]).toMatchObject({ requested: undefined });
     });
   });
 
