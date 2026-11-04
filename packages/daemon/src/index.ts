@@ -3,7 +3,7 @@ import "./daemon-cwd-anchor.js";
 import { serve, type ServerType } from "@hono/node-server";
 import os from "node:os";
 import path from "node:path";
-import { realSimctlAllowed } from "./domain/simulator-lifecycle.js";
+import { enableRealSimctlIfAllowed } from "./domain/simulator-lifecycle.js";
 import { pathToFileURL } from "node:url";
 import { closeHttpServer, createDaemonShutdown, DAEMON_SHUTDOWN_RECEIPT, trackHttpServerResponses } from "./daemon-shutdown.js";
 import { readOpenRigEnv, OPENRIG_HOME } from "./openrig-compat.js";
@@ -320,9 +320,9 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   // OF-208 — real `xcrun simctl` is off unless this is the production entrypoint (direct run) AND the daemon of the user's own
   // default state directory, never under a test runner. A createDaemon child, a scenario daemon (private OPENRIG_HOME) and an
   // imported startServer all keep the service disabled: it runs no simctl and starts no timer. See simulator-lifecycle.ts.
-  if (opts?.realSimctl && realSimctlAllowed({ env: process.env, userHome: os.userInfo().homedir, openrigHome: OPENRIG_HOME })) {
-    deps.simulatorLifecycle?.enableRealSimctl();
-  }
+  enableRealSimctlIfAllowed(deps.simulatorLifecycle, {
+    requested: opts?.realSimctl, env: process.env, userHome: os.userInfo().homedir, openrigHome: OPENRIG_HOME,
+  });
 
   // Multi-bind via N serve() instances sharing the same Hono app.
   // Hono's serve() targets a single host:port; for multi-bind we spawn

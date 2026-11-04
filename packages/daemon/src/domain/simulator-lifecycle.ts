@@ -103,6 +103,16 @@ export function realSimctlAllowed(input: { env: Record<string, string | undefine
   return resolvePath(input.openrigHome) === resolvePath(joinPath(input.userHome, ".openrig"));
 }
 
+/** The one place the real simctl is switched on: the production entrypoint asked for it AND this process may. Returns whether it did. */
+export function enableRealSimctlIfAllowed(
+  service: { enableRealSimctl(): void } | undefined,
+  input: { requested: boolean | undefined; env: Record<string, string | undefined>; userHome: string; openrigHome: string },
+): boolean {
+  if (!service || input.requested !== true || !realSimctlAllowed(input)) return false;
+  service.enableRealSimctl();
+  return true;
+}
+
 export function realSimctlExec(args: string[]): Promise<string> {
   const timeout = args[0] === "erase" ? 120_000 : 20_000;
   return new Promise((resolve, reject) => {

@@ -11,7 +11,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import {
   SimulatorLifecycle, nameIsForSeat, seatToken, parseSimctlDevices,
-  BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, realSimctlAllowed, type SimctlExec,
+  BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, realSimctlAllowed, enableRealSimctlIfAllowed, type SimctlExec,
 } from "../src/domain/simulator-lifecycle.js";
 
 const GB = BYTES_PER_GB;
@@ -80,6 +80,25 @@ describe("OF-208 real simctl is fail-closed", () => {
     expect(allowed({ env: { NODE_ENV: "test" } })).toBe(false);
     expect(allowed({ userHome: "" })).toBe(false);
     expect(allowed({ openrigHome: "" })).toBe(false);
+  });
+
+  it("the production entrypoint's request switches it on only with the default home and no test runner", () => {
+    const on = vi.fn();
+    const svc = { enableRealSimctl: on };
+    const base = { requested: true as boolean | undefined, env: {} as Record<string, string | undefined>, userHome: home, openrigHome: `${home}/.openrig` };
+    expect(enableRealSimctlIfAllowed(svc, base)).toBe(true);
+    expect(on).toHaveBeenCalledTimes(1);
+    for (const refused of [
+      { ...base, requested: undefined }, // an imported startServer
+      { ...base, requested: false },
+      { ...base, openrigHome: "/tmp/scenario-home" }, // a scenario / hermetic daemon
+      { ...base, env: { VITEST: "true" } },
+      { ...base, env: { NODE_ENV: "test" } },
+    ]) {
+      expect(enableRealSimctlIfAllowed(svc, refused)).toBe(false);
+    }
+    expect(enableRealSimctlIfAllowed(undefined, base)).toBe(false);
+    expect(on).toHaveBeenCalledTimes(1);
   });
 
   it("a service built without an exec runs no simctl, for a sweep or a removal, and starts no timer", async () => {
