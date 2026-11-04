@@ -161,7 +161,12 @@ describe("B. a test daemon binds loopback only, on a host that looks like it has
     running.push(() => killIfRunning(child));
     let output = "";
     for (const stream of [child.stdout!, child.stderr!]) { stream.setEncoding("utf8"); stream.on("data", (c: string) => { output += c; }); }
-    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    // Bounded: a daemon that did NOT refuse the fake address (it bound something else) must fail the row, not hang it.
+    const exitedInTime = await Promise.race([
+      new Promise<boolean>((resolve) => child.once("exit", () => resolve(true))),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 120_000)),
+    ]);
+    expect(exitedInTime, `the unpinned daemon stayed up instead of refusing ${FAKE_TAILNET_ADDRESS}: ${output}`).toBe(true);
     // The fake address is on no interface, so the bind to it is refused, and the refusal names it.
     expect(output).toContain(FAKE_TAILNET_ADDRESS);
     expect(output).toMatch(/EADDRNOTAVAIL/);
