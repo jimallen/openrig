@@ -307,7 +307,8 @@ export function createTestApp(
   const eventBus = new EventBus(db);
   const queueRepo = new QueueRepository(db, eventBus);
   const tmux = opts?.tmux ?? mockTmuxAdapter();
-  const transcriptStore = new TranscriptStore("/tmp/openrig-test-transcripts");
+  // Default root: resolves through OPENRIG_HOME to the hermetic per-run test home (test/hermetic-env.setup.ts).
+  const transcriptStore = new TranscriptStore();
   const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const snapshotRepo = new SnapshotRepository(db);
   const checkpointStore = new CheckpointStore(db);
