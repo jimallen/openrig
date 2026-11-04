@@ -546,7 +546,7 @@ describe("OF-208 SimulatorLifecycle", () => {
       expect(log.filter((l) => l.includes("does not exist"))).toEqual([]);
     });
 
-    it("the service built the way startup builds it reads claim_dirs from the settings store (and the cap)", () => {
+    it("the service built the way startup builds it reads claim_dirs from the settings store (and the cap)", async () => {
       seedRig();
       fs.mkdirSync(path.join(claims, UD(4)));
       fs.writeFileSync(path.join(queue, "2.sim"), UD(5));
@@ -564,16 +564,17 @@ describe("OF-208 SimulatorLifecycle", () => {
         expect(sim.claimedUdids()).toContain(UD(6));
         store.set("simulators.claim_dirs", "");
         expect(sim.claimedUdids()).toEqual([]);
-        // the cap comes through the same store: the default 20 GB leaves the 8 GB device, 5 GB erases it, 0 turns the sweep off
-        return sim.sweepOverCap().then(async (r) => {
-          expect(r.status).toBe("ok");
-          expect(fake.erased()).toEqual([]);
-          store.set("simulators.size_cap_gb", "5");
-          await sim.sweepOverCap();
-          expect(fake.erased()).toEqual([UD(1)]);
-          store.set("simulators.size_cap_gb", "0");
-          expect((await sim.sweepOverCap()).status).toBe("disabled");
-        });
+        // the cap comes through the same store: the default 20 GB leaves the 8 GB device, 5 GB erases it, 0 turns the sweep off.
+        // OF-225: awaited INSIDE the try. It used to be `return sim.sweepOverCap().then(...)`, so the finally below removed the folder
+        // before the sweeps ran and the later store.set() wrote config.json back into it, leaving of222-startup-cfg-* behind on every run.
+        const r = await sim.sweepOverCap();
+        expect(r.status).toBe("ok");
+        expect(fake.erased()).toEqual([]);
+        store.set("simulators.size_cap_gb", "5");
+        await sim.sweepOverCap();
+        expect(fake.erased()).toEqual([UD(1)]);
+        store.set("simulators.size_cap_gb", "0");
+        expect((await sim.sweepOverCap()).status).toBe("disabled");
       } finally {
         if (saved === undefined) delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"]; else process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"] = saved;
         fs.rmSync(cfgDir, { recursive: true, force: true });

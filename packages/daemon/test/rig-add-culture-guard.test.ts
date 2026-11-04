@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
+import { guardTmpdirHomeFiles } from "./helpers/tmpdir-home-tripwire.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -310,21 +311,24 @@ describe("checkCultureFile: swap races and nlink (deterministic via the test sea
 });
 
 describe("delivery and restore read the culture overlay through the shared guarded reader (all four adapters)", () => {
-  const realFsOps = () => ({
+  // OF-225: each case gets its own home under its `or-deliver-*` cwd (removed with it). The home used to be os.tmpdir(), so the
+  // claude-code and codex cases wrote the host's <tmpdir>/.claude.json and <tmpdir>/.codex/config.toml. The tripwire fails any case that does.
+  guardTmpdirHomeFiles();
+  const realFsOps = (home: string) => ({
     readFile: (p: string) => fs.readFileSync(p, "utf-8"),
     writeFile: (p: string, c: string) => fs.writeFileSync(p, c),
     exists: (p: string) => fs.existsSync(p),
     mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }),
     copyFile: (s: string, d: string) => fs.copyFileSync(s, d),
     listFiles: (dir: string) => (fs.existsSync(dir) && fs.statSync(dir).isDirectory() ? fs.readdirSync(dir) : []),
-    homedir: os.tmpdir(),
+    homedir: home,
   });
   type Deliver = { name: string; make: (cwd: string) => { deliverStartup: (files: ResolvedStartupFile[], binding: never) => Promise<{ delivered: number; failed: Array<{ path: string; error: string }> }> }; guidance: string };
   const adapters: Deliver[] = [
-    { name: "claude-code", guidance: "CLAUDE.md", make: (cwd) => new ClaudeCodeAdapter({ tmux: mockTmux(), fsOps: realFsOps() as never, sleep: async () => {}, sessionIdFactory: () => "s" }) as never },
-    { name: "codex", guidance: "AGENTS.md", make: () => new CodexRuntimeAdapter({ tmux: mockTmux(), fsOps: realFsOps() as never, sleep: async () => {} }) as never },
-    { name: "pi", guidance: "AGENTS.md", make: (cwd) => new PiRuntimeAdapter({ tmux: mockTmux(), fsOps: realFsOps() as never, stateRoot: nodePath.join(cwd, "state"), runnerEntryPath: "/nonexistent/runner.js", sleep: async () => {} }) as never },
-    { name: "stub", guidance: "AGENTS.md", make: () => new StubRuntimeAdapter({ tmux: mockTmux(), fsOps: realFsOps() as never, sleep: async () => {} } as never) as never },
+    { name: "claude-code", guidance: "CLAUDE.md", make: (cwd) => new ClaudeCodeAdapter({ tmux: mockTmux(), fsOps: realFsOps(nodePath.join(cwd, "home")) as never, sleep: async () => {}, sessionIdFactory: () => "s" }) as never },
+    { name: "codex", guidance: "AGENTS.md", make: (cwd) => new CodexRuntimeAdapter({ tmux: mockTmux(), fsOps: realFsOps(nodePath.join(cwd, "home")) as never, sleep: async () => {} }) as never },
+    { name: "pi", guidance: "AGENTS.md", make: (cwd) => new PiRuntimeAdapter({ tmux: mockTmux(), fsOps: realFsOps(nodePath.join(cwd, "home")) as never, stateRoot: nodePath.join(cwd, "state"), runnerEntryPath: "/nonexistent/runner.js", sleep: async () => {} }) as never },
+    { name: "stub", guidance: "AGENTS.md", make: (cwd) => new StubRuntimeAdapter({ tmux: mockTmux(), fsOps: realFsOps(nodePath.join(cwd, "home")) as never, sleep: async () => {} } as never) as never },
   ];
 
   const setup = () => {
