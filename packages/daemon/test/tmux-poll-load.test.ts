@@ -251,7 +251,9 @@ describe("SeatIdentityReconciler sweep", () => {
       getPanePid: async (pane: string): Promise<number | null> => { pidReads.push(pane); return null; },
       getPaneCommand: async (): Promise<string | null> => null,
     };
-    await new SeatIdentityReconciler({ db, tmux }).reconcileAll();
+    const rec = new SeatIdentityReconciler({ db, tmux });
+    await rec.reconcileAll();
+    await rec.reconcileAll();  // OF-205 (b): a missing session is recorded on the second poll in a row
     expect(pidReads).toEqual([]);
     expect(new SeatIdentityStore(db).getForNode(nodeIds.gone!)).toMatchObject({ verdict: "pane_missing", reason: "session_missing" });
   });

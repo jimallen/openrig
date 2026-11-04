@@ -107,6 +107,8 @@ export class SeatIdentityReconciler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private reconciling = false;
   private generation = 0;
+  /** OF-205 (b): the seats whose session read missing on the previous poll, with the session name read (a seat is lost only once two polls in a row say so). */
+  private readonly missingSeen = new Map<string, string>();
 
   constructor(deps: SeatIdentityReconcilerDeps) {
     this.db = deps.db;
@@ -151,6 +153,8 @@ export class SeatIdentityReconciler {
     const seats = this.runningSeats();
     // Prune verdicts for nodes no longer running (keep the table bounded).
     this.store.pruneExcept(seats.map((s) => s.node_id));
+    const running = new Set(seats.map((s) => s.node_id));
+    for (const nodeId of [...this.missingSeen.keys()]) if (!running.has(nodeId)) this.missingSeen.delete(nodeId);
     if (seats.length === 0) return;
 
     const observedAt = this.now().toISOString();
@@ -173,6 +177,8 @@ export class SeatIdentityReconciler {
     }
     if (generation !== this.generation) return;
     if (liveSessions === null || (liveSessions.size === 0 && this.tmux.hostKind !== "hc")) {
+      // A poll that could not look neither confirms nor refutes a missing session: the two polls must be consecutive.
+      this.missingSeen.clear();
       for (const seat of seats) {
         this.store.upsert(this.tmuxUnavailableVerdict(seat, observedAt));
       }
@@ -252,9 +258,21 @@ export class SeatIdentityReconciler {
       try {
         const verdict = await this.computeVerdict(seat, liveSessions, observedAt, nativeProofs.get(seat.node_id) ?? null, panes);
         if (generation !== this.generation) return;
+        // OF-205 (b): a supported stop, restart, handover or restore ends the terminal a moment before the session row is written, and a poll inside that
+        // moment reads `session_missing`, which rig health reports as `seat.lost` until the next poll replaces it. The first such read is not recorded
+        // (the previous verdict stands); a second consecutive one is. A crashed seat is reported one poll later, never missed.
+        if (verdict.reason === "session_missing") {
+          if (this.missingSeen.get(seat.node_id) !== seat.session_name) {
+            this.missingSeen.set(seat.node_id, seat.session_name);
+            continue;
+          }
+        } else {
+          this.missingSeen.delete(seat.node_id);
+        }
         this.store.upsert(verdict);
       } catch {
         if (generation !== this.generation) return;
+        this.missingSeen.delete(seat.node_id);
         // A single seat's tmux failure must not crash the loop; record it as
         // unavailable observation (non-green for Codex).
         this.store.upsert(this.tmuxUnavailableVerdict(seat, observedAt));

@@ -348,6 +348,9 @@ describe("SeatIdentityReconciler.reconcileAll", () => {
     const rec = new SeatIdentityReconciler({ db, tmux, now: NOW });
 
     await rec.reconcileAll();
+    // OF-205 (b): the first poll that reads the session missing records nothing; the second one in a row does (seat-identity-missing-debounce.test.ts).
+    expect(new SeatIdentityStore(db).getForNode("n1")).toBeNull();
+    await rec.reconcileAll();
 
     const v = new SeatIdentityStore(db).getForNode("n1");
     expect(v?.verdict).toBe("pane_missing");
@@ -378,6 +381,7 @@ describe("SeatIdentityReconciler.reconcileAll", () => {
     const rec = new SeatIdentityReconciler({ db, tmux, now: NOW });
 
     await rec.reconcileAll();
+    await rec.reconcileAll();  // OF-205 (b): two polls in a row
 
     const v = new SeatIdentityStore(db).getForNode("n1");
     expect(v?.verdict).toBe("pane_missing");

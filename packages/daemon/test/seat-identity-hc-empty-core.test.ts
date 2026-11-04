@@ -36,12 +36,14 @@ function hcHost(listing: () => ReturnType<typeof terminal>[]): HcAdapter {
     "terminal.get": () => { throw new HcUnavailableError("not asked in this test"); },
   }));
 }
+/** OF-205 (b): a missing session is recorded when two polls in a row read it. */
+const twice = async (rec: SeatIdentityReconciler) => { await rec.reconcileAll(); await rec.reconcileAll(); };
 const down = (): never => { throw new HcUnavailableError("core is down"); };
 
 describe("OF-207: the last seat terminal of an hc core", () => {
   it.each(["claude-code", "codex", "pi"])("%s: an empty listing from a core that answered is session_missing, and `seat.lost` reports it", async (runtime) => {
     const db = seed(runtime);
-    await new SeatIdentityReconciler({ db, tmux: hcHost(() => []), now: NOW }).reconcileAll();
+    await twice(new SeatIdentityReconciler({ db, tmux: hcHost(() => []), now: NOW }));
     expect(new SeatIdentityStore(db).getForNode("n1")).toMatchObject({ verdict: "pane_missing", reason: "session_missing", evidenceSource: "tmux_session" });
     const found = new SeatLostHealthSource({ inventory: () => inventoryOfLiveRigs(db), waiting: () => null, now: NOW }).read();
     expect(found.flatMap((o) => (o.kind === "seat-lost" ? [o.sessionName] : []))).toEqual(["dev-impl@solo-rig"]);
@@ -50,7 +52,7 @@ describe("OF-207: the last seat terminal of an hc core", () => {
 
   it("a terminal that is not a seat (no seat label) does not keep the seat alive: still session_missing", async () => {
     const db = seed("claude-code");
-    await new SeatIdentityReconciler({ db, tmux: hcHost(() => [terminal({ address: "t1", labels: {} })]), now: NOW }).reconcileAll();
+    await twice(new SeatIdentityReconciler({ db, tmux: hcHost(() => [terminal({ address: "t1", labels: {} })]), now: NOW }));
     expect(new SeatIdentityStore(db).getForNode("n1")?.reason).toBe("session_missing");
   });
 
