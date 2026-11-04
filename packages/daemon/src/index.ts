@@ -10,6 +10,8 @@ import { readOpenRigEnv, OPENRIG_HOME } from "./openrig-compat.js";
 import { makeOperatorDeliveryEngine } from "./domain/gateway/operator-delivery-engine.js";
 import { resolveDaemonDbPath } from "./daemon-db-path.js";
 import { createDaemon } from "./startup.js";
+import { installProcessStartClock } from "./domain/process-start-clock.js";
+import { createProcessStartClock } from "./adapters/linux-proc-start-clock.js";
 import { removeParentSessionEnv } from "./domain/parent-session-env.js";
 import { resolveBindPlan } from "./domain/bind-plan.js";
 import { runQueueRetentionSweep, RETENTION_DEFAULTS, RETENTION_SWEEP_INTERVAL_MS } from "./domain/queue-retention.js";
@@ -307,6 +309,9 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
     // Default path — the plan already computed loopback + tailscale-when-active.
     bindHosts = bindPlan.hosts;
   }
+
+  // OF-220: dates processes by the OS boot clock where there is one (Linux), so a stored start time names the true second.
+  installProcessStartClock(createProcessStartClock());
 
   const { app, contextMonitor, deps, eventLoopMonitor, hcCoreWatch, injectWebSocket } = await createDaemon({
     dbPath,

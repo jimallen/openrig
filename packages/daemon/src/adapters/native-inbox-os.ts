@@ -7,6 +7,7 @@ import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import { INJECT_FORMAT_LITERAL, type ProcessRow } from "../domain/claude-native-inbox.js";
 import { NAME_ENVELOPE_PARSER_LITERAL } from "../domain/native-name-envelope.js";
+import { clockStartForPsStart, installedProcessStartClock } from "../domain/process-start-clock.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -109,12 +110,17 @@ export function fileIncludes(path: string, needle: string, chunkBytes = 4 * 1024
   }
 }
 
-/** The start time of a process (`ps -o lstart=`), or null. */
+/** The start time of a process, or null. `ps -o lstart=` names the second; where the platform has a boot clock (Linux, OF-220:
+ *  `ps` can name a second up to two before the process began) the kernel's own start stands when it is the same process. */
 export async function processStart(pid: number): Promise<Date | null> {
   try {
     const { stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 5_000, env: { ...process.env, LC_ALL: "C" } });
     const t = Date.parse(stdout.trim());
-    return Number.isFinite(t) ? new Date(t) : null;
+    if (!Number.isFinite(t)) return null;
+    const clock = installedProcessStartClock();
+    let precise: number | null = null;
+    try { precise = clock ? clockStartForPsStart(t, (await clock.startedAtMs([pid])).get(pid)) : null; } catch { precise = null; }
+    return new Date(precise ?? t);
   } catch {
     return null;
   }

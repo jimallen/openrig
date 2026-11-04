@@ -17,6 +17,7 @@ import {
   isProbeShellReady,
 } from "./native-resume-probe.js";
 import { runAsyncSite } from "./sync-site-wrap.js";
+import { withTrueStartTimes } from "./process-start-clock.js";
 import { isClaudeSidecarFromEarlierProcess, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import { observeClaudePaneRuntime, type NativeProcessLister } from "./native-process-lineage.js";
 import { validateResumeToken, isTypedResumeWord, observedResumeTokenToWrite } from "./resume-token-validation.js";
@@ -408,7 +409,7 @@ export async function defaultListProcessesStrict(): Promise<Array<{ pid: number;
     const { stdout } = await execFileAsync("ps", ["-Ao", "pid,ppid,lstart,command"], { encoding: "utf-8", maxBuffer: 8 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
     return stdout;
   });
-  return output
+  return withTrueStartTimes(output
     .split("\n")
     .slice(1)
     .map((line) => line.trim())
@@ -424,7 +425,7 @@ export async function defaultListProcessesStrict(): Promise<Array<{ pid: number;
         command: match[4] ?? "",
       };
     })
-    .filter((row): row is { pid: number; ppid: number; command: string; startedAt: string } => row !== null);
+    .filter((row): row is { pid: number; ppid: number; command: string; startedAt: string } => row !== null));
 }
 
 function findCodexDescendantPids(
