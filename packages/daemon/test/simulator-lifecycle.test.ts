@@ -556,16 +556,24 @@ describe("OF-208 SimulatorLifecycle", () => {
       try {
         const store = new SettingsStore(path.join(cfgDir, "config.json"));
         store.set("simulators.claim_dirs", ` ${claims} , ${queue},`);
-        const sim = buildSimulatorLifecycle({ db, eventBus, settings: () => store });
+        const fake = fakeSimctl([{ udid: UD(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB }]);
+        const sim = buildSimulatorLifecycle({ db, eventBus, settings: () => store, simctl: fake.exec, log: (l) => log.push(l) });
         expect(sim.claimedUdids()).toEqual([UD(4), UD(5)].sort());
         // read fresh on every use: a claim added later is seen, and an emptied setting claims nothing
         fs.mkdirSync(path.join(claims, UD(6)));
         expect(sim.claimedUdids()).toContain(UD(6));
         store.set("simulators.claim_dirs", "");
         expect(sim.claimedUdids()).toEqual([]);
-        // the cap comes through the same store
-        store.set("simulators.size_cap_gb", "0");
-        return sim.sweepOverCap().then((r) => expect(r.status).toBe("disabled"));
+        // the cap comes through the same store: the default 20 GB leaves the 8 GB device, 5 GB erases it, 0 turns the sweep off
+        return sim.sweepOverCap().then(async (r) => {
+          expect(r.status).toBe("ok");
+          expect(fake.erased()).toEqual([]);
+          store.set("simulators.size_cap_gb", "5");
+          await sim.sweepOverCap();
+          expect(fake.erased()).toEqual([UD(1)]);
+          store.set("simulators.size_cap_gb", "0");
+          expect((await sim.sweepOverCap()).status).toBe("disabled");
+        });
       } finally {
         if (saved === undefined) delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"]; else process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"] = saved;
         fs.rmSync(cfgDir, { recursive: true, force: true });

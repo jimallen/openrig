@@ -199,10 +199,14 @@ export interface SimulatorSettings {
  * store on every use. startup.ts builds the service through this, so a test can build it from a store holding claim_dirs and
  * see the directories the sweep would read.
  */
-export function buildSimulatorLifecycle(deps: { db: Database.Database; eventBus: EventBus; settings: () => SimulatorSettings }): SimulatorLifecycle {
+export function buildSimulatorLifecycle(deps: { db: Database.Database; eventBus: EventBus; settings: () => SimulatorSettings; simctl?: SimctlExec; platform?: string; log?: (line: string) => void }): SimulatorLifecycle {
   return new SimulatorLifecycle({
     db: deps.db,
     eventBus: deps.eventBus,
+    // test seams only: the daemon passes none, so the service starts disabled until the production entrypoint enables it
+    ...(deps.simctl ? { simctl: deps.simctl } : {}),
+    ...(deps.platform ? { platform: deps.platform } : {}),
+    ...(deps.log ? { log: deps.log } : {}),
     capGb: () => Number(deps.settings().resolveOne("simulators.size_cap_gb").value),
     claimDirs: () => String(deps.settings().resolveOne("simulators.claim_dirs").value).split(",").map((d) => d.trim()).filter((d) => d.length > 0),
   });

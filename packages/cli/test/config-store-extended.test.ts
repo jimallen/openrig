@@ -301,14 +301,20 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       const errs: string[] = [];
       const origErr = console.error;
       const origLog = console.log;
+      const origExit = process.exitCode;
+      process.exitCode = undefined;
       console.error = (m?: unknown) => { errs.push(String(m)); };
       console.log = () => {};
+      let exitAfter: typeof process.exitCode;
       try {
         await cmd.parseAsync(["node", "rig", "config", "set", "simulators.claim_dirs", `${present},${missing}`]);
+        exitAfter = process.exitCode;
       } finally {
         console.error = origErr;
         console.log = origLog;
+        process.exitCode = origExit;
       }
+      expect(exitAfter ?? 0).toBe(0); // a warning, not a failure
       expect(errs.filter((e) => e.startsWith("warning:"))).toHaveLength(1);
       expect(errs.join("\n")).toContain(missing);
       expect(errs.join("\n")).not.toContain(`'${present}'`);
