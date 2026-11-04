@@ -430,7 +430,7 @@ describe("OF-208 SimulatorLifecycle", () => {
     });
     const big = (n: number, name: string): FakeDevice => ({ udid: UD(n), name, state: "Shutdown", dataPathSize: 30 * GB });
     // A real-shaped UDID per device: the claim matcher is UDID-shaped.
-    const UD = (n: number) => `0000000${n}-0000-4000-8000-00000000000${n}`.toUpperCase();
+    const UD = (n: number) => `0000000${n}-ABCD-4000-8000-00000000AB0${n}`.toUpperCase(); // hex letters, so a lower-case claim name differs from it
     const dirs = () => [claims, queue];
 
     it("the sweep skips a device whose UDID is a directory name in a claim dir, and erases its unclaimed sibling", async () => {
@@ -498,7 +498,7 @@ describe("OF-208 SimulatorLifecycle", () => {
       seedRig();
       const fake = fakeSimctl([big(1, "qa-duo-271")]);
       let lists = 0;
-      fake.state.onList = () => { if (++lists === 1) fs.mkdirSync(path.join(claims, UD(1))); };
+      fake.state.onList = () => { if (++lists === 2) fs.mkdirSync(path.join(claims, UD(1))); }; // the claim appears during the re-read, after the first claims read
       const res = await make(fake, () => 20, "darwin", dirs).sweepOverCap();
       expect(fake.erased()).toEqual([]);
       expect(res.outcomes[0]).toMatchObject({ action: "skipped", reason: "claimed" });
