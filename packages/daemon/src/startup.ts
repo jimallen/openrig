@@ -1353,7 +1353,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     ompRunnerStateStore: ompAdapter,
   });
   // OF-208: iOS simulator lifecycle. The cap is read fresh from the settings store on every sweep.
-  const simulatorLifecycle = buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore() });
+  // OF-221: the rig's Chief of Staff is told, once per rig per erase run, in its queue (no wake; the wake ladder escalates a long-pending item).
+  const { makeSimulatorErasedNotifier } = await import("./domain/simulator-erased-notice.js");
+  const simulatorLifecycle = buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore(), notifyErased: makeSimulatorErasedNotifier({ db, queue: queueRepoInstance }) });
   const rigLifecycleService = new RigLifecycleService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter, simulatorLifecycle,
   });

@@ -583,7 +583,7 @@ describe("OF-208 SimulatorLifecycle", () => {
 
     it("startup.ts builds the service through buildSimulatorLifecycle with the settings store, and nowhere constructs it bare", () => {
       const startup = fs.readFileSync(path.resolve(import.meta.dirname, "../src/startup.ts"), "utf8");
-      expect(startup).toContain("buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore() })");
+      expect(startup).toContain("buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore(), notifyErased: ");  // OF-221 adds the notice port; the settings store is still what it reads
       expect(startup).not.toMatch(/new SimulatorLifecycle\(/);
       expect(startup).toMatch(/simulatorLifecycle,\n\s+rigExpansionService,/); // handed to the app deps
     });

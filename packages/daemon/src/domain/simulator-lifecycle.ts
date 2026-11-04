@@ -187,7 +187,19 @@ export interface SimulatorLifecycleDeps {
   /** Default: only darwin has simulators; elsewhere the timer never starts. */
   platform?: string;
   log?: (line: string) => void;
+  /** OF-221: told once per rig per erase run, after the run's erases. Never throws into the run; absent, nobody is told. */
+  notifyErased?: SimulatorErasedNotifierPort;
 }
+
+/** What one erase run did for one rig (simulator-erased-notice.ts builds the Chief of Staff's notice from it). */
+export interface SimulatorErasedRun {
+  rigId: string;
+  reason: SimulatorEraseReason;
+  capBytes?: number;
+  at: string;
+  devices: Array<{ seat: string; udid: string; name: string; sizeBytes: number | null }>;
+}
+export type SimulatorErasedNotifierPort = (run: SimulatorErasedRun) => Promise<void>;
 
 /** What the builder needs of the settings store (the real `SettingsStore` satisfies it). */
 export interface SimulatorSettings {
@@ -199,7 +211,7 @@ export interface SimulatorSettings {
  * store on every use. startup.ts builds the service through this, so a test can build it from a store holding claim_dirs and
  * see the directories the sweep would read.
  */
-export function buildSimulatorLifecycle(deps: { db: Database.Database; eventBus: EventBus; settings: () => SimulatorSettings; simctl?: SimctlExec; platform?: string; log?: (line: string) => void }): SimulatorLifecycle {
+export function buildSimulatorLifecycle(deps: { db: Database.Database; eventBus: EventBus; settings: () => SimulatorSettings; simctl?: SimctlExec; platform?: string; log?: (line: string) => void; notifyErased?: SimulatorErasedNotifierPort }): SimulatorLifecycle {
   return new SimulatorLifecycle({
     db: deps.db,
     eventBus: deps.eventBus,
@@ -207,6 +219,7 @@ export function buildSimulatorLifecycle(deps: { db: Database.Database; eventBus:
     ...(deps.simctl ? { simctl: deps.simctl } : {}),
     ...(deps.platform ? { platform: deps.platform } : {}),
     ...(deps.log ? { log: deps.log } : {}),
+    ...(deps.notifyErased ? { notifyErased: deps.notifyErased } : {}),
     capGb: () => Number(deps.settings().resolveOne("simulators.size_cap_gb").value),
     claimDirs: () => String(deps.settings().resolveOne("simulators.claim_dirs").value).split(",").map((d) => d.trim()).filter((d) => d.length > 0),
   });
@@ -220,6 +233,7 @@ export class SimulatorLifecycle {
   private readonly claimDirs: () => string[];
   private readonly platform: string;
   private readonly log: (line: string) => void;
+  private readonly notifyErased: SimulatorErasedNotifierPort | null;
   /** Serialises sweeps and removals so two of them never list and erase at once. */
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -231,6 +245,7 @@ export class SimulatorLifecycle {
     this.claimDirs = deps.claimDirs ?? (() => []);
     this.platform = deps.platform ?? process.platform;
     this.log = deps.log ?? ((line) => console.warn(line));
+    this.notifyErased = deps.notifyErased ?? null;
   }
 
   /** The UDIDs claimed right now in the configured directories, or null when they cannot be read. Read-only; for diagnosis and tests. */
@@ -439,6 +454,7 @@ export class SimulatorLifecycle {
     }
     const reason: SimulatorEraseReason = trigger.kind === "cap" ? "over_size_cap" : trigger.reason;
     const outcomes: SimulatorOutcome[] = [];
+    const erasedByRig = new Map<string, SimulatorErasedRun["devices"]>(); // OF-221: what this run erased, per rig, for the one notice each rig gets
     const missingSeen = new Set<string>(); // one "claim dir missing" line per run, however many times the claims are read
     const claims = this.readClaims(missingSeen);
     if (claims.unreadable !== null) this.log(`[simulators] claims unreadable, nothing is erased this run: ${claims.unreadable}`);
@@ -474,6 +490,7 @@ export class SimulatorLifecycle {
         continue;
       }
       outcomes.push({ udid: fresh.udid, name: fresh.name, action: "erased", reason, sizeBytes: fresh.sizeBytes });
+      erasedByRig.set(again.seat.rigId, [...(erasedByRig.get(again.seat.rigId) ?? []), { seat: again.seat.logicalId, udid: fresh.udid, name: fresh.name, sizeBytes: fresh.sizeBytes }]);
       try {
         this.eventBus.emit({
           type: "simulator.erased",
@@ -488,6 +505,16 @@ export class SimulatorLifecycle {
         });
       } catch (err) {
         this.log(`[simulators] erased ${fresh.udid} but the event could not be written: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (this.notifyErased) {
+      const at = new Date().toISOString();
+      for (const [rigId, devices] of erasedByRig) {
+        try {
+          await this.notifyErased({ rigId, reason, ...(trigger.kind === "cap" ? { capBytes: trigger.capBytes } : {}), at, devices });
+        } catch (err) {
+          this.log(`[simulators] the erase notice for rig ${rigId} could not be sent: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
     return { status: "ok", outcomes };
