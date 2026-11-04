@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { setupCommand, runSetup, goldenPathNextSteps, permissionPolicyMenuLines, parseSetupProviders, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
 import type { DoctorDeps } from "../src/commands/doctor.js";
 import { HC_TESTED_VERSION } from "../src/tmux-health.js";
+import { stubConfigStore } from "./helpers/stub-config-store.js";
 
 function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
   return {
@@ -37,7 +38,7 @@ function captureLogs(fn: () => Promise<unknown>): Promise<{ logs: string[]; exit
   const origExitCode = process.exitCode;
   return fn()
     .then(() => {
-      exitCode = process.exitCode;
+      exitCode = typeof process.exitCode === "number" ? process.exitCode : undefined;
       process.exitCode = origExitCode;
       return { logs, exitCode };
     })
@@ -455,7 +456,7 @@ describe("rig setup", () => {
         return "";
       },
       checkPort: async () => true,
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts" } }) },
+      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
       platform: "darwin",
       readFile: () => null,
       mkdirp: () => {},
@@ -503,7 +504,7 @@ describe("rig setup", () => {
         return "";
       },
       checkPort: async () => true,
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts" } }) },
+      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
       platform: "darwin",
       readFile: () => null,
       mkdirp: () => {},
@@ -595,7 +596,7 @@ describe("rig setup --policy (onboarding record)", () => {
 
   function specDeps(initial: string | null, sink: Record<string, string>): SetupDeps {
     return makeDeps({
-      readFile: (p: string) => (p === SPEC ? (p in sink ? sink[p] : initial) : null),
+      readFile: (p: string) => (p === SPEC ? (sink[p] ?? initial) : null),
       exists: (p: string) => p === SPEC && (initial !== null || p in sink),
       writeFile: (p: string, c: string) => { sink[p] = c; },
     });

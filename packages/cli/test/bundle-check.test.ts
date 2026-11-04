@@ -7,6 +7,7 @@ import { Command } from "commander";
 import { checkBundleFolder } from "../src/lib/bundle-check.js";
 import { bundleCommand } from "../src/commands/bundle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
 const SPEC = `version: "0.2"
 name: author-fixture
@@ -94,7 +95,7 @@ describe("advisory bundle check", () => {
     const factory = vi.fn(() => { throw new Error("daemon must not be used"); });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const deps = { clientFactory: factory, lifecycleDeps: new Proxy({}, { get() { throw new Error("lifecycle must not be used"); } }) } as StatusDeps;
+      const deps = { clientFactory: factory, lifecycleDeps: new Proxy(asLifecycleDeps({}), { get() { throw new Error("lifecycle must not be used"); } }) } as StatusDeps;
       await new Command().addCommand(bundleCommand(deps)).parseAsync(["bundle", "check", root, "--json"], { from: "user" });
       expect(factory).not.toHaveBeenCalled(); expect(log).toHaveBeenCalledTimes(1);
       expect(JSON.parse(String(log.mock.calls[0]![0])).standardVersion).toBe("openrig.bundle-standard/v1");

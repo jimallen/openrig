@@ -11,6 +11,7 @@ import {
   authSeatsReport,
   SEAT_REGISTRY_DISCLAIMER,
 } from "../src/lib/codex-auth.js";
+import { must } from "./helpers/must.js";
 
 const NOW = () => "2026-06-26T00:00:00Z";
 let home: string;
@@ -32,7 +33,7 @@ describe("auth seats registry (OPR.0.4.1.29)", () => {
     authSeatSet(paths, { seat: "dev1@rig", rig: "rig", runtime: "codex", authProfile: "team" }, NOW);
     const rows = authSeatsList(paths).filter((r) => r.seat === "dev1@rig");
     expect(rows.length).toBe(1);
-    expect(rows[0].authProfile).toBe("team");
+    expect(must(rows[0], "the seat row").authProfile).toBe("team");
   });
 
   it("rejects invalid runtime + control-char seat fail-closed", () => {

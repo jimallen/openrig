@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { createDaemon } from "../../daemon/src/startup.js";
 import { queueCommand, type QueueDeps } from "../src/commands/queue.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
+import { must } from "./helpers/must.js";
 
 describe("queue destination advisory through CLI and route", () => {
   it("prints the accepted typo unchanged for create and both handoffs", async () => {
@@ -11,9 +13,9 @@ describe("queue destination advisory through CLI and route", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       const source = daemon.deps.rigRepo.createRig("advisory-source");
-      daemon.deps.rigRepo.addNode(source.id, "sender.ba", { runtime: null });
+      daemon.deps.rigRepo.addNode(source.id, "sender.ba");
       const target = daemon.deps.rigRepo.createRig("advisory-target");
-      daemon.deps.rigRepo.addNode(target.id, "product.ba", { runtime: null });
+      daemon.deps.rigRepo.addNode(target.id, "product.ba");
       const client = { post: async (url: string, body: unknown) => {
         const response = await daemon.app.request(url, { method: "POST", headers: {
           "Content-Type": "application/json", "X-OpenRig-Session": "sender-ba@advisory-source",
@@ -21,13 +23,13 @@ describe("queue destination advisory through CLI and route", () => {
         return { status: response.status, data: await response.json() };
       } };
       const deps: QueueDeps = {
-        lifecycleDeps: { readFile: () => null, exists: () => false,
-          fetch: async () => ({ ok: true }) } as QueueDeps["lifecycleDeps"],
+        lifecycleDeps: asLifecycleDeps({ readFile: () => null, exists: () => false,
+          fetch: async () => ({ ok: true }) }),
         clientFactory: () => client as unknown as ReturnType<QueueDeps["clientFactory"]>,
       };
       for (const json of [false, true]) {
         for (const verb of ["create", "handoff", "handoff-and-complete"]) {
-          const original = await daemon.deps.queueRepo.create({ sourceSession: "sender-ba@advisory-source",
+          const original = await must(daemon.deps.queueRepo, "the queue repository").create({ sourceSession: "sender-ba@advisory-source",
             destinationSession: "sender-ba@advisory-source", body: "fixture source", nudge: false });
           const args = verb === "create"
             ? [verb, "--destination", "prodcut-ba@advisory-target", "--body", "fixture", "--summary", "fixture"]
@@ -40,7 +42,7 @@ describe("queue destination advisory through CLI and route", () => {
           expect(result.advisories[0].message).toContain("does not guarantee pickup or delivery");
           const row = result.created ?? result;
           expect(row.destinationSession).toBe("prodcut-ba@advisory-target");
-          expect(daemon.deps.queueRepo.getById(row.qitemId)?.destinationSession).toBe(row.destinationSession);
+          expect(must(daemon.deps.queueRepo, "the queue repository").getById(row.qitemId)?.destinationSession).toBe(row.destinationSession);
         }
       }
     } finally {

@@ -38,7 +38,7 @@ it("does not retain a partial local pack or sync it and allows a clean retry", a
   const discovery = new ContextPackLibraryService({ roots: [{ path: library, sourceType: "user_file" }] });
   const visibleDuringCopy: string[] = [];
   const errorsDuringCopy: Array<{ source: string; error: string }> = [];
-  failure.observe = () => { errorsDuringCopy.push(...discovery.scan().errors); visibleDuringCopy.push(...discovery.list().map((pack) => pack.ref)); };
+  failure.observe = () => { errorsDuringCopy.push(...discovery.scan().errors); visibleDuringCopy.push(...discovery.list().map((pack) => pack.id)); };
   failure.enabled = true;
   await contextCommand(deps).parseAsync(["add", source], { from: "user" });
   expect(process.exitCode).toBe(1); expect(error.mock.calls.flat().join(" ")).toContain("fixture partial copy failed");

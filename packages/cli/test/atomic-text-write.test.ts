@@ -13,7 +13,7 @@ import { assertFixtureScopedHome } from "./live-daemon-guard.js";
 
 const failure = vi.hoisted(() => ({ active: false }));
 vi.mock("node:fs", async (original) => {
-  const actual = await original<typeof import("node:fs")>();
+  const actual = await original<typeof import("node:fs") & { default: typeof import("node:fs") }>();
   const writeFileSync = (...args: Parameters<typeof fs.writeFileSync>) => {
     if (failure.active) {
       failure.active = false;

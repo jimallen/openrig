@@ -7,6 +7,7 @@ import { downCommand } from "../src/commands/down.js";
 import type { StatusDeps } from "../src/commands/status.js";
 import type { RemoteHostDeps } from "../src/remote-host-ops.js";
 import { downRoutes } from "../../daemon/src/routes/down.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
 describe("remote down operation outcomes", () => {
   let server: ReturnType<typeof serve>;
@@ -53,7 +54,7 @@ describe("remote down operation outcomes", () => {
           alreadyStopped: testCase.alreadyStopped, deleted: testCase.deleted,
         };
         const deps: StatusDeps & Pick<RemoteHostDeps, "hostRegistryLoader"> = {
-          lifecycleDeps: { readFile: () => null } as StatusDeps["lifecycleDeps"],
+          lifecycleDeps: asLifecycleDeps({ readFile: () => null }),
           clientFactory: baseUrl => new DaemonClient(baseUrl),
           hostRegistryLoader: () => ({
             ok: true,

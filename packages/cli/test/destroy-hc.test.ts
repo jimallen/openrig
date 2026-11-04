@@ -22,6 +22,7 @@ import {
   type HcSeatOutcome,
 } from "../src/destroy-helpers.js";
 import { destroyCommand } from "../src/commands/destroy.js";
+import { stubConfigStore } from "./helpers/stub-config-store.js";
 
 // Restated here, not imported: the name is a durable address. A seat whose name changed across revisions would be
 // invisible to destroy and keep running after `rig destroy --all` reported success.
@@ -231,7 +232,7 @@ describe("executeDestroy with hc seats", () => {
 });
 
 describe("rig destroy --all command with hc seats", () => {
-  const configStore = { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx" } }) };
+  const configStore = stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx", lines: 1000, pollIntervalSeconds: 2 } });
   async function run(destroyDeps: DestroyDeps): Promise<{ out: string; exitCode: number | undefined }> {
     const program = new Command();
     program.exitOverride();

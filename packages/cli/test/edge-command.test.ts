@@ -7,6 +7,7 @@ import { STATE_FILE, type DaemonState } from "../src/daemon-lifecycle.js";
 import { edgeCommand } from "../src/commands/edge.js";
 import { createProgram } from "../src/index.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { stubChildProcess } from "./helpers/stub-child-process.js";
 
 describe("rig edge", () => {
   let server: http.Server;
@@ -37,7 +38,7 @@ describe("rig edge", () => {
   function deps(): StatusDeps {
     return {
       lifecycleDeps: {
-        spawn: vi.fn(() => ({ pid: 1, unref: vi.fn() })), fetch: vi.fn(async () => ({ ok: true })), kill: vi.fn(() => true),
+        spawn: vi.fn(() => stubChildProcess({ pid: 1, unref: vi.fn() })), fetch: vi.fn(async () => ({ ok: true })), kill: vi.fn(() => true),
         readFile: vi.fn((p: string) => p === STATE_FILE ? JSON.stringify({ pid: 123, port, db: "test.sqlite", startedAt: "2026-09-30T00:00:00Z" } satisfies DaemonState) : null),
         writeFile: vi.fn(), removeFile: vi.fn(), exists: vi.fn((p: string) => p === STATE_FILE), mkdirp: vi.fn(),
         openForAppend: vi.fn(() => 3), isProcessAlive: vi.fn(() => true),

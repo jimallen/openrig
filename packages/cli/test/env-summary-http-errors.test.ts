@@ -6,6 +6,7 @@ import { DaemonClient } from "../src/client.js";
 import { envCommand } from "../src/commands/env.js";
 import { STATE_FILE } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
 const failures = [
   { status: 503, data: { error: "rig_summary_unavailable" }, message: "rig_summary_unavailable" },
@@ -23,10 +24,10 @@ it.each(failures.flatMap((failure) => ["status", "logs", "down"].map((operation)
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
   const deps: StatusDeps = {
-    lifecycleDeps: {
+    lifecycleDeps: asLifecycleDeps({
       readFile: (path: string) => path === STATE_FILE ? JSON.stringify({ pid: 123, port: address.port, db: "fixture" }) : null,
       exists: (path: string) => path === STATE_FILE, isProcessAlive: () => true, fetch: async () => ({ ok: true }),
-    } as StatusDeps["lifecycleDeps"],
+    }),
     clientFactory: () => new DaemonClient(`http://127.0.0.1:${address.port}`),
   };
   const error = vi.spyOn(console, "error").mockImplementation(() => {});

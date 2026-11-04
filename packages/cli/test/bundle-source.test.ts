@@ -7,6 +7,7 @@ import type { StatusDeps } from "../src/commands/status.js";
 import { DaemonClient } from "../src/client.js";
 import { PodBundleAssembler } from "../../daemon/src/domain/pod-bundle-assembler.js";
 import { parseGitHubBundleLink, selectGitHubBundleSource, prepareGitHubBundle, importGitHubBundle, bundleIdentityLines, bundleGit, authoredCompatibility } from "../src/lib/bundle-source.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
 const state = vi.hoisted(() => ({ host: undefined as string | undefined, origin: "local-instance", remote: "local-instance" }));
 vi.mock("../src/local-origin.js", () => ({ readLocalOrigin: () => state.origin }));
@@ -271,7 +272,7 @@ describe("GitHub bundle source", () => {
     const prepared = { source: selectGitHubBundleSource(URL, refs), folder: checkoutDir, checkoutDir, archivePath: path.join(root, "bundle.rigbundle"), receiptPath: path.join(root, "source.json") };
     const post = vi.fn(async (_url: string, body: Record<string, unknown>) => ({ status: 201, data: { source: (body.provenance as { source: unknown }).source, configurationId: "build.dev=codex", packageDigest: { value: "digest", coverage: "openrig.package-digest/v1" }, assembler: { openrigVersion: "0.6.6" }, archiveHash: "archive" } }));
     const client = { get: vi.fn(async () => ({ status: 200, data: { selfHostId: state.remote } })), post } as unknown as DaemonClient;
-    const deps = { lifecycleDeps: {}, clientFactory: () => client } as StatusDeps;
+    const deps: StatusDeps = { lifecycleDeps: asLifecycleDeps({}), clientFactory: () => client };
     return { prepared, post, deps, prepare: vi.fn(async () => prepared) };
   }
 

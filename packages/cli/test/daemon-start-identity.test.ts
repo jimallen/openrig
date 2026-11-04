@@ -10,7 +10,9 @@ import { acquireDaemonStartLock } from "../src/daemon-start-lock.js";
 afterEach(() => vi.useRealTimers());
 function fixture() {
   const files = new Map<string, string>();
-  const child = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null as number | null, signalCode: null, unref: vi.fn() }) as unknown as ChildProcess;
+  // `fake` is the writable view of the child (ChildProcess.exitCode is read-only); `child` is what the code under test sees.
+  const fake = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null as number | null, signalCode: null, unref: vi.fn() });
+  const child = fake as unknown as ChildProcess;
   let spawned = false;
   const lock = { recordChild: vi.fn(), release: vi.fn() };
   const body = { pid: child.pid, bind: { mode: "explicit" as const, hosts: ["127.0.0.1"], tailscaleDetected: false } };
@@ -18,14 +20,14 @@ function fixture() {
     acquireStartLock: vi.fn(() => lock),
     spawn: vi.fn(() => { spawned = true; return child; }),
     fetch: vi.fn(async () => { if (!spawned) throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" }); return { ok: true, json: async () => body }; }),
-    kill: vi.fn(() => { child.exitCode = 0; child.emit("exit", 0, "SIGTERM"); return true; }),
+    kill: vi.fn(() => { fake.exitCode = 0; child.emit("exit", 0, "SIGTERM"); return true; }),
     readFile: (p) => files.get(p) ?? null,
     writeFile: vi.fn((p, value) => { files.set(p, value); }),
     removeFile: (p) => { files.delete(p); },
     exists: (p) => files.has(p), mkdirp: vi.fn(), openForAppend: () => 3,
     isProcessAlive: () => child.exitCode === null,
   };
-  return { deps, child, body, files, lock };
+  return { deps, child, fake, body, files, lock };
 }
 const opts = { port: 19873, host: "127.0.0.1", db: "fixture.sqlite" };
 
@@ -45,7 +47,7 @@ describe("child-bound startup", () => {
     const winner = JSON.stringify({ pid: 45678, port: opts.port, host: opts.host, db: opts.db, startedAt: "2026-09-07T00:00:00Z" });
     f.deps.spawn = vi.fn(() => {
       f.files.set(STATE_FILE, winner);
-      if (state === "dead") { f.child.exitCode = 1; queueMicrotask(() => f.child.emit("exit", 1, null)); }
+      if (state === "dead") { f.fake.exitCode = 1; queueMicrotask(() => f.child.emit("exit", 1, null)); }
       return f.child;
     });
     f.deps.fetch = vi.fn(async () => { if (!f.files.has(STATE_FILE)) throw new Error("refused"); return { ok: true, json: async () => ({ ...f.body, pid: 45678 }) }; });
@@ -81,7 +83,7 @@ describe("child-bound startup", () => {
     const f = fixture(); const fetch = f.deps.fetch;
     f.deps.fetch = async (url) => {
       await fetch(url);
-      queueMicrotask(() => { f.child.exitCode = 1; f.child.emit("exit", 1, null); });
+      queueMicrotask(() => { f.fake.exitCode = 1; f.child.emit("exit", 1, null); });
       return { ok: true, json: () => new Promise(() => {}) };
     };
     await expect(startDaemon(opts, f.deps)).rejects.toThrow(/exited/);
@@ -102,7 +104,7 @@ describe("child-bound startup", () => {
     const f = fixture(); f.body.pid = 999;
     f.deps.isProcessAlive = () => false;
     const kill = f.deps.kill;
-    f.deps.kill = vi.fn((...args) => {
+    f.deps.kill = vi.fn((...args: Parameters<LifecycleDeps["kill"]>) => {
       expect(f.lock.release).not.toHaveBeenCalled();
       return kill(...args);
     });

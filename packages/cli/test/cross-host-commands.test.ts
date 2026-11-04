@@ -4,7 +4,7 @@ import { captureCommand, type CaptureDeps } from "../src/commands/capture.js";
 import { psCommand, type PsDeps } from "../src/commands/ps.js";
 import { whoamiCommand, type WhoamiDeps } from "../src/commands/whoami.js";
 import type { CrossHostResult, RunCrossHostCommandOpts } from "../src/cross-host-executor.js";
-import type { HostRegistryLoadResult } from "../src/host-registry.js";
+import type { HostEntry, HostRegistryLoadResult } from "../src/host-registry.js";
 
 // Capture stdout / stderr / exitCode for command actions.
 interface CapturedOutput {
@@ -46,7 +46,7 @@ afterEach(() => {
   console.error = originalError;
   process.stdout.write = originalStdoutWrite;
   process.stderr.write = originalStderrWrite;
-  captured.exitCode = process.exitCode;
+  captured.exitCode = typeof process.exitCode === "number" ? process.exitCode : undefined;
   process.exitCode = undefined;
   vi.unstubAllEnvs();
 });
@@ -58,7 +58,7 @@ const KNOWN_REGISTRY: HostRegistryLoadResult = {
   },
 };
 
-function deps(overrides: { run?: (h: never, argv: readonly string[], opts?: RunCrossHostCommandOpts) => Promise<CrossHostResult>; registry?: HostRegistryLoadResult } = {}): SendDeps & CaptureDeps {
+function deps(overrides: { run?: (h: HostEntry, argv: readonly string[], opts?: RunCrossHostCommandOpts) => Promise<CrossHostResult>; registry?: HostRegistryLoadResult } = {}): SendDeps & CaptureDeps {
   const lifecycleDeps = { exists: () => false } as never;
   const clientFactory = (() => ({}) as never) as never;
   return {
@@ -395,7 +395,7 @@ function makeFailingLifecycleDeps(): never {
 // `rig ps --host <id>` (C9b)
 // ---------------------------------------------------------------------------
 
-function psDeps(overrides: { run?: (h: never, argv: readonly string[]) => Promise<CrossHostResult>; registry?: HostRegistryLoadResult } = {}): PsDeps {
+function psDeps(overrides: { run?: (h: HostEntry, argv: readonly string[]) => Promise<CrossHostResult>; registry?: HostRegistryLoadResult } = {}): PsDeps {
   return {
     lifecycleDeps: { exists: () => false } as never,
     clientFactory: (() => ({}) as never) as never,
@@ -528,7 +528,7 @@ describe("ps --host (cross-host short-circuit)", () => {
 // `rig whoami --host <id>` (C9b')
 // ---------------------------------------------------------------------------
 
-function whoamiDeps(overrides: { run?: (h: never, argv: readonly string[]) => Promise<CrossHostResult>; registry?: HostRegistryLoadResult } = {}): WhoamiDeps {
+function whoamiDeps(overrides: { run?: (h: HostEntry, argv: readonly string[]) => Promise<CrossHostResult>; registry?: HostRegistryLoadResult } = {}): WhoamiDeps {
   return {
     lifecycleDeps: { exists: () => false } as never,
     clientFactory: (() => ({}) as never) as never,

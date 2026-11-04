@@ -6,6 +6,7 @@ import { expect, it, vi } from "vitest";
 import { contextCommand } from "../src/commands/context.js";
 import { STATE_FILE } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
 it.each([
   "name: desired",
@@ -24,11 +25,11 @@ it.each([
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
   const post = vi.fn(async () => ({ status: 200, data: { count: 1, entries: [], errors: [] } }));
   const deps: StatusDeps = {
-    lifecycleDeps: {
+    lifecycleDeps: asLifecycleDeps({
       readFile: (path: string) => path === STATE_FILE ? JSON.stringify({ pid: 123, port: 7433, db: "fixture" }) : null,
       exists: (path: string) => path === STATE_FILE, isProcessAlive: () => true,
       fetch: async () => ({ ok: true }),
-    } as StatusDeps["lifecycleDeps"],
+    }),
     clientFactory: () => ({ post }) as unknown as ReturnType<StatusDeps["clientFactory"]>,
   };
   try {

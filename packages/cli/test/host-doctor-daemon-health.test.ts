@@ -5,6 +5,7 @@ import { expect, it, vi } from "vitest";
 import { daemonCommand } from "../src/commands/daemon.js";
 import { doctorLegs, type DoctorDeps } from "../src/commands/host.js";
 import type { LifecycleDeps } from "../src/daemon-lifecycle.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
 it.each(["healthy", "unhealthy", "unverified", "stopped"] as const)(
   "preserves the actual daemon status command's %s verdict in SSH doctor",
@@ -28,9 +29,9 @@ it.each(["healthy", "unhealthy", "unverified", "stopped"] as const)(
         const output = vi.spyOn(console, "log").mockImplementation((...parts) => { lines.push(parts.join(" ")); });
         try {
           const command = new Command();
-          command.addCommand(daemonCommand({
+          command.addCommand(daemonCommand(asLifecycleDeps({
             fetch, readFile: () => null, exists: () => false, isProcessAlive: () => false,
-          } as LifecycleDeps));
+          })));
           await command.parseAsync(["node", "rig", "daemon", "status"]);
         } finally { output.mockRestore(); }
         stdout = lines.join("\n");

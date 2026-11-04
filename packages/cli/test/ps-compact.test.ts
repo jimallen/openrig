@@ -9,6 +9,7 @@ import { psCommand } from "../src/commands/ps.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { must } from "./helpers/must.js";
 
 function mockLifecycleDeps(overrides?: Partial<LifecycleDeps>): LifecycleDeps {
   return {
@@ -178,7 +179,7 @@ const RIG_C_NODES = [
 const ALL_NODES = [...RIG_A_NODES, ...RIG_B_NODES, ...RIG_C_NODES];
 const TOTAL_NODE_COUNT = ALL_NODES.length; // 15
 
-const PS_DATA = [
+const PS_DATA: Array<Record<string, unknown> & { rigId: string; name: string; archivedAt?: string | null; isArchived?: boolean }> = [
   { rigId: "rig-a", name: "openrig-build", rigName: "openrig-build", nodeCount: 7, runningCount: 7, status: "running", lifecycleState: "attention_required", uptime: "2h", latestSnapshot: null },
   { rigId: "rig-b", name: "openrig-comms", rigName: "openrig-comms", nodeCount: 5, runningCount: 5, status: "running", lifecycleState: "running", uptime: "1h", latestSnapshot: null },
   { rigId: "rig-c", name: "openrig-velocity", rigName: "openrig-velocity", nodeCount: 3, runningCount: 3, status: "running", lifecycleState: "running", uptime: "30m", latestSnapshot: null },
@@ -511,7 +512,7 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
   ])(
     "preserves explicit stop intent in $mode node JSON",
     async ({ args: extra }) => {
-      const original = NODES_BY_RIG["rig-c"];
+      const original = must(NODES_BY_RIG["rig-c"], "the rig-c fixture nodes");
       NODES_BY_RIG["rig-c"] = [
         { ...RIG_C_NODES[0], intentionallyStopped: true, sessionStatus: "exited" },
         { ...RIG_C_NODES[1], intentionallyStopped: false },

@@ -55,7 +55,7 @@ function isPermittedByShape(host: string, port: number): boolean {
   return Number.isInteger(port) && port >= EPHEMERAL_MIN; // loopback-ephemeral permit; :7433 & low → refuse
 }
 
-function urlFromInput(input: RequestInfo | URL): string {
+function urlFromInput(input: string | URL | Request): string {
   if (typeof input === "string") return input;
   if (input instanceof URL) return input.toString();
   return (input as Request).url;
@@ -74,7 +74,7 @@ export function installFetchGuard(): void {
   if (state.originalFetch) return;
   state.originalFetch = globalThis.fetch;
   const orig = state.originalFetch;
-  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const t = parseTarget(urlFromInput(input));
     // Non-http(s) targets (data:, blob:, node: …) are not a daemon vector — pass through.
     if (!t || !/^https?:/i.test(t.origin)) return orig(input as never, init);

@@ -317,7 +317,6 @@ describe("runCrossHostCommand", () => {
 // Fix: the remote command runs under `sh -lc` (the operator's own login PATH), and a
 // 127/command-not-found classifies LOUD as its own step with a teaching hint.
 import { runCrossHostCommand as d13Run, classifyResult as d13Classify } from "../src/cross-host-executor.js";
-import { EventEmitter } from "node:events";
 
 function d13Child(exitCode: number, stderr = "") {
   const child = new EventEmitter() as import("node:child_process").ChildProcess;

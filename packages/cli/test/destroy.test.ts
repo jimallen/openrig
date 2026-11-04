@@ -11,8 +11,10 @@ import {
   executeDestroy,
   listManagedTmuxSessionsFromDb,
   type DestroyDeps,
+  type ListenerInspection,
 } from "../src/destroy-helpers.js";
 import { destroyCommand } from "../src/commands/destroy.js";
+import { stubConfigStore } from "./helpers/stub-config-store.js";
 
 function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
   return new Promise(async (resolve) => {
@@ -258,7 +260,7 @@ describe("destroy helpers", () => {
       exists: () => true,
       removePath,
       mkdirp,
-      inspectListener: vi.fn(async () => ({ kind: "openrig" })),
+      inspectListener: vi.fn(async (_host: string, _port: number): Promise<ListenerInspection> => ({ kind: "openrig" })),
       findListeningPid: () => null,
     });
 
@@ -287,7 +289,7 @@ describe("destroy helpers", () => {
       exists: () => true,
       removePath: vi.fn(),
       mkdirp: vi.fn(),
-      inspectListener: vi.fn(async () => ({ kind: "other_http", detail: "HTTP 200" })),
+      inspectListener: vi.fn(async (_host: string, _port: number): Promise<ListenerInspection> => ({ kind: "other_http", detail: "HTTP 200" })),
       findListeningPid: () => 7777,
       killProcess,
     });
@@ -365,7 +367,7 @@ describe("destroy command", () => {
     const program = new Command();
     program.exitOverride();
     program.addCommand(destroyCommand({
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx" } }) },
+      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx", lines: 1000, pollIntervalSeconds: 2 } }),
       destroyDeps: makeDestroyDeps(),
     }));
 
@@ -381,7 +383,7 @@ describe("destroy command", () => {
     const program = new Command();
     program.exitOverride();
     program.addCommand(destroyCommand({
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx" } }) },
+      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx", lines: 1000, pollIntervalSeconds: 2 } }),
       destroyDeps: makeDestroyDeps(),
     }));
 
@@ -397,7 +399,7 @@ describe("destroy command", () => {
     const program = new Command();
     program.exitOverride();
     program.addCommand(destroyCommand({
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx" } }) },
+      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx", lines: 1000, pollIntervalSeconds: 2 } }),
       destroyDeps: makeDestroyDeps(),
     }));
 
@@ -417,7 +419,7 @@ describe("destroy command", () => {
     const program = new Command();
     program.exitOverride();
     program.addCommand(destroyCommand({
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx" } }) },
+      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/db" }, transcripts: { enabled: true, path: "/tmp/tx", lines: 1000, pollIntervalSeconds: 2 } }),
       destroyDeps,
     }));
 

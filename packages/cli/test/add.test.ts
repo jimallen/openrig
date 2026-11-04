@@ -102,6 +102,8 @@ describe("rig add", () => {
   let tmpDir: string;
   let fragmentPath: string;
   let capturedBody: Record<string, unknown> | null = null;
+  // Read through a function: a direct read after `capturedBody = null` is narrowed to `null`.
+  const sentBody = (): Record<string, unknown> | null => capturedBody;
   let capturedUrl: string | null = null;
   let summaryStatus = 200;
 
@@ -350,8 +352,8 @@ describe("rig add", () => {
       await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath]);
     });
     expect(capturedBody).not.toBeNull();
-    expect((capturedBody as { member: { id: string } }).member.id).toBe("server2");
-    expect((capturedBody as { edges: unknown[] }).edges).toEqual([{ from: "server2", to: "server", kind: "delegates_to" }]);
+    expect((sentBody() as { member: { id: string } }).member.id).toBe("server2");
+    expect((sentBody() as { edges: unknown[] }).edges).toEqual([{ from: "server2", to: "server", kind: "delegates_to" }]);
   });
 
   it("lifts bare-form top-level edges out to pod-local edges (not dropped into the member)", async () => {
@@ -360,7 +362,7 @@ describe("rig add", () => {
     await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath]);
     });
-    const sent = capturedBody as { member: Record<string, unknown>; edges: unknown[] };
+    const sent = sentBody() as { member: Record<string, unknown>; edges: unknown[] };
     expect(sent.edges).toEqual([{ from: "server2", to: "server", kind: "delegates_to" }]);
     // edges lifted OUT of the member, not silently carried as an ignored field.
     expect(sent.member["edges"]).toBeUndefined();

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { compactNodeProjection, padCompactNodeRow, padNodeRow, formatDeclaredModel } from "../src/commands/ps.js";
+import { must } from "./helpers/must.js";
 
 // 0.5.1 — rig ps must surface RUNTIME and the DECLARED model.
 //
@@ -54,13 +55,13 @@ describe("rig ps — runtime + declared model", () => {
   });
 
   it("RED: the compact PROJECTION carries runtime and model (node-inventory has both; ps dropped them)", () => {
-    const [compact] = compactNodeProjection([node({ runtime: "codex", model: "gpt-5.6-sol" })] as never);
+    const compact = must(compactNodeProjection([node({ runtime: "codex", model: "gpt-5.6-sol" })] as never)[0], "the projected row");
     expect(compact.runtime).toBe("codex");
     expect(compact.model).toBe("gpt-5.6-sol");
   });
 
   it("RED: a claude-code seat with no declared model still projects its runtime", () => {
-    const [compact] = compactNodeProjection([node()] as never);
+    const compact = must(compactNodeProjection([node()] as never)[0], "the projected row");
     expect(compact.runtime).toBe("claude-code");
     expect(compact.model).toBeNull();
   });
