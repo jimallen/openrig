@@ -5,7 +5,11 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { StatusDeps } from "../src/commands/status.js";
 import { DaemonClient } from "../src/client.js";
-import { PodBundleAssembler } from "../../daemon/src/domain/pod-bundle-assembler.js";
+import { PodBundleAssembler, type PodAssemblerFsOps } from "../../daemon/src/domain/pod-bundle-assembler.js";
+
+// The production wiring adds the guarded readers (readVendoredFile, readPersonaFile); this suite deliberately runs the
+// assembler on a plain filesystem, where it falls back to readFileBuffer / readFile (the type documents the fallback).
+const unguardedFsOps = (ops: Omit<PodAssemblerFsOps, "readVendoredFile" | "readPersonaFile">): PodAssemblerFsOps => ops as PodAssemblerFsOps;
 import { parseGitHubBundleLink, selectGitHubBundleSource, prepareGitHubBundle, importGitHubBundle, bundleIdentityLines, bundleGit, authoredCompatibility } from "../src/lib/bundle-source.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
@@ -166,14 +170,14 @@ describe("GitHub bundle source", () => {
     });
     const prepared = await prepareGitHubBundle(URL, git, path.join(root, "imports"));
     const output = path.join(root, "assembled");
-    const assembler = new PodBundleAssembler({ fsOps: {
+    const assembler = new PodBundleAssembler({ fsOps: unguardedFsOps({
       readFile: file => fs.readFileSync(file, "utf8"), readFileBuffer: fs.readFileSync,
       exists: fs.existsSync, realpath: fs.realpathSync,
       mkdirp: dir => { fs.mkdirSync(dir, { recursive: true }); },
       writeFile: (file, bytes) => fs.writeFileSync(file, bytes),
       copyDir: (from, to) => fs.cpSync(from, to, { recursive: true }),
       listFiles: dir => fs.readdirSync(dir, { recursive: true }).map(String).filter(file => fs.statSync(path.join(dir, file)).isFile()),
-    } });
+    }) });
     const f = fixture();
     let assembledRigRoot = "";
     f.post.mockImplementation(async (_url, body) => {

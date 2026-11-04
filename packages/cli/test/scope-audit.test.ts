@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { classifyScopeItem, sliceStatusIsActive, type ScopeAuditInput } from "../src/lib/scope/scope-audit.js";
 
-function makeInput(overrides: Partial<ScopeAuditInput>): ScopeAuditInput {
+function makeInput(overrides: Partial<ScopeAuditInput> = {}): ScopeAuditInput {
   return {
     id: null,
     path: "/workspace/missions/release-0.4.0",

@@ -5,6 +5,7 @@ import { specsCommand } from "../src/commands/specs.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { must } from "./helpers/must.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return { spawn: vi.fn(() => ({ pid: 1, unref: vi.fn() }) as never), fetch: vi.fn(async () => ({ ok: true })), kill: vi.fn(() => true), readFile: vi.fn(() => null), writeFile: vi.fn(), removeFile: vi.fn(), exists: vi.fn(() => false), mkdirp: vi.fn(), openForAppend: vi.fn(() => 3), isProcessAlive: vi.fn(() => true) };
@@ -200,7 +201,7 @@ describe("Specs CLI", () => {
     ["research", "builtin", "rig", false],
     ["starter", "builtin", "agent", false],
   ])("preview %s/%s/%s keeps the review and scopes first-team guidance", async (name, sourceType, kind, guided) => {
-    const entry = { ...LIBRARY_ENTRIES[0], name, sourceType, kind };
+    const entry = { ...must(LIBRARY_ENTRIES[0], "the first library entry"), name, sourceType, kind };
     const review = { ...RIG_REVIEW, name, kind };
     const previewServer = http.createServer((req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });

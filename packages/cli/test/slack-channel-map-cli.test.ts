@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { slackCommand } from "../src/commands/slack.js";
+import { slackCommand, type SlackDeps } from "../src/commands/slack.js";
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from "@openrig/daemon/gateway-slack";
 
 const homes: string[] = [];
@@ -15,7 +15,7 @@ function setup(channelMap?: Array<{ match: string; channel: string }>) {
   homes.push(home);
   saveConfig({ ...DEFAULT_CONFIG, channel: "C0DEFAULT", ...(channelMap ? { channelMap } : {}) }, home);
   const logs: string[] = [];
-  const run = (argv: string[], fetchImpl?: Parameters<typeof slackCommand>[0]["fetchImpl"]) =>
+  const run = (argv: string[], fetchImpl?: SlackDeps["fetchImpl"]) =>
     slackCommand({ home, log: (m) => logs.push(m), fetchImpl }).parseAsync(["node", "slack", ...argv]);
   return { home, logs, run };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { wrapSendBody } from "../src/commands/send.js";
+import { must } from "./helpers/must.js";
 
 describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)", () => {
   it("renders From / To / body / reply hint with both session names", () => {
@@ -121,7 +122,7 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
     const body = "totally · gen ffffffff not the real gen";
     const out = wrapSendBody("a@r", "b@r", body, { stampISO: "2026-08-06T17:42:09Z", genUuid: GEN });
     const [headerBlock, ...bodyRegion] = out.split("\n---\n");
-    expect(headerBlock.split("\n").find((l) => l.startsWith("Sent:"))).toBe("Sent: 08-06 17:42Z · gen a1b2c3d4");
+    expect(must(headerBlock, "the header block").split("\n").find((l) => l.startsWith("Sent:"))).toBe("Sent: 08-06 17:42Z · gen a1b2c3d4");
     expect(headerBlock).not.toContain("ffffffff");
     expect(bodyRegion.join("\n---\n")).toContain("· gen ffffffff");
   });
@@ -130,7 +131,7 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
   // no Sent:/gen line — absent=omit. FOLLOW-ON (h): the delivered-at stamp adds the Sent: line, at
   // which point the gen rides this same render for free (one HG-5 baseline change, in h).
   it("(g) interim: the meta-less handoff nudge carries no Sent:/gen line (h will stamp it)", () => {
-    const nudge = wrapSendBody("orch-lead@v", "driver-3@v", "Queue handoff: qitem-9 - check your queue.", null);
+    const nudge = wrapSendBody("orch-lead@v", "driver-3@v", "Queue handoff: qitem-9 - check your queue.", undefined);
     expect(nudge).not.toContain("Sent:");
     expect(nudge).not.toContain(" · gen ");
   });

@@ -46,12 +46,12 @@ describe("rig startup-proof", () => {
   });
 
   it("posts startup_proof through the authenticated activity hook", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({
       ok: true,
       oriented: "verified",
       nodeId: "node-1",
       challengeId: "challenge-1",
-    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    }), { status: 200, headers: { "content-type": "application/json" } }));
 
     const result = await submitStartupProof(
       { challengeId: "challenge-1", answer: "answer-1" },

@@ -34,7 +34,7 @@ describe("GitHub legacy package containment", () => {
           post: async (route: string, body: Record<string, unknown>) => {
             if (route === "/api/bundles/create") { creates++; outputPath = body.outputPath as string; }
             const res = await app.request(route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-            return { status: res.status, data: await res.json() };
+            return { status: res.status, data: await res.json() as Record<string, unknown> };
           },
         };
         const git = async (checkout: string, args: string[]) => {

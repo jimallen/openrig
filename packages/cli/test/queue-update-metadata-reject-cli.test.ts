@@ -25,10 +25,13 @@ import { queueRoutes } from "../../daemon/src/routes/queue.js";
 import { DaemonClient } from "../src/client.js";
 import { queueCommand } from "../src/commands/queue.js";
 import { STATE_FILE } from "../src/daemon-lifecycle.js";
+import { must } from "./helpers/must.js";
 
 let db: Database.Database;
 let bus: EventBus;
 let repo: QueueRepository;
+// The public read of a row the test just wrote (QueueRepository.getByIdOrThrow is private; this is the same lookup).
+const getItem = (qitemId: string) => must(repo.getById(qitemId), `queue item ${qitemId}`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let server: any;
 let port = 0;
@@ -114,7 +117,7 @@ describe("51-06 D2 — real CLI->loopback HTTP->queueRoutes/QueueRepository acce
     expect(out).toContain("summary_evidence_not_persistable");
     expect(out).toContain("invalidFields");
     // unchanged item/metadata/transition/event state AFTER the real HTTP call
-    const item = repo.getByIdOrThrow(id);
+    const item = getItem(id);
     expect(item.state).toBe("pending");
     expect(item.summary).toBeNull();
     expect(txnCount(id)).toBe(beforeTxns);
@@ -127,13 +130,13 @@ describe("51-06 D2 — real CLI->loopback HTTP->queueRoutes/QueueRepository acce
     const body = JSON.parse(out) as { error: string; invalidFields?: string[] };
     expect(body.error).toBe("summary_evidence_not_persistable");
     expect(body.invalidFields).toEqual(["evidenceRef"]);
-    expect(repo.getByIdOrThrow(id).evidenceRef).toBeNull();
+    expect(getItem(id).evidenceRef).toBeNull();
   });
 
   it("CONTROL: real-CLI human-seat park PERSISTS summary + evidence (exit 0)", async () => {
     const { exit } = await runCli(["update", id, "--actor", "orch@rig", "--state", "blocked", "--blocked-on", "human@kernel", "--summary", "PARK-KEEP", "--evidence-ref", "/proof/park.md"]);
     expect(exit).toBeFalsy(); // success
-    const item = repo.getByIdOrThrow(id);
+    const item = getItem(id);
     expect(item.summary).toBe("PARK-KEEP");
     expect(item.evidenceRef).toBe("/proof/park.md");
   });
@@ -149,7 +152,7 @@ describe("51-06 D2 — real CLI->loopback HTTP->queueRoutes/QueueRepository acce
     { verb: "update", json: false }, { verb: "update", json: true },
   ] as const)("$verb missing blocker gives conditional external-gate guidance (json=$json)", async ({ verb, json }) => {
     const missing = "qitem-19990101000000-deadbeef";
-    const before = repo.getByIdOrThrow(id);
+    const before = getItem(id);
     const beforeTxns = txnCount(id), beforeEvents = eventCount();
     const { out, exit } = await runCli([...parkArgs(verb, missing), ...(json ? ["--json"] : [])]);
     expect(exit).toBe(2);
@@ -160,7 +163,7 @@ describe("51-06 D2 — real CLI->loopback HTTP->queueRoutes/QueueRepository acce
     expect(body.message).toContain("A qitem absent from this daemon cannot be a live blocker here.");
     expect(body.message).toContain("If it is stored on another host, use a typed gate such as external:<host>/<id>");
     expect(body.message).toContain("--wake-watchdog or --wake-after");
-    expect(repo.getByIdOrThrow(id)).toEqual(before);
+    expect(getItem(id)).toEqual(before);
     expect(txnCount(id)).toBe(beforeTxns);
     expect(eventCount()).toBe(beforeEvents);
   });
@@ -169,25 +172,25 @@ describe("51-06 D2 — real CLI->loopback HTTP->queueRoutes/QueueRepository acce
     const blocker = await repo.create({ sourceSession: "orch@rig", destinationSession: "dev-x@rig", body: "live blocker" });
     const { exit } = await runCli([...parkArgs(verb, blocker.qitemId), "--json"]);
     expect(exit).toBeFalsy();
-    expect(repo.getByIdOrThrow(id)).toMatchObject({ state: "blocked", blockedOn: blocker.qitemId });
+    expect(getItem(id)).toMatchObject({ state: "blocked", blockedOn: blocker.qitemId });
   });
 
   it.each(["block", "update"] as const)("%s still refuses a terminal local qitem blocker", async (verb) => {
     const blocker = await repo.create({ sourceSession: "orch@rig", destinationSession: "dev-x@rig", body: "closed blocker" });
     repo.update({ qitemId: blocker.qitemId, actorSession: "dev-x@rig", state: "done", closureReason: "no-follow-on", transitionNote: "finished" });
-    const before = repo.getByIdOrThrow(id);
+    const before = getItem(id);
     const { out, exit } = await runCli([...parkArgs(verb, blocker.qitemId), "--json"]);
     expect(exit).toBe(2);
     const body = JSON.parse(out);
     expect(body).toMatchObject({ error: "blocker_not_live", rejectedBlocker: blocker.qitemId, blockerState: "done" });
     expect(body.message).not.toContain("external:<host>/<id>");
-    expect(repo.getByIdOrThrow(id)).toEqual(before);
+    expect(getItem(id)).toEqual(before);
   });
 
   it.each(["block", "update"] as const)("%s still accepts an external typed gate without looking up its qitem suffix", async (verb) => {
     const gate = "external:other-host/qitem-19990101000000-deadbeef";
     const { exit } = await runCli([...parkArgs(verb, gate), "--json"]);
     expect(exit).toBeFalsy();
-    expect(repo.getByIdOrThrow(id)).toMatchObject({ state: "blocked", blockedOn: gate });
+    expect(getItem(id)).toMatchObject({ state: "blocked", blockedOn: gate });
   });
 });

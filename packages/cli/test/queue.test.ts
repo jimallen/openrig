@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import type { QueueDeps } from "../src/commands/queue.js";
 import { resolveQueueBody, previewBody, waitForDeliveryOutcome } from "../src/commands/queue.js";
 import { createProgram } from "../src/index.js";
+import { must } from "./helpers/must.js";
 
 /**
  * `rig queue` CLI tests — PL-004 Phase A revision (R1).
@@ -1809,7 +1810,7 @@ describe("rig queue CLI", () => {
       const program = createProgram({ queueDeps: deps });
       program.exitOverride();
       await program.parseAsync(["node", "rig", "queue", "show", "qitem-1"]);
-      const printed = JSON.parse(logs[0]);
+      const printed = JSON.parse(must(logs[0], "the first log line"));
       expect(printed.bodyTruncated).toBe(true);
       expect(printed.bodyBytes).toBe(1000);
       expect(Array.from(printed.body).length).toBe(512);
@@ -1824,7 +1825,7 @@ describe("rig queue CLI", () => {
       const program = createProgram({ queueDeps: deps });
       program.exitOverride();
       await program.parseAsync(["node", "rig", "queue", "show", "qitem-1"]);
-      const printed = JSON.parse(logs[0]);
+      const printed = JSON.parse(must(logs[0], "the first log line"));
       expect(printed.body).toBe("short body");
       expect(printed.bodyTruncated).toBe(false);
       expect(printed.bodyBytes).toBe(10);
@@ -1836,7 +1837,7 @@ describe("rig queue CLI", () => {
       const program = createProgram({ queueDeps: deps });
       program.exitOverride();
       await program.parseAsync(["node", "rig", "queue", "show", "qitem-1"]);
-      const printed = JSON.parse(logs[0]);
+      const printed = JSON.parse(must(logs[0], "the first log line"));
       expect(printed.body).toBe("");
       expect(printed.bodyBytes).toBe(0);
       expect(printed.bodyTruncated).toBe(false);
@@ -1851,7 +1852,7 @@ describe("rig queue CLI", () => {
       program.exitOverride();
       await program.parseAsync(["node", "rig", "queue", "show", "qitem-1", "--json"]);
       expect(logs.length).toBe(1); // compact single-line JSON, no separate marker line
-      const printed = JSON.parse(logs[0]);
+      const printed = JSON.parse(must(logs[0], "the first log line"));
       expect(printed.bodyTruncated).toBe(true);
       expect(printed.bodyBytes).toBe(1000);
       expect(Array.from(printed.body).length).toBe(PREVIEW_MAX_CODEPOINTS);
@@ -1865,7 +1866,7 @@ describe("rig queue CLI", () => {
       await program.parseAsync(["node", "rig", "queue", "show", "qitem-1", "--full", "--json"]);
       // Byte-identical to a raw JSON.stringify of the item (today's shape).
       expect(logs[0]).toBe(JSON.stringify(item));
-      const printed = JSON.parse(logs[0]);
+      const printed = JSON.parse(must(logs[0], "the first log line"));
       expect(printed.body).toBe("C".repeat(1000)); // complete, untruncated
       expect(printed).not.toHaveProperty("bodyBytes");
       expect(printed).not.toHaveProperty("bodyTruncated");
@@ -1878,7 +1879,7 @@ describe("rig queue CLI", () => {
       const program = createProgram({ queueDeps: deps });
       program.exitOverride();
       await program.parseAsync(["node", "rig", "queue", "show", "qitem-1", "--full"]);
-      const printed = JSON.parse(logs[0]);
+      const printed = JSON.parse(must(logs[0], "the first log line"));
       expect(printed.body).toBe(full);
       expect(printed).not.toHaveProperty("bodyBytes");
       expect(printed).not.toHaveProperty("bodyTruncated");

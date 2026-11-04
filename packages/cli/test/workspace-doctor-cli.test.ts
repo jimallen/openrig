@@ -92,7 +92,7 @@ function captureStdout(): { logs: string[]; restore: () => void } {
   return { logs, restore: () => { console.log = original; } };
 }
 
-let originalExitCode: number | string | undefined;
+let originalExitCode: typeof process.exitCode;
 
 beforeEach(() => {
   originalExitCode = process.exitCode;

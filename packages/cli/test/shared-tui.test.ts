@@ -5,7 +5,14 @@ import { tuiCommand } from "../src/commands/tui.js";
 import { probeFrontDoor } from "../src/front-door.js";
 
 function client(rigs: unknown, nodes: unknown, status = 200) {
-  return { get: vi.fn(async <T>(path: string) => ({ status, data: (path === "/api/ps" ? rigs : nodes) as T })) };
+  return { get: vi.fn(async (path: string): Promise<{ status: number; data: unknown }> => ({ status, data: path === "/api/ps" ? rigs : nodes })) };
+}
+/** sharedTuiTarget over the spy. The client's `get<T>` is generic and a vi.fn spy is not, so the spy's reply is read as the caller's T here, once. */
+function target(c: { baseUrl?: string; get: ReturnType<typeof client>["get"] }): Promise<string> {
+  return sharedTuiTarget({
+    ...(c.baseUrl === undefined ? {} : { baseUrl: c.baseUrl }),
+    get: <T>(path: string) => c.get(path) as Promise<{ status: number; data: T }>,
+  });
 }
 const kernel = [{ rigId: "selected-instance-kernel", rigName: "kernel" }];
 const terminal = { podId: "database-pod-id", logicalId: "operator.human", runtime: "terminal", canonicalSessionName: "actual-terminal", tmuxAttachCommand: "hc attach -- actual-terminal" };
@@ -19,18 +26,18 @@ describe("shared kernel TUI", () => {
   });
   it("uses the selected daemon's binding, without creating a session", async () => {
     const c = client(kernel, [terminal]);
-    expect(await sharedTuiTarget(c)).toBe("actual-terminal");
+    expect(await target(c)).toBe("actual-terminal");
     expect(c.get.mock.calls.map(([p]) => p)).toEqual(["/api/ps", "/api/rigs/selected-instance-kernel/nodes"]);
   });
   it("distinguishes no kernel, no terminal, and a failed read", async () => {
-    await expect(sharedTuiTarget(client([], []))).rejects.toThrow("No kernel");
-    await expect(sharedTuiTarget(client(kernel, [{ ...terminal, runtime: "codex" }]))).rejects.toThrow("no bound shared terminal");
-    await expect(sharedTuiTarget(client(kernel, [], 503))).rejects.toThrow("HTTP 503");
-    await expect(sharedTuiTarget(client([...kernel, ...kernel], [terminal]))).rejects.toThrow("Multiple kernels");
+    await expect(target(client([], []))).rejects.toThrow("No kernel");
+    await expect(target(client(kernel, [{ ...terminal, runtime: "codex" }]))).rejects.toThrow("no bound shared terminal");
+    await expect(target(client(kernel, [], 503))).rejects.toThrow("HTTP 503");
+    await expect(target(client([...kernel, ...kernel], [terminal]))).rejects.toThrow("Multiple kernels");
   });
   it("does not attach a local namesake for a remote daemon", async () => {
     const c = { ...client(kernel, [terminal]), baseUrl: "http://other-machine:7433" };
-    await expect(sharedTuiTarget(c)).rejects.toThrow("local hc core");
+    await expect(target(c)).rejects.toThrow("local hc core");
     expect(c.get).not.toHaveBeenCalled();
   });
   it("joins the existing terminal instead of launching another TUI", async () => {

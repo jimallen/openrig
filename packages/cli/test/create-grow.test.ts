@@ -5,6 +5,7 @@ import { STATE_FILE, type DaemonState, type LifecycleDeps } from "../src/daemon-
 import { createProgram } from "../src/index.js";
 import type { StatusDeps } from "../src/commands/status.js";
 import type { RigDeps } from "../src/commands/rig.js";
+import { asDaemonClient, type KnownClientMembers } from "./helpers/mock-daemon-client.js";
 
 function lifecycleDeps(): LifecycleDeps {
   const state: DaemonState = {
@@ -48,10 +49,10 @@ function captureLogs(run: () => Promise<unknown>): Promise<{ logs: string[]; exi
   });
 }
 
-function deps(client: Partial<DaemonClient>): StatusDeps {
+function deps<T extends object>(client: T & KnownClientMembers<T>): StatusDeps {
   return {
     lifecycleDeps: lifecycleDeps(),
-    clientFactory: () => client as DaemonClient,
+    clientFactory: () => asDaemonClient(client),
   };
 }
 

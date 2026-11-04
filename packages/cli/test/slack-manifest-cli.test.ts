@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { slackCommand, type SlackDeps } from "../src/commands/slack.js";
 import { buildSlackAppManifest, FEATURE_SCOPES, BASELINE_REQUIRED_SCOPES } from "@openrig/daemon/gateway-slack";
+import { slackSurfaceStub } from "./helpers/slack-surface.js";
 
 const homes: string[] = [];
 afterEach(() => { for (const h of homes.splice(0)) rmSync(h, { recursive: true, force: true }); });
@@ -71,7 +72,7 @@ describe("rig slack manifest (offline)", () => {
 
 describe("next-step routing names `rig slack manifest` first", () => {
   const readiness = (ok: boolean) => [{ label: "bot-token", ok, detail: ok ? "set" : "unset" }];
-  const surface = (ok: boolean) => async () => ({
+  const surface = (ok: boolean) => async () => slackSurfaceStub({
     loadConfig: () => ({ enabled: false, inboundDestination: "x", outboundDestinations: [], sourceLabel: "s", channel: null,
       requiredScopes: [...BASELINE_REQUIRED_SCOPES], secretsEnvFile: null, queueUrl: null,
       minimumLevelThatPosts: "NOTICE" as const, minimumLevelThatInterrupts: "ALERT" as const }),

@@ -88,7 +88,7 @@ async function runWalk(port: number, argv: string[], failTransportAt?: number, p
     program.addCommand(walkCommand(deps));
     await program.parseAsync(["node", "rig", "walk", ...argv]);
   } catch { /* exitOverride */ } finally {
-    exitCode = process.exitCode;
+    exitCode = typeof process.exitCode === "number" ? process.exitCode : undefined;
     process.exitCode = undefined;
     console.log = origLog; console.error = origErr;
     await new Promise<void>((r) => { server.close(() => r()); });

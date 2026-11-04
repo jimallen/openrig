@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Command } from "commander";
+import type { WritePacketOptions } from "../src/restore-packet/packet-writer.js";
 
 // Module-level mock for daemon-lifecycle so the M2c-CLI mock-daemon
 // round-trip test can drive a fake "daemon running" state without
@@ -855,7 +856,7 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  function buildBaselineOpts(targetDir: string): Record<string, unknown> {
+  function buildBaselineOpts(targetDir: string): WritePacketOptions {
     return {
       targetDir,
       structured: parseCodexJsonl(`{"type":"session_meta","payload":{"cwd":"/Users/example/code/projects/openrig-hub","id":"src-session-id"}}
@@ -885,7 +886,7 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const targetDir = path.join(tmpRoot, "packet-1");
-    const result = await writePacket(buildBaselineOpts(targetDir) as Parameters<typeof writePacket>[0]);
+    const result = await writePacket(buildBaselineOpts(targetDir));
 
     expect(result.targetDir).toBe(targetDir);
     for (const required of ["restore-instructions.md", "transcript-latest.md", "touched-files.md", "restore-summary.json"]) {
@@ -906,8 +907,8 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     const path = await import("node:path");
     const targetDir = path.join(tmpRoot, "packet-full");
     const opts = buildBaselineOpts(targetDir);
-    (opts as Record<string, unknown>)["includeFullTranscript"] = true;
-    await writePacket(opts as Parameters<typeof writePacket>[0]);
+    opts.includeFullTranscript = true;
+    await writePacket(opts);
 
     expect(fs.existsSync(path.join(targetDir, "transcript.md"))).toBe(true);
     const summary = JSON.parse(fs.readFileSync(path.join(targetDir, "restore-summary.json"), "utf-8"));
@@ -921,7 +922,7 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const targetDir = path.join(tmpRoot, "packet-fields");
-    await writePacket(buildBaselineOpts(targetDir) as Parameters<typeof writePacket>[0]);
+    await writePacket(buildBaselineOpts(targetDir));
 
     const summary = JSON.parse(fs.readFileSync(path.join(targetDir, "restore-summary.json"), "utf-8"));
     expect(summary.target_rig).toBe("openrig-velocity-claude");
@@ -947,7 +948,7 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     fs.mkdirSync(targetDir);
     fs.writeFileSync(path.join(targetDir, "marker.txt"), "do not overwrite");
 
-    const opts = buildBaselineOpts(targetDir) as Parameters<typeof writePacket>[0];
+    const opts = buildBaselineOpts(targetDir);
     await expect(writePacket(opts)).rejects.toThrow(/exists|already/i);
     // Marker preserved (no partial overwrite).
     expect(fs.readFileSync(path.join(targetDir, "marker.txt"), "utf-8")).toBe("do not overwrite");
@@ -958,13 +959,13 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const targetDir = path.join(tmpRoot, "packet-fail");
-    const opts = buildBaselineOpts(targetDir) as Record<string, unknown>;
+    const opts = buildBaselineOpts(targetDir);
     // Inject a contract violation: empty current_work_summary should fail
     // schema validation (minLength: 1).
-    opts["currentWorkSummary"] = "";
+    opts.currentWorkSummary = "";
 
     await expect(
-      writePacket(opts as Parameters<typeof writePacket>[0]),
+      writePacket(opts),
     ).rejects.toThrow(/schema|valid|current_work_summary/i);
 
     // Target dir was NEVER created (atomic rename semantics).
@@ -985,9 +986,9 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     for (let i = 0; i < 150; i++) {
       lines.push(`{"type":"response_item","payload":{"type":"message","role":"user","content":"msg ${i}"}}`);
     }
-    const opts = buildBaselineOpts(path.join(tmpRoot, "packet-bound")) as Record<string, unknown>;
-    opts["structured"] = parseCodexJsonl(lines.join("\n"));
-    await writePacket(opts as Parameters<typeof writePacket>[0]);
+    const opts = buildBaselineOpts(path.join(tmpRoot, "packet-bound"));
+    opts.structured = parseCodexJsonl(lines.join("\n"));
+    await writePacket(opts);
 
     const summary = JSON.parse(fs.readFileSync(path.join(tmpRoot, "packet-bound", "restore-summary.json"), "utf-8"));
     expect(summary.bounded_latest_transcript.bound).toBe(120);
@@ -1133,7 +1134,7 @@ describe("M2c-CLI redaction + omitted-record round-trip end-to-end", () => {
     };
 
     const targetDir = path.join(tmpRoot, "via-daemon");
-    const program = createProgram({ restorePacketDeps: deps as unknown as Parameters<typeof createProgram>[0]["restorePacketDeps"] });
+    const program = createProgram({ restorePacketDeps: deps as unknown as NonNullable<Parameters<typeof createProgram>[0]>["restorePacketDeps"] });
     program.exitOverride();
     await program.parseAsync([
       "node", "rig", "restore-packet", "write",

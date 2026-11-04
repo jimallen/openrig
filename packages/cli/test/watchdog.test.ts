@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { WatchdogDeps } from "../src/commands/watchdog.js";
 import { createProgram } from "../src/index.js";
 import { mkTemp } from "./helpers/temp-roots.js";
+import { must } from "./helpers/must.js";
 
 vi.mock("../src/daemon-lifecycle.js", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../src/daemon-lifecycle.js");
@@ -266,7 +267,7 @@ describe("rig watchdog CLI (PL-004 Phase C)", () => {
       registeredAt: "2026-09-02T05:00:00.000Z",
     }));
     jobs.push({
-      ...jobs[0],
+      ...must(jobs[0], "the first job"),
       jobId: "stopped-job",
       state: "stopped",
     });

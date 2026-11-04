@@ -10,6 +10,9 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { slackCommand, type SlackDeps } from "../src/commands/slack.js";
 import { buildSlackAppManifest, FEATURE_SCOPES, BASELINE_REQUIRED_SCOPES } from "@openrig/daemon/gateway-slack";
+import { slackSurfaceStub, type SlackSurface } from "./helpers/slack-surface.js";
+import type { DaemonClient } from "../src/client.js";
+import { asDaemonClient } from "./helpers/mock-daemon-client.js";
 const homes: string[] = [];
 afterEach(() => homes.splice(0).forEach((home) => rmSync(home, { recursive: true, force: true })));
 
@@ -20,7 +23,7 @@ function run(cmd: ReturnType<typeof slackCommand>, argv: string[]): Promise<void
 function makeDeps(overrides: Partial<SlackDeps> = {}): { deps: SlackDeps; logs: string[]; posts: { path: string }[] } {
   const logs: string[] = [];
   const posts: { path: string }[] = [];
-  const cfg = {
+  const cfg: ReturnType<SlackSurface["loadConfig"]> = {
     enabled: false, inboundDestination: "operator-agent@kernel",
     outboundDestinations: [], sourceLabel: "vm", channel: "C1", requiredScopes: ["chat:write"],
     secretsEnvFile: null, queueUrl: null, minimumLevelThatPosts: "NOTICE", minimumLevelThatInterrupts: "ALERT",
@@ -28,7 +31,7 @@ function makeDeps(overrides: Partial<SlackDeps> = {}): { deps: SlackDeps; logs: 
   const deps: SlackDeps = {
     home: (() => { const home = mkdtempSync(join(tmpdir(), "slack-verb-")); homes.push(home); return home; })(),
     log: (m) => logs.push(m),
-    surface: async () => ({
+    surface: async () => slackSurfaceStub({
       loadConfig: () => ({ ...cfg }),
       saveConfig: () => "/tmp/slack-connector.json",
       staticReadiness: () => [],
@@ -197,12 +200,12 @@ describe("Slack verify reports optional capabilities from granted scopes", () =>
 
 describe("Slack status separates local configuration from bounded daemon observation", () => {
   it("retains local JSON fields and reports the observed socket and pending interval without Slack I/O", async () => {
-    const get=vi.fn(async <T>(path:string,opts:unknown)=>{
+    const get=vi.fn<DaemonClient["get"]>(async <T>(path:string,opts:unknown)=>{
       expect(path).toBe("/api/gateway/slack/status");expect(opts).toEqual({timeoutMs:900});
       return {status:200,data:{state:"active",connector:{configurationDigest:"observed-digest",inbound:{state:"connected",generation:2},recovery:{state:"incomplete",reason:"pass-budget"}}} as T};
     });
     const fetchImpl=vi.fn(async()=>{throw new Error("no Slack call");});
-    const {deps,logs,posts}=makeDeps({fetchImpl,clientFactory:()=>({get,post:vi.fn()})});
+    const {deps,logs,posts}=makeDeps({fetchImpl,clientFactory:()=>asDaemonClient({get,post:vi.fn()})});
     await run(slackCommand(deps),["status","--json"]);
     expect(JSON.parse(logs[0]!)).toMatchObject({config:{enabled:false},readiness:[],permWarning:null,next:null,
       observation:{state:"active",connector:{configurationDigest:"observed-digest",recovery:{state:"incomplete"}}}});
@@ -211,8 +214,8 @@ describe("Slack status separates local configuration from bounded daemon observa
   it.each(["offline","malformed","slow"])("keeps configuration and labels live state unknown when %s",async mode=>{
     vi.useFakeTimers();
     try {
-      const get=vi.fn(async<T>()=>{if(mode==="offline")throw new Error("offline");if(mode==="slow")return new Promise<never>(()=>{});return {status:200,data:{unexpected:true} as T};});
-      const {deps,logs}=makeDeps({clientFactory:()=>({get,post:vi.fn()})});
+      const get=vi.fn<DaemonClient["get"]>(async<T>()=>{if(mode==="offline")throw new Error("offline");if(mode==="slow")return new Promise<never>(()=>{});return {status:200,data:{unexpected:true} as T};});
+      const {deps,logs}=makeDeps({clientFactory:()=>asDaemonClient({get,post:vi.fn()})});
       const pass=run(slackCommand(deps),["status","--json"]);await vi.advanceTimersByTimeAsync(2000);await pass;
       expect(JSON.parse(logs[0]!)).toMatchObject({config:{channel:"C1"},observation:{state:"unknown",reason:"daemon-unavailable"}});
     } finally {vi.useRealTimers();}
@@ -224,10 +227,10 @@ describe("Slack recovery status times", () => {
   it("renders scanned and pending bounds as ISO times while preserving JSON timestamps", async () => {
     const coverage = { coverageStart: "1000.000000", coveredThrough: "1005.000000",
       pending: { upper: "1010.000000", nextLatest: "1008.123456" }, nextRetryAt: 1_015_000 };
-    const get = vi.fn(async <T>() => ({ status: 200, data: { state: "active", connector: {
+    const get = vi.fn<DaemonClient["get"]>(async <T>() => ({ status: 200, data: { state: "active", connector: {
       recovery: { state: "backoff", coverage, limits: ["Slack plan limit excludes older history"] },
     } } as T }));
-    const { deps, logs } = makeDeps({ clientFactory: () => ({ get, post: vi.fn() }) });
+    const { deps, logs } = makeDeps({ clientFactory: () => asDaemonClient({ get, post: vi.fn() }) });
     await run(slackCommand(deps), ["status"]);
     const text = logs.join("\n");
     expect(text).toContain("Available history scanned: [1970-01-01T00:16:40.000Z, 1970-01-01T00:16:45.000Z)");

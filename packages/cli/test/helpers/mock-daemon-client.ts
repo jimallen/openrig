@@ -7,7 +7,7 @@
 // renamed in src fails to compile here instead of silently stubbing nothing.
 import type { DaemonClient } from "../../src/client.js";
 
-type KnownClientMembers<T> = { [K in keyof T]: K extends keyof DaemonClient ? T[K] : never };
+export type KnownClientMembers<T> = { [K in keyof T]: K extends keyof DaemonClient ? T[K] : never };
 
 /** View a stubbed subset of DaemonClient as the full client the command under test expects. */
 export function asDaemonClient<T extends object>(stubs: T & KnownClientMembers<T>): DaemonClient {

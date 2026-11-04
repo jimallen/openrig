@@ -10,6 +10,7 @@ import { upCommand } from "../src/commands/up.js";
 import { DaemonClient, DaemonConnectionError } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import { printedSeatLaunchCommands, runPrintedSeatCommand } from "./helpers/advised-command.js";
+import { must } from "./helpers/must.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -333,14 +334,14 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
         { logicalId: "dev.qa", status: "resumed" },
       ], warnings: [],
     });
-    const prompt = vi.fn(async () => true);
+    const prompt = vi.fn(async (_question: string) => true);
 
     const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd(prompt).parseAsync(["node", "rig", "up", "myrig", "--existing"]);
     });
 
     expect(prompt).toHaveBeenCalledTimes(1);
-    const question = prompt.mock.calls[0]![0] as string;
+    const question = must(prompt.mock.calls[0], "the prompt call")[0];
     expect(question).toContain("dev.impl");
     expect(question).toContain("no token available");
     expect(question).toContain("[y/N]");
@@ -480,7 +481,7 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
       nodes: [{ logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" }],
       warnings: [],
     });
-    const prompt = vi.fn(async () => false);
+    const prompt = vi.fn(async (_question: string) => false);
 
     const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd(prompt).parseAsync(["node", "rig", "up", "myrig", "--existing"]);

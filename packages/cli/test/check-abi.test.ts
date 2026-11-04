@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { checkAbi, openInChildProcess } from "../scripts/check-abi.mjs";
 
+/** The refusal message of a failed check; a passing check has none, which fails the calling assertion loudly. */
+function messageOf(result: ReturnType<typeof checkAbi>): string {
+  if (result.ok) throw new Error("expected a refusal, but the ABI check passed");
+  return result.message;
+}
+
 describe("postinstall ABI check", () => {
   it("passes on supported even-numbered LTS with working native addon", () => {
     const result = checkAbi({
@@ -19,10 +25,10 @@ describe("postinstall ABI check", () => {
     expect(result.ok).toBe(false);
     expect(addonCalled).toBe(false);
     if (result.ok) return;
-    expect(result.message).toContain("requires Node.js 22 or 24");
-    expect(result.message).toContain("Node 20 is no longer supported");
-    expect(result.message).toContain("v20.20.2");
-    expect(result.message).toContain("nvm install 22");
+    expect(messageOf(result)).toContain("requires Node.js 22 or 24");
+    expect(messageOf(result)).toContain("Node 20 is no longer supported");
+    expect(messageOf(result)).toContain("v20.20.2");
+    expect(messageOf(result)).toContain("nvm install 22");
   });
 
   it("passes on Node 24 LTS", () => {
@@ -39,9 +45,9 @@ describe("postinstall ABI check", () => {
       loadNativeAddon: () => {},
     });
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("odd-numbered");
-    expect(result.message).toContain("v25.8.0");
-    expect(result.message).toContain("nvm install 22");
+    expect(messageOf(result)).toContain("odd-numbered");
+    expect(messageOf(result)).toContain("v25.8.0");
+    expect(messageOf(result)).toContain("nvm install 22");
   });
 
   it("fails on odd-numbered Node 23 with honest error", () => {
@@ -50,7 +56,7 @@ describe("postinstall ABI check", () => {
       loadNativeAddon: () => {},
     });
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("odd-numbered");
+    expect(messageOf(result)).toContain("odd-numbered");
   });
 
   it("fails on Node below 22 with version-too-low error", () => {
@@ -59,8 +65,8 @@ describe("postinstall ABI check", () => {
       loadNativeAddon: () => {},
     });
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("requires Node.js 22 or 24");
-    expect(result.message).toContain("nvm install 22");
+    expect(messageOf(result)).toContain("requires Node.js 22 or 24");
+    expect(messageOf(result)).toContain("nvm install 22");
   });
 
   it("fails with ABI mismatch error when native addon throws on supported version", () => {
@@ -74,9 +80,9 @@ describe("postinstall ABI check", () => {
       },
     });
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("native binary does not match");
-    expect(result.message).toContain("npm rebuild better-sqlite3");
-    expect(result.message).toContain("NODE_MODULE_VERSION");
+    expect(messageOf(result)).toContain("native binary does not match");
+    expect(messageOf(result)).toContain("npm rebuild better-sqlite3");
+    expect(messageOf(result)).toContain("NODE_MODULE_VERSION");
   });
 
   it("reports generic native-load-failure for MODULE_NOT_FOUND (not ABI-mismatch text)", () => {
@@ -90,11 +96,11 @@ describe("postinstall ABI check", () => {
     });
     expect(result.ok).toBe(false);
     // Should NOT say "native binary does not match" — that's ABI-specific
-    expect(result.message).not.toContain("native binary does not match");
+    expect(messageOf(result)).not.toContain("native binary does not match");
     // Should say generic addon-load-failure
-    expect(result.message).toContain("native addon failed to load");
-    expect(result.message).toContain("Cannot find module");
-    expect(result.message).toContain("npm rebuild better-sqlite3");
+    expect(messageOf(result)).toContain("native addon failed to load");
+    expect(messageOf(result)).toContain("Cannot find module");
+    expect(messageOf(result)).toContain("npm rebuild better-sqlite3");
   });
 
   it("reports generic native-load-failure for filesystem permission errors", () => {
@@ -105,9 +111,9 @@ describe("postinstall ABI check", () => {
       },
     });
     expect(result.ok).toBe(false);
-    expect(result.message).not.toContain("native binary does not match");
-    expect(result.message).toContain("native addon failed to load");
-    expect(result.message).toContain("EACCES");
+    expect(messageOf(result)).not.toContain("native binary does not match");
+    expect(messageOf(result)).toContain("native addon failed to load");
+    expect(messageOf(result)).toContain("EACCES");
   });
 
   it("skips native addon check entirely for odd versions (fast path)", () => {
@@ -150,9 +156,9 @@ describe("postinstall ABI check", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.message).toContain("could not open a database");
-    expect(result.message).toContain("SIGSEGV");
-    expect(result.message).toContain("npm rebuild better-sqlite3");
+    expect(messageOf(result)).toContain("could not open a database");
+    expect(messageOf(result)).toContain("SIGSEGV");
+    expect(messageOf(result)).toContain("npm rebuild better-sqlite3");
   });
 
   it("does not open a database when the addon fails to load", () => {

@@ -494,6 +494,7 @@ describe("rig status", () => {
       });
       srv = {
         server,
+        requested: [],
         port: 0,
         close: () => new Promise<void>((r) => server.close(() => r())),
         listen: () => new Promise<number>((r) => {

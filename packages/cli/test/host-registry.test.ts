@@ -7,6 +7,7 @@ import {
   resolveHost,
   validateHostRegistry,
   defaultHostRegistryPath,
+  type HostEntry,
 } from "../src/host-registry.js";
 
 function withTempFile(name: string, contents: string, fn: (path: string) => void) {
@@ -19,6 +20,9 @@ function withTempFile(name: string, contents: string, fn: (path: string) => void
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+/** The ssh `user` of an entry; http entries have none. */
+const userOf = (host: HostEntry | undefined): string | undefined => (host?.transport === "ssh" ? host.user : undefined);
 
 describe("host registry — defaultHostRegistryPath", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -76,8 +80,8 @@ hosts:
       expect(r.ok).toBe(true);
       if (r.ok) {
         expect(r.registry.hosts.map((h) => h.id)).toEqual(["vm-a", "laptop-b"]);
-        expect(r.registry.hosts[0]?.user).toBeUndefined();
-        expect(r.registry.hosts[1]?.user).toBe("tester");
+        expect(userOf(r.registry.hosts[0])).toBeUndefined();
+        expect(userOf(r.registry.hosts[1])).toBe("tester");
       }
     });
   });
@@ -195,7 +199,7 @@ describe("host registry — resolveHost", () => {
   it("resolves a known id", () => {
     const r = resolveHost(registry, "vm-b");
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.host.target).toBe("vm-b.local");
+    if (r.ok) expect(r.host.transport === "ssh" ? r.host.target : undefined).toBe("vm-b.local");
   });
 
   it("rejects an unknown id with the supported-list hint", () => {

@@ -8,6 +8,7 @@ import {
 } from "../src/commands/workflow-render.js";
 import type { WorkflowDeps } from "../src/commands/workflow.js";
 import { createProgram } from "../src/index.js";
+import { must } from "./helpers/must.js";
 
 vi.mock("../src/daemon-lifecycle.js", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../src/daemon-lifecycle.js");
@@ -80,14 +81,14 @@ describe("workflow-render (WF3 FR-2)", () => {
   it("branch-taken renders when the trail carries it, leaves no residue when absent (present-tolerant)", () => {
     const withBranch = renderTraceTree(INSTANCE, TRAIL, NOW).join("\n");
     expect(withBranch).toContain("↳ branch: remediate");
-    const noBranch = renderTraceTree(INSTANCE, [TRAIL[0]], NOW).join("\n");
+    const noBranch = renderTraceTree(INSTANCE, [must(TRAIL[0], "the first trail row")], NOW).join("\n");
     expect(noBranch).not.toContain("branch:");
   });
 
   it("failed steps carry the ✖ glyph", () => {
     const lines = renderTraceTree(
       { ...INSTANCE, status: "failed", currentStepId: null },
-      [{ ...TRAIL[0], closureReason: "failed" }],
+      [{ ...must(TRAIL[0], "the first trail row"), closureReason: "failed" }],
       NOW,
     );
     expect(lines.join("\n")).toContain("✖");

@@ -180,7 +180,7 @@ describe("doctorLegs — Source-1 learning from the healthz body already in hand
     const rows = await doctorLegs(anonHost, {
       ...baseDeps,
       httpGet: async () => ({ status: 200, body: JSON.stringify({ status: "ok", selfHostId: "host-84c37990" }) }),
-      learnHostBinding: (alias, id) => {
+      learnHostBinding: (alias: string, id: string) => {
         calls.push([alias, id]);
         return { outcome: "bound", binding: { hostId: id, firstObservedAt: "x", lastObservedAt: "x" } };
       },
@@ -197,7 +197,7 @@ describe("doctorLegs — Source-1 learning from the healthz body already in hand
     const rows = await doctorLegs(anonHost, {
       ...baseDeps,
       httpGet: async () => ({ status: 200, body: JSON.stringify({ selfHostId: "host-deadbeef" }) }),
-      learnHostBinding: (_alias, id) => ({
+      learnHostBinding: (_alias: string, id: string) => ({
         outcome: "conflict",
         binding: { hostId: "host-84c37990", firstObservedAt: "x", lastObservedAt: "x", conflict: { hostId: id, observedAt: "y" } },
       }),

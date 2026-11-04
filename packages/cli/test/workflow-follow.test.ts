@@ -6,6 +6,7 @@ import {
   type FollowIo,
 } from "../src/commands/workflow-follow.js";
 import type { DaemonClient } from "../src/client.js";
+import { must } from "./helpers/must.js";
 
 vi.mock("../src/daemon-lifecycle.js", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../src/daemon-lifecycle.js");
@@ -252,7 +253,7 @@ describe("workflow-follow (WF3 FR-1)", () => {
     const code = await followInstance(h.client, "WF1", { json: true, io: h.io });
     expect(code).toBe(0);
     for (const line of h.outLines) expect(() => JSON.parse(line)).not.toThrow();
-    expect(JSON.parse(h.outLines[0]).type).toBe("snapshot");
+    expect(JSON.parse(must(h.outLines[0], "the first output line")).type).toBe("snapshot");
   });
 
   it("trace 404 maps to transport exit 1, not an outcome code", async () => {

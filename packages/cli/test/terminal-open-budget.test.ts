@@ -13,6 +13,7 @@ import type { AppLs, AppPort } from "../../daemon/src/adapters/hc-placement.js";
 import { HERDR_APP_PANES_PER_PAGE, HerdrAppProvider } from "../../daemon/src/domain/terminal/herdr-app-provider.js";
 import { composeView } from "../../daemon/src/domain/terminal/view-composer.js";
 import { terminalRoutes } from "../../daemon/src/routes/terminal.js";
+import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 
 describe("terminal open request budget", () => {
   it("waits for a slow multi-page open instead of abandoning a delivered one", async () => {
@@ -53,12 +54,12 @@ describe("terminal open request budget", () => {
     if (!httpServer.listening) await new Promise<void>(resolve => httpServer.once("listening", resolve));
     const port = (httpServer.address() as { port: number }).port;
     const deps: TerminalDeps = {
-      lifecycleDeps: {
+      lifecycleDeps: asLifecycleDeps({
         exists: () => true,
         readFile: () => JSON.stringify({ pid: process.pid, port, host: "127.0.0.1", db: "owned", startedAt: new Date().toISOString() }),
         isProcessAlive: () => true,
         fetch: async () => ({ ok: true }),
-      } as TerminalDeps["lifecycleDeps"],
+      }),
       clientFactory: baseUrl => new DaemonClient(baseUrl),
       columns: async () => undefined,
     };
@@ -81,7 +82,7 @@ describe("terminal open request budget", () => {
     } finally {
       process.exitCode = originalExit;
       log.mockRestore();
-      httpServer.closeAllConnections();
+      if ("closeAllConnections" in httpServer) httpServer.closeAllConnections();
       await new Promise<void>(resolve => httpServer.close(() => resolve()));
     }
   }, 60_000);

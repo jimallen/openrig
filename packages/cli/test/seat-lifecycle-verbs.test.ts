@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { seatCommand } from "../src/commands/seat.js";
 import { STATE_FILE, type DaemonState, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { must } from "./helpers/must.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -467,7 +468,7 @@ describe("fresh launch preview", () => {
     ]).then(() => undefined));
     expect(output.exitCode).toBe(1);
     expect(calls).toHaveLength(1);
-    expect(calls[0].path).toBe("/api/seat/launch-plan/dev%40fixture");
+    expect(must(calls[0], "the first call").path).toBe("/api/seat/launch-plan/dev%40fixture");
   });
 
   it("requires a reason for execution before contacting the daemon", async () => {
