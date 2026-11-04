@@ -9,7 +9,8 @@ export const FAKE_TAILNET_ADDRESS = "100.64.0.1";
 const real = os.networkInterfaces.bind(os);
 os.networkInterfaces = () => ({
   // First, so it is the one the daemon's first-match probe finds even on a host with a real tailnet interface.
-  tailscale0: [{ address: FAKE_TAILNET_ADDRESS, netmask: "255.192.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: false, cidr: `${FAKE_TAILNET_ADDRESS}/10` }],
+  // A name no real interface has: `...real()` below would otherwise overwrite this entry on a host whose own interface is tailscale0.
+  "openrig-fake-tailnet0": [{ address: FAKE_TAILNET_ADDRESS, netmask: "255.192.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: false, cidr: `${FAKE_TAILNET_ADDRESS}/10` }],
   ...real(),
 });
 syncBuiltinESMExports();
