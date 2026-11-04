@@ -82,7 +82,7 @@ type PaneObservation = { pid: number | null; command: string | null };
 
 export interface SeatIdentityReconcilerDeps {
   db: Database.Database;
-  tmux: Pick<TmuxAdapter, "listSessions" | "getPanePid" | "getPaneCommand"> & Partial<Pick<TmuxAdapter, "readAllPaneProcesses" | "listPanes">>;
+  tmux: Pick<TmuxAdapter, "listSessions" | "getPanePid" | "getPaneCommand"> & Partial<Pick<TmuxAdapter, "readAllPaneProcesses" | "listPanes" | "hostKind">>;
   now?: () => Date;
   listProcesses?: NativeProcessLister;
 }
@@ -159,6 +159,11 @@ export class SeatIdentityReconciler {
     // (throws) OR reports zero live sessions while we have running seats in
     // the DB, treat it as a transient tmux blip and record `tmux_unavailable`
     // for legacy runtimes. Codex remains non-green without native evidence.
+    // OF-207: on hc an empty listing is an answer, not a blip. HcIdentity.listSessions
+    // throws when the core cannot be reached (never the empty list a tmux server with
+    // no sessions gives), so zero live terminals from a core that answered means every
+    // running seat's terminal is gone: the sweep goes on and each seat reads
+    // `session_missing`. Without this the last terminal of a core could never be lost.
     let liveSessions: Set<string> | null = null;
     try {
       const sessions = await this.tmux.listSessions();
@@ -167,7 +172,7 @@ export class SeatIdentityReconciler {
       liveSessions = null;
     }
     if (generation !== this.generation) return;
-    if (liveSessions === null || liveSessions.size === 0) {
+    if (liveSessions === null || (liveSessions.size === 0 && this.tmux.hostKind !== "hc")) {
       for (const seat of seats) {
         this.store.upsert(this.tmuxUnavailableVerdict(seat, observedAt));
       }
