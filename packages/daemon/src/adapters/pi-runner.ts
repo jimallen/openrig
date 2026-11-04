@@ -1190,7 +1190,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   try {
     args = parseRunnerArgs(argv);
   } catch (err) {
-    console.error(`${PI_RUNNER_ERROR_MARKER} ${(err as Error).message}`);
+    console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} ${(err as Error).message}`));
     process.exitCode = 2;
     return;
   }
@@ -1242,16 +1242,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   console.log(banner);
 
   if (runtime === "pi") {
-    console.log(`[pi-runner] seat ${args.sessionName}: ${piCredentialNotice({
+    console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: ${piCredentialNotice({
       model: args.model, agentDir: paths.agentDir, env: childEnv,
       readFile: (file) => {
         if (fs.statSync(file).size > 1024 * 1024) throw new Error("Unbounded metadata");
         return fs.readFileSync(file, "utf8");
       },
-    })}`);
+    })}`));
   }
-  console.log(`[${runtime}-runner] starting ${runtime} --mode rpc (seat ${args.sessionName})`);
-  console.log(`[${runtime}-runner] send text normally; prefixes: "/followup <text>" queues after the turn, "/abort" cancels`);
+  console.log(sanitizeForPane(`[${runtime}-runner] starting ${runtime} --mode rpc (seat ${args.sessionName})`));
+  console.log(sanitizeForPane(`[${runtime}-runner] send text normally; prefixes: "/followup <text>" queues after the turn, "/abort" cancels`));
 
   // OMP runs under a per-seat HOME. A HOME-dependent launcher on PATH (a mise
   // shim) cannot find its target there, so resolve the real binary first,
@@ -1260,7 +1260,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (runtime === "omp") {
     const resolved = resolveRuntimeExecutable("omp", process.env);
     if (!resolved.ok) {
-      console.error(`[omp-runner] ERROR launch: ${resolved.error}`);
+      console.error(sanitizeForPane(`[omp-runner] ERROR launch: ${resolved.error}`));
       // Record the exit for this launch so the adapter fails it now instead
       // of waiting out its readiness timeout. The durable cursor survives.
       const at = new Date().toISOString();
@@ -1438,7 +1438,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   if (runtime === "pi") {
     child.on("error", (err) => {
-      console.error(`${PI_RUNNER_ERROR_MARKER} failed to spawn pi: ${err.message}`);
+      console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} failed to spawn pi: ${err.message}`));
       const code = (err as NodeJS.ErrnoException).code === "ENOENT" ? 127 : 1;
       core.handlePiExit(code);
       input.close();
@@ -1464,16 +1464,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (!core.isReady()) {
       const how = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
       const output = stderrTail.length > 0 ? ` Its last output: ${stderrTail.join(" | ")}` : " It printed nothing on stderr.";
-      console.error(transportUp
+      console.error(sanitizeForPane(transportUp
         ? "[omp-runner] ERROR OMP did not establish a resumable RPC session. Authenticate this isolated seat using HOME=<seat-root> PI_CODING_AGENT_DIR=<seat-root>/agent omp and /login, or provide its declared model provider key in the OpenRig daemon environment. Default OMP credentials are not shared."
-        : `[omp-runner] ERROR OMP exited during startup, before its RPC transport started (${command}, ${how}).${output}`);
+        : `[omp-runner] ERROR OMP exited during startup, before its RPC transport started (${command}, ${how}).${output}`));
     }
     core.handlePiExit(code);
     input.close();
     process.exitCode = code ?? 1;
   };
   child.on("error", (err) => {
-    console.error(`[omp-runner] ERROR failed to spawn omp: ${err.message}`);
+    console.error(sanitizeForPane(`[omp-runner] ERROR failed to spawn omp: ${err.message}`));
     recordExit(null);
   });
   // "close" fires once OMP's stdio is drained, so its stderr is in the tail
