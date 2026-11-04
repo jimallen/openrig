@@ -1,6 +1,6 @@
 /**
  * FORK-OWNED (jimallen/openrig; not in upstream mvschwarz/openrig). OF-223: the hexagonal boundary of the daemon's domain.
- * The rule, and the merge procedure, are in local/architecture/hexagonal-boundary.md. The census test is
+ * The rule, and the procedure for porting upstream code, are in local/architecture/hexagonal-boundary.md. The census test is
  * test/fork-hexagonal-boundary.test.ts; the baseline is local/architecture/hexagonal-baseline.txt.
  *
  * Instrument: the TypeScript compiler's parser over every *.ts file under packages/daemon/src/domain (a positional
@@ -14,7 +14,7 @@
  * A violation is one (file, target, kind) triple; several statements of the same kind collapse into one, so a baseline
  * line survives edits that only move or split statements.
  *
- * Run as a script (from the repository root) for the merge procedure:
+ * Run as a script (from the repository root); `sync` is for porting an upstream change:
  *   node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts check
  *   node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts sync [--upstream origin/main]
  */
@@ -180,9 +180,9 @@ export function parseBaseline(text: string): BaselineEntry[] {
 
 export const BASELINE_HEADER = [
   "# FORK-OWNED. OF-223 hexagonal-boundary baseline: the domain's known imports of adapters, src/db and infrastructure modules.",
-  "# The rule and the merge procedure: local/architecture/hexagonal-boundary.md. Checked by packages/daemon/test/fork-hexagonal-boundary.test.ts.",
+  "# The rule and the porting procedure: local/architecture/hexagonal-boundary.md. Checked by packages/daemon/test/fork-hexagonal-boundary.test.ts.",
   "# One line per violation: <file under packages/daemon> <target> <value|type> <upstream|fork>, sorted. This file only shrinks,",
-  "# except that the sync command adds violations an upstream merge brought in (marked upstream). Never add a fork line by hand.",
+  "# except that the sync command adds violations in code ported from upstream (tagged upstream). Never add a line by hand.",
 ];
 
 export function formatBaseline(entries: ReadonlyArray<Omit<BaselineEntry, "lineNo">>): string {
@@ -230,7 +230,7 @@ export function describeComparison(c: Comparison): string {
       "  To fix one you wrote: declare what the domain needs as a port (an interface or type) in src/domain, implement it in",
       "  src/adapters, and wire the adapter in src/startup.ts; a domain service takes the port in its constructor. Do not add",
       "  the line to the baseline.",
-      `  If an upstream merge brought it in, run \`${SYNC_COMMAND}\`: it adds only the violations an upstream copy of the`,
+      `  If you ported it from upstream and keep it, run \`${SYNC_COMMAND}\`: it adds only the violations an upstream copy of the`,
       "  file (origin/main's or the merge base's, following renames) also has, marked upstream, and refuses the rest.",
     );
   }
@@ -245,7 +245,7 @@ export function describeComparison(c: Comparison): string {
   return out.join("\n");
 }
 
-// ---- upstream attribution (the merge procedure) -------------------------------------------------------------------
+// ---- upstream attribution (sync, when porting upstream code) --------------------------------------------------------
 
 const KIND_RANK: Record<ImportKind, number> = { type: 0, value: 1 };
 

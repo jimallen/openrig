@@ -5,8 +5,7 @@
 (mvschwarz/openrig, the git remote `origin`) has none of them and none of them is proposed upstream. OF-223; Jim's
 decision: "enforce + ratchet". Measured at fork commit `eb2fe398`.
 
-Why here and not in `ARCHITECTURE.md`: that file is upstream's, and every fork edit to an upstream file is a merge conflict
-waiting for upstream's next edit to the same lines. `local/` is the fork's directory for what is not for upstream
+Why here and not in `ARCHITECTURE.md`: that file is upstream's, and this rule is the fork's. `local/` is the fork's directory for what is not for upstream
 (`local/README.md`). `docs/` is not used: its guard admits only `docs/as-built/`, `docs/reference/` (which ships to every
 user) and `docs/releases/`, and their indexes are upstream files. No upstream file links here; the census test's failure
 message names this page, which is how a contributor who trips the rule finds it.
@@ -81,9 +80,9 @@ reaches much further than the files with that name: 156 domain files import `bet
 - **The rest of the daemon**: `src/routes`, `src/server.ts`, `src/startup.ts`, `src/index.ts`, `src/adapters`,
   `src/db`, `src/lib`, `src/terminal` and the `*-surface.ts` files are not checked. `src/lib` is not classified: the domain
   may import it, and nothing checks that it stays free of I/O.
-- **Modules not on the list.** At `eb2fe398` the domain also imports `node:worker_threads` (1 statement), `node:perf_hooks`
-  (4), `tar` (1, which reads and writes files) and `hono` (4, the HTTP framework). None is a violation today; widening the
-  list is Jim's decision (this unit records them and does not act on them).
+- **Modules allowed for now.** At `eb2fe398` the domain also imports `node:worker_threads` (1 statement), `node:perf_hooks`
+  (4), `tar` (1, which reads and writes files) and `hono` (4, the HTTP framework). By Jim's decision the list stays as it
+  is: these four are allowed for now and will be revisited later.
 - **Code in a string.** `src/domain/slow-op-recorder.ts` builds a worker from a `String.raw` template that calls
   `require("node:fs")`; that file I/O is invisible to a parser by construction. An independent regex scan, which does read
   strings, found no other forbidden module named inside a string at `eb2fe398`.
@@ -107,46 +106,39 @@ would remove violations without writing a port.
 | `yolo-mode.js`, `hc-seat.js` | 2, 1 | No infrastructure import; they default a parameter to `process.env`. Pure apart from that ambient read. |
 | `tmux.js` | 35 (the largest) | A real adapter (`node:fs/promises`, `node:os`), the retained tmux implementation kept for rollback. 29 of its 32 triples are type-only (by a line grep, most name `TmuxAdapter`; four name `ExecFn`). A port type for "the seat host" would retire most of these. |
 
-## Who owns a file, and how far the rule applies
+## How the rule applies: fix on touch
 
-The fork merges from upstream. Code the fork moves in an upstream file is a merge conflict the next time upstream edits
-it, so the rule is strict about **new** violations everywhere but asks for **fixes** only in code the fork owns.
+Upstream (origin/main) is a source of ideas, not a merge target: the fork does not merge origin/main whole; a good upstream
+change is ported selectively, as a fork unit. So no daemon domain file has special status because of where it came from.
 
-- **Upstream-owned file**: its path exists in upstream (`origin/main`, or the merge base of the fork's `HEAD` with it),
-  or the fork renamed it from such a path (git's rename detection, `git diff -M`, the default a merge uses).
-- **Fork-only file**: neither.
-- **Fork-modified upstream file**: upstream-owned, and the fork's copy differs from upstream's.
+- **New violations** are forbidden in every domain file.
+- **Existing violations** are fixed on touch: a unit that already touches a domain file may fix that file's violations
+  within its own scope (declare the port, implement it in an adapter, wire it in `src/startup.ts`) and delete the
+  baseline lines it retires. No unit is opened only to fix one, and no unit widens its scope to fix one.
 
-Each baseline line carries an origin. A line is `upstream` when an upstream copy of the file has the same target at the
-same or a stronger kind (`value` is stronger than `type`); otherwise it is `fork`. The upstream copies are origin/main's
-and the merge base's, each read at the file's own path, at the path it had before a fork rename, and at the path upstream
-renamed it to; each copy's relative imports are resolved from its own path. The attribution scans the upstream blobs with
-the same parser (no blame, so a moved or reformatted line still matches).
+### The `upstream` and `fork` tags: history only
+
+Each baseline line carries an origin tag, recorded once when the baseline was seeded. It is history, not a rule: it says
+whether the violation came from upstream's code or the fork's, and nothing treats the two differently. A line is
+`upstream` when an upstream copy of the file has the same target at the same or a stronger kind (`value` is stronger than
+`type`); otherwise it is `fork`. The upstream copies are origin/main's and the merge base's, each read at the file's own
+path, at the path it had before a fork rename, and at the path upstream renamed it to; each copy's relative imports are
+resolved from its own path. The attribution scans the upstream blobs with the same parser (no blame, so a moved or
+reformatted line still matches).
 
 Measured on `eb2fe398` against origin/main `bb007efa` and the merge base `fc41b273`: 346 `upstream`, 102 `fork`.
 
-- Of the 102 `fork` lines, 78 are in 52 fork-only files and 24 in 15 fork-modified upstream files. For each of the 23
-  distinct (file, target) pairs of those 24, `git log -S` finds a fork commit since the merge base that adds or removes
+- Of the 102 `fork` lines, 78 are in 52 files upstream does not have and 24 in 15 files the fork modified. For each of the
+  23 distinct (file, target) pairs of those 24, `git log -S` finds a fork commit since the merge base that adds or removes
   the import's module name, and no `fork` line sits in a file the fork has not changed since the merge base.
 - Four lines are `upstream` only through the merge base: upstream has since removed them (`bootstrap-orchestrator.ts`,
   `native-process-lineage.ts`, `resume-metadata-refresher.ts` → `node:child_process`; `restore-check-service.ts` →
-  `shell-quote.js`). Without the merge base they would be charged to the fork.
+  `shell-quote.js`).
 - Two lines are `upstream` only through rename following: the fork renamed `claim-service.ts` to
-  `session-reconciler.ts`, whose `better-sqlite3` and `tmux.js` type imports came from upstream. Path-only attribution
-  charged them to the fork; the dry merge below found it, because a merge carries upstream's `claim-service.ts` changes
-  into `session-reconciler.ts`.
+  `session-reconciler.ts`, whose `better-sqlite3` and `tmux.js` type imports came from upstream.
 
-Limits of the attribution, by construction: a violation the fork added to an upstream file that upstream's copy also has
-(at the same or a stronger kind) reads as upstream's; that is harmless, since the two are the same import. A rename git
-does not detect (under 50% similar) reads as a fork-only file.
-
-The rule per file:
-
-| File | New violation | Existing violation |
-|---|---|---|
-| Fork-only | Forbidden. | Fix it when a unit already touches the file: replace the import with a port, delete the baseline line. |
-| Upstream-owned, unmodified by the fork | Arrives only by merge; the merge procedure records it as `upstream`. Nobody fixes upstream code to pass. | Leave it. Never edit an upstream-owned file only to satisfy this rule. Its line goes when upstream removes the import. |
-| Fork-modified upstream file | Forbidden: the fork's own edits add no violation. | `upstream` lines: leave them. `fork` lines: fix one only when a unit already touches those lines and the fix stays within the fork's own lines (for example, the fork's import is replaced by a port the fork's code takes). If the fix would move upstream's code (a constructor upstream wrote, an upstream call site), leave it and say so in the unit. |
+Limits of the attribution, by construction: a violation the fork added to a file that upstream's copy also has (at the
+same or a stronger kind) reads as upstream's. A rename git does not detect (under 50% similar) reads as the fork's.
 
 ## The check
 
@@ -160,7 +152,8 @@ every domain file, compares the violations with `hexagonal-baseline.txt`, and fa
 - a malformed, duplicate or unsorted baseline line.
 
 It reads no git state, so it behaves the same in any checkout. The baseline only shrinks; the one way a line is added is
-the merge procedure below, and only for upstream's violations. **Never add a `fork` line by hand.**
+`sync` when a unit ports an upstream change (below), and only for violations upstream's own code has. **Never add a line
+by hand.**
 
 The same scanner runs from the command line (from the repository root):
 
@@ -169,18 +162,21 @@ node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts check 
 node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts sync [--upstream origin/main]
 ```
 
-## Merging from upstream
+## Porting an upstream change
 
-1. `git fetch origin`, then merge `origin/main` as usual and resolve its conflicts. This rule's files are fork-only, so
-   they add none.
-2. Run `node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts sync`. It:
-   - **prunes** every stale line (a violation upstream's or the fork's change removed) and **tightens** lines whose import
-     became type-only, printing each;
-   - **adds**, marked `upstream`, each new violation that an upstream copy of the file (origin/main's or the merge
-     base's, following renames) also has;
-   - **refuses** the rest (exit 1, printed with the fix): those are fork-authored, for example a fork edit that a merge
-     resolution carried into a domain file. Fix them, or take them to review; they are not the merge's to record.
-3. Run the census test, and commit the baseline change with the merge.
+A unit that ports a change from upstream brings upstream's code into the fork, and with it any violation that code has.
+The ported code is upstream's design; whether to fix it now or keep it as upstream wrote it is the porting unit's call,
+within its scope.
 
-A merge never fails because of upstream's violations, and nobody edits upstream code to pass: step 2 records them.
-`sync` needs the `origin/main` ref; the test does not.
+1. `git fetch origin`, then port the change (cherry-pick, or rewrite it) as a fork unit.
+2. If the census test reports new violations in what you ported and you keep them, run
+   `node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts sync`. It:
+   - **prunes** every stale line and **tightens** lines whose import became type-only, printing each;
+   - **adds**, tagged `upstream`, each new violation that an upstream copy of the file (origin/main's, or the merge base's,
+     following renames) also has;
+   - **refuses** the rest (exit 1, printed with the fix): an import upstream's copy does not have is the fork's own, and
+     the fork adds no new violation. Fix it with a port.
+3. Run the census test, and commit the baseline change with the port; the reviewer sees each added line in the diff.
+
+When nothing was ported, `sync` only prunes and tightens, so it is also the quick way to clear stale lines after any change.
+It needs the `origin/main` ref; the test does not.

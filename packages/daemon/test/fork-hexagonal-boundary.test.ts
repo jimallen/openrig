@@ -1,7 +1,7 @@
 // FORK-OWNED (jimallen/openrig; not in upstream mvschwarz/openrig). OF-223, Jim's decision "enforce + ratchet": the domain
 // (src/domain) depends on no adapter, no src/db and no infrastructure module. Today's violations are recorded in
 // local/architecture/hexagonal-baseline.txt; this file fails on any violation not recorded there, and on any recorded one that
-// is gone, so the baseline only shrinks. The rule, the type-only decision and the upstream-merge procedure are in
+// is gone, so the baseline only shrinks. The rule, the type-only decision and the procedure for porting upstream code are in
 // local/architecture/hexagonal-boundary.md.
 //
 // Census (instrument: the TypeScript parser over every *.ts under packages/daemon/src/domain; helpers/fork-hexagonal-boundary.ts).
@@ -198,7 +198,7 @@ describe("the comparison and its messages", () => {
   });
 });
 
-describe("attribution of a new violation to upstream or the fork (the merge procedure)", () => {
+describe("attribution of a new violation to upstream or the fork (sync, when porting upstream code)", () => {
   const added = [
     { file: "src/domain/up.ts", target: "src/adapters/tmux.js", kind: "value" as const, rule: "domain-imports-adapter" as const, lines: [1], forms: ["import" as const] },
     { file: "src/domain/forkonly.ts", target: "node:os", kind: "value" as const, rule: "domain-imports-infrastructure" as const, lines: [1], forms: ["import" as const] },

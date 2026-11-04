@@ -1,7 +1,7 @@
 # FORK-OWNED. OF-223 hexagonal-boundary baseline: the domain's known imports of adapters, src/db and infrastructure modules.
-# The rule and the merge procedure: local/architecture/hexagonal-boundary.md. Checked by packages/daemon/test/fork-hexagonal-boundary.test.ts.
+# The rule and the porting procedure: local/architecture/hexagonal-boundary.md. Checked by packages/daemon/test/fork-hexagonal-boundary.test.ts.
 # One line per violation: <file under packages/daemon> <target> <value|type> <upstream|fork>, sorted. This file only shrinks,
-# except that the sync command adds violations an upstream merge brought in (marked upstream). Never add a fork line by hand.
+# except that the sync command adds violations in code ported from upstream (tagged upstream). Never add a line by hand.
 src/domain/active-lens-store.ts node:fs value upstream
 src/domain/activity-endpoint.ts node:fs value upstream
 src/domain/agent-activity-store.ts better-sqlite3 type upstream
