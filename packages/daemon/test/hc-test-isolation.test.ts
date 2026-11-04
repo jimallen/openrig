@@ -141,6 +141,17 @@ describe("where a trusted scaffold is made", () => {
     expect(readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8")).toMatch(/setupFiles: \[[^\]]*"\.\/test\/helpers\/trusted-run-root\.setup\.ts"/);
   });
 
+  // The suite-wide setup file runs before every test file's `vi.mock`. Anything it imports is loaded unmocked and cached, so a test file
+  // that mocks `node:fs` and then imports a helper the setup already pulled in gets the REAL module back (release 53: the setup's
+  // import of trusted-scaffold.ts reached hermetic-env.js, and hermetic-env-setup-failure.test.ts saw "expected [Function] to throw").
+  it("the setup file reaches only node builtins and vitest: its one local import is the leaf trusted-run-root.ts, which imports no local module", () => {
+    const importsOf = (f: string) => [...readFileSync(join(import.meta.dirname, "helpers", f), "utf8").matchAll(/^import [^;]*? from "([^"]+)";/gm)].map((m) => m[1]);
+    expect(importsOf("trusted-run-root.setup.ts")).toEqual(["vitest", "./trusted-run-root.js"]);
+    const leaf = importsOf("trusted-run-root.ts");
+    expect(leaf.length, "positive control: the leaf's imports were read").toBeGreaterThan(0);
+    expect(leaf.filter((m) => !m.startsWith("node:"))).toEqual([]);
+  });
+
   it("a run root's name carries its creating pid, `<prefix><pid>-XXXXXX`", () => {
     withFakeAccount((home, hooks) => {
       const base = trustedBaseFolder({ HOME: "/tmp/fixture-home" }, () => home, (cleanup) => { hooks.push(cleanup); });
