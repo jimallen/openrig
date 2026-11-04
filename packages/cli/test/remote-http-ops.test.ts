@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import type { HostEntry, HostRegistryLoadResult } from "../src/host-registry.js";
 import { Command } from "commander";
 import type { DaemonClient, DaemonResponse } from "../src/client.js";
 import { runRemoteHttpOp } from "../src/remote-host-ops.js";
@@ -21,8 +22,8 @@ function mockClient(responses: Record<string, { status: number; data: unknown }>
   } as unknown as DaemonClient & { _calls: typeof calls };
 }
 
-function mockRegistry(hosts: Array<Record<string, unknown>>) {
-  return () => ({ ok: true as const, registry: { hosts } });
+function mockRegistry(hosts: HostEntry[]) {
+  return (): HostRegistryLoadResult => ({ ok: true, registry: { hosts } });
 }
 
 async function captureLogs(fn: () => Promise<void>): Promise<{ stdout: string[]; stderr: string[]; exitCode: number | undefined }> {

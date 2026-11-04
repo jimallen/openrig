@@ -32,6 +32,17 @@ function cleanReceipt(pid: number): string {
   return JSON.stringify({ schema: "openrig.daemon-shutdown/v1", pid, startedAt: now, completedAt: now, outcome: "clean", phase: "complete", failures: [] });
 }
 
+/** The Error a promise rejects with; fails if it resolves or rejects with a non-Error. */
+async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof Error) return error;
+    throw error;
+  }
+  throw new Error("expected the promise to reject, but it resolved");
+}
+
 function neverFetch(): Promise<{ ok: boolean }> {
   return new Promise(() => {});
 }
@@ -63,7 +74,7 @@ function startableDeps(overrides?: Partial<LifecycleDeps>): LifecycleDeps {
   let spawned = false;
   const deps = mockDeps(overrides);
   const spawn = deps.spawn;
-  deps.spawn = vi.fn((...args) => { spawned = true; return spawn(...args); });
+  deps.spawn = vi.fn((...args: Parameters<LifecycleDeps["spawn"]>) => { spawned = true; return spawn(...args); });
   deps.fetch = overrides?.fetch ?? vi.fn(async () => {
     if (!spawned) throw new Error("refused");
     return startupHealth();
@@ -219,7 +230,7 @@ describe("Daemon Lifecycle", () => {
   it("start: no state and a hanging initial probe still starts and verifies its own child", async () => {
     vi.useFakeTimers();
     const deps = startableDeps({ fetch: vi.fn().mockImplementationOnce(neverFetch).mockResolvedValue(startupHealth()) });
-    const pending = startDaemon({ port: 7433 }, deps).catch((error) => error as Error);
+    const pending = rejectionOf(startDaemon({ port: 7433 }, deps));
     await vi.runAllTimersAsync();
 
     expect(await pending).toMatchObject({ pid: 12345, port: 7433 });
@@ -232,7 +243,7 @@ describe("Daemon Lifecycle", () => {
   it("start: a timed-out no-state probe on an occupied port refuses before any initialization", async () => {
     vi.useFakeTimers();
     const deps = mockDeps({ fetch: vi.fn(neverFetch), isPortOccupied: vi.fn(async () => true) });
-    const pending = startDaemon({ port: 17433, host: "127.0.0.2" }, deps).catch((error) => error as Error);
+    const pending = rejectionOf(startDaemon({ port: 17433, host: "127.0.0.2" }, deps));
     await vi.runAllTimersAsync();
     expect((await pending).message).toMatch(/EADDRINUSE.*port 17433/);
     expect((await pending).message).toContain("--port <unused-port>");
@@ -264,7 +275,7 @@ describe("Daemon Lifecycle", () => {
         return child as unknown as ChildProcess;
       }),
     });
-    const pending = startDaemon({}, deps).catch((error) => error as Error);
+    const pending = rejectionOf(startDaemon({}, deps));
     await vi.runAllTimersAsync();
     expect((await pending).message).toContain("EADDRINUSE");
     expect(deps.fileSize).toHaveBeenCalledWith(LOG_FILE);
@@ -287,7 +298,7 @@ describe("Daemon Lifecycle", () => {
         return child as unknown as ChildProcess;
       }),
     });
-    const pending = startDaemon({ port: 7433 }, deps).catch((error) => error as Error);
+    const pending = rejectionOf(startDaemon({ port: 7433 }, deps));
     await vi.runAllTimersAsync();
     const error = await pending;
 
@@ -309,7 +320,7 @@ describe("Daemon Lifecycle", () => {
         return child as unknown as ChildProcess;
       }),
     });
-    const pending = startDaemon({}, deps).catch((error) => error as Error);
+    const pending = rejectionOf(startDaemon({}, deps));
     await vi.runAllTimersAsync();
     const error = await pending;
 
@@ -833,7 +844,7 @@ describe("Daemon Lifecycle", () => {
 
   // Test 16: logs --follow passes follow flag to tailLogs
   it("tailLogs: called with follow=true invokes follow behavior", () => {
-    const spawnFn = vi.fn(() => ({ pid: 1, unref: vi.fn(), on: vi.fn() }) as unknown as ChildProcess);
+    const spawnFn = vi.fn<LifecycleDeps["spawn"]>(() => ({ pid: 1, unref: vi.fn(), on: vi.fn() }) as unknown as ChildProcess);
     const deps = mockDeps({
       exists: vi.fn((p: string) => p === LOG_FILE),
       spawn: spawnFn,
@@ -950,7 +961,7 @@ describe("Daemon Lifecycle", () => {
       fetch: vi.fn(() => neverFetch()),
     });
 
-    const startPromise = startDaemon({ port: 7433 }, deps).catch((error) => error as Error);
+    const startPromise = rejectionOf(startDaemon({ port: 7433 }, deps));
     await vi.runAllTimersAsync();
     const error = await startPromise;
 
@@ -1098,7 +1109,7 @@ describe("Daemon Lifecycle", () => {
       }),
     });
 
-    const startPromise = startDaemon({ port: 7433 }, deps).catch((error) => error as Error);
+    const startPromise = rejectionOf(startDaemon({ port: 7433 }, deps));
     await vi.runAllTimersAsync();
     const error = await startPromise;
 
@@ -1124,7 +1135,7 @@ describe("Daemon Lifecycle", () => {
       }),
     });
 
-    const startPromise = startDaemon({ port: 7433 }, deps).catch((error) => error as Error);
+    const startPromise = rejectionOf(startDaemon({ port: 7433 }, deps));
     await vi.runAllTimersAsync();
     const error = await startPromise;
 
@@ -1766,7 +1777,7 @@ describe("daemonNotRunningError / printDaemonNotRunning (AC-4 shared honest erro
       const deps = mockDeps({
         exists: vi.fn(() => false), // no daemon.json -> stateless branch
         // /healthz ANSWERS 200, but after 400ms — past the 250ms probe, within a sane budget.
-        fetch: vi.fn(() => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 400))),
+        fetch: vi.fn(() => new Promise<{ ok: boolean }>((resolve) => setTimeout(() => resolve({ ok: true }), 400))),
       });
       const statusPromise = getDaemonStatus(deps);
       await vi.runAllTimersAsync();
@@ -1803,7 +1814,7 @@ describe("daemonNotRunningError / printDaemonNotRunning (AC-4 shared honest erro
     vi.useFakeTimers();
     try {
       const deps = mockDeps({
-        fetch: vi.fn(() => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 400))), // answers > 250ms probe
+        fetch: vi.fn(() => new Promise<{ ok: boolean }>((resolve) => setTimeout(() => resolve({ ok: true }), 400))), // answers > 250ms probe
       });
       const statusPromise = getDaemonStatus(deps);
       await vi.runAllTimersAsync();

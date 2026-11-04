@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import type { HostEntry, HostRegistryLoadResult } from "../src/host-registry.js";
 import { Command } from "commander";
 import { psCommand, type PsDeps } from "../src/commands/ps.js";
 import type { DaemonClient, DaemonResponse } from "../src/client.js";
@@ -24,8 +25,8 @@ function makeCmd(deps: PsDeps): Command {
   return prog;
 }
 
-function mockRegistry(hosts: Array<Record<string, unknown>>) {
-  return () => ({ ok: true as const, registry: { hosts } });
+function mockRegistry(hosts: HostEntry[]) {
+  return (): HostRegistryLoadResult => ({ ok: true, registry: { hosts } });
 }
 
 async function captureLogs(fn: () => Promise<void>): Promise<{ stdout: string[]; stderr: string[] }> {
