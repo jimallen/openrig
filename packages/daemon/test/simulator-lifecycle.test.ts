@@ -183,8 +183,8 @@ describe("OF-208 SimulatorLifecycle", () => {
   });
   afterEach(() => db.close());
 
-  const make = (fake: ReturnType<typeof fakeSimctl>, capGb?: () => number, platform = "darwin") =>
-    new SimulatorLifecycle({ db, eventBus, simctl: fake.exec, capGb, platform, log: (l) => log.push(l) });
+  const make = (fake: ReturnType<typeof fakeSimctl>, capGb?: () => number, platform = "darwin", claimDirs?: () => string[]) =>
+    new SimulatorLifecycle({ db, eventBus, simctl: fake.exec, capGb, claimDirs, platform, log: (l) => log.push(l) });
 
   const events = () => (db.prepare("SELECT rig_id, node_id, payload FROM events WHERE type = 'simulator.erased' ORDER BY seq").all() as Array<{ rig_id: string; node_id: string; payload: string }>)
     .map((r) => ({ ...r, p: JSON.parse(r.payload) as Record<string, unknown> }));
@@ -414,6 +414,144 @@ describe("OF-208 SimulatorLifecycle", () => {
         clearInterval(timer);
       } finally {
         vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("claims (OF-222): a device a test guard has claimed is never erased", () => {
+    let claims: string; // a scratch stand-in for a guard's claim directory (never eztrack's)
+    let queue: string;
+    beforeEach(() => {
+      claims = fs.mkdtempSync(path.join(os.tmpdir(), "of222-claims-"));
+      queue = fs.mkdtempSync(path.join(os.tmpdir(), "of222-queue-"));
+    });
+    afterEach(() => {
+      for (const d of [claims, queue]) { fs.chmodSync(d, 0o755); fs.rmSync(d, { recursive: true, force: true }); }
+    });
+    const big = (n: number, name: string): FakeDevice => ({ udid: UD(n), name, state: "Shutdown", dataPathSize: 30 * GB });
+    // A real-shaped UDID per device: the claim matcher is UDID-shaped.
+    const UD = (n: number) => `0000000${n}-0000-4000-8000-00000000000${n}`.toUpperCase();
+    const dirs = () => [claims, queue];
+
+    it("the sweep skips a device whose UDID is a directory name in a claim dir, and erases its unclaimed sibling", async () => {
+      seedRig();
+      fs.mkdirSync(path.join(claims, UD(1)));
+      fs.writeFileSync(path.join(claims, UD(1), "owner"), "ui-run-sim v1\nslot=1\n");
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "impl-duo-1")]);
+      const res = await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([UD(2)]);
+      expect(res.outcomes.find((o) => o.udid === UD(1))).toMatchObject({ action: "skipped", reason: "claimed" });
+    });
+
+    it("a claim name in lower case still claims; a RELEASED claim (<UDID>.released.<pid>) does not", async () => {
+      seedRig();
+      fs.mkdirSync(path.join(claims, UD(1).toLowerCase()));
+      fs.mkdirSync(path.join(claims, `${UD(2)}.released.12186`));
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "impl-duo-1")]);
+      await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([UD(2)]);
+    });
+
+    it("a queued run's one-line file claims its UDID; an empty file and an oversized file claim nothing", async () => {
+      seedRig();
+      fs.writeFileSync(path.join(queue, "15821.sim"), `${UD(1)}\n`);
+      fs.writeFileSync(path.join(queue, "15821.v2"), "");
+      fs.writeFileSync(path.join(queue, "999.log"), `${UD(2)} ${"x".repeat(300)}`);
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "impl-duo-1"), big(3, "ux-duo-1")]);
+      await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([UD(2), UD(3)]);
+    });
+
+    it("with no claim dirs configured, or a dir that does not exist, nothing is claimed", async () => {
+      seedRig();
+      const fake = fakeSimctl([big(1, "qa-duo-271")]);
+      await make(fake, () => 20, "darwin", () => [path.join(claims, "no-such-dir")]).sweepOverCap();
+      expect(fake.erased()).toEqual([UD(1)]);
+      const fake2 = fakeSimctl([big(1, "qa-duo-271")]);
+      await make(fake2, () => 20).sweepOverCap();
+      expect(fake2.erased()).toEqual([UD(1)]);
+    });
+
+    it("a claim dir that cannot be listed makes the sweep erase nothing (fail closed)", async () => {
+      seedRig();
+      fs.chmodSync(claims, 0o000);
+      const fake = fakeSimctl([big(1, "qa-duo-271")]);
+      const res = await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ action: "skipped", reason: "claims_unreadable" });
+    });
+
+    it("a claim dir with more than 2000 entries, or a claim-dir setting that throws, also fails closed", async () => {
+      seedRig();
+      for (let i = 0; i < 2001; i++) fs.writeFileSync(path.join(queue, `f${i}`), "");
+      const fake = fakeSimctl([big(1, "qa-duo-271")]);
+      const res = await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ reason: "claims_unreadable" });
+      const fake2 = fakeSimctl([big(1, "qa-duo-271")]);
+      const res2 = await make(fake2, () => 20, "darwin", () => { throw new Error("config unreadable"); }).sweepOverCap();
+      expect(fake2.erased()).toEqual([]);
+      expect(res2.outcomes[0]).toMatchObject({ reason: "claims_unreadable" });
+    });
+
+    it("a claim granted between the first read and the erase protects the device (claims are re-read with the state)", async () => {
+      seedRig();
+      const fake = fakeSimctl([big(1, "qa-duo-271")]);
+      let lists = 0;
+      fake.state.onList = () => { if (++lists === 1) fs.mkdirSync(path.join(claims, UD(1))); };
+      const res = await make(fake, () => 20, "darwin", dirs).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ action: "skipped", reason: "claimed" });
+    });
+
+    it("removal also leaves a claimed device of the removed seat alone", async () => {
+      const { rig, nodes } = seedRig();
+      fs.writeFileSync(path.join(queue, "1.sim"), UD(1));
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "qa-duo-272")]);
+      const sim = make(fake, undefined, "darwin", dirs);
+      const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(nodes["verify.qa"]!.id);
+      const res = await sim.eraseForRemovedSeats(removed, "seat_removed");
+      expect(fake.erased()).toEqual([UD(2)]);
+      expect(res.outcomes.find((o) => o.udid === UD(1))).toMatchObject({ action: "skipped", reason: "claimed" });
+    });
+
+    it("planOverCap shows claimed, and the sweep leaves the claim dirs byte-for-byte as they were", async () => {
+      const a = seedRig();
+      fs.mkdirSync(path.join(claims, UD(1)));
+      fs.writeFileSync(path.join(claims, UD(1), "owner"), "ui-run-sim v1\n");
+      fs.writeFileSync(path.join(queue, "7.sim"), UD(2));
+      const snap = () => JSON.stringify([claims, queue].map((d) => fs.readdirSync(d, { recursive: true, withFileTypes: false }).sort().map((n) => {
+        const st = fs.statSync(path.join(d, String(n)));
+        return [n, st.mtimeMs, st.isFile() ? fs.readFileSync(path.join(d, String(n)), "utf8") : "dir"];
+      })));
+      const before = snap();
+      const fake = fakeSimctl([big(1, "qa-duo-271"), big(2, "impl-duo-1"), big(3, "ux-duo-1")]);
+      const sim = make(fake, () => 20, "darwin", dirs);
+      const plan = await sim.planOverCap();
+      expect(plan.rows.map((r) => [r.device.udid, r.verdict, r.seat])).toEqual([
+        [UD(1), "claimed", "verify.qa"], [UD(2), "claimed", "build.impl"], [UD(3), "erase", "build.ux"],
+      ]);
+      await sim.sweepOverCap();
+      expect(snap()).toBe(before);
+      void a;
+    });
+
+    it("the claim_dirs setting defaults to empty, takes absolute paths, and refuses a relative one", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "of222-cfg-"));
+      const saved = process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
+      delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
+      try {
+        const store = new SettingsStore(path.join(dir, "config.json"));
+        expect(store.resolveOne("simulators.claim_dirs")).toMatchObject({ value: "", source: "default" });
+        store.set("simulators.claim_dirs", "/a/lock.sim, /a/lock.queue");
+        expect(store.resolveOne("simulators.claim_dirs")).toMatchObject({ value: "/a/lock.sim, /a/lock.queue", source: "file" });
+        expect(() => store.set("simulators.claim_dirs", "/a/ok,relative/dir")).toThrow(/absolute directory path/);
+        process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"] = "/env/dir";
+        expect(store.resolveOne("simulators.claim_dirs")).toMatchObject({ value: "/env/dir", source: "env" });
+      } finally {
+        if (saved === undefined) delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"]; else process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"] = saved;
+        fs.rmSync(dir, { recursive: true, force: true });
       }
     });
   });

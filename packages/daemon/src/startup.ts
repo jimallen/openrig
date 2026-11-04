@@ -1356,6 +1356,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const simulatorLifecycle = new SimulatorLifecycle({
     db, eventBus,
     capGb: () => Number(new ContextPackSettingsStore().resolveOne("simulators.size_cap_gb").value),
+    claimDirs: () => String(new ContextPackSettingsStore().resolveOne("simulators.claim_dirs").value).split(",").map((d) => d.trim()).filter((d) => d.length > 0),
   });
   const rigLifecycleService = new RigLifecycleService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter, simulatorLifecycle,

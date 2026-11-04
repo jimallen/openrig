@@ -23,11 +23,16 @@
 //   - a removal acts for the seats that were removed from any non-kernel rig (an archived rig being deleted included); a
 //     kernel seat's removal erases nothing.
 //
+// Claims (OF-222): a project's test guard claims a simulator for a run BEFORE the device boots, so for a while a claimed device is
+// Shutdown and idle. `simulators.claim_dirs` names directories where such claims live; a device claimed there is never erased, by
+// either trigger (see `readClaims`). The sweep only reads them.
+//
 // Real simctl is OFF unless the real launch path turns it on (`enableRealSimctl`, from index.ts, only when
 // `realSimctlAllowed`): a service built any other way (createDaemon in a test child, a scenario daemon with a private
 // OPENRIG_HOME, an in-process harness) has no exec, runs nothing, and starts no timer.
 
 import { execFile } from "node:child_process";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import type Database from "better-sqlite3";
 import type { EventBus } from "./event-bus.js";
@@ -40,6 +45,17 @@ export const SIMULATOR_SIZE_CAP_DEFAULT_GB = 20;
 export const BYTES_PER_GB = 1024 ** 3;
 /** The reserved name of the kernel rig (project-rig.ts reserves it). */
 const KERNEL_RIG_NAME = "kernel";
+const UDID_SRC = "[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}";
+const UDID_RE = new RegExp(`^${UDID_SRC}$`);
+const UDID_GLOBAL_RE = new RegExp(UDID_SRC, "g");
+const MAX_CLAIM_ENTRIES = 2000;
+const MAX_CLAIM_FILE_BYTES = 256;
+
+interface Claims {
+  udids: Set<string>;
+  /** Why the claims could not be read (the sweep then erases nothing), or null. */
+  unreadable: string | null;
+}
 export const SIMULATOR_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 
 export type SimulatorEraseReason = "seat_removed" | "rig_deleted" | "over_size_cap";
@@ -166,6 +182,8 @@ export interface SimulatorLifecycleDeps {
   simctl?: SimctlExec;
   /** The configured cap in whole GB (`simulators.size_cap_gb`), read fresh for each sweep. */
   capGb?: () => number;
+  /** The configured claim directories (`simulators.claim_dirs`, split), read fresh for each run and again before each erase. Default none. */
+  claimDirs?: () => string[];
   /** Default: only darwin has simulators; elsewhere the timer never starts. */
   platform?: string;
   log?: (line: string) => void;
@@ -176,6 +194,7 @@ export class SimulatorLifecycle {
   private readonly eventBus: EventBus;
   private simctl: SimctlExec | null;
   private readonly capGb: () => number;
+  private readonly claimDirs: () => string[];
   private readonly platform: string;
   private readonly log: (line: string) => void;
   /** Serialises sweeps and removals so two of them never list and erase at once. */
@@ -186,6 +205,7 @@ export class SimulatorLifecycle {
     this.eventBus = deps.eventBus;
     this.simctl = deps.simctl ?? null;
     this.capGb = deps.capGb ?? (() => SIMULATOR_SIZE_CAP_DEFAULT_GB);
+    this.claimDirs = deps.claimDirs ?? (() => []);
     this.platform = deps.platform ?? process.platform;
     this.log = deps.log ?? ((line) => console.warn(line));
   }
@@ -252,10 +272,11 @@ export class SimulatorLifecycle {
       return { status: "unavailable", rows: [] };
     }
     const trigger: Trigger = { kind: "cap", capBytes: gb * BYTES_PER_GB };
+    const claims = this.readClaims();
     return {
       status: "ok",
       rows: devices.map((device) => {
-        const verdict = this.decide(device, trigger);
+        const verdict = this.decide(device, trigger, claims);
         const seat = verdict.seat;
         return {
           device,
@@ -296,7 +317,46 @@ export class SimulatorLifecycle {
   }
 
   /** Why this device must be left alone, or the seat it belongs to for this trigger. */
-  private decide(device: SimulatorDevice, trigger: Trigger): { skip: string; seat?: NodeRow | RemovedSeat } | { seat: NodeRow | RemovedSeat } {
+  /**
+   * The UDIDs claimed in the configured directories. A UDID is claimed by (a) an entry whose NAME is exactly that UDID (file or
+   * directory, any case: `<UDID>.released.<pid>` is not exact, so a released claim does not count) or (b) a regular file of at most
+   * 256 bytes directly in the directory whose content contains it (a queued run's one-line `<pid>.sim`). Liveness is not judged: a
+   * stale claim keeps its device un-erased. A directory that does not exist claims nothing; one that cannot be listed, or has more
+   * than 2000 entries, makes the answer `unreadable` and nothing attributed is erased. Read-only.
+   */
+  private readClaims(): Claims {
+    const udids = new Set<string>();
+    let dirs: string[];
+    try {
+      dirs = this.claimDirs();
+    } catch (err) {
+      return { udids, unreadable: `claim dirs: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    for (const dir of dirs) {
+      let names: string[];
+      try {
+        names = readdirSync(dir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+        return { udids, unreadable: `${dir}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (names.length > MAX_CLAIM_ENTRIES) return { udids, unreadable: `${dir}: more than ${MAX_CLAIM_ENTRIES} entries` };
+      for (const name of names) {
+        if (UDID_RE.test(name)) { udids.add(name.toUpperCase()); continue; }
+        try {
+          const path = joinPath(dir, name);
+          const st = statSync(path);
+          if (!st.isFile() || st.size === 0 || st.size > MAX_CLAIM_FILE_BYTES) continue;
+          for (const m of readFileSync(path, "utf8").matchAll(UDID_GLOBAL_RE)) udids.add(m[0].toUpperCase());
+        } catch {
+          // an entry that vanished between readdir and read (a claim being released) claims nothing now
+        }
+      }
+    }
+    return { udids, unreadable: null };
+  }
+
+  private decide(device: SimulatorDevice, trigger: Trigger, claims: Claims): { skip: string; seat?: NodeRow | RemovedSeat } | { seat: NodeRow | RemovedSeat } {
     const owners = this.allNodes().filter((n) => nameIsForSeat(device.name, n.logicalId));
     let seat: NodeRow | RemovedSeat;
     if (trigger.kind === "removal") {
@@ -312,6 +372,8 @@ export class SimulatorLifecycle {
     // From here the device IS attributed to `seat`; the skip says why it is still left alone.
     if (!device.isAvailable) return { skip: "unavailable", seat };
     if (device.state !== "Shutdown") return { skip: `not_shut_down:${device.state}`, seat };
+    if (claims.unreadable !== null) return { skip: "claims_unreadable", seat };
+    if (claims.udids.has(device.udid.toUpperCase())) return { skip: "claimed", seat };
     if (trigger.kind === "cap") {
       if (device.sizeBytes === null) return { skip: "size_unknown", seat };
       if (device.sizeBytes <= trigger.capBytes) return { skip: "under_cap", seat };
@@ -338,8 +400,9 @@ export class SimulatorLifecycle {
     }
     const reason: SimulatorEraseReason = trigger.kind === "cap" ? "over_size_cap" : trigger.reason;
     const outcomes: SimulatorOutcome[] = [];
+    const claims = this.readClaims();
     for (const first of devices) {
-      const verdict = this.decide(first, trigger);
+      const verdict = this.decide(first, trigger, claims);
       if ("skip" in verdict) {
         outcomes.push({ udid: first.udid, name: first.name, action: "skipped", reason: verdict.skip, sizeBytes: first.sizeBytes });
         // A not_shut_down verdict is only reached after attribution passed, so the device is a removed seat's.
@@ -356,7 +419,8 @@ export class SimulatorLifecycle {
         this.log(`[simulators] re-read failed for ${first.udid}, left alone: ${err instanceof Error ? err.message : String(err)}`);
         continue;
       }
-      const again = fresh ? this.decide(fresh, trigger) : { skip: "gone" };
+      // The claims are re-read with the state: a claim granted since the first read protects the device too.
+      const again = fresh ? this.decide(fresh, trigger, this.readClaims()) : { skip: "gone" };
       if (!fresh || "skip" in again) {
         outcomes.push({ udid: first.udid, name: first.name, action: "skipped", reason: fresh ? (again as { skip: string }).skip : "gone", sizeBytes: first.sizeBytes });
         continue;

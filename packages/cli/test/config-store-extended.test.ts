@@ -190,6 +190,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       // pda L0 (review D2) — pda cost facts, both twins, default off.
       "usage.pda_cost_facts",
       "simulators.size_cap_gb", // OF-208
+      "simulators.claim_dirs", // OF-222
       // OPR.0.4.6.FS-1 W2 — queue-retention maintenance knobs.
       "retention.enabled",
       "retention.transitions_days",
@@ -279,6 +280,15 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
     for (const value of ["0", "601", "2.5", "45junk"]) {
       expect(() => store.set("runtime.readiness_timeout_seconds", value)).toThrow(/integer in \[1, 600\]/);
     }
+  });
+
+  it("simulators.claim_dirs (OF-222) defaults to empty and refuses a relative directory", () => {
+    const store = new ConfigStore(configPath);
+    expect(store.resolveWithSource("simulators.claim_dirs")).toMatchObject({ value: "", source: "default" });
+    store.set("simulators.claim_dirs", "/p/.ui-run.lock.sim,/p/.ui-run.lock.queue");
+    expect(store.resolve().simulators.claimDirs).toBe("/p/.ui-run.lock.sim,/p/.ui-run.lock.queue");
+    expect(() => store.set("simulators.claim_dirs", "/ok,not/absolute")).toThrow(/absolute directory path/);
+    expect(store.resolve().simulators.claimDirs).toBe("/p/.ui-run.lock.sim,/p/.ui-run.lock.queue");
   });
 
   it("simulators.size_cap_gb (OF-208) defaults to 20, accepts 0 (off) and whole GB, and refuses a negative or non-integer value", () => {

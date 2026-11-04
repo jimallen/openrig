@@ -207,6 +207,8 @@ export const SETTINGS_VALID_KEYS = [
   // in-flight sweep.
   // OF-208 — erase a seat's SHUT DOWN simulator above this many GB; default 20, 0 off. Lockstep with the CLI twin.
   "simulators.size_cap_gb",
+  // OF-222 — comma-separated absolute directories whose entries claim simulators; lockstep with the CLI twin.
+  "simulators.claim_dirs",
   "retention.enabled",
   "retention.transitions_days",
   "retention.watchdog_days",
@@ -324,6 +326,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "retention.watchdog_days": { primary: "OPENRIG_RETENTION_WATCHDOG_DAYS" },
   "retention.usage_samples_days": { primary: "OPENRIG_RETENTION_USAGE_SAMPLES_DAYS" },
   "simulators.size_cap_gb": { primary: "OPENRIG_SIMULATORS_SIZE_CAP_GB" },
+  "simulators.claim_dirs": { primary: "OPENRIG_SIMULATORS_CLAIM_DIRS" },
   "retention.watchdog_keep_per_job": { primary: "OPENRIG_RETENTION_WATCHDOG_KEEP_PER_JOB" },
   "retention.batch_size": { primary: "OPENRIG_RETENTION_BATCH_SIZE" },
   // S04 — net-new key; OPENRIG_* primary only.
@@ -408,6 +411,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "usage.pi_openrouter_charge": ["usage", "piOpenRouterCharge"],
   "usage.pda_cost_facts": ["usage", "pdaCostFacts"],
   "simulators.size_cap_gb": ["simulators", "sizeCapGb"],
+  "simulators.claim_dirs": ["simulators", "claimDirs"],
   "retention.enabled": ["retention", "enabled"],
   "retention.transitions_days": ["retention", "transitionsDays"],
   "retention.watchdog_days": ["retention", "watchdogDays"],
@@ -697,6 +701,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     // terminal+aged transitions >30d; prune watchdog_history >14d keep-50/job;
     // 500 rows/qitems per bounded batch; enabled by default).
     case "simulators.size_cap_gb": return 20;
+    case "simulators.claim_dirs": return "";
     case "retention.enabled": return true;
     case "retention.transitions_days": return 30;
     case "retention.watchdog_days": return 14;
@@ -890,6 +895,11 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
     if (!/^-?\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 0) {
       throw new Error(`Invalid value for retention.watchdog_keep_per_job: must be an integer >= 0, got "${raw}"`);
     }
+  },
+  "simulators.claim_dirs": (raw) => {
+    const entries = (raw ?? "").split(",").map((e) => e.trim()).filter((e) => e.length > 0);
+    const bad = entries.find((e) => !e.startsWith("/"));
+    if (bad !== undefined) throw new Error(`Invalid value for simulators.claim_dirs: every entry must be an absolute directory path (comma-separated), got "${bad}"`);
   },
   "simulators.size_cap_gb": (raw, coerced) => {
     if (!/^-?\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 0) {

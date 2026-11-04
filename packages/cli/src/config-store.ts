@@ -199,6 +199,7 @@ export interface RiggedConfig {
   // OF-208 — iOS simulator size cap (twin of the daemon settings-store): whole GB, 0 turns the cap sweep off.
   simulators: {
     sizeCapGb: number;
+    claimDirs: string;
   };
   retention: {
     enabled: boolean;
@@ -371,7 +372,7 @@ const DEFAULTS = {
     pdaCostFacts: false,
   },
   // OF-208 — simulator size cap default (twin of daemon getDefaultValue).
-  simulators: { sizeCapGb: 20 },
+  simulators: { sizeCapGb: 20, claimDirs: "" },
   // OPR.0.4.6.FS-1 W2 — retention defaults (twin of daemon getDefaultValue).
   retention: {
     enabled: true,
@@ -501,6 +502,8 @@ export const VALID_KEYS = [
   // lockstep with the daemon settings-store SETTINGS_VALID_KEYS.
   // OF-208 — erase a seat's SHUT DOWN simulator above this many GB; default 20, 0 off. Lockstep with the daemon twin.
   "simulators.size_cap_gb",
+  // OF-222 — comma-separated absolute directories whose entries claim simulators (a test guard's lock/queue dirs); a claimed device is never erased.
+  "simulators.claim_dirs",
   "retention.enabled",
   "retention.transitions_days",
   "retention.watchdog_days",
@@ -614,6 +617,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "retention.transitions_days": { primary: "OPENRIG_RETENTION_TRANSITIONS_DAYS" },
   "retention.watchdog_days": { primary: "OPENRIG_RETENTION_WATCHDOG_DAYS" },
   "simulators.size_cap_gb": { primary: "OPENRIG_SIMULATORS_SIZE_CAP_GB" },
+  "simulators.claim_dirs": { primary: "OPENRIG_SIMULATORS_CLAIM_DIRS" },
   "retention.watchdog_keep_per_job": { primary: "OPENRIG_RETENTION_WATCHDOG_KEEP_PER_JOB" },
   "retention.batch_size": { primary: "OPENRIG_RETENTION_BATCH_SIZE" },
   "queue.pickup_stall_threshold_minutes": { primary: "OPENRIG_QUEUE_PICKUP_STALL_THRESHOLD_MINUTES" },
@@ -700,6 +704,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "usage.pi_openrouter_charge": ["usage", "piOpenRouterCharge"],
   "usage.pda_cost_facts": ["usage", "pdaCostFacts"],
   "simulators.size_cap_gb": ["simulators", "sizeCapGb"],
+  "simulators.claim_dirs": ["simulators", "claimDirs"],
   "retention.enabled": ["retention", "enabled"],
   "retention.transitions_days": ["retention", "transitionsDays"],
   "retention.watchdog_days": ["retention", "watchdogDays"],
@@ -1017,6 +1022,11 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
       throw new Error(`Invalid value for retention.watchdog_keep_per_job: must be an integer >= 0, got "${raw}"`);
     }
   },
+  "simulators.claim_dirs": (raw) => {
+    const entries = (raw ?? "").split(",").map((e) => e.trim()).filter((e) => e.length > 0);
+    const bad = entries.find((e) => !e.startsWith("/"));
+    if (bad !== undefined) throw new Error(`Invalid value for simulators.claim_dirs: every entry must be an absolute directory path (comma-separated), got "${bad}"`);
+  },
   "simulators.size_cap_gb": (raw, coerced) => {
     if (!/^-?\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 0) {
       throw new Error(`Invalid value for simulators.size_cap_gb: must be an integer >= 0 (0 turns the cap off), got "${raw}"`);
@@ -1263,6 +1273,7 @@ export class ConfigStore {
       },
       simulators: {
         sizeCapGb: v("simulators.size_cap_gb") as number,
+        claimDirs: v("simulators.claim_dirs") as string,
       },
       retention: {
         enabled: v("retention.enabled") as boolean,

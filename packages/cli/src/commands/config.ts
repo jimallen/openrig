@@ -101,7 +101,8 @@ Keys:
                          wake_human_rung (always | explicit-only — post agent-to-agent escalations to a person;
                            under explicit-only, an ask that needs a person must be addressed to the person;
                            without a human registry, explicit-only posts everything, as always does)
-  simulators.*           size_cap_gb (erase a seat's SHUT DOWN iOS simulator bigger than this many GB; default 20, 0 turns the cap off)
+  simulators.*           size_cap_gb (erase a seat's SHUT DOWN iOS simulator bigger than this many GB; default 20, 0 turns the cap off),
+                         claim_dirs (comma-separated absolute dirs whose entries claim simulators: a test guard's lock/queue dirs; a claimed device is never erased)
   retention.*            enabled, transitions_days, watchdog_days,
                          watchdog_keep_per_job, batch_size
   launch.non_interruptive  accept harness first-launch warnings at full bypass for new rigs (default off)

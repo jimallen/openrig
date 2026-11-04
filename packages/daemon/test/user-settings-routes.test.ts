@@ -120,7 +120,8 @@ describe("config routes (User Settings v0)", () => {
     // + 1 recovery.post_restart_prompt (OF-182; default on).
     // + 1 transport.message_pump (Seat Messaging S3; default on).
     // + 1 simulators.size_cap_gb (OF-208; default 20).
-    expect(Object.keys(body.settings).length).toBe(84);
+    // + 1 simulators.claim_dirs (OF-222; default empty).
+    expect(Object.keys(body.settings).length).toBe(85);
     expect(body.settings["simulators.size_cap_gb"]).toMatchObject({ value: 20, source: "default", defaultValue: 20 });
     expect(body.settings["recovery.post_restart_prompt"]).toMatchObject({ value: true, source: "default" });
     expect(body.settings["transport.native_claude"]?.value).toBe(true);
