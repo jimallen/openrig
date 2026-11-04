@@ -591,6 +591,10 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       const s = fixture(["lose-enter"]); await s.launch();
       s.accept("long", "x".repeat(1500)); daemon(s);
       await state(s, "long", "received", 30_000);
+      // "received" is the relay's record, written before the relay fsyncs the directory and exits; the stub logs what its agent got only after that exit, 10 to 15 ms
+      // later on Sparky (OF-228). Enter alone returns at once, so the pump can read the record inside that window. Wait for the turn to end, in its context line
+      // or in a drop (a drop is then reported as one, not as a timeout), and only then count: the count is the assertion and stays exact.
+      await until(() => s.log().filter((l) => l.startsWith("context long ") || l.startsWith("dropped")), (l) => l.length > 0, "the agent's turn");
       expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
       expect(context(s, "long")).toHaveLength(1);
     }, 60_000);
