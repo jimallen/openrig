@@ -126,10 +126,16 @@ change is ported selectively, as a fork unit. So no daemon domain file has speci
 - **Existing violations** are fixed on touch: a unit that already touches a domain file may fix that file's violations
   within its own scope (declare the port, implement it in an adapter, wire it in `src/startup.ts`) and delete the
   baseline lines it retires. No unit is opened only to fix one, and no unit widens its scope to fix one.
-- **A rename, move or split is a touch.** Renaming a domain file that has a baseline line makes the census report the old
-  line stale and the import at the new path new; `sync` prunes the first and refuses the second (no upstream copy has
-  that path's import). So the unit that renames, moves or splits the
-  file fixes the import in the same change.
+- **A rename, move or split is a touch**, so the unit doing it may fix the file's violations, like any other touch.
+  Renaming a domain file that has a baseline line makes the census report the old line stale and the import at the new
+  path new. Commit the rename, then run `sync`:
+  - for an `upstream`-origin line, `sync` follows the committed rename to upstream's copy of the file, prunes the old line
+    and re-records the import at the new path as `upstream` (exit 0). That re-recording is accepted: `sync` reproduces
+    the line, so the review rule for added lines below holds;
+  - for a `fork`-origin line, no upstream copy has the import, so `sync` prunes the old line and refuses the new one
+    (exit 1, nothing written). Only here must the unit fix the import, in the same change.
+  A rename git does not detect (under 50% similar), or a split into a new file, reads as the fork's, and is refused the
+  same way.
 
 ### The `upstream` and `fork` tags: history only
 
@@ -157,8 +163,8 @@ every domain file the daemon's tsconfig compiles (so a new `.tsx`, `.mts` or `.c
 
 It reads no git state, so it behaves the same in any checkout. That also means it cannot tell a line `sync` wrote from
 one written by hand: a new violation plus a hand-added line passes it. The baseline only shrinks; the one way a line is
-added is `sync` when a unit ports an upstream change (below), and only for violations upstream's own code has. **Never add
-a line by hand.**
+added is `sync`, when a unit ports an upstream change (below) or renames a file with an `upstream`-origin line (above),
+and only for violations upstream's own code has. **Never add a line by hand.**
 
 **The review rule for a diff that adds a baseline line.** The reviewer deletes the added lines and runs `sync` (from the
 repository root, with `origin` fetched). A genuine upstream line comes back byte-identical; a fork line is refused with
@@ -187,5 +193,7 @@ within its scope.
      the fork's own, and the fork adds no new violation. Fix it with a port, then run `sync` again.
 3. Run the census test, and commit the baseline change with the port; the reviewer sees each added line in the diff.
 
-When nothing was ported, `sync` only prunes and tightens, so it is also the quick way to clear stale lines after any change.
+When nothing was ported and no file with an `upstream`-origin line was renamed, `sync` only prunes and tightens, so it is
+also the quick way to clear stale lines after any change. After a committed rename of such a file it also re-records that
+file's lines at the new path, tagged `upstream`.
 It needs the `origin/main` ref; the test does not.
