@@ -1,7 +1,9 @@
 // Must stay first: pins the daemon cwd before any module evaluates a path.
 import "./daemon-cwd-anchor.js";
 import { serve, type ServerType } from "@hono/node-server";
+import os from "node:os";
 import path from "node:path";
+import { realSimctlAllowed } from "./domain/simulator-lifecycle.js";
 import { pathToFileURL } from "node:url";
 import { closeHttpServer, createDaemonShutdown, DAEMON_SHUTDOWN_RECEIPT, trackHttpServerResponses } from "./daemon-shutdown.js";
 import { readOpenRigEnv, OPENRIG_HOME } from "./openrig-compat.js";
@@ -244,7 +246,7 @@ async function isTrustedLocalOrTailnetBind(host: string): Promise<boolean> {
   return false;
 }
 
-export async function startServer(port?: number) {
+export async function startServer(port?: number, opts?: { realSimctl?: boolean }) {
   const p = port ?? parseInt(readOpenRigEnv("OPENRIG_PORT", "RIGGED_PORT") ?? "7433", 10);
   // D15 — anchor the default db under OPENRIG_HOME, never a bare CWD-relative
   // filename (which could open the shared fleet db). Explicit OPENRIG_DB wins.
@@ -314,6 +316,13 @@ export async function startServer(port?: number) {
     // listeners from BINDING EVIDENCE (probe each host) instead of config echo.
     bindPlan,
   });
+
+  // OF-208 — real `xcrun simctl` is off unless this is the production entrypoint (direct run) AND the daemon of the user's own
+  // default state directory, never under a test runner. A createDaemon child, a scenario daemon (private OPENRIG_HOME) and an
+  // imported startServer all keep the service disabled: it runs no simctl and starts no timer. See simulator-lifecycle.ts.
+  if (opts?.realSimctl && realSimctlAllowed({ env: process.env, userHome: os.userInfo().homedir, openrigHome: OPENRIG_HOME })) {
+    deps.simulatorLifecycle?.enableRealSimctl();
+  }
 
   // Multi-bind via N serve() instances sharing the same Hono app.
   // Hono's serve() targets a single host:port; for multi-bind we spawn
@@ -438,5 +447,5 @@ if (isDirectRun) {
   // environment to every seat, so drop the launching session's identity.
   const removed = removeParentSessionEnv(process.env);
   if (removed.length) console.log(`[openrig] Seats will not inherit the launching session's ${removed.join(", ")}.`);
-  startServer();
+  startServer(undefined, { realSimctl: true });
 }

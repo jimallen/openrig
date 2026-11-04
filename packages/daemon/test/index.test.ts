@@ -67,6 +67,50 @@ describe("daemon startServer", () => {
     );
   });
 
+  describe("OF-208 real simctl is switched on only by the production entrypoint on the user's own home", () => {
+    const enable = vi.fn();
+    const savedVitest = process.env["VITEST"];
+    beforeEach(() => {
+      enable.mockReset();
+      createDaemonMock.mockResolvedValue({
+        app: { fetch: vi.fn() },
+        contextMonitor: { start: vi.fn(), stop: vi.fn() },
+        deps: { simulatorLifecycle: { enableRealSimctl: enable, startSweepTimer: vi.fn() } },
+        injectWebSocket: vi.fn(),
+      });
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      if (savedVitest === undefined) delete process.env["VITEST"]; else process.env["VITEST"] = savedVitest;
+    });
+
+    it("an imported startServer (no realSimctl request) never enables it", async () => {
+      delete process.env["VITEST"];
+      vi.stubEnv("NODE_ENV", "production");
+      const { startServer } = await import("../src/index.js");
+      await startServer(7441);
+      expect(enable).not.toHaveBeenCalled();
+    });
+
+    it("the production entrypoint's request is refused under a test runner", async () => {
+      const { startServer } = await import("../src/index.js");
+      await startServer(7441, { realSimctl: true });
+      expect(enable).not.toHaveBeenCalled();
+    });
+
+    it("the request is granted only when the daemon's home is the account's default (OPENRIG_HOME as resolved at import)", async () => {
+      delete process.env["VITEST"];
+      vi.stubEnv("NODE_ENV", "production");
+      const { startServer } = await import("../src/index.js");
+      const { OPENRIG_HOME } = await import("../src/openrig-compat.js");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      await startServer(7441, { realSimctl: true });
+      const isDefaultHome = path.resolve(OPENRIG_HOME) === path.resolve(path.join(os.userInfo().homedir, ".openrig"));
+      expect(enable).toHaveBeenCalledTimes(isDefaultHome ? 1 : 0);
+    });
+  });
+
   it("does not require a terminal bearer token for the default loopback bind", async () => {
     const { startServer } = await import("../src/index.js");
 

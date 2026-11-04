@@ -11,7 +11,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import {
   SimulatorLifecycle, nameIsForSeat, seatToken, parseSimctlDevices,
-  BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, type SimctlExec,
+  BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, realSimctlAllowed, type SimctlExec,
 } from "../src/domain/simulator-lifecycle.js";
 
 const GB = BYTES_PER_GB;
@@ -56,6 +56,74 @@ class ThrowingEventBus extends EventBus {
 }
 
 const U = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+
+/** A directory holding an `xcrun` that records every call to `log` and answers `list` with no devices: the real simctl is never reachable. */
+function stubXcrun(): { dir: string; log: string; calls: () => string[]; cleanup: () => void } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "of208-xcrun-"));
+  const log = path.join(dir, "calls.log");
+  fs.writeFileSync(path.join(dir, "xcrun"), `#!/bin/sh\necho "$@" >> '${log}'\necho '{"devices":{}}'\n`, { mode: 0o755 });
+  const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+  return { dir, log, calls, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
+describe("OF-208 real simctl is fail-closed", () => {
+  const home = "/Users/someone";
+  const allowed = (over: Partial<Parameters<typeof realSimctlAllowed>[0]> = {}) =>
+    realSimctlAllowed({ env: {}, userHome: home, openrigHome: `${home}/.openrig`, ...over });
+
+  it("is allowed only for the account's own default state directory outside a test runner", () => {
+    expect(allowed()).toBe(true);
+    expect(allowed({ openrigHome: "/var/folders/xx/scratch/openrig-home" })).toBe(false); // every scenario / hermetic daemon
+    expect(allowed({ openrigHome: `${home}/.openrig-other` })).toBe(false);
+    expect(allowed({ openrigHome: `${home}/.openrig/../.openrig` })).toBe(true); // resolved, not string-compared
+    expect(allowed({ env: { VITEST: "true" } })).toBe(false);
+    expect(allowed({ env: { NODE_ENV: "test" } })).toBe(false);
+    expect(allowed({ userHome: "" })).toBe(false);
+    expect(allowed({ openrigHome: "" })).toBe(false);
+  });
+
+  it("a service built without an exec runs no simctl, for a sweep or a removal, and starts no timer", async () => {
+    const db = createFullTestDb();
+    const stub = stubXcrun();
+    const savedPath = process.env["PATH"];
+    process.env["PATH"] = `${stub.dir}:/usr/bin:/bin`;
+    try {
+      const repo = new RigRepository(db);
+      const rig = repo.createRig("eztrack");
+      const node = repo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+      const sim = new SimulatorLifecycle({ db, eventBus: new EventBus(db), capGb: () => 1, platform: "darwin", log: () => {} });
+      expect(sim.enabled).toBe(false);
+      expect(await sim.sweepOverCap()).toEqual({ status: "disabled", outcomes: [] });
+      const removed = sim.seatsForRemoval(rig.id, node.id);
+      repo.deleteNode(node.id);
+      expect(await sim.eraseForRemovedSeats(removed, "seat_removed")).toEqual({ status: "disabled", outcomes: [] });
+      expect(sim.startSweepTimer(10)).toBeNull();
+      expect(stub.calls()).toEqual([]);
+    } finally {
+      process.env["PATH"] = savedPath;
+      stub.cleanup();
+      db.close();
+    }
+  });
+
+  it("enableRealSimctl is the one switch: afterwards the service reaches xcrun (the stub, here)", async () => {
+    const db = createFullTestDb();
+    const stub = stubXcrun();
+    const savedPath = process.env["PATH"];
+    process.env["PATH"] = `${stub.dir}:/usr/bin:/bin`;
+    try {
+      const sim = new SimulatorLifecycle({ db, eventBus: new EventBus(db), capGb: () => 1, platform: "darwin", log: () => {} });
+      sim.enableRealSimctl();
+      expect(sim.enabled).toBe(true);
+      expect((await sim.sweepOverCap()).status).toBe("ok");
+      expect(stub.calls()).toEqual(["simctl list devices -j"]);
+    } finally {
+      process.env["PATH"] = savedPath;
+      stub.cleanup();
+      db.close();
+    }
+  });
+});
 
 describe("OF-208 simulator naming", () => {
   it("a seat's token is the last dot-segment of its logical id, lower-cased", () => {
@@ -308,6 +376,95 @@ describe("OF-208 SimulatorLifecycle", () => {
     });
   });
 
+  describe("which seats take part", () => {
+    it("a kernel seat's generic token never claims a hand-made device, and does not make a project seat's device ambiguous", async () => {
+      seedRig("kernel", ["ops.worker", "ops.steward"]);
+      const proj = seedRig("eztrack", ["build.worker"]);
+      const fake = fakeSimctl([
+        { udid: U(1), name: "steward-test", state: "Shutdown", dataPathSize: 60 * GB }, // hand-made; only the kernel has a `steward`
+        { udid: U(2), name: "worker-test", state: "Shutdown", dataPathSize: 60 * GB }, // hand-made; a project seat is `worker` too
+      ]);
+      const res = await make(fake, () => 20).sweepOverCap();
+      // `steward-test`: no participating seat -> left alone. `worker-test` is the project seat's by the same convention (the project
+      // seat is the only participating `worker`), which is exactly why the kernel must not ALSO be counted: it would make this
+      // device ambiguous for ever, and with the kernel as sole owner it would erase a hand-made device.
+      expect(res.outcomes.find((o) => o.udid === U(1))).toMatchObject({ action: "skipped", reason: "unattributed" });
+      expect(fake.erased()).toEqual([U(2)]);
+      expect(events()[0]!.node_id).toBe(proj.nodes["build.worker"]!.id);
+    });
+
+    it("a device only a kernel seat could own is left alone, over the cap and shut down", async () => {
+      seedRig("kernel", ["ops.worker", "ops.agent", "ops.human"]);
+      const fake = fakeSimctl([
+        { udid: U(1), name: "worker-test", state: "Shutdown", dataPathSize: 60 * GB },
+        { udid: U(2), name: "agent-scratch", state: "Shutdown", dataPathSize: 60 * GB },
+        { udid: U(3), name: "human-sim", state: "Shutdown", dataPathSize: 60 * GB },
+      ]);
+      await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+    });
+
+    it("removing a kernel seat or the kernel rig erases nothing", async () => {
+      const k = seedRig("kernel", ["ops.worker"]);
+      const sim = make(fakeSimctl([]));
+      expect(sim.seatsForRemoval(k.rig.id)).toEqual([]);
+      expect(sim.seatsForRemoval(k.rig.id, k.nodes["ops.worker"]!.id)).toEqual([]);
+    });
+
+    it("an archived rig's copy of a seat does not make the live seat's device ambiguous", async () => {
+      const live = seedRig("eztrack", ["verify.qa"]);
+      const old = seedRig("eztrack-old", ["verify.qa"]);
+      db.prepare("UPDATE rigs SET archived_at = datetime('now') WHERE id = ?").run(old.rig.id);
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }]);
+      await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased()).toEqual([U(1)]);
+      expect(events()[0]).toMatchObject({ rig_id: live.rig.id, node_id: live.nodes["verify.qa"]!.id });
+    });
+
+    it("a device only an archived rig's seat could own is left alone", async () => {
+      const old = seedRig("eztrack-old", ["verify.qa"]);
+      db.prepare("UPDATE rigs SET archived_at = datetime('now') WHERE id = ?").run(old.rig.id);
+      seedRig("other", ["build.impl"]);
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }]);
+      const res = await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ reason: "unattributed" });
+    });
+
+    it("a stopped rig (no live session) takes part: its seat's over-cap device is erased", async () => {
+      const r = seedRig("eztrack", ["verify.qa"]);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE node_id = ?").get(r.nodes["verify.qa"]!.id)).toEqual({ n: 0 });
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }]);
+      await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased()).toEqual([U(1)]);
+    });
+
+    it("deleting an archived rig erases its seats' devices when no participating seat could own them", async () => {
+      const old = seedRig("eztrack-old", ["verify.qa"]);
+      db.prepare("UPDATE rigs SET archived_at = datetime('now') WHERE id = ?").run(old.rig.id);
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 1 * GB }]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(old.rig.id);
+      expect(removed).toHaveLength(1);
+      rigRepo.deleteRig(old.rig.id);
+      await sim.eraseForRemovedSeats(removed, "rig_deleted");
+      expect(fake.erased()).toEqual([U(1)]);
+    });
+
+    it("deleting an archived duplicate leaves the live rig's device alone", async () => {
+      seedRig("eztrack", ["verify.qa"]);
+      const old = seedRig("eztrack-old", ["verify.qa"]);
+      db.prepare("UPDATE rigs SET archived_at = datetime('now') WHERE id = ?").run(old.rig.id);
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 1 * GB }]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(old.rig.id);
+      rigRepo.deleteRig(old.rig.id);
+      const res = await sim.eraseForRemovedSeats(removed, "rig_deleted");
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ reason: "ambiguous" });
+    });
+  });
+
   describe("event", () => {
     it("records udid, name, size, reason (and the cap) for every erase, on the seat's rig and node", async () => {
       const { rig, nodes } = seedRig();
@@ -442,6 +599,11 @@ describe("OF-208 removal reaches the simulators from every removal path", () => 
     await settle(fake, 1);
     expect(fake.erased()).toEqual([U(1)]);
     expect(reasons(db)).toEqual(["seat_removed"]);
+    // the event names the seat (and its rig and node), so whoever reads the log can say whose next boot will be slow
+    const ev = db.prepare("SELECT rig_id, node_id, payload FROM events WHERE type = 'simulator.erased'").get() as { rig_id: string; node_id: string; payload: string };
+    expect(ev.rig_id).toBe(rig.id);
+    expect(JSON.parse(ev.payload)).toMatchObject({ seat: "verify.qa", name: "qa-duo-271", udid: U(1) });
+    expect(ev.node_id).toBe(JSON.parse(ev.payload).nodeId);
   });
 
   it("a refused removal erases nothing", async () => {

@@ -13,8 +13,22 @@
 // Attribution: a device carries no creator (device.plist has name, type, runtime only; launchd_sim and
 // CoreSimulatorService have ppid 1), so a seat owns a device by the name convention: the device name starts with the
 // seat's member token (last dot-segment of its logical id, lower-cased) and a dash. See `seatToken`/`nameIsForSeat`.
+//
+// Which seats take part (pinned in test/simulator-lifecycle.test.ts):
+//   - ownership and ambiguity are judged against the nodes of rigs that are NOT archived and NOT the kernel. A STOPPED
+//     rig takes part: its seats still own their devices. An archived rig does not: `rig down --fresh` and archived
+//     duplicates leave a same-named archived copy of every live rig, and counting those would make every device of a
+//     recreated rig ambiguous for good. The kernel does not: its member tokens are generic (lead, worker, agent, ...), so a
+//     hand-made `worker-test` would be "a kernel seat's".
+//   - a removal acts for the seats that were removed from any non-kernel rig (an archived rig being deleted included); a
+//     kernel seat's removal erases nothing.
+//
+// Real simctl is OFF unless the real launch path turns it on (`enableRealSimctl`, from index.ts, only when
+// `realSimctlAllowed`): a service built any other way (createDaemon in a test child, a scenario daemon with a private
+// OPENRIG_HOME, an in-process harness) has no exec, runs nothing, and starts no timer.
 
 import { execFile } from "node:child_process";
+import { join as joinPath, resolve as resolvePath } from "node:path";
 import type Database from "better-sqlite3";
 import type { EventBus } from "./event-bus.js";
 
@@ -24,6 +38,8 @@ export type SimctlExec = (args: string[]) => Promise<string>;
 export const SIMULATOR_SIZE_CAP_DEFAULT_GB = 20;
 /** 1 GB = 1024^3 bytes. */
 export const BYTES_PER_GB = 1024 ** 3;
+/** The reserved name of the kernel rig (project-rig.ts reserves it). */
+const KERNEL_RIG_NAME = "kernel";
 export const SIMULATOR_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 
 export type SimulatorEraseReason = "seat_removed" | "rig_deleted" | "over_size_cap";
@@ -54,7 +70,7 @@ export interface SimulatorOutcome {
 }
 
 export interface SimulatorRunResult {
-  /** "unavailable": simctl absent, failing or unparseable; nothing was done. */
+  /** "unavailable": simctl absent, failing or unparseable; "disabled": the cap is 0 or real simctl is not enabled in this process. Nothing was done in either case. */
   status: "ok" | "unavailable" | "disabled";
   outcomes: SimulatorOutcome[];
 }
@@ -75,7 +91,19 @@ export function nameIsForSeat(deviceName: string, logicalId: string): boolean {
   return token.length > 0 && deviceName.toLowerCase().startsWith(`${token}-`);
 }
 
-export function defaultSimctlExec(args: string[]): Promise<string> {
+/**
+ * Whether THIS process may run the real `xcrun simctl`: only the daemon of the user's own default state directory
+ * (`<account home>/.openrig`), never under a test runner. `userHome` is the account's home from the OS, not `$HOME`, so a
+ * harness that re-points HOME at a scratch directory is not mistaken for the real user; a private OPENRIG_HOME (every
+ * scenario/hermetic daemon) never matches. Fail-closed: a real daemon on a custom OPENRIG_HOME gets no simulator cleanup.
+ */
+export function realSimctlAllowed(input: { env: Record<string, string | undefined>; userHome: string; openrigHome: string }): boolean {
+  if (input.env["VITEST"] !== undefined || input.env["NODE_ENV"] === "test") return false;
+  if (!input.userHome || !input.openrigHome) return false;
+  return resolvePath(input.openrigHome) === resolvePath(joinPath(input.userHome, ".openrig"));
+}
+
+export function realSimctlExec(args: string[]): Promise<string> {
   const timeout = args[0] === "erase" ? 120_000 : 20_000;
   return new Promise((resolve, reject) => {
     execFile("xcrun", ["simctl", ...args], { timeout, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
@@ -114,7 +142,8 @@ type Trigger =
 export interface SimulatorLifecycleDeps {
   db: Database.Database;
   eventBus: EventBus;
-  /** Injected the way the daemon injects its other external tools; defaults to the real `xcrun simctl`. */
+  /** Injected the way the daemon injects its other external tools. Absent: the service is disabled (no simctl is ever run)
+   *  until `enableRealSimctl()`; only the real launch path calls that. */
   simctl?: SimctlExec;
   /** The configured cap in whole GB (`simulators.size_cap_gb`), read fresh for each sweep. */
   capGb?: () => number;
@@ -126,7 +155,7 @@ export interface SimulatorLifecycleDeps {
 export class SimulatorLifecycle {
   private readonly db: Database.Database;
   private readonly eventBus: EventBus;
-  private readonly simctl: SimctlExec;
+  private simctl: SimctlExec | null;
   private readonly capGb: () => number;
   private readonly platform: string;
   private readonly log: (line: string) => void;
@@ -136,14 +165,26 @@ export class SimulatorLifecycle {
   constructor(deps: SimulatorLifecycleDeps) {
     this.db = deps.db;
     this.eventBus = deps.eventBus;
-    this.simctl = deps.simctl ?? defaultSimctlExec;
+    this.simctl = deps.simctl ?? null;
     this.capGb = deps.capGb ?? (() => SIMULATOR_SIZE_CAP_DEFAULT_GB);
     this.platform = deps.platform ?? process.platform;
     this.log = deps.log ?? ((line) => console.warn(line));
   }
 
-  /** The seats of one rig, or one node of it, read before a delete so the erase can run after the delete committed. */
+  /** Turns the real `xcrun simctl` on. Called by the real launch path only, and only when `realSimctlAllowed`. */
+  enableRealSimctl(): void {
+    this.simctl = realSimctlExec;
+  }
+
+  get enabled(): boolean {
+    return this.simctl !== null;
+  }
+
+  /** The seats of one rig, or one node of it, read before a delete so the erase can run after the delete committed.
+   *  The kernel rig's seats are never returned: their generic tokens must not claim a hand-made device. */
   seatsForRemoval(rigId: string, nodeId?: string): RemovedSeat[] {
+    const rig = this.db.prepare("SELECT name FROM rigs WHERE id = ?").get(rigId) as { name: string } | undefined;
+    if (!rig || rig.name === KERNEL_RIG_NAME) return [];
     const rows = (nodeId === undefined
       ? this.db.prepare("SELECT id AS nodeId, rig_id AS rigId, logical_id AS logicalId FROM nodes WHERE rig_id = ?").all(rigId)
       : this.db.prepare("SELECT id AS nodeId, rig_id AS rigId, logical_id AS logicalId FROM nodes WHERE rig_id = ? AND id = ?").all(rigId, nodeId)
@@ -166,7 +207,7 @@ export class SimulatorLifecycle {
 
   /** Starts the periodic cap sweep (boot sweep, then every interval). Null where there are no simulators (not darwin). */
   startSweepTimer(intervalMs: number = SIMULATOR_SWEEP_INTERVAL_MS): ReturnType<typeof setInterval> | null {
-    if (this.platform !== "darwin") return null;
+    if (this.simctl === null || this.platform !== "darwin") return null;
     const tick = (): void => { void this.sweepOverCap(); };
     tick();
     const timer = setInterval(tick, intervalMs);
@@ -175,6 +216,7 @@ export class SimulatorLifecycle {
   }
 
   private enqueue(trigger: Trigger): Promise<SimulatorRunResult> {
+    if (this.simctl === null) return Promise.resolve({ status: "disabled", outcomes: [] });
     const run = this.queue.then(() => this.run(trigger)).catch((err: unknown): SimulatorRunResult => {
       this.log(`[simulators] unexpected error: ${err instanceof Error ? err.message : String(err)}`);
       return { status: "unavailable", outcomes: [] };
@@ -184,7 +226,12 @@ export class SimulatorLifecycle {
   }
 
   private allNodes(): NodeRow[] {
-    return this.db.prepare("SELECT id AS nodeId, rig_id AS rigId, logical_id AS logicalId FROM nodes").all() as NodeRow[];
+    // The seats that take part: rigs neither archived nor the kernel (a stopped rig takes part). See the header.
+    return this.db.prepare(
+      `SELECT n.id AS nodeId, n.rig_id AS rigId, n.logical_id AS logicalId FROM nodes n
+         JOIN rigs r ON r.id = n.rig_id
+        WHERE r.archived_at IS NULL AND r.name <> ?`,
+    ).all(KERNEL_RIG_NAME) as NodeRow[];
   }
 
   /** Why this device must be left alone, or the seat it belongs to for this trigger. */
@@ -211,7 +258,12 @@ export class SimulatorLifecycle {
   }
 
   private async list(): Promise<SimulatorDevice[]> {
-    return parseSimctlDevices(await this.simctl(["list", "devices", "-j"]));
+    return parseSimctlDevices(await this.exec(["list", "devices", "-j"]));
+  }
+
+  private exec(args: string[]): Promise<string> {
+    if (this.simctl === null) return Promise.reject(new Error("simctl is not enabled in this process"));
+    return this.simctl(args);
   }
 
   private async run(trigger: Trigger): Promise<SimulatorRunResult> {
@@ -248,7 +300,7 @@ export class SimulatorLifecycle {
         continue;
       }
       try {
-        await this.simctl(["erase", fresh.udid]);
+        await this.exec(["erase", fresh.udid]);
       } catch (err) {
         this.log(`[simulators] erase of ${fresh.name} (${fresh.udid}) failed: ${err instanceof Error ? err.message : String(err)}`);
         outcomes.push({ udid: fresh.udid, name: fresh.name, action: "failed", reason, sizeBytes: fresh.sizeBytes });
