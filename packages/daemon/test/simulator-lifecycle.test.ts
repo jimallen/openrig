@@ -1,0 +1,524 @@
+// OF-208 — iOS simulator lifecycle. Every simctl call goes to a fake (SimctlExec injected, the way the daemon injects its
+// other external tools); no test or kit runs the real simctl.
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import type Database from "better-sqlite3";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { EventBus } from "../src/domain/event-bus.js";
+import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import {
+  SimulatorLifecycle, nameIsForSeat, seatToken, parseSimctlDevices,
+  BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, type SimctlExec,
+} from "../src/domain/simulator-lifecycle.js";
+
+const GB = BYTES_PER_GB;
+
+interface FakeDevice { udid: string; name: string; state: string; isAvailable?: boolean; dataPathSize?: number | null }
+
+/** A fake `xcrun simctl`: `list devices -j` renders `devices`; `erase <udid>` is recorded and applied. */
+function fakeSimctl(devices: FakeDevice[]) {
+  const calls: string[][] = [];
+  const state = { devices, failList: null as Error | null, failErase: null as Error | null, onList: null as (() => void) | null, listDelay: 0 };
+  const exec: SimctlExec = async (args) => {
+    calls.push(args);
+    if (args[0] === "list") {
+      if (state.failList) throw state.failList;
+      if (state.listDelay) await new Promise((r) => setTimeout(r, state.listDelay));
+      const body = {
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.iOS-27-1": state.devices.map((d) => ({
+            udid: d.udid, name: d.name, state: d.state, isAvailable: d.isAvailable ?? true,
+            ...(d.dataPathSize === null ? {} : { dataPathSize: d.dataPathSize ?? 0 }),
+          })),
+        },
+      };
+      const out = JSON.stringify(body);
+      state.onList?.();
+      return out;
+    }
+    if (args[0] === "erase") {
+      if (state.failErase) throw state.failErase;
+      const d = state.devices.find((x) => x.udid === args[1]);
+      if (d) d.dataPathSize = 18_337_792;
+      return "";
+    }
+    throw new Error(`fake simctl: unexpected ${args.join(" ")}`);
+  };
+  const erased = () => calls.filter((c) => c[0] === "erase").map((c) => c[1]);
+  return { exec, calls, state, erased };
+}
+
+const U = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+
+describe("OF-208 simulator naming", () => {
+  it("a seat's token is the last dot-segment of its logical id, lower-cased", () => {
+    expect(seatToken("verify.QA")).toBe("qa");
+    expect(seatToken("solo")).toBe("solo");
+  });
+
+  it("a device is named for a seat only by token + dash, case-insensitively", () => {
+    expect(nameIsForSeat("qa-duo-271", "verify.qa")).toBe(true);
+    expect(nameIsForSeat("QA-duo-271", "verify.qa")).toBe(true);
+    expect(nameIsForSeat("qa", "verify.qa")).toBe(false); // no dash
+    expect(nameIsForSeat("qa2-duo-271", "verify.qa")).toBe(false); // a different seat's token
+    expect(nameIsForSeat("xqa-duo", "verify.qa")).toBe(false); // not a prefix
+    expect(nameIsForSeat("-duo", "verify.")).toBe(false); // empty token matches nothing
+  });
+
+  it("parses dataPathSize as bytes and treats a missing or non-numeric size as unknown", () => {
+    const out = parseSimctlDevices(JSON.stringify({ devices: { r: [
+      { udid: "a", name: "n", state: "Shutdown", isAvailable: true, dataPathSize: 5 },
+      { udid: "b", name: "n", state: "Shutdown", isAvailable: true },
+      { udid: "c", name: "n", state: "Shutdown", isAvailable: true, dataPathSize: "7" },
+    ] } }));
+    expect(out.map((d) => d.sizeBytes)).toEqual([5, null, null]);
+  });
+});
+
+describe("OF-208 SimulatorLifecycle", () => {
+  let db: Database.Database;
+  let rigRepo: RigRepository;
+  let eventBus: EventBus;
+  let log: string[];
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    rigRepo = new RigRepository(db);
+    eventBus = new EventBus(db);
+    log = [];
+  });
+  afterEach(() => db.close());
+
+  const make = (fake: ReturnType<typeof fakeSimctl>, capGb?: () => number, platform = "darwin") =>
+    new SimulatorLifecycle({ db, eventBus, simctl: fake.exec, capGb, platform, log: (l) => log.push(l) });
+
+  const events = () => (db.prepare("SELECT rig_id, node_id, payload FROM events WHERE type = 'simulator.erased' ORDER BY seq").all() as Array<{ rig_id: string; node_id: string; payload: string }>)
+    .map((r) => ({ ...r, p: JSON.parse(r.payload) as Record<string, unknown> }));
+
+  /** One rig "eztrack" with the seats the existing devices are named for, minus whatever the test removes. */
+  function seedRig(name = "eztrack", logicalIds = ["verify.qa", "build.impl", "build.ux"]) {
+    const rig = rigRepo.createRig(name);
+    const nodes = Object.fromEntries(logicalIds.map((id) => [id, rigRepo.addNode(rig.id, id, { runtime: "terminal" })]));
+    return { rig, nodes };
+  }
+
+  describe("trigger (a): removal", () => {
+    it("erases only the removed seat's attributed, shut-down devices", async () => {
+      const { rig, nodes } = seedRig();
+      const fake = fakeSimctl([
+        { udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB },
+        { udid: U(2), name: "impl-xedd-duo-271", state: "Shutdown", dataPathSize: 9 * GB }, // another live seat's
+        { udid: U(3), name: "lw7t3-meal-timing-abc", state: "Shutdown", dataPathSize: 9 * GB }, // nobody's
+      ]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(nodes["verify.qa"]!.id);
+      const res = await sim.eraseForRemovedSeats(removed, "seat_removed");
+      expect(res.status).toBe("ok");
+      expect(fake.erased()).toEqual([U(1)]);
+    });
+
+    it("skips a booted device of the removed seat and says so", async () => {
+      const { rig, nodes } = seedRig();
+      const fake = fakeSimctl([
+        { udid: U(1), name: "qa-duo-271", state: "Booted", dataPathSize: 8 * GB },
+        { udid: U(2), name: "qa-duo-272", state: "Shutting Down", dataPathSize: 8 * GB },
+        { udid: U(3), name: "qa-duo-273", state: "Shutdown", dataPathSize: 8 * GB },
+      ]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(nodes["verify.qa"]!.id);
+      const res = await sim.eraseForRemovedSeats(removed, "seat_removed");
+      expect(fake.erased()).toEqual([U(3)]);
+      expect(res.outcomes.filter((o) => o.action === "skipped").map((o) => [o.udid, o.reason])).toEqual([
+        [U(1), "not_shut_down:Booted"], [U(2), "not_shut_down:Shutting Down"],
+      ]);
+      expect(log.some((l) => l.includes(U(1)) && l.includes("Booted"))).toBe(true);
+    });
+
+    it("never touches a device no seat is named for, nor an unavailable one", async () => {
+      const { rig, nodes } = seedRig();
+      const fake = fakeSimctl([
+        { udid: U(1), name: "somebody-elses-sim", state: "Shutdown", dataPathSize: 30 * GB },
+        { udid: U(2), name: "qa", state: "Shutdown", dataPathSize: 30 * GB },
+        { udid: U(3), name: "qa-gone-runtime", state: "Shutdown", isAvailable: false, dataPathSize: 30 * GB },
+      ]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(nodes["verify.qa"]!.id);
+      await sim.eraseForRemovedSeats(removed, "seat_removed");
+      expect(fake.erased()).toEqual([]);
+    });
+
+    it("leaves a device two seats could own: the same member id in another rig", async () => {
+      const a = seedRig("eztrack", ["verify.qa"]);
+      seedRig("other-rig", ["review.qa"]);
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB }]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(a.rig.id, a.nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(a.nodes["verify.qa"]!.id);
+      const res = await sim.eraseForRemovedSeats(removed, "seat_removed");
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ action: "skipped", reason: "ambiguous" });
+    });
+
+    it("a rig removal erases every removed seat's devices and records rig_deleted", async () => {
+      const { rig } = seedRig();
+      const fake = fakeSimctl([
+        { udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB },
+        { udid: U(2), name: "impl-xedd-duo-271", state: "Shutdown", dataPathSize: 9 * GB },
+        { udid: U(3), name: "ux-duo-271", state: "Booted", dataPathSize: 12 * GB },
+      ]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(rig.id);
+      expect(removed).toHaveLength(3);
+      rigRepo.deleteRig(rig.id);
+      await sim.eraseForRemovedSeats(removed, "rig_deleted");
+      expect(fake.erased().sort()).toEqual([U(1), U(2)]);
+      expect(events().map((e) => e.p["reason"])).toEqual(["rig_deleted", "rig_deleted"]);
+    });
+
+    it("re-reads the device right before the erase: a device booted in between is left alone", async () => {
+      const { rig, nodes } = seedRig();
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB }]);
+      let lists = 0;
+      fake.state.onList = () => { if (++lists === 1) fake.state.devices[0]!.state = "Booted"; };
+      // The first list is rendered before onList runs, so it reads Shutdown; every later list reads Booted.
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(nodes["verify.qa"]!.id);
+      const res = await sim.eraseForRemovedSeats(removed, "seat_removed");
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ action: "skipped", reason: "not_shut_down:Booted" });
+      expect(events()).toEqual([]);
+    });
+  });
+
+  describe("trigger (b): size cap", () => {
+    it("erases a shut-down attributed device only above the cap (strictly)", async () => {
+      seedRig();
+      const fake = fakeSimctl([
+        { udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 20 * GB + 1 },
+        { udid: U(2), name: "impl-duo-1", state: "Shutdown", dataPathSize: 20 * GB },
+        { udid: U(3), name: "ux-duo-1", state: "Shutdown", dataPathSize: 19 * GB },
+      ]);
+      const res = await make(fake, () => 20).sweepOverCap();
+      expect(res.status).toBe("ok");
+      expect(fake.erased()).toEqual([U(1)]);
+      expect(res.outcomes.filter((o) => o.reason === "under_cap").map((o) => o.udid)).toEqual([U(2), U(3)]);
+    });
+
+    it("never erases a booted device, however big", async () => {
+      seedRig();
+      const fake = fakeSimctl([{ udid: U(1), name: "impl-xedd-duo-271", state: "Booted", dataPathSize: 18.8 * GB * 3 }]);
+      await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+    });
+
+    it("never erases an unattributed or ambiguous device, however big", async () => {
+      seedRig("eztrack", ["verify.qa"]);
+      seedRig("other-rig", ["review.qa"]);
+      const fake = fakeSimctl([
+        { udid: U(1), name: "lw7t3-meal-timing-abc", state: "Shutdown", dataPathSize: 60 * GB },
+        { udid: U(2), name: "qa-duo-271", state: "Shutdown", dataPathSize: 60 * GB },
+      ]);
+      const res = await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes.map((o) => o.reason)).toEqual(["unattributed", "ambiguous"]);
+    });
+
+    it("leaves a device whose size simctl did not give", async () => {
+      seedRig();
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: null }]);
+      const res = await make(fake, () => 20).sweepOverCap();
+      expect(fake.erased()).toEqual([]);
+      expect(res.outcomes[0]).toMatchObject({ action: "skipped", reason: "size_unknown" });
+    });
+
+    it("reads the cap fresh each sweep and 0 turns the sweep off without calling simctl", async () => {
+      seedRig();
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB }]);
+      let cap = 0;
+      const sim = make(fake, () => cap);
+      expect((await sim.sweepOverCap()).status).toBe("disabled");
+      expect(fake.calls).toEqual([]);
+      cap = 5;
+      await sim.sweepOverCap();
+      expect(fake.erased()).toEqual([U(1)]);
+    });
+
+    it("the daemon setting defaults to 20 GB and an override reaches the sweep", async () => {
+      seedRig();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "of208-cfg-"));
+      const cfg = path.join(dir, "config.json");
+      const savedEnv = process.env["OPENRIG_SIMULATORS_SIZE_CAP_GB"];
+      delete process.env["OPENRIG_SIMULATORS_SIZE_CAP_GB"];
+      try {
+        const store = new SettingsStore(cfg);
+        expect(SIMULATOR_SIZE_CAP_DEFAULT_GB).toBe(20);
+        expect(store.resolveOne("simulators.size_cap_gb")).toMatchObject({ value: 20, source: "default" });
+
+        const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB }]);
+        const sim = make(fake, () => Number(store.resolveOne("simulators.size_cap_gb").value));
+        await sim.sweepOverCap();
+        expect(fake.erased()).toEqual([]); // 8 GB is under the default 20
+
+        store.set("simulators.size_cap_gb", "5");
+        expect(store.resolveOne("simulators.size_cap_gb")).toMatchObject({ value: 5, source: "file" });
+        await sim.sweepOverCap();
+        expect(fake.erased()).toEqual([U(1)]); // 8 GB is over 5
+
+        expect(() => store.set("simulators.size_cap_gb", "-1")).toThrow(/integer >= 0/);
+        expect(() => store.set("simulators.size_cap_gb", "ten")).toThrow();
+        process.env["OPENRIG_SIMULATORS_SIZE_CAP_GB"] = "7";
+        expect(store.resolveOne("simulators.size_cap_gb")).toMatchObject({ value: 7, source: "env" });
+      } finally {
+        if (savedEnv === undefined) delete process.env["OPENRIG_SIMULATORS_SIZE_CAP_GB"]; else process.env["OPENRIG_SIMULATORS_SIZE_CAP_GB"] = savedEnv;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("the timer is not started off darwin and ticks on darwin (boot sweep, then each interval)", async () => {
+      seedRig();
+      const fake = fakeSimctl([]);
+      expect(make(fake, () => 20, "linux").startSweepTimer(1000)).toBeNull();
+      expect(fake.calls).toEqual([]);
+
+      vi.useFakeTimers();
+      try {
+        const timer = make(fake, () => 20, "darwin").startSweepTimer(1000)!;
+        expect(timer).not.toBeNull();
+        await vi.advanceTimersByTimeAsync(0);
+        const boot = fake.calls.filter((c) => c[0] === "list").length;
+        expect(boot).toBe(1);
+        await vi.advanceTimersByTimeAsync(2500);
+        expect(fake.calls.filter((c) => c[0] === "list").length).toBe(3);
+        clearInterval(timer);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("event", () => {
+    it("records udid, name, size, reason (and the cap) for every erase, on the seat's rig and node", async () => {
+      const { rig, nodes } = seedRig();
+      const fake = fakeSimctl([{ udid: U(7), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8_375_889_920 }]);
+      await make(fake, () => 5).sweepOverCap();
+      const ev = events();
+      expect(ev).toHaveLength(1);
+      expect(ev[0]).toMatchObject({ rig_id: rig.id, node_id: nodes["verify.qa"]!.id });
+      expect(ev[0]!.p).toMatchObject({
+        type: "simulator.erased", seat: "verify.qa", udid: U(7), name: "qa-duo-271",
+        sizeBytes: 8_375_889_920, reason: "over_size_cap", capBytes: 5 * GB,
+      });
+    });
+
+    it("a removal event has no cap and survives the rig's deletion", async () => {
+      const { rig } = seedRig();
+      const fake = fakeSimctl([{ udid: U(7), name: "qa-duo-271", state: "Shutdown", dataPathSize: 123 }]);
+      const sim = make(fake);
+      const removed = sim.seatsForRemoval(rig.id);
+      rigRepo.deleteRig(rig.id);
+      await sim.eraseForRemovedSeats(removed, "rig_deleted");
+      const ev = events();
+      expect(ev).toHaveLength(1);
+      expect(ev[0]!.p).toMatchObject({ udid: U(7), name: "qa-duo-271", sizeBytes: 123, reason: "rig_deleted" });
+      expect(ev[0]!.p).not.toHaveProperty("capBytes");
+    });
+
+    it("writes no event for a device it skipped or failed to erase", async () => {
+      seedRig();
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }]);
+      fake.state.failErase = new Error("erase failed");
+      const res = await make(fake, () => 20).sweepOverCap();
+      expect(res.outcomes[0]).toMatchObject({ action: "failed", reason: "over_size_cap" });
+      expect(events()).toEqual([]);
+    });
+  });
+
+  describe("simctl absent or failing", () => {
+    it("a missing xcrun does nothing, throws nothing, writes nothing", async () => {
+      const { rig, nodes } = seedRig();
+      const fake = fakeSimctl([]);
+      fake.state.failList = Object.assign(new Error("spawn xcrun ENOENT"), { code: "ENOENT" });
+      const sim = make(fake, () => 20);
+      expect(await sim.sweepOverCap()).toEqual({ status: "unavailable", outcomes: [] });
+      const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      expect(await sim.eraseForRemovedSeats(removed, "seat_removed")).toEqual({ status: "unavailable", outcomes: [] });
+      expect(fake.calls.every((c) => c[0] === "list")).toBe(true);
+      expect(events()).toEqual([]);
+    });
+
+    it("unparseable list output does nothing", async () => {
+      seedRig();
+      const sim = new SimulatorLifecycle({ db, eventBus, simctl: async () => "not json", capGb: () => 20, log: (l) => log.push(l) });
+      expect(await sim.sweepOverCap()).toEqual({ status: "unavailable", outcomes: [] });
+    });
+
+    it("a failed erase is reported and the next device is still handled", async () => {
+      seedRig();
+      const fake = fakeSimctl([
+        { udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB },
+        { udid: U(2), name: "impl-duo-1", state: "Shutdown", dataPathSize: 30 * GB },
+      ]);
+      const realExec = fake.exec;
+      const sim = new SimulatorLifecycle({
+        db, eventBus, capGb: () => 20, log: (l) => log.push(l),
+        simctl: async (args) => { if (args[0] === "erase" && args[1] === U(1)) { fake.calls.push(args); throw new Error("busy"); } return realExec(args); },
+      });
+      const res = await sim.sweepOverCap();
+      expect(res.outcomes.map((o) => [o.udid, o.action])).toEqual([[U(1), "failed"], [U(2), "erased"]]);
+      expect(log.some((l) => l.includes(U(1)) && l.includes("busy"))).toBe(true);
+    });
+
+    it("an event write failure after an erase does not throw", async () => {
+      seedRig();
+      const fake = fakeSimctl([{ udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 30 * GB }]);
+      const sim = new SimulatorLifecycle({ db, eventBus: { emit: () => { throw new Error("db locked"); } } as unknown as EventBus, simctl: fake.exec, capGb: () => 20, log: (l) => log.push(l) });
+      const res = await sim.sweepOverCap();
+      expect(res.outcomes[0]).toMatchObject({ action: "erased" });
+      expect(log.some((l) => l.includes("event could not be written"))).toBe(true);
+    });
+  });
+
+  describe("serialisation", () => {
+    it("two removals never interleave their simctl calls", async () => {
+      const { rig, nodes } = seedRig();
+      const fake = fakeSimctl([
+        { udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB },
+        { udid: U(2), name: "impl-duo-271", state: "Shutdown", dataPathSize: 8 * GB },
+      ]);
+      fake.state.listDelay = 5;
+      const sim = make(fake);
+      const qa = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      const impl = sim.seatsForRemoval(rig.id, nodes["build.impl"]!.id);
+      rigRepo.deleteNode(nodes["verify.qa"]!.id);
+      rigRepo.deleteNode(nodes["build.impl"]!.id);
+      await Promise.all([sim.eraseForRemovedSeats(qa, "seat_removed"), sim.eraseForRemovedSeats(impl, "seat_removed")]);
+      // each run is list, re-list, erase; serialised, the second starts after the first erased.
+      expect(fake.calls.map((c) => c[0])).toEqual(["list", "list", "erase", "list", "list", "erase"]);
+      expect(fake.erased()).toEqual([U(1), U(2)]);
+    });
+  });
+});
+
+describe("OF-208 removal reaches the simulators from every removal path", () => {
+  let db: Database.Database;
+  beforeEach(() => { db = createFullTestDb(); });
+  afterEach(() => db.close());
+
+  function wire(devices: FakeDevice[]) {
+    const fake = fakeSimctl(devices);
+    const eventBus = new EventBus(db);
+    const simulatorLifecycle = new SimulatorLifecycle({ db, eventBus, simctl: fake.exec, capGb: () => 0, platform: "linux", log: () => {} });
+    const setup = createTestApp(db, { simulatorLifecycle });
+    return { fake, setup, simulatorLifecycle };
+  }
+  const devs = (): FakeDevice[] => [
+    { udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB },
+    { udid: U(2), name: "impl-duo-271", state: "Shutdown", dataPathSize: 9 * GB },
+  ];
+  const settle = (fake: ReturnType<typeof fakeSimctl>, n: number) => vi.waitFor(() => expect(fake.erased().length).toBe(n));
+
+  it("DELETE /api/rigs/:rigId/nodes/:nodeRef (rig remove) erases that seat's device", async () => {
+    const { fake, setup } = wire(devs());
+    const rig = setup.rigRepo.createRig("eztrack");
+    setup.rigRepo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+    setup.rigRepo.addNode(rig.id, "build.impl", { runtime: "terminal" });
+    const res = await setup.app.request(`/api/rigs/${rig.id}/nodes/verify.qa`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    await settle(fake, 1);
+    expect(fake.erased()).toEqual([U(1)]);
+  });
+
+  it("a refused removal erases nothing", async () => {
+    const { fake, setup } = wire(devs());
+    const res = await setup.app.request(`/api/rigs/no-such-rig/nodes/verify.qa`, { method: "DELETE" });
+    expect(res.status).toBe(404);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("DELETE /api/rigs/:rigId/pods/:podRef (rig shrink) erases the pod members' devices", async () => {
+    const { fake, setup } = wire(devs());
+    const rig = setup.rigRepo.createRig("eztrack");
+    await setup.rigExpansionService.expand({
+      rigId: rig.id,
+      pod: { id: "verify", label: "Verify", members: [{ id: "qa", runtime: "terminal", agentRef: "builtin:terminal", profile: "none", cwd: "/tmp" }], edges: [] },
+    });
+    setup.rigRepo.addNode(rig.id, "build.impl", { runtime: "terminal" });
+    const res = await setup.app.request(`/api/rigs/${rig.id}/pods/verify`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    await settle(fake, 1);
+    expect(fake.erased()).toEqual([U(1)]);
+  });
+
+  it("POST /api/rigs/:rigId/release with delete erases the rig's seats' devices", async () => {
+    const { fake, setup } = wire(devs());
+    const rig = setup.rigRepo.createRig("eztrack");
+    setup.rigRepo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+    setup.rigRepo.addNode(rig.id, "build.impl", { runtime: "terminal" });
+    const res = await setup.app.request(`/api/rigs/${rig.id}/release`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).deleted).toBe(true);
+    await settle(fake, 2);
+    expect(fake.erased().sort()).toEqual([U(1), U(2)]);
+  });
+
+  it("release without delete removes no seat and erases nothing", async () => {
+    const { fake, setup } = wire(devs());
+    const rig = setup.rigRepo.createRig("eztrack");
+    setup.rigRepo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+    const res = await setup.app.request(`/api/rigs/${rig.id}/release`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("DELETE /api/rigs/:rigId erases the rig's seats' devices", async () => {
+    const { fake, setup } = wire(devs());
+    const rig = setup.rigRepo.createRig("eztrack");
+    setup.rigRepo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+    setup.rigRepo.addNode(rig.id, "build.impl", { runtime: "terminal" });
+    const res = await setup.app.request(`/api/rigs/${rig.id}`, { method: "DELETE" });
+    expect(res.status).toBe(204);
+    await settle(fake, 2);
+    expect(fake.erased().sort()).toEqual([U(1), U(2)]);
+  });
+
+  it("rig down --delete (teardown with delete) erases the rig's seats' devices, stopped or not", async () => {
+    const { fake, setup } = wire(devs());
+    const rig = setup.rigRepo.createRig("eztrack");
+    setup.rigRepo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+    setup.rigRepo.addNode(rig.id, "build.impl", { runtime: "terminal" });
+    const result = await setup.teardownOrchestrator.teardown(rig.id, { delete: true });
+    expect(result.deleted).toBe(true);
+    await settle(fake, 2);
+    expect(fake.erased().sort()).toEqual([U(1), U(2)]);
+  });
+
+  it("rig down without delete erases nothing", async () => {
+    const { fake, setup } = wire(devs());
+    const rig = setup.rigRepo.createRig("eztrack");
+    setup.rigRepo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+    await setup.teardownOrchestrator.teardown(rig.id, {});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("a harness that wires no SimulatorLifecycle removes seats as before", async () => {
+    const setup = createTestApp(db);
+    const rig = setup.rigRepo.createRig("eztrack");
+    setup.rigRepo.addNode(rig.id, "verify.qa", { runtime: "terminal" });
+    const res = await setup.app.request(`/api/rigs/${rig.id}/nodes/verify.qa`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+  });
+});

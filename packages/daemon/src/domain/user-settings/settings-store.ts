@@ -205,6 +205,8 @@ export const SETTINGS_VALID_KEYS = [
   // VALID_KEYS (each side's exact-equality parity test pins its own list). A
   // flip is read at the next daily maintenance tick — never retroactive to an
   // in-flight sweep.
+  // OF-208 — erase a seat's SHUT DOWN simulator above this many GB; default 20, 0 off. Lockstep with the CLI twin.
+  "simulators.size_cap_gb",
   "retention.enabled",
   "retention.transitions_days",
   "retention.watchdog_days",
@@ -321,6 +323,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "retention.transitions_days": { primary: "OPENRIG_RETENTION_TRANSITIONS_DAYS" },
   "retention.watchdog_days": { primary: "OPENRIG_RETENTION_WATCHDOG_DAYS" },
   "retention.usage_samples_days": { primary: "OPENRIG_RETENTION_USAGE_SAMPLES_DAYS" },
+  "simulators.size_cap_gb": { primary: "OPENRIG_SIMULATORS_SIZE_CAP_GB" },
   "retention.watchdog_keep_per_job": { primary: "OPENRIG_RETENTION_WATCHDOG_KEEP_PER_JOB" },
   "retention.batch_size": { primary: "OPENRIG_RETENTION_BATCH_SIZE" },
   // S04 — net-new key; OPENRIG_* primary only.
@@ -404,6 +407,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "usage.pi_cost_facts": ["usage", "piCostFacts"],
   "usage.pi_openrouter_charge": ["usage", "piOpenRouterCharge"],
   "usage.pda_cost_facts": ["usage", "pdaCostFacts"],
+  "simulators.size_cap_gb": ["simulators", "sizeCapGb"],
   "retention.enabled": ["retention", "enabled"],
   "retention.transitions_days": ["retention", "transitionsDays"],
   "retention.watchdog_days": ["retention", "watchdogDays"],
@@ -692,6 +696,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     // OPR.0.4.6.FS-1 W2 — retention defaults (arch D3 safe values: archive
     // terminal+aged transitions >30d; prune watchdog_history >14d keep-50/job;
     // 500 rows/qitems per bounded batch; enabled by default).
+    case "simulators.size_cap_gb": return 20;
     case "retention.enabled": return true;
     case "retention.transitions_days": return 30;
     case "retention.watchdog_days": return 14;
@@ -884,6 +889,11 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
   "retention.watchdog_keep_per_job": (raw, coerced) => {
     if (!/^-?\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 0) {
       throw new Error(`Invalid value for retention.watchdog_keep_per_job: must be an integer >= 0, got "${raw}"`);
+    }
+  },
+  "simulators.size_cap_gb": (raw, coerced) => {
+    if (!/^-?\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 0) {
+      throw new Error(`Invalid value for simulators.size_cap_gb: must be an integer >= 0 (0 turns the cap off), got "${raw}"`);
     }
   },
   "retention.batch_size": (raw, coerced) => {

@@ -151,6 +151,8 @@ export type RigEvent =
   | { type: "rig.deleted"; rigId: string }
   | { type: "node.added"; rigId: string; nodeId: string; logicalId: string }
   | { type: "node.removed"; rigId: string; nodeId: string }
+  /** OF-208: a seat's iOS simulator was erased (`simctl erase`; the udid stays). `reason` is why; `capBytes` is set for over_size_cap. */
+  | { type: "simulator.erased"; rigId: string; nodeId: string; seat: string; udid: string; name: string; sizeBytes: number | null; reason: "seat_removed" | "rig_deleted" | "over_size_cap"; capBytes?: number }
   | { type: "rig.edge_added"; rigId: string; edgeId: string; from: string; to: string; kind: string; reason: string | null; operator: string | null }
   | { type: "binding.updated"; rigId: string; nodeId: string }
   | { type: "session.status_changed"; rigId: string; nodeId: string; status: string }

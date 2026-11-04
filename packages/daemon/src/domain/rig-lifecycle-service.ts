@@ -9,6 +9,7 @@ import type { QueueRepository } from "./queue-repository.js";
 import { findOtherSessionOwner } from "./session-owner.js";
 import { heldMessageIdsFor, openMessageIdsFor } from "./seat-messaging/message-store.js";
 import { probePresence, type SessionPresence } from "./session-liveness.js";
+import type { SimulatorLifecycle } from "./simulator-lifecycle.js";
 
 type ClaimedSessionRow = {
   session_id: string;
@@ -153,6 +154,8 @@ interface RigLifecycleDeps {
   eventBus: EventBus;
   queueRepo: QueueRepository;
   tmuxAdapter?: TmuxAdapter;
+  /** OF-208: erases a removed seat's attributed, shut-down simulators after the delete committed. */
+  simulatorLifecycle?: SimulatorLifecycle;
 }
 
 export class RigLifecycleService {
@@ -163,6 +166,7 @@ export class RigLifecycleService {
   private readonly eventBus: EventBus;
   private readonly queueRepo: QueueRepository;
   private readonly tmuxAdapter: TmuxAdapter | null;
+  private readonly simulatorLifecycle: SimulatorLifecycle | null;
 
   constructor(deps: RigLifecycleDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("RigLifecycleService: rigRepo must share the same db handle");
@@ -177,6 +181,7 @@ export class RigLifecycleService {
     this.eventBus = deps.eventBus;
     this.queueRepo = deps.queueRepo;
     this.tmuxAdapter = deps.tmuxAdapter ?? null;
+    this.simulatorLifecycle = deps.simulatorLifecycle ?? null;
   }
 
   async unclaimSession(sessionRef: string): Promise<UnclaimSessionResult> {
@@ -360,6 +365,7 @@ export class RigLifecycleService {
 
     let deleted = false;
     if (failed.length === 0 && opts?.delete) {
+      const removedSeats = this.simulatorLifecycle?.seatsForRemoval(rigId) ?? [];
       let persistedSeq = 0;
       let persistedAt = "";
       const tx = this.db.transaction(() => {
@@ -380,6 +386,7 @@ export class RigLifecycleService {
         createdAt: persistedAt,
       });
       deleted = true;
+      void this.simulatorLifecycle?.eraseForRemovedSeats(removedSeats, "rig_deleted");
     }
 
     return {
@@ -501,6 +508,7 @@ export class RigLifecycleService {
     ).all(node.node_id, node.latest_session_id ?? "") as Array<{ session_name: string }>).map((r) => r.session_name)
       .filter((name) => keepSession || name !== node.latest_session_name);
 
+    const removedSeats = this.simulatorLifecycle?.seatsForRemoval(rigId, node.node_id) ?? [];
     const persisted: Array<{ type: "session.detached" | "node.removed"; seq: number; createdAt: string }> = [];
     const persistedOlder: Array<{ name: string; seq: number; createdAt: string }> = [];
     let rosterEvent: ReturnType<EventBus["persistWithinTransaction"]> | null = null;
@@ -563,6 +571,8 @@ export class RigLifecycleService {
       }
     }
     if (rosterEvent) this.eventBus.notifySubscribers(rosterEvent);
+    // OF-208: the node row is gone; erase its attributed, shut-down simulators (queued, never throws, never delays this reply).
+    void this.simulatorLifecycle?.eraseForRemovedSeats(removedSeats, "seat_removed");
 
     return {
       ok: true,

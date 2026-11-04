@@ -12,6 +12,7 @@ import nodePath from "node:path";
 import { removeManagedBlocksFromFile, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE } from "./managed-blocks.js";
 import { stopTranscriptRotation } from "./transcript-rotation.js";
 import { findOtherSessionOwner } from "./session-owner.js";
+import type { SimulatorLifecycle } from "./simulator-lifecycle.js";
 
 export interface TeardownResult {
   rigId: string;
@@ -43,6 +44,8 @@ interface TeardownDeps {
   eventBus: EventBus;
   resumeMetadataRefresher?: ResumeMetadataRefresher;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
+  /** OF-208: erases a deleted rig's attributed, shut-down simulators after the delete committed. */
+  simulatorLifecycle?: SimulatorLifecycle;
 }
 
 interface LatestNodeSession {
@@ -375,6 +378,7 @@ export class RigTeardownOrchestrator {
 
   /** Atomically delete rig + persist rig.deleted event */
   private atomicDelete(rigId: string): void {
+    const removedSeats = this.deps.simulatorLifecycle?.seatsForRemoval(rigId) ?? [];
     let persistedSeq = 0;
     let persistedAt = "";
     const tx = this.db.transaction(() => {
@@ -387,6 +391,7 @@ export class RigTeardownOrchestrator {
     this.deps.eventBus.notifySubscribers({
       type: "rig.deleted", rigId, seq: persistedSeq, createdAt: persistedAt,
     });
+    void this.deps.simulatorLifecycle?.eraseForRemovedSeats(removedSeats, "rig_deleted");
   }
 
   /** Get latest session per node, filtered to live statuses.

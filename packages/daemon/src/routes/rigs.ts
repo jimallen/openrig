@@ -513,6 +513,10 @@ rigsRoutes.delete("/:id", async (c) => {
     return c.body(null, 204);
   }
 
+  // OF-208: the seats are read before the delete; their simulators are erased after it committed.
+  const simulatorLifecycle = c.get("simulatorLifecycle" as never) as import("../domain/simulator-lifecycle.js").SimulatorLifecycle | undefined;
+  const removedSeats = simulatorLifecycle?.seatsForRemoval(rigId) ?? [];
+
   // Atomic: event persist + rig delete in one transaction
   // Uses eventBus.db (same handle as rigRepo.db — enforced by shared AppDeps)
   const txn = eventBus.db.transaction(() => {
@@ -528,6 +532,7 @@ rigsRoutes.delete("/:id", async (c) => {
     const remove = async () => {
       const persistedEvent = txn();
       eventBus.notifySubscribers(persistedEvent);
+      void simulatorLifecycle?.eraseForRemovedSeats(removedSeats, "rig_deleted");
       return c.body(null, 204);
     };
     const guard = (c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)?.deliveryGuard;

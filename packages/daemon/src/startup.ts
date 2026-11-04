@@ -92,6 +92,7 @@ import { routeBundleContents } from "./domain/bundle-content-routing.js";
 import { DiscoveryRepository } from "./domain/discovery-repository.js";
 import { SessionReconciler } from "./domain/session-reconciler.js";
 import { RigLifecycleService } from "./domain/rig-lifecycle-service.js";
+import { SimulatorLifecycle } from "./domain/simulator-lifecycle.js";
 import { RigExpansionService } from "./domain/rig-expansion-service.js";
 // TODO: AS-T12 — migrate to pod-aware bundle source resolver
 import { LegacyBundleSourceResolver as BundleSourceResolver } from "./domain/bundle-source-resolver.js";
@@ -1351,8 +1352,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     piRunnerStateStore: piAdapter,
     ompRunnerStateStore: ompAdapter,
   });
+  // OF-208: iOS simulator lifecycle. The cap is read fresh from the settings store on every sweep.
+  const simulatorLifecycle = new SimulatorLifecycle({
+    db, eventBus,
+    capGb: () => Number(new ContextPackSettingsStore().resolveOne("simulators.size_cap_gb").value),
+  });
   const rigLifecycleService = new RigLifecycleService({
-    db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter,
+    db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter, simulatorLifecycle,
   });
   const rigExpansionService = new RigExpansionService({ db, rigRepo, eventBus, nodeLauncher, podInstantiator, sessionRegistry });
 
@@ -1503,6 +1509,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     discoveryRepo,
     sessionReconciler,
     rigLifecycleService,
+    simulatorLifecycle,
     rigExpansionService,
     // Slice 15 — SeatActivityService owns the `terminal-active` primitive
     // (tmux byte-stream). Wired into PsProjectionService so `rig ps`
@@ -1522,7 +1529,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       },
     }),
     teardownOrchestrator: new RigTeardownOrchestrator({
-      db, rigRepo, sessionRegistry, tmuxAdapter, snapshotCapture, eventBus, resumeMetadataRefresher, serviceOrchestrator,
+      db, rigRepo, sessionRegistry, tmuxAdapter, snapshotCapture, eventBus, resumeMetadataRefresher, serviceOrchestrator, simulatorLifecycle,
     }),
     podInstantiator,
     podBundleSourceResolver,

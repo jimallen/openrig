@@ -119,7 +119,9 @@ describe("config routes (User Settings v0)", () => {
     // + 1 transport.native_claude (native comms step 3; default on since S2).
     // + 1 recovery.post_restart_prompt (OF-182; default on).
     // + 1 transport.message_pump (Seat Messaging S3; default on).
-    expect(Object.keys(body.settings).length).toBe(83);
+    // + 1 simulators.size_cap_gb (OF-208; default 20).
+    expect(Object.keys(body.settings).length).toBe(84);
+    expect(body.settings["simulators.size_cap_gb"]).toMatchObject({ value: 20, source: "default", defaultValue: 20 });
     expect(body.settings["recovery.post_restart_prompt"]).toMatchObject({ value: true, source: "default" });
     expect(body.settings["transport.native_claude"]?.value).toBe(true);
     expect(body.settings["transport.message_pump"]).toMatchObject({ value: true, source: "default" });

@@ -262,6 +262,8 @@ export function createTestApp(
       diagnose(nodeId: string): import("../../src/domain/permission-drift.js").PermissionDriftDiagnostic | null;
     };
     listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
+    /** OF-208: wire a SimulatorLifecycle (with a fake simctl) into removal; omitted, removal touches no simulator. */
+    simulatorLifecycle?: import("../../src/domain/simulator-lifecycle.js").SimulatorLifecycle;
     /**
      * Agent Starter v1 vertical M2: optional real-fs upRouter for tests
      * that POST /api/up with a YAML spec on disk. Default behavior
@@ -381,7 +383,7 @@ export function createTestApp(
   const discoveryRepo = new DiscoveryRepository(db);
   const sessionReconciler = new SessionReconciler({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, transcriptStore });
   const rigExpansionService = new RigExpansionService({ db, rigRepo, eventBus, nodeLauncher, podInstantiator, sessionRegistry });
-  const rigLifecycleService = new RigLifecycleService({ db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo, tmuxAdapter: tmux });
+  const rigLifecycleService = new RigLifecycleService({ db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo, tmuxAdapter: tmux, simulatorLifecycle: opts?.simulatorLifecycle });
   const contextUsageStore = new ContextUsageStore(db, { stateDir: "/tmp/openrig-test" });
   const healthProjection = new HealthProjectionService(new LiveContextHealthSource({
     db,
@@ -427,9 +429,10 @@ export function createTestApp(
     bootstrapOrchestrator, bootstrapRepo,
     discoveryRepo, sessionReconciler, rigExpansionService,
     rigLifecycleService,
+    simulatorLifecycle: opts?.simulatorLifecycle,
     psProjectionService: new PsProjectionService({ db }),
     upRouter,
-    teardownOrchestrator: new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus }),
+    teardownOrchestrator: new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus, simulatorLifecycle: opts?.simulatorLifecycle }),
     podInstantiator,
     podBundleSourceResolver,
     contextUsageStore,
@@ -469,7 +472,7 @@ export function createTestApp(
     rigLifecycleService,
     psProjectionService: new PsProjectionService({ db }),
     upRouter,
-    teardownOrchestrator: new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus }),
+    teardownOrchestrator: new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus, simulatorLifecycle: opts?.simulatorLifecycle }),
     podInstantiator, podBundleSourceResolver, db, tmuxAdapter: tmux,
     agentActivityStore,
     startupOrchestrator,

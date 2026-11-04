@@ -180,6 +180,8 @@ export interface AppDeps {
   sessionReconciler: SessionReconciler;
   rigExpansionService?: import("./domain/rig-expansion-service.js").RigExpansionService;
   rigLifecycleService?: RigLifecycleService;
+  /** OF-208: erases seats' simulators on removal and over the size cap; absent in harnesses that do not wire it. */
+  simulatorLifecycle?: import("./domain/simulator-lifecycle.js").SimulatorLifecycle;
   /**
    * Slice 15 — Seat-activity service (terminal-active primitive). The
    * daemon owns one instance and wires it into PsProjectionService and
@@ -547,6 +549,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("sessionReconciler" as never, deps.sessionReconciler);
     c.set("rigExpansionService" as never, deps.rigExpansionService);
     c.set("rigLifecycleService" as never, deps.rigLifecycleService);
+    c.set("simulatorLifecycle" as never, deps.simulatorLifecycle);
     c.set("psProjectionService" as never, deps.psProjectionService);
     c.set("upRouter" as never, deps.upRouter);
     c.set("teardownOrchestrator" as never, deps.teardownOrchestrator);
