@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { CONFIG_CATEGORIES, configCategory, configEntries, configDetailLines, configListLines,
   configValue, configSourceLines, type ConfigRead, type ConfigEntry } from "../src/config/config-model.js";
 import { SETTINGS_VALID_KEYS } from "../../daemon/src/domain/user-settings/settings-store.js";
+/** Element at an index, failing the test (not the type-checker) when the fixture is shorter than the test assumes. */
+const at = <T,>(xs: readonly T[], i: number): T => {
+  const x = xs[i];
+  if (x === undefined) throw new Error(`fixture has no element at index ${i}`);
+  return x;
+};
 const entry = (key: string, overrides: Partial<ConfigEntry> = {}): ConfigEntry => ({
   key, group: "general", value: true, defaultValue: false, source: "file", visibility: "shown",
   reason: null, scope: "Displayed daemon instance", application: "Running application unverified.", ...overrides,
@@ -29,21 +35,21 @@ describe("CONFIG presentation core (shared navigation not yet integrated)", () =
       entry("queue.wake_retry_interval_seconds", { value: 300, defaultValue: 300 })]);
     const list = configListLines(read.entries, width, "workspace.root");
     expect(list.every((l) => l.text.length <= width)).toBe(true);
-    expect(list[0].text).toContain("…");
+    expect(at(list, 0).text).toContain("…");
     const detail = configDetailLines(read, "workspace.root", width);
     expect(detail.every((l) => l.text.length <= width)).toBe(true);
     expect(detail.map((l) => l.text).join("").replaceAll(" ", "")).toContain(path);
-    expect(read.entries[0].value).toBe(path);
-    expect(configValue(read.entries[1])).toBe("5 min");
+    expect(at(read.entries, 0).value).toBe(path);
+    expect(configValue(at(read.entries, 1))).toBe("5 min");
   });
   it("keeps unavailable and withheld values honest and invalidates removed selections", () => {
     const read = makeRead([entry("host.name", { visibility: "unavailable", value: null, defaultKnown: false }),
       entry("policies.claude_compaction.message_inline", { value: null, visibility: "withheld", reason: "Instruction body withheld." })]);
-    expect(configValue(read.entries[0])).toBe("Unavailable");
-    expect(configValue(read.entries[0], true)).toBe("Not reported");
-    expect(configValue(read.entries[1])).toBe("Contents withheld");
-    expect(configDetailLines(read, "removed.setting", 54)[0].text).toContain("unavailable after refresh");
+    expect(configValue(at(read.entries, 0))).toBe("Unavailable");
+    expect(configValue(at(read.entries, 0), true)).toBe("Not reported");
+    expect(configValue(at(read.entries, 1))).toBe("Contents withheld");
+    expect(at(configDetailLines(read, "removed.setting", 54), 0).text).toContain("unavailable after refresh");
     expect(configSourceLines(read, 54).map((l) => l.text).join(" ")).toContain("Credentials withheld.");
-    expect(configSourceLines(null, 54)[0].text).toContain("CONFIG unavailable");
+    expect(at(configSourceLines(null, 54), 0).text).toContain("CONFIG unavailable");
   });
 });

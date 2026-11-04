@@ -195,7 +195,7 @@ describe("fresh pane-output ROW FLASH — guard round-5 finding 2 (exact agent r
     expect(screen.motionActive).toBe(true); // the expiry redraw is scheduled off this
     const styled = stylizeLines(screen, createStyle("truecolor"));
     expect(styled[y - 1]!, "flash = inverse video on the agent row").toMatch(INVERSE);
-    const guardRow = screen.explorerRows.find((row) => row.key.endsWith("/dev50.guard"))!.y - 1;
+    const guardRow = screen.explorerRows.find((row) => row.key?.endsWith("/dev50.guard"))!.y - 1;
     expect(styled[guardRow]!).not.toMatch(INVERSE); // sibling rows untouched
     styled.forEach((l, i) => expect(stripAnsi(l)).toBe(screen.lines[i]));
   });

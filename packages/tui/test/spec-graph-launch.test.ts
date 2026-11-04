@@ -88,7 +88,7 @@ describe("rig spec graph and Launch", () => {
     let frame = screen();
     view.dispatch({ type: "layout", contentMaxOffset: frame.contentMaxOffset, contentTargetCount: frame.contentTargets.length });
     view.dispatch({ type: "content-select", index: frame.contentTargets.findIndex(t => t.action.type === "spec-launch") });
-    const open = resolveKeyAction({ type: "key", key: "enter" }, view.get(), frame, frame.explorerRows.length);
+    const open = resolveKeyAction({ type: "key", key: "enter", action: { type: "activate" } }, view.get(), frame, frame.explorerRows.length);
     expect(open).toEqual({ type: "spec-launch" });
     view.dispatch(open!);
     expect(screen().lines.join("\n")).toContain("Working folder: not chosen");
@@ -101,7 +101,7 @@ describe("rig spec graph and Launch", () => {
     expect(frame.lines.join("\n")).toContain("Host: build-box");
     expect(frame.lines.join("\n")).toContain("Launch also sets OPENRIG_URL to this TUI's daemon.");
     view.dispatch({ type: "content-select", index: frame.contentTargets.findIndex(t => t.action.type === "act") });
-    expect(resolveKeyAction({ type: "key", key: "enter" }, view.get(), frame, frame.explorerRows.length)).toEqual({ type: "act", act: "launch-spec" });
+    expect(resolveKeyAction({ type: "key", key: "enter", action: { type: "activate" } }, view.get(), frame, frame.explorerRows.length)).toEqual({ type: "act", act: "launch-spec" });
     // Dispatch alone (including control-socket navigation) cannot execute an act.
     view.dispatch({ type: "act", act: "launch-spec" });
     expect(view.get().specLaunch?.folder).toBe("/work/My Team");

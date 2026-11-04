@@ -41,7 +41,9 @@ function pressEnterOnPrintLink(snap: FleetSnapshot, size: { cols: number; rows: 
   };
   const resolve = (k: keyof typeof KEYS) => {
     const sc = draw();
-    return resolveKeyAction(decodeInput(KEYS[k])[0]!, v.get(), sc, computeExplorerRows(v.get(), snap).length);
+    const ev = decodeInput(KEYS[k])[0];
+    if (ev?.type !== "key") throw new Error(`${k} did not decode to a key event`);
+    return resolveKeyAction(ev, v.get(), sc, computeExplorerRows(v.get(), snap).length);
   };
   const key = (k: keyof typeof KEYS) => { const a = resolve(k); if (a) v.dispatch(a); };
   key("right");

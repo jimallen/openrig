@@ -11,7 +11,7 @@
 // explorer row is required to lack — an absence assertion whose matcher can
 // never fire is not a regression pin.
 import { describe, it, expect } from "vitest";
-import { createViewState } from "../src/state.js";
+import { createViewState, emptySnapshot } from "../src/state.js";
 import { renderScreen } from "../src/render.js";
 import { stylizeLines } from "../src/stylize.js";
 import { createStyle, stripAnsi } from "../src/theme.js";
@@ -26,6 +26,7 @@ const AGENTS = [
 
 function snap(): FleetSnapshot {
   return {
+    ...emptySnapshot(),
     hosts: [{ name: "h", reachable: true, rigs: [{ name: "r", pods: [{ name: "p", agents: AGENTS.map((a) => ({
       name: a.name, runtime: a.runtime, spec: "", context: 12, tokens: null, status: a.status, live: true,
     })) }] }] }],

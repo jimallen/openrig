@@ -7,7 +7,7 @@ import { renderScreen } from "../src/render.js";
 import { createViewState } from "../src/state.js";
 import { stylizeLines } from "../src/stylize.js";
 import { createStyle, stripAnsi } from "../src/theme.js";
-import type { FleetSnapshot } from "../src/types.js";
+import type { FleetSnapshot, HealthRecord } from "../src/types.js";
 
 function record(input: {
   id: string;
@@ -16,7 +16,7 @@ function record(input: {
   status?: "active" | "cleared" | "indeterminate";
   freshness?: "fresh" | "stale" | "unavailable" | "contradictory";
   summary: string;
-}) {
+}): HealthRecord {
   return {
     schema: "openrig.health/v0alpha1",
     id: input.id,

@@ -223,7 +223,7 @@ describe("OF-146 the other TUI queue-row listings mark a damaged row", () => {
     const list = renderScreen(state, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
     expect(lineWith(list, "Shipped work")[0]).toContain(MARK);
     expect(lineWith(list, "Shipped fine")[0]).not.toContain("DAMAGED");
-    const detail = renderScreen({ ...state, recentOpen: rows[0] }, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
+    const detail = renderScreen({ ...state, recentOpen: rows[0] ?? null }, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
     expect(detail).toContain(`${MARK} · Shipped work`);
   });
 
@@ -241,7 +241,7 @@ describe("OF-146 the other TUI queue-row listings mark a damaged row", () => {
     const list = renderScreen(state, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
     expect(lineWith(list, "Old shipped work")[0]).toContain(MARK);
     expect(lineWith(list, "Old fine work")[0]).not.toContain("DAMAGED");
-    const detail = renderScreen({ ...state, recentOpen: rows[0] }, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
+    const detail = renderScreen({ ...state, recentOpen: rows[0] ?? null }, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
     expect(detail).toContain(`${MARK} · Old shipped work`);
   });
 });

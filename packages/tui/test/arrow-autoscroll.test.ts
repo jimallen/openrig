@@ -12,7 +12,7 @@ const keyUp: Extract<InputEvent, { type: "key" }> = { type: "key", key: "up", ac
 
 function screen(nTargets: number): Screen {
   const contentTargets = Array.from({ length: nTargets }, (_, i) => ({ y: i + 3, x1: 32, x2: 80, action: { type: "noop" as const } }));
-  return { lines: [], hitMap: [], contentTargets, contentMaxOffset: 5, explorerRows: [] };
+  return { lines: [], hitMap: [], contentTargets, contentMaxOffset: 5, explorerRows: [], explorerWidth: 32 };
 }
 function state(over: Partial<ViewState>): ViewState {
   return {

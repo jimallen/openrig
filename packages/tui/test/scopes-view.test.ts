@@ -95,7 +95,7 @@ it.each([60, 160])("joins scope states and evidence by ID at width %i, not posit
     { id: "a", index: 1, text: "First item", state: "rejected", reason: "Only A rejected", judgment: { id: "a-receipt" } },
     { id: "b", index: 2, text: "Second item", state: "accepted", reason: "Only B accepted", judgment: { id: "b-receipt" } },
   ] };
-  const render = scopeContractLines(detail, { collapseReqs: false, narrative: null, width }).map(l => l.text).join("\n");
+  const render = scopeContractLines(detail, { collapseReqs: false, narrative: false, width }).map(l => l.text).join("\n");
   const b = render.indexOf("Second item"), a = render.indexOf("First item"), missing = render.indexOf("Unknown item");
   expect(render).toMatch(width === 60 ? /REQ 1 · ACCEPTED/ : /ACCEPTED\s+1\s+Second item/);
   expect(render).toMatch(width === 60 ? /REQ 2 · REJECTED/ : /REJECTED\s+2\s+First item/);

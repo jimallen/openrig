@@ -70,6 +70,6 @@ it("reads instance Health directly and renders its explicit scope", async () => 
   const view = createViewState({ instanceId: "s03" }); view.dispatch(parseCommand("system"));
   const snap = await hydrateSnapshot(client, undefined, null, null, null, view.get());
   expect(calls).toEqual(["/api/health"]);
-  expect(snap.health.availability).toBe("loaded");
+  expect(snap.health?.availability).toBe("loaded");
   expect(renderScreen(view.get(), snap, { cols: 80, rows: 24 }).lines.join("\n")).toContain("Instance health");
 });

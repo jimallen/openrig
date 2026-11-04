@@ -26,7 +26,7 @@ describe("rig detail — Open terminals link", () => {
       const v = drilled();
       expect(v.get().viewTab).toBe("table");
       const draw = () => { const sc = renderScreen(v.get(), snap, size); v.dispatch({ type: "layout", contentMaxOffset: sc.contentMaxOffset, contentTargetCount: sc.contentTargets.length }); return sc; };
-      const resolve = (k: keyof typeof KEYS) => { const sc = draw(); return resolveKeyAction(decodeInput(KEYS[k])[0]!, v.get(), sc, computeExplorerRows(v.get(), snap).length); };
+      const resolve = (k: keyof typeof KEYS) => { const sc = draw(); const ev = decodeInput(KEYS[k])[0]; if (ev?.type !== "key") throw new Error(`${k} did not decode to a key event`); return resolveKeyAction(ev, v.get(), sc, computeExplorerRows(v.get(), snap).length); };
       const key = (k: keyof typeof KEYS) => { const a = resolve(k); if (a) v.dispatch(a); };
       const first = draw();
       // Narrow panes truncate the row with "…" rather than wrap it; the link itself stays a target.

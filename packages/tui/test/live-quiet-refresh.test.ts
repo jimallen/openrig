@@ -156,26 +156,26 @@ describe("proof basis freshness", () => {
   it("repairs a missed change in the existing 30s window without treating quiet time as stale", async () => {
     vi.useFakeTimers();
     let revision = "before";
-    const live = createLiveRefresh({ hydrate: async () => ({ ...emptySnapshot(), instanceId: revision }), onFrame() {}, now: () => Date.now() });
+    const live = createLiveRefresh({ hydrate: async () => ({ ...emptySnapshot(), daemonTarget: revision }), onFrame() {}, now: () => Date.now() });
     await live.refresh(); revision = "committed";
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(live.load().stale).toBe(false); expect(live.snapshot().instanceId).toBe("before");
+    expect(live.load().stale).toBe(false); expect(live.snapshot().daemonTarget).toBe("before");
     await vi.advanceTimersByTimeAsync(25_000);
-    expect(live.snapshot().instanceId).toBe("committed"); expect(live.load().stale).toBe(false);
+    expect(live.snapshot().daemonTarget).toBe("committed"); expect(live.load().stale).toBe(false);
     live.close();
   });
   it("marks known invalidation and overdue reconciliation, then reconciles a trailing change", async () => {
     vi.useFakeTimers();
     const delayed = deferred<FleetSnapshot>(); let calls = 0;
-    const live = createLiveRefresh({ hydrate: () => ++calls === 2 ? delayed.promise : Promise.resolve({ ...emptySnapshot(), instanceId: String(calls) }), onFrame() {}, now: () => Date.now() });
+    const live = createLiveRefresh({ hydrate: () => ++calls === 2 ? delayed.promise : Promise.resolve({ ...emptySnapshot(), daemonTarget: String(calls) }), onFrame() {}, now: () => Date.now() });
     await live.refresh();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(live.load().stale).toBe(false); // quiet reconciliation in flight, within its bound
     await vi.advanceTimersByTimeAsync(30_001);
     expect(live.load().stale).toBe(true);
     const invalidation = live.invalidate(); expect(live.load().stale).toBe(true);
-    delayed.resolve({ ...emptySnapshot(), instanceId: "stale response" }); await invalidation;
-    expect(live.snapshot().instanceId).toBe("3"); expect(live.load().stale).toBe(false);
+    delayed.resolve({ ...emptySnapshot(), daemonTarget: "stale response" }); await invalidation;
+    expect(live.snapshot().daemonTarget).toBe("3"); expect(live.load().stale).toBe(false);
     live.connectionStatus("dropped"); expect(live.load()).toMatchObject({ connection: "dropped", stale: true });
     live.close();
   });

@@ -25,7 +25,8 @@ describe("founder-corrected Slice 4 entry point", () => {
     const [escape] = decoder.flush();
     expect(escape).toEqual({ type: "key", key: "escape" });
 
-    const action = resolveEscapeAction(escape!, view.get());
+    if (escape?.type !== "key") throw new Error("expected a key event from the decoder flush");
+    const action = resolveEscapeAction(escape, view.get());
     expect(action).toEqual({ type: "back" });
     view.dispatch(action!);
     expect(view.get().scopesSelected).toBeNull();
