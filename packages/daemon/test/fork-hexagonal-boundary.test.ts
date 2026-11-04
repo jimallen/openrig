@@ -4,12 +4,15 @@
 // is gone, so the baseline only shrinks. The rule, the type-only decision and the procedure for porting upstream code are in
 // local/architecture/hexagonal-boundary.md.
 //
-// Census (instrument: the TypeScript parser over every *.ts under packages/daemon/src/domain; helpers/fork-hexagonal-boundary.ts).
-import { readFileSync } from "node:fs";
+// Census (instrument: the TypeScript parser over every file under packages/daemon/src/domain that the daemon's tsconfig compiles:
+// .ts, .tsx, .mts, .cts and their .d.* forms; helpers/fork-hexagonal-boundary.ts).
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  BASELINE_PATH, RULE_DOC, SYNC_COMMAND, attributeToUpstream, classifyEdge, compareToBaseline, describeComparison, formatBaseline,
-  parseBaseline, scanDomain, scanImports, violationKey, violationsInSource, type BaselineEntry, type Violation,
+  BASELINE_PATH, DAEMON_ROOT, DOMAIN_DIR, RULE_DOC, SYNC_COMMAND, attributeToUpstream, classifyEdge, compareToBaseline, describeComparison, formatBaseline,
+  parseBaseline, planSync, scanDomain, scanImports, violationKey, violationsInSource, type BaselineEntry, type Violation,
 } from "./helpers/fork-hexagonal-boundary.js";
 
 const scan = scanDomain();
@@ -21,13 +24,59 @@ describe("hexagonal boundary census: the scan", () => {
     expect(scan.files.length).toBeGreaterThan(500);
     expect(scan.files).toContain("src/domain/event-bus.ts");
     expect(scan.files.some((f) => f.startsWith("src/domain/gateway/"))).toBe(true);
-    expect(scan.files.every((f) => f.startsWith("src/domain/") && f.endsWith(".ts"))).toBe(true);
+    expect(scan.files.every((f) => f.startsWith("src/domain/"))).toBe(true);
     // The scan reads the files it lists: a known violation is found where it is.
     expect(scan.violations.map(violationKey)).toContain("src/domain/event-bus.ts better-sqlite3 type");
   });
 
   it("every import whose module cannot be read statically is a known one (a new one would be invisible to this census)", () => {
     expect(scan.unresolved.map((u) => `${u.file} ${u.form}`)).toEqual(["src/domain/skill-mirror-drift.ts dynamic-import"]);
+  });
+});
+
+describe("hexagonal boundary census: every file the daemon build compiles is scanned (review F1)", () => {
+  it("every TypeScript source under src/domain (a plain directory walk, any of .ts .tsx .mts .cts) is scanned", () => {
+    const walk = (rel: string): string[] => readdirSync(path.join(DAEMON_ROOT, rel), { withFileTypes: true }).flatMap((d) =>
+      d.isDirectory() ? walk(`${rel}/${d.name}`) : d.isFile() ? [`${rel}/${d.name}`] : []);
+    const sources = walk(DOMAIN_DIR).filter((f) => /\.[cm]?tsx?$/.test(f));
+    expect(sources.length).toBeGreaterThan(500);
+    expect(sources.filter((f) => !scan.files.includes(f))).toEqual([]);
+  });
+
+  // A daemon root in a temp folder, holding one domain file of each extension tsc compiles, each importing a forbidden module.
+  const probeRoot = (files: Record<string, string>, run: (root: string) => void): void => {
+    const root = mkdtempSync(path.join(tmpdir(), "of223-ext-"));
+    try {
+      for (const [rel, text] of Object.entries(files)) {
+        mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+        writeFileSync(path.join(root, rel), text);
+      }
+      run(root);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+  const IMPORT_CP = `import { execFileSync } from "node:child_process";\n`;
+
+  for (const ext of [".ts", ".tsx", ".mts", ".cts", ".d.ts", ".d.mts", ".d.cts"]) {
+    it(`a domain file ending in ${ext} is scanned, and its forbidden import is a violation`, () => {
+      probeRoot({ [`src/domain/nested/probe${ext}`]: IMPORT_CP }, (root) => {
+        const s = scanDomain(root);
+        expect(s.files).toEqual([`src/domain/nested/probe${ext}`]);
+        expect(s.violations.map(violationKey)).toEqual([`src/domain/nested/probe${ext} node:child_process value`]);
+      });
+    });
+  }
+
+  it("a .tsx file is parsed as TSX (JSX text that reads like an import is not one), and files tsc does not compile are not scanned", () => {
+    // Parsed as plain TS, `<p>import("node:fs") ...</p>` is a type assertion on a real dynamic import of node:fs.
+    probeRoot({
+      "src/domain/view.tsx": `${IMPORT_CP}export const v = <p>import("node:fs") is text here</p>;\n`,
+      "src/domain/plain.js": IMPORT_CP,
+      "src/domain/notes.md": IMPORT_CP,
+    }, (root) => {
+      const s = scanDomain(root);
+      expect(s.files).toEqual(["src/domain/view.tsx"]);
+      expect(s.violations.map(violationKey)).toEqual(["src/domain/view.tsx node:child_process value"]);
+    });
   });
 });
 
@@ -232,6 +281,42 @@ describe("attribution of a new violation to upstream or the fork (sync, when por
   it("without the merge base, a violation upstream has since removed would be charged to the fork", () => {
     const { fork } = attributeToUpstream(added, copiesFrom(upstreamRef));
     expect(fork.map((x) => x.file)).toContain("src/domain/gone-upstream.ts");
+  });
+});
+
+describe("sync's plan, with fake upstream copies (review F5)", () => {
+  const v = (file: string, target: string, kind: "value" | "type"): Violation => ({ file, target, kind, rule: target.startsWith("src/adapters/") ? "domain-imports-adapter" : "domain-imports-infrastructure", lines: [1], forms: ["import"] });
+  const e = (file: string, target: string, kind: "value" | "type", origin: "upstream" | "fork", lineNo: number): BaselineEntry => ({ file, target, kind, origin, lineNo });
+  const upstreamTree: Record<string, string> = { "src/domain/ported.ts": `import { x } from "../adapters/tmux.js";` };
+  const copies = (f: string) => (upstreamTree[f] === undefined ? [] : [{ path: f, text: upstreamTree[f] }]);
+  const line = (x: { file: string; target: string; kind: string; origin: string }) => `${x.file} ${x.target} ${x.kind} ${x.origin}`;
+
+  it("prunes a stale line, tightens a value line now type-only, adds a ported upstream violation, and refuses the fork's own", () => {
+    const plan = planSync(
+      [v("src/domain/b.ts", "node:os", "type"), v("src/domain/ported.ts", "src/adapters/tmux.js", "value"), v("src/domain/mine.ts", "node:fs", "value")],
+      [e("src/domain/a.ts", "node:fs", "value", "fork", 5), e("src/domain/b.ts", "node:os", "value", "upstream", 6)],
+      copies,
+    );
+    expect(plan.pruned.map(line)).toEqual(["src/domain/a.ts node:fs value fork"]);
+    expect(plan.tightened.map(line)).toEqual(["src/domain/b.ts node:os value upstream"]);
+    expect(plan.added.map(violationKey)).toEqual(["src/domain/ported.ts src/adapters/tmux.js value"]);
+    expect(plan.refused.map(violationKey)).toEqual(["src/domain/mine.ts node:fs value"]);
+    expect(plan.entries.map(line).sort()).toEqual(["src/domain/b.ts node:os type upstream", "src/domain/ported.ts src/adapters/tmux.js value upstream"]);
+  });
+
+  it("is a no-op when the baseline matches the tree", () => {
+    const plan = planSync([v("src/domain/a.ts", "node:os", "value")], [e("src/domain/a.ts", "node:os", "value", "fork", 5)], copies);
+    expect([plan.pruned, plan.tightened, plan.added, plan.refused].map((x) => x.length)).toEqual([0, 0, 0, 0]);
+    expect(plan.entries.map(line)).toEqual(["src/domain/a.ts node:os value fork"]);
+  });
+
+  it("re-adds a deleted upstream line byte-identical, and never a fork one (the review rule for an added baseline line)", () => {
+    const kept = e("src/domain/z.ts", "node:os", "value", "fork", 9);
+    const tree = [v("src/domain/ported.ts", "src/adapters/tmux.js", "value"), v("src/domain/z.ts", "node:os", "value")];
+    const withLine = formatBaseline([e("src/domain/ported.ts", "src/adapters/tmux.js", "value", "upstream", 0), kept]);
+    expect(formatBaseline(planSync(tree, [kept], copies).entries)).toBe(withLine);
+    const forkLineDeleted = planSync(tree, [e("src/domain/ported.ts", "src/adapters/tmux.js", "value", "upstream", 0)], copies);
+    expect(forkLineDeleted.refused.map(violationKey)).toEqual(["src/domain/z.ts node:os value"]);
   });
 });
 

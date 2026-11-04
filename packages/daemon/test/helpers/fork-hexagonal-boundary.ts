@@ -3,8 +3,8 @@
  * The rule, and the procedure for porting upstream code, are in local/architecture/hexagonal-boundary.md. The census test is
  * test/fork-hexagonal-boundary.test.ts; the baseline is local/architecture/hexagonal-baseline.txt.
  *
- * Instrument: the TypeScript compiler's parser over every *.ts file under packages/daemon/src/domain (a positional
- * predicate: the folder, not a list of files). Only syntax that loads or names a module is read, so a module name that
+ * Instrument: the TypeScript compiler's parser over every file under packages/daemon/src/domain that the daemon's
+ * tsconfig compiles (a positional predicate: the folder and the build's own file set, not a list of files). Only syntax that loads or names a module is read, so a module name that
  * appears in a string, a template or a comment is never counted. Forms read:
  *   static `import`, side-effect `import "x"`, `import type`, inline `type` specifiers, `export ... from`,
  *   `export * from`, `import x = require("x")`, dynamic `import("x")`, `require("x")`, and the type-position
@@ -19,7 +19,7 @@
  *   node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts sync [--upstream origin/main]
  */
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
@@ -38,7 +38,7 @@ export interface UnresolvedImport { form: "dynamic-import" | "require"; line: nu
 
 /** Every module a source file loads or names, by syntax. Strings and comments are never read as imports. */
 export function scanImports(fileName: string, source: string): { edges: ImportEdge[]; unresolved: UnresolvedImport[] } {
-  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKind(fileName));
   const edges: ImportEdge[] = [];
   const unresolved: UnresolvedImport[] = [];
   const lineOf = (node: ts.Node): number => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
@@ -127,13 +127,31 @@ export function violationsInSource(file: string, source: string): { violations: 
   return { violations: [...byKey.values()], unresolved };
 }
 
-/** Every *.ts file under src/domain, relative to packages/daemon, sorted. */
+/**
+ * The files under src/domain the daemon build compiles, asked of the compiler itself: packages/daemon/tsconfig.json's
+ * include, exclude and options (allowJs and the rest), applied to `root`. At this commit that is .ts, .tsx, .mts, .cts and
+ * their .d.* forms, and the JavaScript ones too if the tsconfig ever sets allowJs. Review F1 (56902a2a): a scan of `.ts`
+ * alone let a new .tsx, .mts or .cts domain file import anything, though tsc compiles all three. Derived from the
+ * tsconfig, not listed, so the scan follows the build.
+ */
+export function compiledDomainFiles(root = DAEMON_ROOT): string[] {
+  const read = ts.readConfigFile(path.join(DAEMON_ROOT, "tsconfig.json"), ts.sys.readFile);
+  if (read.error || read.config === undefined) throw new Error("cannot read packages/daemon/tsconfig.json");
+  const real = ts.parseJsonConfigFileContent(read.config, ts.sys, DAEMON_ROOT);
+  const parsed = ts.parseJsonConfigFileContent({ include: real.raw?.include, exclude: real.raw?.exclude, files: real.raw?.files }, ts.sys, root, real.options);
+  return parsed.fileNames.map((f) => path.relative(root, f).split(path.sep).join("/")).filter((f) => f.startsWith(`${DOMAIN_DIR}/`)).sort();
+}
+
+function scriptKind(fileName: string): ts.ScriptKind {
+  if (/\.tsx$/.test(fileName)) return ts.ScriptKind.TSX;
+  if (/\.jsx$/.test(fileName)) return ts.ScriptKind.JSX;
+  if (/\.[cm]?js$/.test(fileName)) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+/** Every file under src/domain the daemon build compiles, relative to packages/daemon, sorted. */
 export function listDomainFiles(daemonRoot = DAEMON_ROOT): string[] {
-  const walk = (rel: string): string[] => readdirSync(path.join(daemonRoot, rel), { withFileTypes: true }).flatMap((e) => {
-    const child = path.posix.join(rel, e.name);
-    return e.isDirectory() ? walk(child) : e.isFile() && e.name.endsWith(".ts") ? [child] : [];
-  });
-  return walk(DOMAIN_DIR).sort();
+  return compiledDomainFiles(daemonRoot);
 }
 
 export interface DomainScan { files: string[]; violations: Violation[]; unresolved: Array<UnresolvedImport & { file: string }>; statements: number }
@@ -318,6 +336,31 @@ export function gitUpstreamSources(sha: string, base: string, repoRoot = REPO_RO
   return [copies(atSha), copies(atBase)];
 }
 
+export interface SyncPlan {
+  /** The baseline to write: kept lines, tightened lines and added upstream lines. */
+  entries: Array<Omit<BaselineEntry, "lineNo">>;
+  pruned: BaselineEntry[];
+  tightened: BaselineEntry[];
+  added: Violation[];
+  /** New violations no upstream copy has: the fork's own; never written. */
+  refused: Violation[];
+}
+
+/** What `sync` does, as a pure function of the tree's violations, the baseline and the upstream copies (review F5). */
+export function planSync(violations: readonly Violation[], baseline: readonly BaselineEntry[], ...upstreamSources: UpstreamCopies[]): SyncPlan {
+  const c = compareToBaseline(violations, baseline);
+  // A tightened line's type triple is also in `added`; it is written once, through the tightened line.
+  const tightenedKeys = new Set(c.tightened.map((e) => violationKey({ ...e, kind: "type" })));
+  const { upstream, fork } = attributeToUpstream(c.added.filter((v) => !tightenedKeys.has(violationKey(v))), ...upstreamSources);
+  const gone = new Set([...c.stale, ...c.tightened].map(violationKey));
+  const entries = [
+    ...baseline.filter((e) => !gone.has(violationKey(e))),
+    ...c.tightened.map((e) => ({ ...e, kind: "type" as const })),
+    ...upstream.map((v) => ({ file: v.file, target: v.target, kind: v.kind, origin: "upstream" as const })),
+  ];
+  return { entries, pruned: c.stale, tightened: c.tightened, added: upstream, refused: fork };
+}
+
 function verifyRef(ref: string): string {
   try {
     return execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "--verify", `${ref}^{commit}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -366,26 +409,17 @@ function main(argv: string[]): number {
     if (baselineText === null) { console.error(`no baseline at ${BASELINE_PATH}`); return 2; }
     const ref = flag("--upstream") ?? "origin/main";
     const { sha, base } = upstreamCommits(ref);
-    const baseline = parseBaseline(baselineText);
-    const c = compareToBaseline(scan.violations, baseline);
-    const { upstream, fork } = attributeToUpstream(c.added, ...gitUpstreamSources(sha, base));
-    const gone = new Set([...c.stale, ...c.tightened].map(violationKey));
-    const kept = baseline.filter((e) => !gone.has(violationKey(e)));
-    const tightened = c.tightened.map((e) => ({ ...e, kind: "type" as const }));
-    // A tightened line's type triple may also be in `added`; it is written once, through `tightened`.
-    const tightenedKeys = new Set(tightened.map(violationKey));
-    const addedUpstream = upstream.filter((v) => !tightenedKeys.has(violationKey(v))).map((v) => ({ ...v, origin: "upstream" as const }));
-    const refused = fork.filter((v) => !tightenedKeys.has(violationKey(v)));
-    writeFileSync(BASELINE_PATH, formatBaseline([...kept, ...tightened, ...addedUpstream]));
-    console.log(`against ${ref} (${sha}) and the merge base (${base}): pruned ${c.stale.length} stale, tightened ${c.tightened.length}, added ${addedUpstream.length} upstream`);
-    for (const e of c.stale) console.log(`  pruned   ${e.file} ${e.target} ${e.kind} ${e.origin}`);
-    for (const e of tightened) console.log(`  tightened ${e.file} ${e.target} value -> type`);
-    for (const v of addedUpstream) console.log(`  added    ${v.file} ${v.target} ${v.kind} upstream`);
-    if (refused.length > 0) {
-      console.error(describeComparison({ added: refused, stale: [], tightened: [] }));
-      console.error(`${refused.length} violation(s) above are in no upstream copy of the file (${ref} or the merge base, following renames), so they are fork-authored and were NOT added.`);
+    const plan = planSync(scan.violations, parseBaseline(baselineText), ...gitUpstreamSources(sha, base));
+    console.log(`against ${ref} (${sha}) and the merge base (${base}): pruned ${plan.pruned.length} stale, tightened ${plan.tightened.length}, added ${plan.added.length} upstream`);
+    for (const e of plan.pruned) console.log(`  pruned   ${e.file} ${e.target} ${e.kind} ${e.origin}`);
+    for (const e of plan.tightened) console.log(`  tightened ${e.file} ${e.target} value -> type`);
+    for (const v of plan.added) console.log(`  added    ${v.file} ${v.target} ${v.kind} upstream`);
+    if (plan.refused.length > 0) {
+      console.error(describeComparison({ added: plan.refused, stale: [], tightened: [] }));
+      console.error(`${plan.refused.length} violation(s) above are in no upstream copy of the file (${ref} or the merge base, following renames), so they are the fork's own and were NOT added. Nothing was written: fix them, then run sync again.`);
       return 1;
     }
+    writeFileSync(BASELINE_PATH, formatBaseline(plan.entries));
     return 0;
   }
 

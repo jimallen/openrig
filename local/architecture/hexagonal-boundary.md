@@ -12,7 +12,9 @@ message names this page, which is how a contributor who trips the rule finds it.
 
 ## The model
 
-- **The domain** is `packages/daemon/src/domain/` (every `*.ts` under it, nested folders included). It holds OpenRig's
+- **The domain** is `packages/daemon/src/domain/`: every file under it that the daemon build compiles (`.ts`, `.tsx`,
+  `.mts`, `.cts` and their `.d.*` forms, read from `packages/daemon/tsconfig.json` through the compiler), nested folders
+  included. It holds OpenRig's
   behaviour: services, orchestrators, the rules about rigs, seats, the queue and delivery.
 - **A port** is an interface or type the domain declares for something it needs from the outside world (a terminal, a
   process, a file, the database, the clock). The domain owns its ports: they are declared in `src/domain`, in the domain's
@@ -80,12 +82,21 @@ reaches much further than the files with that name: 156 domain files import `bet
 - **The rest of the daemon**: `src/routes`, `src/server.ts`, `src/startup.ts`, `src/index.ts`, `src/adapters`,
   `src/db`, `src/lib`, `src/terminal` and the `*-surface.ts` files are not checked. `src/lib` is not classified: the domain
   may import it, and nothing checks that it stays free of I/O.
+- **Indirect paths, known and not counted.** The rule reads a domain file's own imports, not what the modules it imports
+  reach. Two such paths exist at `eb2fe398`:
+  - `src/openrig-compat.ts` (a top-level daemon module, neither domain nor adapter) value-imports `node:fs` and `node:os`,
+    and 14 domain files value-import it, so they reach both modules through it;
+  - `src/domain/project-classifier.ts` type-imports `src/routes/require-sender-identity.js`, a module of the HTTP side
+    (it imports `hono`): the domain depending on the driving side. The rule does not name `src/routes`.
+  Neither is a violation today.
 - **Modules allowed for now.** At `eb2fe398` the domain also imports `node:worker_threads` (1 statement), `node:perf_hooks`
   (4), `tar` (1, which reads and writes files) and `hono` (4, the HTTP framework). By Jim's decision the list stays as it
   is: these four are allowed for now and will be revisited later.
-- **Code in a string.** `src/domain/slow-op-recorder.ts` builds a worker from a `String.raw` template that calls
-  `require("node:fs")`; that file I/O is invisible to a parser by construction. An independent regex scan, which does read
-  strings, found no other forbidden module named inside a string at `eb2fe398`.
+- **Code the scanner cannot see.** `src/domain/slow-op-recorder.ts` builds a worker from a `String.raw` template that
+  calls `require("node:fs")`; that file I/O is invisible to a parser by construction. An independent regex scan, which
+  does read strings, found no other forbidden module named inside a string at `eb2fe398`. Two more forms are invisible
+  and not even reported as unresolvable: a `require` made with `createRequire(...)` (`createRequire(import.meta.url)("node:fs")`)
+  and code compiled at run time with `new Function(...)`. There are 0 of either in the domain at `eb2fe398`.
 - **An import the parser cannot resolve**: a dynamic `import()` or `require()` whose argument is not a string literal. At
   `eb2fe398` there is one, `src/domain/skill-mirror-drift.ts` (`import(pathToFileURL(scriptPath).href)`); the test pins
   that list, so a new one fails the test.
@@ -94,15 +105,15 @@ reaches much further than the files with that name: 156 domain files import `bet
 
 Classified by each target's own value-import closure within `src/` (does it reach an infrastructure module?) and by
 reading it for `process.*` and exec calls. These are recorded in the baseline like every other target; the observation is
-that they may be domain code living in the adapters folder, so moving them (in a fork-only change, see ownership below)
-would remove violations without writing a port.
+that they may be domain code living in the adapters folder, so moving them (in a unit that already touches them) would
+remove violations without writing a port.
 
 | Target | Domain statements | Reading |
 |---|---|---|
 | `shell-quote.js` | 15 | A 4-line pure string function. Domain code in the wrong folder. |
 | `pda-runner-protocol.js` | 14 | A wire protocol (types, parsers, constants) plus one `process.kill(pid, 0)` liveness probe. The protocol is a port contract; the probe is an adapter. |
 | `pi-runner-protocol.js` | 3 | Same shape: protocol definitions, plus argv building for the runner's child. |
-| `non-interruptive.js`, `runner-terminal-ended.js`, `hc-delivery-token.js`, `hc-dialog-input.js`, `seat-gate-marker.js`, `hc-version.js`, `omp-resume.js`, `pda-resume.js` | 1 to 3 each | No infrastructure import in their closure and no process access: parsing, constants or types. Candidates for the domain. |
+| `non-interruptive.js`, `runner-terminal-ended.js`, `hc-delivery-token.js`, `hc-dialog-input.js`, `seat-gate-marker.js`, `hc-version.js` | 1 to 3 each | No infrastructure import in their closure and no process access: parsing, constants or types. Candidates for the domain. (`omp-resume.js` and `pda-resume.js` are not: their value closures reach `pi-resume.js`, which reads `process.env`, and `pda-runner-protocol.js`'s `process.kill`.) |
 | `yolo-mode.js`, `hc-seat.js` | 2, 1 | No infrastructure import; they default a parameter to `process.env`. Pure apart from that ambient read. |
 | `tmux.js` | 35 (the largest) | A real adapter (`node:fs/promises`, `node:os`), the retained tmux implementation kept for rollback. 29 of its 32 triples are type-only (by a line grep, most name `TmuxAdapter`; four name `ExecFn`). A port type for "the seat host" would retire most of these. |
 
@@ -115,6 +126,10 @@ change is ported selectively, as a fork unit. So no daemon domain file has speci
 - **Existing violations** are fixed on touch: a unit that already touches a domain file may fix that file's violations
   within its own scope (declare the port, implement it in an adapter, wire it in `src/startup.ts`) and delete the
   baseline lines it retires. No unit is opened only to fix one, and no unit widens its scope to fix one.
+- **A rename, move or split is a touch.** Renaming a domain file that has a baseline line makes the census report the old
+  line stale and the import at the new path new; `sync` prunes the first and refuses the second (no upstream copy has
+  that path's import). So the unit that renames, moves or splits the
+  file fixes the import in the same change.
 
 ### The `upstream` and `fork` tags: history only
 
@@ -126,24 +141,13 @@ path, at the path it had before a fork rename, and at the path upstream renamed 
 resolved from its own path. The attribution scans the upstream blobs with the same parser (no blame, so a moved or
 reformatted line still matches).
 
-Measured on `eb2fe398` against origin/main `bb007efa` and the merge base `fc41b273`: 346 `upstream`, 102 `fork`.
-
-- Of the 102 `fork` lines, 78 are in 52 files upstream does not have and 24 in 15 files the fork modified. For each of the
-  23 distinct (file, target) pairs of those 24, `git log -S` finds a fork commit since the merge base that adds or removes
-  the import's module name, and no `fork` line sits in a file the fork has not changed since the merge base.
-- Four lines are `upstream` only through the merge base: upstream has since removed them (`bootstrap-orchestrator.ts`,
-  `native-process-lineage.ts`, `resume-metadata-refresher.ts` → `node:child_process`; `restore-check-service.ts` →
-  `shell-quote.js`).
-- Two lines are `upstream` only through rename following: the fork renamed `claim-service.ts` to
-  `session-reconciler.ts`, whose `better-sqlite3` and `tmux.js` type imports came from upstream.
-
-Limits of the attribution, by construction: a violation the fork added to a file that upstream's copy also has (at the
-same or a stronger kind) reads as upstream's. A rename git does not detect (under 50% similar) reads as the fork's.
+At `eb2fe398` the seed tagged 346 lines `upstream` and 102 `fork`. A rename git does not detect (under 50% similar)
+reads as the fork's; a fork import that upstream's copy also has reads as upstream's.
 
 ## The check
 
 `packages/daemon/test/fork-hexagonal-boundary.test.ts` runs in the daemon suite (`npm test -w packages/daemon`). It parses
-every domain file, compares the violations with `hexagonal-baseline.txt`, and fails on:
+every domain file the daemon's tsconfig compiles (so a new `.tsx`, `.mts` or `.cts` file is read like a `.ts` one), compares the violations with `hexagonal-baseline.txt`, and fails on:
 
 - a violation not in the baseline (naming the file and lines, the target, the kind and the rule, and how to fix it);
 - a stale line, whose violation is gone (naming the baseline line to delete);
@@ -151,9 +155,14 @@ every domain file, compares the violations with `hexagonal-baseline.txt`, and fa
 - a non-literal dynamic import it cannot read, other than the known one;
 - a malformed, duplicate or unsorted baseline line.
 
-It reads no git state, so it behaves the same in any checkout. The baseline only shrinks; the one way a line is added is
-`sync` when a unit ports an upstream change (below), and only for violations upstream's own code has. **Never add a line
-by hand.**
+It reads no git state, so it behaves the same in any checkout. That also means it cannot tell a line `sync` wrote from
+one written by hand: a new violation plus a hand-added line passes it. The baseline only shrinks; the one way a line is
+added is `sync` when a unit ports an upstream change (below), and only for violations upstream's own code has. **Never add
+a line by hand.**
+
+**The review rule for a diff that adds a baseline line.** The reviewer deletes the added lines and runs `sync` (from the
+repository root, with `origin` fetched). A genuine upstream line comes back byte-identical; a fork line is refused with
+exit 1 and nothing is written. Only lines `sync` reproduces are accepted.
 
 The same scanner runs from the command line (from the repository root):
 
@@ -174,8 +183,8 @@ within its scope.
    - **prunes** every stale line and **tightens** lines whose import became type-only, printing each;
    - **adds**, tagged `upstream`, each new violation that an upstream copy of the file (origin/main's, or the merge base's,
      following renames) also has;
-   - **refuses** the rest (exit 1, printed with the fix): an import upstream's copy does not have is the fork's own, and
-     the fork adds no new violation. Fix it with a port.
+   - **refuses** the rest (exit 1, printed with the fix, and nothing written): an import upstream's copy does not have is
+     the fork's own, and the fork adds no new violation. Fix it with a port, then run `sync` again.
 3. Run the census test, and commit the baseline change with the port; the reviewer sees each added line in the diff.
 
 When nothing was ported, `sync` only prunes and tightens, so it is also the quick way to clear stale lines after any change.
