@@ -4,6 +4,12 @@ This directory is personal, machine-specific tooling layered on top of a
 stock `npm i -g @openrig/cli` install. It lives on the fork only — it is not
 part of any upstream PR.
 
+## `architecture/` — fork-only architecture rules
+
+`architecture/hexagonal-boundary.md` is the daemon's hexagonal boundary (the domain imports no adapter, no `src/db`
+and no infrastructure module), with `architecture/hexagonal-baseline.txt`, the ratchet that
+`packages/daemon/test/fork-hexagonal-boundary.test.ts` checks, and the procedure for merging from upstream (OF-223).
+
 ## `jims-team/` — custom rig spec
 
 Role-based delivery team (7 seats) built from the personas in
