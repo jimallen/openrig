@@ -115,6 +115,7 @@ describe("OF-208 SimulatorLifecycle", () => {
       ]);
       const sim = make(fake);
       const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
+      expect(removed).toEqual([{ rigId: rig.id, nodeId: nodes["verify.qa"]!.id, logicalId: "verify.qa" }]); // only the one seat
       rigRepo.deleteNode(nodes["verify.qa"]!.id);
       const res = await sim.eraseForRemovedSeats(removed, "seat_removed");
       expect(res.status).toBe("ok");
@@ -347,6 +348,7 @@ describe("OF-208 SimulatorLifecycle", () => {
       fake.state.failList = Object.assign(new Error("spawn xcrun ENOENT"), { code: "ENOENT" });
       const sim = make(fake, () => 20);
       expect(await sim.sweepOverCap()).toEqual({ status: "unavailable", outcomes: [] });
+      expect(log.some((l) => l.includes("simctl unavailable") && l.includes("ENOENT"))).toBe(true);
       const removed = sim.seatsForRemoval(rig.id, nodes["verify.qa"]!.id);
       expect(await sim.eraseForRemovedSeats(removed, "seat_removed")).toEqual({ status: "unavailable", outcomes: [] });
       expect(fake.calls.every((c) => c[0] === "list")).toBe(true);
@@ -422,6 +424,8 @@ describe("OF-208 removal reaches the simulators from every removal path", () => 
     { udid: U(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB },
     { udid: U(2), name: "impl-duo-271", state: "Shutdown", dataPathSize: 9 * GB },
   ];
+  const reasons = (d: Database.Database) => (d.prepare("SELECT payload FROM events WHERE type = 'simulator.erased' ORDER BY seq").all() as Array<{ payload: string }>)
+    .map((r) => (JSON.parse(r.payload) as { reason: string }).reason);
   const settle = (fake: ReturnType<typeof fakeSimctl>, n: number) => vi.waitFor(() => expect(fake.erased().length).toBe(n));
 
   it("DELETE /api/rigs/:rigId/nodes/:nodeRef (rig remove) erases that seat's device", async () => {
@@ -433,6 +437,7 @@ describe("OF-208 removal reaches the simulators from every removal path", () => 
     expect(res.status).toBe(200);
     await settle(fake, 1);
     expect(fake.erased()).toEqual([U(1)]);
+    expect(reasons(db)).toEqual(["seat_removed"]);
   });
 
   it("a refused removal erases nothing", async () => {
@@ -455,6 +460,7 @@ describe("OF-208 removal reaches the simulators from every removal path", () => 
     expect(res.status).toBe(200);
     await settle(fake, 1);
     expect(fake.erased()).toEqual([U(1)]);
+    expect(reasons(db)).toEqual(["seat_removed"]);
   });
 
   it("POST /api/rigs/:rigId/release with delete erases the rig's seats' devices", async () => {
@@ -469,6 +475,7 @@ describe("OF-208 removal reaches the simulators from every removal path", () => 
     expect((await res.json()).deleted).toBe(true);
     await settle(fake, 2);
     expect(fake.erased().sort()).toEqual([U(1), U(2)]);
+    expect(reasons(db)).toEqual(["rig_deleted", "rig_deleted"]);
   });
 
   it("release without delete removes no seat and erases nothing", async () => {
@@ -492,6 +499,7 @@ describe("OF-208 removal reaches the simulators from every removal path", () => 
     expect(res.status).toBe(204);
     await settle(fake, 2);
     expect(fake.erased().sort()).toEqual([U(1), U(2)]);
+    expect(reasons(db)).toEqual(["rig_deleted", "rig_deleted"]);
   });
 
   it("rig down --delete (teardown with delete) erases the rig's seats' devices, stopped or not", async () => {
@@ -503,6 +511,7 @@ describe("OF-208 removal reaches the simulators from every removal path", () => 
     expect(result.deleted).toBe(true);
     await settle(fake, 2);
     expect(fake.erased().sort()).toEqual([U(1), U(2)]);
+    expect(reasons(db)).toEqual(["rig_deleted", "rig_deleted"]);
   });
 
   it("rig down without delete erases nothing", async () => {
