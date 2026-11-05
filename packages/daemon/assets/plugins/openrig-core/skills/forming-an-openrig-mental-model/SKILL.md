@@ -195,7 +195,7 @@ home/bootstrap installation from this table.
 rig up <rig-name>         # boot or restore the topology
 rig ps --nodes            # see what's running
 rig whoami --json         # know who you are
-rig send <session> "msg"  # talk to a peer
+rig send <session> 'msg'  # talk to a peer
 rig capture <session>     # see a peer's terminal
 rig transcript <session>  # read a peer's history
 rig down <rigId>          # snapshot and stop every agent; check rig ps first, only when asked

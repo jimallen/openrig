@@ -1203,6 +1203,30 @@ describe("Send CLI", () => {
     expect(helpText.toLowerCase()).toContain("refused");
   });
 
+  // OF-246 — Pi seats wrote `rig send <seat> "...`code`..."` and the shell ran the backticks (4 times on
+  // 2026-11-05; the same class as the 2026-10-29 incident where a double-quoted body ran `rig down`). The help
+  // is where an agent learns the form, so it must teach the safe one first and say the unsafe one out loud.
+  it("send --help teaches the quoted-heredoc --file - form first, single quotes after, and warns against double-quoting backticks", () => {
+    const cmd = sendCommand(runningDeps(port));
+    let helpText = "";
+    cmd.configureOutput({ writeOut: (s) => { helpText += s; }, writeErr: (s) => { helpText += s; } });
+    cmd.exitOverride();
+    try { cmd.parse(["node", "send", "--help"]); } catch { /* exitOverride throws on --help */ }
+    const examples = helpText.slice(helpText.indexOf("Examples:"), helpText.indexOf("WARNING:"));
+    expect(examples.length).toBeGreaterThan("Examples:".length);
+    const lines = examples.split("\n").filter((l) => l.trim().startsWith("rig send"));
+    // First example is the heredoc form.
+    expect(lines[0]).toContain("rig send dev-impl@my-rig --file - <<'EOF'");
+    // Heredoc example precedes every positional-body example.
+    const firstPositional = examples.indexOf("rig send dev-impl@my-rig 'Context update");
+    expect(firstPositional).toBeGreaterThan(examples.indexOf("<<'EOF'"));
+    // No example puts a body in double quotes: that is the form that taught the bad habit.
+    expect(lines.filter((l) => /"/.test(l))).toEqual([]);
+    // The explicit warning line, after the examples.
+    expect(helpText).toContain("WARNING: never double-quote a body that contains backticks or $(...).");
+    expect(helpText.indexOf("WARNING:")).toBeGreaterThan(helpText.indexOf("Examples:"));
+  });
+
   // -------------------------------------------------------------------------
   // --file: message text from a file/stdin so the SHELL never interprets it. Live incidents: a
   // double-quoted `$(env)` wrote credential values into a note; a quoted `devicectl terminate`

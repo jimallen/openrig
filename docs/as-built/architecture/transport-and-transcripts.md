@@ -82,7 +82,7 @@ Routes: `packages/daemon/src/routes/{transport,transcripts,ask,chat,whoami}.ts`
 
 ## 3. Communication flow
 
-`rig send <session> "message"` → CLI → `POST /api/transport/send` →
+`rig send <session> 'message'` → CLI → `POST /api/transport/send` →
 `SessionTransport.send()`:
 
 1. Resolve the session name (`resolveBySessionName`,

@@ -114,10 +114,12 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
 - **Give the team more work:** write the goal to a file: what to change, in which repository and branch, what done
   looks like, and that the result comes back to you (the branch or commit, the review, any PR text). Then
   `rig queue create --source <your name> --destination <seat>@<rig> --body-file <file>`, and tell that agent with
-  `rig send <seat>@<rig> "task <id> is yours"`. A message informs, and a queue task is the work someone owns.
+  `rig send <seat>@<rig> 'task <id> is yours'`. A message informs, and a queue task is the work someone owns.
+  Never double-quote a `rig send` body that contains backticks or `$(...)`: the shell runs them. Use single
+  quotes for a short plain body, and `rig send <seat>@<rig> --file - <<'EOF'` with a quoted heredoc for the rest.
   `--source` names you when this session hasn't joined the team.
 - **Then ask what's next.** If no team can take the work, fix that or ask the person. Don't quietly do it yourself.
-- **Other ways to work with the team:** `rig send <seat>@<rig> "..."` types into an agent's terminal,
+- **Other ways to work with the team:** `rig send <seat>@<rig> '...'` types into an agent's terminal,
   `rig capture <seat>@<rig>` reads its screen, and `rig ps --nodes --rig <rig>` shows who's on it.
 
 ## 4. Find out more

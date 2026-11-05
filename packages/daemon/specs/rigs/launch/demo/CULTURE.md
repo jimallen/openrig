@@ -26,7 +26,8 @@ turn an idle review seat into a milestone scanner.
 
 ## Communication
 
-Use `rig send <session> "message" --verify` for direct messages. Use `rig chatroom send demo "message"` for rig-wide updates and review visibility.
+Use `rig send <session> 'message' --verify` for direct messages. Use `rig chatroom send demo 'message'` for rig-wide updates and review visibility.
+Never double-quote a message body that contains backticks or `$(...)`: the shell runs them. Use single quotes, or `--file -` with a quoted heredoc (`<<'EOF'`).
 
 ## When you are blocked
 

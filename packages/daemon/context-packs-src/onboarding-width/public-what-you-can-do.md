@@ -93,9 +93,12 @@ unseen — which makes messages the one delivery channel that never gets skipped
   Over `--host` to an http-registered host, a send that may have reached the remote reads
   `remote-outcome-unknown` ("Delivery UNCONFIRMED"): check the target with `rig capture <session>
   --host <id>` before any resend. Only a host that was never reached reads as unreachable.
+  Never double-quote a body that contains backticks or `$(...)`: your shell runs them before `rig`
+  sees the text. Put a short plain body in single quotes, and a multi-line body, or one with
+  backticks, `$` or quotes, in a quoted heredoc: `rig send <session> --file - <<'EOF'` ... `EOF`.
 - **`rig send --raw`** — send exact text or keystrokes without the From/To envelope;
   the interactive-prompt guard still applies. To deliberately drive an interactive prompt,
-  **`--dangerously-interact --reason "<why>"`** is the explicit override and implies raw text.
+  **`--dangerously-interact --reason '<why>'`** is the explicit override and implies raw text.
   Inspect the prompt and establish authority for its effect before using that override.
 - **`rig broadcast`** — one fact to everyone at once, rather than relaying it N times and getting
   the wording wrong on the fourth. **Blast radius is real** — on a large rig this lands in every

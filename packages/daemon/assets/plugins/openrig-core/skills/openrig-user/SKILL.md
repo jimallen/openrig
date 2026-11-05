@@ -34,7 +34,7 @@ external or irreversible boundaries — public push / PR / publish, and destruct
 Three coordination surfaces, used together for forward-momentum work. Internalize this
 on first read — it shapes every turn you take in a rig.
 
-### `rig send <seat> "<text>"` — intra-pod direct messaging / nudges
+### `rig send <seat> '<text>'` — intra-pod direct messaging / nudges
 
 Use when you need to ask a quick question or give a teammate context that does not
 carry handoff semantics. **NOT for durable work.** NOT for state that must survive
@@ -45,10 +45,12 @@ the receipt and move on.
 Example:
 
 ```bash
-rig send dev-reviewer@example-project "The import report is ready; the durable handoff names its evidence." --verify
+rig send dev-reviewer@example-project 'The import report is ready; the durable handoff names its evidence.' --verify
 ```
 
-**Any text with shell metacharacters goes through `--file -` and a QUOTED heredoc.** A
+**Never double-quote a body that contains backticks or `$(...)`.** A short plain body goes in
+single quotes; a multi-line body, or any text with shell metacharacters, goes through `--file -`
+and a QUOTED heredoc. A
 double-quoted positional is expanded by your shell before `rig` sees it: `$(...)` and
 backticks inside it EXECUTE (this has leaked credentials into a note and re-run a
 terminate command), and a body starting with `---` is parsed as an option. Multi-line
@@ -674,7 +676,7 @@ Typical operator loop:
 ```bash
 rig up secrets-manager --cwd /path/to/project
 rig ps --nodes --json
-rig send vault-specialist@secrets-manager "Check Vault health and report back." --verify
+rig send vault-specialist@secrets-manager 'Check Vault health and report back.' --verify
 rig env status secrets-manager
 rig env logs secrets-manager
 ```
@@ -683,7 +685,7 @@ Cross-rig communication is valid when the target session resolves uniquely.
 Example:
 
 ```bash
-rig send vault-specialist@secrets-manager "Read secret/data/dogfood and report the value." --verify
+rig send vault-specialist@secrets-manager 'Read secret/data/dogfood and report the value.' --verify
 ```
 
 Use the specialist instead of teaching every peer the same app-specific toolchain.
@@ -796,13 +798,13 @@ rig transcript <session> --json
 ### Send to one session
 
 ```bash
-rig send <session> "message"
-rig send <session> "message" --verify
-rig send <session> "message" --wait-for-idle <seconds>
-rig send <session> "message" --raw
-rig send <session> "message" --dangerously-interact --reason "<why>"
-rig send <session> "message" --host <id>
-rig send <session> "message" --json
+rig send <session> 'message'
+rig send <session> 'message' --verify
+rig send <session> 'message' --wait-for-idle <seconds>
+rig send <session> 'message' --raw
+rig send <session> 'message' --dangerously-interact --reason '<why>'
+rig send <session> 'message' --host <id>
+rig send <session> 'message' --json
 rig send <session> --file - <<'EOF'   # safe for $(...), backticks, leading ---, multi-line
 ...text...
 EOF
@@ -823,7 +825,7 @@ rig send <session> --file ./report.md
 > **Durable work goes to the QUEUE, not `send`.** `rig send` is an *ephemeral* message to a pane — it can be missed, and its delivery status is pane-render, not receipt. If you are **assigning work, or the message is important enough that losing it would be a real bummer**, use `rig queue` (below): it's durable, owned, tracked, and survives compaction and restart. Reach for `send` for a quick conversational nudge; reach for the **queue** for anything that must not get lost. Do not default to `send` for work — that's the most common mistake.
 
 As of v0.3.3, content beginning with `--` or `-` is safe:
-`rig send <session> "content starting with -- or - is now safe"` delivers
+`rig send <session> 'content starting with -- or - is now safe'` delivers
 literally. The daemon's `send_text` path carries an explicit `--`
 end-of-options sentinel so tmux no longer parses dash-prefixed content
 as its own flags. The CLI surface itself is unchanged. For multi-line
@@ -878,9 +880,9 @@ broadcast storm. Reserve `rig broadcast` for small rigs or a genuine all-hands e
 envelope, the delivery/interactive-prompt guards, and per-recipient results:
 
 ```bash
-rig send --to dev-impl@my-rig,dev-qa@my-rig "message to specific seats"   # named seats (comma-list or repeat --to)
-rig send --pod dev "message to one pod"                                    # scoped fan-out
-rig send --rig my-rig "message to one rig"                                 # scoped fan-out
+rig send --to dev-impl@my-rig,dev-qa@my-rig 'message to specific seats'   # named seats (comma-list or repeat --to)
+rig send --pod dev 'message to one pod'                                    # scoped fan-out
+rig send --rig my-rig 'message to one rig'                                 # scoped fan-out
 ```
 
 ### Chatroom

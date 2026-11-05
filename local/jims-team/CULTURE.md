@@ -38,7 +38,7 @@ Rules:
    autonomous scaling.
 2. **A grown seat has NO persona until you give it one.** Grow is bare metal:
    immediately after the seat lands, deliver the role from the spec copy —
-   `rig send <seat>@<rig> "$(cat ~/.openrig/specs/jims-team/agents/<persona>/guidance/role.md)"`
+   `rig send <seat>@<rig> --file ~/.openrig/specs/jims-team/agents/<persona>/guidance/role.md`
    — followed by the §Coordination mechanics card. A seat without its persona is
    not a teammate; do not assign it lanes.
 3. **Unique member names** (impl2, impl3, …) — tmux session names are
@@ -54,7 +54,8 @@ own terminal. You reach them with the `rig` CLI from your shell:
 - `rig whoami --json` — your seat identity, rig name, node id, cwd. Run FIRST.
 - `rig ps --nodes --rig <your-rig-name> --json` — the live roster: every teammate's
   canonical session name, runtime, and state.
-- `rig send <seat>@<rig> "<message>"` — delegate a lane. A delegation states why
+- `rig send <seat>@<rig> '<message>'` — delegate a lane (a multi-line body, or one with backticks, `$` or quotes:
+  `rig send <seat>@<rig> --file - <<'EOF'` with a quoted heredoc; never double-quote a body that contains backticks or `$(...)`). A delegation states why
   the work matters, the deliverable, the write boundary, the completion evidence,
   and when to report — never "take a look".
 

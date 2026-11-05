@@ -190,7 +190,7 @@ reconcile. **This is the feature a handover has and a compaction does not** — 
   or returns nothing, fall back to `claude -p --resume <full-uuid>` (or the Codex rollout resume).
   **A failing wrapper is not a closed channel.**
 - **When one question is not enough, resume them LIVE:** a tenure can be resumed into a **named
-  terminal** and messaged with `rig send <session> "..."` like any other seat. Use it for multi-turn
+  terminal** and messaged with `rig send <session> '...'` like any other seat. Use it for multi-turn
   work — a design rationale, a disagreement between artifacts. **Orient them first** (wake-tenancy,
   below): a woken tenure not told it is retired may reason as the live occupant.
 

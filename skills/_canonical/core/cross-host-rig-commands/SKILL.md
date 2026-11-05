@@ -59,7 +59,7 @@ use the actual validator's error rather than inventing an alias that collides.
 ## Address the intended operation
 
 ```bash
-rig send dev-worker@example-rig "check the assigned result" --host remote-dev --verify
+rig send dev-worker@example-rig 'check the assigned result' --host remote-dev --verify
 rig capture dev-worker@example-rig --host remote-dev
 rig ps --host remote-dev --nodes --json
 rig whoami --host remote-dev

@@ -164,7 +164,9 @@ checks, next owner and stopping condition. Then deliver the context instruction,
 for example for the first builder:
 
 ```sh
-rig send dev-parser@starter "Read $PROJECT_ROOT/SPEC.md and the addressed sources in $PROJECT_ROOT/.openrig/factory/TASK-A.md. Run rig whoami --json and rig queue list --owned --json in your own seat; report your identity, scope and any native readiness/permission blocker. Await the bounded queue assignment."
+rig send dev-parser@starter --file - <<'EOF'
+Read <project-root>/SPEC.md and the addressed sources in <project-root>/.openrig/factory/TASK-A.md. Run rig whoami --json and rig queue list --owned --json in your own seat; report your identity, scope and any native readiness/permission blocker. Await the bounded queue assignment.
+EOF
 rig capture dev-parser@starter
 ```
 

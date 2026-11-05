@@ -345,7 +345,7 @@ A rig can package actual software alongside the agents that manage it. The shipp
 ```bash
 rig up secrets-manager
 rig env status secrets-manager
-rig send vault-specialist@secrets-manager "Check Vault health and report status." --verify
+rig send vault-specialist@secrets-manager 'Check Vault health and report status.' --verify
 ```
 
 Requires Docker for service-backed rigs.

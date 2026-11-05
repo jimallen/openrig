@@ -100,10 +100,12 @@ docs/review/<review-name>/01-review-<your-id>.md
 
 Also report to the orchestrator or chatroom:
 ```bash
-rig send <orchestrator-session> "REVIEW: <title>
+rig send <orchestrator-session> --file - <<'EOF'
+REVIEW: <title>
 HIGH :: <file:line> :: <issue>
 MEDIUM :: <file:line> :: <issue>
-..." --verify
+...
+EOF
 ```
 
 Or for rig-wide visibility:

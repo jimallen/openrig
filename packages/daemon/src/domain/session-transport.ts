@@ -1262,7 +1262,7 @@ function needsInputRefusal(sessionName: string, readiness: AgentActivity): strin
   if (readiness.evidenceSource === "runner_sidecar") {
     return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: rig seat pda-release ${sessionName} --reason "<why>"). No text was sent.`;
   }
-  return `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`;
+  return `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} '<text>' --dangerously-interact --reason '<why>'. No text was sent.`;
 }
 
 /** The result for an hc delivery that did not land, or null when it did. A send the core may still deliver is not a

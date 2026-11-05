@@ -24,9 +24,13 @@ mean the session was quiet.**
 ## Reaching a peer
 
 ```bash
-rig send <session> "message"     # types into their terminal and presses enter
+rig send <session> 'message'     # types into their terminal and presses enter
 rig capture <session>            # reads what is on their screen
 ```
+
+Never double-quote a body that contains backticks or `$(...)`: the shell runs them. Put a short
+plain body in single quotes, and anything multi-line or with backticks, `$` or quotes in a quoted
+heredoc: `rig send <session> --file - <<'EOF'` ... `EOF`.
 
 The session name is the address. `rig --help` lists the rest of the surface.
 

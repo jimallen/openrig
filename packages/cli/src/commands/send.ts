@@ -276,22 +276,27 @@ Examples:
   Report with \`backticks\`, $(subshells), and ---dashes pass through literally.
   EOF
   rig send dev-impl@my-rig --file ./report.md
-  rig send dev-impl@my-rig "Context update: QA approved. Proceed."
-  rig send dev-impl@my-rig "message" --verify
-  rig send --to dev-impl@my-rig,dev-qa@my-rig "message to two seats"
-  rig send --pod dev "message to the whole dev pod"
-  rig send --rig my-rig "message to the whole rig"
-  rig send dev-impl@my-rig "safe proof prompt" --wait-for-idle 30 --verify
-  rig send dev-impl@my-rig "Stop and read the spec." --force
-  rig send dev-impl@my-rig "message" --json
-  rig send --host remote-dev dev-impl@my-rig "remote message" --verify
-  rig send dev-impl@my-rig@vps-b "host-qualified target sugar (suffix must be a registered host id)"
+  rig send dev-impl@my-rig 'Context update: QA approved. Proceed.'
+  rig send dev-impl@my-rig 'message' --verify
+  rig send --to dev-impl@my-rig,dev-qa@my-rig 'message to two seats'
+  rig send --pod dev 'message to the whole dev pod'
+  rig send --rig my-rig 'message to the whole rig'
+  rig send dev-impl@my-rig 'safe proof prompt' --wait-for-idle 30 --verify
+  rig send dev-impl@my-rig 'Stop and read the spec.' --force
+  rig send dev-impl@my-rig 'message' --json
+  rig send --host remote-dev dev-impl@my-rig 'remote message' --verify
+  rig send dev-impl@my-rig@vps-b 'host-qualified target sugar (suffix must be a registered host id)'
 
-SAFE TEXT: a double-quoted positional is expanded by the SHELL before rig sees it, so
-$(...) and backticks inside it EXECUTE (and a body starting with "---" is parsed as an
-option). For any text with shell metacharacters, multi-line reports, or content you did
-not write yourself, pass it with --file - and a QUOTED heredoc (<<'EOF'), or --file <path>.
---file replaces the positional text (giving both is an error), works with every mode
+WARNING: never double-quote a body that contains backticks or $(...). The shell runs them
+before rig sees the text (a double-quoted body once ran 'rig down'; ids vanish and 'command
+not found' lines appear in the message).
+
+SAFE TEXT: a multi-line body, or any body with backticks, $, quotes or a leading "---",
+goes in a quoted heredoc: rig send <session> --file - <<'EOF' ... EOF (or --file <path>).
+A short plain body goes in single quotes. A double-quoted positional is expanded by the
+SHELL before rig sees it, so $(...) and backticks inside it EXECUTE (and a body starting
+with "---" is parsed as an option). For content you did not write yourself, always use
+--file. --file replaces the positional text (giving both is an error), works with every mode
 (single seat, --to, --pod, --rig, --raw, --dangerously-interact, --host), and an empty or
 unreadable file sends nothing. The file's bytes are sent exactly: a trailing newline is
 kept, as it is for a positional that carries one (a heredoc ends in one, so the envelope
@@ -315,7 +320,7 @@ A mid-task/busy target now sends-with-advisory by default (busy is not a block);
 --force is a back-compat no-op and never bypasses the interactive-prompt/permission
 guard. Use --raw to send exact text/keystrokes
 without the From/To envelope (e.g. a slash command); it is still guarded. Use
---dangerously-interact --reason "<why>" to DELIBERATELY drive a prompt (select an
+--dangerously-interact --reason '<why>' to DELIBERATELY drive a prompt (select an
 option or approve a permission) — the only override of the prompt guard; it
 implies --raw and is audit-logged. The answer is typed as keystrokes: letters may
 be menu shortcuts, and CR/ESC act as keys. An Enter is added only when the complete

@@ -40,7 +40,7 @@ If a command fails due to permissions:
 4. Continue with what you can do while waiting
 
 If blocked on another agent:
-1. Send them a direct message: `rig send <session> "I'm waiting on <specific thing>" --verify`
+1. Send them a direct message: `rig send <session> 'I am waiting on <specific thing>' --verify` (never double-quote a body that contains backticks or `$(...)`: the shell runs them)
 2. If they don't respond within a reasonable time, escalate to the orchestrator
 3. Do not stall silently
 
