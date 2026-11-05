@@ -11,6 +11,10 @@ its path-only topology/work trace.
 post-compaction on both runtimes, threshold-triggered on Claude, on-demand on both, configurable
 off, and never runs at fresh session start.
 
+**Guard:** `hooks/scripts/rig-body-guard.cjs` is a `PreToolUse` hook on Claude Code's `Bash` tool (and, through `pi/rig-body-guard.cjs`, the Pi `tool_call`
+extension the OpenRig pi-runner loads for every Pi seat). It refuses, before the shell runs it, a `rig send` / `rig queue ...` command whose text holds a command
+substitution (backticks or `$(...)`) in double quotes, unquoted, or in an unquoted here-document, and tells the model to use `--file - <<'EOF'`.
+
 ## Runtimes
 
 This plugin ships dual-manifest packaging — both `.claude-plugin/` and `.codex-plugin/`. Use it with:

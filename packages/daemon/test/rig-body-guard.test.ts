@@ -82,6 +82,8 @@ const ROWS: Row[] = [
   { id: "H3", deny: true, kind: "heredoc", note: "<<- unquoted heredoc (tab-stripped terminator)", cmd: `rig send a@b --file - <<-EOF\n\treport ${T}x${T}\n\tEOF` },
   { id: "H4", deny: true, kind: "heredoc", note: "cat <<EOF | rig send: the heredoc belongs to cat, the pipe feeds rig", cmd: `cat <<EOF | rig send a@b --file -\nreport ${T}x${T}\nEOF` },
   { id: "H5", deny: true, kind: "heredoc", note: "queue --body-file - <<EOF", cmd: `rig queue create --source a --destination b --body-file - <<EOF\n$(x)\nEOF` },
+  { id: "H9", deny: true, kind: "substitution", note: "<<- terminator indented with a tab: the next command is still scanned", cmd: `cat <<-EOF\n\tplain\n\tEOF\nrig send a@b "x ${T}y${T}"` },
+  { id: "H10", deny: true, kind: "substitution", note: "a command after a quoted heredoc is still scanned", cmd: `rig send a@b --file - <<'EOF'\nsafe ${T}text${T}\nEOF\nrig send c@d "x ${T}y${T}"` },
   { id: "H6", deny: true, kind: "here-string", note: "here-string with a substitution", cmd: `rig send a@b --file - <<< "x ${T}y${T}"` },
   { id: "H7", deny: true, kind: "pipe-producer", note: "echo with backticks piped into --file -", cmd: `echo "report ${T}x${T}" | rig send a@b --file -` },
   { id: "H8", deny: true, kind: "pipe-producer", note: "printf with $( ) piped into --file -", cmd: `printf '%s\\n' "report $(x)" | rig send a@b --file -` },

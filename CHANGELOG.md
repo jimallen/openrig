@@ -10,6 +10,20 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A `rig send` body with backticks or `$(...)` in double quotes is refused before the shell runs it (OF-249)
+
+- The shell expands a command substitution before `rig` starts, so nothing inside `rig send` can stop it. In one run a double-quoted body ran an unbounded
+  test suite in the repository; earlier ones ran `rig down` and pasted a whole `bd show` into a message. The guidance (OF-246) did not stop it, so the guard now
+  sits in the agent harness, before the command runs.
+- Pi seats: the pi-runner starts every Pi with `--extension <openrig-core>/pi/rig-body-guard.cjs`, which refuses a `bash` tool call with a command substitution
+  (backticks or `$(...)`) in double quotes or unquoted in the text of `rig send`, `rig queue ...`, `rig broadcast`, `rig chatroom`, `rig stream`, and the other
+  commands that carry free text, or in an unquoted here-document (`<<EOF`) or `echo`/`printf` piped into them. The model reads the refusal as the tool result: put the
+  text in a quoted here-document, `rig send <session> --file - <<'EOF'` (`--body-file -` for `rig queue`). A runner that cannot find the file does not start Pi.
+- Claude Code: `hooks/claude.json` of the `openrig-core` plugin gains a blocking `PreToolUse` hook on `Bash` that runs the same parser
+  (`hooks/scripts/rig-body-guard.cjs`). It takes effect where the plugin is installed in the Claude config.
+- Safe forms are not touched: single-quoted text, a quoted here-document (`<<'EOF'`), `--file <path>`, `--file -` fed by a pipe or here-document, a `$` inside
+  single quotes. Codex seats and `hc send` are not covered.
+
 ### A message sent to a seat whose agent dies can no longer run in a login shell (OF-200, hc)
 
 - On herdr-core the core holds a `rig send` for 0.45 s to several seconds and checks only that the terminal is live when it writes. A seat's agent used
