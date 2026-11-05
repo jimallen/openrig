@@ -46,15 +46,17 @@ export function trailingMarkers(prompt: string): SeatMarker[] {
 /** The line above the marker of a long message's short paste. Its body is not in the prompt: the gate hook adds it as `additionalContext`, from
  *  the seat's spool. activity-relay.cjs reads the same line. A hook that crashed let that prompt run with no body, so such a prompt in a
  *  transcript is no proof of arrival, and only the hook's own record is. */
-export function spooledNote(part: { index: number; total: number } | null, marker: SeatMarker): string {
-  return `OpenRig: long message${part === null ? "" : `, part ${part.index} of ${part.total}`}. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again. (${spooledTag(marker)})`;
+export function spooledNote(part: { index: number; total: number } | null, marker: SeatMarker, resent = false): string {
+  return `OpenRig: long message${part === null ? "" : `, part ${part.index} of ${part.total}`}${resent ? RESENT_LABEL : ""}. Its text comes with this prompt as additional context. If you do not see it, OpenRig sends it again. (${spooledTag(marker)})`;
 }
 
 /** Binds the note to its marker's (id, nonce). A sender never knows its message's nonce, so no body can end in a note that reads as gate syntax. */
 function spooledTag(marker: SeatMarker): string {
   return createHash("sha256").update(`spooled:${seatMarkerKey(marker)}`).digest("hex").slice(0, 16);
 }
-const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\. \(([a-f0-9]{16})\)$/;
+/** OF-243: said in the note of a copy sent again because the gate's first record of it was not confirmed on the agent's file (OF-229). */
+export const RESENT_LABEL = ", resent: not confirmed on file";
+const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?(?:, resent: not confirmed on file)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\. \(([a-f0-9]{16})\)$/;
 
 /** `trailingMarkers`, each saying whether its prompt is a long message's short paste. A record of a prompt uses this one. */
 export function promptMarkers(prompt: string): SeatMarker[] {

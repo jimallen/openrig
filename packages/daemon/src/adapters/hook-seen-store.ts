@@ -86,9 +86,60 @@ export class HookSeenStore {
     for (const other of fs.readdirSync(dir)) if (other !== name) fs.rmSync(nodePath.join(dir, other), { force: true });
   }
 
-  /** The message left the seat: its text does not stay on disk. */
+  /** The message left the seat: its text does not stay on disk, and nor does the count of its resends. */
   discardSpool(seat: string): void {
     fs.rmSync(this.spoolDir(seat), { recursive: true, force: true });
+    fs.rmSync(this.resentDir(seat), { recursive: true, force: true });
+  }
+
+  private resentDir(seat: string): string { return nodePath.join(this.seatDir(seat), "resent"); }
+  private gaveUpDir(seat: string): string { return nodePath.join(this.seatDir(seat), "gave-up"); }
+  private markerName(marker: SeatMarker): string { return createHash("sha256").update(seatMarkerKey(marker)).digest("hex"); }
+
+  /** OF-243: how many times the gate cleared this part's record because its text was not on the agent's file. 0 when never, or when it cannot be read. */
+  resentOf(seat: string, marker: SeatMarker): number {
+    try {
+      const value = JSON.parse(fs.readFileSync(nodePath.join(this.resentDir(seat), this.markerName(marker)), "utf8")) as { count?: unknown };
+      return typeof value.count === "number" && Number.isInteger(value.count) && value.count > 0 ? value.count : 0;
+    } catch { return 0; }
+  }
+
+  /** One more clear, counted before the record goes: a count lost with a crash would only allow one resend more. Returns the new count. */
+  noteResent(seat: string, marker: SeatMarker): number {
+    const count = this.resentOf(seat, marker) + 1;
+    fs.mkdirSync(this.resentDir(seat), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(nodePath.join(this.resentDir(seat), this.markerName(marker)), JSON.stringify({ id: marker.id, count }), { mode: 0o600 });
+    return count;
+  }
+
+  /** The gate stopped resending this part: its text could not be found on the agent's file after every resend allowed (hook-seat-gate.ts). Kept for health,
+   *  apart from the resend count, which goes with the message. */
+  giveUp(seat: string, marker: SeatMarker): void {
+    const file = nodePath.join(this.gaveUpDir(seat), this.markerName(marker));
+    if (fs.existsSync(file)) return;
+    fs.mkdirSync(this.gaveUpDir(seat), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify({ id: marker.id, at: this.now().toISOString() }), { mode: 0o600 });
+  }
+
+  /** The parts the gate gave up on in the last `sinceMs`, by seat. Older ones are deleted as they are found. */
+  gaveUp(sinceMs: number): Array<{ seat: string; id: string; at: string }> {
+    const found: Array<{ seat: string; id: string; at: string }> = [];
+    let folders: string[];
+    try { folders = fs.readdirSync(this.root); } catch { return found; }
+    for (const folder of folders) {
+      const dir = nodePath.join(this.root, folder, "gave-up");
+      let names: string[];
+      try { names = fs.readdirSync(dir); } catch { continue; }
+      for (const name of names) {
+        try {
+          const entry = JSON.parse(fs.readFileSync(nodePath.join(dir, name), "utf8")) as { id?: unknown; at?: unknown };
+          if (typeof entry.id !== "string" || typeof entry.at !== "string") continue;
+          if (this.now().getTime() - Date.parse(entry.at) > sinceMs) { fs.rmSync(nodePath.join(dir, name), { force: true }); continue; }
+          found.push({ seat: decodeURIComponent(folder), id: entry.id, at: entry.at });
+        } catch { /* unreadable: not a finding */ }
+      }
+    }
+    return found;
   }
 
   /** The record of this exact (id, nonce). The file's contents are compared too: a name only says what was asked for. */

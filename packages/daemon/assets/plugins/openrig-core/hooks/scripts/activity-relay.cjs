@@ -290,7 +290,7 @@ function recordSeen(seenDir, marker, record) {
 // passes. A crash after the text and before the record gives a second copy, the safe way round. The agent sees nothing until this process ends, and
 // takes nothing at all from one that is killed or fails (measured on Codex 0.166.0, OF-229): a kill after the record leaves a record and no text. The
 // record therefore proves nothing alone; it carries `bodySha256`, and the daemon waits for the text to show in the agent's own file (hook-seat-gate.ts).
-const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\. \(([a-f0-9]{16})\)$/;
+const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?(?:, resent: not confirmed on file)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\. \(([a-f0-9]{16})\)$/;
 
 function spooledMarker(prompt) {
   const markers = trailingMarkers(prompt);

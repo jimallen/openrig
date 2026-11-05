@@ -77,13 +77,15 @@ export interface CodexSeatGateDeps {
   /** How long the rollout may lag a long message's record before its text is taken as lost (see hook-seat-gate.ts). */
   bodyGraceMs?: number;
   now?: () => number;
+  /** How many resends the gate allows a part whose text never shows on file (see hook-seat-gate.ts). */
+  maxResends?: number;
 }
 
 export function codexSeatGate(deps: CodexSeatGateDeps): SeatGate {
   return hookSeatGate({
     store: deps.store, nonceOf: deps.nonceOf, fileIncludes: rolloutIncludes,
     bodyOnFile: (path, sha) => { const bodies = codexRolloutBodies(path); return bodies === null ? null : bodies.has(sha); },
-    bodyGraceMs: deps.bodyGraceMs, now: deps.now,
+    bodyGraceMs: deps.bodyGraceMs, now: deps.now, maxResends: deps.maxResends,
     transcriptsOf: (seat) => { const path = deps.rolloutPathOf(seat); return path === null ? [] : [path]; },
   });
 }

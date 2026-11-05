@@ -130,7 +130,7 @@ def submit():
         log.write(b"context " + mid + b" " + hashlib.sha256(added.encode()).hexdigest().encode() + b" " + str(len(added)).encode() + b"\n")
     if runtime == "codex":
         with open(rollout, "a") as f:
-            if added is not None:  # measured on real Codex 0.166.0: a hook's additionalContext lands as a developer message, its text exactly
+            if added is not None and not flag("no-developer-record"):  # measured on real Codex 0.166.0: a hook's additionalContext lands as a developer message, its text exactly
                 f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": added}]}}) + "\n")
             f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": composer.decode()}]}}) + "\n")
     else:

@@ -580,9 +580,26 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       await wait(800);
       expect(context(s, "long")).toEqual([`context long ${sha(body)} 1500`]);
       expect(agent(s, "long")).toHaveLength(2);
+      // OF-243: the first copy's note is plain; the copy sent for want of the text on file says so.
+      expect(agent(s, "long")[0]).not.toContain("resent");
+      expect(agent(s, "long")[1]).toContain("OpenRig: long message, resent: not confirmed on file. Its text comes");
       expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "gate_seen" });
       expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
     }, 90_000);
+
+    it("codex, OF-243: a file that never shows the text is resent three times and then left: the row is received on the record, and health says the text was not found", async () => {
+      // The stub does not file the hook's context in its rollout (a path that is wrong for good, or a Codex that records nothing), so no copy is ever confirmed.
+      const s = fixture(["no-developer-record"]); await s.launch();
+      const body = "n".repeat(1500);
+      s.accept("long", body); daemon(s, "none", { DELIVERY_BODY_GRACE_MS: "1000" });
+      await state(s, "long", "received", 60_000);
+      await wait(1500);
+      expect(agent(s, "long")).toHaveLength(4);  // the first copy and three resends, not a fifth
+      expect(agent(s, "long").slice(1).every((l) => l.includes("resent: not confirmed on file"))).toBe(true);
+      expect(context(s, "long")).toHaveLength(4);
+      expect(http(s, "/api/health").text).toContain("could not be found on the agent's file");
+      expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered" });
+    }, 120_000);
 
     it("past 9000 characters: numbered parts, each its own id and turn, in order, whole, and received only when all are", async () => {
       const s = fixture(); await s.launch();

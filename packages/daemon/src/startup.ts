@@ -1340,12 +1340,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const entry = inventoryOfLiveRigs(db).find((e) => e.canonicalSessionName === seat);
     return entry ? { rigId: entry.rigId, logicalId: entry.logicalId } : null;
   })] : [];
+  // OF-243: a long message's part the gate stopped resending, because its text never showed on the agent's file.
+  const { GateUnconfirmedHealthSource } = await import("./domain/seat-messaging/gate-unconfirmed-health.js");
+  const gateUnconfirmedHealth = messagePumpEnabled ? [new GateUnconfirmedHealthSource(new HookSeenStore(seatGateRoot(OPENRIG_HOME)))] : [];
   // OF-200: a seat whose agent ended its terminal is a finding (read-only; it restarts nothing).
   const seatLostHealth = new SeatLostHealthSource({
     inventory: () => inventoryOfLiveRigs(db),
     waiting: (seat) => { const open = seatMessages.openBySeat().find((row) => row.seat === seat); return open ? { open: open.open, oldestId: open.oldestId } : null; },
   });
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, seatLostHealth, ...seatMessagingHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, seatLostHealth, ...seatMessagingHealth, ...gateUnconfirmedHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),

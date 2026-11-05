@@ -31,6 +31,8 @@ export interface SeatSpool {
   declaredVersion(seat: string): number | null;
   spool(seat: string, marker: SeatMarker, text: string): void;
   discardSpool(seat: string): void;
+  /** How many times the gate cleared this part's record because its text was not on the agent's file (OF-243): above 0, the copy is a resend. */
+  resentOf?(seat: string, marker: SeatMarker): number;
 }
 
 /** Past this a paste may collapse on screen, hiding its marker. Measured on Codex (a paste of 1000 characters or fewer shows whole). Bytes,
@@ -57,7 +59,7 @@ function prepareLongPaste(message: SeatMessage, text: string, rows: Pick<HopRows
   const index = Math.min(message.part ?? 1, total);
   const marker = { id: total === 1 ? id : partId(id, index, total), nonce };
   spool.spool(message.seat, marker, parts[index - 1]!);
-  return shortPaste(message, marker, index, total);
+  return shortPaste(message, marker, index, total, (spool.resentOf?.(message.seat, marker) ?? 0) > 0);
 }
 
 /** A wake group is one text with one marker per row, but the spool holds one message's text under one marker, so a long group goes a row at a
@@ -83,9 +85,9 @@ function withoutPreviousOccupantLabel(body: string): string {
 }
 
 /** The note and the marker, under the label a message for the previous occupant carries on every attempt. */
-function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number): string {
+function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, total: number, resent = false): string {
   const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL}\n` : "";
-  return `${label}${spooledNote(total === 1 ? null : { index, total }, marker)}\n${nativeMarker(marker.id, marker.nonce)}`;
+  return `${label}${spooledNote(total === 1 ? null : { index, total }, marker, resent)}\n${nativeMarker(marker.id, marker.nonce)}`;
 }
 
 export interface HopGuard {

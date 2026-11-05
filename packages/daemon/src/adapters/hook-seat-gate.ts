@@ -27,7 +27,15 @@ export interface HookSeatGateDeps {
   /** How long the agent's file may lag a record before the text is taken as lost. Default `BODY_GRACE_MS`. */
   bodyGraceMs?: number;
   now?: () => number;
+  /** How many times a part's record may be cleared and the part sent again for want of its text on file, before the gate stops (default `MAX_UNCONFIRMED_RESENDS`). */
+  maxResends?: number;
 }
+
+/** OF-243. A rollout path that is wrong for good would clear the record, and send the part, every grace period for ever. Three: each resend is one more
+ *  9000-byte copy in the agent's conversation, and a relay that is killed inside its 7 ms window three attempts running does not happen by chance, so
+ *  a part still missing from the file after three is a file we cannot read the way we think we can. Then the record stands, as it did before the text
+ *  was checked, and `rig health` says so. */
+export const MAX_UNCONFIRMED_RESENDS = 3;
 
 /** Longer than the hook's own timeout (5 s) and the time Codex takes to put its context on file. A text that shows up later than this is delivered twice, never lost. */
 export const BODY_GRACE_MS = 30_000;
@@ -54,7 +62,13 @@ export function hookSeatGate(deps: HookSeatGateDeps): SeatGate {
       return lapsed ? null : { kind: "unavailable", cause: "transcript_unreadable" };
     }
     if (lapsed) {
-      deps.store.clear(seat, { id, nonce });
+      const marker = { id, nonce };
+      if (deps.store.resentOf(seat, marker) >= (deps.maxResends ?? MAX_UNCONFIRMED_RESENDS)) {
+        deps.store.giveUp(seat, marker);
+        return null;
+      }
+      deps.store.noteResent(seat, marker);
+      deps.store.clear(seat, marker);
       return { kind: "not_seen" };
     }
     return { kind: "unavailable", cause: "body_unconfirmed" };

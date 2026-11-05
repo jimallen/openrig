@@ -467,6 +467,18 @@ describe("the hops", () => {
         await hop().attempt(long);
         expect(calls[0]).toBe(calls[1]);
       });
+      it("OF-243: a part whose record the gate cleared goes again with its note saying so, and the tag and marker are the first copy's", async () => {
+        const body = "y".repeat(PASTE_LIMIT);
+        let resent = 0;
+        await hop({ ...spool, resentOf: () => resent }).attempt({ ...message, body });
+        resent = 1;
+        await hop({ ...spool, resentOf: () => resent }).attempt({ ...message, body });
+        const [first, again] = calls.map((c) => c.replace("paste:", ""));
+        expect(first).not.toContain("resent");
+        expect(again).toContain("OpenRig: long message, resent: not confirmed on file. Its text comes");
+        expect(again!.replace(", resent: not confirmed on file", "")).toBe(first);
+        expect(promptMarkers(again!)).toEqual([{ id: "m-1", nonce: store.nonceOf(ID), spooled: true }]);
+      });
       it("a short message is none of this", async () => {
         await hop().attempt(message);
         expect(store.partsOf(ID)).toBeNull();
