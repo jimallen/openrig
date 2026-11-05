@@ -122,17 +122,26 @@ describe("OF-209 rig remove reports the seat messages still waiting", () => {
     expect(exitCode).toBe(1);
     expect(output).toContain("1 message(s) still waiting for the removed seats of pod half: a1.");
   });
+  it("shrink: the return to senders is conditional on archiving the rig AND on a queue reaching the sender", async () => {
+    const { output } = await run(shrinkCommand(deps()), ["shrink", "rig-1", "half"]);
+    expect(output).toContain("they go back to their senders, where a queue can reach them, only if rig rig-1 is archived first");
+  });
   it("shrink control: says nothing about messages when none wait", async () => {
     const { output } = await run(shrinkCommand(deps()), ["shrink", "rig-1", "empty"]);
     expect(output).toContain("Removed pod empty from rig rig-1");
     expect(output).not.toContain("message(s)");
   });
-  it("release --delete names the open messages and says they go back to their senders", async () => {
+  // OF-236 e (review of211 N2): "they go back to their senders" is true only where a queue can reach the sender (daemon: QueueSenderReturn.hasQueue: a `name@rig`
+  // sender whose rig exists, not `@system`, not `daemon@kernel`); otherwise the message ends on its row with its text kept and nobody told. The text says so.
+  it("release --delete names the open messages and says they go back to their senders only where a queue can reach the sender", async () => {
     const { output, exitCode } = await run(releaseCommand(deps()), ["release", "rig-1", "--delete"]);
     expect(exitCode).toBeUndefined();
     expect(output).toContain("1 message(s) were still open for the seats of rig rig-1: r1.");
-    expect(output).toContain("they go back to their senders");
+    expect(output).toContain("each goes back to its sender where a queue can reach the sender");
+    expect(output).toContain("otherwise it ends on its row, text kept, and nobody is told");
+    expect(output, "no unconditional promise of a return").not.toMatch(/they go back to their senders[.:]|They go back to their senders too/);
     expect(output).toContain("1 message(s) held by the typing guard for the seats of rig rig-1: h9.");
+    expect(output).toContain("They are returned or kept on the same terms.");
   });
   it("release control: says nothing about messages when none were open", async () => {
     const { output } = await run(releaseCommand(deps()), ["release", "rig-2"]);

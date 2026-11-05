@@ -31,7 +31,7 @@ type ShrinkResponse = {
 function reportWaitingMessages(data: ShrinkResponse): void {
   const pending = data.pendingMessageIds ?? [];
   if (pending.length > 0) {
-    console.log(`${pending.length} message(s) still waiting for the removed seats of pod ${data.namespace}: ${pending.join(", ")}. They stay open and go, labelled, to a seat added later at the same address; they go back to their senders only if rig ${data.rigId} is archived first.`);
+    console.log(`${pending.length} message(s) still waiting for the removed seats of pod ${data.namespace}: ${pending.join(", ")}. They stay open and go, labelled, to a seat added later at the same address; they go back to their senders, where a queue can reach them, only if rig ${data.rigId} is archived first.`);
   }
   const held = data.heldMessageIds ?? [];
   if (held.length > 0) {
