@@ -3,7 +3,9 @@
 // Instrument: every `.killSession(` / `.respawnPane(` call in packages/daemon/src outside adapters/ (the adapters define them), counted per file; and, for each file, the
 // guard entry that takes the lease before it is reached. A new call site in any file fails the count; a removed guard entry fails the entry check. Whoever adds a site
 // classifies it here: under a lifecycle entry, or a probe terminal that is never a seat (its label is not the seat label, so the reconciler never lists it).
-// Production entrypoint: nothing new executes; this reads source text. The per-operation behaviour is pinned in seat-identity-lifecycle-ops.real.test.ts.
+// Production entrypoint: nothing new executes; this reads source text, so it is a BACKSTOP only: a lease entry made unreachable while its text stays passes it. The
+// behaviour is pinned end to end in seat-identity-lifecycle-ops.real.test.ts (rig down, shrinkPod, removeNode, stop) and lifecycle-ops.real.test.ts (handover, launch --fresh,
+// restore, relaunch, instantiate cleanup) and seat-restart-in-place-native.test.ts (in-place restart), where an unreachable entry fails (OF-241).
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
