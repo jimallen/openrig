@@ -44,6 +44,24 @@ describe("resolvePiRigBodyGuard", () => {
   });
 });
 
+describe("census: the one place a Pi child is spawned", () => {
+  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []);
+  const sources = walk(path.join(PACKAGE_DIR, "src")).map((file) => ({ file: path.relative(PACKAGE_DIR, file), text: fs.readFileSync(file, "utf8") }));
+
+  it("positive control: the walk reads the adapters it is about", () => {
+    expect(sources.length).toBeGreaterThan(100);
+    expect(sources.map((s) => s.file)).toContain(path.join("src", "adapters", "pi-runner.ts"));
+  });
+  it("buildPiChildArgs( is called exactly once outside its definition, in pi-runner.ts, and the call passes extensions", () => {
+    const calls = sources.flatMap((s) => [...s.text.matchAll(/buildPiChildArgs\(\{([^}]*)\}\)/g)].map((m) => ({ file: s.file, body: m[1]! })));
+    expect(calls.map((c) => c.file)).toEqual([path.join("src", "adapters", "pi-runner.ts")]);
+    expect(calls[0]!.body).toContain("extensions:");
+  });
+  it('"--mode", "rpc" (the Pi child argv) is written in one file only', () => {
+    expect(sources.filter((s) => /"--mode",\s*"rpc"/.test(s.text)).map((s) => s.file)).toEqual([path.join("src", "adapters", "pi-runner-protocol.ts")]);
+  });
+});
+
 describe("the real runner process", () => {
   const dirs: string[] = [];
   afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });

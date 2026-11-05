@@ -505,6 +505,12 @@ function scan(src, depth, out) {
   for (const s of subs) scan(s, depth + 1, out);
 }
 
+/** The here-documents and here-strings of a shell command that reads its script from stdin are shell text too. */
+function scanStdinScript(cmd, depth, out) {
+  for (const h of cmd.heredocs) scan(h.body, depth + 1, out);
+  for (const w of cmd.hereStrings) scan(w.text, depth + 1, out);
+}
+
 function scanPipeline(cmds, resolved, from, to, depth, out) {
   let message = null;
   for (let i = from; i < to; i++) {
@@ -519,6 +525,8 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       if (ci >= 0) {
         const script = res.args.slice(ci + 1).find((a) => !a.text.startsWith("-"));
         if (script) scan(script.text, depth + 1, out);
+      } else if (res.args.every((a) => a.text.startsWith("-")) || res.args.some((a) => a.text === "-s")) {
+        scanStdinScript(cmds[i], depth, out);        // bash <<'EOF' ... EOF / bash <<< '...': the text is the script
       }
     } else if (res.name === "eval") {
       scan(res.args.map((a) => a.text).join(" "), depth + 1, out);
@@ -527,6 +535,7 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       while (k < res.args.length && res.args[k].text.startsWith("-")) k += SSH_VALUED.has(res.args[k].text) ? 2 : 1;
       const remote = res.args.slice(k + 1);                 // after the host
       if (remote.length) scan(remote.map((a) => a.text).join(" "), depth + 1, out);
+      else scanStdinScript(cmds[i], depth, out);            // ssh host <<'EOF' ... EOF
     }
   }
   if (!message) return;
