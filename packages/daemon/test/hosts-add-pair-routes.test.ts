@@ -420,7 +420,7 @@ describe("local pair-client seam — POST /pair + GET /pair/:id (the browser's w
         res.end();
       }
     });
-    await new Promise<void>((resolve) => target.listen(0, resolve));
+    await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
     targetPort = (target.address() as { port: number }).port;
   });
   afterEach(() => {
