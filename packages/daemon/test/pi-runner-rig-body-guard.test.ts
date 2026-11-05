@@ -64,4 +64,31 @@ describe("the real runner process", () => {
     expect(at).toBeGreaterThan(0);
     expect(argv[at + 1]).toBe(GUARD);
   }, 60_000);
+
+  it("refuses to start Pi at all when the guard file is absent (exit 127, the exit recorded, the pi child never spawned)", async () => {
+    // A copy of src/ sits where "../../assets" does not exist, inside the package so bare imports still resolve.
+    const copy = fs.mkdtempSync(path.join(PACKAGE_DIR, "node_modules", ".cache-of249-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "of249-runner-missing-"));
+    dirs.push(copy, root);
+    fs.cpSync(path.join(PACKAGE_DIR, "src"), path.join(copy, "src"), { recursive: true });
+    fs.writeFileSync(path.join(copy, "package.json"), JSON.stringify({ type: "module" })); // as in the real package: import.meta.dirname needs ESM
+    expect(fs.existsSync(path.join(copy, "assets"))).toBe(false);
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const argvFile = path.join(root, "argv.json");
+    fs.writeFileSync(path.join(bin, "pi"), `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(argvFile)}, "started");\nsetTimeout(() => process.exit(0), 300);\n`, { mode: 0o700 });
+    const env = { PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin`, OPENRIG_HOME: path.join(root, "home"), HOME: root };
+    const stateRoot = path.join(root, "state");
+    const out: string[] = [];
+    const child = spawn(process.execPath, ["--import", "tsx", path.join(copy, "src", "adapters", "pi-runner.ts"), "--session-name", "s1@r", "--state-root", stateRoot, "--cwd", root, "--launch-id", "l1", "--approve"], { cwd: PACKAGE_DIR, env, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", (d) => out.push(String(d)));
+    child.stderr.on("data", (d) => out.push(String(d)));
+    const exited = await new Promise<number | null>((resolve) => { child.on("exit", (code) => resolve(code)); setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 40_000); });
+    expect(exited).toBe(127);
+    expect(out.join("")).toContain("not starting Pi without it");
+    expect(fs.existsSync(argvFile)).toBe(false);
+    const state = JSON.parse(fs.readFileSync(path.join(stateRoot, "s1@r", "runner-state.json"), "utf8")) as { ready: boolean; exited?: { code: number } };
+    expect(state.ready).toBe(false);
+    expect(state.exited?.code).toBe(127);
+  }, 90_000);
 });

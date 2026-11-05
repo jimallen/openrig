@@ -137,6 +137,7 @@ const ROWS: Row[] = [
   { id: "S29", deny: false, note: "empty command", cmd: `` },
   { id: "S30", deny: false, note: "rig send with --id and --verify flags, single quotes", cmd: `rig send a@b 'hi' --id m1 --verify --json` },
   { id: "S31", deny: false, note: "rig mentioned as an argument of another command", cmd: `grep -rn "rig send" docs/ | head` },
+  { id: "S33", deny: false, note: "unquoted heredoc with arithmetic $((1+2)) only: nothing executes", cmd: `rig send a@b --file - <<EOF\nsum $((1+2))\nEOF` },
   { id: "S32", deny: false, note: "2>&1 file descriptor redirect", cmd: `rig send a@b 'hi' 2>&1 | tail -3` },
 
   // ---- parse failures: refuse only when the plain-text signal is there
