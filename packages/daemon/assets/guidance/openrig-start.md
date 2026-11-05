@@ -1,7 +1,7 @@
 # OpenRig Start
 
 You are running inside an OpenRig-managed topology — a persistent team of agents in separate
-terminals, each with a name and a role, talking to each other directly.
+terminals, each with a name and a role, talking to each other.
 
 **This file is deliberately thin.** Its only job is to get you your identity. It is not an
 orientation, and it cannot tell you what your rig is for or what you are supposed to be doing.
@@ -24,13 +24,11 @@ mean the session was quiet.**
 ## Reaching a peer
 
 ```bash
-rig send <session> 'message'     # types into their terminal and presses enter
-rig capture <session>            # reads what is on their screen
+rig send <session> 'message'     # types into their terminal
+rig capture <session>            # reads their screen
 ```
 
-Never double-quote a body that contains backticks or `$(...)`: the shell runs them. Put a short
-plain body in single quotes, and anything multi-line or with backticks, `$` or quotes in a quoted
-heredoc: `rig send <session> --file - <<'EOF'` ... `EOF`.
+Never double-quote a body with backticks or `$(...)`: use `--file - <<'EOF'`.
 
 The session name is the address. `rig --help` lists the rest of the surface.
 
