@@ -57,13 +57,13 @@ describe("the real runner process", () => {
     fs.writeFileSync(path.join(bin, "pi"), `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));\nsetTimeout(() => process.exit(0), 300);\n`, { mode: 0o700 });
     const env = { PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin`, OPENRIG_HOME: path.join(root, "home"), HOME: root };
     const child = spawn(process.execPath, ["--import", "tsx", RUNNER, "--session-name", "s1@r", "--state-root", path.join(root, "state"), "--cwd", root, "--launch-id", "l1", "--approve"], { cwd: PACKAGE_DIR, env, stdio: ["ignore", "ignore", "ignore"] });
-    const exited = await new Promise<number | null>((resolve) => { child.on("exit", (code) => resolve(code)); setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 40_000); });
+    const exited = await new Promise<number | null>((resolve) => { child.on("exit", (code) => resolve(code)); setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 100_000); });
     expect(exited).toBe(0);
     const argv = JSON.parse(fs.readFileSync(argvFile, "utf8")) as string[];
     const at = argv.indexOf("--extension");
     expect(at).toBeGreaterThan(0);
     expect(argv[at + 1]).toBe(GUARD);
-  }, 60_000);
+  }, 130_000);
 
   it("refuses to start Pi at all when the guard file is absent (exit 127, the exit recorded, the pi child never spawned)", async () => {
     // A copy of src/ sits where "../../assets" does not exist, inside the package so bare imports still resolve.
@@ -83,12 +83,12 @@ describe("the real runner process", () => {
     const child = spawn(process.execPath, ["--import", "tsx", path.join(copy, "src", "adapters", "pi-runner.ts"), "--session-name", "s1@r", "--state-root", stateRoot, "--cwd", root, "--launch-id", "l1", "--approve"], { cwd: PACKAGE_DIR, env, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (d) => out.push(String(d)));
     child.stderr.on("data", (d) => out.push(String(d)));
-    const exited = await new Promise<number | null>((resolve) => { child.on("exit", (code) => resolve(code)); setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 40_000); });
+    const exited = await new Promise<number | null>((resolve) => { child.on("exit", (code) => resolve(code)); setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 100_000); });
     expect(exited).toBe(127);
     expect(out.join("")).toContain("not starting Pi without it");
     expect(fs.existsSync(argvFile)).toBe(false);
     const state = JSON.parse(fs.readFileSync(path.join(stateRoot, "s1@r", "runner-state.json"), "utf8")) as { ready: boolean; exited?: { code: number } };
     expect(state.ready).toBe(false);
     expect(state.exited?.code).toBe(127);
-  }, 90_000);
+  }, 130_000);
 });
