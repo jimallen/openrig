@@ -4,7 +4,7 @@
 // cursor, so the cursor is pinned here too. The sweep row compares `charWidth` with the core for every code point (U+0020..U+10FFFF).
 //
 // Not proven here: the Herdr app's own drawing (it reads the core's screen; a font that draws an emoji wider than two cells is not measured),
-// a real Pi, and any hc other than the one on PATH (0.1.16 on Linux, 0.1.17 on macOS were both measured; they differ, see SEQUENCES).
+// a real Pi, and any hc other than the one on PATH (0.1.16 and 0.1.17 were both measured, each on macOS, 0.1.16 also on Linux; the two versions differ, the two OSes do not: see SEQUENCES).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -18,7 +18,7 @@ import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js"
 import { coreSequenceWidths, paneWidthTableSource, sweepCoreWidths } from "./helpers/hc-width-sweep.js";
 import { panePi, until } from "./helpers/pi-runner-pane.js";
 
-/** hc 0.1.16 (Linux) and 0.1.17 (macOS) disagree on these four code points (2 cells, 1 cell); the table is 0.1.17's. Measured both ways. */
+/** hc 0.1.16 and 0.1.17 disagree on these four code points (2 cells, 1 cell); the table is 0.1.17's. Measured both ways. */
 const VERSION_DEPENDENT = new Set([0x302e, 0x302f, 0x16ff0, 0x16ff1]);
 
 /** Strings whose width the core decides differently by version. [string, cells hc 0.1.16 draws it in (code points added up), cells hc 0.1.17 draws it in (one cluster)]. */
