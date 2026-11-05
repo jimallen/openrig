@@ -287,7 +287,9 @@ function recordSeen(seenDir, marker, record) {
 //
 // The order is the crash rule. The record is written LAST, after the text has gone to stdout, so a record proves the agent was given the text. A
 // hook that crashes or times out before that leaves no record, and the prompt ran with only the note: the row stays open and the next attempt
-// passes. A crash after the text and before the record gives a second copy, the safe way round. The agent sees nothing until this process ends.
+// passes. A crash after the text and before the record gives a second copy, the safe way round. The agent sees nothing until this process ends, and
+// takes nothing at all from one that is killed or fails (measured on Codex 0.166.0, OF-229): a kill after the record leaves a record and no text. The
+// record therefore proves nothing alone; it carries `bodySha256`, and the daemon waits for the text to show in the agent's own file (hook-seat-gate.ts).
 const SPOOLED_NOTE = /^OpenRig: long message(?:, part \d+ of \d+)?\. Its text comes with this prompt as additional context\. If you do not see it, OpenRig sends it again\. \(([a-f0-9]{16})\)$/;
 
 function spooledMarker(prompt) {
@@ -327,6 +329,9 @@ async function deliverSpooled(spooled, providerPayload, env = process.env, now =
   try {
     recordSeen(spooled.seenDir, spooled.marker, {
       ...spooled.marker, recordedAt: now().toISOString(), via: "hook", durable: false,
+      // A record is written before this process has exited, and an agent takes a hook's output only from an exit it saw (OF-229). So the record names the text
+      // it stands for, and the daemon calls the row received when the agent's own file holds that text, not before.
+      bodySha256: crypto.createHash("sha256").update(spooled.text, "utf8").digest("hex"),
       agentPid: Number.isInteger(agentPid) && agentPid > 0 ? agentPid : null,
       transcriptPath: firstString(providerPayload.transcript_path),
     });

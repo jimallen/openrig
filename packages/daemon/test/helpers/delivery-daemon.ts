@@ -6,7 +6,7 @@ import { serve } from "@hono/node-server";
 import type { ClaudeNativeInbox } from "../../src/domain/claude-native-inbox.js";
 import type { LastHop } from "../../src/domain/seat-messaging/ports.js";
 import { createDaemon } from "../../src/startup.js";
-const { MPD_DB: db, MPD_DIR: dir, MPD_CRASH: crash = "none", DELIVERY_PORT: port, DELIVERY_TIMING: timing } = process.env;
+const { MPD_DB: db, MPD_DIR: dir, MPD_CRASH: crash = "none", DELIVERY_PORT: port, DELIVERY_TIMING: timing, DELIVERY_BODY_GRACE_MS: grace } = process.env;
 if (!db || !dir) throw new Error("MPD_DB and MPD_DIR are required");
 const note = (line: string) => appendFileSync(join(dir, "hop.log"), `${line}\n`);
 const hang = () => new Promise<never>(() => undefined);
@@ -29,6 +29,7 @@ const daemon = await createDaemon({
   dbPath: db,
   onClaudeInboxReady: (ready) => { inbox = ready; },
   wrapSeatMessagingPorts: (ports) => ({ gateFor: (seat) => ports.gateFor(seat), hopFor: (seat) => { const hop = ports.hopFor(seat); return hop ? noted(hop) : null; } }),
+  ...(grace ? { seatGateBodyGraceMs: Number(grace) } : {}),
   messagePumpTiming: timing ? JSON.parse(timing) : { tickMs: 40, pauseRecheckMs: 80, backoffMs: [300, 300, 300] },
 });
 if (port) await new Promise<void>((ok) => serve({ fetch: daemon.app.fetch, port: Number(port), hostname: "127.0.0.1" }, () => ok()));

@@ -1,13 +1,18 @@
-// Seat Messaging, stage S2: the daemon's read of a hook gate, the `SeatGate` port over the seen store. Read only.
+// Seat Messaging, stage S2: the daemon's read of a hook gate, the `SeatGate` port over the seen store. Read only, but for one clear (below).
 //
 // Two sources, in order (census, part 2): the seen record, and the marker in the file the prompt lands in. The second is what a hook
 // that crashed left behind: the prompt ran with no record. The row's nonce comes in through `nonceOf`, because a marker with any other
 // nonce is forged: it confirms nothing, and its own record does not stand in the way of the real one.
+//
+// A long message's record is not enough alone (OF-229). The relay writes it before it has exited, and an agent takes a hook's output only from a hook
+// that exited: killed after its record, the relay leaves a record and the agent without the text. So a record that names its text (`bodySha256`) reads as
+// seen only once the agent's own file holds that text. Until then the gate is unavailable (the file may lag the hook); past `bodyGraceMs` from the record
+// it is a record of nothing, and is cleared, so the next attempt passes the relay again and carries the text. A second copy is the safe way round.
 
 import fs from "node:fs";
 import type { GateLookup, MessageId, SeatGate } from "../domain/seat-messaging/ports.js";
 import { HOOK_GATE_VERSION } from "./hook-gate-version.js";
-import type { HookSeenStore } from "./hook-seen-store.js";
+import type { HookSeenStore, SeenRecord } from "./hook-seen-store.js";
 
 export interface HookSeatGateDeps {
   store: HookSeenStore;
@@ -17,9 +22,38 @@ export interface HookSeatGateDeps {
   transcriptsOf: (seat: string) => string[];
   /** null: the file could not be read, which proves nothing either way. */
   fileIncludes: (path: string, needle: string) => boolean | null;
+  /** Given, a record that names its text is believed only when this says the file holds it. null: the file cannot be read. Claude's gate gives none. */
+  bodyOnFile?: (path: string, bodySha256: string) => boolean | null;
+  /** How long the agent's file may lag a record before the text is taken as lost. Default `BODY_GRACE_MS`. */
+  bodyGraceMs?: number;
+  now?: () => number;
 }
 
+/** Longer than the hook's own timeout (5 s) and the time Codex takes to put its context on file. A text that shows up later than this is delivered twice, never lost. */
+export const BODY_GRACE_MS = 30_000;
+
 export function hookSeatGate(deps: HookSeatGateDeps): SeatGate {
+  const now = deps.now ?? Date.now;
+  /** null: the record stands. Otherwise what the gate says instead. */
+  const bodyUnconfirmed = (seat: string, id: MessageId, nonce: string, record: SeenRecord): GateLookup | null => {
+    if (record.bodySha256 === undefined || record.durable || deps.bodyOnFile === undefined) return null;
+    const paths = new Set(deps.transcriptsOf(seat));
+    if (record.transcriptPath) paths.add(record.transcriptPath);
+    if (paths.size === 0) return null;  // no file to look in: nothing can be told, and the record is all there is
+    let unreadable = false;
+    for (const path of paths) {
+      const held = deps.bodyOnFile(path, record.bodySha256);
+      if (held === true) return null;
+      if (held === null) unreadable = true;
+    }
+    if (unreadable) return { kind: "unavailable", cause: "transcript_unreadable" };
+    const age = now() - Date.parse(record.recordedAt);
+    if (Number.isFinite(age) && age >= (deps.bodyGraceMs ?? BODY_GRACE_MS)) {
+      deps.store.clear(seat, { id, nonce });
+      return { kind: "not_seen" };
+    }
+    return { kind: "unavailable", cause: "body_unconfirmed" };
+  };
   return {
     version: HOOK_GATE_VERSION,
     lookup: async (seat: string, id: MessageId, row: MessageId = id): Promise<GateLookup> => {
@@ -27,7 +61,9 @@ export function hookSeatGate(deps: HookSeatGateDeps): SeatGate {
       const nonce = deps.nonceOf(row);
       if (nonce === null) return { kind: "not_seen" };
       const read = deps.store.read(seat, { id, nonce });
-      if (read.kind === "seen") return { kind: "seen", record: { id, recordedAt: read.record.recordedAt, nonce } };
+      if (read.kind === "seen") {
+        return bodyUnconfirmed(seat, id, nonce, read.record) ?? { kind: "seen", record: { id, recordedAt: read.record.recordedAt, nonce } };
+      }
       if (read.kind === "unavailable") return read;
       const needle = `[openrig-msg ${id}:${nonce}]`;
       for (const path of deps.transcriptsOf(seat)) {

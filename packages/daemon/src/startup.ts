@@ -225,6 +225,8 @@ interface DaemonOptions {
   onCodexReconcileReady?: (reconcile: (sessionName: string, threadId: string | null) => void) => void;
   /** Seat Messaging S3: a test's shorter schedule. */
   messagePumpTiming?: Partial<import("./domain/seat-messaging/message-pump.js").MessagePumpTiming>;
+  /** Tests of how long a Codex rollout may lag a long message's gate record before the text is taken as lost (OF-229). Default: the gate's own. */
+  seatGateBodyGraceMs?: number;
   /** S20 — the effective bind plan (mode/hosts/tailscaleDetected/ignoredRoutingHost),
    *  computed once in index.ts and exposed on /healthz so adoption gates verify
    *  listeners by binding evidence. Absent (tests/legacy) = healthz body unchanged. */
@@ -1309,6 +1311,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const localSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
     db, rows: seatMessages, hookStore: new HookSeenStore(seatGateRoot(OPENRIG_HOME)), stateRoots: { pi: piStateRoot, omp: ompStateRoot },
     foregroundGroup: foregroundGroupPrograms, client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: transcriptHasPrompt,
+    bodyGraceMs: opts?.seatGateBodyGraceMs,
     rolloutOf: (seat) => {
       const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? AND resume_token IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string } | undefined;
       return row ? contextUsageStore.readCodexTranscriptPath(row.token) : null;

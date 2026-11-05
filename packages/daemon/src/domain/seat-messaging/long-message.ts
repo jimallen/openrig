@@ -5,7 +5,8 @@ import { messageId, type MessageId } from "./ports.js";
  * A long message on a paste path goes as a short paste, and the seat's gate hook adds its text as `additionalContext`. Real Codex truncates that
  * context past about 10k, keeping the first and last 5000 (measured, d65d5416, on ASCII only), so a longer message goes in numbered parts, each with
  * an id of its own, in a turn of its own. Parts are cut by UTF-8 bytes (decision 38): the budget looks byte-based, and bytes are safe either way.
- * Claude's limit on it is not measured.
+ * Claude's limit on it is not measured. The gate also reads the context back, to believe a record (hook-seat-gate.ts, OF-229): a part must come back
+ * exactly, so 9000 bytes stays under the cut (measured, OF-229: ASCII, hex, CJK and emoji bodies of 9000 bytes came back exact; 12000 ASCII came back cut).
  */
 export const LONG_PART_BYTES = 9000;
 

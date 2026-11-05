@@ -26,6 +26,8 @@ export interface RuntimeSeatPortsDeps {
   fileIncludes: (path: string, needle: string) => boolean | null;
   rolloutOf: (seat: string) => string | null;
   foregroundGroup?: ForegroundGroupOf;
+  /** Tests of the grace a Codex rollout may lag a long message's record (OF-229). Everything else takes the gate's own default. */
+  bodyGraceMs?: number;
 }
 
 /** Which gate a seat declared at launch. Only these runtimes have one: pda, terminal and stub seats are not the pump's, and a seat of a
@@ -84,7 +86,7 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
         transcriptsOf: (name) => { const path = this.deps.inbox().transcriptOf(name) ?? store.declaredTranscript(name); return path === null ? [] : [path]; },
       });
     }
-    if (runtime === "codex") return store.declaredVersion(seat) === null ? null : codexSeatGate({ store, nonceOf: nonce, rolloutPathOf: (name) => this.deps.rolloutOf(name) ?? store.declaredTranscript(name) });
+    if (runtime === "codex") return store.declaredVersion(seat) === null ? null : codexSeatGate({ store, nonceOf: nonce, rolloutPathOf: (name) => this.deps.rolloutOf(name) ?? store.declaredTranscript(name), bodyGraceMs: this.deps.bodyGraceMs });
     const stateRoot = this.stateRoot(runtime);
     if (stateRoot === null || this.runnerState(seat)?.seatGate === undefined) return null;
     return piSeatGate({ stateRoot, nonceOf: nonce });

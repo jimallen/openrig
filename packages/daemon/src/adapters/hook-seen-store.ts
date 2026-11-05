@@ -26,6 +26,9 @@ export interface SeenRecord {
   transcriptPath: string | null;
   /** The prompt was found persisted, so no later reconcile has to look for it. */
   durable: boolean;
+  /** A long message's record only (OF-229): the sha256 (hex) of the text the relay put on its stdout. The record is written before the relay has exited, and an agent
+   *  takes a hook's output only from a hook that exited, so the record alone does not say the agent has the text. Absent from a record of an older relay. */
+  bodySha256?: string;
 }
 
 export function seatGateRoot(openrigHome: string): string {
@@ -207,6 +210,9 @@ export function reconcileSeen(input: {
   processAlive: (pid: number) => boolean; markers?: (path: string) => Map<string, SeatMarker> | null;
   /** The caller has proved the seat's agent gone, as a seat restart has. A runtime whose hook names no pid (Codex) relies on this. */
   agentGone?: boolean;
+  /** The sha256 of every text the agent was given as context, in a file: null when it cannot be read. Given, a record that names its text (`bodySha256`) and whose
+   *  file holds the note but not the text is cleared, not settled: the relay was killed after its record, and the agent never had the text. */
+  bodies?: (path: string) => Set<string> | null;
 }): SeenReconcile {
   const read = input.markers ?? transcriptMarkers;
   const records = input.store.list(input.seat);
@@ -215,10 +221,15 @@ export function reconcileSeen(input: {
   for (const record of records) if (record.transcriptPath) paths.add(record.transcriptPath);
   const present = new Map<string, SeatMarker>();
   let complete = true;
+  const bodies = new Set<string>();
+  let bodiesKnown = input.bodies !== undefined;
   for (const path of paths) {
     const found = read(path);
-    if (found === null) { complete = false; continue; }
+    if (found === null) { complete = false; bodiesKnown = false; continue; }
     for (const [key, marker] of found) present.set(key, marker);
+    const given = input.bodies?.(path);
+    if (given === null) bodiesKnown = false;
+    else for (const sha of given ?? []) bodies.add(sha);
   }
   const held = new Map(records.map((record) => [seatMarkerKey(record), record]));
   const result: SeenReconcile = { received: [], cleared: [], unsettled: [] };
@@ -226,6 +237,11 @@ export function reconcileSeen(input: {
     const record = held.get(key);
     if (record?.durable) continue;
     if (!record && marker.spooled) continue;  // the hook never ran, so its body never reached the agent
+    if (record?.bodySha256 !== undefined && marker.spooled && input.bodies !== undefined) {
+      // The record and the note are here; is the text? Unknown (a file unreadable) settles nothing. Known and missing: the relay was killed after its record.
+      if (!bodiesKnown) { result.unsettled.push({ id: record.id, nonce: record.nonce }); continue; }
+      if (!bodies.has(record.bodySha256)) { input.store.clear(input.seat, record); result.cleared.push({ id: record.id, nonce: record.nonce }); continue; }
+    }
     input.store.markReceived(input.seat, marker);
     if (!record) result.received.push(marker);
   }
