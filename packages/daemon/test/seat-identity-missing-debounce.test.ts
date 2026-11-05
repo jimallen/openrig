@@ -19,7 +19,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 const A = "dev-a@solo-rig";
 const B = "dev-b@solo-rig";
-type Core = { live: string[]; down: boolean };
+type Core = { live: string[]; down: boolean; getBoom?: boolean };
 
 function fixture(seatNames = [A]) {
   const db = createFullTestDb(); databases.push(db);
@@ -33,10 +33,11 @@ function fixture(seatNames = [A]) {
   const host = new HcAdapter(new FakeHc({
     "terminal.list": () => {
       if (core.down) throw new HcUnavailableError("core is down");
-      return { terminals: core.live.map((name) => terminal({ address: `t${seatNames.indexOf(name) + 7}`, labels: { [SEAT_LABEL]: name } })), hidden_finished: 0 };
+      return { terminals: core.live.map((name) => terminal({ address: `t${seatNames.indexOf(name) + 7}`, labels: { [SEAT_LABEL]: name }, ...(core.getBoom ? { pid: null } : {}) })), hidden_finished: 0 };  // no pid in the listing: the seat is read one terminal at a time
     },
     "terminal.get": (params) => {
       if (core.down) throw new HcUnavailableError("core is down");
+      if (core.getBoom) throw new Error("programming error in one seat's read");  // not an HcFailure: the adapter does not swallow it
       const name = seatNames.find((n) => core.live.includes(n) && params["terminal"] === `t${seatNames.indexOf(n) + 7}`);
       if (!name) throw new HcUnavailableError("not asked in this test");
       return terminal({ address: params["terminal"] as string, labels: { [SEAT_LABEL]: name } });
@@ -126,6 +127,27 @@ describe("OF-205 (b): a missing session is recorded only when two polls in a row
     expect(f.reason("n0")).not.toBe("session_missing");
     await f.rec.reconcileAll();
     expect(f.reason("n0")).toBe("session_missing");
+  });
+
+  // OF-236 d (review of205 F2): the per-seat catch clears the seat's first read. It is reachable (a read of one seat throws something that is not an hc failure,
+  // which the adapter swallows), so it stays, and this row reaches it: without the clear, the first read made BEFORE the throw would pair with the first read
+  // made AFTER it and record session_missing from two reads that were not consecutive.
+  it("a seat whose read throws starts the count again: a missed poll, a throw, then a missed poll is two first reads, not a pair", async () => {
+    const f = fixture();
+    await f.rec.reconcileAll();
+    const before = f.store.getForNode("n0")!.verdict;
+    f.core.live = [];
+    await f.rec.reconcileAll();           // first read of the missing session
+    f.core.live = [A]; f.core.getBoom = true;
+    await f.rec.reconcileAll();           // the seat's read throws: recorded as tmux_unavailable, the count is cleared
+    expect(f.reason("n0"), "the throwing read is reached (the catch recorded it)").toBe("tmux_unavailable");
+    f.core.live = []; f.core.getBoom = false;
+    await f.rec.reconcileAll();           // first read again
+    expect(f.reason("n0"), "one missed poll after the throw is not a second read").toBe("tmux_unavailable");
+    expect(f.lost()).toEqual([]);
+    await f.rec.reconcileAll();           // now two in a row
+    expect(f.reason("n0")).toBe("session_missing");
+    expect(before).not.toBe("pane_missing");
   });
 
   it("a node that stopped running forgets its first read: a restart that replaces its session row starts the count again", async () => {
