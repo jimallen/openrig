@@ -353,7 +353,8 @@ describe("openrig-core plugin — hooks (HG-2.6 + HG-2.7)", () => {
       // (precompact-hook.mjs generates the restore packet + writes restore-pending/<seat>.json
       // on PreCompact), instead of depending on the drift-prone host skill copy.
       // Native comms step 2: PostToolUse / PostToolUseFailure relay an answered permission prompt (async).
-      "Notification", "PostCompact", "PostToolUse", "PostToolUseFailure", "PreCompact", "SessionStart", "Stop", "UserPromptSubmit",
+      // OF-249: PreToolUse (matcher Bash) runs rig-body-guard.cjs, which refuses a rig send with a command substitution before the shell runs it.
+      "Notification", "PostCompact", "PostToolUse", "PostToolUseFailure", "PreCompact", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit",
     ]);
   });
 
