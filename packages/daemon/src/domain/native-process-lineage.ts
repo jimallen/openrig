@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { isShellForeground } from "./shell-classifier.js";
 import { runAsyncSite } from "./sync-site-wrap.js";
 import { readNativeExecutablePaths } from "./native-process-executable.js";
-import { withTrueStartTimes } from "./process-start-clock.js";
+import { sameProcessIdentity, withTrueStartTimes } from "./process-start-clock.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -433,7 +433,7 @@ export interface ClaudeLaunchedProcess { pid: number; startedAt: string }
 export interface ClaudeResumeRotation { token: string; process: ClaudeLaunchedProcess }
 
 function rotationProcess(row: NativeProcessRow, rotation: ClaudeResumeRotation | null | undefined): boolean {
-  return !!rotation && row.pid === rotation.process.pid && !!row.startedAt && row.startedAt === rotation.process.startedAt;
+  return !!rotation && !!row.startedAt && sameProcessIdentity(row, rotation.process);
 }
 
 export type NativeProcessObservation = { panePid: number; process: NativeProcessRow; fingerprint: string };

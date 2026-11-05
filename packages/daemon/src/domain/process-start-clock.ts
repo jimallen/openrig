@@ -22,6 +22,17 @@ export interface ProcessStartClock {
   startedAtMs(pids: readonly number[]): Promise<ReadonlyMap<number, number>>;
 }
 
+/**
+ * Where a boot instant, once measured, is kept for the rest of that boot (OF-230). The platform's boot id names the boot: a
+ * record of another boot is not this boot's. The adapter reads the id and owns the file; the domain only names the need.
+ */
+export interface BootInstantStore {
+  /** The boot instant (epoch ms) kept for this boot id, or null when none is kept for it or the record cannot be read. */
+  read(bootId: string): Promise<number | null>;
+  /** Keep the boot instant for this boot id (replacing a record of any other boot). */
+  write(bootId: string, bootMs: number): Promise<void>;
+}
+
 let installed: ProcessStartClock | null = null;
 
 /** The composition root installs the platform's clock once (null: the platform has none, `ps` lstart stands). */
@@ -48,6 +59,35 @@ export function clockStartForPsStart(psLstartMs: number, clockStartMs: number | 
   if (clockStartMs === undefined || !Number.isFinite(psLstartMs)) return null;
   const after = clockStartMs - psLstartMs;
   return after >= -CLOCK_START_MAX_BEFORE_PS_MS && after < CLOCK_START_MAX_AFTER_PS_MS ? clockStartMs : null;
+}
+
+/** How far apart, for one pid, two readings of the same process's start may name (OF-230): one whole second. A start is a
+ *  second-granular string; the true second and the second the old `ps` clock named differ by at most one (the true start lies
+ *  in [L, L+2) s of the second `ps` named), and a boot instant re-measured within its jitter can move a start across one
+ *  second boundary. Two seconds apart is never the same reading of one process. */
+export const SAME_PROCESS_START_TOLERANCE_MS = 1_000;
+
+export interface ProcessIdentity { pid: number | null; startedAt?: string | null }
+
+/**
+ * Whether two stored/observed identities are one process. The pid must be equal, always. The start must be equal, or, where a
+ * boot clock is installed (Linux: starts are dated by it, and a value stored under the old `ps` clock or across a boundary flap
+ * can differ by a second), within SAME_PROCESS_START_TOLERANCE_MS. Where no clock is installed (macOS: `ps` is deterministic)
+ * the comparison is the exact string it always was.
+ *
+ * A reused pid cannot pass: a different process on the same pid needs the old one gone and the kernel's pid counter to wrap
+ * its whole range inside that second or two (pid_max is 32768 or more), and every caller binds the identity to more than the
+ * start (the launch token in argv, the pane's process chain).
+ */
+export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
+  if (a.pid === null || b.pid === null || a.pid !== b.pid) return false;
+  const left = a.startedAt ?? null;
+  const right = b.startedAt ?? null;
+  if (left === right) return true;
+  if (left === null || right === null || installed === null) return false;
+  const leftMs = parsePsLstartMs(left);
+  const rightMs = parsePsLstartMs(right);
+  return Number.isFinite(leftMs) && Number.isFinite(rightMs) && Math.abs(leftMs - rightMs) <= SAME_PROCESS_START_TOLERANCE_MS;
 }
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;

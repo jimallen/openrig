@@ -18,7 +18,7 @@ import { isClaudeSidecarFromEarlierProcess } from "../src/domain/resume-token-ca
 import { readNativeEffort } from "../src/domain/seat-effort.js";
 import {
   clockStartForPsStart, formatPsLstart, installProcessStartClock, parsePsLstartMs,
-  withTrueStartTimes, type ProcessStartClock,
+  sameProcessIdentity, withTrueStartTimes, type ProcessStartClock,
 } from "../src/domain/process-start-clock.js";
 import { processStart } from "../src/adapters/native-inbox-os.js";
 import { createProcessStartClock } from "../src/adapters/linux-proc-start-clock.js";
@@ -184,7 +184,8 @@ describe("what a start time 1 s early would have attributed to a reused pid", ()
 describe("the deployed entrypoint", () => {
   it("installs the platform's clock before it builds the daemon (packages/daemon/src/index.ts constructs it; nothing else does)", () => {
     const text = fs.readFileSync(path.join(import.meta.dirname, "../src/index.ts"), "utf8");
-    const install = text.indexOf("installProcessStartClock(createProcessStartClock());");
+    // OF-230: the clock is given the file that keeps its boot instant, in the daemon's state directory.
+    const install = text.indexOf("installProcessStartClock(createProcessStartClock(process.platform, new FileBootInstantStore(path.join(OPENRIG_HOME, BOOT_INSTANT_FILE))));");
     expect(install).toBeGreaterThan(-1);
     expect(install).toBeLessThan(text.indexOf("await createDaemon({"));
   });
@@ -222,4 +223,41 @@ describe("real processes, real ps, the platform's own clock", () => {
       for (const child of children) child.kill("SIGKILL");
     }
   }, 60_000);
+});
+
+// OF-230: the same process may be named one second apart (a value stored under the old ps clock, or a boot instant re-measured a
+// few ms differently). Same pid only; one second at most; and only where a boot clock is installed.
+describe("sameProcessIdentity", () => {
+  const T = "Tue Jul 15 09:30:10 2031";
+  const sec = (n: number) => `Tue Jul 15 09:30:${String(10 + n).padStart(2, "0")} 2031`;
+  afterEach(() => installProcessStartClock(null));
+
+  it("with a boot clock: the same pid within one second either way is one process", () => {
+    installProcessStartClock(clockOf({}));
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 7, startedAt: T })).toBe(true);
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 7, startedAt: sec(1) })).toBe(true);
+    expect(sameProcessIdentity({ pid: 7, startedAt: sec(1) }, { pid: 7, startedAt: T })).toBe(true);
+  });
+  it("with a boot clock: two seconds apart is a different process on a reused pid", () => {
+    installProcessStartClock(clockOf({}));
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 7, startedAt: sec(2) })).toBe(false);
+    expect(sameProcessIdentity({ pid: 7, startedAt: sec(2) }, { pid: 7, startedAt: T })).toBe(false);
+  });
+  it("another pid is never the same process, at any start", () => {
+    installProcessStartClock(clockOf({}));
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 8, startedAt: T })).toBe(false);
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 8, startedAt: sec(1) })).toBe(false);
+    expect(sameProcessIdentity({ pid: null, startedAt: T }, { pid: null, startedAt: T })).toBe(false);
+  });
+  it("an unknown or unparseable start never matches a known one", () => {
+    installProcessStartClock(clockOf({}));
+    expect(sameProcessIdentity({ pid: 7, startedAt: null }, { pid: 7, startedAt: null })).toBe(true);
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 7 })).toBe(false);
+    expect(sameProcessIdentity({ pid: 7, startedAt: "garbage" }, { pid: 7, startedAt: T })).toBe(false);
+    expect(sameProcessIdentity({ pid: 7, startedAt: "garbage" }, { pid: 7, startedAt: "garbage" })).toBe(true);
+  });
+  it("without a boot clock (macOS, where ps is deterministic) the comparison is exact", () => {
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 7, startedAt: T })).toBe(true);
+    expect(sameProcessIdentity({ pid: 7, startedAt: T }, { pid: 7, startedAt: sec(1) })).toBe(false);
+  });
 });

@@ -23,6 +23,7 @@ import { CODEX_NETWORK_DEFAULT_OVERRIDE } from "./codex-network-default.js";
 import { readStoredJsonObject } from "./stored-json.js";
 import { getSeatCwdFault, seatCwdFaultReason, seatCwdFixAdvice, type SeatCwdFault } from "./cwd-resolution.js";
 import { registeredPaneOf, registeredPaneSql } from "./binding-pane.js";
+import { sameProcessIdentity } from "./process-start-clock.js";
 
 /**
  * OPR.0.7.0.5 — restart ONE Codex seat in place so it reads its Codex home's current account: the same
@@ -389,7 +390,7 @@ export class CodexInPlaceRestart {
     const registeredPane = registeredPaneOf(target.binding);
     if (!registeredPane) return { ok: false, code: "seat_restarted_since", message: "The seat has no registered pane to verify against; verify the current occupant another way." };
     const current = await this.observeCodex(registeredPane, null);
-    if (!current || current.process.pid !== finished.newPid || (current.process.startedAt ?? null) !== finished.newStartedAt) {
+    if (!current || !sameProcessIdentity(current.process, { pid: finished.newPid, startedAt: finished.newStartedAt })) {
       return { ok: false, code: "seat_restarted_since", message: "The seat's Codex is no longer the process the restart started; verify the current occupant another way." };
     }
     const conversationId = readResumeToken(this.deps.db, target.sessionId);

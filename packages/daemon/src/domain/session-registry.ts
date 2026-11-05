@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import { hasTerminalAddress } from "./binding-pane.js";
+import { sameProcessIdentity } from "./process-start-clock.js";
 import { monotonicFactory } from "ulid";
 import { randomUUID } from "node:crypto";
 
@@ -81,7 +82,7 @@ export function claudeResumeRotation(row: {
   if (!from || from === row.resume_token?.trim()) return null;
   const hooked = launchedProcess(row.resume_rotated_process);
   const launch = launchedProcess(row.resume_launch_process);
-  if (!hooked || !launch || launch.token !== from || launch.pid !== hooked.pid || launch.startedAt !== hooked.startedAt) return null;
+  if (!hooked || !launch || launch.token !== from || !sameProcessIdentity(launch, hooked)) return null;
   return { token: from, process: { pid: hooked.pid, startedAt: hooked.startedAt } };
 }
 

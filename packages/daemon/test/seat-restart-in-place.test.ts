@@ -15,6 +15,7 @@ import type { ArbitratedSeatState } from "../src/domain/activity-taxonomy.js";
 import type { SeatCwdFault } from "../src/domain/cwd-resolution.js";
 import type { InPlaceRestartIo, ProcessFacts } from "../src/domain/seat-restart-in-place.js";
 import { accountLineNames, parseEffectiveSettings, shellWords } from "../src/domain/seat-restart-in-place.js";
+import { installProcessStartClock } from "../src/domain/process-start-clock.js";
 
 const LSTART = "Mon Oct 12 21:00:00 2026";
 const LATER = "Mon Oct 12 21:05:00 2026";
@@ -649,6 +650,41 @@ describe("rig seat restart --keep-conversation --verify", () => {
     const done = await restarted({});
     done.setRows([shellRow(100, 400), codexRow(400, 100, `-s workspace-write resume ${TOKEN}`, "Mon Oct 12 22:00:00 2026")]);
     expect(await done.service.verifyRestartInPlace({ seatRef: SEAT })).toMatchObject({ ok: false, code: "seat_restarted_since" });
+  });
+});
+
+// OF-230: the restart record stores the new Codex's start second. A daemon that dates processes by another clock (the old `ps`
+// one, or a boot instant a few ms different) names the same process one second apart; that is the same process, and a
+// different process on that pid, or a pid 2 s apart, is not.
+describe("rig seat restart --verify: a stored start tolerates one second for the same pid", () => {
+  const LATER_PLUS_1S = "Mon Oct 12 21:05:01 2026";
+  async function verifyWith(rowsFor: (pid: number) => NativeProcessRow[]) {
+    installProcessStartClock({ startedAtMs: async () => new Map() });
+    try {
+      const w = world({ rollout: undefined, screen: undefined });
+      expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ outcome: "restarted_account_unverified" });
+      const finished = w.events().find((e) => e.type === "seat.restart_in_place_finished")!;
+      w.setRows(rowsFor(finished.newPid));
+      expect(finished.newStartedAt).toBe(LATER); // the record the rows below are one and two seconds from
+      return await w.service.verifyRestartInPlace({ seatRef: SEAT });
+    } finally { installProcessStartClock(null); }
+  }
+  const at = (pid: number, startedAt: string) => [shellRow(100, pid), codexRow(pid, 100, `-s workspace-write resume ${TOKEN}`, startedAt)];
+
+  it("accepts the same pid one second later or earlier", async () => {
+    expect(await verifyWith((pid) => at(pid, LATER_PLUS_1S))).toMatchObject({ ok: true });
+    expect(await verifyWith((pid) => at(pid, "Mon Oct 12 21:04:59 2026"))).toMatchObject({ ok: true });
+  });
+  it("refuses the same pid two seconds apart, and another pid at the same second", async () => {
+    expect(await verifyWith((pid) => at(pid, "Mon Oct 12 21:05:02 2026"))).toMatchObject({ ok: false, code: "seat_restarted_since" });
+    expect(await verifyWith((pid) => at(pid + 1, LATER))).toMatchObject({ ok: false, code: "seat_restarted_since" });
+  });
+  it("keeps the exact comparison where no boot clock is installed (macOS)", async () => {
+    const w = world({ rollout: undefined, screen: undefined });
+    expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ outcome: "restarted_account_unverified" });
+    const finished = w.events().find((e) => e.type === "seat.restart_in_place_finished")!;
+    w.setRows(at(finished.newPid, LATER_PLUS_1S));
+    expect(await w.service.verifyRestartInPlace({ seatRef: SEAT })).toMatchObject({ ok: false, code: "seat_restarted_since" });
   });
 });
 

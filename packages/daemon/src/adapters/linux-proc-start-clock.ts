@@ -5,15 +5,20 @@
 // has 10 ms resolution and a boot instant re-measured on every read would move a process's start by a few ms between two
 // reads, and flip the second it names for the few processes that began within those ms of a second boundary. It is
 // measured again only when the wall clock has plainly moved (stepped) under it, by more than BOOT_REMEASURE_MS.
+// OF-230: the measured boot instant is also kept across daemon lives, keyed by the kernel's boot id, so the ~10 ms the
+// measurement varies by cannot move a process's start across a second boundary under the next daemon (about 0.75% of live
+// processes, on every restart). A kept instant is used while the boot id matches; after a reboot it is measured again.
 // CLK_TCK is 100 on Linux: USER_HZ is fixed by the kernel's userspace ABI.
 import { readFile } from "node:fs/promises";
-import type { ProcessStartClock } from "../domain/process-start-clock.js";
+import type { BootInstantStore, ProcessStartClock } from "../domain/process-start-clock.js";
 
 const TICKS_PER_SECOND = 100;
 /** A boot instant that differs from the kept one by less than this is read jitter (10 ms uptime resolution, scheduling), not a
  *  clock step. */
 export const BOOT_REMEASURE_MS = 500;
 const READ_CHUNK = 64;
+/** The kernel's id of this boot: new at every boot, constant until the next. */
+export const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
 
 export interface LinuxProcStartClockIo {
   readText(path: string): Promise<string>;
@@ -34,8 +39,17 @@ export function parseStatStartTicks(stat: string): number | null {
 
 export class LinuxProcStartClock implements ProcessStartClock {
   private bootMs: number | null = null;
+  private bootId: string | null | undefined;
 
-  constructor(private readonly io: LinuxProcStartClockIo = nodeIo) {}
+  constructor(private readonly io: LinuxProcStartClockIo = nodeIo, private readonly store: BootInstantStore | null = null) {}
+
+  /** This boot's id, read once (undefined: not read yet; null: unreadable, so nothing is kept or reused). */
+  private async currentBootId(): Promise<string | null> {
+    if (this.bootId === undefined) {
+      try { this.bootId = (await this.io.readText(BOOT_ID_PATH)).trim() || null; } catch { this.bootId = null; }
+    }
+    return this.bootId;
+  }
 
   private async bootInstantMs(): Promise<number | null> {
     const before = this.io.now();
@@ -43,7 +57,20 @@ export class LinuxProcStartClock implements ProcessStartClock {
     const after = this.io.now();
     if (!Number.isFinite(uptime)) return null;
     const measured = (before + after) / 2 - uptime * 1000;
-    if (this.bootMs === null || Math.abs(measured - this.bootMs) > BOOT_REMEASURE_MS) this.bootMs = measured;
+    const bootId = this.store ? await this.currentBootId() : null;
+    if (this.bootMs === null && bootId !== null) {
+      // First read of this daemon: the instant kept for this boot, if any, stands in for a fresh measurement.
+      try {
+        const kept = await this.store!.read(bootId);
+        if (kept !== null && Number.isFinite(kept)) this.bootMs = kept;
+      } catch { /* unreadable record: measure */ }
+    }
+    if (this.bootMs === null || Math.abs(measured - this.bootMs) > BOOT_REMEASURE_MS) {
+      this.bootMs = measured;
+      if (bootId !== null) {
+        try { await this.store!.write(bootId, measured); } catch { /* not kept: the next daemon measures again */ }
+      }
+    }
     return this.bootMs;
   }
 
@@ -64,6 +91,6 @@ export class LinuxProcStartClock implements ProcessStartClock {
 }
 
 /** The platform's clock, or null where there is no /proc boot clock (macOS: `ps` lstart is already the true second). */
-export function createProcessStartClock(platform: NodeJS.Platform = process.platform): ProcessStartClock | null {
-  return platform === "linux" ? new LinuxProcStartClock() : null;
+export function createProcessStartClock(platform: NodeJS.Platform = process.platform, store: BootInstantStore | null = null): ProcessStartClock | null {
+  return platform === "linux" ? new LinuxProcStartClock(nodeIo, store) : null;
 }

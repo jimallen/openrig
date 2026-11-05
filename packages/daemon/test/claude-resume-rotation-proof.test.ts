@@ -16,6 +16,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { CLAUDE_RESUME_ROTATION_COLUMNS, SessionRegistry, claudeResumeRotation } from "../src/domain/session-registry.js";
 import { verifyClaudePaneProcess, observeClaudeDelivery, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { installProcessStartClock } from "../src/domain/process-start-clock.js";
 
 const require = createRequire(import.meta.url);
 const relay = require("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") as {
@@ -271,5 +272,61 @@ describe("the identity proof", () => {
   it("refuses a third token even with a recorded resume", async () => {
     expect(await verifyClaudePaneProcess(proof(T3, T1))).toBeNull();
     expect(await observeClaudeDelivery(proof(T3, T1))).toMatchObject({ state: "unknown" });
+  });
+});
+
+// OF-230: a rotation's stored process was dated by whatever clock the daemon that stored it used. Under the Linux boot clock the
+// same process can name a second one apart (the old `ps` clock, or a boot instant re-measured a few ms differently). The same
+// pid one second apart is the same process; two seconds apart, or another pid, is not. Where no boot clock is installed
+// (macOS) the comparison stays exact.
+describe("a stored rotation process tolerates one second for the same pid", () => {
+  const clockless = { startedAtMs: async () => new Map<number, number>() };
+  const sec = (s: number) => `Fri Oct  9 01:00:0${s} 2026`;
+  const tmux = { getPanePid: async () => 100 };
+  const rows = (): NativeProcessRow[] => [
+    { pid: 100, ppid: 1, pgid: 100, tpgid: 101, executableName: "bash", command: "-bash", startedAt: sec(5) },
+    { pid: 101, ppid: 100, pgid: 101, tpgid: 101, executableName: "claude", command: `claude --resume ${T1}`, startedAt: sec(5) },
+  ];
+  const prove = (stored: { pid: number; startedAt: string }) => verifyClaudePaneProcess({
+    target: "%1", tmux, listProcesses: async () => rows(), expectedToken: T2, rotation: { token: T1, process: stored },
+  });
+  afterEach(() => installProcessStartClock(null));
+
+  it.each([[4], [6]])("accepts the live process one second from the stored start (stored at :0%i)", async (stored) => {
+    installProcessStartClock(clockless);
+    expect(await prove({ pid: 101, startedAt: sec(stored) })).not.toBeNull();
+  });
+  it.each([[3, "two seconds before"], [7, "two seconds after"]])("refuses the same pid stored at :0%i (%s)", async (stored) => {
+    installProcessStartClock(clockless);
+    expect(await prove({ pid: 101, startedAt: sec(stored) })).toBeNull();
+  });
+  it("refuses another pid at the very same second", async () => {
+    installProcessStartClock(clockless);
+    expect(await prove({ pid: 102, startedAt: sec(5) })).toBeNull();
+  });
+  it("is exact where no clock is installed", async () => {
+    expect(await prove({ pid: 101, startedAt: sec(6) })).toBeNull();
+    expect(await prove({ pid: 101, startedAt: sec(5) })).not.toBeNull();
+  });
+
+  describe("the two stored values compared with each other (resume_launch_process / resume_rotated_process)", () => {
+    function rotationFor(launchAt: string, hookedAt: string, hookedPid = 4242) {
+      const s = seat({ launchObserved: { pid: 4242, startedAt: launchAt } });
+      s.hook(T2, "resume");
+      s.db.prepare("UPDATE sessions SET resume_rotated_process = ? WHERE id = ?")
+        .run(JSON.stringify({ pid: hookedPid, startedAt: hookedAt, token: T1 }), s.session.id);
+      return s.rotation();
+    }
+    it("same pid one second apart is one process; two seconds, or another pid, is not", () => {
+      installProcessStartClock(clockless);
+      expect(rotationFor(sec(1), sec(2))).toMatchObject({ token: T1, process: { pid: 4242, startedAt: sec(2) } });
+      expect(rotationFor(sec(2), sec(1))).not.toBeNull();
+      expect(rotationFor(sec(1), sec(3))).toBeNull();
+      expect(rotationFor(sec(1), sec(1), 4243)).toBeNull();
+    });
+    it("is exact where no clock is installed", () => {
+      expect(rotationFor(sec(1), sec(2))).toBeNull();
+      expect(rotationFor(sec(1), sec(1))).not.toBeNull();
+    });
   });
 });
