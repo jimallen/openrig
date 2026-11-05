@@ -417,6 +417,22 @@ describe("SeatIdentityReconciler.reconcileAll", () => {
     db.close();
   });
 
+  it("TMUX BLIP GUARD — zero live sessions with SEVERAL seats is tmux_unavailable for every one (OF-236 c: the guard does not depend on a lone seat)", async () => {
+    const db = createFullTestDb();
+    seedSeat(db, { nodeId: "n1", sessionName: "s1@rig", pane: "%1", runtime: "claude-code" });
+    seedSeat(db, { nodeId: "n2", sessionName: "s2@rig", pane: "%2", runtime: "claude-code" });
+    seedSeat(db, { nodeId: "n3", sessionName: "s3@rig", pane: "%3", runtime: "claude-code" });
+    const tmux = makeTmux({ sessions: [], panePid: { "%1": null, "%2": null, "%3": null } });
+    const rec = new SeatIdentityReconciler({ db, tmux, now: NOW });
+
+    await rec.reconcileAll();
+    await rec.reconcileAll();
+
+    const store = new SeatIdentityStore(db);
+    expect(["n1", "n2", "n3"].map((n) => store.getForNode(n)?.verdict)).toEqual(["tmux_unavailable", "tmux_unavailable", "tmux_unavailable"]);
+    db.close();
+  });
+
   it("non-running seats are pruned; only running tmux-bound seats get verdicts", async () => {
     const db = createFullTestDb();
     seedSeat(db, { nodeId: "n1", sessionName: "s1@rig", pane: "%1", runtime: "claude-code" });

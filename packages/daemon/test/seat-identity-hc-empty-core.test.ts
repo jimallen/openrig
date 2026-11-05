@@ -50,6 +50,21 @@ describe("OF-207: the last seat terminal of an hc core", () => {
     expect(found, "nothing but the seat-lost finding").toHaveLength(1);
   });
 
+  // OF-236 c (review of207 F2): every row above has ONE seat, so a fix that only reads the empty listing as a fact for a lone seat (`seats.length < 2`) passed them.
+  it.each([2, 3])("%i seats whose terminals are all gone from one empty listing: every one is session_missing, none is left tmux_unavailable", async (count) => {
+    const db = seed("claude-code");
+    for (let i = 2; i <= count; i++) {
+      db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime, cwd) VALUES (?, 'rig-1', ?, 'claude-code', '/tmp')").run(`n${i}`, `dev.impl${i}`);
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, startup_status, created_at) VALUES (?, ?, ?, 'running', 'ready', '2026-11-04 11:00:00')").run(`s${i}`, `n${i}`, `dev-impl${i}@solo-rig`);
+      db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session, terminal_address) VALUES (?, ?, 'hc', ?, ?)").run(`b${i}`, `n${i}`, `dev-impl${i}@solo-rig`, `t${i}`);
+    }
+    await twice(new SeatIdentityReconciler({ db, tmux: hcHost(() => []), now: NOW }));
+    const store = new SeatIdentityStore(db);
+    for (let i = 1; i <= count; i++) expect(store.getForNode(`n${i}`), `seat n${i}`).toMatchObject({ verdict: "pane_missing", reason: "session_missing" });
+    const lost = new SeatLostHealthSource({ inventory: () => inventoryOfLiveRigs(db), waiting: () => null, now: NOW }).read();
+    expect(lost.filter((o) => o.kind === "seat-lost"), "one seat-lost finding per seat").toHaveLength(count);
+  });
+
   it("a terminal that is not a seat (no seat label) does not keep the seat alive: still session_missing", async () => {
     const db = seed("claude-code");
     await twice(new SeatIdentityReconciler({ db, tmux: hcHost(() => [terminal({ address: "t1", labels: {} })]), now: NOW }));
