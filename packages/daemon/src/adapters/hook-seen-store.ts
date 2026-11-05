@@ -291,7 +291,7 @@ export function reconcileSeen(input: {
     if (record?.bodySha256 !== undefined && marker.spooled && input.bodies !== undefined) {
       // The record and the note are here; is the text? Unknown (a file unreadable) settles nothing. Known and missing: the relay was killed after its record.
       if (!bodiesKnown) { result.unsettled.push({ id: record.id, nonce: record.nonce }); continue; }
-      if (!bodies.has(record.bodySha256)) { input.store.clear(input.seat, record); result.cleared.push({ id: record.id, nonce: record.nonce }); continue; }
+      if (!bodies.has(record.bodySha256)) { input.store.noteResent(input.seat, record); input.store.clear(input.seat, record); result.cleared.push({ id: record.id, nonce: record.nonce }); continue; }
     }
     input.store.markReceived(input.seat, marker);
     if (!record) result.received.push(marker);

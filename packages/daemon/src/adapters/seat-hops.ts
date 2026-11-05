@@ -6,7 +6,7 @@
 
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcClient, type HcTerminal } from "./hc-client.js";
 import { hcTerminalName } from "./hc-host.js";
-import { SPOOL_GATE_VERSION } from "./hook-gate-version.js";
+import { RESEND_LABEL_GATE_VERSION, SPOOL_GATE_VERSION } from "./hook-gate-version.js";
 import { spooledNote, type SeatMarker } from "./seat-gate-marker.js";
 import { CodexPasteHop, type CodexPasteInput } from "./codex-paste-hop.js";
 import type { PiRunnerState } from "./pi-runner-protocol.js";
@@ -59,7 +59,9 @@ function prepareLongPaste(message: SeatMessage, text: string, rows: Pick<HopRows
   const index = Math.min(message.part ?? 1, total);
   const marker = { id: total === 1 ? id : partId(id, index, total), nonce };
   spool.spool(message.seat, marker, parts[index - 1]!);
-  return shortPaste(message, marker, index, total, (spool.resentOf?.(message.seat, marker) ?? 0) > 0);
+  // The label only for a relay that reads it: a seat that declared an older gate is sent the same resend without it.
+  const labelled = (spool.declaredVersion(message.seat) ?? 0) >= RESEND_LABEL_GATE_VERSION && (spool.resentOf?.(message.seat, marker) ?? 0) > 0;
+  return shortPaste(message, marker, index, total, labelled);
 }
 
 /** A wake group is one text with one marker per row, but the spool holds one message's text under one marker, so a long group goes a row at a

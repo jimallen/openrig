@@ -12,6 +12,7 @@ import { handoverTextId, startupTextId } from "../src/domain/seat-messaging/long
 import type { NativeEligibility, NativeEndpointRow } from "../src/domain/claude-native-inbox.js";
 import { CLAUDE_SOCKET_REPEAT_WINDOW_MS } from "../src/domain/seat-messaging/claude-last-hop.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { RESEND_LABEL_GATE_VERSION } from "../src/adapters/hook-gate-version.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "../src/domain/seat-messaging/message-label.js";
 import { messageId, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
@@ -470,14 +471,28 @@ describe("the hops", () => {
       it("OF-243: a part whose record the gate cleared goes again with its note saying so, and the tag and marker are the first copy's", async () => {
         const body = "y".repeat(PASTE_LIMIT);
         let resent = 0;
-        await hop({ ...spool, resentOf: () => resent }).attempt({ ...message, body });
+        const resending = { ...spool, declaredVersion: () => 3 as number | null, resentOf: () => resent };
+        await hop(resending).attempt({ ...message, body });
         resent = 1;
-        await hop({ ...spool, resentOf: () => resent }).attempt({ ...message, body });
+        await hop(resending).attempt({ ...message, body });
         const [first, again] = calls.map((c) => c.replace("paste:", ""));
         expect(first).not.toContain("resent");
         expect(again).toContain("OpenRig: long message, resent: not confirmed on file. Its text comes");
         expect(again!.replace(", resent: not confirmed on file", "")).toBe(first);
         expect(promptMarkers(again!)).toEqual([{ id: "m-1", nonce: store.nonceOf(ID), spooled: true }]);
+      });
+      it("OF-243 review F1: only a seat whose relay declared gate 3 or more is sent the label; a gate-2 relay does not read it, and would deliver the note with no text", async () => {
+        expect(RESEND_LABEL_GATE_VERSION).toBe(3);
+        const body = "y".repeat(PASTE_LIMIT);
+        const sent = async (version: number | null) => {
+          calls.length = 0;
+          await hop({ ...spool, declaredVersion: () => version, resentOf: () => 2 }).attempt({ ...message, body });
+          return calls[0]!.replace("paste:", "");
+        };
+        expect(await sent(2)).not.toContain("resent");
+        expect(await sent(2)).toContain("OpenRig: long message. Its text comes");
+        expect(await sent(3)).toContain("resent: not confirmed on file");
+        expect(await sent(4)).toContain("resent: not confirmed on file");
       });
       it("a short message is none of this", async () => {
         await hop().attempt(message);

@@ -115,7 +115,7 @@ describe("the seat gate in the relay, daemon stopped", () => {
   it("SessionStart declares the gate: a seat on an older relay declares none", () => {
     const s = seat();
     sessionStart(s);
-    expect(JSON.parse(readFileSync(join(seatDir(s), "gate.json"), "utf8"))).toMatchObject({ version: 2 });
+    expect(JSON.parse(readFileSync(join(seatDir(s), "gate.json"), "utf8"))).toMatchObject({ version: 3 });
   });
 });
 

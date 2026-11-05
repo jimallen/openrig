@@ -10,8 +10,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { codexSeatGate } from "../src/adapters/codex-seat-gate.js";
 import { HookSeenStore, seatGateFolder, seatGateRoot } from "../src/adapters/hook-seen-store.js";
 import { MAX_UNCONFIRMED_RESENDS } from "../src/adapters/hook-seat-gate.js";
+import { reconcileCodexSeatGate } from "../src/adapters/codex-seat-gate.js";
 import { promptMarkers, spooledNote } from "../src/adapters/seat-gate-marker.js";
-import { GateUnconfirmedHealthSource } from "../src/domain/seat-messaging/gate-unconfirmed-health.js";
+import { GAVE_UP_WINDOW_MS, GateUnconfirmedHealthSource } from "../src/domain/seat-messaging/gate-unconfirmed-health.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -110,6 +111,28 @@ describe("OF-243: the gate stops resending a part whose text never shows", () =>
     clock += 86_400_001;
     expect(store().gaveUp(86_400_000)).toEqual([]);
     expect(fs.readdirSync(path.join(seatGateRoot(home), seatGateFolder(SEAT), "gave-up"))).toEqual([]);  // deleted, not hidden
+  });
+  it("the count belongs to one message's one part: another nonce, or another part id, has its own", () => {
+    const mine = { id: "m", nonce: NONCE };
+    store().noteResent(SEAT, mine);
+    store().noteResent(SEAT, mine);
+    expect(store().resentOf(SEAT, mine)).toBe(2);
+    expect(store().resentOf(SEAT, { id: "m", nonce: "b".repeat(32) })).toBe(0);
+    expect(store().resentOf(SEAT, { id: "m.part2of2", nonce: NONCE })).toBe(0);
+    expect(store().resentOf("other.seat@rig", mine)).toBe(0);
+  });
+  it("a seat restart's reconcile counts its clear too, so the resend is labelled and the bound sees it", () => {
+    fs.writeFileSync(missing, `${JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `${spooledNote(null, { id: "m", nonce: NONCE })}\n[openrig-msg m:${NONCE}]` }] } })}\n`);
+    writeRecord();
+    expect(reconcileCodexSeatGate(store(), SEAT, missing).cleared).toEqual([{ id: "m", nonce: NONCE }]);
+    expect(fs.existsSync(recordPath())).toBe(false);
+    expect(store().resentOf(SEAT, { id: "m", nonce: NONCE })).toBe(1);
+  });
+  it("the finding stays for 24 hours, written here as a literal, and the health source asks for that much", () => {
+    expect(GAVE_UP_WINDOW_MS).toBe(86_400_000);
+    const asked: number[] = [];
+    new GateUnconfirmedHealthSource({ gaveUp: (since) => { asked.push(since); return []; } }).coverage();
+    expect(asked).toEqual([86_400_000]);
   });
   it("rig health names the part, its seat, and what to check; it is empty when nothing was given up", async () => {
     const health = new GateUnconfirmedHealthSource(store(), () => new Date(clock));

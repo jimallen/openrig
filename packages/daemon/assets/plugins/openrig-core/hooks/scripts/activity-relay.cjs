@@ -247,7 +247,7 @@ function buildNativeAckPayload(providerPayload, env = process.env) {
 //
 // Keep this small and first. A hook that crashes or times out fails OPEN: the prompt runs with no record (M4). What this code can catch
 // fails closed; what it cannot, the daemon's reconcile finds in the transcript.
-const SEAT_GATE_VERSION = 2;
+const SEAT_GATE_VERSION = 3;
 const SEAT_GATE_RUNTIMES = new Set(["claude-code", "codex"]);
 const SEAT_GATE_UNAVAILABLE_REASON =
   "OpenRig: this message could not record its delivery, so it was not shown to the agent; OpenRig will send it again.";

@@ -258,7 +258,7 @@ function renderList(projection: HealthListProjection): void {
   console.log(`Fleet health — evaluated=${evaluated} findings=${projection.total} limit=${projection.limit}`);
   for (const c of projection.coverage ?? []) {
     if (c.status === "notice") {
-      console.log(`WAITING: ${c.reason}.`);
+      console.log(`WAITING: ${/[.!?]$/.test(c.reason) ? c.reason : `${c.reason}.`}`);
       continue;
     }
     if (!c.partial) continue;

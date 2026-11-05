@@ -27,7 +27,7 @@ describe("the SeatGate over the seen store", () => {
     sessionStart(s);
     submit(s, `x\n\n${marker("m-1")}`);
     expect(await gateOf(s).lookup(SEAT, messageId("m-1"))).toMatchObject({ kind: "seen", record: { id: "m-1", nonce: NONCE } });
-    expect(gateOf(s).version).toBe(2);
+    expect(gateOf(s).version).toBe(3);
   });
 
   it("a record under another nonce is forged: it confirms nothing", async () => {

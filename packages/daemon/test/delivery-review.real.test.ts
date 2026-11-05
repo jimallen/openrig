@@ -27,6 +27,8 @@ const SEATPY = resolve(here, "helpers/delivery-seat.py");
 const RELAY = resolve(here, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
 const SHIM = resolve(here, "helpers/delivery-relay-delay.cjs");
 const PAUSE_SHIM = resolve(here, "helpers/delivery-relay-pause.cjs");
+/** The relay as OF-229 shipped it (d05bcda2), byte for byte: gate version 2, which does not read a resend's label. */
+const RELAY_OF229 = resolve(here, "helpers/relay-of229.cjs");
 const RUNNER = resolve(here, "../src/adapters/pi-runner.ts");
 const TOKEN = "delivery-token";
 let serial = 0;
@@ -50,7 +52,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   afterEach(() => { for (const c of children) if (c.exitCode === null && c.signalCode === null) c.kill("SIGKILL"); children = []; });
   afterAll(() => core.stop());
 
-  function fixture(flags: string[] = [], runtime = "codex") {
+  function fixture(flags: string[] = [], runtime = "codex", relay = RELAY) {
     const dir = mkdtempSync(join(core.root, "w-"));
     for (const f of flags) writeFileSync(join(dir, f), "");
     writeFileSync(join(dir, "seat.log"), ""); writeFileSync(join(dir, "hop.log"), "");
@@ -74,7 +76,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         `OPENRIG_SESSION_NAME=${name}`, `OPENRIG_RUNTIME=${runtime}`, `OPENRIG_HOME=${HOME}`, `OPENRIG_NODE_ID=${node.id}`, `OPENRIG_URL=http://127.0.0.1:${qport}`, `OPENRIG_ACTIVITY_HOOK_TOKEN=${TOKEN}`];
       const launcher = join(dir, "openrig-tmux-send-stub");  // a real Codex seat's foreground: our launch script, with the agent its child
       writeFileSync(launcher, `/usr/bin/python3 -I ${runtime === "codex" ? CODEX_SEAT : CLAUDE_SEAT} "$@"\n:\n`);
-      await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/bin/sh", launcher, dir, RELAY, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
+      await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/bin/sh", launcher, dir, relay, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
       await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes(flags.includes("no-composer") ? "Select a model" : runtime === "codex" ? "Ask Codex" : "❯"), "first paint");
       await until(() => existsSync(join(gateDir, "gate.json")), Boolean, "the relay's declaration");
     };
@@ -583,8 +585,29 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       // OF-243: the first copy's note is plain; the copy sent for want of the text on file says so.
       expect(agent(s, "long")[0]).not.toContain("resent");
       expect(agent(s, "long")[1]).toContain("OpenRig: long message, resent: not confirmed on file. Its text comes");
+      expect(JSON.parse(readFileSync(join(s.gateDir, "gate.json"), "utf8"))).toMatchObject({ version: 3 });  // the relay that reads the label declares it
       expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "gate_seen" });
       expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+    }, 90_000);
+
+    it("codex, OF-243 review F1: the OF-229 relay (gate 2) is sent its resend without the label it cannot read, so the text still arrives and the row is received on it", async () => {
+      expect(createHash("sha256").update(readFileSync(RELAY_OF229)).digest("hex")).toBe("c5885930c3340188f078f7da21e471fe854c01a9e04c479b7289964b3c337940");  // d05bcda2's relay, unedited
+      const s = fixture([], "codex", RELAY_OF229); await s.launch();
+      expect(JSON.parse(readFileSync(join(s.gateDir, "gate.json"), "utf8"))).toMatchObject({ version: 2 });
+      const body = `${"k".repeat(1498)}é😀`;
+      s.flag("kill-relay-after-record", PAUSE_SHIM);
+      s.accept("long", body); daemon(s, "none", { DELIVERY_BODY_GRACE_MS: "5000" });
+      await until(() => agent(s, "long"), (l) => l.length === 1, "the note ran");
+      expect(context(s, "long")).toEqual([]);
+      let receivedWithoutBody = 0;
+      await until(() => { const v = String(s.read("long")?.message_state); if (v === "received" && context(s, "long").length === 0) receivedWithoutBody += 1; return v; }, (v) => v === "received" || receivedWithoutBody > 0, "received", 20_000);
+      expect(receivedWithoutBody).toBe(0);
+      await wait(800);
+      expect(agent(s, "long")).toHaveLength(2);
+      expect(agent(s, "long")[1]).not.toContain("resent");
+      expect(context(s, "long")).toEqual([`context long ${sha(body)} 1500`]);  // the text the first copy never carried arrived with the second
+      expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+      expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered" });
     }, 90_000);
 
     it("codex, OF-243: a file that never shows the text is resent three times and then left: the row is received on the record, and health says the text was not found", async () => {
