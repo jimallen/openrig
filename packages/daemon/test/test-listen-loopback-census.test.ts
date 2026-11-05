@@ -1,4 +1,4 @@
-// OF-234 — no daemon test opens a network listener on every interface.
+// OF-234 / OF-239 — no daemon, cli or tui test opens a network listener on every interface.
 //
 // A mock server started with `server.listen(0, cb)` (no host) binds the unspecified address: while the test runs it is reachable
 // from the LAN and the tailnet, not only from the test. OF-232 pinned the daemons the tests spawn; this census covers the mock
@@ -14,7 +14,11 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const TEST_DIR = HERE;
+// OF-239: the same census covers the cli and tui test trees (one rule, one classifier; measured at d05bcda2: cli 126 calls in 88 files, 71 of them host-less
+// TCP listens in 52 files, now pinned; tui 11 calls, all pinned; ui has no test listener). Paths in a failure are relative to packages/.
+const PACKAGES = path.resolve(HERE, "../..");
+const TEST_PACKAGES = ["daemon", "cli", "tui"] as const;
+const TEST_DIR = PACKAGES;
 
 const LOOPBACK_LITERALS = new Set(["127.0.0.1", "::1", "localhost"]);
 /** Identifiers that name the loopback host constant the daemon-entrypoint helper exports. */
@@ -40,7 +44,12 @@ export function classifyListens(fileName: string, source: string): ListenFinding
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const ownListenMethod = (() => {
     let found = false;
-    const v = (n: ts.Node): void => { if (ts.isMethodDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "listen") found = true; ts.forEachChild(n, v); };
+    // A class method `listen() {}` or a helper object's `listen: () => ...` property (the cli status/agent tests wrap their pinned server.listen in one).
+    const v = (n: ts.Node): void => {
+      if (ts.isMethodDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "listen") found = true;
+      if (ts.isPropertyAssignment(n) && ts.isIdentifier(n.name) && n.name.text === "listen" && (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))) found = true;
+      ts.forEachChild(n, v);
+    };
     v(sf);
     return found;
   })();
@@ -100,7 +109,7 @@ function testFiles(): string[] {
       else if (/\.(ts|tsx|mts|mjs|js)$/.test(e.name)) out.push(full);
     }
   };
-  walk(TEST_DIR);
+  for (const pkg of TEST_PACKAGES) walk(path.join(PACKAGES, pkg, "test"));
   return out.sort();
 }
 
@@ -135,6 +144,8 @@ describe("OF-234: the classifier sees a host-less listen (instrument rows)", () 
   it("accepts a zero-argument listen() only where the file declares its own listen method", () => {
     expect(classifyListens("a.ts", "core.listen();").map(f => f.cls)).toEqual(["violation"]);
     expect(classifyListens("a.ts", "class C { async listen() {} } const c = new C(); c.listen();").map(f => f.cls)).toEqual(["own-listen-method"]);
+    expect(classifyListens("a.ts", "const h = { listen: () => new Promise(r => s.listen(0, r)) }; h.listen();").map(f => f.cls)).toEqual(["violation", "own-listen-method"]);
+    expect(classifyListens("a.ts", 'const h = { listen: () => new Promise(r => s.listen(0, "127.0.0.1", r)) }; h.listen();').map(f => f.cls)).toEqual(["tcp-loopback", "own-listen-method"]);
   });
 });
 
@@ -146,6 +157,11 @@ describe("OF-234: every listener a daemon test opens is loopback", () => {
 
   it("the census sees the population (positive control: a clean zero below is not an empty scan)", () => {
     expect(findings.filter(f => f.kind === "listen").length).toBeGreaterThan(50);
+    // Per package, so a scan that silently lost one tree cannot pass on the others' population.
+    const per = (pkg: string) => findings.filter(f => f.kind === "listen" && f.rel.startsWith(`${pkg}${path.sep}test${path.sep}`)).length;
+    expect(per("daemon"), "daemon test listeners seen").toBeGreaterThan(50);
+    expect(per("cli"), "cli test listeners seen").toBeGreaterThan(100);
+    expect(per("tui"), "tui test listeners seen").toBeGreaterThan(5);
     expect(findings.filter(f => f.cls === "tcp-loopback").length).toBeGreaterThan(20);
     expect(findings.filter(f => f.cls === "unix-socket").length).toBeGreaterThan(10);
   });

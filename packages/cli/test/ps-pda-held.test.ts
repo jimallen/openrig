@@ -68,7 +68,7 @@ describe("OF-89: rig ps shows a pda seat that holds a message", () => {
         res.end(JSON.stringify([{ rigId: "rig-p", name: "pda-rig", rigName: "pda-rig", nodeCount: 2, runningCount: 2, status: "running", lifecycleState: "running", uptime: "1h", latestSnapshot: null }]));
       } else res.end("[]");
     });
-    await new Promise<void>((resolve) => server.listen(0, resolve));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     port = (server.address() as { port: number }).port;
   });
   afterAll(() => {

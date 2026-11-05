@@ -109,7 +109,7 @@ describe("rig ps --nodes — nodeId", () => {
       else if (req.url === "/api/ps") res.end(JSON.stringify(PS_DATA));
       else { res.statusCode = 404; res.end("{}"); }
     });
-    await new Promise<void>((r) => server.listen(0, r));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     port = (server.address() as { port: number }).port;
   });
   afterAll(() => {

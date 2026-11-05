@@ -101,7 +101,7 @@ describe("rig up — project rig with an existing stopped rig", () => {
         res.writeHead(404).end();
       });
     });
-    await new Promise<void>((r) => { server.listen(0, r); });
+    await new Promise<void>((r) => { server.listen(0, "127.0.0.1", r); });
     port = (server.address() as { port: number }).port;
   });
 

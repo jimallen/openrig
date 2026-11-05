@@ -155,7 +155,7 @@ describe("Chatroom CLI", () => {
         res.writeHead(404).end();
       });
     });
-    await new Promise<void>((resolve) => { server.listen(0, resolve); });
+    await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
     port = (server.address() as { port: number }).port;
   });
 
@@ -238,7 +238,7 @@ describe("Chatroom CLI", () => {
       });
     });
     const ambiguousPort = await new Promise<number>((resolve) => {
-      ambiguousServer.listen(0, () => {
+      ambiguousServer.listen(0, "127.0.0.1", () => {
         resolve((ambiguousServer.address() as { port: number }).port);
       });
     });
@@ -335,7 +335,7 @@ describe("Chatroom CLI", () => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify([{ id: "rig-odd", name: odd, nodeCount: 1 }]));
       });
-      const oddPort = await new Promise<number>((resolve) => oddServer.listen(0, () => resolve((oddServer.address() as { port: number }).port)));
+      const oddPort = await new Promise<number>((resolve) => oddServer.listen(0, "127.0.0.1", () => resolve((oddServer.address() as { port: number }).port)));
       const { calls, deps } = fakeHc();
       await captureLogs(async () => { await watchCmd(deps, oddPort).parseAsync(["node", "rig", "chatroom", "watch", odd, "--terminal"]); });
       oddServer.close();

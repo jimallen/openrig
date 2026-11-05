@@ -89,7 +89,7 @@ describe("Up CLI", () => {
         res.end(JSON.stringify({ error: "not found" }));
       }
     });
-    await new Promise<void>((resolve) => { server.listen(0, resolve); });
+    await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
     port = (server.address() as { port: number }).port;
   });
 
@@ -226,7 +226,7 @@ describe("Up CLI", () => {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "failed", error: "boom", stages: [], errors: ["boom"] }));
     });
-    await new Promise<void>((resolve) => { failServer.listen(0, resolve); });
+    await new Promise<void>((resolve) => { failServer.listen(0, "127.0.0.1", resolve); });
     const failPort = (failServer.address() as { port: number }).port;
 
     const prog = new Command();
@@ -251,7 +251,7 @@ describe("Up CLI", () => {
         errors: [],
       }));
     });
-    await new Promise<void>((resolve) => { failServer.listen(0, resolve); });
+    await new Promise<void>((resolve) => { failServer.listen(0, "127.0.0.1", resolve); });
     const failPort = (failServer.address() as { port: number }).port;
 
     const prog = new Command();
@@ -789,7 +789,7 @@ describe("Up CLI", () => {
     // Start a TCP server on a port to trigger port-in-use
     const net = await import("node:net");
     const blockingServer = net.createServer();
-    await new Promise<void>((resolve) => blockingServer.listen(0, resolve));
+    await new Promise<void>((resolve) => blockingServer.listen(0, "127.0.0.1", resolve));
     const blockedPort = (blockingServer.address() as { port: number }).port;
 
     // Create deps where daemon is NOT running (triggers auto-start → preflight)

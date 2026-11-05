@@ -85,7 +85,7 @@ describe("rig usage CLI grammar (daemon-backed)", () => {
       if ((req.url ?? "").includes("/usage/top")) res.end(JSON.stringify(TOP_PAYLOAD));
       else res.end(JSON.stringify(SERIES_PAYLOAD));
     });
-    await new Promise<void>((resolve) => server.listen(0, () => resolve()));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     port = (server.address() as { port: number }).port;
   });
   afterAll(() => server.close());

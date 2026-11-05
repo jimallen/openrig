@@ -59,7 +59,7 @@ describe("DaemonClient", () => {
   beforeAll(async () => {
     echoServer = createEchoServer();
     await new Promise<void>((resolve) => {
-      echoServer.server.listen(0, () => {
+      echoServer.server.listen(0, "127.0.0.1", () => {
         const addr = echoServer.server.address();
         if (addr && typeof addr === "object") {
           echoServer.port = addr.port;
