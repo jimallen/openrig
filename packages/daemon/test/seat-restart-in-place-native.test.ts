@@ -345,9 +345,9 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     const poll = () => outside(() => rec.reconcileAll()).then(() => store.getForNode(nodeId)?.reason ?? null);
     await poll();
     const client = seatHost.client;
-    const original = client.call.bind(client) as (method: string, params?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
+    const original = client.call.bind(client);
     const events: Array<{ kind: string; held: boolean; reasons?: Array<string | null> }> = [];
-    (client as unknown as { call: typeof original }).call = async (method, params, options) => {
+    const patched = async (method: string, params?: Record<string, unknown>, options?: Parameters<typeof original>[2]) => {
       const labelled = method === "terminal.run" && (params?.["labels"] as Record<string, string> | undefined)?.[SEAT_LABEL] === seat;
       if (labelled) {
         // The terminal is about to be made: it is absent now.
@@ -359,11 +359,12 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
       if (labelled) events.push({ kind: "labelled", held: guard.lifecycleHeld(nodeId) });
       return result;
     };
+    Object.defineProperty(client, "call", { value: patched, configurable: true, writable: true });
     try {
       const result = await post("restart", { reason: "OF-241" });
       expect(result.status, JSON.stringify(result.body)).toBe(200);
       for (const pid of stubPids()) pids.add(pid);
-    } finally { (client as unknown as { call: typeof original }).call = original; }
+    } finally { Object.defineProperty(client, "call", { value: original, configurable: true, writable: true }); }
     expect(events.map((e) => e.kind), "the restart respawned the terminal once").toEqual(["gap-before-run", "labelled"]);
     expect(events[0]!.held, "the lease held the seat when its terminal was gone").toBe(true);
     expect(events[0]!.reasons!.every((r) => r !== "session_missing"), `the four polls in the gap: ${JSON.stringify(events[0]!.reasons)}`).toBe(true);
