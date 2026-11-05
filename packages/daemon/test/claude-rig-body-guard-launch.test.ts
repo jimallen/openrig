@@ -92,10 +92,11 @@ const VARIANTS: Variant[] = [
 const KINDS = ["fresh", "resume", "fork"] as const;
 
 function tmuxMock(): TmuxAdapter {
-  return mockShellCommand({
-    sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })), sendShellCommand: vi.fn(async () => ({ ok: true })),
+  const partial: Partial<TmuxAdapter> = {
+    sendText: vi.fn(async () => ({ ok: true as const })), sendKeys: vi.fn(async () => ({ ok: true as const })), sendShellCommand: vi.fn(async () => ({ ok: true as const })),
     hasSession: vi.fn(async () => true), getPaneCommand: vi.fn(async () => "claude"), capturePaneContent: vi.fn(async () => ""), listPanes: vi.fn(async () => []),
-  } as unknown as TmuxAdapter);
+  };
+  return mockShellCommand(partial as TmuxAdapter);
 }
 const fsOps = { readFile: () => { throw new Error("nf"); }, writeFile: vi.fn(), exists: () => false, mkdirp: vi.fn(), copyFile: vi.fn(), listFiles: () => [] };
 const binding = (extra: Partial<NodeBinding>): NodeBinding => ({ id: "b", nodeId: "n", tmuxSession: "dev@test", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: existingRigRoot("of250-work"), ...extra }) as NodeBinding;
