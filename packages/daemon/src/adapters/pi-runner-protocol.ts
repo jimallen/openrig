@@ -385,6 +385,9 @@ export function buildPiChildArgs(opts: {
   sessionFile?: string;
   forkRef?: string;
   runtime?: RunnerRuntime;
+  /** OF-249: Pi extension files loaded with `--extension` (command-line extensions load regardless of project trust and
+   *  of discovery settings). The runner passes the rig-body guard here for every Pi seat. Pi only: not passed to OMP. */
+  extensions?: string[];
 }): string[] {
   const args = [
     "--mode", "rpc",
@@ -393,6 +396,9 @@ export function buildPiChildArgs(opts: {
       ? ["--approval-mode", opts.trust === "approve" ? "yolo" : "always-ask"]
       : ["--name", opts.sessionName, `--${opts.trust}`]),
   ];
+  if (opts.runtime !== "omp") {
+    for (const extension of opts.extensions ?? []) args.push("--extension", extension);
+  }
   if (opts.model?.trim()) {
     args.push("--model", opts.model.trim());
   }

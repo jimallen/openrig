@@ -991,6 +991,20 @@ export function openPaneFrame(ruleLabel: string, stdout: FrameStream = process.s
   return frame;
 }
 
+/** OF-249: the Pi extension that guards `rig send` text. It lives in the openrig-core plugin assets beside the Claude hook and
+ *  shares its parser (hooks/scripts/rig-body-guard.cjs). src/adapters and dist/adapters are the same depth below the package root. */
+export function piRigBodyGuardExtensionPath(adaptersDir: string = import.meta.dirname): string {
+  return nodePath.resolve(adaptersDir, "../../assets/plugins/openrig-core/pi/rig-body-guard.cjs");
+}
+
+/** The guard extension a Pi seat must start with, or the reason it cannot (the file is absent). Pure: `exists` is injected. */
+export function resolvePiRigBodyGuard(exists: (file: string) => boolean, adaptersDir?: string): { ok: true; path: string } | { ok: false; error: string } {
+  const file = piRigBodyGuardExtensionPath(adaptersDir);
+  return exists(file)
+    ? { ok: true, path: file }
+    : { ok: false, error: `the rig-body guard extension is missing (${file}); not starting Pi without it` };
+}
+
 export function parseRunnerArgs(argv: string[]): RunnerArgs {
   const args: Partial<RunnerArgs> & { trust?: "approve" | "no-approve" } = {};
   for (let i = 0; i < argv.length; i++) {
@@ -1224,6 +1238,21 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     openrigUrl: endpoint?.baseUrl ?? process.env.OPENRIG_URL,
     extraNames: args.envPassthrough,
   });
+  // OF-249: every Pi seat loads the rig-body guard, which refuses a bash tool call that would let the shell run a command
+  // substitution inside `rig send` text before rig starts. Without the file the seat does not start (an unguarded seat
+  // that looks guarded is the worse outcome); Pi itself also refuses to start on a missing --extension path.
+  const guard = runtime === "pi" ? resolvePiRigBodyGuard((file) => fs.existsSync(file)) : undefined;
+  if (guard !== undefined && !guard.ok) {
+    console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} launch: ${guard.error}`));
+    const at = new Date().toISOString();
+    try {
+      const pending = parsePiRunnerState(fs.readFileSync(paths.runnerStatePath, "utf8"));
+      const exitedState: PiRunnerState = { ready: false, launchId: args.launchId, lastEntryId: pending?.lastEntryId, updatedAt: at, exited: { code: 127, at } };
+      fs.writeFileSync(paths.runnerStatePath, JSON.stringify(exitedState));
+    } catch { /* the pane ERROR marker still fails readiness */ }
+    process.exitCode = 127;
+    return;
+  }
   const childArgs = buildPiChildArgs({
     sessionsDir: paths.sessionsDir,
     sessionName: args.sessionName,
@@ -1232,6 +1261,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     sessionFile: args.sessionFile,
     forkRef: args.forkRef,
     runtime,
+    extensions: guard?.ok ? [guard.path] : undefined,
   });
 
   // OF-213: the seat names itself first, on every start (a restart is a new runner process): the terminal's title for the pane
