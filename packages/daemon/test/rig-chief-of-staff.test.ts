@@ -6,7 +6,7 @@ import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { rigChiefOfStaff } from "../src/domain/rig-chief-of-staff.js";
+import { agentRefSegment, rigChiefOfStaff } from "../src/domain/rig-chief-of-staff.js";
 
 describe("rigChiefOfStaff", () => {
   let db: Database.Database;
@@ -16,12 +16,12 @@ describe("rigChiefOfStaff", () => {
   afterEach(() => db.close());
 
   /** A rig with these seats (each with a session named `<member>@<rig>`) and these delegates_to edges. */
-  function rig(name: string, seats: Array<string | { id: string; role?: string; session?: false }>, edges: Array<[string, string]> = []) {
+  function rig(name: string, seats: Array<string | { id: string; role?: string; agentRef?: string; session?: false }>, edges: Array<[string, string]> = []) {
     const r = rigs.createRig(name);
     const nodes = new Map<string, string>();
     for (const seat of seats) {
-      const { id, role, session } = typeof seat === "string" ? { id: seat, role: undefined, session: undefined } : seat;
-      const node = rigs.addNode(r.id, id, { runtime: "claude-code", ...(role ? { role } : {}) });
+      const { id, role, agentRef, session } = typeof seat === "string" ? { id: seat, role: undefined, agentRef: undefined, session: undefined } : seat;
+      const node = rigs.addNode(r.id, id, { runtime: "claude-code", ...(role ? { role } : {}), ...(agentRef ? { agentRef } : {}) });
       nodes.set(id, node.id);
       if (session !== false) sessions.registerSession(node.id, `${id.replace(".", "-")}@${name}`);
     }
@@ -104,5 +104,83 @@ describe("rigChiefOfStaff", () => {
     const answer = rigChiefOfStaff(db, live.id);
     expect(answer).toMatchObject({ ok: true, logicalId: "exec.cos" });
     if (answer.ok) expect(db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(answer.nodeId)).toEqual({ rig_id: live.id });
+  });
+
+  // OF-238: rigs built the way Jim builds them declare no role; exec.cos is known by the agent it is made from. Live shapes (read-only, 2026-11-05): eztrack's
+  // exec.cos has agent_ref `local:../../agents/chief-of-staff`, its other seats `local:../../agents/<name>` or `path:/.../agents/<name>`.
+  describe("a seat made from the chief-of-staff agent (agent_ref)", () => {
+    const COS = "local:../../agents/chief-of-staff";
+
+    it.each([
+      ["local: relative", "local:../../agents/chief-of-staff"],
+      ["path: absolute", "path:/Users/x/.agents-release/current/agents/chief-of-staff"],
+      ["trailing slash", "path:/x/agents/chief-of-staff/"],
+      ["several trailing slashes", "local:../../agents/chief-of-staff//"],
+      ["no directory, only a scheme", "local:chief-of-staff"],
+      ["surrounding whitespace", "  local:../../agents/chief-of-staff  "],
+    ])("%s names it", (_name, ref) => {
+      const r = rig("agent", [{ id: "exec.boss", agentRef: ref }, "build.impl", "verify.qa"]);
+      expect(rigChiefOfStaff(db, r.id)).toMatchObject({ ok: true, logicalId: "exec.boss", basis: "agent_ref" });
+    });
+
+    it.each([
+      ["a longer last segment", "local:../../agents/chief-of-staff-2"],
+      ["a prefixed last segment", "local:../../agents/not-chief-of-staff"],
+      ["a suffixed file", "path:/x/agents/chief-of-staff.md"],
+      ["the name only as a directory above", "path:/x/agents/chief-of-staff/lead"],
+      ["another case", "local:../../agents/Chief-Of-Staff"],
+      ["the name inside a segment", "local:../../agents/the-chief-of-staff-agent"],
+    ])("%s does not", (_name, ref) => {
+      const r = rig("lookalike", [{ id: "exec.boss", agentRef: ref }, "build.impl"], [["exec.boss", "build.impl"]]);
+      expect(rigChiefOfStaff(db, r.id), "the single delegates_to root answers instead, not the agent_ref").toMatchObject({ ok: true, logicalId: "exec.boss", basis: "delegates_to_root" });
+      const flat = rig("lookalike-flat", [{ id: "exec.boss", agentRef: ref }, "build.impl"]);
+      expect(rigChiefOfStaff(db, flat.id)).toEqual({ ok: false, reason: "no_delegates_to_root" });
+    });
+
+    it("eztrack's live shape: exec.cos by its agent_ref, not by the fallback", () => {
+      const r = rig("eztrack", [{ id: "exec.cos", agentRef: COS }, { id: "build.arch", agentRef: "local:../../agents/architect" }, { id: "verify.ops", agentRef: "path:/x/agents/devops" }],
+        [["exec.cos", "build.arch"], ["exec.cos", "verify.ops"]]);
+      expect(rigChiefOfStaff(db, r.id)).toMatchObject({ ok: true, logicalId: "exec.cos", session: "exec-cos@eztrack", basis: "agent_ref" });
+    });
+
+    it("beats the delegates_to root: the agent's seat is the Chief of Staff even where another seat is the one root", () => {
+      const r = rig("beats-root", ["lead.top", { id: "exec.cos", agentRef: COS }], [["lead.top", "exec.cos"]]);
+      expect(rigChiefOfStaff(db, r.id)).toMatchObject({ ok: true, logicalId: "exec.cos", basis: "agent_ref" });
+    });
+
+    it("answers where the structure has several roots (the kernel's shape with one seat made from the agent)", () => {
+      const r = rig("two-roots", ["advisor.lead", { id: "exec.cos", agentRef: COS }, "improve.steward", "improve.engineer"], [["advisor.lead", "exec.cos"], ["improve.steward", "improve.engineer"]]);
+      expect(rigChiefOfStaff(db, r.id)).toMatchObject({ ok: true, logicalId: "exec.cos", basis: "agent_ref" });
+    });
+
+    it("a declared role still comes first", () => {
+      const r = rig("role-first", [{ id: "ops.chief", role: "chief-of-staff" }, { id: "exec.cos", agentRef: COS }]);
+      expect(rigChiefOfStaff(db, r.id)).toMatchObject({ ok: true, logicalId: "ops.chief", basis: "declared_role" });
+    });
+
+    it("two seats made from the agent is none, naming both, even where one delegates_to root exists (fail closed)", () => {
+      const r = rig("twice", [{ id: "exec.cos", agentRef: COS }, { id: "backup.cos", agentRef: "path:/x/agents/chief-of-staff" }, "build.impl"], [["exec.cos", "build.impl"]]);
+      expect(rigChiefOfStaff(db, r.id)).toEqual({ ok: false, reason: "several_by_agent_ref: backup.cos, exec.cos" });
+    });
+
+    it("a seat with no session row yet is none (nothing to address); the root rule is not tried instead", () => {
+      const r = rig("nosession", [{ id: "exec.cos", agentRef: COS, session: false }, "build.impl"], [["build.impl", "exec.cos"]]);
+      expect(rigChiefOfStaff(db, r.id)).toEqual({ ok: false, reason: "no_session: exec.cos" });
+    });
+
+    it("is scoped to the rig: an archived twin's chief-of-staff seat is not the live rig's", () => {
+      const old = rig("eztrack", [{ id: "exec.cos", agentRef: COS }, "build.impl"]);
+      db.prepare("UPDATE rigs SET archived_at = '2026-11-01 10:00:00' WHERE id = ?").run(old.id);
+      const live = rig("eztrack", ["exec.cos", { id: "build.impl", agentRef: "local:../../agents/engineer" }]);
+      expect(rigChiefOfStaff(db, live.id)).toEqual({ ok: false, reason: "no_delegates_to_root" });
+      expect(rigChiefOfStaff(db, old.id)).toEqual({ ok: false, reason: "rig_archived" });
+    });
+
+    it("agentRefSegment is the last segment, exactly", () => {
+      expect(agentRefSegment("local:../../agents/chief-of-staff")).toBe("chief-of-staff");
+      expect(agentRefSegment("path:/a/b/chief-of-staff///")).toBe("chief-of-staff");
+      expect(agentRefSegment("local:chief-of-staff")).toBe("chief-of-staff");
+      expect(agentRefSegment("builtin:terminal")).toBe("terminal");
+    });
   });
 });
