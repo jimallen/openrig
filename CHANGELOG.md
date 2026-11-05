@@ -19,7 +19,15 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   permission hook. The guard is appended after the existing hook groups; permission rules and hooks of the launch, the user and the project all stay.
 - Nothing is written to disk: it is a launch argument, not a config file. The hook script is the one shipped in the daemon's assets
   (`assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs`); if it is missing, the launch is refused and nothing is typed into the pane.
-- Seats already running keep their old launch until relaunched or restored. Codex, OMP and Claude tools other than `Bash` are not covered.
+- The hook runs the daemon's own node by absolute path (`process.execPath`, shell-quoted), like the team permission hook. A bare `node` failed open on a seat whose PATH has
+  no node (measured on Claude 2.1.318: the command ran unguarded).
+- Still fail-open, by Claude Code's hook contract: the hook script removed under a seat that is already running, and a hook that runs past its 5 s timeout. The launch-time check
+  refuses a launch when the script is missing; it does not make a running seat's guard permanent.
+- Not guarded: a Claude started outside OpenRig, or by a host whose daemon is older than this change; seats already running until they are relaunched or restored; Codex, OMP, and
+  Claude tools other than `Bash`.
+- Also in this unit (OF-249 review F1, `17d58da`): the script word given to `ssh`, `sh -c` or `eval` is judged in the local shell's quoting, so ``ssh host "rig send s '`x`'"``
+  is refused. This is stricter than the plain case: such a word with ANY substitution next to plain rig text is refused too, e.g. `ssh host "cd $(pwd) && rig send s hi"`;
+  write the remote command in single quotes, or send the text with `--file - <<'EOF'`.
 
 ### A `rig send` body with backticks or `$(...)` in double quotes is refused before the shell runs it (OF-249)
 

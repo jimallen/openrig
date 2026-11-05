@@ -4,7 +4,7 @@ import { claudeRigBodyGuardScriptPath } from "../../src/adapters/claude-rig-body
 import { shellQuote } from "../../src/adapters/shell-quote.js";
 
 export const GUARD_SCRIPT = claudeRigBodyGuardScriptPath();
-export const GUARD_GROUP = { matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(GUARD_SCRIPT)}`, timeout: 5 }] };
+export const GUARD_GROUP = { matcher: "Bash", hooks: [{ type: "command", command: `${shellQuote(process.execPath)} ${shellQuote(GUARD_SCRIPT)}`, timeout: 5 }] };
 /** The --settings JSON of a launch that had no settings of its own. */
 export const GUARD_JSON = JSON.stringify({ hooks: { PreToolUse: [GUARD_GROUP] } });
 /** Classic (shell text) form, after the posture flag. */

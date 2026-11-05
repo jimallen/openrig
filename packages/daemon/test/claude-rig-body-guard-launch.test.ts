@@ -22,7 +22,10 @@ describe("withRigBodyGuard", () => {
   });
   it("the guard group is a blocking Bash PreToolUse hook on the shipped rig-body-guard.cjs", () => {
     expect(GUARD_GROUP.matcher).toBe("Bash");
-    expect(GUARD_GROUP.hooks[0]!.command).toBe(`node '${GUARD_SCRIPT}'`);
+    expect(GUARD_GROUP.hooks[0]!.command).toBe(`'${process.execPath}' '${GUARD_SCRIPT}'`);
+    // F-1: the interpreter is the daemon's own node by absolute path, never a bare `node` that a seat PATH may not resolve.
+    expect(GUARD_GROUP.hooks[0]!.command.startsWith("'/")).toBe(true);
+    expect(GUARD_GROUP.hooks[0]!.command).not.toMatch(/^node /);
     expect(GUARD_SCRIPT.endsWith("/assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs")).toBe(true);
   });
   it("one --settings in: the guard is appended as a SECOND PreToolUse group; permissions and the first hook are untouched", () => {
@@ -44,7 +47,7 @@ describe("withRigBodyGuard", () => {
     expect(() => withRigBodyGuard(["--settings", TEAM, "--settings", GUARD_JSON])).toThrow(/more than one --settings/);
   });
   it("a custom script path is used", () => {
-    expect(JSON.parse(withRigBodyGuard([], "/x/y z.cjs")[1]!).hooks.PreToolUse[0].hooks[0].command).toBe("node '/x/y z.cjs'");
+    expect(JSON.parse(withRigBodyGuard([], "/x/y z.cjs")[1]!).hooks.PreToolUse[0].hooks[0].command).toBe(`'${process.execPath}' '/x/y z.cjs'`);
   });
   it("the refusal names a missing script and is null when it is there", () => {
     expect(claudeRigBodyGuardRefusal(GUARD_SCRIPT)).toBeNull();

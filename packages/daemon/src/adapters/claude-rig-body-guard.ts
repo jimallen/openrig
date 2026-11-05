@@ -20,9 +20,10 @@ export function claudeRigBodyGuardRefusal(scriptPath: string = claudeRigBodyGuar
 
 interface HookGroup { matcher?: string; hooks?: Array<{ type?: string; command?: string }> }
 
-/** The guard's PreToolUse group: a blocking command hook on Bash. */
+/** The guard's PreToolUse group: a blocking command hook on Bash. The interpreter is the daemon's own node (process.execPath, quoted), like the team hook:
+ *  a bare `node` fails open on a seat whose PATH has no node (OF-250 review F-1, measured on Claude 2.1.318). */
 export function claudeRigBodyGuardGroup(scriptPath: string): { matcher: string; hooks: Array<{ type: string; command: string; timeout: number }> } {
-  return { matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(scriptPath)}`, timeout: 5 }] };
+  return { matcher: "Bash", hooks: [{ type: "command", command: `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`, timeout: 5 }] };
 }
 
 /** Add the guard to a Claude launch's argv. Exactly one `--settings` comes out, whatever went in (more than one going in is a bug in the caller). */
