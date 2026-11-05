@@ -20,7 +20,9 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   commands that carry free text, or in an unquoted here-document (`<<EOF`) or `echo`/`printf` piped into them. The model reads the refusal as the tool result: put the
   text in a quoted here-document, `rig send <session> --file - <<'EOF'` (`--body-file -` for `rig queue`). A runner that cannot find the file does not start Pi.
 - Claude Code: `hooks/claude.json` of the `openrig-core` plugin gains a blocking `PreToolUse` hook on `Bash` that runs the same parser
-  (`hooks/scripts/rig-body-guard.cjs`). It takes effect where the plugin is installed in the Claude config.
+  (`hooks/scripts/rig-body-guard.cjs`). **This alone protects no Claude seat**: it takes effect only where the plugin is installed in the Claude config, and it is
+  not installed on the hosts measured. Claude seats are guarded only once the daemon passes the guard on every Claude launch (OF-250). Claude tools other than `Bash`
+  (a monitor-type tool, if enabled) do not match the hook.
 - Safe forms are not touched: single-quoted text, a quoted here-document (`<<'EOF'`), `--file <path>`, `--file -` fed by a pipe or here-document, a `$` inside
   single quotes. Codex seats and `hc send` are not covered.
 
