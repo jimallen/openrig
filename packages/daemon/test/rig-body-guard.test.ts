@@ -108,6 +108,9 @@ const ROWS: Row[] = [
   { id: "W18", deny: true, kind: "substitution", note: "bash reading its script from a quoted heredoc", cmd: `bash <<'EOF'\nrig send a@b "x ${T}y${T}"\nEOF` },
   { id: "W19", deny: true, kind: "substitution", note: "ssh host reading its script from a heredoc", cmd: `ssh host <<'EOF'\nrig send a@b "x ${T}y${T}"\nEOF` },
   { id: "W20", deny: true, kind: "substitution", note: "bash with a here-string script", cmd: `bash <<< 'rig send a@b "x ${T}y${T}"'` },
+  { id: "F1a", deny: true, kind: "substitution", note: "F1: ssh host with outer double quotes; the LOCAL shell runs the backticks inside the inner single quotes", cmd: `ssh host "rig send s '${T}x${T}'"` },
+  { id: "F1b", deny: true, kind: "substitution", note: "F1: bash -c with outer double quotes and inner single quotes", cmd: `bash -c "rig send s 'see $(x)'"` },
+  { id: "F1c", deny: true, kind: "substitution", note: "F1: eval with outer double quotes and inner single quotes", cmd: `eval "rig send s 'see ${T}x${T}'"` },
   { id: "W17", deny: true, kind: "substitution", note: "nested 6 deep", cmd: NEST(6) },
 
   // ---- safe forms: must NOT be refused
@@ -145,6 +148,8 @@ const ROWS: Row[] = [
   { id: "S33", deny: false, note: "unquoted heredoc with arithmetic $((1+2)) only: nothing executes", cmd: `rig send a@b --file - <<EOF\nsum $((1+2))\nEOF` },
   { id: "S34", deny: false, note: "bash script from a heredoc that itself sends through a quoted heredoc", cmd: `bash <<'EOF'\nrig send a@b --file - <<'X'\n${T}t${T} $(u)\nX\nEOF` },
   { id: "S35", deny: false, note: "bash running a script file with a heredoc as stdin data (not a script)", cmd: `bash ./run.sh <<'EOF'\nrig send a@b "x ${T}y${T}"\nEOF` },
+  { id: "F1d", deny: false, note: "F1 control: ssh with outer double quotes and no substitution", cmd: `ssh host "rig send s 'plain text'"` },
+  { id: "F1e", deny: false, note: "F1 control: ssh with a substitution that is not about a rig command", cmd: `ssh host "echo $(date)"` },
   { id: "S32", deny: false, note: "2>&1 file descriptor redirect", cmd: `rig send a@b 'hi' 2>&1 | tail -3` },
 
   // ---- parse failures: refuse only when the plain-text signal is there

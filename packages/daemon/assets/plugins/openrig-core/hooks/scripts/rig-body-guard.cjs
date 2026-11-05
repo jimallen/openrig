@@ -511,6 +511,17 @@ function scanStdinScript(cmd, depth, out) {
   for (const w of cmd.hereStrings) scan(w.text, depth + 1, out);
 }
 
+/** F1 (OF-249 review): the script handed to sh -c / eval / ssh is itself a word of THIS shell. When that word has a command substitution
+ *  (outer double quotes or none), the local shell runs it before the wrapper starts, so judging the inner text against its own quoting
+ *  ('...' inside) is the wrong context. A script word that expands AND mentions a guarded rig command is refused. */
+function outerExpansion(words, out) {
+  for (const w of words) {
+    if (!w.expands) continue;
+    const m = FALLBACK_NAME_RE.exec(w.text);
+    if (m) { out.push({ kind: "substitution", command: m[1] }); return; }
+  }
+}
+
 function scanPipeline(cmds, resolved, from, to, depth, out) {
   let message = null;
   for (let i = from; i < to; i++) {
@@ -524,17 +535,18 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       const ci = res.args.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text));
       if (ci >= 0) {
         const script = res.args.slice(ci + 1).find((a) => !a.text.startsWith("-"));
-        if (script) scan(script.text, depth + 1, out);
+        if (script) { outerExpansion([script], out); scan(script.text, depth + 1, out); }
       } else if (res.args.every((a) => a.text.startsWith("-")) || res.args.some((a) => a.text === "-s")) {
         scanStdinScript(cmds[i], depth, out);        // bash <<'EOF' ... EOF / bash <<< '...': the text is the script
       }
     } else if (res.name === "eval") {
+      outerExpansion(res.args, out);
       scan(res.args.map((a) => a.text).join(" "), depth + 1, out);
     } else if (res.name === "ssh") {
       let k = 0;
       while (k < res.args.length && res.args[k].text.startsWith("-")) k += SSH_VALUED.has(res.args[k].text) ? 2 : 1;
       const remote = res.args.slice(k + 1);                 // after the host
-      if (remote.length) scan(remote.map((a) => a.text).join(" "), depth + 1, out);
+      if (remote.length) { outerExpansion(remote, out); scan(remote.map((a) => a.text).join(" "), depth + 1, out); }
       else scanStdinScript(cmds[i], depth, out);            // ssh host <<'EOF' ... EOF
     }
   }
@@ -555,11 +567,12 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
 // ---------------------------------------------------------------------------------------------
 // Verdict
 
-const FALLBACK_RE = new RegExp(
-  "(?:^|[^\\w./-])(?:[\\w./-]*/)?rig\\s+(?:-\\S+\\s+)*(?:" +
+const FALLBACK_SRC =
+  "(?:^|[^\\w./-])(?:[\\w./-]*/)?rig\\s+(?:-\\S+\\s+)*(" +
     Object.keys(MESSAGE_COMMANDS).concat(Object.keys(FLAG_COMMANDS)).map((n) => n.replace(/-/g, "\\-")).join("|") +
-    ")\\b",
-);
+    ")\\b";
+const FALLBACK_RE = new RegExp(FALLBACK_SRC);
+const FALLBACK_NAME_RE = new RegExp(FALLBACK_SRC);
 
 /** check(command) -> { block, violations, reason }. Never throws. */
 function check(command) {
