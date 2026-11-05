@@ -50,6 +50,14 @@ describe("what the input line shows", () => {
     expect(inputView("日本語", 3, 40)).toEqual({ text: "日本語", cursorColumn: 6 });
     expect(inputView("日本語日本語", 6, 7).text).toBe("…日本語");
   });
+  it("counts the emoji the core draws in two cells as two (OF-231): 🚀 and its block, ✅ ❌ ⭐ ⚡, the U+1FA70 block; and every mark the core draws in none as none", () => {
+    for (const cp of [0x1f680, 0x1f6c5, 0x1f6dc, 0x1f6fc, 0x2705, 0x274c, 0x2b50, 0x26a1, 0x1fa70, 0x1faf8, 0x1f1e6]) expect(charWidth(cp), `U+${cp.toString(16)}`).toBe(2);
+    for (const cp of [0x483, 0x5b0, 0x94d, 0xe31, 0x200d, 0xfe0f, 0x20e3, 0xe0067]) expect(charWidth(cp), `U+${cp.toString(16)}`).toBe(0);
+    for (const cp of [0x41, 0xe9, 0x2192, 0x2500, 0x276f, 0x1f6c6, 0x1f6ff, 0x1f700, 0x1fa6f, 0x1faff, 0x1fb00]) expect(charWidth(cp), `U+${cp.toString(16)}`).toBe(1);
+    expect(inputView("🚀🚀x", 5, 40)).toEqual({ text: "🚀🚀x", cursorColumn: 5 });
+    expect(inputView("🚀🚀x", 2, 40)).toEqual({ text: "🚀🚀x", cursorColumn: 2 });
+    expect(reflowedRows("❯ " + "🚀".repeat(60), 31)).toBe(5);
+  });
   it("a cursor offset after an astral character counts it as one character", () => {
     expect(inputView("a😀b", 3, 40).cursorColumn).toBe(3);
   });

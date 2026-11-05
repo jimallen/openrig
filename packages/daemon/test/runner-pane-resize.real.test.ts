@@ -176,3 +176,10 @@ typedLineAcrossResizes("60 あ in the input line across resizes to odd widths, t
 // The second cause (measured): the core reflows the input row with the cursor's cell. 29 x at 32 columns fill 31 cells, the cursor is the 32nd, and
 // at 31 columns the row is two. ASCII only; the same stale rule row as the wide case, and the frame had counted one row.
 typedLineAcrossResizes("29 x in the input line across resizes to 32 and 31 columns, through a private hc core (OF-218, the cursor's cell)", "x".repeat(29), "x", [32, 20], [[31, 20], [32, 20], [31, 20]]);
+
+// OF-231 (review of the Pi console N2, then measured): the same case with emoji the old width table counted as one cell and the core draws as two.
+// 60 🚀 (U+1F680, Transport and Map Symbols) at 200x40, resized to 31x20: the input row is 2 + 120 cells and reflows to 5 rows, not the 4 the old table
+// counted, which left one rule row on the screen. ✅ (U+2705, Emoji_Presentation in Dingbats) and 🩰 (U+1FA70 block) are the other two ranges.
+typedLineAcrossResizes("60 🚀 in the input line across resizes to odd widths, through a private hc core (OF-231, Transport and Map Symbols)", "🚀".repeat(60), "🚀", [31, 20], [[27, 20], [45, 25], [32, 20], [31, 20]]);
+typedLineAcrossResizes("60 ✅ in the input line across resizes to odd widths, through a private hc core (OF-231, Dingbats emoji)", "✅".repeat(60), "✅", [31, 20], [[27, 20], [45, 25], [32, 20], [31, 20]]);
+typedLineAcrossResizes("60 🩰 in the input line across resizes to odd widths, through a private hc core (OF-231, U+1FA70 block)", "🩰".repeat(60), "🩰", [31, 20], [[27, 20], [45, 25], [32, 20], [31, 20]]);
