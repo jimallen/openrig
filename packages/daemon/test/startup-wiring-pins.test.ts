@@ -209,5 +209,11 @@ describe("OF-235 — the identity reconciler is wired to the delivery guard's li
     expect(held("of235-node"), "while the lease is held").toBe(true);
     release(); await op;
     expect(held("of235-node"), "after it is released").toBe(false);
+    const count = priv<() => number>(deps.seatIdentityReconciler, "lifecycleHeldCount");
+    expect(count, "SeatIdentityReconciler.lifecycleHeldCount is injected by startup").toBeTypeOf("function");
+    let during = -1;
+    await guard.lifecycle(["of235-node"], async () => { during = count(); });
+    expect(during, "the lease table's count, as the ceiling reads it").toBe(1);
+    expect(count()).toBe(0);
   });
 });

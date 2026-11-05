@@ -2,7 +2,7 @@
 // respawn, `rig down`, restart, handover or restore can leave every labelled terminal absent for far longer than two 5 s polls, and the laptop core holds 27 seats.
 // The reconciler now records no missing-session verdict for a seat while the delivery guard's lifecycle lease holds it (`SeatDeliveryGuard.lifecycleHeld`).
 // Not `ownsLifecycle`: that reads the lease's async context, and the reconciler's timer is outside every operation's context, so it would always say no.
-// A lease that is never released stops excusing after LIFECYCLE_EXCUSE_CEILING_MS, so a hung operation cannot hide a real loss for ever.
+// A lease that is never released stops excusing after LIFECYCLE_EXCUSE_BASE_MS + LIFECYCLE_EXCUSE_PER_SEAT_MS per seat held (the restore loop is sequential, one startup wait per seat), so a hung operation cannot hide a real loss for ever.
 //
 // Production entrypoint: startup.ts constructs the SeatDeliveryGuard and the SeatIdentityReconciler (passing the guard's `lifecycleHeld`) and starts the 5 s timer;
 // seat-lost-health.ts reads the verdict. These rows use the real guard, the real reconciler and the real health source over a fake hc core; the per-operation
@@ -18,7 +18,8 @@ import { HcAdapter } from "../src/adapters/hc-adapter.js";
 import { HcUnavailableError } from "../src/adapters/hc-client.js";
 import { SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
-import { LIFECYCLE_EXCUSE_CEILING_MS, SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
+import { LIFECYCLE_EXCUSE_BASE_MS, LIFECYCLE_EXCUSE_PER_SEAT_MS, SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
+import { STARTUP_TEXT_WAIT_MS } from "../src/domain/startup-orchestrator.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { SeatLostHealthSource, inventoryOfLiveRigs } from "../src/domain/seat-lost-health.js";
 
@@ -28,7 +29,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 const SEATS = ["dev-a@solo-rig", "dev-b@solo-rig", "dev-c@solo-rig"];
 const [A, B, C] = SEATS as [string, string, string];
 
-function fixture(opts: { seats?: string[]; wired?: boolean; ceilingMs?: number } = {}) {
+function fixture(opts: { seats?: string[]; wired?: boolean; excuse?: { baseMs: number; perSeatMs: number } } = {}) {
   const seatNames = opts.seats ?? [A];
   const db = createDb(); databases.push(db); migrate(db, ALL_MIGRATIONS);
   db.prepare("INSERT INTO rigs (id, name) VALUES ('rig-1', 'solo-rig')").run();
@@ -55,7 +56,8 @@ function fixture(opts: { seats?: string[]; wired?: boolean; ceilingMs?: number }
   const rec = new SeatIdentityReconciler({
     db, tmux: host, now: () => new Date(Date.UTC(2026, 10, 4, 12, 0, 5 * tick++)),
     ...(opts.wired === false ? {} : { lifecycleHeld: (id: string) => guard.lifecycleHeld(id) }),
-    ...(opts.ceilingMs !== undefined ? { lifecycleExcuseCeilingMs: opts.ceilingMs } : {}),
+    ...(opts.wired === false ? {} : { lifecycleHeldCount: () => guard.lifecycleHeldCount() }),
+    ...(opts.excuse ? { lifecycleExcuse: opts.excuse } : {}),
   });
   const store = new SeatIdentityStore(db);
   const reason = (node: string) => store.getForNode(node)?.reason ?? "(no verdict)";
@@ -126,7 +128,7 @@ describe("OF-235: a seat a lifecycle lease holds is not reported lost while the 
   });
 
   it("a lease that is never released stops excusing at the ceiling: a real loss is reported two polls after it", async () => {
-    const f = fixture({ ceilingMs: 60_000 });
+    const f = fixture({ excuse: { baseMs: 50_000, perSeatMs: 10_000 } });
     await f.poll(1);
     let release!: () => void;
     const hung = f.guard.lifecycle(["n0"], () => new Promise<void>((resolve) => { release = resolve; }));
@@ -142,12 +144,58 @@ describe("OF-235: a seat a lifecycle lease holds is not reported lost while the 
     release(); await hung;
   });
 
-  it("the ceiling is half an hour (a restore of many seats holds its leases for its whole run)", () => {
-    expect(LIFECYCLE_EXCUSE_CEILING_MS).toBe(30 * 60_000);
+  it("the ceiling grows with the seats the lease table holds: three seats under one lease are excused for 80 s of a 50 s + 10 s per seat bound, not 60", async () => {
+    const f = fixture({ seats: SEATS, excuse: { baseMs: 50_000, perSeatMs: 10_000 } });
+    await f.poll(1);
+    let release!: () => void;
+    const hung = f.guard.lifecycle(["n0", "n1", "n2"], () => new Promise<void>((resolve) => { release = resolve; }));
+    await new Promise((r) => setImmediate(r));
+    expect(f.guard.lifecycleHeldCount()).toBe(3);
+    f.core.live = [];
+    const seen = await f.poll(20);
+    // t0 .. t0+75 s (sixteen sweeps) are excused, the sweep at t0+80 s is the first read, the next records.
+    expect(seen.findIndex((x) => x.length > 0), "poll index (0-based) of the first seat.lost").toBe(17);
+    expect(seen[17]).toEqual(SEATS);
+    release(); await hung;
+  });
+
+  it("the ceiling's terms: 30 min plus the startup wait of one seat (STARTUP_TEXT_WAIT_MS, 5 min) per seat held; a change to that wait shows up here", () => {
+    expect(LIFECYCLE_EXCUSE_BASE_MS).toBe(30 * 60_000);
+    expect(LIFECYCLE_EXCUSE_PER_SEAT_MS, "the bound one seat's turn of the sequential restore can wait").toBe(STARTUP_TEXT_WAIT_MS);
+    expect(STARTUP_TEXT_WAIT_MS, "the per-seat bound the ceiling relies on; if it changes, re-judge the ceiling").toBe(5 * 60_000);
+    expect(LIFECYCLE_EXCUSE_BASE_MS + 27 * LIFECYCLE_EXCUSE_PER_SEAT_MS, "the laptop's 27 seats").toBe(165 * 60_000);
+  });
+
+  it("the hold clock of a seat that stopped running is forgotten: a new lease on it after a long gap starts a new clock", async () => {
+    const f = fixture({ seats: [A, B], excuse: { baseMs: 5_000, perSeatMs: 5_000 } });   // 10 s bound with one seat held
+    await f.poll(1);
+    f.core.live = [B];
+    await f.guard.lifecycle(["n0"], async () => {
+      await f.poll(3);
+      f.db.prepare("UPDATE sessions SET status = 'exited' WHERE id = 's0'").run();
+    });
+    await f.poll(8);                       // n0 is not running; B keeps the clock ticking (40 s, past the bound)
+    f.db.prepare("UPDATE sessions SET status = 'running' WHERE id = 's0'").run();
+    await f.guard.lifecycle(["n0"], async () => { expect(await f.poll(3), "a new lease on the relaunched seat").toEqual([[], [], []]); });
+  });
+
+  it("a lease taken while the core is being asked, after the pre-listing read, excuses that sweep even with a missing read already counted", async () => {
+    const f = fixture();
+    await f.poll(1);
+    f.core.live = [];
+    await f.poll(1);                       // first read of the gap, no lease yet
+    let release!: () => void;
+    let op!: Promise<void>;
+    f.core.onList = () => {
+      f.core.onList = null;
+      op = f.guard.lifecycle(["n0"], () => new Promise<void>((resolve) => { release = resolve; }));   // the operation starts as the poll asks the core
+    };
+    expect(await f.poll(1), "the second read of the gap would have recorded it").toEqual([[]]);
+    release(); await op;
   });
 
   it("a seat the lease held and released starts a fresh hold clock the next time", async () => {
-    const f = fixture({ ceilingMs: 30_000 });
+    const f = fixture({ excuse: { baseMs: 20_000, perSeatMs: 10_000 } });
     await f.poll(1);
     f.core.live = [];
     await f.guard.lifecycle(["n0"], async () => { await f.poll(5); });   // 25 s of a 30 s ceiling

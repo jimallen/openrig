@@ -162,6 +162,13 @@ export class SeatDeliveryGuard {
     return this.lifecycleLeases.get(nodeId)?.active === true;
   }
 
+  /** How many seats lifecycle leases hold right now: a multi-seat operation (restore, `rig down`) holds one per seat for its whole run. */
+  lifecycleHeldCount(): number {
+    let n = 0;
+    for (const lease of this.lifecycleLeases.values()) if (lease.active) n++;
+    return n;
+  }
+
   ownsLifecycle(nodeId: string): boolean {
     const lease = this.scope.getStore()?.get(nodeId);
     if (!lease?.active || !lease.lifecycle) return false;

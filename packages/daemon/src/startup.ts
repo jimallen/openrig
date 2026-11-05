@@ -588,6 +588,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     tmux: tmuxAdapter,
     // OF-235: a seat a lifecycle operation holds is not reported lost while the operation runs.
     lifecycleHeld: (nodeId) => deliveryGuard.lifecycleHeld(nodeId),
+    lifecycleHeldCount: () => deliveryGuard.lifecycleHeldCount(),
   });
 
   // Read transcript config from env (passed by CLI via PNS-T02 config surface)

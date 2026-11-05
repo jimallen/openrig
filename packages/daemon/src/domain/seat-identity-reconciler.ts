@@ -2,6 +2,7 @@ import { observeClaudePaneProcess, observeClaudePaneRuntime, observeCodexPanePro
 import { isShellForeground } from "./shell-classifier.js";
 import { registeredPaneSql } from "./binding-pane.js";
 import { claudeResumeRotation } from "./session-registry.js";
+import { STARTUP_TEXT_WAIT_MS } from "./startup-orchestrator.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -15,11 +16,16 @@ import { RESERVED_HOST_IDS, validateHostRegistry } from "./hosts/hosts-registry-
  *  tmux reads), so a slower cadence is the right cost/freshness trade. */
 export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
 
-/** OF-235: how long one seat's lifecycle lease may excuse a missing terminal, counted from the first poll that saw the lease held. A restore, `rig down`
- *  or handover holds the lease for its whole run and its terminal may be absent for all of it, so the excuse must outlast a long multi-seat restore;
- *  but a lease that is never released (a hung operation) must not hide a real loss for ever. Past this the seat falls back to the two-poll rule.
- *  A judgement, not a measurement: STARTUP_TEXT_WAIT_MS is 5 min per seat and a restore of the laptop's 27 seats runs seat after seat under one lease. */
-export const LIFECYCLE_EXCUSE_CEILING_MS = 30 * 60_000;
+/** OF-235: how long a lifecycle lease may excuse a seat's missing terminal, counted from the first poll that saw the lease held. A restore, `rig down` or
+ *  handover holds its leases for the whole run and the terminal may be absent for all of it, so the excuse must outlast a long multi-seat restore; but a lease
+ *  that is never released (a hung operation) must not hide a real loss for ever. The bound is
+ *      LIFECYCLE_EXCUSE_BASE_MS + LIFECYCLE_EXCUSE_PER_SEAT_MS x (the lifecycle leases held at that poll, from the guard's lease table)
+ *  and past it the seat falls back to the two-poll rule. The restore loop is sequential and holds every seat's lease from its start, so its length grows with
+ *  the number of seats held: the per-seat term is the bound one seat's turn can wait, STARTUP_TEXT_WAIT_MS (5 min), so the laptop's 27 seats get 30 + 135 = 165 min.
+ *  The base is a judgement (preflight, snapshot and bookkeeping around the loop), not a measurement; no restore duration has been measured. Finite: a lease held
+ *  for ever hides a loss for at most this bound plus two polls. */
+export const LIFECYCLE_EXCUSE_BASE_MS = 30 * 60_000;
+export const LIFECYCLE_EXCUSE_PER_SEAT_MS = STARTUP_TEXT_WAIT_MS;
 
 /** Foreground commands that read as a bare shell (a seat that dropped to a
  *  prompt, or an orphan/QA-squat shell occupying the pane). Mirrors the
@@ -93,8 +99,10 @@ export interface SeatIdentityReconcilerDeps {
   listProcesses?: NativeProcessLister;
   /** OF-235: true while the delivery guard's lifecycle lease holds this seat (`SeatDeliveryGuard.lifecycleHeld`). Absent: no seat is ever excused. */
   lifecycleHeld?: (nodeId: string) => boolean;
-  /** Overrides LIFECYCLE_EXCUSE_CEILING_MS (tests). */
-  lifecycleExcuseCeilingMs?: number;
+  /** OF-235: how many seats the guard's lifecycle leases hold right now (`SeatDeliveryGuard.lifecycleHeldCount`); it scales the ceiling. Absent: one. */
+  lifecycleHeldCount?: () => number;
+  /** Overrides LIFECYCLE_EXCUSE_BASE_MS / LIFECYCLE_EXCUSE_PER_SEAT_MS (tests). */
+  lifecycleExcuse?: { baseMs: number; perSeatMs: number };
 }
 
 /**
@@ -122,7 +130,9 @@ export class SeatIdentityReconciler {
   /** OF-235: per seat, the observation time (ms) of the first poll that found a lifecycle lease holding it; cleared by the first poll that does not. */
   private readonly heldSince = new Map<string, number>();
   private readonly lifecycleHeld: ((nodeId: string) => boolean) | undefined;
-  private readonly excuseCeilingMs: number;
+  private readonly lifecycleHeldCount: (() => number) | undefined;
+  private readonly excuseBaseMs: number;
+  private readonly excusePerSeatMs: number;
 
   constructor(deps: SeatIdentityReconcilerDeps) {
     this.db = deps.db;
@@ -131,7 +141,9 @@ export class SeatIdentityReconciler {
     this.store = new SeatIdentityStore(deps.db);
     this.listProcesses = deps.listProcesses ?? listNativeProcesses;
     this.lifecycleHeld = deps.lifecycleHeld;
-    this.excuseCeilingMs = deps.lifecycleExcuseCeilingMs ?? LIFECYCLE_EXCUSE_CEILING_MS;
+    this.lifecycleHeldCount = deps.lifecycleHeldCount;
+    this.excuseBaseMs = deps.lifecycleExcuse?.baseMs ?? LIFECYCLE_EXCUSE_BASE_MS;
+    this.excusePerSeatMs = deps.lifecycleExcuse?.perSeatMs ?? LIFECYCLE_EXCUSE_PER_SEAT_MS;
   }
 
   /** OF-235: a supported operation (stop, `rig down`, restart, handover, restore, launch) holds the seat's lifecycle lease from before it ends the
@@ -141,7 +153,8 @@ export class SeatIdentityReconciler {
     if (!this.lifecycleHeld?.(nodeId)) { this.heldSince.delete(nodeId); return false; }
     const since = this.heldSince.get(nodeId) ?? observedMs;
     this.heldSince.set(nodeId, since);
-    return observedMs - since < this.excuseCeilingMs;
+    const held = Math.max(1, this.lifecycleHeldCount?.() ?? 1);
+    return observedMs - since < this.excuseBaseMs + this.excusePerSeatMs * held;
   }
 
   private runningSeats(): RunningSeatRow[] {
