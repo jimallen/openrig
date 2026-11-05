@@ -79,7 +79,7 @@ describe("local bare identity — no self-host suffix on any intra-instance surf
     expect(intents.length).toBeGreaterThan(0);
     const env = intents[intents.length - 1]!.body;
     expect(env).toContain("From: dev-driver@v-openrig-build\n"); // bare, newline-bounded (not a triple prefix)
-    expect(env).toContain(`↩ Reply: rig send dev-driver@v-openrig-build "..."`); // verbatim-usable locally
+    expect(env).toContain(`↩ Reply: rig send dev-driver@v-openrig-build '...'`); // verbatim-usable locally
     expect(env).not.toContain(TEST_HOST);
   });
 
@@ -94,7 +94,7 @@ describe("local bare identity — no self-host suffix on any intra-instance surf
       TEST_HOST,
     );
     expect(env).toContain("From: dev-driver@v-openrig-build\n");
-    expect(env).toContain(`↩ Reply: rig send dev-driver@v-openrig-build "..."`);
+    expect(env).toContain(`↩ Reply: rig send dev-driver@v-openrig-build '...'`);
     expect(env).not.toContain(TEST_HOST);
   });
 
@@ -106,6 +106,6 @@ describe("local bare identity — no self-host suffix on any intra-instance surf
       TEST_HOST,
     );
     expect(env).toContain("From: pm-lead@other-rig@host-remote1");
-    expect(env).toContain(`↩ Reply: rig send pm-lead@other-rig@host-remote1 "..."`);
+    expect(env).toContain(`↩ Reply: rig send pm-lead@other-rig@host-remote1 '...'`);
   });
 });

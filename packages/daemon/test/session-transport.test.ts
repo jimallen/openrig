@@ -784,7 +784,7 @@ describe("SessionTransport", () => {
     async (mode) => {
       seedCanonicalRig();
       const header = "From: sender-agent@demo\nTo: dev-impl@my-rig\nSent: 10-11 05:00Z\n---\n";
-      const footer = "\n---\n↩ Reply: rig send sender-agent@demo \"...\"";
+      const footer = "\n---\n↩ Reply: rig send sender-agent@demo '...'";
       const canonical = mode.startsWith("canonical") || mode === "footer suffix";
       const message = header + "Requested body." + (canonical ? footer : "");
       let rendered = message;
@@ -808,7 +808,7 @@ describe("SessionTransport", () => {
     "send with verify retains columns at envelope and composer boundaries: %s",
     async (mode) => {
       seedCanonicalRig();
-      const message = "From: sender-agent@demo\nTo: dev-impl@my-rig\n---\nRequested body.\n---\n↩ Reply: rig send sender-agent@demo \"...\"";
+      const message = "From: sender-agent@demo\nTo: dev-impl@my-rig\n---\nRequested body.\n---\n↩ Reply: rig send sender-agent@demo '...'";
       const suffix = mode === "From suffix" ? "\nFrom: extra body text"
         : mode === "Claude quote suffix" ? "\n❯ extra quoted body"
         : mode === "Codex quote suffix" ? "\n› extra quoted body" : "";
@@ -831,7 +831,7 @@ describe("SessionTransport", () => {
     "send with verify separates user envelopes from agent output: %s",
     async (mode) => {
       seedCanonicalRig();
-      const message = "From: sender-agent@demo\nTo: dev-impl@my-rig\n---\nRequested body.\n---\n↩ Reply: rig send sender-agent@demo \"...\"";
+      const message = "From: sender-agent@demo\nTo: dev-impl@my-rig\n---\nRequested body.\n---\n↩ Reply: rig send sender-agent@demo '...'";
       const render = (text: string) => "❯ " + text.split("\n").join("\n  ");
       const marker = mode === "Claude status" ? "✻ Working… (2s · thinking)"
         : mode === "Claude spinner" ? "⠋ Processing"
@@ -935,7 +935,7 @@ describe("SessionTransport", () => {
     sessionRegistry.updateStatus(session.id, "running");
     sessionRegistry.updateBinding(node.id, { tmuxSession: address });
     let message = kind === "raw" ? "Check the blue ledger, then report its total."
-      : `From: sender@fixture\nTo: ${address}\nSent: 10-13 10:00Z\n---\nCheck the blue ledger.\nReport its total.\n---\n↩ Reply: rig send sender@fixture "..."`;
+      : `From: sender@fixture\nTo: ${address}\nSent: 10-13 10:00Z\n---\nCheck the blue ledger.\nReport its total.\n---\n↩ Reply: rig send sender@fixture '...'`;
     const render = (glyph: string, text: string) => glyph + " " + text.split("\n").join("\n  ");
     let post = render("❯", message) + "\n» reply quotation below live input";
     if (shape === "below framed draft") post = "────────────────────\n" + render("❯", message) + "\n────────────────────\n? for shortcuts\n» later quote";
@@ -2545,7 +2545,7 @@ describe("SessionTransport", () => {
 
   // ── GHOST-STAGE (h): delivered-at latency stamped at the WRITE moment ──
   const H_ENVELOPE =
-    'From: a@r\nTo: dev-impl@my-rig\nSent: 08-06 17:42Z\n---\nhi\n---\n↩ Reply: rig send a@r "..."';
+    'From: a@r\nTo: dev-impl@my-rig\nSent: 08-06 17:42Z\n---\nhi\n---\n↩ Reply: rig send a@r \'...\'';
 
   it("(h) send() flags a delayed delivery on the Sent: line when the compose→write gap exceeds 10s", async () => {
     seedCanonicalRig();

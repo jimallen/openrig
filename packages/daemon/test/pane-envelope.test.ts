@@ -11,6 +11,8 @@
 // envelope".
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { wrapPaneEnvelope, appendDeliveredSegment, DELIVERED_LATENCY_FLAG_MS } from "../src/lib/pane-envelope.js";
 
 describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => {
@@ -19,15 +21,15 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
     expect(out).toContain("From: driver-3@my-rig");
     expect(out).toContain("To: guard-3@my-rig");
     expect(out).toContain("Status: ready.");
-    expect(out).toContain('↩ Reply: rig send driver-3@my-rig "..."');
+    expect(out).toContain('↩ Reply: rig send driver-3@my-rig \'...\'');
   });
 
   it("routes an external sender's reply through the durable human queue", () => {
     const out = wrapPaneEnvelope("decision-maker@external", "driver@rig", "Decision received.");
     expect(out).toContain("From: decision-maker@external");
-    expect(out).toContain('↩ Reply if needed: rig queue create --destination decision-maker@external --body "..." --verify');
+    expect(out).toContain('↩ Reply if needed: rig queue create --destination decision-maker@external --body \'...\' --verify');
     expect(out).not.toContain("rig send decision-maker@external");
-    expect(wrapPaneEnvelope("driver@external-tools", "guard@rig", "Status.")).toContain('↩ Reply: rig send driver@external-tools "..."');
+    expect(wrapPaneEnvelope("driver@external-tools", "guard@rig", "Status.")).toContain('↩ Reply: rig send driver@external-tools \'...\'');
   });
 
   it("preserves the original body verbatim between the dash separators", () => {
@@ -43,13 +45,13 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
     expect(out).toContain("From: a@r");
     expect(out).toContain("To: b@r");
     expect(out).toContain("---\n\n---");
-    expect(out).toContain('↩ Reply: rig send a@r "..."');
+    expect(out).toContain('↩ Reply: rig send a@r \'...\'');
   });
 
   it("falls back to a marker when the sender is undefined or empty", () => {
     const undef = wrapPaneEnvelope(undefined, "b@r", "hi");
     expect(undef).toContain("From: <unknown sender>");
-    expect(undef).toContain('↩ Reply: rig send <unknown sender> "..."');
+    expect(undef).toContain('↩ Reply: rig send <unknown sender> \'...\'');
     const blank = wrapPaneEnvelope("   ", "b@r", "hi");
     expect(blank).toContain("From: <unknown sender>");
   });
@@ -70,7 +72,7 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
     const out = wrapPaneEnvelope("dev50@v-rig@origin-host", "guard@my-rig", "hi");
     expect(out).toContain("From: dev50@v-rig@origin-host"); // the ORIGIN host, preserved
     expect(out).not.toContain("@destination-host"); // NOT re-stamped with the destination's id (no forgery)
-    expect(out).toContain('↩ Reply: rig send dev50@v-rig@origin-host "..."'); // reply hint round-trips the origin
+    expect(out).toContain('↩ Reply: rig send dev50@v-rig@origin-host \'...\''); // reply hint round-trips the origin
   });
 
   // V0.3.1 slice 23 — the queue-handoff nudge body MUST remain a
@@ -95,7 +97,7 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
 
   it("backward-compat: with no meta, the output is exactly today's 6-line DM envelope (no Sent line)", () => {
     const out = wrapPaneEnvelope("a@r", "b@r", "hi");
-    expect(out).toBe("From: a@r\nTo: b@r\n---\nhi\n---\n↩ Reply: rig send a@r \"...\"");
+    expect(out).toBe("From: a@r\nTo: b@r\n---\nhi\n---\n↩ Reply: rig send a@r '...'");
   });
 
   it("multi-send renders the FULL recipient list on the To line (WHO got it)", () => {
@@ -139,7 +141,7 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
 
   it("(g) byte-exact full envelope with gen (cross-package parity anchor)", () => {
     const out = wrapPaneEnvelope("a@r", "b@r", "hi", { stampISO: "2026-08-06T17:42:09Z", genUuid: GEN });
-    expect(out).toBe('From: a@r\nTo: b@r\nSent: 08-06 17:42Z · gen a1b2c3d4\n---\nhi\n---\n↩ Reply: rig send a@r "..."');
+    expect(out).toBe('From: a@r\nTo: b@r\nSent: 08-06 17:42Z · gen a1b2c3d4\n---\nhi\n---\n↩ Reply: rig send a@r \'...\'');
   });
 
   it("(g) pin-a: OMITS the suffix entirely when the generation is UNKNOWN (never 'gen unknown', never forged)", () => {
@@ -221,5 +223,30 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
 
   it("(h) a malformed / unparseable delta is a no-op (never a NaN segment)", () => {
     expect(appendDeliveredSegment(ENV(), Number.NaN)).toBe(ENV());
+  });
+});
+
+// OF-246b: the reply footer is the most-read place an agent learns `rig send`. The CLI and daemon renderers live
+// in separate packages that do not import each other, so byte-identity of the two footer templates is pinned
+// here by reading the CLI source as TEXT (nothing is imported). The footers must also stay single-quoted: a
+// double-quoted `"..."` taught seats to double-quote a body, and the shell then ran its backticks.
+describe("reply footer templates: CLI and daemon twins stay byte-identical and single-quoted", () => {
+  const footerLines = (path: string): string[] =>
+    readFileSync(path, "utf8").split("\n").map((l) => l.trim()).filter((l) => /^[?:] `\u21a9 Reply/.test(l));
+  const cliPath = fileURLToPath(new URL("../../cli/src/commands/send.ts", import.meta.url));
+  const daemonPath = fileURLToPath(new URL("../src/lib/pane-envelope.ts", import.meta.url));
+
+  it("both files carry exactly the same two footer template lines (the rig send line and the external queue line)", () => {
+    const cli = footerLines(cliPath);
+    const daemon = footerLines(daemonPath);
+    expect(daemon).toHaveLength(2);
+    expect(cli).toEqual(daemon);
+  });
+
+  it("neither footer asks the reader to double-quote a body", () => {
+    const joined = footerLines(daemonPath).join("\n");
+    expect(joined).toContain("rig send ${senderLabel} '...'");
+    expect(joined).toContain("--body '...' --verify");
+    expect(joined).not.toContain('"..."');
   });
 });

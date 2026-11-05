@@ -12,19 +12,19 @@ describe("wrapSendBody — bare-as-received sender", () => {
   it("renders the BARE local sender in BOTH From: and the reply hint (byte-identical to the daemon twin)", () => {
     const out = wrapSendBody(SENDER, "guard@my-rig", "hi");
     expect(out).toBe(
-      'From: dev50-driver@v-openrig-build\nTo: guard@my-rig\n---\nhi\n---\n\u21a9 Reply: rig send dev50-driver@v-openrig-build "..."',
+      'From: dev50-driver@v-openrig-build\nTo: guard@my-rig\n---\nhi\n---\n\u21a9 Reply: rig send dev50-driver@v-openrig-build \'...\'',
     );
   });
 
   it("a boundary-constructed ORIGIN triple renders verbatim", () => {
     const out = wrapSendBody(`${SENDER}@mm2-openrig1`, "guard@my-rig", "hi");
     expect(out).toContain(`From: ${SENDER}@mm2-openrig1`);
-    expect(out).toContain(`\u21a9 Reply: rig send ${SENDER}@mm2-openrig1 "..."`);
+    expect(out).toContain(`\u21a9 Reply: rig send ${SENDER}@mm2-openrig1 '...'`);
   });
 
   it("the unknown-sender fallback is never suffixed", () => {
     const out = wrapSendBody(undefined, "guard@my-rig", "hi");
     expect(out).toContain("From: <unknown sender>");
-    expect(out).toContain('\u21a9 Reply: rig send <unknown sender> "..."');
+    expect(out).toContain('\u21a9 Reply: rig send <unknown sender> \'...\'');
   });
 });

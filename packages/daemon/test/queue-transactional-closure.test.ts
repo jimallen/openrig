@@ -525,7 +525,7 @@ describe("W1 MF4 — the intent freezes its emitting generation/envelope", () =>
     const successor = await repo.create({ nudge: false, sourceSession: "driver@rig", destinationSession: "reviewer@rig", body: "z" });
     // A committed-but-undelivered intent whose frozen envelope carries the ORIGINAL gen.
     const FROZEN =
-      `From: driver@rig\nTo: reviewer@rig\nSent: 08-08 19:44Z · gen 11111111\n---\nQueue handoff: ${successor.qitemId} - check your queue.\n---\n↩ Reply: rig send driver@rig \"...\"`;
+      `From: driver@rig\nTo: reviewer@rig\nSent: 08-08 19:44Z · gen 11111111\n---\nQueue handoff: ${successor.qitemId} - check your queue.\n---\n↩ Reply: rig send driver@rig '...'`;
     outbox.record({ outboxId: `wake-intent-${successor.qitemId}`, senderSession: "driver@rig", destinationSession: "reviewer@rig", body: FROZEN, auditPointer: successor.qitemId });
     repo.attachTransport(transport); // tenure swap: transport now available
     outcome.mode = "verified";

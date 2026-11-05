@@ -8,15 +8,15 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
     expect(out).toContain("From: driver-3@my-rig");
     expect(out).toContain("To: guard-3@my-rig");
     expect(out).toContain("Status: ready.");
-    expect(out).toContain('↩ Reply: rig send driver-3@my-rig "..."');
+    expect(out).toContain('↩ Reply: rig send driver-3@my-rig \'...\'');
   });
 
   it("routes an external sender's reply through the durable human queue", () => {
     const out = wrapSendBody("decision-maker@external", "driver@rig", "Decision received.");
     expect(out).toContain("From: decision-maker@external");
-    expect(out).toContain('↩ Reply if needed: rig queue create --destination decision-maker@external --body "..." --verify');
+    expect(out).toContain('↩ Reply if needed: rig queue create --destination decision-maker@external --body \'...\' --verify');
     expect(out).not.toContain("rig send decision-maker@external");
-    expect(wrapSendBody("driver@external-tools", "guard@rig", "Status.")).toContain('↩ Reply: rig send driver@external-tools "..."');
+    expect(wrapSendBody("driver@external-tools", "guard@rig", "Status.")).toContain('↩ Reply: rig send driver@external-tools \'...\'');
   });
 
   it("preserves the original body verbatim between the dash separators", () => {
@@ -32,7 +32,7 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
     expect(out).toContain("From: a@r");
     expect(out).toContain("To: b@r");
     expect(out).toContain("---\n\n---");
-    expect(out).toContain('↩ Reply: rig send a@r "..."');
+    expect(out).toContain('↩ Reply: rig send a@r \'...\'');
   });
 
   // P18 DELIVER-AND-LABEL RESTORED the CLI `<unknown sender>` fallback: an env-less send DELIVERS carrying
@@ -45,7 +45,7 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
     expect(wrapSendBody("", "b@r", "hi")).toContain("From: <unknown sender>");
     expect(wrapSendBody("   ", "b@r", "hi")).toContain("From: <unknown sender>");
     // the reply hint routes to the honest marker, not a fabricated identity:
-    expect(wrapSendBody(undefined, "b@r", "hi")).toContain('↩ Reply: rig send <unknown sender> "..."');
+    expect(wrapSendBody(undefined, "b@r", "hi")).toContain('↩ Reply: rig send <unknown sender> \'...\'');
   });
 
   it("uses the literal recipient string in the To header so cross-rig addresses survive", () => {
@@ -56,7 +56,7 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
   // Send/broadcast header (ruling 03c35295) — MUST mirror packages/daemon/test/pane-envelope.test.ts
   // byte-for-byte (the twin parity contract). Envelope=truth, render=projection; scale=anti-storm teeth.
   it("backward-compat: with no meta, the output is exactly today's 6-line DM envelope (no Sent line)", () => {
-    expect(wrapSendBody("a@r", "b@r", "hi")).toBe("From: a@r\nTo: b@r\n---\nhi\n---\n↩ Reply: rig send a@r \"...\"");
+    expect(wrapSendBody("a@r", "b@r", "hi")).toBe("From: a@r\nTo: b@r\n---\nhi\n---\n↩ Reply: rig send a@r '...'");
   });
 
   it("multi-send renders the FULL recipient list on the To line", () => {
@@ -100,7 +100,7 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
 
   it("(g) byte-exact full envelope with gen (cross-package parity anchor)", () => {
     const out = wrapSendBody("a@r", "b@r", "hi", { stampISO: "2026-08-06T17:42:09Z", genUuid: GEN });
-    expect(out).toBe('From: a@r\nTo: b@r\nSent: 08-06 17:42Z · gen a1b2c3d4\n---\nhi\n---\n↩ Reply: rig send a@r "..."');
+    expect(out).toBe('From: a@r\nTo: b@r\nSent: 08-06 17:42Z · gen a1b2c3d4\n---\nhi\n---\n↩ Reply: rig send a@r \'...\'');
   });
 
   it("(g) pin-a: OMITS the suffix entirely when the generation is UNKNOWN (never 'gen unknown', never forged)", () => {

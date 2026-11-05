@@ -303,7 +303,7 @@ describe("Send CLI", () => {
     });
     const text = String((lastSendBody as Record<string, unknown>).text);
     expect(text).toContain("From: operator-jim@kernel\nTo:");
-    expect(text).toContain('↩ Reply: rig send operator-jim@kernel "..."');
+    expect(text).toContain('↩ Reply: rig send operator-jim@kernel \'...\'');
   });
 
   it("OF-196: a seat's own identity wins over the operator seat name", async () => {

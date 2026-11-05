@@ -131,7 +131,7 @@ directions (see REGISTRATION above — the reply half needs the reverse row).
 2. From `orch-main@rig-a` on `H_A`: `rig send dev-main@rig-b "ping" --host B`.
 3. On `H_B`, capture `dev-main@rig-b`'s pane. EXPECT `From: orch-main@rig-a@${ID_A}` —
    the ORIGIN host, never `@${ID_B}`.
-4. Copy the `↩ Reply: rig send orch-main@rig-a@${ID_A} "..."` hint VERBATIM and run it on
+4. Copy the `↩ Reply: rig send orch-main@rig-a@${ID_A} '...'` hint VERBATIM and run it on
    `H_B`. EXPECT it routes to `H_A` and delivers to `orch-main@rig-a`, not a local
    lookalike.
 
@@ -219,7 +219,7 @@ seat `lead-main@shared` on each; `H_B` registered on `H_A` as `B`.
 2. On `H_B`, capture `lead-main@shared`. EXPECT `From: lead-main@shared@${ID_A}` — the origin host
    disambiguates the two same-named rigs (this is the collision the founder narrated,
    now honest-observable).
-3. Run the verbatim `↩ Reply: rig send lead-main@shared@${ID_A} "..."` on `H_B`. EXPECT it lands
+3. Run the verbatim `↩ Reply: rig send lead-main@shared@${ID_A} '...'` on `H_B`. EXPECT it lands
    on `H_A`'s `lead-main@shared` (the successor/reply follows the host the triple names),
    NOT `H_B`'s same-named `lead-main@shared`.
 4. NEGATIVE (D10 honest scope): from `H_B`, `rig send lead-main@shared "x"` (BARE, no
