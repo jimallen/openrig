@@ -45,10 +45,13 @@ const daemon = await createDaemon({
 const leaseLog = process.env.MPD_LEASE_LOG;
 const guard = daemon.deps.tmuxAdapter?.deliveryGuard;
 if (leaseLog && guard) {
-  const lifecycle = guard.lifecycle.bind(guard) as <T>(ids: string[], fn: () => Promise<T>) => Promise<T>;
-  (guard as unknown as { lifecycle: typeof lifecycle }).lifecycle = (ids, fn) => lifecycle(ids, async () => {
-    const started = performance.now();
-    try { return await fn(); } finally { appendFileSync(leaseLog, `lease ${ids.length} seat(s) held ${Math.round(performance.now() - started)} ms\n`); }
+  const lifecycle = guard.lifecycle.bind(guard);
+  Object.defineProperty(guard, "lifecycle", {
+    configurable: true, writable: true,
+    value: <T>(ids: string[], fn: () => Promise<T>): Promise<T> => lifecycle(ids, async () => {
+      const started = performance.now();
+      try { return await fn(); } finally { appendFileSync(leaseLog, `lease ${ids.length} seat(s) held ${Math.round(performance.now() - started)} ms\n`); }
+    }),
   });
 }
 const enforcer = daemon.deps.compactionEnforcer;

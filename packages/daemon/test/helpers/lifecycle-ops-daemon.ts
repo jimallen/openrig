@@ -10,6 +10,7 @@ import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import { HcClient } from "../../src/adapters/hc-client.js";
 import { hcTerminalName } from "../../src/adapters/hc-seat.js";
+import { HcAdapter } from "../../src/adapters/hc-adapter.js";
 import { StubRuntimeAdapter } from "../../src/adapters/stub-runtime-adapter.js";
 import type { TmuxAdapter } from "../../src/adapters/tmux.js";
 import type { NodeBinding } from "../../src/domain/runtime-adapter.js";
@@ -50,12 +51,12 @@ const hop: LastHop = {
       appendFileSync(join(dir, "gate.log"), `${id}\n`);
       writeFileSync(join(dir, "seen", String(id)), "");
       return { kind: "sent" };
-    }).catch(() => ({ kind: "paused", reason: "busy" }) as LastHopResult);
+    }).catch((): LastHopResult => ({ kind: "paused", reason: "busy" }));
   },
 };
 
 const daemon = await createDaemon({ dbPath, seatMessagingPorts: { gateFor: () => gate, hopFor: () => hop }, messagePumpTiming: { tickMs: 40, backoffMs: [120_000] } });
-tmux = daemon.deps.tmuxAdapter as TmuxAdapter;
+tmux = daemon.deps.tmuxAdapter;
 const db = daemon.db;
 const guard = tmux.deliveryGuard!;
 const reconciler = daemon.deps.seatIdentityReconciler!;
@@ -83,12 +84,13 @@ const held = (nodeId: string | null) => nodeId !== null && guard.lifecycleHeld(n
 //   terminal.kill -> the seat's terminal is gone: note whether the lease holds the seat, then poll four times in the absence (a respawn runs the new program only after this
 //                    returns, so these polls are inside the respawn's own gap);
 //   terminal.run  -> a terminal is made and labelled: note whether the lease holds the seat when the call has returned.
-const hcClient = (tmux as unknown as { client: HcClient }).client;
-const originalCall = hcClient.call.bind(hcClient) as (method: string, params?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
-(hcClient as unknown as { call: typeof originalCall }).call = async (method, params, options) => {
+if (!(tmux instanceof HcAdapter)) throw new Error("the daemon's seat host is not hc");
+const hcClient = tmux.client;
+const originalCall = hcClient.call.bind(hcClient);
+const patchedCall = async (method: string, params?: Record<string, unknown>, options?: { timeoutMs?: number }): Promise<unknown> => {
   if (process.env.LOD_TRACE && /terminal\.(kill|run|get|list|signal|hangup)/.test(method)) note({ kind: "trace", method, terminal: params?.["terminal"] });
   if (method === "terminal.kill") {
-    const before = await originalCall("terminal.get", { terminal: params?.["terminal"] }).catch(() => null) as { labels: Labels } | null;
+    const before = await originalCall<{ labels: Labels }>("terminal.get", { terminal: params?.["terminal"] }).catch(() => null);
     const node = before ? nodeOfLabels(before.labels) : null;
     const seat = before?.labels["openrig.seat"] ?? String(params?.["terminal"]);
     const result = await originalCall(method, params, options);
@@ -105,17 +107,21 @@ const originalCall = hcClient.call.bind(hcClient) as (method: string, params?: R
   if (runSeat) note({ kind: "terminal.run", seat: runSeat, heldWhenLabelled: held(runNode) });
   return result;
 };
+Object.defineProperty(hcClient, "call", { value: patchedCall, configurable: true, writable: true });
 
 // A respawn of a terminal whose program already ended (the handover's successor launcher stops the retiree by signal and waits for it, then respawns) calls no
 // terminal.kill; the gap is between the program's end and the new terminal, and the pre-run poll above is inside it. Note the lease at the respawn's start.
-const respawnOriginal = (tmux.respawnPane as (...a: unknown[]) => Promise<unknown>).bind(tmux);
-(tmux as unknown as Record<string, unknown>)["respawnPane"] = async (...args: unknown[]) => {
-  const target = String(args[0]);
-  const before = await originalCall("terminal.get", { terminal: target }).catch(() => null) as { labels: Labels; state: string } | null;
-  const seat = before?.labels["openrig.seat"] ?? target;
-  note({ kind: "respawn-begin", seat, state: before?.state ?? null, held: held(before ? nodeOfLabels(before.labels) : null) });
-  return respawnOriginal(...args);
-};
+const respawnOriginal = tmux.respawnPane.bind(tmux);
+Object.defineProperty(tmux, "respawnPane", {
+  configurable: true, writable: true,
+  value: async (...args: Parameters<HcAdapter["respawnPane"]>) => {
+    const target = String(args[0]);
+    const before = await originalCall<{ labels: Labels; state: string }>("terminal.get", { terminal: target }).catch(() => null);
+    const seat = before?.labels["openrig.seat"] ?? target;
+    note({ kind: "respawn-begin", seat, state: before?.state ?? null, held: held(before ? nodeOfLabels(before.labels) : null) });
+    return respawnOriginal(...args);
+  },
+});
 
 let failLaunch = false;   // the instantiate op: every member's harness fails to start, so the launch of the whole rig fails and its cleanup runs
 const adapter = Object.assign(new StubRuntimeAdapter({ tmux }), {
