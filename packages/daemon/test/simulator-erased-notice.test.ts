@@ -68,7 +68,10 @@ describe("OF-221 the Chief of Staff is told when simulators are erased", () => {
     await sim.sweepOverCap();
     const rows = items();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ source_session: SIMULATOR_NOTICE_SOURCE, destination_session: "exec-cos@eztrack", priority: "routine" });
+    // The author is a LITERAL here, not the module's constant: the stuck-sweep and queue exclusions are keyed on the string "daemon@kernel", so a change of the
+    // constant must fail this row rather than move the oracle with it.
+    expect(rows[0]).toMatchObject({ source_session: "daemon@kernel", destination_session: "exec-cos@eztrack", priority: "routine" });
+    expect(SIMULATOR_NOTICE_SOURCE).toBe("daemon@kernel");
     expect(created[0]!.summary).toBe("2 simulators erased in eztrack");
     expect(JSON.parse(rows[0]!["tags"]!)).toEqual(["simulator-erased", "rig:eztrack", "reason:over_size_cap"]);
     const body = rows[0]!["body"]!;
@@ -194,6 +197,21 @@ describe("OF-221 the Chief of Staff is told when simulators are erased", () => {
     const res = await sim.sweepOverCap();
     expect(res.status).toBe("ok");
     expect(log.join("\n")).toContain("notifier broke");
+  });
+
+  it("a notifier that fails for the first rig does not stop the notice for the rigs after it (OF-236 a)", async () => {
+    eztrack("eztrack", ["verify.qa"]);
+    eztrack("other", ["build.impl"]);
+    const calls: string[] = [];
+    const real = makeSimulatorErasedNotifier({ db, queue: recording, log: (l) => log.push(l) });
+    const sim = new SimulatorLifecycle({ db, eventBus, simctl: fakeSimctl([{ udid: U(1), name: "qa-duo-1", size: 30 * GB }, { udid: U(2), name: "impl-duo-1", size: 30 * GB }]), capGb: () => 20, platform: "darwin", log: (l) => log.push(l),
+      notifyErased: async (notice) => { calls.push(notice.rigId); if (calls.length === 1) throw new Error("first rig notice failed"); await real(notice); } });
+    const res = await sim.sweepOverCap();
+    expect(res.status).toBe("ok");
+    expect(calls, "both rigs were offered a notice").toHaveLength(2);
+    expect(log.join("\n")).toContain("first rig notice failed");
+    expect(items(), "the rig after the failure was still told").toHaveLength(1);
+    expect(items()[0]!["destination_session"]).toMatch(/^exec-cos@(eztrack|other)$/);
   });
 
   it("startup wires it: buildSimulatorLifecycle is given the notifier over the daemon's own queue repository", () => {

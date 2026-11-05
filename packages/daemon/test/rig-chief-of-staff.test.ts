@@ -77,6 +77,25 @@ describe("rigChiefOfStaff", () => {
     expect(rigChiefOfStaff(db, r.id)).toEqual({ ok: false, reason: "no_delegates_to_root" });
   });
 
+  // OF-236 a (review of221 N2): the two shapes a wrong query would get past the rows above.
+  it("a root keeps being a root when something else points at it with another kind of edge", () => {
+    const r = rigs.createRig("watched");
+    const cos = rigs.addNode(r.id, "exec.cos", { runtime: "claude-code" }), impl = rigs.addNode(r.id, "build.impl", { runtime: "claude-code" });
+    sessions.registerSession(cos.id, "exec-cos@watched"); sessions.registerSession(impl.id, "build-impl@watched");
+    rigs.addEdge(r.id, cos.id, impl.id, "delegates_to");
+    rigs.addEdge(r.id, impl.id, cos.id, "can_observe"); // an incoming edge, but not a delegation: exec.cos is still delegated to by nobody
+    expect(rigChiefOfStaff(db, r.id)).toMatchObject({ ok: true, logicalId: "exec.cos", basis: "delegates_to_root" });
+  });
+
+  it("another live rig's declared chief-of-staff is not this rig's (the declared-role query is scoped to the rig)", () => {
+    const mine = rig("mine", ["exec.cos", "build.impl"], [["exec.cos", "build.impl"]]);
+    rig("twin", [{ id: "ops.chief", role: "chief-of-staff" }]);
+    const answer = rigChiefOfStaff(db, mine.id);
+    expect(answer).toMatchObject({ ok: true, logicalId: "exec.cos", session: "exec-cos@mine", basis: "delegates_to_root" });
+    const bare = rig("bare", ["a.one", "b.two"]);
+    expect(rigChiefOfStaff(db, bare.id), "a rig with no chief of its own has none, whatever a twin declares").toEqual({ ok: false, reason: "no_delegates_to_root" });
+  });
+
   it("a Chief of Staff with no session row yet has none (nothing to address)", () => {
     const r = rig("nosession", [{ id: "exec.cos", session: false }, "build.impl"], [["exec.cos", "build.impl"]]);
     expect(rigChiefOfStaff(db, r.id)).toEqual({ ok: false, reason: "no_session: exec.cos" });
