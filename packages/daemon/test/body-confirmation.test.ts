@@ -56,6 +56,14 @@ describe("OF-229: what Codex was given as context", () => {
     fs.writeFileSync(file, [developerLine(BODY), userLine("only a user said this"), developerLine("an assistant said this", "assistant"), JSON.stringify({ type: "event_msg", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "wrong record type" }] } })].join("\n") + "\n");
     expect([...codexRolloutBodies(file)!]).toEqual([sha(BODY)]);
   });
+  it("only an input_text part is context: the same text in any other part type is not", () => {
+    const file = path.join(dir, "r.jsonl");
+    const part = (type: string) => JSON.stringify({ type: "response_item", payload: { type: "message", role: "developer", content: [{ type, text: BODY }] } });
+    fs.writeFileSync(file, `${part("output_text")}\n${part("refusal")}\n`);
+    expect(codexRolloutBodies(file)!.size).toBe(0);
+    fs.appendFileSync(file, `${part("input_text")}\n`);
+    expect([...codexRolloutBodies(file)!]).toEqual([sha(BODY)]);
+  });
   it("a user record that happens to carry the word developer in another field is still a user record", () => {
     const file = path.join(dir, "r.jsonl");
     fs.writeFileSync(file, `${JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", phase: "developer", content: [{ type: "input_text", text: "user text" }] } })}\n`);
@@ -121,9 +129,36 @@ describe("OF-229: the record is believed when the text is on file", () => {
   });
   it("a file that cannot be read proves nothing, so nothing is cleared however old the record is", async () => {
     writeRecord();
-    clock = T0 + 86_400_000;
+    clock = T0 + 1;
     expect(await gate({ rollouts: [home] }).lookup(SEAT, messageId("m"))).toEqual({ kind: "unavailable", cause: "transcript_unreadable" });
+    clock = T0 + 86_400_000;
+    await gate({ rollouts: [home] }).lookup(SEAT, messageId("m"));
     expect(fs.existsSync(recordPath())).toBe(true);
+  });
+  it("OF-229 round 2: a file that stays unreadable cannot hold the lane for ever. Inside the grace it is unavailable; from the grace on the record stands, as before the fix, and is not cleared", async () => {
+    writeRecord();
+    clock = T0 + 9_999;
+    expect(await gate({ rollouts: [home] }).lookup(SEAT, messageId("m"))).toEqual({ kind: "unavailable", cause: "transcript_unreadable" });
+    for (const age of [10_000, 86_400_000]) {
+      clock = T0 + age;
+      expect((await gate({ rollouts: [home] }).lookup(SEAT, messageId("m"))).kind).toBe("seen");
+    }
+    expect(fs.existsSync(recordPath())).toBe(true);
+  });
+  it("a rollout that is not there past the grace is a file with no text in it: cleared, and resent", async () => {
+    writeRecord();
+    clock = T0 + 10_000;
+    expect((await gate({ rollouts: [path.join(home, "nope.jsonl")] }).lookup(SEAT, messageId("m"))).kind).toBe("not_seen");
+    expect(fs.existsSync(recordPath())).toBe(false);
+  });
+  it("the production grace is 30 seconds, written here as a literal: 29 999 ms in, the text may still be coming; at 30 000 it is taken as lost", async () => {
+    const production = () => codexSeatGate({ store: store(), nonceOf: () => NONCE, rolloutPathOf: () => rollout, now: () => clock });
+    writeRecord();
+    clock = T0 + 29_999;
+    expect(await production().lookup(SEAT, messageId("m"))).toEqual({ kind: "unavailable", cause: "body_unconfirmed" });
+    clock = T0 + 30_000;
+    expect((await production().lookup(SEAT, messageId("m"))).kind).toBe("not_seen");
+    expect(fs.existsSync(recordPath())).toBe(false);
   });
   it("the record's own transcript path is searched when the daemon knows no rollout: the text there makes it seen, and its absence there past the grace does not", async () => {
     clock = T0 + 86_400_000;

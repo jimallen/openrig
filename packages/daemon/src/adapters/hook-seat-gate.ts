@@ -46,9 +46,14 @@ export function hookSeatGate(deps: HookSeatGateDeps): SeatGate {
       if (held === true) return null;
       if (held === null) unreadable = true;
     }
-    if (unreadable) return { kind: "unavailable", cause: "transcript_unreadable" };
     const age = now() - Date.parse(record.recordedAt);
-    if (Number.isFinite(age) && age >= (deps.bodyGraceMs ?? BODY_GRACE_MS)) {
+    const lapsed = Number.isFinite(age) && age >= (deps.bodyGraceMs ?? BODY_GRACE_MS);
+    if (unreadable) {
+      // A file that stays unreadable proves nothing either way, and `unavailable` holds the seat's whole lane (OF-212), so it is bounded: from the grace on, the
+      // record stands as it did before the text was checked. Clearing it instead would resend a copy every grace period for as long as the file stays unreadable.
+      return lapsed ? null : { kind: "unavailable", cause: "transcript_unreadable" };
+    }
+    if (lapsed) {
       deps.store.clear(seat, { id, nonce });
       return { kind: "not_seen" };
     }
