@@ -117,9 +117,8 @@ describe("OF-243: the gate stops resending a part whose text never shows", () =>
     for (let i = 0; i < 4; i += 1) await cycle();
     const rows = health.coverage();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ source: "seat-gate-unconfirmed", status: "notice", partial: false });
-    expect(rows[0]!.reason).toContain(`m to ${SEAT}`);
-    expect(rows[0]!.reason).toContain("rollout path");
+    expect(rows[0]).toMatchObject({ source: "seat-gate-unconfirmed", status: "notice", partial: false, reason: expect.stringContaining(`m to ${SEAT}`) });
+    expect(rows[0]).toMatchObject({ reason: expect.stringContaining("rollout path") });
     expect(health.read()).toEqual([]);
   });
 });
