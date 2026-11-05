@@ -40,6 +40,17 @@ const daemon = await createDaemon({
   seatMessagingPorts: { gateFor: () => gate, hopFor: () => hop },
   messagePumpTiming: { tickMs: 40, pauseRecheckMs: 100, backoffMs: [300, 300, 300] },
 });
+// OF-241 measurement (opt-in, MPD_LEASE_LOG=<file>): how long each lifecycle lease the enforcer takes is HELD, from the moment it runs `fn` to the moment `fn` returns
+// (the wait for the seat's queue is not counted). Nothing else changes.
+const leaseLog = process.env.MPD_LEASE_LOG;
+const guard = daemon.deps.tmuxAdapter?.deliveryGuard;
+if (leaseLog && guard) {
+  const lifecycle = guard.lifecycle.bind(guard) as <T>(ids: string[], fn: () => Promise<T>) => Promise<T>;
+  (guard as unknown as { lifecycle: typeof lifecycle }).lifecycle = (ids, fn) => lifecycle(ids, async () => {
+    const started = performance.now();
+    try { return await fn(); } finally { appendFileSync(leaseLog, `lease ${ids.length} seat(s) held ${Math.round(performance.now() - started)} ms\n`); }
+  });
+}
 const enforcer = daemon.deps.compactionEnforcer;
 if (!enforcer) throw new Error("the daemon built no enforcer");
 note("booted");

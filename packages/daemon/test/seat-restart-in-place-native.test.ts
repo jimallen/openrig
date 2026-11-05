@@ -20,6 +20,7 @@
 //
 // Roots are given to `terminal.run` as separate argv words, so hc execs them directly: no outer shell sits
 // between the core and the terminal's root process on images whose shell doesn't exec a lone `-c` command.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, it, expect, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -35,6 +36,8 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { migrate } from "../src/db/migrate.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
+import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
+import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
@@ -193,7 +196,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       return { status: res.status, body: await res.json() as Record<string, any> };
     };
-    return { seat, pane, post, seatHost: realTmux };
+    return { seat, pane, post, seatHost: realTmux, db, nodeId: node.id };
   }
 
   it("shell-backed: the same conversation resumes in the same terminal under the same shell, with the running choices", async () => {
@@ -326,6 +329,50 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     expect((await terminalOf(native.seat)).address, "a direct-native restart moves the address").not.toBe(native.pane);
     // Whatever the binding says now, the next ordinary stop through the guard must still end the seat.
     await expect(native.seatHost.killSession(native.seat)).resolves.toEqual({ ok: true });
+  }, 90_000);
+
+  // OF-241 (closing OF-235 F4): the restart's lease, measured. The restart stops Codex (the terminal ends with it: the seat's only program), then respawns the terminal
+  // under the same name. Between those two the seat has no terminal, and its row still says running: the identity reconciler (polled four times from a context
+  // outside every lease, as its timer is) must not read it as lost, and the lease must hold the seat when the terminal is gone and when the new one is labelled.
+  it.each(["direct_native", "script_backed"] as const)("OF-241: the in-place restart (%s) holds the seat's lifecycle lease from the terminal's end to the new terminal's label, the reconciler stays quiet in the gap, and a crash outside the lease reports", async (shape) => {
+    const { seat, post, seatHost, db, nodeId } = await setup(shape, { guarded: true, quiet: true });
+    const guard = seatHost.deliveryGuard!;
+    const outside = AsyncLocalStorage.snapshot();
+    let tick = 0;
+    const rec = new SeatIdentityReconciler({ db, tmux: seatHost, now: () => new Date(Date.UTC(2026, 10, 4, 12, 0, 5 * tick++)),
+      lifecycleHeld: (id) => guard.lifecycleHeld(id), lifecycleHeldCount: () => guard.lifecycleHeldCount() });
+    const store = new SeatIdentityStore(db);
+    const poll = () => outside(() => rec.reconcileAll()).then(() => store.getForNode(nodeId)?.reason ?? null);
+    await poll();
+    const client = seatHost.client;
+    const original = client.call.bind(client) as (method: string, params?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
+    const events: Array<{ kind: string; held: boolean; reasons?: Array<string | null> }> = [];
+    (client as unknown as { call: typeof original }).call = async (method, params, options) => {
+      const labelled = method === "terminal.run" && (params?.["labels"] as Record<string, string> | undefined)?.[SEAT_LABEL] === seat;
+      if (labelled) {
+        // The terminal is about to be made: it is absent now.
+        const reasons: Array<string | null> = [];
+        for (let i = 0; i < 4; i++) reasons.push(await poll());
+        events.push({ kind: "gap-before-run", held: guard.lifecycleHeld(nodeId), reasons });
+      }
+      const result = await original(method, params, options);
+      if (labelled) events.push({ kind: "labelled", held: guard.lifecycleHeld(nodeId) });
+      return result;
+    };
+    try {
+      const result = await post("restart", { reason: "OF-241" });
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      for (const pid of stubPids()) pids.add(pid);
+    } finally { (client as unknown as { call: typeof original }).call = original; }
+    expect(events.map((e) => e.kind), "the restart respawned the terminal once").toEqual(["gap-before-run", "labelled"]);
+    expect(events[0]!.held, "the lease held the seat when its terminal was gone").toBe(true);
+    expect(events[0]!.reasons!.every((r) => r !== "session_missing"), `the four polls in the gap: ${JSON.stringify(events[0]!.reasons)}`).toBe(true);
+    expect(events[1]!.held, "the lease held the seat when the new terminal was labelled").toBe(true);
+    expect(guard.lifecycleHeld(nodeId), "released after the restart").toBe(false);
+    // The control: a crash outside any lease is reported on the second poll and not the first.
+    await scratch().client().call("terminal.kill", { terminal: hcTerminalName(seat) });
+    expect(await poll(), "first poll after a crash").not.toBe("session_missing");
+    expect(await poll(), "second poll").toBe("session_missing");
   }, 90_000);
 
   it("direct-native: killed and run again under the same name; the original's output stays readable at its old address", async () => {

@@ -159,11 +159,11 @@ describe("OF-235: a seat a lifecycle lease holds is not reported lost while the 
     release(); await hung;
   });
 
-  it("the ceiling's terms: 30 min plus the startup wait of one seat (STARTUP_TEXT_WAIT_MS, 5 min) per seat held; a change to that wait shows up here", () => {
-    expect(LIFECYCLE_EXCUSE_BASE_MS).toBe(30 * 60_000);
+  it("the ceiling's terms: 10 min plus the startup wait of one seat (STARTUP_TEXT_WAIT_MS, 5 min) per seat held; a change to that wait shows up here", () => {
+    expect(LIFECYCLE_EXCUSE_BASE_MS, "measured 0.4 s of OpenRig's own work for 27 stub seats (OF-241)").toBe(10 * 60_000);
     expect(LIFECYCLE_EXCUSE_PER_SEAT_MS, "the bound one seat's turn of the sequential restore can wait").toBe(STARTUP_TEXT_WAIT_MS);
     expect(STARTUP_TEXT_WAIT_MS, "the per-seat bound the ceiling relies on; if it changes, re-judge the ceiling").toBe(5 * 60_000);
-    expect(LIFECYCLE_EXCUSE_BASE_MS + 27 * LIFECYCLE_EXCUSE_PER_SEAT_MS, "the laptop's 27 seats").toBe(165 * 60_000);
+    expect(LIFECYCLE_EXCUSE_BASE_MS + 27 * LIFECYCLE_EXCUSE_PER_SEAT_MS, "the laptop's 27 seats").toBe(145 * 60_000);
   });
 
   it("the hold clock of a seat that stopped running is forgotten: a new lease on it after a long gap starts a new clock", async () => {

@@ -21,10 +21,12 @@ export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
  *  that is never released (a hung operation) must not hide a real loss for ever. The bound is
  *      LIFECYCLE_EXCUSE_BASE_MS + LIFECYCLE_EXCUSE_PER_SEAT_MS x (the lifecycle leases held at that poll, from the guard's lease table)
  *  and past it the seat falls back to the two-poll rule. The restore loop is sequential and holds every seat's lease from its start, so its length grows with
- *  the number of seats held: the per-seat term is the bound one seat's turn can wait, STARTUP_TEXT_WAIT_MS (5 min), so the laptop's 27 seats get 30 + 135 = 165 min.
- *  The base is a judgement (preflight, snapshot and bookkeeping around the loop), not a measurement; no restore duration has been measured. Finite: a lease held
+ *  the number of seats held: the per-seat term is the bound one seat's turn can wait, STARTUP_TEXT_WAIT_MS (5 min), so the laptop's 27 seats get 10 + 135 = 145 min.
+ *  The base covers the work around the seat loop (snapshot, preflight, bookkeeping). OF-241 measured it: a rig down and restore of 27 stub seats on a private
+ *  core (hc 0.1.16, Sparky) took 0.55 s and 0.42 s, with 27 leases held at once for 0.39 s, about 15 ms per seat of OpenRig's own work; a real agent's start-up is not in
+ *  that number and is what the per-seat term is for. 10 min is a margin of more than a thousand over the measurement, not a measurement. Finite: a lease held
  *  for ever hides a loss for at most this bound plus two polls. */
-export const LIFECYCLE_EXCUSE_BASE_MS = 30 * 60_000;
+export const LIFECYCLE_EXCUSE_BASE_MS = 10 * 60_000;
 export const LIFECYCLE_EXCUSE_PER_SEAT_MS = STARTUP_TEXT_WAIT_MS;
 
 /** Foreground commands that read as a bare shell (a seat that dropped to a

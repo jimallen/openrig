@@ -113,7 +113,7 @@ describe.skipIf(!HC)("the compaction sequence across a daemon crash, on a privat
   function daemon(f: Fixture, crash: "none" | "before_bytes" = "none"): ChildProcess {
     const env: NodeJS.ProcessEnv = {
       ...core.env, PATH: `${dirname(HC)}:/usr/bin:/bin`, TMPDIR: join(core.root, "h"), OPENRIG_HOME: join(core.root, "h", "openrig"),
-      OPENRIG_TRANSPORT_MESSAGE_PUMP: "true", MPD_DB: f.db, MPD_DIR: f.dir, MPD_SEAT: f.seat, MPD_CRASH: crash,
+      OPENRIG_TRANSPORT_MESSAGE_PUMP: "true", ...(process.env.MPD_LEASE_LOG ? { MPD_LEASE_LOG: process.env.MPD_LEASE_LOG } : {}), MPD_DB: f.db, MPD_DIR: f.dir, MPD_SEAT: f.seat, MPD_CRASH: crash,
     };
     const stderr: string[] = [];
     const child = spawn(process.execPath, ["--import", "tsx", CHILD], { cwd: resolve(here, ".."), env, stdio: ["ignore", "ignore", "pipe"] });
