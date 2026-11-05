@@ -108,6 +108,16 @@ describe.skipIf(!HC)("OF-241: lifecycle leases, end to end on a real daemon and 
     expectCrashOutsideLeaseReports(r);
   }, 150_000);
 
+  it("rig import of a flat spec whose every member fails to launch (RigInstantiator cleanup): the lease holds the rig's nodes when the rig is deleted, no terminal is ended, and a crash outside any lease reports", async () => {
+    const r = await run("legacy-instantiate");
+    expect(of(r, "child-error"), JSON.stringify(of(r, "child-error"))).toEqual([]);
+    expect(of(r, "legacy-instantiate")[0], JSON.stringify(of(r, "legacy-instantiate"))).toMatchObject({ ok: false });
+    // The cleanup's kill loop is empty by construction (see the child): no terminal is ended or made, so there is no gap to poll. What the lease covers is the delete.
+    expectLeaseThroughout(r, { kills: 0, runs: 0 });
+    expect(of(r, "rig-delete"), `the rig is deleted once; events ${JSON.stringify(r.events.filter((e) => e.kind !== "poll"))}; with every one of its nodes held by the lease`).toEqual([{ kind: "rig-delete", nodes: 1, heldNodes: 1 }]);
+    expectCrashOutsideLeaseReports(r);
+  }, 150_000);
+
   // A measurement, not a pin (run with LOD_MEASURE_SEATS=27): how long a multi-seat restore of stub seats takes on a private core, and how long the lease is seen held.
   // The stub starts at once, so this is OpenRig's own work per seat without a real agent's start-up (the bound for that, STARTUP_TEXT_WAIT_MS, is per seat).
   it.skipIf(!process.env.LOD_MEASURE_SEATS)("measurement: rig down then restore of N stub seats, timed", async () => {

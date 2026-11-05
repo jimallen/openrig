@@ -23,7 +23,8 @@ export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
  *  and past it the seat falls back to the two-poll rule. The restore loop is sequential and holds every seat's lease from its start, so its length grows with
  *  the number of seats held: the per-seat term is the bound one seat's turn can wait, STARTUP_TEXT_WAIT_MS (5 min), so the laptop's 27 seats get 10 + 135 = 145 min.
  *  The base covers the work around the seat loop (snapshot, preflight, bookkeeping). OF-241 measured it: a rig down and restore of 27 stub seats on a private
- *  core (hc 0.1.16, Sparky) took 0.55 s and 0.42 s, with 27 leases held at once for 0.39 s, about 15 ms per seat of OpenRig's own work; a real agent's start-up is not in
+ *  core (hc 0.1.17, Sparky; Sparky's hc was 0.1.17 from 14:34 on 2026-11-05) took 0.55 s and 0.42 s, with 27 leases held at once for 0.39 s, about 15 ms per seat of
+ *  OpenRig's own work; the OF-241 review re-measured it there at 0.50 s down, 0.43 s restore and 0.38 s for the longest lease. A real agent's start-up is not in
  *  that number and is what the per-seat term is for. 10 min is a margin of more than a thousand over the measurement, not a measurement. Finite: a lease held
  *  for ever hides a loss for at most this bound plus two polls. */
 export const LIFECYCLE_EXCUSE_BASE_MS = 10 * 60_000;

@@ -239,6 +239,30 @@ try {
     failLaunch = false;
     result = { status: instantiated.ok ? 200 : 500, body: JSON.parse(JSON.stringify(instantiated)) };
     note({ kind: "instantiate", ok: instantiated.ok, detail: JSON.stringify(instantiated).slice(0, 1500) });
+  } else if (op === "legacy-instantiate") {
+    // RigInstantiator.instantiate (the flat-spec path): its only member fails to launch (the node launcher is made to refuse it: preflight already rejects every cause that is checkable beforehand, a duplicate name or a missing folder), so every member fails and its cleanup runs under the lifecycle lease. launchedSessionNames is empty whenever that cleanup runs (it is
+    // filled only by a launch that succeeded, and the cleanup runs only when none did), so its kill loop ends no terminal: the one effect under the lease is deleting the rig.
+    // Noted: the lease at that delete. The control seat is another rig's.
+    seatName = "dev-ctl@lod-leg-ctl";
+    controlNode = (await seedSeat("lod-leg-ctl", "dev.ctl", seatName)).node.id;
+    await outside(() => reconciler.reconcileAll());
+    Object.defineProperty(daemon.deps.nodeLauncher, "launchNode", {
+      configurable: true, writable: true,
+      value: async () => ({ ok: false as const, code: "launch_failed", message: "OF-241: the launcher refuses this member" }),
+    });
+    const repo = daemon.deps.rigRepo;
+    const deleteRig = repo.deleteRig.bind(repo);
+    Object.defineProperty(repo, "deleteRig", {
+      configurable: true, writable: true,
+      value: (rigId: string) => {
+        const nodeIds = (db.prepare("SELECT id FROM nodes WHERE rig_id = ?").all(rigId) as Array<{ id: string }>).map((n) => n.id);
+        note({ kind: "rig-delete", nodes: nodeIds.length, heldNodes: nodeIds.filter((id) => guard.lifecycleHeld(id)).length });
+        return deleteRig(rigId);
+      },
+    });
+    const outcome = await daemon.deps.rigInstantiator.instantiate({ schemaVersion: 1, name: "lod-leg", version: "1.0.0", nodes: [{ id: "dev", runtime: "claude-code", role: "worker", cwd: dir }], edges: [] });
+    result = { status: outcome.ok ? 200 : 500, body: JSON.parse(JSON.stringify(outcome)) };
+    note({ kind: "legacy-instantiate", ok: outcome.ok, detail: JSON.stringify(outcome).slice(0, 600) });
   } else throw new Error(`unknown LOD_OP ${op}`);
   // The control, after the operation (the lease is released): a crash outside any lease reports, on the second poll and not the first. The seat is the node's
   // current one: a restore or a node launch may name the new session differently.
