@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK, operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { GUARD_GROUP } from "./helpers/claude-guard.js";
 
 const asset = fileURLToPath(new URL("../assets/claude-team-permissions.cjs", import.meta.url));
 const { decide } = createRequire(import.meta.url)(asset);
@@ -54,7 +55,7 @@ describe("Claude kernel inspection permissions", () => {
   it("keeps native kernel allowances when the optional hook is absent", () => {
     vi.mocked(existsSync).mockReturnValueOnce(false);
     expect(JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]!))
-      .toEqual({ permissions: { allow: KERNEL_CLAUDE_ALLOW } });
+      .toEqual({ permissions: { allow: KERNEL_CLAUDE_ALLOW }, hooks: { PreToolUse: [GUARD_GROUP] } });
   });
 });
 
@@ -133,8 +134,8 @@ describe("Claude team command permissions", () => {
   it("falls back to native lifecycle asks when the launch asset is absent", () => {
     vi.mocked(existsSync).mockReturnValueOnce(false);
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true });
-    expect(JSON.parse(args[1]!)).toEqual({ permissions: { allow: TEAM_CLAUDE_ALLOW, ask: TEAM_CLAUDE_ASK } });
-    expect(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })).toEqual([]);
+    expect(JSON.parse(args[1]!)).toEqual({ permissions: { allow: TEAM_CLAUDE_ALLOW, ask: TEAM_CLAUDE_ASK }, hooks: { PreToolUse: [GUARD_GROUP] } });
+    expect(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })).toEqual(["--settings", JSON.stringify({ hooks: { PreToolUse: [GUARD_GROUP] } })]);
   });
 
   it("executes the launch-provided hook via stdin without changing its input or settings", () => {

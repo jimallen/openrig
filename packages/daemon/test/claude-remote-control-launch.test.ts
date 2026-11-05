@@ -5,6 +5,7 @@ import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { buildNativeResumeCommand } from "../src/domain/native-resume-probe.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { GUARD_FLAG } from "./helpers/claude-guard.js";
 
 // Claude Code Remote Control: a member that declares `remote_control: true` has EVERY claude launch of
 // its seat carry `--remote-control=<session name>` (claude 2.1.296: `--remote-control [name]` takes an
@@ -16,7 +17,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 // The posture / renderer segments are the fixed defaults of a clean environment (acceptEdits floor,
 // classic renderer), exactly as the neighbouring launch pins assume.
 const SEAT = "exec-cos@eztrack";
-const FLOOR = "--permission-mode acceptEdits";
+const FLOOR = `--permission-mode acceptEdits ${GUARD_FLAG}`; // OF-250: the rig-body guard is in every launch's one --settings
 const RENDERER = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1";
 
 function mockTmux(): TmuxAdapter {

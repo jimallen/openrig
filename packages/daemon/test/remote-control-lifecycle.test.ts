@@ -20,6 +20,7 @@ import type { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+import { GUARD_ARGV } from "./helpers/claude-guard.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORKSPACE = existingRigRoot("workspace");
 
@@ -90,7 +91,7 @@ describe("restore re-applies --remote-control (pod-aware down/up, real teardown 
     const up = await restore.restore(down.snapshotId!, { adapters: { "claude-code": adapter } });
     if (!up.ok) throw new Error(up.message);
     expect(up.result.nodes[0]).toMatchObject({ status: "resumed" });
-    expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto${flag} --resume ${token} --name=${name}`, expect.any(Function), { asTerminalProgram: true });
+    expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto ${GUARD_ARGV.join(" ")}${flag} --resume ${token} --name=${name}`, expect.any(Function), { asTerminalProgram: true });
   });
 });
 

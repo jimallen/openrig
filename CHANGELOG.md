@@ -10,6 +10,17 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Every managed Claude launch carries the rig-body guard (OF-250)
+
+- The OF-249 guard reaches Claude seats through the launch itself: `operationalLaunchArgs` merges it into the launch's ONE `--settings` JSON as a PreToolUse
+  group on `Bash` (after the native-inbox key, in that fixed order). A launch with no settings of its own gets a `--settings` holding only the guard.
+  Fresh, resume, fork, handover successor, restore and remote-control launches all go through it (7 command sites, pinned by an AST census).
+- Never two `--settings`: Claude Code 2.1.318 does not merge them (the last wins and the other is dropped, measured), so a second flag would have dropped a team or kernel
+  permission hook. The guard is appended after the existing hook groups; permission rules and hooks of the launch, the user and the project all stay.
+- Nothing is written to disk: it is a launch argument, not a config file. The hook script is the one shipped in the daemon's assets
+  (`assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs`); if it is missing, the launch is refused and nothing is typed into the pane.
+- Seats already running keep their old launch until relaunched or restored. Codex, OMP and Claude tools other than `Bash` are not covered.
+
 ### A `rig send` body with backticks or `$(...)` in double quotes is refused before the shell runs it (OF-249)
 
 - The shell expands a command substitution before `rig` starts, so nothing inside `rig send` can stop it. In one run a double-quoted body ran an unbounded
@@ -21,7 +32,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   text in a quoted here-document, `rig send <session> --file - <<'EOF'` (`--body-file -` for `rig queue`). A runner that cannot find the file does not start Pi.
 - Claude Code: `hooks/claude.json` of the `openrig-core` plugin gains a blocking `PreToolUse` hook on `Bash` that runs the same parser
   (`hooks/scripts/rig-body-guard.cjs`). **This alone protects no Claude seat**: it takes effect only where the plugin is installed in the Claude config, and it is
-  not installed on the hosts measured. Claude seats are guarded only once the daemon passes the guard on every Claude launch (OF-250). Claude tools other than `Bash`
+  not installed on the hosts measured. Claude seats are guarded by the launch-time delivery of OF-250 (above), not by the plugin. Claude tools other than `Bash`
   (a monitor-type tool, if enabled) do not match the hook.
 - Safe forms are not touched: single-quoted text, a quoted here-document (`<<'EOF'`), `--file <path>`, `--file -` fed by a pipe or here-document, a `$` inside
   single quotes. Codex seats and `hc send` are not covered.

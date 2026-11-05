@@ -8,6 +8,7 @@ import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
+import { GUARD_FLAG, GUARD_ARGV } from "./helpers/claude-guard.js";
 
 const token = "00000000-0000-4000-8000-000000000006";
 const autoScreen = "Restored conversation\n─────────\n❯\u00a0\n─────────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n";
@@ -67,7 +68,7 @@ describe("auto-mode startup content requires the launched Claude identity", () =
       ...(resumes ? { resumeToken: token, resumeType: "claude_id", allowFreshFallback: true } : {}),
     });
     // Launch authorization is distinct from permission to paste/submit startup content.
-    expect(calls.filter(c => c.kind === "launch")).toEqual([{ kind: "launch", text: `claude --permission-mode auto ${resumes ? "--resume" : "--session-id"} ${token} --name=${name}` }]);
+    expect(calls.filter(c => c.kind === "launch")).toEqual([{ kind: "launch", text: `claude --permission-mode auto ${GUARD_ARGV.join(" ")} ${resumes ? "--resume" : "--session-id"} ${token} --name=${name}` }]);
     if (mode === "resume-missing") expect(result.startupStatus).toBe("attention_required");
     expect({ ok: result.ok, content: calls.filter(c => c.kind === "content"), submit: calls.filter(c => c.kind === "submit") }).toEqual({
       ok: good, content: good ? [{ kind: "content", text: payload }] : [], submit: good ? [{ kind: "submit", keys: ["Enter"] }] : [],

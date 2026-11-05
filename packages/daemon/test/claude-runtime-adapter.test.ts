@@ -11,6 +11,7 @@ import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-p
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { claudePostureFlag } from "../src/adapters/yolo-mode.js";
 import { mkTemp } from "./helpers/temp-roots.js";
+import { GUARD_FLAG, GUARD_ARGV } from "./helpers/claude-guard.js";
 
 function mockTmux(): TmuxAdapter {
   return mockShellCommand({
@@ -93,7 +94,7 @@ describe("launchHarness — per-agent --model reaches the claude launch (51-07 A
   it("absent model → the resume command is exact bytes (no --model, posture intact)", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(withModel(undefined), { name: "seat", resumeToken: "tok-123" });
-    expect(lastCmd(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-123' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude ${POSTURE} --resume 'tok-123' --name=seat`);
+    expect(lastCmd(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-123' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude ${POSTURE} ${GUARD_FLAG} --resume 'tok-123' --name=seat`);
   });
 
   // D1 pin — posture BYTE-UNCHANGED both directions: the ONLY delta with/without model is the
@@ -180,7 +181,7 @@ describe("launchHarness — classic-renderer env prefix (OPR.0.5.3.1 scrollback 
   it("RESUME launch carries the prefix", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(makeBinding(), { name: "seat", resumeToken: "tok-123" });
-    expect(lastCmd(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-123' ${PREFIX}claude ${POSTURE} --resume 'tok-123' --name=seat`);
+    expect(lastCmd(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-123' ${PREFIX}claude ${POSTURE} ${GUARD_FLAG} --resume 'tok-123' --name=seat`);
   });
 
   it("FORK launch carries the prefix", async () => {
@@ -193,7 +194,7 @@ describe("launchHarness — classic-renderer env prefix (OPR.0.5.3.1 scrollback 
     process.env.OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN = "0";
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(makeBinding(), { name: "seat", resumeToken: "tok-123" });
-    expect(lastCmd(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-123' claude ${POSTURE} --resume 'tok-123' --name=seat`);
+    expect(lastCmd(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-123' claude ${POSTURE} ${GUARD_FLAG} --resume 'tok-123' --name=seat`);
   });
 });
 
@@ -599,7 +600,7 @@ describe("Claude Code runtime adapter", () => {
     const sendText = tmux.sendText as ReturnType<typeof vi.fn>;
     expect(sendText).toHaveBeenCalledWith(
       "r01-impl",
-      "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --session-id 11111111-1111-4111-8111-111111111111 --name=dev-impl@test-rig"
+      `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits ${GUARD_FLAG} --session-id 11111111-1111-4111-8111-111111111111 --name=dev-impl@test-rig`
     );
     if (result.ok) {
       expect(result.resumeToken).toBe("11111111-1111-4111-8111-111111111111");
@@ -617,7 +618,7 @@ describe("Claude Code runtime adapter", () => {
     const sendText = tmux.sendText as ReturnType<typeof vi.fn>;
     expect(sendText).toHaveBeenCalledWith(
       "r01-impl",
-      "OPENRIG_RESUME_LAUNCH='abc-123' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --resume 'abc-123' --name=dev-impl@test-rig"
+      `OPENRIG_RESUME_LAUNCH='abc-123' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits ${GUARD_FLAG} --resume 'abc-123' --name=dev-impl@test-rig`
     );
   });
 

@@ -21,6 +21,11 @@ import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { GUARD_FLAG, GUARD_JSON } from "./helpers/claude-guard.js";
+
+// OF-250: the non-interruptive launch's one --settings now also carries the rig-body guard group.
+import { shellQuote } from "../src/adapters/shell-quote.js";
+const NI_JSON = JSON.stringify({ skipDangerousModePermissionPrompt: true, hooks: JSON.parse(GUARD_JSON).hooks });
 
 const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -113,12 +118,12 @@ describe("non-interruptive launch choice", () => {
       expect(result.ok && result.appliedLaunch).toMatchObject({ state: "observed", value: "bypassPermissions" });
     }
     const command = vi.mocked(tmux.sendText).mock.calls[0]![1];
-    expect(command).toContain("'--settings' '{\"skipDangerousModePermissionPrompt\":true}'");
+    expect(command).toContain(`'--settings' ${shellQuote(NI_JSON)}`);
     expect(command).toContain("--dangerously-skip-permissions");
     expect(fsOps.writeFile).not.toHaveBeenCalled();
     vi.mocked(tmux.sendText).mockClear();
     await adapter.launchHarness({ ...binding, nonInterruptive: false }, opts);
-    expect(vi.mocked(tmux.sendText).mock.calls[0]![1]).toBe(command.replace(" '--settings' '{\"skipDangerousModePermissionPrompt\":true}'", ""));
+    expect(vi.mocked(tmux.sendText).mock.calls[0]![1]).toBe(command.replace(` '--settings' ${shellQuote(NI_JSON)}`, ` ${GUARD_FLAG}`));
   });
 
   it.each(["fresh", "resume", "fork"] as const)("Codex %s uses the same notices without changing model, sandbox or profile", async mode => {
@@ -185,8 +190,8 @@ describe("non-interruptive launch choice", () => {
       await adapter.launchHarness({ ...binding, permissionMode }, opts);
       const args = command.mock.calls[0]![0];
       expect(args.slice(0, 2)).toEqual(["--permission-mode", permissionMode]);
-      expect(args.includes("--settings")).toBe(permissionMode === "bypassPermissions");
-      if (permissionMode === "bypassPermissions") expect(JSON.parse(args[args.indexOf("--settings") + 1]!)).toEqual({ skipDangerousModePermissionPrompt: true });
+      expect(args.filter((a) => a === "--settings")).toHaveLength(1);
+      expect(JSON.parse(args[args.indexOf("--settings") + 1]!)).toEqual(permissionMode === "bypassPermissions" ? JSON.parse(NI_JSON) : JSON.parse(GUARD_JSON));
     }
   });
 

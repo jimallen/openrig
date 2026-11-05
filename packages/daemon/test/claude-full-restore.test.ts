@@ -17,6 +17,7 @@ import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import type { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { GUARD_FLAG, GUARD_ARGV } from "./helpers/claude-guard.js";
 
 // Shape of Fleet's Claude 2.1.220 auto-mode screen after full down/up:
 // the header has scrolled out; the empty prompt and mode footer remain.
@@ -97,7 +98,7 @@ describe("managed Claude full down/up", () => {
           : { status: "running", startup_status: "attention_required", resume_token: token, resume_provenance: null },
       });
       expect(latest).not.toMatchObject({ id: old.id });
-      expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto --resume ${token} --name=${name}`, expect.any(Function), { asTerminalProgram: true });
+      expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto ${GUARD_ARGV.join(" ")} --resume ${token} --name=${name}`, expect.any(Function), { asTerminalProgram: true });
       expect(db.prepare("SELECT status, resume_token FROM sessions WHERE id = ?").get(old.id)).toEqual({ status: "exited", resume_token: token });
       expect(tmux.sendText).not.toHaveBeenCalled();
       expect(tmux.sendKeys).not.toHaveBeenCalled();

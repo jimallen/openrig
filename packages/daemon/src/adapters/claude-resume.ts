@@ -11,6 +11,7 @@ import { holdResumedPoll } from "../domain/resume-settle.js";
 import { verifyClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { observeClaudePermission, type AppliedLaunchObservation } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
+import { claudeRigBodyGuardRefusal } from "./claude-rig-body-guard.js";
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
 
 export type ResumeResult =
@@ -40,6 +41,8 @@ interface ClaudeResumeOptions {
   sleep?: (ms: number) => Promise<void>;
   /** OF-167: how long a resume the poll called resumed is given to exit before it is believed. */
   settleMs?: number;
+  /** OF-250: DI seam for the rig-body guard hook script path (default: the shipped asset). */
+  rigBodyGuardScript?: string;
 }
 
 export class ClaudeResumeAdapter {
@@ -84,6 +87,10 @@ export class ClaudeResumeAdapter {
       return { ok: false, code: "resume_failed", message: "claude-code remote_control: the seat has no session name to pass to --remote-control" };
     }
 
+    // OF-250: a restore carries the rig-body guard in its one --settings (operationalLaunchArgs adds it) or does not happen.
+    const guardRefusal = claudeRigBodyGuardRefusal(this.options.rigBodyGuardScript);
+    if (guardRefusal) return { ok: false, code: "resume_failed", message: guardRefusal };
+
     // OPR.0.4.8.2: the RESTORE path uses the SAME launch-posture decision as fresh launch (the
     // unconditional acceptEdits floor when OFF; the full bypass when YOLO is ON) — every seat.
     // 0.5.2-07: --model matches the fresh-launch adapter (claude-code-adapter), emitted after posture.
@@ -96,7 +103,7 @@ export class ClaudeResumeAdapter {
         managed = await this.options.claudeManagedLaunch!.prepare({ nodeId: nodeId!, cwd, session: tmuxSessionName }, selectedPermissionMode);
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
-    const choice = { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode, nativeInbox: this.options.nativeInboxEnabled?.() ?? false };
+    const choice = { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode, nativeInbox: this.options.nativeInboxEnabled?.() ?? false, rigBodyGuardScript: this.options.rigBodyGuardScript };
     const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
     const appliedLaunch = observeClaudePermission(posture);
     const permissionMode = posture + operationalLaunchArg("claude-code", choice);

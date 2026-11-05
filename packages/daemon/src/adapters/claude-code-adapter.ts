@@ -21,6 +21,7 @@ import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume
 import { claudeRemoteControlArg, claudeRemoteControlArgs, claudeRemoteControlNameMissing } from "./claude-remote-control.js";
 import { shellQuote } from "./shell-quote.js";
 import { shellWord } from "./tmux-server.js";
+import { claudeRigBodyGuardRefusal, claudeRigBodyGuardScriptPath } from "./claude-rig-body-guard.js";
 import { validateClaudeActivityHookDelivery, claudeActivityRelayPath, CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH } from "../domain/claude-activity-hooks.js";
 import { isFilesystemRoot } from "../domain/cwd-resolution.js";
 import { observeClaudePermission } from "../domain/permission-drift.js";
@@ -65,14 +66,16 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   private nativeInboxEnabled: () => boolean;
 
   /** The launch choice with native comms step 3's inbox setting decided now. */
-  private launchChoice(binding: NodeBinding): NodeBinding & { nativeInbox: boolean } {
-    return { ...binding, nativeInbox: this.nativeInboxEnabled() };
+  private launchChoice(binding: NodeBinding): NodeBinding & { nativeInbox: boolean; rigBodyGuardScript: string } {
+    return { ...binding, nativeInbox: this.nativeInboxEnabled(), rigBodyGuardScript: this.rigBodyGuardScript };
   }
   private listProcesses?: NativeProcessLister;
   private autoLaunches = new Map<string, { binding: NodeBinding; token: string; executable?: string; fingerprint?: string; process?: ClaudeLaunchedProcess }>();
   readonly claudeManagedLaunch?: ClaudeManagedLaunch;
   private activityRelayPath: string | null;
   private claudeHooksManifestPath: string | null;
+  /** OF-250: the rig-body guard hook script (DI for tests; default is the shipped asset). */
+  private rigBodyGuardScript: string;
   /** P20 — called after a projected file is written to a target, so the manifest
    *  records what we last wrote (→ operator-vs-stale discrimination). No-op by default. */
   private recordProjection: (targetPath: string, content: string) => void;
@@ -95,6 +98,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     /** DI source of the canonical claude.json hooks manifest — the event vocabulary
      *  is derived (filtered to relay events) from it, not a parallel constant. */
     claudeHooksManifestPath?: string;
+    /** OF-250: DI seam for the guard hook script path. */
+    rigBodyGuardScript?: string;
     /** P20 — record-at-apply hook (startup wires it to the projection manifest store).
      *  Absent → no-op (the manifest stays empty → discrimination safe-degrades to P17). */
     recordProjection?: (targetPath: string, content: string) => void;
@@ -112,6 +117,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     this.claudeManagedLaunch = deps.claudeManagedLaunch;
     this.activityRelayPath = deps.activityRelayPath ?? null;
     this.claudeHooksManifestPath = deps.claudeHooksManifestPath ?? null;
+    this.rigBodyGuardScript = deps.rigBodyGuardScript ?? claudeRigBodyGuardScriptPath();
     this.recordProjection = deps.recordProjection ?? (() => {});
   }
 
@@ -261,6 +267,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     if (claudeRemoteControlNameMissing(binding.remoteControl, opts.name)) {
       return { ok: false, error: "claude-code remote_control: the seat has no session name to pass to --remote-control" };
     }
+
+    // OF-250: every Claude launch carries the rig-body guard in its one --settings (operationalLaunchArgs adds it) or does not happen.
+    const guardRefusal = claudeRigBodyGuardRefusal(this.rigBodyGuardScript);
+    if (guardRefusal) return { ok: false, error: guardRefusal };
 
     // OPR.0.4.8.2: the acceptEdits floor by default; YOLO (opt-in) swaps in the full-bypass flag.
     // The SAME decision (claudePostureFlag) is used on the restore path (claude-resume.ts).

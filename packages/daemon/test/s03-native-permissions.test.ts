@@ -26,6 +26,7 @@ import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import { GUARD_ARGV } from "./helpers/claude-guard.js";
 
 // Legacy unit seams below isolate argument/store behavior. Production context
 // resolution and race controls live in s03-bound-launch.test.ts.
@@ -231,7 +232,7 @@ describe("S03 selected arguments and unchanged defaults", () => {
   });
   it("Claude legacy resume carries the supported explicit mode", async () => {
     const t = refusedTransport(); await new ClaudeResumeAdapter(t.tmux, { claudeManagedLaunch: fakeManaged(["auto"]) }).resume("seat", "claude_id", "original", "/inert", "full_bypass", null, "auto", "node");
-    expect(t.send.mock.calls[0]?.[1]).toContain("--permission-mode auto --resume");
+    expect(t.send.mock.calls[0]?.[1]).toContain(`--permission-mode auto ${GUARD_ARGV.join(" ")} --resume`); // OF-250
     expect(observeClaudePermission("--permission-mode auto")).toMatchObject({ value: "auto" });
   });
   it("separates normalized launch arguments from native enforcement and refuses missing help semantics", () => {

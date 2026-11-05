@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
+import { GUARD_FLAG, GUARD_ARGV } from "./helpers/claude-guard.js";
 
 const CLAUDE_FLOOR_EFFECT = {
   runtime: "claude-code",
@@ -73,7 +74,7 @@ describe("ClaudeResumeAdapter", () => {
       expect(sendText).toHaveBeenCalledOnce();
       expect(sendText.mock.calls[0]![0]).toBe("r99-demo1-lead");
       // OPR.0.4.8.2: restore now carries the launch-posture floor (acceptEdits), same as fresh.
-      expect(sendText.mock.calls[0]![1]).toBe("OPENRIG_RESUME_LAUNCH='my-session' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --resume 'my-session'");
+      expect(sendText.mock.calls[0]![1]).toBe(`OPENRIG_RESUME_LAUNCH='my-session' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits ${GUARD_FLAG} --resume 'my-session'`);
       expect(sendKeys).toHaveBeenCalledOnce();
       expect(sendKeys.mock.calls[0]![0]).toBe("r99-demo1-lead");
       expect(sendKeys.mock.calls[0]![1]).toEqual(["Enter"]);
@@ -89,7 +90,7 @@ describe("ClaudeResumeAdapter", () => {
       await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo", undefined, "gpt-5.4-cheap");
 
       expect(sendText.mock.calls[0]![1]).toBe(
-        "OPENRIG_RESUME_LAUNCH='my-session' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --model 'gpt-5.4-cheap' --resume 'my-session'"
+        `OPENRIG_RESUME_LAUNCH='my-session' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits ${GUARD_FLAG} --model 'gpt-5.4-cheap' --resume 'my-session'`
       );
     });
 
@@ -101,7 +102,7 @@ describe("ClaudeResumeAdapter", () => {
       await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo", undefined, "gpt-5.4-cheap", undefined, undefined, "high");
 
       expect(sendText.mock.calls[0]![1]).toBe(
-        "OPENRIG_RESUME_LAUNCH='my-session' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --model 'gpt-5.4-cheap' --effort 'high' --resume 'my-session'"
+        `OPENRIG_RESUME_LAUNCH='my-session' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits ${GUARD_FLAG} --model 'gpt-5.4-cheap' --effort 'high' --resume 'my-session'`
       );
     });
 
@@ -140,7 +141,7 @@ describe("ClaudeResumeAdapter", () => {
 
       await adapter.resume("r99-demo1-lead", "claude_name", "tok; rm -rf /", "/repo");
 
-      expect(sendText.mock.calls[0]![1]).toBe("OPENRIG_RESUME_LAUNCH='tok; rm -rf /' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --resume 'tok; rm -rf /'");
+      expect(sendText.mock.calls[0]![1]).toBe(`OPENRIG_RESUME_LAUNCH='tok; rm -rf /' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits ${GUARD_FLAG} --resume 'tok; rm -rf /'`);
     });
 
     // The Enter-failure -> C-c cleanup and the no-Enter-after-a-failed-paste rule belong to
@@ -294,7 +295,7 @@ describe("ClaudeResumeAdapter", () => {
       }
       // Explicitly: only the launch command + Enter were sent.
       expect(sendText).toHaveBeenCalledTimes(1);
-      expect(sendText.mock.calls[0]![1]).toContain("claude --permission-mode acceptEdits --resume");
+      expect(sendText.mock.calls[0]![1]).toContain(`claude --permission-mode acceptEdits ${GUARD_FLAG} --resume`);
       expect(sendKeys).toHaveBeenCalledTimes(1);
       expect(sendKeys.mock.calls[0]![1]).toEqual(["Enter"]);
     });

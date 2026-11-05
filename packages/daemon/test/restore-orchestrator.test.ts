@@ -41,6 +41,7 @@ import { observeClaudePermission, observeCodexSandbox, observePiResourceTrust, o
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+import { GUARD_FLAG } from "./helpers/claude-guard.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORK_DIR = existingRigRoot("work");
 
@@ -2396,7 +2397,7 @@ describe("RestoreOrchestrator", () => {
         expect(tmux.createSession).toHaveBeenCalledTimes(1);
         if (!lostOwnership && mode !== "error") expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(latest.id)).toEqual({ status: "running" });
         expect(tmux.sendText).toHaveBeenCalledTimes(1); // launch command only, no startup replay
-        expect(tmux.sendText).toHaveBeenCalledWith("dev-owner@headerless", expect.stringContaining(`--dangerously-skip-permissions --resume '${token}'`));
+        expect(tmux.sendText).toHaveBeenCalledWith("dev-owner@headerless", expect.stringContaining(`--dangerously-skip-permissions ${GUARD_FLAG} --resume '${token}'`));
         expect(tmux.sendKeys).toHaveBeenCalledTimes(1);
       }
     });

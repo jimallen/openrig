@@ -14,6 +14,7 @@ import { operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { GUARD_GROUP, GUARD_JSON } from "./helpers/claude-guard.js";
 
 const dbs: ReturnType<typeof createFullTestDb>[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); vi.unstubAllEnvs(); });
@@ -47,9 +48,11 @@ function assertDefault(cmd: string, runtime: string) {
     expect(settings.permissions.allow).not.toContain("Bash(tmux:*)");
     expect(settings.permissions.allow).not.toContain("Bash(node:*)");
     expect(settings.permissions.ask).toBeUndefined();
-    expect(settings.hooks.PreToolUse).toHaveLength(1);
+    // OF-250: the team hook first, the rig-body guard appended as a second group in the SAME --settings.
+    expect(settings.hooks.PreToolUse).toHaveLength(2);
     expect(settings.hooks.PreToolUse[0].matcher).toBe("Bash");
     expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain("claude-team-permissions.cjs");
+    expect(settings.hooks.PreToolUse[1]).toEqual(GUARD_GROUP);
     expect(settings.permissions.deny).toBeUndefined();
     expect(cmd).toContain("--permission-mode acceptEdits");
   } else {
@@ -130,8 +133,8 @@ describe("team launch permission defaults", () => {
     expect(f.store.apply(f.binding, "codex")).toMatchObject({ teamPermissionDefault: false, launchPosture: "floor" });
   });
   it("explicit native mode and non-interruptive flags are preserved", () => {
-    expect(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" } as any)).toEqual([]);
+    expect(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" } as any)).toEqual(["--settings", GUARD_JSON]); // OF-250: only the guard
     const choice = { teamPermissionDefault: true, launchPosture: "full_bypass", nonInterruptive: true } as any;
-    expect(operationalLaunchArgs("claude-code", choice)).toEqual(["--settings", '{"skipDangerousModePermissionPrompt":true}']);
+    expect(operationalLaunchArgs("claude-code", choice)).toEqual(["--settings", JSON.stringify({ skipDangerousModePermissionPrompt: true, hooks: JSON.parse(GUARD_JSON).hooks })]);
   });
 });

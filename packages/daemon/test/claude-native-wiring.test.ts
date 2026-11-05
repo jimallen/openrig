@@ -31,6 +31,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { GUARD_GROUP } from "./helpers/claude-guard.js";
 
 const require = createRequire(import.meta.url);
 const relay = require("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") as {
@@ -126,7 +127,7 @@ describe("launch flag: the inbox setting merged into the ONE --settings (criteri
     expect(JSON.parse(on[on.indexOf("--settings") + 1]!)).toMatchObject({ crossSessionInbound: "accept", permissions: expect.any(Object) });
     expect(JSON.parse(off[off.indexOf("--settings") + 1]!).crossSessionInbound).toBeUndefined();
     expect(operationalLaunchArgs("codex", { nativeInbox: true }).join(" ")).not.toContain("crossSessionInbound");
-    expect(operationalLaunchArgs("claude-code", { nativeInbox: true })).toEqual(["--settings", '{"crossSessionInbound":"accept"}']);
+    expect(operationalLaunchArgs("claude-code", { nativeInbox: true })).toEqual(["--settings", JSON.stringify({ crossSessionInbound: "accept", hooks: { PreToolUse: [GUARD_GROUP] } })]);
   });
 });
 
