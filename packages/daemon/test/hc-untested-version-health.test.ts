@@ -18,16 +18,16 @@ const T0 = new Date("2031-03-04T05:00:00.000Z");
 const reasonOf = (row: HealthSourceCoverage | undefined): string => (row && "reason" in row ? row.reason : "");
 
 describe("HcUntestedVersionHealthSource", () => {
-  it.each([null, "0.1.16", "0.1.14", "0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1", "nonsense"])("says nothing for %j: no core yet, the tested version, or a version the refusal notice speaks for", (version) => {
+  it.each([null, "0.1.16", "0.1.17", "0.1.14", "0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1", "nonsense"])("says nothing for %j: no core yet, the tested version, or a version the refusal notice speaks for", (version) => {
     expect(new HcUntestedVersionHealthSource(() => version, () => T0).coverage()).toEqual([]);
   });
 
-  it.each(["0.1.15", "0.1.17", "0.1.99"])("shows one notice for hc %s naming it and the tested 0.1.16, on the injected clock", (version) => {
+  it.each(["0.1.15", "0.1.18", "0.1.99"])("shows one notice for hc %s naming it and the tested 0.1.16 and 0.1.17, on the injected clock", (version) => {
     const rows = new HcUntestedVersionHealthSource(() => version, () => T0).coverage();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ source: "hc-untested-version", status: "notice", partial: false, evaluatedAt: "2031-03-04T05:00:00.000Z" });
     expect(reasonOf(rows[0])).toContain(version);
-    expect(reasonOf(rows[0])).toContain("0.1.16");
+    expect(reasonOf(rows[0])).toContain("0.1.16 and 0.1.17");
     expect(reasonOf(rows[0])).toContain("Seats keep running");
   });
 
@@ -35,7 +35,7 @@ describe("HcUntestedVersionHealthSource", () => {
     let version: string | null = "0.1.16";
     const source = new HcUntestedVersionHealthSource(() => version, () => T0);
     expect(source.coverage()).toEqual([]);
-    version = "0.1.17";
+    version = "0.1.18";
     expect(source.coverage()).toHaveLength(1);
     expect(source.coverage()).toHaveLength(1);
     version = "0.1.16";
@@ -43,7 +43,7 @@ describe("HcUntestedVersionHealthSource", () => {
   });
 
   it("is a coverage-only source: no observation, so no finding and no RSI record", () => {
-    expect(new HcUntestedVersionHealthSource(() => "0.1.17", () => T0).read()).toEqual([]);
+    expect(new HcUntestedVersionHealthSource(() => "0.1.18", () => T0).read()).toEqual([]);
   });
 });
 
@@ -112,10 +112,10 @@ describe("the notice follows the core the watch is connected to", () => {
     expect(version).toBe("0.1.16");
     expect(untested.coverage()).toEqual([]);  // control: the tested version shows nothing
 
-    core.helloReply = hello({ version: "0.1.17" });
+    core.helloReply = hello({ version: "0.1.18" });
     core.dropConnections();
     await until(() => untested.coverage().length > 0, "the untested notice");
-    expect(reasonOf(untested.coverage()[0])).toMatch(/0\.1\.17.*0\.1\.16/);
+    expect(reasonOf(untested.coverage()[0])).toMatch(/0\.1\.18.*0\.1\.16/);
     expect(watch.state()).toBe("streaming");
     expect(watch.pinnedCoreId()).toBe("core-a");        // the same core id: not a swapped core
     expect(client.refusedBecause).toBeNull();           // accepted: no refusal, calls still go through

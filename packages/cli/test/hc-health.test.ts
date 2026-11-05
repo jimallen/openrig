@@ -8,14 +8,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, buildHcHostFailure, classifyHcCore, parseHcVersion, probeHcHostAsync, probeHcInstall,
+  HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, HC_TESTED_VERSIONS, buildHcHostFailure, classifyHcCore, parseHcVersion, probeHcHostAsync, probeHcInstall,
   readHcHello, type HcHelloOutcome,
 } from "../src/tmux-health.js";
 
 // The pin is restated, not imported: a change to it must fail here and be a deliberate, reviewed edit.
 describe("the pins", () => {
-  it("are hc 0.1.16 tested, 0.1.15 the oldest accepted, and protocol generation 1", () => {
-    expect(HC_TESTED_VERSION).toBe("0.1.16");
+  it("are hc 0.1.16 and 0.1.17 tested (0.1.17 the newest), 0.1.15 the oldest accepted, and protocol generation 1", () => {
+    expect([...HC_TESTED_VERSIONS]).toEqual(["0.1.16", "0.1.17"]);
+    expect(HC_TESTED_VERSION).toBe("0.1.17");
     expect(HC_OLDEST_ACCEPTED_VERSION).toBe("0.1.15");
     expect(HC_GENERATION).toBe(1);
   });
@@ -39,11 +40,11 @@ describe("probeHcInstall (hc --version alone)", () => {
     }
   });
 
-  it.each(["0.1.15", "0.1.17", "0.1.99"])("accepts hc %s with a warning that names it and the tested 0.1.16", (v) => {
+  it.each(["0.1.15", "0.1.18", "0.1.99"])("accepts hc %s with a warning that names it and the tested 0.1.16", (v) => {
     const result = run(() => `hc ${v}\n`);
     expect(result).toMatchObject({ installed: true, available: true, version: v, detail: null, code: "pinned" });
     expect(result.warning).toContain(v);
-    expect(result.warning).toContain("0.1.16");
+    expect(result.warning).toContain("0.1.16 and 0.1.17");
   });
 
   it("is not_installed when the command fails, and unhealthy when its output has no version", () => {
@@ -77,11 +78,11 @@ describe("classifyHcCore", () => {
     expect(classifyHcCore(outcome)).toMatchObject(expected);
   });
 
-  it.each(["0.1.15", "0.1.17", "0.1.99"])("a core on the tested minor line, hc %s, is available with a warning naming both versions", (v) => {
+  it.each(["0.1.15", "0.1.18", "0.1.99"])("a core on the tested minor line, hc %s, is available with a warning naming both versions", (v) => {
     const core = classifyHcCore({ kind: "hello", generation: 1, version: v });
     expect(core).toMatchObject({ code: "available", available: true, version: v });
     expect(core.warning).toContain(v);
-    expect(core.warning).toContain("0.1.16");
+    expect(core.warning).toContain("0.1.16 and 0.1.17");
   });
 
   it("the tested core has no warning", () => {
@@ -115,7 +116,7 @@ describe("probeHcHostAsync", () => {
   });
 
   it("keeps the install's warning when there is no core, and takes the core's when the core is the untested one", async () => {
-    expect((await probeHcHostAsync(hc("0.1.17"), hello({ kind: "no_core", detail: "d" }))).warning).toContain("0.1.17");
+    expect((await probeHcHostAsync(hc("0.1.18"), hello({ kind: "no_core", detail: "d" }))).warning).toContain("0.1.18");
     const both = await probeHcHostAsync(hc("0.1.16"), hello({ kind: "hello", generation: 1, version: "0.1.99" }));
     expect(both).toMatchObject({ code: "available", version: "0.1.99" });
     expect(both.warning).toContain("0.1.99");

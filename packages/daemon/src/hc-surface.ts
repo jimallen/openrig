@@ -11,7 +11,7 @@ export {
   type HcHello, type HcTerminal,
 } from "./adapters/hc-client.js";
 export {
-  HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, judgeHcVersion, parseHcVersionOutput, type HcVersionJudgement,
+  HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, HC_TESTED_VERSIONS, judgeHcVersion, parseHcVersionOutput, type HcVersionJudgement,
 } from "./adapters/hc-version.js";
 export {
   KERNEL_RIG, KERNEL_TAB, SPACE_LABEL, TAB_ID_SEPARATOR, TAB_LABEL,

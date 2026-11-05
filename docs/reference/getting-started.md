@@ -15,7 +15,7 @@ operator in the OpenRig view.
 
 ## Before you start
 
-You need Node.js 22 or 24 and hc (herdr-core, the terminal host for agent seats), on macOS or Linux; `rig setup` checks for it and, when it is missing, says how to install the tested version (https://herdr.dev/core/); it does not install it. OpenRig accepts the tested release's minor line from its oldest accepted release up (tested hc 0.1.16, accepted hc 0.1.x from 0.1.15), because the Herdr app updates hc by itself: an accepted hc that is not 0.1.16 works, and `rig setup`, `rig doctor` and `rig health` warn that it is untested; a new minor or major hc, or one older than 0.1.15, is refused. tmux is no longer required: keep it installed through the soak, for rollback only. On Linux, the
+You need Node.js 22 or 24 and hc (herdr-core, the terminal host for agent seats), on macOS or Linux; `rig setup` checks for it and, when it is missing, says how to install the tested version (https://herdr.dev/core/); it does not install it. OpenRig accepts the tested release's minor line from its oldest accepted release up (tested hc 0.1.16 and 0.1.17, accepted hc 0.1.x from 0.1.15), because the Herdr app updates hc by itself: an accepted hc that is not 0.1.16 works, and `rig setup`, `rig doctor` and `rig health` warn that it is untested; a new minor or major hc, or one older than 0.1.15, is refused. tmux is no longer required: keep it installed through the soak, for rollback only. On Linux, the
 distribution's own Node.js can be older (Ubuntu 24.04's is 18); install a
 supported version with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`)
 or NodeSource. On a Mac with Apple

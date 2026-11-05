@@ -88,13 +88,13 @@ describe("runDoctorChecks", () => {
     expect(hcCheck?.message).toBe(`hc ${HC_TESTED_VERSION}`);
   });
 
-  it.each(["0.1.15", "0.1.17", "0.1.99"])("hc %s (same minor, not the tested one) -> warn naming both versions, not fail", (v) => {
+  it.each(["0.1.15", "0.1.18", "0.1.99"])("hc %s (same minor, not the tested one) -> warn naming both versions, not fail", (v) => {
     const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${v}\n`) }));
     const hcCheck = checks.find((c) => c.name === "hc");
     expect(hcCheck?.status).toBe("warn");
     expect(hcCheck?.message).toContain(v);
     expect(hcCheck?.reason).toContain(v);
-    expect(hcCheck?.reason).toContain("0.1.16");
+    expect(hcCheck?.reason).toContain("0.1.16 and 0.1.17");
   });
 
   it.each(["0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1"])("hc %s -> fail: another minor, another major or a malformed version", (v) => {
@@ -159,12 +159,12 @@ describe("runDoctorChecks", () => {
       }
     });
 
-    it.each(["0.1.15", "0.1.17", "0.1.99"])("warn, naming both versions, on a core of hc %s (same minor, not the tested one)", async (v) => {
+    it.each(["0.1.15", "0.1.18", "0.1.99"])("warn, naming both versions, on a core of hc %s (same minor, not the tested one)", async (v) => {
       const check = await core(async () => ({ kind: "hello", generation: HC_GENERATION, version: v }));
       expect(check?.status).toBe("warn");
       expect(check?.message).toContain(v);
       expect(check?.reason).toContain(v);
-      expect(check?.reason).toContain("0.1.16");
+      expect(check?.reason).toContain("0.1.16 and 0.1.17");
     });
 
     it.each(["0.2.0", "0.2.16", "1.1.16", "0.1.16-rc1"])("fail on a core of hc %s", async (v) => {

@@ -16,7 +16,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 describe("the hc surface exports", () => {
   it("exactly the names the CLI needs, and no host, lifecycle, watch or placement driver", () => {
     expect(Object.keys(surface).sort()).toEqual([
-      "HC_GENERATION", "HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError",
+      "HC_GENERATION", "HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "HC_TESTED_VERSIONS", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError",
       "KERNEL_RIG", "KERNEL_TAB", "SEAT_LABEL", "SPACE_LABEL", "TAB_ID_SEPARATOR", "TAB_LABEL",
       "coreRuntimeLocationRefusal", "hcTerminalName", "judgeHcVersion", "parseHcVersionOutput", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "resolveHcSocket",
       "rigOfSeat", "rigSpaceId", "rigTabId",
@@ -28,7 +28,7 @@ describe("the hc surface exports", () => {
       expect(surface[name], name).toBe(client[name]);
     }
     for (const name of ["SEAT_LABEL", "hcTerminalName"] as const) expect(surface[name], name).toBe(seat[name]);
-    for (const name of ["HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "judgeHcVersion", "parseHcVersionOutput"] as const) {
+    for (const name of ["HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "HC_TESTED_VERSIONS", "judgeHcVersion", "parseHcVersionOutput"] as const) {
       expect(surface[name], name).toBe(version[name]);
     }
     for (const name of ["KERNEL_RIG", "KERNEL_TAB", "SPACE_LABEL", "TAB_ID_SEPARATOR", "TAB_LABEL", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "rigOfSeat", "rigSpaceId", "rigTabId"] as const) {
@@ -43,7 +43,8 @@ describe("the hc surface exports", () => {
     expect(surface.hcTerminalName("a@b")).not.toBe(surface.hcTerminalName("a@c"));
     expect(surface.SEAT_LABEL).toBe("openrig.seat");
     expect(surface.HC_GENERATION).toBe(1);
-    expect(surface.HC_TESTED_VERSION).toBe("0.1.16");
+    expect(surface.HC_TESTED_VERSION).toBe("0.1.17");
+    expect([...surface.HC_TESTED_VERSIONS]).toEqual(["0.1.16", "0.1.17"]);
     expect(surface.HC_OLDEST_ACCEPTED_VERSION).toBe("0.1.15");
   });
 });

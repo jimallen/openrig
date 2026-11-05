@@ -5,20 +5,28 @@
 // pulling anything heavy in (hc-surface.test.ts pins the closure).
 //
 // Jim, 2026-11-01: the Herdr app updates hc by itself, so an exact pin would refuse a core the app just installed and stop
-// OpenRig managing seats. The rule instead accepts the tested release's own minor line, warns when the version is not the tested
-// one, and refuses what could have changed the protocol: another major, another minor, or a release older than the floor.
+// OpenRig managing seats. The rule instead accepts the tested releases' own minor line, warns when the version is not one of the tested
+// ones, and refuses what could have changed the protocol: another major, another minor, or a release older than the floor.
 
-/** The hc release this build was tested against: every `*.real.test.ts` ran on a private core of this version. */
-export const HC_TESTED_VERSION = "0.1.16";
+/** The hc releases this build was tested against, oldest first: the `*.real.test.ts` files and the daemon suite ran on a private
+ *  core of each (0.1.17: the full daemon suite and the code-point sweep on Sparky, OF-241). A version is added only after that run. */
+export const HC_TESTED_VERSIONS = ["0.1.16", "0.1.17"] as const;
+
+/** The newest tested release: the one install hints and fixes name ("Install hc ${HC_TESTED_VERSION}"), and the minor line the
+ *  rule accepts. */
+export const HC_TESTED_VERSION = HC_TESTED_VERSIONS[HC_TESTED_VERSIONS.length - 1]!;
+
+/** The tested set as prose for messages: "0.1.16 and 0.1.17". */
+const TESTED_SET_TEXT = HC_TESTED_VERSIONS.join(" and ");
 
 /** The oldest release of the tested minor line that is accepted (0.1.15 is the version the spikes and most of the suite were
  *  written on). Anything below it, in the same minor, is refused. */
 export const HC_OLDEST_ACCEPTED_VERSION = "0.1.15";
 
 export type HcVersionJudgement =
-  /** Exactly the tested version. */
+  /** Exactly one of the tested versions. */
   | { verdict: "tested"; version: string }
-  /** Accepted, not tested: the same major.minor, at or above the floor. `warning` names both versions. */
+  /** Accepted, not tested: the same major.minor, at or above the floor. `warning` names the version and the tested set. */
   | { verdict: "untested"; version: string; warning: string }
   /** Refused: malformed, another major or minor, or below the floor. */
   | { verdict: "refused"; version: string; reason: string };
@@ -40,19 +48,19 @@ const FLOOR = parse(HC_OLDEST_ACCEPTED_VERSION)!;
 export function judgeHcVersion(version: string): HcVersionJudgement {
   const parts = parse(version);
   if (parts === null) {
-    return { verdict: "refused", version, reason: `hc version ${JSON.stringify(version)} is not major.minor.patch, so it cannot be compared with the tested hc ${HC_TESTED_VERSION}` };
+    return { verdict: "refused", version, reason: `hc version ${JSON.stringify(version)} is not major.minor.patch, so it cannot be compared with the tested hc ${TESTED_SET_TEXT}` };
   }
   const [major, minor, patch] = parts;
   if (major !== TESTED[0] || minor !== TESTED[1]) {
-    return { verdict: "refused", version, reason: `hc ${version} is not on the ${TESTED[0]}.${TESTED[1]} line this build is tested on (hc ${HC_TESTED_VERSION}); a new major or minor can change the protocol` };
+    return { verdict: "refused", version, reason: `hc ${version} is not on the ${TESTED[0]}.${TESTED[1]} line this build is tested on (hc ${TESTED_SET_TEXT}); a new major or minor can change the protocol` };
   }
   if (patch < FLOOR[2]) {
-    return { verdict: "refused", version, reason: `hc ${version} is older than the oldest accepted release, hc ${HC_OLDEST_ACCEPTED_VERSION} (this build is tested on hc ${HC_TESTED_VERSION})` };
+    return { verdict: "refused", version, reason: `hc ${version} is older than the oldest accepted release, hc ${HC_OLDEST_ACCEPTED_VERSION} (this build is tested on hc ${TESTED_SET_TEXT})` };
   }
-  if (version === HC_TESTED_VERSION) return { verdict: "tested", version };
+  if ((HC_TESTED_VERSIONS as readonly string[]).includes(version)) return { verdict: "tested", version };
   return {
     verdict: "untested", version,
-    warning: `hc ${version} is accepted but untested: this build is tested on hc ${HC_TESTED_VERSION}, and a release of the same minor line is expected to work`,
+    warning: `hc ${version} is accepted but untested: this build is tested on hc ${TESTED_SET_TEXT}, and a release of the same minor line is expected to work`,
   };
 }
 

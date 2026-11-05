@@ -6,10 +6,10 @@
 // runs (spike 1+2), with the caller's env. So this module runs only `hc --version` (measured safe) and reads the core's
 // socket itself, which is what the daemon's HcClient does too.
 import { createConnection } from "node:net";
-import { HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, judgeHcVersion, parseHcVersionOutput, resolveHcSocket } from "@openrig/daemon/hc";
+import { HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, HC_TESTED_VERSIONS, judgeHcVersion, parseHcVersionOutput, resolveHcSocket } from "@openrig/daemon/hc";
 
-// The tested version, the oldest accepted one and the protocol generation are the daemon's (hc-surface.ts); re-exported so importers keep one place to ask.
-export { HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION };
+// The tested versions (HC_TESTED_VERSION is the newest), the oldest accepted one and the protocol generation are the daemon's (hc-surface.ts); re-exported so importers keep one place to ask.
+export { HC_GENERATION, HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, HC_TESTED_VERSIONS };
 
 const HELLO_TIMEOUT_MS = 3_000;
 
@@ -183,7 +183,7 @@ export function buildHcHostFailure(code: HcProbeResult["code"], detail: string):
     case "version_mismatch":
       return {
         message: "hc is not a version OpenRig accepts.",
-        reason: `${reason} This build is tested with hc ${HC_TESTED_VERSION} and accepts that minor line from hc ${HC_OLDEST_ACCEPTED_VERSION} up. ${detail}`,
+        reason: `${reason} This build is tested with hc ${HC_TESTED_VERSIONS.join(" and ")} and accepts that minor line from hc ${HC_OLDEST_ACCEPTED_VERSION} up. ${detail}`,
         fix: `Install hc ${HC_TESTED_VERSION} (see hc update --help), and if a core from another version is running, have the operator restart it (a seat does not; terminals stay alive).`,
       };
     case "unsupported_generation":
