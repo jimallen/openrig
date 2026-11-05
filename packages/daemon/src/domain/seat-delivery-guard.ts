@@ -155,6 +155,13 @@ export class SeatDeliveryGuard {
     return lease !== undefined && this.scope.getStore()?.get(target!.nodeId) !== lease;
   }
 
+  /** A lifecycle lease holds this seat right now, whoever asks. `ownsLifecycle` answers only for code running inside the lease's
+   *  async context (it reads the AsyncLocalStorage), so a timer-driven poller such as the identity reconciler always gets false
+   *  from it. This one reads the lease table itself: true from the moment `lifecycle` holds the seat until it releases it. */
+  lifecycleHeld(nodeId: string): boolean {
+    return this.lifecycleLeases.get(nodeId)?.active === true;
+  }
+
   ownsLifecycle(nodeId: string): boolean {
     const lease = this.scope.getStore()?.get(nodeId);
     if (!lease?.active || !lease.lifecycle) return false;

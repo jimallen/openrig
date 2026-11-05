@@ -15,6 +15,12 @@ import { RESERVED_HOST_IDS, validateHostRegistry } from "./hosts/hosts-registry-
  *  tmux reads), so a slower cadence is the right cost/freshness trade. */
 export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
 
+/** OF-235: how long one seat's lifecycle lease may excuse a missing terminal, counted from the first poll that saw the lease held. A restore, `rig down`
+ *  or handover holds the lease for its whole run and its terminal may be absent for all of it, so the excuse must outlast a long multi-seat restore;
+ *  but a lease that is never released (a hung operation) must not hide a real loss for ever. Past this the seat falls back to the two-poll rule.
+ *  A judgement, not a measurement: STARTUP_TEXT_WAIT_MS is 5 min per seat and a restore of the laptop's 27 seats runs seat after seat under one lease. */
+export const LIFECYCLE_EXCUSE_CEILING_MS = 30 * 60_000;
+
 /** Foreground commands that read as a bare shell (a seat that dropped to a
  *  prompt, or an orphan/QA-squat shell occupying the pane). Mirrors the
  *  SessionFingerprinter SHELL_NAMES vocabulary. `pane_current_command` may
@@ -85,6 +91,10 @@ export interface SeatIdentityReconcilerDeps {
   tmux: Pick<TmuxAdapter, "listSessions" | "getPanePid" | "getPaneCommand"> & Partial<Pick<TmuxAdapter, "readAllPaneProcesses" | "listPanes" | "hostKind">>;
   now?: () => Date;
   listProcesses?: NativeProcessLister;
+  /** OF-235: true while the delivery guard's lifecycle lease holds this seat (`SeatDeliveryGuard.lifecycleHeld`). Absent: no seat is ever excused. */
+  lifecycleHeld?: (nodeId: string) => boolean;
+  /** Overrides LIFECYCLE_EXCUSE_CEILING_MS (tests). */
+  lifecycleExcuseCeilingMs?: number;
 }
 
 /**
@@ -109,6 +119,10 @@ export class SeatIdentityReconciler {
   private generation = 0;
   /** OF-205 (b): the seats whose session read missing on the previous poll, with the session name read (a seat is lost only once two polls in a row say so). */
   private readonly missingSeen = new Map<string, string>();
+  /** OF-235: per seat, the observation time (ms) of the first poll that found a lifecycle lease holding it; cleared by the first poll that does not. */
+  private readonly heldSince = new Map<string, number>();
+  private readonly lifecycleHeld: ((nodeId: string) => boolean) | undefined;
+  private readonly excuseCeilingMs: number;
 
   constructor(deps: SeatIdentityReconcilerDeps) {
     this.db = deps.db;
@@ -116,6 +130,18 @@ export class SeatIdentityReconciler {
     this.now = deps.now ?? (() => new Date());
     this.store = new SeatIdentityStore(deps.db);
     this.listProcesses = deps.listProcesses ?? listNativeProcesses;
+    this.lifecycleHeld = deps.lifecycleHeld;
+    this.excuseCeilingMs = deps.lifecycleExcuseCeilingMs ?? LIFECYCLE_EXCUSE_CEILING_MS;
+  }
+
+  /** OF-235: a supported operation (stop, `rig down`, restart, handover, restore, launch) holds the seat's lifecycle lease from before it ends the
+   *  terminal until after the new one is bound, however long that takes, so a terminal missing under the lease is the operation's doing, not a crash.
+   *  True while the lease holds the seat and has held it for less than the ceiling; the clock is the sweep's own observation time. */
+  private excusedByLifecycle(nodeId: string, observedMs: number): boolean {
+    if (!this.lifecycleHeld?.(nodeId)) { this.heldSince.delete(nodeId); return false; }
+    const since = this.heldSince.get(nodeId) ?? observedMs;
+    this.heldSince.set(nodeId, since);
+    return observedMs - since < this.excuseCeilingMs;
   }
 
   private runningSeats(): RunningSeatRow[] {
@@ -155,6 +181,7 @@ export class SeatIdentityReconciler {
     this.store.pruneExcept(seats.map((s) => s.node_id));
     const running = new Set(seats.map((s) => s.node_id));
     for (const nodeId of [...this.missingSeen.keys()]) if (!running.has(nodeId)) this.missingSeen.delete(nodeId);
+    for (const nodeId of [...this.heldSince.keys()]) if (!running.has(nodeId)) this.heldSince.delete(nodeId);
     if (seats.length === 0) return;
 
     const observedAt = this.now().toISOString();
@@ -168,6 +195,10 @@ export class SeatIdentityReconciler {
     // no sessions gives), so zero live terminals from a core that answered means every
     // running seat's terminal is gone: the sweep goes on and each seat reads
     // `session_missing`. Without this the last terminal of a core could never be lost.
+    // OF-235: the leases are read before the listing as well as after it. A lease that held the seat when the core was asked excuses what the listing
+    // shows even if the operation finished before the verdict is written (the listing may be from the middle of it).
+    const observedMs = Date.parse(observedAt);
+    const excusedAtListing = new Set(seats.filter((s) => this.excusedByLifecycle(s.node_id, observedMs)).map((s) => s.node_id));
     let liveSessions: Set<string> | null = null;
     try {
       const sessions = await this.tmux.listSessions();
@@ -258,6 +289,13 @@ export class SeatIdentityReconciler {
       try {
         const verdict = await this.computeVerdict(seat, liveSessions, observedAt, nativeProofs.get(seat.node_id) ?? null, panes);
         if (generation !== this.generation) return;
+        // OF-235: while a lifecycle lease holds the seat, a missing terminal is the operation's (a respawn, `rig down`, restart, handover or restore can
+        // leave it absent for far longer than two polls). Nothing is recorded and no count is kept: the lease's end restarts the two-poll rule.
+        const excused = this.excusedByLifecycle(seat.node_id, observedMs) || excusedAtListing.has(seat.node_id);
+        if (excused && verdict.reason === "session_missing") {
+          this.missingSeen.delete(seat.node_id);
+          continue;
+        }
         // OF-205 (b): a supported stop, restart, handover or restore ends the terminal a moment before the session row is written, and a poll inside that
         // moment reads `session_missing`, which rig health reports as `seat.lost` until the next poll replaces it. The first such read is not recorded
         // (the previous verdict stands); a second consecutive one is. A crashed seat is reported one poll later, never missed.

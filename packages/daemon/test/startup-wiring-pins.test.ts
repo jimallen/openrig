@@ -192,3 +192,22 @@ describe("OF-2 — startup wiring of name-keyed lookups is live-first (composed 
     expect(isAlive(NAME)).toBe(false);
   });
 });
+
+describe("OF-235 — the identity reconciler is wired to the delivery guard's lifecycle leases (composed createDaemon)", () => {
+  it("the reconciler excuses a seat exactly while the guard the lifecycle services use holds it", async () => {
+    const guard = priv<{ lifecycle: (ids: string[], fn: () => Promise<void>) => Promise<void> }>(priv(deps.rigLifecycleService, "tmuxAdapter"), "deliveryGuard");
+    expect(guard, "the services' adapter carries the daemon's delivery guard").toBeTruthy();
+    db.prepare("INSERT INTO rigs (id, name) VALUES ('of235-rig', 'of235-rig')").run();
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id) VALUES ('of235-node', 'of235-rig', 'dev.a')").run();
+    const held = priv<(nodeId: string) => boolean>(deps.seatIdentityReconciler, "lifecycleHeld");
+    expect(held, "SeatIdentityReconciler.lifecycleHeld is injected by startup").toBeTypeOf("function");
+    expect(held("of235-node")).toBe(false);
+    let release!: () => void;
+    const op = guard.lifecycle(["of235-node"], () => new Promise<void>((resolve) => { release = resolve; }));
+    await new Promise((r) => setImmediate(r));
+    // Asked from here, outside the lease's async context, as the reconciler's timer asks: ownsLifecycle would say false.
+    expect(held("of235-node"), "while the lease is held").toBe(true);
+    release(); await op;
+    expect(held("of235-node"), "after it is released").toBe(false);
+  });
+});
