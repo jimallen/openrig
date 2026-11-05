@@ -13,8 +13,21 @@ lost = False
 seen_ids = []
 flag = lambda n: os.path.exists(base + "/" + n)
 transcript = rollout if runtime == "codex" else base + "/transcript.jsonl"
-def hook(payload):
-    return subprocess.run([node, relay], input=json.dumps(payload).encode(), capture_output=True)
+def hook(payload, kill_after_record=None):
+    if kill_after_record is None:
+        return subprocess.run([node, relay], input=json.dumps(payload).encode(), capture_output=True)
+    # OF-229: the relay is paused by `kill_after_record` (a --require shim) right after its gate record is linked, and killed there. Its text
+    # is already on stdout and its record is on disk; it never exits.
+    linked = base + "/relay-linked"
+    child = subprocess.Popen([node, relay], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             env={**os.environ, "NODE_OPTIONS": "--require " + kill_after_record, "DELIVERY_LINKED_FLAG": linked})
+    child.stdin.write(json.dumps(payload).encode()); child.stdin.close()
+    deadline = time.time() + 20
+    while not os.path.exists(linked) and time.time() < deadline:
+        time.sleep(0.005)
+    child.kill()
+    out = child.stdout.read(); child.wait()
+    return subprocess.CompletedProcess(child.args, child.returncode, out, b"")
 def stamp():
     return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 def claude_line(record):
@@ -87,7 +100,14 @@ def submit():
             taken(prompt)
         composer = b""
         return
-    ran = hook({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "transcript_path": transcript, "session_id": "s-1", "prompt_id": "p-%d" % time.time_ns()})
+    pause_shim = None
+    if flag("kill-relay-after-record"):
+        pause_shim = open(base + "/kill-relay-after-record").read().strip()
+        os.remove(base + "/kill-relay-after-record")
+    ran = hook({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "transcript_path": transcript, "session_id": "s-1", "prompt_id": "p-%d" % time.time_ns()}, pause_shim)
+    if ran.returncode != 0:
+        # Measured on real Codex 0.166.0 (OF-229): a hook that is killed or fails has its stdout dropped, whatever it had written. The prompt runs.
+        ran = subprocess.CompletedProcess(ran.args, ran.returncode, b"", ran.stderr)
     if flag("die-after-record"):
         os.remove(base + "/die-after-record"); os._exit(9)
     blocked = None
@@ -110,6 +130,8 @@ def submit():
         log.write(b"context " + mid + b" " + hashlib.sha256(added.encode()).hexdigest().encode() + b" " + str(len(added)).encode() + b"\n")
     if runtime == "codex":
         with open(rollout, "a") as f:
+            if added is not None:  # measured on real Codex 0.166.0: a hook's additionalContext lands as a developer message, its text exactly
+                f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": added}]}}) + "\n")
             f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": composer.decode()}]}}) + "\n")
     else:
         taken(prompt)

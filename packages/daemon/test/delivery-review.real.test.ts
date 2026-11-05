@@ -26,6 +26,7 @@ const CHILD = resolve(here, "helpers/delivery-daemon.ts");
 const SEATPY = resolve(here, "helpers/delivery-seat.py");
 const RELAY = resolve(here, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
 const SHIM = resolve(here, "helpers/delivery-relay-delay.cjs");
+const PAUSE_SHIM = resolve(here, "helpers/delivery-relay-pause.cjs");
 const RUNNER = resolve(here, "../src/adapters/pi-runner.ts");
 const TOKEN = "delivery-token";
 let serial = 0;
@@ -559,6 +560,29 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
       }, 70_000);
     }
+
+    it("codex, OF-229: a relay killed after its record and before it exits gave the agent only the note, so the row does not read received until the body is on file, and the next attempt carries it", async () => {
+      // Real Codex 0.166.0 drops the stdout of a hook that is killed or fails (measured, OF-229), so the text on the relay's stdout was never taken, while the record
+      // that makes the row `received` was already on disk. A durable "received" for a body the agent never had is the loss the row's promise forbids.
+      const s = fixture(); await s.launch();
+      const body = "k".repeat(1500);
+      s.flag("kill-relay-after-record", PAUSE_SHIM);
+      s.accept("long", body); daemon(s, "none", { DELIVERY_BODY_GRACE_MS: "1500" });
+      await until(() => agent(s, "long"), (l) => l.length === 1, "the note ran");
+      // The record exists (the relay was killed after linking it), the agent has no body yet.
+      expect(readdirSync(s.seen).filter((f) => /^[a-f0-9]{64}$/.test(f))).toHaveLength(1);
+      expect(context(s, "long")).toEqual([]);
+      // From here until the body is in the agent's context, the row must never read received. Sampled every 25 ms; with the fix, `received` needs the body on file,
+      // and the stub files it after its context line, so a received row with no context line is exactly the defect.
+      let receivedWithoutBody = 0; let lastState = "";
+      await until(() => { lastState = String(s.read("long")?.message_state); if (lastState === "received" && context(s, "long").length === 0) receivedWithoutBody += 1; return lastState; }, (v) => v === "received" || receivedWithoutBody > 0, "received", 40_000);
+      expect(receivedWithoutBody).toBe(0);
+      await wait(800);
+      expect(context(s, "long")).toEqual([`context long ${sha(body)} 1500`]);
+      expect(agent(s, "long")).toHaveLength(2);
+      expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "gate_seen" });
+      expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+    }, 90_000);
 
     it("past 9000 characters: numbered parts, each its own id and turn, in order, whole, and received only when all are", async () => {
       const s = fixture(); await s.launch();
