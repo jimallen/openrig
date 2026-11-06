@@ -58,7 +58,10 @@ export function snapshotMatchesCurrentOccupants(
     // OF-255: the seat's fresh successor was stopped before the snapshot, which recorded the seat with no occupant and kept
     // the stopped successor's row (status exited). That is the same fact current state holds (a stopped seat, occupant of
     // record X): a match. A snapshot that does not carry that exact row never matches this way.
+    // Nothing live may be newer than the stopped successor (the capture keeps that contradiction loud too), so a newer row
+    // of the same seat, even one written without a new tenure generation, never lets an `absent` snapshot match.
     if (captured.kind === "none" && current.session.status === "exited"
+      && !candidates.some((row) => row.nodeId === node.id && row.status !== "exited" && row.id > current.session.id)
       && snapshot.data.sessions.some((row) => row.id === current.session.id && row.status === "exited")) continue;
     // The snapshot resolves the occupant's resume identity through its whole history (a failed launch that
     // never reached ready inherits its predecessor's). The candidates above drop that history, so resolve

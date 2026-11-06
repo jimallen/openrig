@@ -313,4 +313,110 @@ describe("rig up --existing after seats were relaunched fresh and the host shut 
       expect(occupantIn(rig.id, kind, node.id)).toEqual({ kind: "absent" });
     });
   });
+
+  // R1/R2 (round-2 review): the match check is the safety-critical part. One direct row per way a STALE snapshot could be
+  // accepted. `S` is the seat's fresh successor, stopped; the snapshot below was captured while it was stopped.
+  describe("snapshotMatchesCurrentOccupants refuses every stale snapshot the new rules could admit", () => {
+    const match = (rigId: string, snapshot: Parameters<typeof snapshotMatchesCurrentOccupants>[2]) =>
+      snapshotMatchesCurrentOccupants(db, rigRepo.getRig(rigId)!, snapshot);
+    const withSessions = (snapshot: ReturnType<SnapshotCapture["captureSnapshot"]>, edit: (rows: Array<{ id: string; status: string }>) => unknown[]) =>
+      ({ ...snapshot, data: { ...snapshot.data, sessions: edit(snapshot.data.sessions as Array<{ id: string; status: string }>) } }) as typeof snapshot;
+
+    function stoppedSuccessor(name: string) {
+      const rig = rigRepo.createRig(name);
+      const node = rigRepo.addNode(rig.id, "seat", { runtime: "claude-code" });
+      const older = sessionRegistry.registerSession(node.id, `seat@${name}`);
+      sessionRegistry.updateResumeToken(older.id, "claude_name", "older-native", "hook");
+      sessionRegistry.markSuperseded(older.id);
+      const successor = sessionRegistry.registerSession(node.id, `seat@${name}`, "fresh");
+      sessionRegistry.updateResumeToken(successor.id, "claude_name", "fresh-native", "hook");
+      db.prepare("INSERT INTO events (rig_id, type, payload) VALUES (?, 'seat.fresh_launched', ?)").run(rig.id, JSON.stringify({
+        nodeId: node.id, sessionId: successor.id, newGeneration: sessionRegistry.currentOccupantTenure(node.id)!.generationUuid,
+      }));
+      sessionRegistry.markIntentionallyStopped(successor.id);
+      const snapshot = snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      expect(snapshot.data.activeOccupantsByNode?.[node.id]).toEqual({ kind: "absent" });
+      return { rig, node, successor, snapshot };
+    }
+
+    it("matches an absent snapshot that carries the stopped successor as exited (the one accepted shape)", () => {
+      const { rig, snapshot } = stoppedSuccessor("m-ok");
+      expect(match(rig.id, snapshot)).toBe(true);
+    });
+
+    it("refuses an absent snapshot that does not carry the stopped successor at all", () => {
+      const { rig, successor, snapshot } = stoppedSuccessor("m-missing");
+      expect(match(rig.id, withSessions(snapshot, (rows) => rows.filter((row) => row.id !== successor.id)))).toBe(false);
+    });
+
+    it("refuses an absent snapshot that carries the stopped successor as detached (it saw it left, not stopped)", () => {
+      const { rig, successor, snapshot } = stoppedSuccessor("m-detached");
+      expect(match(rig.id, withSessions(snapshot, (rows) => rows.map((row) => (row.id === successor.id ? { ...row, status: "detached" } : row))))).toBe(false);
+    });
+
+    it("refuses when the successor is no longer exited now, though the snapshot saw it exited (it was resumed in place)", () => {
+      const { rig, successor, snapshot } = stoppedSuccessor("m-revived");
+      sessionRegistry.markDetached(successor.id);
+      expect(match(rig.id, snapshot)).toBe(false);
+    });
+
+    it("refuses when a live row is newer than the stopped successor, even one written without a new tenure generation (R2)", () => {
+      const { rig, node, snapshot } = stoppedSuccessor("m-newer-live");
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, 'seat@m-newer-live', 'running')").run("Z".repeat(26), node.id);
+      expect(match(rig.id, snapshot)).toBe(false);
+    });
+
+    // The stop override: a deliberate stop NEWER than a detached row of the SAME seat hides that row; nothing else does.
+    function olderConversationThenDetached(name: string) {
+      const rig = rigRepo.createRig(name);
+      const seat = rigRepo.addNode(rig.id, "seat", { runtime: "claude-code" });
+      const other = rigRepo.addNode(rig.id, "other", { runtime: "claude-code" });
+      const w = sessionRegistry.registerSession(seat.id, `seat@${name}`);
+      sessionRegistry.updateResumeToken(w.id, "claude_name", "w-native", "hook");
+      sessionRegistry.updateStatus(w.id, "running");
+      const snapshot = snapshotCapture.captureSnapshot(rig.id, "manual"); // names W, the older conversation
+      sessionRegistry.updateStatus(w.id, "exited");
+      const x = sessionRegistry.registerSession(seat.id, `seat@${name}`);
+      sessionRegistry.updateResumeToken(x.id, "claude_name", "x-native", "hook");
+      sessionRegistry.markDetached(x.id);
+      return { rig, seat, other, w, x, snapshot };
+    }
+
+    it("a stop on ANOTHER seat does not hide this seat's detached row: a snapshot naming the older conversation is refused", () => {
+      const { rig, other, snapshot } = olderConversationThenDetached("m-other-seat");
+      const stopped = sessionRegistry.registerSession(other.id, "other@m-other-seat");
+      sessionRegistry.markIntentionallyStopped(stopped.id);
+      expect(match(rig.id, snapshot)).toBe(false);
+    });
+
+    it("an unmarked exit newer than the detached row does not hide it: the snapshot naming the older conversation is refused", () => {
+      const { rig, seat, snapshot } = olderConversationThenDetached("m-unmarked");
+      const crashed = sessionRegistry.registerSession(seat.id, "seat@m-unmarked");
+      sessionRegistry.updateStatus(crashed.id, "exited");
+      expect(match(rig.id, snapshot)).toBe(false);
+    });
+
+    it("a deliberate stop of the same seat newer than the detached row does hide it (the seat is stopped, nothing to compare)", () => {
+      const { rig, seat, snapshot } = olderConversationThenDetached("m-marked");
+      const stopped = sessionRegistry.registerSession(seat.id, "seat@m-marked");
+      sessionRegistry.markIntentionallyStopped(stopped.id);
+      expect(match(rig.id, snapshot)).toBe(true);
+    });
+  });
+
+  // N8: restore-check forecasts the fallback capture, so it reads the stop marks the capture reads. Two detached rows behind a
+  // later deliberate stop are a stopped seat; unmarked they would read as an ambiguity.
+  it("`rig restore-check` reads the stop marks: two detached rows behind a later deliberate stop are not an ambiguity", async () => {
+    const rig = rigRepo.createRig("eztrack-of255-n8");
+    const node = rigRepo.addNode(rig.id, "seat", { runtime: "terminal" });
+    for (const _ of [1, 2]) sessionRegistry.markDetached(sessionRegistry.registerSession(node.id, "seat@n8").id);
+    sessionRegistry.markIntentionallyStopped(sessionRegistry.registerSession(node.id, "seat@n8").id);
+    // One detached row remains a persisted session, so current-state recovery is eligible and the forecast runs.
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'terminal')").run(node.id);
+    const body = await (await app.request(`/api/restore-check?rig=${rig.name}&noQueue=true&noHooks=true`)).json() as { checks: Array<{ check: string; evidence?: string }> };
+    const preconditions = body.checks.find((c) => c.check === `rig.${rig.name}.restore-preconditions`);
+    expect(preconditions).toBeDefined();
+    expect(JSON.stringify(preconditions)).not.toContain("Active-occupant ambiguity");
+  });
 });
+
