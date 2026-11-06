@@ -81,7 +81,13 @@ export function parseChanges(output) {
 
 export function buildStaleMessage(changes) {
   return [
-    "Skills mirror is stale at skills/_canonical/. Run: npm run mirror-skills",
+    `Skills mirror is stale at ${TARGET_DIR}: it differs from its source ${SOURCE_DIR}.`,
+    "`npm run mirror-skills` does NOT repair this: it regenerates every skill edge from the external skill canon",
+    "(OPENRIG_SKILL_CANON_ROOT) and would overwrite a hand edit with the canon's bytes.",
+    "Fix: make the change in the skill canon, then run",
+    "  OPENRIG_SKILL_CANON_ROOT=<canon root> npm run mirror-skills",
+    "If you edited an edge in this repo by hand, carry the same change into the canon, make the edges byte-identical,",
+    "then run: node scripts/regen-edge-digests.mjs",
     "Changes that would land:",
     ...changes.map((c) => `  ${c}`),
   ].join("\n");
@@ -398,13 +404,24 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const isCheck = argv.includes("--check");
 
   if (isCheck) {
+    // Two independent drift checks, both required: the source -> mirror
+    // byte comparison (the one mirror-skills.test.mjs asserts) and the
+    // generated-edge digests/layout. --check fails if either is stale, so
+    // test:repo and the unit test cannot disagree about the same tree.
+    const verifyMirror = dependencies.checkMode ?? checkMode;
     const verify = dependencies.checkGeneratedEdges ?? checkGeneratedEdges;
     const inputs =
       dependencies.checkInputs ??
       (dependencies.checkGeneratedEdges ? {} : readGeneratedCheckInputs());
-    const { stale, changes } = await verify(inputs);
-    if (stale) {
-      console.error(buildGeneratedStaleMessage(changes));
+    const mirror = verifyMirror();
+    const generated = await verify(inputs);
+    if (mirror.stale) {
+      console.error(buildStaleMessage(mirror.changes));
+    }
+    if (generated.stale) {
+      console.error(buildGeneratedStaleMessage(generated.changes));
+    }
+    if (mirror.stale || generated.stale) {
       process.exitCode = 1;
     }
     return;

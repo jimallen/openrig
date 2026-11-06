@@ -76,6 +76,16 @@ test("buildStaleMessage names the npm script and lists the pending changes", () 
   assert.match(message, /removed\/SKILL\.md/);
 });
 
+test("buildStaleMessage does not advise a bare `npm run mirror-skills` as the repair: it names the canon root and the digest regen", () => {
+  const message = buildStaleMessage([">f.st...... core/x/SKILL.md"]);
+
+  // The apply regenerates from the external canon and refuses without it.
+  assert.match(message, /does NOT repair/);
+  assert.match(message, /OPENRIG_SKILL_CANON_ROOT=<canon root> npm run mirror-skills/);
+  assert.match(message, /node scripts\/regen-edge-digests\.mjs/);
+  assert.doesNotMatch(message, /Run: npm run mirror-skills/);
+});
+
 test("EXCLUDES bars curation-cycle bookkeeping and runtime artifacts from public surface", () => {
   // These exclusions are load-bearing — see SOP rule "feedback.md is
   // curation-cycle bookkeeping; runtime mirrors are for agent-loaded
@@ -101,8 +111,9 @@ test("source SKILL.md inventory is non-empty (sanity check)", () => {
 test("mirror is in sync with source (drift-detect via --check)", () => {
   // The load-bearing assertion: skills/_canonical/ must not drift from
   // packages/daemon/specs/agents/shared/skills/. Failing this means
-  // someone edited the source without running `npm run mirror-skills`.
-  // Fix: run the script and re-commit.
+  // someone edited one edge without the other. `npm run mirror-skills`
+  // regenerates from the external canon, so the failure message
+  // (buildStaleMessage) names the real fix.
   if (!existsSync(TARGET_DIR)) {
     // First-time bootstrap: target doesn't exist yet. The check would
     // report every source file as a pending change. Skip in that case
@@ -114,7 +125,7 @@ test("mirror is in sync with source (drift-detect via --check)", () => {
     stale,
     false,
     stale
-      ? `mirror drift detected (${changes.length} change(s)). Run: npm run mirror-skills`
+      ? `mirror drift detected (${changes.length} change(s)).\n${buildStaleMessage(changes)}`
       : "",
   );
 });
@@ -1095,6 +1106,7 @@ test("mirror main --check uses layout/digests and never activates the provisiona
   let scannerCalls = 0;
 
   await mirror.main(["--check"], {
+    checkMode: () => ({ stale: false, changes: [] }),
     checkGeneratedEdges: async () => {
       checkCalls += 1;
       return { stale: false, changes: [] };
@@ -1224,3 +1236,121 @@ function walk(root, visit) {
     else visit(path);
   }
 }
+
+async function runMainCheck(dependencies) {
+  const mirror = await import("./mirror-skills.mjs");
+  const savedExitCode = process.exitCode;
+  const savedError = console.error;
+  const errors = [];
+  console.error = (message) => errors.push(String(message));
+  process.exitCode = undefined;
+  try {
+    await mirror.main(["--check"], dependencies);
+    return { exitCode: process.exitCode, errors };
+  } finally {
+    console.error = savedError;
+    process.exitCode = savedExitCode;
+  }
+}
+
+test("main --check fails when only source-to-mirror drift exists, and prints the real fix", async () => {
+  // Production consequence: test:repo runs `mirror-skills.mjs --check`; if it
+  // ignores source->mirror drift, that drift passes test:repo's script step
+  // and fails only the unit test, which is how c0b11ce42 broke releases 40-59.
+  const { exitCode, errors } = await runMainCheck({
+    checkMode: () => ({ stale: true, changes: [">f.st...... core/x/SKILL.md"] }),
+    checkGeneratedEdges: async () => ({ stale: false, changes: [] }),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /core\/x\/SKILL\.md/);
+  assert.match(errors[0], /OPENRIG_SKILL_CANON_ROOT/);
+});
+
+test("main --check fails when only generated-edge drift exists", async () => {
+  const { exitCode, errors } = await runMainCheck({
+    checkMode: () => ({ stale: false, changes: [] }),
+    checkGeneratedEdges: async () => ({
+      stale: true,
+      changes: [{ edge: "spec", path: "core/x/SKILL.md", reason: "digest" }],
+    }),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /spec: core\/x\/SKILL\.md \(digest\)/);
+});
+
+test("main --check reports both kinds of drift when both exist", async () => {
+  const { exitCode, errors } = await runMainCheck({
+    checkMode: () => ({ stale: true, changes: [">f.st...... core/x/SKILL.md"] }),
+    checkGeneratedEdges: async () => ({
+      stale: true,
+      changes: [{ edge: "plugin", path: "y/SKILL.md", reason: "missing" }],
+    }),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(errors.length, 2);
+});
+
+test("main --check passes only when neither check is stale", async () => {
+  const { exitCode, errors } = await runMainCheck({
+    checkMode: () => ({ stale: false, changes: [] }),
+    checkGeneratedEdges: async () => ({ stale: false, changes: [] }),
+  });
+
+  assert.equal(exitCode, undefined);
+  assert.deepEqual(errors, []);
+});
+
+test("the --check script and checkMode agree on a real tree with a hand edit and refreshed digests", () => {
+  // The exact c0b11ce42 shape, in a scratch copy (never the working tree):
+  // a hand edit to one edge, digests refreshed from disk. checkGeneratedEdges
+  // is clean by construction; only the source->mirror comparison can see it.
+  const repoRoot = join(import.meta.dirname, "..");
+  const scratch = mkdtempSync(join(tmpdir(), "mirror-check-agree-"));
+  try {
+    const copy = (relative) => {
+      mkdirSync(dirname(join(scratch, relative)), { recursive: true });
+      execFileSync("cp", ["-R", join(repoRoot, relative), join(scratch, relative)]);
+    };
+    copy("skills/_canonical");
+    copy("packages/daemon/specs/agents/shared/skills");
+    copy("packages/daemon/assets/plugins/openrig-core/skills");
+    copy("scripts/skill-edge-layout.generated.json");
+    copy("scripts/skill-edge-digests.generated.json");
+
+    const script = join(repoRoot, "scripts/mirror-skills.mjs");
+    const run = () => {
+      try {
+        execFileSync(process.execPath, [script, "--check"], {
+          cwd: scratch,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        return { status: 0, stderr: "" };
+      } catch (error) {
+        return { status: error.status, stderr: String(error.stderr) };
+      }
+    };
+    assert.equal(run().status, 0, "the unmodified scratch copy must pass --check");
+
+    const specFile = "packages/daemon/specs/agents/shared/skills/core/agent-starters/SKILL.md";
+    writeFileSync(join(scratch, specFile), readFileSync(join(scratch, specFile), "utf8") + "hand edit\n");
+    const digestPath = join(scratch, "scripts/skill-edge-digests.generated.json");
+    const digests = JSON.parse(readFileSync(digestPath, "utf8"));
+    digests.edges.spec["core/agent-starters/SKILL.md"] = createHash("sha256")
+      .update(readFileSync(join(scratch, specFile)))
+      .digest("hex");
+    writeFileSync(digestPath, `${JSON.stringify(digests, null, 2)}\n`);
+
+    const drifted = run();
+    assert.equal(drifted.status, 1, "--check must fail on source->mirror drift");
+    assert.match(drifted.stderr, /core\/agent-starters\/SKILL\.md/);
+    assert.match(drifted.stderr, /OPENRIG_SKILL_CANON_ROOT/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
