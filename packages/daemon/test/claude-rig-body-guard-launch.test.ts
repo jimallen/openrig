@@ -191,7 +191,8 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     expect(hook('r"$(:)"ig send s "$(touch m10)"', options)).toMatchObject(REFUSED);
     expect(hook("rig s$''end x $(y)", options)).toMatchObject(REFUSED);                 // the name is literal
     expect(hook("echo host $(hostname)", options)).toMatchObject(REFUSED);              // over-refusal accepted: "host" is a guarded subcommand word
-    expect(hook("echo backend $(date)", options)).toMatchObject(ALLOWED);               // a subcommand word inside another word is not a word
+    expect(hook("queue create --body $(x)", options)).toMatchObject(REFUSED);           // the subcommand word is the first word of the text
+    expect(hook("echo resending $(date)", options)).toMatchObject(ALLOWED);             // a subcommand word inside another word is not a word
     // RECORDED: a deliberately obfuscated name AND subcommand ("s$''end" leaves `s$end` after the quotes go) is allowed: an accident guard, not a sandbox (CHANGELOG, guard header)
     expect(hook("r$''ig s$''end x $(y)", options)).toMatchObject(ALLOWED);
   });
