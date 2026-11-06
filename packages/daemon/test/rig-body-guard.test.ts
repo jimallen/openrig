@@ -222,6 +222,7 @@ const ROWS: Row[] = [
   { id: "HU5", deny: true, kind: "substitution", note: "F-6: unquoted heredoc to bash, a ${x:-$( )} inside the single quotes of the rig body", cmd: `bash <<EOF\nrig send s 'a \${X:-$(date)}'\nEOF` },
   { id: "HU6", deny: true, kind: "substitution", note: "F-6: unquoted heredoc to bash, $(( $( ) )) inside the single quotes of the rig body", cmd: `bash <<EOF\nrig send s 'n=$(( $(date) + 1 ))'\nEOF` },
   { id: "HU7", deny: false, note: "F-6 control: unquoted heredoc to bash, pure arithmetic inside the single quotes", cmd: `bash <<EOF\nrig send s 'n=$((1+2))'\nEOF` },
+  { id: "HU8", deny: false, note: "F-6 control: unquoted heredoc, pure arithmetic in the rig body AND an unrelated live substitution elsewhere", cmd: `bash <<EOF\ncd $(pwd); rig send s 'n=$((1+2))'\nEOF` },
   { id: "HU3", deny: false, note: "F-6 control: the same with a QUOTED delimiter: literal to the shell", cmd: `bash <<'EOF'\nrig send s 'a $(date)'\nEOF` },
   { id: "HU4", deny: false, note: "F-6 control: unquoted delimiter, an unrelated substitution, plain rig text", cmd: `bash <<EOF\ncd $(pwd); rig send s hi\nEOF` },
   { id: "S32", deny: false, note: "2>&1 file descriptor redirect", cmd: `rig send a@b 'hi' 2>&1 | tail -3` },
