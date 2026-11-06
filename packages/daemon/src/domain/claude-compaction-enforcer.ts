@@ -74,6 +74,12 @@ const PREP_SEND_ATTEMPTS_MAX = 3;
 // sequential — a longer block would stall other seats' telemetry); on a busy
 // timeout the send returns not-ok, the stage does NOT advance, and the SAME stage
 // is retried on the next poll tick. No new scheduler.
+// OF-247 (c): `withDeliveryGuard` holds the seat's lifecycle lease around the whole pass, so on a busy,
+// unpumped seat the lease is held for up to this wait (plus the send) once per 30 s tick, one stage per
+// pass (measured in compaction-lease-hold.test.ts; sendPreparedCompact's wait, at most 1 s, is the other
+// site). The seat is free for the rest of the tick, so the identity reconciler's hold clock restarts at its next
+// 5 s poll and the excuse ceiling is never approached: a crash inside a hold is reported a hold later at most.
+// Display only, so the wait is not shortened for the lease's sake.
 export const POST_COMPACT_SEND_WAIT_MS_DEFAULT = 10_000;
 // How long a sequence may leave the content lane held with no row of its own open and no poll advancing it. A stage waits on a usage sample
 // that may never come, and no message waits on that. Three of ContextMonitor's polls: a value chosen, not measured.
