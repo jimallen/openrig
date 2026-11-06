@@ -20,10 +20,47 @@ export function claudeRigBodyGuardRefusal(scriptPath: string = claudeRigBodyGuar
 
 interface HookGroup { matcher?: string; hooks?: Array<{ type?: string; command?: string }> }
 
-/** The guard's PreToolUse group: a blocking command hook on Bash. The interpreter is the daemon's own node (process.execPath, quoted), like the team hook:
- *  a bare `node` fails open on a seat whose PATH has no node (OF-250 review F-1, measured on Claude 2.1.318). */
-export function claudeRigBodyGuardGroup(scriptPath: string): { matcher: string; hooks: Array<{ type: string; command: string; timeout: number }> } {
-  return { matcher: "Bash", hooks: [{ type: "command", command: `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`, timeout: 5 }] };
+/** Seconds the wrapper gives the guard before it stops it and falls to the degraded check. Shorter than the hook timeout below (Claude Code runs the command unguarded on a hook timeout). */
+export const RIG_BODY_GUARD_WATCHDOG_SECONDS = 3;
+const HOOK_TIMEOUT_SECONDS = 5;
+
+/** OF-253: the inline `sh -c` script that runs the guard. $1 = node, $2 = the guard script, $3 = the watchdog seconds; the hook JSON arrives on stdin.
+ *  Measured on Claude Code 2.1.319: only exit 2 (or a deny decision) blocks a tool call; a missing interpreter (127), a missing script, exit 1, a SIGKILL and a timeout all let it run.
+ *  So when the guard cannot answer (node or the script is missing, the guard crashes or exits non-zero, or it outruns the watchdog) this script applies a DEGRADED check
+ *  of its own to the hook text: it refuses (exit 2, a message the model reads) only a command that mentions `rig` and holds a backtick or `$(`, and lets everything else run.
+ *  No file other than node and the guard script is needed, so a package directory replaced under a running seat cannot remove it. The watchdog is plain sh (no `timeout` binary). */
+export const RIG_BODY_GUARD_WRAPPER = String.raw`N=$1; S=$2; W=$3
+in=$(cat)
+deg() {
+  if printf '%s' "$in" | grep -Eq '(^|[^[:alnum:]_]|\\[nt])rig([^[:alnum:]_]|$)' && printf '%s' "$in" | grep -qF -e '` + "`" + String.raw`' -e '$('; then
+    echo "rig-body-guard is unavailable ($1) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat." >&2
+    exit 2
+  fi
+  exit 0
+}
+[ -x "$N" ] && [ -f "$S" ] || deg "node or the guard script is missing"
+out=$(
+  printf '%s' "$in" | "$N" "$S" &
+  p=$!
+  ( sleep "$W"; kill "$p" 2>/dev/null ) >/dev/null 2>&1 &
+  k=$!
+  wait "$p"; rc=$?
+  kill "$k" 2>/dev/null
+  exit "$rc"
+)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  [ -z "$out" ] || printf '%s\n' "$out"
+  exit 0
+fi
+deg "the guard failed or timed out, exit $rc"`;
+
+/** The guard's PreToolUse group: a blocking command hook on Bash. It runs RIG_BODY_GUARD_WRAPPER with the daemon's own node (process.execPath, quoted, like the team hook: a bare `node`
+ *  fails open on a seat whose PATH has no node, OF-250 review F-1) and the guard script. */
+export function claudeRigBodyGuardGroup(scriptPath: string, options: { nodePath?: string; watchdogSeconds?: number } = {}): { matcher: string; hooks: Array<{ type: string; command: string; timeout: number }> } {
+  const node = options.nodePath ?? process.execPath;
+  const watchdog = options.watchdogSeconds ?? RIG_BODY_GUARD_WATCHDOG_SECONDS;
+  return { matcher: "Bash", hooks: [{ type: "command", command: `sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(node)} ${shellQuote(scriptPath)} ${watchdog}`, timeout: HOOK_TIMEOUT_SECONDS }] };
 }
 
 const SETTINGS_FLAG = "--settings";

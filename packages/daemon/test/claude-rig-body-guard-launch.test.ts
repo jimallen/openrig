@@ -3,10 +3,14 @@
 // launch's own --settings JSON. This file pins: the merge function; the composition order with the native-inbox key; "exactly one --settings
 // per command string" across every launch kind and every launch-settings variant, classic and managed, fresh/resume/fork/restore; and the
 // refusal when the hook script is missing (nothing is typed into the pane).
-import { describe, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
-import { claudeRigBodyGuardRefusal, claudeRigBodyGuardScriptPath, withRigBodyGuard } from "../src/adapters/claude-rig-body-guard.js";
+import { claudeRigBodyGuardGroup, claudeRigBodyGuardRefusal, claudeRigBodyGuardScriptPath, withRigBodyGuard } from "../src/adapters/claude-rig-body-guard.js";
 import { operationalLaunchArgs, withNativeInboxSettings } from "../src/adapters/kernel-authority.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -22,10 +26,10 @@ describe("withRigBodyGuard", () => {
   });
   it("the guard group is a blocking Bash PreToolUse hook on the shipped rig-body-guard.cjs", () => {
     expect(GUARD_GROUP.matcher).toBe("Bash");
-    expect(GUARD_GROUP.hooks[0]!.command).toBe(`'${process.execPath}' '${GUARD_SCRIPT}'`);
-    // F-1: the interpreter is the daemon's own node by absolute path, never a bare `node` that a seat PATH may not resolve.
-    expect(GUARD_GROUP.hooks[0]!.command.startsWith("'/")).toBe(true);
-    expect(GUARD_GROUP.hooks[0]!.command).not.toMatch(/^node /);
+    // OF-253: an inline sh wrapper; the interpreter is the daemon's own node by absolute path (OF-250 F-1), never a bare `node`; the watchdog is 3 s, under the 5 s hook timeout.
+    expect(GUARD_GROUP.hooks[0]!.command.startsWith("sh -c '")).toBe(true);
+    expect(GUARD_GROUP.hooks[0]!.command.endsWith(` sh '${process.execPath}' '${GUARD_SCRIPT}' 3`)).toBe(true);
+    expect(GUARD_GROUP.hooks[0]!.timeout).toBe(5);
     expect(GUARD_SCRIPT.endsWith("/assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs")).toBe(true);
   });
   it("one --settings in: the guard is appended as a SECOND PreToolUse group; permissions and the first hook are untouched", () => {
@@ -83,13 +87,88 @@ describe("withRigBodyGuard", () => {
     expect(JSON.parse(out[1]!).hooks.PreToolUse).toEqual([null, { matcher: "X", hooks: "s" }, GUARD_GROUP]);
   });
   it("a custom script path is used", () => {
-    expect(JSON.parse(withRigBodyGuard([], "/x/y z.cjs")[1]!).hooks.PreToolUse[0].hooks[0].command).toBe(`'${process.execPath}' '/x/y z.cjs'`);
+    expect(JSON.parse(withRigBodyGuard([], "/x/y z.cjs")[1]!).hooks.PreToolUse[0].hooks[0].command.endsWith(` sh '${process.execPath}' '/x/y z.cjs' 3`)).toBe(true);
   });
   it("the refusal names a missing script and is null when it is there", () => {
     expect(claudeRigBodyGuardRefusal(GUARD_SCRIPT)).toBeNull();
     expect(claudeRigBodyGuardRefusal("/nonexistent/rig-body-guard.cjs")).toContain("not launching Claude without it");
     expect(claudeRigBodyGuardRefusal(GUARD_SCRIPT, () => false)).not.toBeNull();
     expect(claudeRigBodyGuardScriptPath("/pkg/dist/adapters")).toBe("/pkg/assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs");
+  });
+});
+
+describe("OF-253: the hook command runs the guard through an inline sh wrapper that fails closed where the risk signal exists", () => {
+  // Measured on Claude Code 2.1.319: only exit 2 (or a deny decision) blocks; a missing interpreter, a missing script, exit 1, a SIGKILL and a timeout let the command run.
+  const BAD = 'rig send s "x `date` y"';
+  const BAD_DOLLAR = 'rig send s "x $(date) y"';
+  const HEREDOC = "rig send s --file - <<'EOF'\nuse `x` here\nEOF";
+  const event = (command: string) => JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } });
+  let dir = "";
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "of253-"));
+    writeFileSync(join(dir, "crash.cjs"), 'throw new Error("guard crashed");\n');
+    writeFileSync(join(dir, "exit1.cjs"), "process.exit(1);\n");
+    writeFileSync(join(dir, "hang.cjs"), "process.stdin.resume(); setTimeout(() => {}, 30000);\n");
+    writeFileSync(join(dir, "garbage.cjs"), 'console.log("not json"); \n');
+  });
+  afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
+  const hook = (command: string, options: { script?: string; node?: string; watchdog?: number } = {}) => {
+    const g = claudeRigBodyGuardGroup(options.script ?? GUARD_SCRIPT, { ...(options.node ? { nodePath: options.node } : {}), watchdogSeconds: options.watchdog ?? 3 });
+    const t0 = Date.now();
+    const r = spawnSync("sh", ["-c", g.hooks[0]!.command], { input: event(command), encoding: "utf8", timeout: 20_000 });
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: Date.now() - t0 };
+  };
+  const REFUSED = { status: 2 };
+  const ALLOWED = { status: 0, stdout: "" };
+
+  it("guard intact: a bad body is denied through the guard's own decision (exit 0 + deny JSON), a safe command and a quoted heredoc pass, and success does not wait for the watchdog", () => {
+    const bad = hook(BAD);
+    expect(bad.status).toBe(0);
+    expect(JSON.parse(bad.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(hook("ls -la")).toMatchObject(ALLOWED);
+    const heredoc = hook(HEREDOC);
+    expect(heredoc).toMatchObject(ALLOWED);
+    expect(heredoc.ms).toBeLessThan(2500); // watchdog is 3 s: a clean exit must not sit out its timer
+  });
+
+  for (const [label, options] of [
+    ["the guard script is gone (a package directory replaced under a running seat)", { script: "/nonexistent/rig-body-guard.cjs" }],
+    ["the node path is gone (a node upgrade under a running seat)", { node: "/nonexistent/bin/node" }],
+  ] as const) {
+    it(`${label}: degraded check refuses rig + backtick or $( and lets the rest run`, () => {
+      const bad = hook(BAD, options);
+      expect(bad).toMatchObject(REFUSED);
+      expect(bad.stderr).toContain("rig-body-guard is unavailable");
+      expect(bad.stderr).toContain("--file /tmp/msg.md");
+      expect(hook(BAD_DOLLAR, options)).toMatchObject(REFUSED);
+      expect(hook("echo hi\nrig send s `x`", options)).toMatchObject(REFUSED); // rig right after a newline
+      expect(hook("ls -la", options)).toMatchObject(ALLOWED);
+      expect(hook("echo `date`", options)).toMatchObject(ALLOWED);           // a backtick with no rig
+      expect(hook("rig send s 'plain'", options)).toMatchObject(ALLOWED);    // rig with no backtick or $(
+      expect(hook("echo a right $(date) b", options)).toMatchObject(ALLOWED); // "rig" inside another word is not rig
+    });
+    it(`${label}: a SAFE quoted-heredoc rig send holding backticks is refused too (the documented cost of degraded mode)`, () => {
+      expect(hook(HEREDOC, options)).toMatchObject(REFUSED);
+    });
+  }
+
+  for (const [label, script] of [["crashes", "crash.cjs"], ["exits 1", "exit1.cjs"]] as const) {
+    it(`the guard ${label}: the same degraded check, not a blanket refusal and not a blanket allow`, () => {
+      expect(hook(BAD, { script: join(dir, script) })).toMatchObject(REFUSED);
+      expect(hook("ls -la", { script: join(dir, script) })).toMatchObject(ALLOWED);
+    });
+  }
+  it("the guard prints something but exits 0: that output is passed through untouched", () => {
+    const r = hook("ls", { script: join(dir, "garbage.cjs") });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("not json\n");
+  });
+  it("the guard outruns the watchdog (1 s): stopped, then the degraded check applies; a safe command still runs", () => {
+    const bad = hook(BAD, { script: join(dir, "hang.cjs"), watchdog: 1 });
+    expect(bad).toMatchObject(REFUSED);
+    expect(bad.ms).toBeGreaterThan(900);
+    expect(bad.ms).toBeLessThan(5000);
+    expect(hook("ls -la", { script: join(dir, "hang.cjs"), watchdog: 1 })).toMatchObject(ALLOWED);
   });
 });
 

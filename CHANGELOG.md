@@ -38,8 +38,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   (`assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs`); if it is missing, the launch is refused and nothing is typed into the pane.
 - The hook runs the daemon's own node by absolute path (`process.execPath`, shell-quoted), like the team permission hook. A bare `node` failed open on a seat whose PATH has
   no node (measured on Claude 2.1.318: the command ran unguarded).
-- Still fail-open, by Claude Code's hook contract: the hook script removed under a seat that is already running, and a hook that runs past its 5 s timeout. The launch-time check
-  refuses a launch when the script is missing; it does not make a running seat's guard permanent.
+- OF-253: the hook is an inline `sh -c` wrapper around the guard, so the guard no longer fails open when it cannot run. Measured on Claude Code 2.1.319 (fake model server, private HOME):
+  only exit 2 (or a deny decision) blocks a tool call; a missing interpreter (127), a missing script, exit 1, a SIGKILL and a timeout all let the command run. The wrapper therefore applies a
+  degraded check of its own when node or the script is missing (a package directory or node replaced under a running seat), when the guard crashes or exits non-zero, and when it outruns a
+  3 s watchdog (plain sh, no `timeout` binary needed; the hook timeout stays 5 s): a command that mentions `rig` AND holds a backtick or `$(` is refused with exit 2 and a message, everything
+  else runs. **Cost of degraded mode:** a safe quoted-heredoc `rig send` whose text holds backticks is refused too until the seat is relaunched or restored; the message says to write the text to a
+  file with a command that does not mention rig and send it with `--file <path>`. Residual: the `sh` binary itself missing, Claude killing the hook before the 3 s watchdog fires on a host so loaded
+  that sh cannot start, and Claude versions other than 2.1.319 (not measured).
 - Not guarded: a Claude started outside OpenRig, or by a host whose daemon is older than this change; seats already running until they are relaunched or restored; Codex, OMP, and
   Claude tools other than `Bash`.
 - Also in this unit (OF-249 review F1, `17d58da`; narrowed by OF-251): the script word given to `ssh`, `sh -c` or `eval` is judged in the local shell's quoting, so
