@@ -139,6 +139,7 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
       const bad = hook(BAD, options);
       expect(bad).toMatchObject(REFUSED);
       expect(bad.stderr).toContain("rig-body-guard is unavailable");
+      expect(bad.stderr).toContain("(node or the guard script is missing)"); // found by the wrapper's own existence check, not by the guard failing
       expect(bad.stderr).toContain("--file /tmp/msg.md");
       expect(hook(BAD_DOLLAR, options)).toMatchObject(REFUSED);
       expect(hook("echo hi\nrig send s `x`", options)).toMatchObject(REFUSED); // rig right after a newline
@@ -154,7 +155,9 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
 
   for (const [label, script] of [["crashes", "crash.cjs"], ["exits 1", "exit1.cjs"]] as const) {
     it(`the guard ${label}: the same degraded check, not a blanket refusal and not a blanket allow`, () => {
-      expect(hook(BAD, { script: join(dir, script) })).toMatchObject(REFUSED);
+      const bad = hook(BAD, { script: join(dir, script) });
+      expect(bad).toMatchObject(REFUSED);
+      expect(bad.stderr).toContain("(the guard failed or timed out, exit ");
       expect(hook("ls -la", { script: join(dir, script) })).toMatchObject(ALLOWED);
     });
   }
@@ -166,6 +169,7 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
   it("the guard outruns the watchdog (1 s): stopped, then the degraded check applies; a safe command still runs", () => {
     const bad = hook(BAD, { script: join(dir, "hang.cjs"), watchdog: 1 });
     expect(bad).toMatchObject(REFUSED);
+    expect(bad.stderr).toContain("exit 143"); // stopped by the watchdog's TERM
     expect(bad.ms).toBeGreaterThan(900);
     expect(bad.ms).toBeLessThan(5000);
     expect(hook("ls -la", { script: join(dir, "hang.cjs"), watchdog: 1 })).toMatchObject(ALLOWED);
