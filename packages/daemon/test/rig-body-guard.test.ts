@@ -193,6 +193,7 @@ const ROWS: Row[] = [
   { id: "L13", deny: true, kind: "substitution", note: "F-1: script (an unmodelled runner) in ssh", cmd: `ssh host "script -q /dev/null rig send s hi $(date)"` },
   { id: "L14", deny: true, kind: "substitution", note: "F-1: docker exec (an unmodelled runner), local", cmd: `docker exec c rig send s "$(date)"` },
   { id: "L15", deny: true, kind: "substitution", note: "F-1: nice/xargs chain with options that take values", cmd: `echo a | nice -n 5 xargs -n 1 -I X rig queue create --body "$(date)"` },
+  { id: "L23", deny: true, kind: "pipe-producer", note: "F-1: echo of a substitution piped into an unmodelled runner's rig send", cmd: `echo $(date) | docker exec -i c rig send s --file -` },
   { id: "L16", deny: false, note: "F-1 control: a bare substitution is not a rig command", cmd: `$(date)` },
   { id: "L17", deny: false, note: "F-1 control: a leading substitution before a command that is not rig", cmd: `$(true) git status` },
   { id: "L18", deny: false, note: "F-1 control: rig among the arguments of echo is text", cmd: `echo rig send $(date)` },
