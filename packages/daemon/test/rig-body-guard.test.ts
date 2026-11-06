@@ -19,7 +19,7 @@ const guardPath = join(pluginRoot, "hooks", "scripts", "rig-body-guard.cjs");
 const piExtensionPath = join(pluginRoot, "pi", "rig-body-guard.cjs");
 const require = createRequire(import.meta.url);
 const guard = require(guardPath) as {
-  check: (command: unknown) => { block: boolean; violations: Array<{ kind: string; command: string | null }>; reason: string };
+  check: (command: unknown, options?: { budgetMs?: number }) => { block: boolean; violations: Array<{ kind: string; command: string | null }>; reason: string };
   hookDecision: (raw: string) => { output: unknown; note: string | null };
   maskPieces: (text: string, marks: Array<[number, number]>) => string;
 };
@@ -31,7 +31,7 @@ const NEST = (n: number): string => {
   return s;
 };
 
-interface Row { id: string; cmd: string; deny: boolean; kind?: string; note: string }
+interface Row { id: string; cmd: string; deny: boolean; kind?: string; note: string; budgetMs?: number }
 
 const ROWS: Row[] = [
   // ---- the incident shapes (verify-qa 18:28Z: the `--` before a double-quoted body that ran an unbounded swift test)
@@ -194,6 +194,36 @@ const ROWS: Row[] = [
   { id: "L14", deny: true, kind: "substitution", note: "F-1: docker exec (an unmodelled runner), local", cmd: `docker exec c rig send s "$(date)"` },
   { id: "L15", deny: true, kind: "substitution", note: "F-1: nice/xargs chain with options that take values", cmd: `echo a | nice -n 5 xargs -n 1 -I X rig queue create --body "$(date)"` },
   { id: "L23", deny: true, kind: "pipe-producer", note: "F-1: echo of a substitution piped into an unmodelled runner's rig send", cmd: `echo $(date) | docker exec -i c rig send s --file -` },
+  // OF-251 review (68f3b6c8) F-2: an unquoted here-document fed to a shell is unescaped by this shell first
+  { id: "HE1", deny: true, kind: "substitution", note: "F-2: sh <<EOF, an escaped \\$( ) that the unquoted heredoc turns into a live one", cmd: `sh <<EOF\nrig send s "\\$(touch m1)"\nEOF` },
+  { id: "HE2", deny: true, kind: "substitution", note: "F-2: the same with escaped backticks", cmd: `sh <<EOF\nrig send s "\\${T}touch m1\\${T}"\nEOF` },
+  { id: "HE3", deny: true, kind: "substitution", note: "F-2: ssh host <<EOF", cmd: `ssh h <<EOF\nrig send s "\\$(touch m1)"\nEOF` },
+  { id: "HE4", deny: true, kind: "substitution", note: "F-2: an escaped backslash does not escape the following $( )", cmd: `sh <<EOF\nrig send s "\\\\$(touch m1)"\nEOF` },
+  { id: "HE5", deny: false, note: "F-2 control: escaped $( ) inside SINGLE quotes of the inner script stays literal", cmd: `sh <<EOF\nrig send s '\\$(x)'\nEOF` },
+  { id: "HE6", deny: false, note: "F-2 control: the same escape with a QUOTED delimiter is literal to this shell, and double-quoted for the inner one it is just text", cmd: `sh <<'EOF'\nrig send s "\\$(x)"\nEOF` },
+  // F-3: text-only programs and script strings that end in a shell
+  { id: "PP1", deny: true, kind: "substitution", note: "F-3: printf of a script with a substitution into sh", cmd: `printf "%s\\n" "rig send s $(touch m6)" | sh` },
+  { id: "PP2", deny: true, kind: "substitution", note: "F-3: echo into bash", cmd: `echo "rig send s $(id)" | bash` },
+  { id: "PP3", deny: true, kind: "substitution", note: "F-3: cat of an unquoted here-document into sh", cmd: `cat <<EOF | sh\nrig send s 'a $(id)'\nEOF` },
+  { id: "PP4", deny: true, kind: "substitution", note: "F-3: single-quoted echo text is literal for echo but live for the sh that reads it", cmd: `echo 'rig send s $(id)' | sh` },
+  { id: "PP5", deny: true, kind: "substitution", note: "F-3: printf into ssh with no remote command", cmd: `printf '%s\\n' "rig send s $(id)" | ssh h` },
+  { id: "PP6", deny: false, note: "F-3 control: plain rig text piped into sh", cmd: `echo "rig send s hi" | sh` },
+  { id: "PP7", deny: false, note: "F-3 control: an unrelated substitution echoed into sh", cmd: `echo $(date) | sh` },
+  { id: "ES1", deny: true, kind: "substitution", note: "F-3: env -S string", cmd: `env -S "rig send s $(touch m2)"` },
+  { id: "ES2", deny: true, kind: "substitution", note: "F-3: env -S with the string attached, single-quoted", cmd: `env -S'rig send s $(id)'` },
+  { id: "ES3", deny: false, note: "F-3 control: env -S string without rig", cmd: `env -S "echo $(date)"` },
+  { id: "WA1", deny: true, kind: "substitution", note: "F-3: watch with one script string", cmd: `watch "rig send s $(id)"` },
+  { id: "WA2", deny: true, kind: "substitution", note: "F-3: watch -n with the words", cmd: `watch -n 5 rig send s "$(id)"` },
+  { id: "WA3", deny: false, note: "F-3 control: watch of plain rig text", cmd: `watch -n 5 rig ps` },
+  { id: "SC1", deny: true, kind: "substitution", note: "F-3: util-linux script -c with a script string", cmd: `script -q -c "rig send s $(id)" /dev/null` },
+  { id: "RS1", deny: true, kind: "substitution", note: "F-3: a script string for an unmodelled runner that starts with a guarded rig command", cmd: `docker exec c "rig send s $(id)"` },
+  { id: "RS2", deny: true, kind: "substitution", note: "F-3: the same after a separator inside the string", cmd: `docker exec c "cd /x; rig send s $(id)"` },
+  // OF-251 review (68f3b6c8) F-1: the guard fails closed in itself when its work budget is spent, and sees through quoting tricks in the name
+  { id: "BU1", deny: true, kind: "unparseable", note: "F-1: budget spent, obfuscated r\"\"ig name", cmd: `r""ig send s "$(touch m9)"`, budgetMs: -1 },
+  { id: "BU2", deny: true, kind: "unparseable", note: "F-1: budget spent, backslash in the name", cmd: `r\\ig send s $(touch m9)`, budgetMs: -1 },
+  { id: "BU3", deny: true, kind: "unparseable", note: "F-1: budget spent, quoted letter in the name", cmd: `'r'ig send s ${T}touch m9${T}`, budgetMs: -1 },
+  { id: "BU4", deny: false, note: "F-1 control: budget spent, no guarded rig text: allowed (fail closed only where the risk signal exists)", cmd: `echo $(date)`, budgetMs: -1 },
+  { id: "BU5", deny: false, note: "F-1 control: budget spent, rig text with no substitution", cmd: `rig send s 'plain'`, budgetMs: -1 },
   { id: "L16", deny: false, note: "F-1 control: a bare substitution is not a rig command", cmd: `$(date)` },
   { id: "L17", deny: false, note: "F-1 control: a leading substitution before a command that is not rig", cmd: `$(true) git status` },
   { id: "L18", deny: false, note: "F-1 control: rig among the arguments of echo is text", cmd: `echo rig send $(date)` },
@@ -246,7 +276,7 @@ describe("rig-body-guard parser table", () => {
 
   for (const row of ROWS) {
     it(`${row.id} ${row.deny ? "refuses" : "allows"}: ${row.note}`, () => {
-      const verdict = guard.check(row.cmd);
+      const verdict = guard.check(row.cmd, row.budgetMs === undefined ? undefined : { budgetMs: row.budgetMs });
       expect(verdict.block).toBe(row.deny);
       if (row.deny) {
         expect(verdict.violations[0]?.kind).toBe(row.kind);
@@ -288,6 +318,31 @@ describe("OF-251 review F-3: the mask is linear", () => {
   });
 });
 
+describe("OF-251 review (68f3b6c8) F-1: nested unquoted here-documents are scanned once per level", () => {
+  const nested = (lines: number, depth: number, tail: string): string => {
+    const head = Array.from({ length: depth }, (_, k) => `sh <<D${k + 1}`).join("\n");
+    const foot = Array.from({ length: depth }, (_, k) => `D${depth - k}`).join("\n");
+    return `${head}\n${"x $(a)\n".repeat(lines)}$(a)\n${foot}\n${tail}`;
+  };
+  it("the reviewer's 700 KB shape (7 levels) is judged by the real parse, not by the work budget, and the obfuscated name behind it is refused", () => {
+    const cmd = nested(100_000, 7, `r""ig send s "$(touch m9)"`);
+    expect(cmd.length).toBeGreaterThan(690_000);
+    const t0 = Date.now();
+    const verdict = guard.check(cmd);
+    const ms = Date.now() - t0;
+    expect(verdict.block).toBe(true);
+    expect(verdict.violations[0]?.kind).toBe("substitution"); // "unparseable" would mean the 1.5 s budget ran out (the doubled scan took 3.8 s here)
+    expect(ms).toBeLessThan(3000);
+  });
+  it("a hard input that does outrun the budget is refused by the guard itself where a guarded rig command is named", () => {
+    const cmd = nested(100_000, 7, `r""ig send s "$(touch m9)"`);
+    const verdict = guard.check(cmd, { budgetMs: -1 });
+    expect(verdict.block).toBe(true);
+    expect(verdict.violations[0]?.kind).toBe("unparseable");
+    expect(guard.check(nested(1000, 3, "echo hi"), { budgetMs: -1 }).block).toBe(false);
+  });
+});
+
 describe("OF-251 differential: the verdict against what a real bash does (fake rig logs argv, fake ssh runs the joined words in sh -c)", () => {
   const P = "$(printf PW%sN X)";
   const B = "`printf PW%sN X`";
@@ -317,6 +372,14 @@ describe("OF-251 differential: the verdict against what a real bash does (fake r
     { id: "d22", cmd: `bash <<EOF\ncd @P@; rig send s hi\nEOF`, lands: false },
     { id: "d23", cmd: `echo rig send @P@`, lands: false },
     { id: "d24", cmd: `bash <<'EOF'\nrig send s 'a @P@'\nEOF`, lands: false },
+    { id: "d25", cmd: `sh <<EOF\nrig send s "\\@P@"\nEOF`, lands: true },
+    { id: "d26", cmd: `sh <<EOF\nrig send s '\\@P@'\nEOF`, lands: false },
+    { id: "d27", cmd: `printf "%s\\n" "rig send s @P@" | sh`, lands: true },
+    { id: "d28", cmd: `echo 'rig send s @P@' | bash`, lands: true },
+    { id: "d29", cmd: `cat <<EOF | sh\nrig send s 'a @P@'\nEOF`, lands: true },
+    { id: "d30", cmd: `env -S "rig send s @P@"`, lands: true },
+    { id: "d31", cmd: `echo "rig send s hi" | sh`, lands: false },
+    { id: "d32", cmd: `echo @P@ | sh`, lands: false },
   ];
   let bin = "";
   let work = "";

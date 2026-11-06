@@ -56,7 +56,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   directly, locally and inside ssh / `sh -c` / `eval`. An unquoted here-document fed to a shell is expanded by this shell first, so a substitution inside its single quotes is refused too.
   The marker character is chosen per command from the private-use range and a literal U+E000 in a message is plain text. The mask is one linear pass; a script word with more than 20,000
   substitutions or 262,144 bytes (with a substitution) is not masked and is refused where it names a guarded rig command (Claude Code fails open on a hook that times out).
-  Still not modelled, as before: a command assembled at run time (`rig${IFS}send`, `R=rig; $R send ...`, ANSI-C quoting of the name), and `script -c "<script>"`.
+  Re-review (68f3b6c8) fixes: an unquoted here-document fed to a shell is scanned ONCE, as the text the shell hands on (substitutions run, `\$`, `` \` ``, `\\` unescaped), so nested
+  `sh <<D1` / `sh <<D2` / ... is linear, not 2^depth (700 KB took 3.8 s, past the hook's watchdog, and an obfuscated `r""ig` slipped through the degraded check). `check()` now has a 1.5 s work
+  budget; when it runs out, the guard itself refuses where a guarded rig command is named (the plain-text signal reads through quotes and backslashes in the name: `r""ig`, `r\ig`, `'r'ig`).
+  A shell or ssh that reads its script from a pipe is judged on what `echo`, `printf` or `cat <<EOF` print into it; `env -S "<string>"`, `watch "<string>"`, `script -c "<string>"` and a script string
+  starting with a guarded rig command given to any other runner (`docker exec c "rig send s $(x)"`) are read as shell text. The `xargs` table entry is gone: the runner rule judges
+  `xargs rig send ...` the same way (it was redundant). Still not modelled: a command assembled at run time (`rig${IFS}send`, `R=rig; $R send ...`, ANSI-C quoting of the name, a shell function or
+  positional parameter that carries the text), `tmux send-keys` (types into another pane), and a script string that does not start with the rig command.
 
 - OF-252: the launch-time merge fails closed on off-shape settings. A `PreToolUse` that is not an array, or `hooks` that is not an object, refuses the launch (it used to be
   replaced, dropping a caller's hook). `--settings=<json>` is recognised as a settings flag, counts toward exactly one, and is merged in its own form. A flag with no value, a value

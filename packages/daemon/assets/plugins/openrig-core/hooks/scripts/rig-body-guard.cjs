@@ -33,6 +33,12 @@ const MAX_LEN = 1_000_000;
 let OUTER_SUB = "\uE000";
 // A script word with more substitutions or more text than this is not masked: the command is refused where a guarded rig command is named
 // (a ParseError, see check()), because a hook that runs past its timeout fails open in Claude Code (OF-251 review F-3).
+// A check that has run this long gives up with a ParseError, so the in-guard fallback (which also sees through quoting tricks in the rig name) decides well
+// before the wrapper's 3 s watchdog and Claude's 5 s hook timeout (a timeout fails open). Overridable per call for tests.
+const DEFAULT_BUDGET_MS = 1500;
+let deadline = Infinity;
+let work = 0;
+function tick() { if ((++work & 1023) === 0 && Date.now() > deadline) throw new ParseError("work budget exceeded"); }
 const MAX_MASK_MARKS = 20_000;
 const MAX_MASK_BYTES = 262_144;
 const MAX_DEPTH = 8;
@@ -140,6 +146,7 @@ function readHeredocBodies(src, i, docs) {
   for (const d of docs) {
     const lines = [];
     while (i < n) {
+      tick();
       const j = src.indexOf("\n", i);
       const line = j < 0 ? src.slice(i) : src.slice(i, j);
       i = j < 0 ? n : j + 1;
@@ -355,6 +362,7 @@ function lex(src) {
   };
 
   while (i < n) {
+    tick();
     const c = src[i];
     if (c === " " || c === "\t") { i++; continue; }
     if (c === "\\" && src[i + 1] === "\n") { i += 2; continue; }
@@ -420,7 +428,8 @@ function lex(src) {
 // Command resolution
 
 const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "coproc", "time"]);
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "su"]);   // su -c takes a shell script like sh -c
+const STDIN_SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash"]);
+const SHELLS = new Set([...STDIN_SHELLS, "su"]);   // su -c takes a shell script like sh -c
 // Programs that only print or search their arguments: `rig send ...` among their arguments is text, not a command to run.
 const NON_RUNNERS = new Set(["echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "which", "type", "whereis", "man", "cat"]);
 // wrapper -> [options that take a value, leading positionals to skip]
@@ -431,7 +440,6 @@ const WRAPPERS = {
   nohup: [new Set(), 0], setsid: [new Set(), 0], builtin: [new Set(), 0], exec: [new Set(["-a"]), 0],
   command: [new Set(), 0], stdbuf: [new Set(["-i", "-o", "-e"]), 0], unbuffer: [new Set(), 0],
   caffeinate: [new Set(["-t", "-w"]), 0], nice: [new Set(["-n", "--adjustment"]), 0],
-  xargs: [new Set(["-I", "-L", "-n", "-P", "-s", "-a", "-d", "-E", "-J", "-R", "-S"]), 0], watch: [new Set(["-n", "--interval"]), 0],
   ionice: [new Set(["-c", "-n", "-p", "-P", "-u"]), 0], timeout: [new Set(["-s", "-k", "--signal", "--kill-after"]), 1],
 };
 const SSH_VALUED = new Set("BbcDEeFIiJLlmOopQRSWw".split("").map((c) => "-" + c));
@@ -445,29 +453,38 @@ function baseName(text) {
 function resolve(words) {
   let k = 0;
   let skipped = false;
+  const scripts = [];          // `env -S "<string>"`: the string is split and run as a command (OF-251 review F-3)
+  const done = (r) => { if (scripts.length) { r = r || { name: "", args: [] }; r.scripts = scripts; } return r; };
   for (let guard = 0; guard < 64; guard++) {
     // OF-251 review F-1: a leading word that expands (`$(true) rig send ...`, `$(command -v rig) send ...`) is an unknown prefix, not the end of resolution.
     while (k < words.length && (ASSIGN_RE.test(words[k].text) || KEYWORDS.has(words[k].text) || words[k].expands)) { if (words[k].expands && !ASSIGN_RE.test(words[k].text)) skipped = true; k++; }
-    if (k >= words.length) return null;
+    if (k >= words.length) return done(null);
     const name = baseName(words[k].text);
     const w = WRAPPERS[name];
     if (!w) {
       // `$(command -v rig) send s hi $(date)`: the name word is a substitution and the next word is a guarded rig command.
-      if (skipped && (Object.prototype.hasOwnProperty.call(MESSAGE_COMMANDS, words[k].text) || Object.prototype.hasOwnProperty.call(FLAG_COMMANDS, words[k].text))) return { name: "rig", args: words.slice(k) };
-      return { name, args: words.slice(k + 1) };
+      if (skipped && (Object.prototype.hasOwnProperty.call(MESSAGE_COMMANDS, words[k].text) || Object.prototype.hasOwnProperty.call(FLAG_COMMANDS, words[k].text))) return done({ name: "rig", args: words.slice(k) });
+      return done({ name, args: words.slice(k + 1) });
     }
     k++;
     let skip = w[1];
     while (k < words.length) {
       const t = words[k].text;
       if (t === "--") { k++; break; }
+      if (name === "env" && (t === "-S" || t === "--split-string") && k + 1 < words.length) { scripts.push(words[k + 1]); k += 2; continue; }
+      if (name === "env" && (t.startsWith("-S") || t.startsWith("--split-string=")) && t.length > (t.startsWith("-S") ? 2 : 15)) { scripts.push(subWord(words[k], t.startsWith("-S") ? 2 : 15)); k++; continue; }
       if (t.startsWith("-") && t.length > 1) { k += w[0].has(t) ? 2 : 1; continue; }
       if (name === "env" && ASSIGN_RE.test(t)) { k++; continue; }
       if (skip > 0) { skip--; k++; continue; }
       break;
     }
   }
-  return null;
+  return done(null);
+}
+
+/** A word made of the tail of another word's text (`-S"rig send"` style attached values), marks shifted with it. */
+function subWord(w, offset) {
+  return { ...w, text: w.text.slice(offset), marks: w.marks.filter((m) => m[0] >= offset).map((m) => [m[0] - offset, m[1] - offset]) };
 }
 
 /** The first word after "rig" that is not an option: the top-level command. */
@@ -517,6 +534,7 @@ function isMessageRig(res) {
 
 function scan(src, depth, out) {
   if (depth > MAX_DEPTH) throw new ParseError("nested too deep");
+  if (Date.now() > deadline) throw new ParseError("work budget exceeded");
   const { cmds, subs } = lex(src);
   const resolved = cmds.map((c) => resolve(c.words));
   // Pipelines: a run of commands joined by | or |&.
@@ -532,9 +550,9 @@ function scan(src, depth, out) {
 /** The here-documents and here-strings of a shell command that reads its script from stdin are shell text too. */
 function scanStdinScript(cmd, depth, out) {
   for (const h of cmd.heredocs) {
-    scan(h.body, depth + 1, out);
-    // OF-251 review F-6: an UNQUOTED delimiter makes THIS shell expand the body first, whatever single quotes the script puts around it.
-    if (!h.quoted && bodyExpands(h.body)) scan(maskSubstitutions(h.body), depth + 1, out);
+    // OF-251 review F-6/F-1: an UNQUOTED delimiter makes THIS shell expand the body first, whatever single quotes the script puts around it, so that expanded
+    // text is the script (scanned once: scanning the raw body as well doubled the work at every nesting level).
+    scan(h.quoted ? h.body : expandUnquotedHeredoc(h.body), depth + 1, out);
   }
   for (const w of cmd.hereStrings) scan(w.text, depth + 1, out);
 }
@@ -554,30 +572,41 @@ function maskPieces(text, marks) {
   return pieces.join("");
 }
 
-/** text with each command substitution the shell runs in it (as in an unquoted here-document body) replaced by OUTER_SUB. */
-function maskSubstitutions(text) {
+/** What the shell that reads an UNQUOTED here-document hands on: each substitution is run by THIS shell (OUTER_SUB), and \$, \`, \\ and \<newline> are unescaped
+ *  (so `sh <<EOF` / `rig send s "\$(x)"` gives the inner shell a live `$(x)`). One linear pass; this is the only text of the body that is scanned (OF-251 review F-1, F-2). */
+function expandUnquotedHeredoc(text) {
   const n = text.length;
-  const marks = [];
+  const pieces = [];
+  let at = 0;
   let i = 0;
+  const cut = (from, to, repl) => { pieces.push(text.slice(at, from), repl); at = to; };
   while (i < n) {
+    tick();
     const c = text[i];
-    if (c === "\\") { i += 2; continue; }
-    if (c === "`") { const j = skipBacktick(text, i + 1); marks.push([i, j]); i = j; continue; }
+    if (c === "\\") {
+      const d = text[i + 1];
+      if (d === "$" || d === "`" || d === "\\") cut(i, i + 2, d);
+      else if (d === "\n") cut(i, i + 2, "");
+      i += 2;
+      continue;
+    }
+    if (c === "`") { const j = skipBacktick(text, i + 1); cut(i, j, OUTER_SUB); i = j; continue; }
     if (c === "$" && text[i + 1] === "(") {
       const j = closeParen(text, i + 2);
-      if (text[i + 2] !== "(" || bodyExpands(text.slice(i + 3, j - 1))) marks.push([i, j + 1]);
+      if (text[i + 2] !== "(" || bodyExpands(text.slice(i + 3, j - 1))) cut(i, j + 1, OUTER_SUB);
       i = j + 1;
       continue;
     }
     if (c === "$" && text[i + 1] === "{") {
       const j = closeBrace(text, i + 2);
-      if (bodyExpands(text.slice(i + 2, j))) marks.push([i, j + 1]);
+      if (bodyExpands(text.slice(i + 2, j))) cut(i, j + 1, OUTER_SUB);
       i = j + 1;
       continue;
     }
     i++;
   }
-  return maskPieces(text, marks);
+  pieces.push(text.slice(at));
+  return pieces.join("");
 }
 
 /** F1 (OF-249 review), narrowed by OF-251: the script handed to sh -c / eval / ssh is itself a word of THIS shell. When that word has a command
@@ -590,11 +619,32 @@ function outerExpansion(words, depth, out) {
   scan(words.map(maskedText).join(" "), depth + 1, out);
 }
 
+/** A script string handed to a program that runs it as shell text (eval, watch, sh -c, su -c, script -c, env -S, ssh's remote command): the words are words of THIS shell. */
+function scanScriptWords(words, depth, out) {
+  outerExpansion(words, depth, out);
+  scan(words.map((a) => a.text).join(" "), depth + 1, out);
+}
+
+/** A shell (or ssh) that reads its script from a pipe: what the earlier commands of the pipeline print is the script (OF-251 review F-3). */
+function scanPipeProducers(cmds, resolved, from, to, depth, out) {
+  for (let j = from; j < to; j++) {
+    scanStdinScript(cmds[j], depth, out);                          // cat <<EOF | sh
+    const res = resolved[j];
+    if (!res || !PRODUCERS.has(res.name)) continue;
+    let words = res.args;
+    while (words.length && /^-[neE]+$/.test(words[0].text)) words = words.slice(1);
+    if (res.name === "printf" && words.length && words[0].text.includes("%")) words = words.slice(1);   // the format is not the text
+    if (words.length) scanScriptWords(words, depth, out);
+  }
+}
+
 function scanPipeline(cmds, resolved, from, to, depth, out) {
   let message = null;
   for (let i = from; i < to; i++) {
     const res = resolved[i];
     if (!res) continue;
+    if (res.scripts) for (const sw of res.scripts) scanScriptWords([sw], depth, out);
+    let handled = true;
     if (res.name === "rig") {
       const top = topLevel(res.args);
       if (top) for (const v of rigViolations(top)) out.push(v);
@@ -604,12 +654,30 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       if (ci >= 0) {
         const script = res.args.slice(ci + 1).find((a) => !a.text.startsWith("-"));
         if (script) { outerExpansion([script], depth, out); scan(script.text, depth + 1, out); }
-      } else if (res.args.every((a) => a.text.startsWith("-")) || res.args.some((a) => a.text === "-s")) {
+      } else if (STDIN_SHELLS.has(res.name) && (res.args.every((a) => a.text.startsWith("-")) || res.args.some((a) => a.text === "-s"))) {
         scanStdinScript(cmds[i], depth, out);        // bash <<'EOF' ... EOF / bash <<< '...': the text is the script
-      }
-    } else if (!NON_RUNNERS.has(res.name) && res.name !== "eval" && res.name !== "ssh") {
-      // OF-251 review F-1: a runner this guard does not model (find -exec, parallel, docker exec, script, ...) with `rig <guarded command> ...`
-      // among its arguments: the rig words are judged as if it were run directly (fail closed).
+        scanPipeProducers(cmds, resolved, from, i, depth, out);
+      } else handled = false;
+    } else if (res.name === "eval") {
+      scanScriptWords(res.args, depth, out);
+    } else if (res.name === "watch") {
+      let k = 0;                                      // watch joins its words and runs them with sh -c
+      while (k < res.args.length && res.args[k].text.startsWith("-")) k += (res.args[k].text === "-n" || res.args[k].text === "--interval") ? 2 : 1;
+      if (k < res.args.length) scanScriptWords(res.args.slice(k), depth, out);
+    } else if (res.name === "script" && res.args.some((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text) || a.text === "--command")) {
+      const ci = res.args.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text) || a.text === "--command");
+      if (res.args[ci + 1]) scanScriptWords([res.args[ci + 1]], depth, out);   // util-linux script -c "<script>"
+    } else if (res.name === "ssh") {
+      let k = 0;
+      while (k < res.args.length && res.args[k].text.startsWith("-")) k += SSH_VALUED.has(res.args[k].text) ? 2 : 1;
+      const remote = res.args.slice(k + 1);                 // after the host
+      if (remote.length) scanScriptWords(remote, depth, out);
+      else { scanStdinScript(cmds[i], depth, out); scanPipeProducers(cmds, resolved, from, i, depth, out); }   // ssh host <<'EOF' ... EOF, printf ... | ssh host
+    } else handled = false;
+    if (!handled && !NON_RUNNERS.has(res.name)) {
+      // OF-251 review F-1/F-3: a runner this guard does not model (find -exec, parallel, docker exec, script, tmux, ...): `rig <guarded command> ...` among its
+      // arguments is judged as if it were run directly, and an argument that is itself a script string naming a guarded rig command is read as shell text
+      // (fail closed). tmux send-keys types into another pane, a different vector that is left alone: only the first rule applies to it.
       const j = res.args.findIndex((a) => !a.expands && baseName(a.text) === "rig");
       if (j >= 0) {
         const top = topLevel(res.args.slice(j + 1));
@@ -618,15 +686,7 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
           if (Object.prototype.hasOwnProperty.call(MESSAGE_COMMANDS, top.name)) message = top.name;
         }
       }
-    } else if (res.name === "eval") {
-      outerExpansion(res.args, depth, out);
-      scan(res.args.map((a) => a.text).join(" "), depth + 1, out);
-    } else if (res.name === "ssh") {
-      let k = 0;
-      while (k < res.args.length && res.args[k].text.startsWith("-")) k += SSH_VALUED.has(res.args[k].text) ? 2 : 1;
-      const remote = res.args.slice(k + 1);                 // after the host
-      if (remote.length) { outerExpansion(remote, depth, out); scan(remote.map((a) => a.text).join(" "), depth + 1, out); }
-      else scanStdinScript(cmds[i], depth, out);            // ssh host <<'EOF' ... EOF
+      if (res.name !== "tmux") for (const a of res.args) if (/\s/.test(a.text) && SCRIPT_START_RE.test(a.text)) scanScriptWords([a], depth, out);
     }
   }
   if (!message) return;
@@ -646,11 +706,13 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
 // ---------------------------------------------------------------------------------------------
 // Verdict
 
-const FALLBACK_SRC =
-  "(?:^|[^\\w./-])(?:[\\w./-]*/)?rig\\s+(?:-\\S+\\s+)*(" +
-    Object.keys(MESSAGE_COMMANDS).concat(Object.keys(FLAG_COMMANDS)).map((n) => n.replace(/-/g, "\\-")).join("|") +
-    ")\\b";
+const GUARDED_ALT = Object.keys(MESSAGE_COMMANDS).concat(Object.keys(FLAG_COMMANDS)).map((n) => n.replace(/-/g, "\\-")).join("|");
+const RIG_TAIL = "(?:[\\w./-]*/)?rig\\s+(?:-\\S+\\s+)*(" + GUARDED_ALT + ")\\b";
+const FALLBACK_SRC = "(?:^|[^\\w./-])" + RIG_TAIL;
 const FALLBACK_RE = new RegExp(FALLBACK_SRC);
+// A script string whose command (at its start, or right after ; & | or an opening parenthesis) is a guarded rig command: `docker exec c "rig send s $(x)"`. Anchored, so a commit message that
+// merely mentions `rig send` is not a script.
+const SCRIPT_START_RE = new RegExp("(?:^|[;&|(])\\s*" + RIG_TAIL);
 
 /** A private-use character the command does not contain; a ParseError when it holds all 6400 of them. */
 function pickMarker(src) {
@@ -660,20 +722,24 @@ function pickMarker(src) {
   throw new ParseError("no free marker character");
 }
 
-/** check(command) -> { block, violations, reason }. Never throws. */
-function check(command) {
+/** check(command[, { budgetMs }]) -> { block, violations, reason }. Never throws. */
+function check(command, options) {
   if (typeof command !== "string" || command.length === 0) return { block: false, violations: [], reason: "" };
   let violations = [];
   try {
     if (command.length > MAX_LEN) throw new ParseError("command too long");
     OUTER_SUB = pickMarker(command);
+    work = 0;
+    deadline = Date.now() + (options && typeof options.budgetMs === "number" ? options.budgetMs : DEFAULT_BUDGET_MS);
     scan(command, 0, violations);
   } catch (error) {
     violations = [];
-    if (FALLBACK_RE.test(command) && (command.includes("`") || command.includes("$("))) {
+    // The plain-text signal also reads through quotes and backslashes in the name (r""ig, r\ig, 'r'ig), which the shell removes before it runs rig.
+    if ((command.includes("`") || command.includes("$(")) && (FALLBACK_RE.test(command) || FALLBACK_RE.test(command.replace(/["'\\]/g, "")))) {
       violations.push({ kind: "unparseable", command: null });
     }
   }
+  deadline = Infinity;
   if (violations.length === 0) return { block: false, violations, reason: "" };
   return { block: true, violations, reason: refusal(violations) };
 }
