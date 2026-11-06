@@ -7,10 +7,11 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
-import { claudeRigBodyGuardGroup, claudeRigBodyGuardRefusal, claudeRigBodyGuardScriptPath, withRigBodyGuard } from "../src/adapters/claude-rig-body-guard.js";
+import { RIG_BODY_GUARD_SUBCOMMANDS, claudeRigBodyGuardGroup, claudeRigBodyGuardRefusal, claudeRigBodyGuardScriptPath, withRigBodyGuard } from "../src/adapters/claude-rig-body-guard.js";
 import { operationalLaunchArgs, withNativeInboxSettings } from "../src/adapters/kernel-authority.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -183,6 +184,32 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     expect(hook("", { ...options, raw: '{"tool_input":{"command":"echo \\u0060date\\u0060"}}' })).toMatchObject(ALLOWED); // decoded backtick, no rig
     expect(hook("rig send s 'plain'", options)).toMatchObject(ALLOWED);
     expect(hook("echo a string $(date) b", options)).toMatchObject(ALLOWED);          // "string" holds r-i-g in order but is not rig
+  });
+  it("R3-1: the degraded check also counts a guarded rig subcommand word (send, queue, ...), so a name spelled apart is still refused; both spelled apart is the accepted residual", () => {
+    const options = { script: "/nonexistent/rig-body-guard.cjs" };
+    expect(hook('r$\'\'ig send s "$(touch m10)"', options)).toMatchObject(REFUSED);   // the name has no rig substring, the subcommand is a whole word
+    expect(hook('r"$(:)"ig send s "$(touch m10)"', options)).toMatchObject(REFUSED);
+    expect(hook("rig s$''end x $(y)", options)).toMatchObject(REFUSED);                 // the name is literal
+    expect(hook("echo host $(hostname)", options)).toMatchObject(REFUSED);              // over-refusal accepted: "host" is a guarded subcommand word
+    expect(hook("echo backend $(date)", options)).toMatchObject(ALLOWED);               // a subcommand word inside another word is not a word
+    // RECORDED: a deliberately obfuscated name AND subcommand ("s$''end" leaves `s$end` after the quotes go) is allowed: an accident guard, not a sandbox (CHANGELOG, guard header)
+    expect(hook("r$''ig s$''end x $(y)", options)).toMatchObject(ALLOWED);
+  });
+  it("R3-1: the subcommand list in the wrapper is the guard's own tables (MESSAGE_COMMANDS and FLAG_COMMANDS)", () => {
+    const guard = createRequire(import.meta.url)(GUARD_SCRIPT) as { MESSAGE_COMMANDS: Record<string, unknown>; FLAG_COMMANDS: Record<string, unknown> };
+    expect([...RIG_BODY_GUARD_SUBCOMMANDS].sort()).toEqual([...Object.keys(guard.MESSAGE_COMMANDS), ...Object.keys(guard.FLAG_COMMANDS)].sort());
+  });
+  it("R3-1: the reviewer's exact 107-character shape (nine nested substitutions, then r$''ig) is refused with the real guard falling back, and by the degraded check without it", () => {
+    const shape = `echo ${"$(echo ".repeat(9)}x${")".repeat(9)}\nr$''ig send s "$(touch m10)"`;
+    expect(shape.length).toBe(107);
+    const withGuard = hook(shape);
+    expect(withGuard.status).toBe(0);
+    expect(JSON.parse(withGuard.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(JSON.parse(withGuard.stdout).hookSpecificOutput.permissionDecisionReason).toContain("could not analyse");
+    expect(hook(shape, { script: "/nonexistent/rig-body-guard.cjs" })).toMatchObject(REFUSED);
+    // depth overflow with no rig anywhere: the guard's fallback refuses it too
+    const noRig = `echo ${"$(echo ".repeat(9)}x${")".repeat(9)}`;
+    expect(JSON.parse(hook(noRig).stdout).hookSpecificOutput.permissionDecision).toBe("deny");
   });
   it("degraded check: a backslash-newline inside the name, and the reviewer's exact padded shape (OF-251 round 2, R2-1)", () => {
     const options = { script: "/nonexistent/rig-body-guard.cjs" };

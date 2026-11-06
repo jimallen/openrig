@@ -240,7 +240,12 @@ const ROWS: Row[] = [
   { id: "SD1", deny: true, kind: "substitution", note: "R2-3: bash /dev/stdin", cmd: `echo "rig send s $(id)" | bash /dev/stdin` },
   { id: "SD2", deny: true, kind: "substitution", note: "R2-3: source /dev/stdin", cmd: `echo "rig send s $(id)" | source /dev/stdin` },
   { id: "EI1", deny: true, kind: "substitution", note: "R2-3: env -iS with bundled options", cmd: `env -iS "rig send s $(id)"` },
-  { id: "BU4", deny: false, note: "F-1 control: budget spent, no guarded rig text: allowed (fail closed only where the risk signal exists)", cmd: `echo $(date)`, budgetMs: -1 },
+  { id: "BU4", deny: true, kind: "unparseable", note: "R3-1: budget spent, NO rig text at all but a substitution: refused (the fallback no longer looks for the word rig)", cmd: `echo $(date)`, budgetMs: -1 },
+  { id: "BU12", deny: false, note: "R3-1 control: budget spent, no backtick and no $( : allowed", cmd: `echo hi; ls -la`, budgetMs: -1 },
+  { id: "R31", deny: true, kind: "unparseable", note: "R3-1: the reviewer's shape: nine nested substitutions (past MAX_DEPTH), then a name spelled r$\x27\x27ig", cmd: `echo ${"$(echo ".repeat(9)}x${")".repeat(9)}\nr$''ig send s "$(touch m10)"` },
+  { id: "R32", deny: true, kind: "unparseable", note: "R3-1: the same prefix, the name spelled r\"$(:)\"ig", cmd: `echo ${"$(echo ".repeat(9)}x${")".repeat(9)}\nr"$(:)"ig send s "$(touch m10)"` },
+  { id: "R33", deny: true, kind: "unparseable", note: "R3-1: depth overflow with no rig anywhere in the command", cmd: `echo ${"$(echo ".repeat(9)}x${")".repeat(9)}` },
+  { id: "R34", deny: false, note: "R3-1 control: the guard parses nine plain nested parentheses-free words fine (no substitution, no refusal)", cmd: `echo ${"a ".repeat(9)}x` },
   { id: "BU5", deny: false, note: "F-1 control: budget spent, rig text with no substitution", cmd: `rig send s 'plain'`, budgetMs: -1 },
   { id: "L16", deny: false, note: "F-1 control: a bare substitution is not a rig command", cmd: `$(date)` },
   { id: "L17", deny: false, note: "F-1 control: a leading substitution before a command that is not rig", cmd: `$(true) git status` },
@@ -262,7 +267,8 @@ const ROWS: Row[] = [
   // OF-251 review F-3: bounded masking; over the bound a command naming a guarded rig command is refused, not timed out
   { id: "Z1", deny: true, kind: "unparseable", note: "F-3: more substitutions in one script word than the mask bound, with rig text", cmd: `ssh h "${"$(a)".repeat(20_001)}; rig send s hi"` },
   { id: "Z2", deny: true, kind: "unparseable", note: "F-3: a script word over the byte bound with a substitution and rig text", cmd: `ssh h "$(a) ${"x".repeat(270_000)} rig send s hi"` },
-  { id: "Z3", deny: false, note: "F-3 control: over the bound without any guarded rig text: allowed", cmd: `ssh h "${"$(a)".repeat(20_001)}; echo hi"` },
+  { id: "Z3", deny: true, kind: "unparseable", note: "F-3/R3-1: over the bound with substitutions and no rig text: refused (the fallback does not look for rig)", cmd: `ssh h "${"$(a)".repeat(20_001)}; echo hi"` },
+  { id: "Z5", deny: false, note: "F-3 control: a 300 KB script word with NO substitution is not masked at all: allowed", cmd: `ssh h "${"x".repeat(300_000)} rig send s hi"` },
   { id: "Z4", deny: false, note: "F-3 control: at the bound minus one", cmd: `ssh h "${"$(a)".repeat(19_999)}; rig send s hi"` },
   // OF-251 review F-6: an UNQUOTED here-document fed to a shell is expanded by this shell first
   { id: "HU1", deny: true, kind: "substitution", note: "F-6: bash <<EOF with a substitution inside the single quotes of the rig body", cmd: `bash <<EOF\nrig send s 'a $(date)'\nEOF` },
@@ -278,7 +284,8 @@ const ROWS: Row[] = [
   // ---- parse failures: refuse only when the plain-text signal is there
   { id: "P1", deny: true, kind: "unparseable", note: "unterminated double quote around a rig send with a backtick", cmd: `rig send a@b "text ${T}x${T} still open` },
   { id: "P2", deny: true, kind: "unparseable", note: "truncated $(cat <<'EOF' wrapper", cmd: `rig send a@b "$(cat <<'EOF'\nreport that was cut off` },
-  { id: "P3", deny: false, note: "unparseable but no rig command: allowed", cmd: `echo "unterminated $(` },
+  { id: "P3", deny: true, kind: "unparseable", note: "unparseable with a $( and no rig command: refused (R3-1: the fallback does not look for rig)", cmd: `echo "unterminated $(` },
+  { id: "P3b", deny: false, note: "unparseable (unterminated quote) with no backtick and no $( : allowed", cmd: `echo "unterminated quote` },
   { id: "P4", deny: false, note: "unparseable rig send with no substitution signal: allowed (the shell reports the syntax error)", cmd: `rig send a@b 'unterminated` },
   { id: "P5", deny: true, kind: "unparseable", note: "nested deeper than the cap", cmd: NEST(12) },
   { id: "P6", deny: true, kind: "unparseable", note: "over the length cap with the signal", cmd: `rig send a@b "x ${T}y${T}" ${"#".repeat(1_100_000)}` },
@@ -370,7 +377,8 @@ describe("OF-251 review (68f3b6c8) F-1: nested unquoted here-documents are scann
     const verdict = guard.check(cmd, { budgetMs: -1 });
     expect(verdict.block).toBe(true);
     expect(verdict.violations[0]?.kind).toBe("unparseable");
-    expect(guard.check(nested(1000, 3, "echo hi"), { budgetMs: -1 }).block).toBe(false);
+    expect(guard.check(nested(1000, 3, "echo hi"), { budgetMs: -1 }).block).toBe(true);   // R3-1: no rig anywhere, substitutions in the bodies: refused
+    expect(guard.check("echo hi; ls", { budgetMs: -1 }).block).toBe(false);               // nothing to refuse
   });
 });
 

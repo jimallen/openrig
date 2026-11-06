@@ -49,9 +49,10 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   exit code) and prefixes PATH with `/usr/bin:/bin`; the degraded check uses shell builtins only (no grep), decodes the JSON escapes for backtick, `$`, r, i, g and strips quotes and backslashes
   before looking for the word `rig`, so `r""ig`, `r\ig` and `'r'ig` count (a hook text over 16 KB is not decoded and counts as mentioning rig when it holds a backtick or `$(`); a guard that
   ignores TERM is KILLed one second after the watchdog's TERM.
-  Round 2: the degraded check is the same coarse rule (decode the JSON escapes, drop backslash-newline, quotes and backslashes, look for `rig` as a substring with a backtick or `$(`), applied to the command's
-  value only (a cwd such as `.../openrig` does not count), linear in plain sh (field splitting on backslashes and quotes instead of per-occurrence loops; 0.17 s at the 16 KB limit on macOS `/bin/sh`), and over 16 KB with a
-  backtick or `$(` the command is refused. The hook now also carries `onFailure: "block"` (Claude Code 2.1.317 and 2.1.319: a hook that fails to run, times out or is killed blocks the tool call):
+  Round 2 and 3: the degraded check decodes the JSON escapes, drops backslash-newline, quotes and backslashes, and refuses when the text holds a backtick or `$(` AND mentions rig: the substring `rig` anywhere, OR
+  a guarded rig subcommand word (`send`, `queue`, `seat`, ... the guard's own tables) as a whole word (so `r$''ig send s "$(x)"` is refused; "host" or "mode" next to a substitution is refused too, an accepted
+  over-refusal while the guard is unavailable). It reads the command's value only (a cwd such as `.../openrig` does not count), is linear in plain sh (field splitting instead of per-occurrence loops; 0.17 s at the 16 KB
+  limit on macOS `/bin/sh`), and over 16 KB with a backtick or `$(` the command is refused. The hook now also carries `onFailure: "block"` (Claude Code 2.1.317 and 2.1.319: a hook that fails to run, times out or is killed blocks the tool call):
   **a seat whose wrapper itself fails (for example `/bin/sh` missing) now refuses EVERY Bash call until it is relaunched or restored**, instead of running commands unguarded.
   The guard also reads a printf format and its arguments as the text it produces, `ssh host sh`, `bash /dev/stdin`, `source /dev/stdin` as shells that read the pipe, and `env -iS "<string>"`;
   a pipeline of shells is scanned once (40,000 `| sh` is linear).
@@ -68,8 +69,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   substitutions or 262,144 bytes (with a substitution) is not masked and is refused where it names a guarded rig command (Claude Code fails open on a hook that times out).
   Re-review (68f3b6c8) fixes: an unquoted here-document fed to a shell is scanned ONCE, as the text the shell hands on (substitutions run, `\$`, `` \` ``, `\\` unescaped), so nested
   `sh <<D1` / `sh <<D2` / ... is linear, not 2^depth (700 KB took 3.8 s, past the hook's watchdog, and an obfuscated `r""ig` slipped through the degraded check). `check()` now has a 1.5 s work
-  budget; when it runs out (or the parse fails), the guard itself falls back to a deliberately COARSE check: after removing backslash-newline pairs, quotes and backslashes, the text holds `rig` anywhere
-  as a substring (so "right" or "trigger" next to a substitution is refused too, only while out of budget) together with a backtick or `$(` (every finer spelling match was bypassed by another way to write the name).
+  budget; when it runs out, or the parse fails, or the command nests past the depth limit, is oversize or has an unterminated construct, the guard could not analyse it and
+  **refuses any command that contains a backtick or `$(`, with no look for the word rig** (round 3: every spelling match of the name, quotes, backslashes, backslash-newline, was bypassed by another way
+  to write it, e.g. `r$''ig` or `r"$(:)"ig` behind nine nested substitutions). The refusal says so in plain words: rewrite the command without substitutions, or send the text with `--file`. Only pathological
+  or unparseable inputs get there, so the over-refusal is accepted. **Threat model:** this guard stops ACCIDENTAL shell expansion in message bodies; it is not a sandbox against a deliberately obfuscated
+  command (whoever can write a command can run the substitution without rig at all). Residuals include run-time assembly (`rig${IFS}send`, `R=rig; $R send`, functions, positional parameters), ANSI-C
+  quoting of the name (`$'\x72ig'`), globs and brace expansion that spell it (`./r?g`, `r{i,}g`), `tmux send-keys`, and a name AND subcommand both spelled apart in degraded mode.
   A shell or ssh that reads its script from a pipe is judged on what `echo`, `printf` or `cat <<EOF` print into it; `env -S "<string>"`, `watch "<string>"`, `script -c "<string>"` and a script string
   starting with a guarded rig command given to any other runner (`docker exec c "rig send s $(x)"`) are read as shell text. The `xargs` table entry is gone: the runner rule judges
   `xargs rig send ...` the same way (it was redundant). Still not modelled: a command assembled at run time (`rig${IFS}send`, `R=rig; $R send ...`, ANSI-C quoting of the name, a shell function or

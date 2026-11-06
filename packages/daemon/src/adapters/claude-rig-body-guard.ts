@@ -24,11 +24,20 @@ interface HookGroup { matcher?: string; hooks?: Array<{ type?: string; command?:
 export const RIG_BODY_GUARD_WATCHDOG_SECONDS = 3;
 const HOOK_TIMEOUT_SECONDS = 5;
 
+/** The guarded rig subcommand words of the guard's tables (MESSAGE_COMMANDS and FLAG_COMMANDS in rig-body-guard.cjs; a test keeps this list equal to them). The degraded check
+ *  below counts one of them, as a whole word, like the substring "rig": a name spelled apart (r$''ig) leaves `send` or `queue` next to it. */
+export const RIG_BODY_GUARD_SUBCOMMANDS: readonly string[] = [
+  "send", "broadcast", "ask", "chatroom", "stream", "queue", "proof", "scope", "watchdog", "workflow",
+  "seat", "edge", "gateway", "project", "launch", "agent-image", "bundle", "host", "slack", "startup-proof", "mode", "restore-packet",
+];
+const SUBCOMMAND_CASE = RIG_BODY_GUARD_SUBCOMMANDS.map((w) => `*[!A-Za-z0-9_]${w}[!A-Za-z0-9_]*`).join("|");
+
 /** OF-253: the inline `sh -c` script that runs the guard. $1 = node, $2 = the guard script, $3 = the watchdog seconds; the hook JSON arrives on stdin.
  *  Measured on Claude Code 2.1.319: only exit 2 (or a deny decision) blocks a tool call; a missing interpreter (127), a missing script, exit 1, a SIGKILL and a timeout all let it run.
  *  So when the guard cannot answer (node or the script is missing, the guard crashes or exits non-zero, or it outruns the watchdog) this script applies a DEGRADED check
  *  of its own to the hook text: it refuses (exit 2, a message the model reads) only a command that mentions `rig` and holds a backtick or `$(`, and lets everything else run.
- *  "Mentions rig" is read after decoding the JSON escapes for backtick, `$`, r, i, g and removing quotes and backslashes, so `r""ig`, `r\ig` and `'r'ig` count; the whole check uses shell
+ *  "Mentions rig" is read after decoding the JSON escapes and removing backslash-newline pairs, quotes and backslashes: the substring `rig` anywhere, OR a guarded rig subcommand word
+ *  (send, queue, ...) as a whole word, so `r""ig`, `r\ig`, `'r'ig` and a name spelled apart (`r$''ig send`) count (a deliberately obfuscated NAME *and* SUBCOMMAND, `r$''ig s$''end`, does not: this is an accident guard, not a sandbox); the whole check uses shell
  *  builtins (case, parameter expansion, printf), so a PATH without grep or sed cannot skip it, and PATH is prefixed with /usr/bin:/bin for cat and sleep. A hook text over 16 KB is not
  *  decoded: with a backtick or `$(` in it, it counts as mentioning rig. `set +e` first, so an inherited errexit (SHELLOPTS) cannot end the script on the guard's exit code before the
  *  degraded check. The watchdog is plain sh (no `timeout` binary): TERM at the deadline, KILL one second later. The two paths that cannot be made fail-closed from here: the shell binary
@@ -68,7 +77,7 @@ deg() {
     done
     IFS=$(printf '\042\047'); set -- $r; IFS=; r="$*"; unset IFS
     case $r in *"$bt"*|*'$('*) ;; *) exit 0 ;; esac
-    case $r in *rig*) ;; *) exit 0 ;; esac
+    case " $r " in *rig*|SUBCASE) ;; *) exit 0 ;; esac
   fi
   echo "rig-body-guard is unavailable ($why) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat." >&2
   exit 2
@@ -88,7 +97,7 @@ if [ "$rc" -eq 0 ]; then
   [ -z "$out" ] || printf '%s\n' "$out"
   exit 0
 fi
-deg "the guard failed or timed out, exit $rc"`.split("@@{").join("${");
+deg "the guard failed or timed out, exit $rc"`.split("@@{").join("${").split("SUBCASE").join(SUBCOMMAND_CASE);
 
 /** The guard's PreToolUse group: a blocking command hook on Bash. `onFailure: "block"` (measured on Claude Code 2.1.317 and 2.1.319, OF-251 round 2) makes a hook that fails to run block the tool call as well: a wrapper that cannot start
  *  (a missing /bin/sh, a bad exit, a timeout, a kill) refuses every Bash call until the seat is relaunched, instead of letting the command run unguarded.  It runs RIG_BODY_GUARD_WRAPPER with the daemon's own node (process.execPath, quoted, like the team hook: a bare `node`

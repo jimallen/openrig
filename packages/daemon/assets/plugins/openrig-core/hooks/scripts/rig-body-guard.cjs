@@ -16,15 +16,20 @@
 //
 // FAIL-CLOSED / FAIL-OPEN (decided, OF-249):
 //   - A command that does not mention a guarded rig command is never refused, whatever the parser does.
-//   - A command the parser cannot read (unterminated quote or $( , too deep, internal error) is
-//     refused ONLY IF a plain-text check also sees `rig <guarded command>` and a backtick or `$(`
-//     in it ("fail-closed where the risk signal exists"); otherwise it is allowed.
+//   - A command the guard cannot ANALYSE (unterminated quote or $( , nested past MAX_DEPTH, over the length, mask or work-budget bounds,
+//     internal error) is refused when it contains a backtick or `$(` ANYWHERE, with no look for the word rig: every spelling check of the name
+//     was bypassed by another way to write it (OF-251 re-review rounds 1 to 3). Only pathological or unparseable inputs get here, so the
+//     over-refusal is accepted; a command with no backtick and no `$(` is allowed.
 //   - Hook input that cannot be read at all (not JSON, no command) is allowed with a note on stderr:
 //     a hook that wedges every Bash call would also block the `rig send` that reports the fault.
 //
+// THREAT MODEL (OF-251): this guard stops ACCIDENTAL shell expansion in message bodies. It is not a sandbox against a deliberately obfuscated
+// command: whoever can write a command can run the substitution without rig at all.
+//
 // Not covered (residual, documented in the OF-249 report): a command assembled at run time
-// (variables used as the command or its text, `eval "$x"`), a file written with an unquoted
-// here-document and sent in a later command, `hc send`, python/node -e shelling out, aliases.
+// (variables used as the command or its text, `eval "$x"`, `rig${IFS}send`, `R=rig; $R send`, a shell function or positional parameter that carries
+// the text), ANSI-C quoting of the name ($'\x72ig'), globs and brace expansion that spell it (./r?g, r{i,}g), a file written with an unquoted
+// here-document and sent in a later command, `hc send`, `tmux send-keys`, python/node -e shelling out, aliases.
 
 const MAX_LEN = 1_000_000;
 // OF-251: stands in, in a wrapper script's text, for a substitution the LOCAL shell runs before the wrapper starts. A private-use
@@ -743,11 +748,9 @@ function check(command, options) {
     scan(command, 0, violations);
   } catch (error) {
     violations = [];
-    // Deliberately coarse (OF-251 re-review rounds 1 and 2: every finer spelling match was bypassed by another way to write the name): after removing
-    // backslash-newline pairs, quotes and backslashes, the text holds `rig` ANYWHERE as a substring (no word boundary: "right" next to a substitution is
-    // refused too) together with a backtick or `$(`. This runs only when the parse failed or the work budget ran out.
-    const coarse = command.replace(/\\\n/g, "").replace(/["'\\]/g, "");
-    if ((coarse.includes("`") || coarse.includes("$(")) && coarse.includes("rig")) {
+    // The guard could not analyse the command (parse error, nesting, size or work budget): refuse ANY command that holds a backtick or `$(`, with no
+    // check for the word rig (rounds 1 to 3 of the OF-251 review found a bypass of every spelling match: r$''ig, r"$(:)"ig, ri\<newline>g, ...).
+    if (command.includes("`") || command.includes("$(")) {
       violations.push({ kind: "unparseable", command: null });
     }
   }
@@ -765,7 +768,7 @@ function refusal(violations) {
     heredoc: `this command feeds ${cmd} from an UNQUOTED here-document (<<EOF) whose body contains a command substitution (backticks or $(...))`,
     "here-string": `this command feeds ${cmd} from a here-string (<<<) holding a command substitution (backticks or $(...))`,
     "pipe-producer": `this command pipes echo/printf with a command substitution (backticks or $(...)) in its text into ${cmd}`,
-    unparseable: `this command mentions ${cmd} with backticks or $(...) and could not be read as shell syntax (an unterminated quote or $( ?)`,
+    unparseable: `the guard could not analyse this command (an unterminated quote or $( , nesting deeper than it reads, a very large command, or too much work) and it contains a command substitution (backticks or $(...)): rewrite it without command substitutions, or put the text in a file and send it with --file`,
   }[first.kind];
   const lines = [
     "rig-body-guard BLOCKED this command before it ran. Nothing was executed.",
