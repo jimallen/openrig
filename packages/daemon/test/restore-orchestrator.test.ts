@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { migrate } from "../src/db/migrate.js";
 import { coreSchema } from "../src/db/migrations/001_core_schema.js";
 import { bindingsSessionsSchema } from "../src/db/migrations/002_bindings_sessions.js";
@@ -39,6 +40,7 @@ import { buildRestorePlanPreview } from "../src/domain/restore-plan-preview.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { observeClaudePermission, observeCodexSandbox, observePiResourceTrust, observeOmpApprovalMode, type AppliedLaunchObservation } from "../src/domain/permission-drift.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
+import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 import { GUARD_FLAG } from "./helpers/claude-guard.js";
@@ -2726,6 +2728,54 @@ describe("RestoreOrchestrator", () => {
     if (!result.ok) return;
     expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "awaiting-decision" })]);
     expect(sessionRegistry.getBindingForNode(newNode.id)).toMatchObject({ nodeId: newNode.id, tmuxSession: sessionName, tmuxPane: "%7" });
+  });
+
+  // OF-247 (d). OF-241's review left `launchNodeTargets`'s lifecycle entry unproven: with the entry made unreachable no test failed (A4 survived), and the owner
+  // called it redundant behind the launcher's own per-seat lease. It is not redundant: the NodeLauncher's lease ends when the launch returns, and a resume that
+  // concludes failed is rolled back afterwards (rollbackToZeroSession kills the blank session) with only the restore's entry holding the seat. Production
+  // consequence: without the entry a seat killed by that rollback is not held by any lifecycle lease, so its terminal reads as lost to the reconciler and a
+  // concurrent stop or launch of the same seat is not serialized behind the rollback. Entrypoint: routes/sessions.ts (subset launch) and routes/snapshots.ts
+  // (restore) -> RestoreOrchestrator, which startup.ts constructs with the delivery guard on the tmux adapter. Real guard, real database; only tmux and the resume are stubs.
+  describe("OF-247 (d): the lifecycle lease holds the seat when a failed resume is rolled back", () => {
+    // The guard's tables (migration 087) are not in the shared core fixture; this describe runs on the full migration list.
+    beforeEach(() => {
+      db.close();
+      db = createDb();
+      migrate(db, ALL_MIGRATIONS);
+      rigRepo = new RigRepository(db);
+      sessionRegistry = new SessionRegistry(db);
+      eventBus = new EventBus(db);
+      snapshotRepo = new SnapshotRepository(db);
+      checkpointStore = new CheckpointStore(db);
+      snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
+    });
+    function guardedTmux(heldAtKill: boolean[], nodeId: () => string) {
+      const guard = new SeatDeliveryGuard(db, (name) => resolveGuardTarget(db, name));
+      const tmux = Object.assign(mockTmux(), { deliveryGuard: guard });
+      (tmux as unknown as { killSession: unknown }).killSession = vi.fn(async () => { heldAtKill.push(guard.lifecycleHeld(nodeId())); return { ok: true as const }; });
+      return { guard, tmux };
+    }
+    const failedResume = () => mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
+
+    it("a subset launch (launchNodeTargets): the seat is held at the rollback's kill, and released after", async () => {
+      const { rig, snap, newNode } = snapshotThenRegrow("of247-subset-rig");
+      const heldAtKill: boolean[] = [];
+      const { guard, tmux } = guardedTmux(heldAtKill, () => newNode.id);
+      const result = await createOrchestrator({ tmux, claude: failedResume() }).launchNodeSubset(rig.id, ["dev.impl"], { snapshotId: snap.id });
+      expect(result.ok ? result.launched : result).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "awaiting-decision" })]);
+      expect(heldAtKill, "kills of the blank session, and whether the lease held the seat at each").toEqual([true]);
+      expect(guard.lifecycleHeld(newNode.id)).toBe(false);
+    });
+
+    it("a full restore: the same rollback is held (the control for the restore() entry)", async () => {
+      const { snap, newNode } = snapshotThenRegrow("of247-restore-rig");
+      const heldAtKill: boolean[] = [];
+      const { guard, tmux } = guardedTmux(heldAtKill, () => newNode.id);
+      const result = await createOrchestrator({ tmux, claude: failedResume() }).restore(snap.id);
+      expect(result.ok ? result.result.nodes : result).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "awaiting-decision" })]);
+      expect(heldAtKill).toEqual([true]);
+      expect(guard.lifecycleHeld(newNode.id)).toBe(false);
+    });
   });
 
   it("pod-aware: a regrown seat resumes through the harness launch and is rebound on the NEW node id", async () => {
