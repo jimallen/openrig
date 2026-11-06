@@ -43,8 +43,8 @@ describe("the hc surface exports", () => {
     expect(surface.hcTerminalName("a@b")).not.toBe(surface.hcTerminalName("a@c"));
     expect(surface.SEAT_LABEL).toBe("openrig.seat");
     expect(surface.HC_GENERATION).toBe(1);
-    expect(surface.HC_TESTED_VERSION).toBe("0.1.17");
-    expect([...surface.HC_TESTED_VERSIONS]).toEqual(["0.1.16", "0.1.17"]);
+    expect(surface.HC_TESTED_VERSION).toBe("0.1.18");
+    expect([...surface.HC_TESTED_VERSIONS]).toEqual(["0.1.16", "0.1.17", "0.1.18"]);
     expect(surface.HC_OLDEST_ACCEPTED_VERSION).toBe("0.1.15");
   });
 });

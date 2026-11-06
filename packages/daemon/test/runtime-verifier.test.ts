@@ -55,8 +55,8 @@ describe("RuntimeVerifier", () => {
     expect(result.error).toBeNull();
   });
 
-  it("the tested hc is 0.1.16 and 0.1.17, 0.1.17 the newest, and the generation 1 (restated, so a change must be deliberate)", () => {
-    expect(HC_TESTED_VERSION).toBe("0.1.17");
+  it("the tested hc is 0.1.16, 0.1.17 and 0.1.18, 0.1.18 the newest, and the generation 1 (restated, so a change must be deliberate)", () => {
+    expect(HC_TESTED_VERSION).toBe("0.1.18");
     expect(HC_GENERATION).toBe(1);
   });
 
@@ -90,14 +90,14 @@ describe("RuntimeVerifier", () => {
     expect(asked).toBe(0);
   });
 
-  it.each(["0.1.15", "0.1.18", "0.1.99"])("hc %s on both the CLI and the core is accepted, verified with a warning naming both versions", async (v) => {
+  it.each(["0.1.15", "0.1.19", "0.1.99"])("hc %s on both the CLI and the core is accepted, verified with a warning naming both versions", async (v) => {
     const exec = createMockExec({ "hc --version": `hc ${v}` });
     const result = await withCore(db, exec, async () => hello({ version: v })).verifyHc();
     expect(result.status).toBe("verified");
     expect(result.version).toBe(v);
     expect(result.error).toContain(v);
     expect(result.error).toContain(PIN);
-    expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: HC_GENERATION, coreVersion: v, testedVersion: "0.1.17", untested: true });
+    expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: HC_GENERATION, coreVersion: v, testedVersion: "0.1.18", untested: true });
   });
 
   it("the tested version carries no warning", async () => {
@@ -108,7 +108,7 @@ describe("RuntimeVerifier", () => {
   });
 
   it("a CLI that is accepted and a core that is not (or the reverse) -> error: each is judged on its own", async () => {
-    const cliOk = await withCore(db, createMockExec({ "hc --version": "hc 0.1.18" }), async () => hello({ version: "0.2.0" })).verifyHc();
+    const cliOk = await withCore(db, createMockExec({ "hc --version": "hc 0.1.19" }), async () => hello({ version: "0.2.0" })).verifyHc();
     expect(cliOk.status).toBe("error");
     expect(cliOk.error).toContain("0.2.0");
     const coreOk = await withCore(db, createMockExec({ "hc --version": "hc 0.1.14" }), async () => hello()).verifyHc();

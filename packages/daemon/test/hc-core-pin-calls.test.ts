@@ -67,7 +67,7 @@ describe("a pinned core, after startup", () => {
     expect(core.asked).toEqual([]);
   });
 
-  it.each(["0.1.15", "0.1.18", "0.1.99"])("serves a call to a core that moved to hc %s (accepted, not the tested version): the same version rule as the watch", async (version) => {
+  it.each(["0.1.15", "0.1.19", "0.1.99"])("serves a call to a core that moved to hc %s (accepted, not the tested version): the same version rule as the watch", async (version) => {
     const core = await fakeCore(hello({ version }));
     lifts.push(pinCallsToCore(core.path, watchOf("core-1")));
     await expect(new HcClient(core.path).call("terminal.list")).resolves.toEqual({ ok: true });

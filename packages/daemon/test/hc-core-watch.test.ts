@@ -134,7 +134,7 @@ describe("verifyHello", () => {
     expect(() => verifyHello(hello({ version }))).toThrow(expect.objectContaining({ kind }));
     expect(() => verifyHello(hello({ version }))).toThrow(HcCoreRefusedError);
   });
-  it.each(["0.1.15", "0.1.16", "0.1.17", "0.1.99"])("accepts hc %s", (version) => {
+  it.each(["0.1.15", "0.1.16", "0.1.17", "0.1.18", "0.1.99"])("accepts hc %s", (version) => {
     expect(() => verifyHello(hello({ version }))).not.toThrow();
   });
   it("says whether an accepted version is the tested one, and names both versions when it is not", () => {

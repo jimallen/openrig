@@ -9,15 +9,15 @@
 // ones, and refuses what could have changed the protocol: another major, another minor, or a release older than the floor.
 
 /** The hc releases this build was tested against, oldest first: the `*.real.test.ts` files and the daemon suite ran on a private
- *  core of each (0.1.17: the full daemon suite and the code-point sweep on Sparky, OF-241). A version is added only after that run. */
-export const HC_TESTED_VERSIONS = ["0.1.16", "0.1.17"] as const;
+ *  core of each (0.1.17: the full daemon suite and the code-point sweep on Sparky, OF-241; 0.1.18: the same on Sparky, hc-hc018). A version is added only after that run. */
+export const HC_TESTED_VERSIONS = ["0.1.16", "0.1.17", "0.1.18"] as const;
 
 /** The newest tested release: the one install hints and fixes name ("Install hc ${HC_TESTED_VERSION}"), and the minor line the
  *  rule accepts. */
 export const HC_TESTED_VERSION = HC_TESTED_VERSIONS[HC_TESTED_VERSIONS.length - 1]!;
 
-/** The tested set as prose for messages: "0.1.16 and 0.1.17". */
-const TESTED_SET_TEXT = HC_TESTED_VERSIONS.join(" and ");
+/** The tested set as prose for messages: "0.1.16, 0.1.17 and 0.1.18". */
+const TESTED_SET_TEXT = `${HC_TESTED_VERSIONS.slice(0, -1).join(", ")} and ${HC_TESTED_VERSIONS[HC_TESTED_VERSIONS.length - 1]}`;
 
 /** The oldest release of the tested minor line that is accepted (0.1.15 is the version the spikes and most of the suite were
  *  written on). Anything below it, in the same minor, is refused. */

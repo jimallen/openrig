@@ -18,7 +18,7 @@ import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js"
 import { coreSequenceWidths, paneWidthTableSource, sweepCoreWidths } from "./helpers/hc-width-sweep.js";
 import { panePi, until } from "./helpers/pi-runner-pane.js";
 
-/** hc 0.1.16 and 0.1.17 disagree on these four code points (2 cells, 1 cell); the table is 0.1.17's. Measured both ways. */
+/** hc 0.1.16 and 0.1.17 disagree on these four code points (2 cells, 1 cell); the table is 0.1.17's. Measured both ways. hc 0.1.18 (Linux, hc-hc018) gave the table's answer for every one of the 1,111,999 code points, these four included. */
 const VERSION_DEPENDENT = new Set([0x302e, 0x302f, 0x16ff0, 0x16ff1]);
 
 /** Strings whose width the core decides differently by version. [string, cells hc 0.1.16 draws it in (code points added up), cells hc 0.1.17 draws it in (one cluster)]. */

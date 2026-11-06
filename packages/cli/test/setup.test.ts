@@ -287,7 +287,7 @@ describe("rig setup", () => {
     expect(result.ready).toBe(false);
   });
 
-  it.each(["0.1.15", "0.1.18", "0.1.99"])("setup accepts hc %s with a warning naming both versions, and stays ready", async (v) => {
+  it.each(["0.1.15", "0.1.19", "0.1.99"])("setup accepts hc %s with a warning naming both versions, and stays ready", async (v) => {
     const base = makeDeps();
     const result = await runSetup(makeDeps({ exec: (cmd: string) => cmd === "hc --version" ? `hc ${v}\n` : base.exec(cmd) }), {});
 

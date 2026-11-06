@@ -982,11 +982,11 @@ requirements:
   // An hc of the tested minor line that is not the tested version is accepted (hc-version.ts) and bootstrap goes on, with the warning.
   it("an accepted but untested hc does not block bootstrap, and its warning naming both versions reaches the result", async () => {
     const specPath = writeSpec(SIMPLE_SPEC_YAML);
-    const exec = createMockExec({ "hc --version": "hc 0.1.18", "claude --version": "claude 1.0.0", "codex --version": "codex 0.5.0", "command -v": "/usr/local/bin/tool" });
+    const exec = createMockExec({ "hc --version": "hc 0.1.19", "claude --version": "claude 1.0.0", "codex --version": "codex 0.5.0", "command -v": "/usr/local/bin/tool" });
     const result = await buildOrchestrator({ exec }).bootstrap({ mode: "apply", sourceRef: specPath, autoApprove: true });
 
     expect(result.status).not.toBe("failed");
-    const warning = result.warnings.find((w) => w.includes("0.1.18"));
+    const warning = result.warnings.find((w) => w.includes("0.1.19"));
     expect(warning).toContain(HC_TESTED_VERSION);
     const tested = await buildOrchestrator().bootstrap({ mode: "apply", sourceRef: writeSpec(SIMPLE_SPEC_YAML), autoApprove: true });
     expect(tested.warnings.some((w) => w.includes("untested"))).toBe(false);
