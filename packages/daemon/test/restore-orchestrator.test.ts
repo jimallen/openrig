@@ -2736,8 +2736,8 @@ describe("RestoreOrchestrator", () => {
   // consequence: without the entry a seat killed by that rollback is not held by any lifecycle lease, so its terminal reads as lost to the reconciler and a
   // concurrent stop or launch of the same seat is not serialized behind the rollback. Entrypoint: routes/sessions.ts (subset launch) and routes/snapshots.ts
   // (restore) -> RestoreOrchestrator, which startup.ts constructs with the delivery guard on the tmux adapter. Real guard, real database; only tmux and the resume are stubs.
-  describe("OF-247 (d): the lifecycle lease holds the seat when a failed resume is rolled back", () => {
-    // The guard's tables (migration 087) are not in the shared core fixture; this describe runs on the full migration list.
+  describe("OF-247: restore under the lifecycle lease, on the full schema", () => {
+    // The guard's tables (migration 087) are not in the shared core fixture; these rows run on the full migration list.
     beforeEach(() => {
       db.close();
       db = createDb();
@@ -2757,6 +2757,7 @@ describe("RestoreOrchestrator", () => {
     }
     const failedResume = () => mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
 
+    describe("(d) the lease holds the seat when a failed resume is rolled back", () => {
     it("a subset launch (launchNodeTargets): the seat is held at the rollback's kill, and released after", async () => {
       const { rig, snap, newNode } = snapshotThenRegrow("of247-subset-rig");
       const heldAtKill: boolean[] = [];
@@ -2775,6 +2776,56 @@ describe("RestoreOrchestrator", () => {
       expect(result.ok ? result.result.nodes : result).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "awaiting-decision" })]);
       expect(heldAtKill).toEqual([true]);
       expect(guard.lifecycleHeld(newNode.id)).toBe(false);
+    });
+    });
+
+    // OF-247 (b). OF-241's review: restore holds its lease across `docker compose up` (tmux-exec.ts `execCommand`: no timeout), "so a hung compose keeps a real loss
+    // excused until the ceiling". Measured instead: by the time the services boot runs (restore step 3b) every stale running row of the rig has been marked
+    // detached (step 2b), a live or unreadable one has refused the restore, and the reconciler lists only `running` rows, so NO seat of this rig is listed, excused or
+    // reported, however long compose hangs: the lease excuses nothing there, and a real loss cannot be hidden by it. Neither a timeout (which would fail a
+    // legitimate cold image pull) nor releasing the lease (the restore body runs inside it) is chosen; the row pins the premise. What a hung compose does cost is the
+    // lease itself: every lifecycle operation on the rig's seats waits behind it, which this unit does not change (see the PR's Boundary).
+    describe("(b) a restore waiting on the services boot", () => {
+      it("holds the lease on the rig's seat, while the seat is no running row and so nothing is excused or reported", async () => {
+        const rig = rigRepo.createRig("of247-compose-rig");
+        const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+        const sessionName = "dev-impl@of247-compose-rig";
+        const session = sessionRegistry.registerSession(node.id, sessionName);
+        sessionRegistry.updateStatus(session.id, "running");
+        sessionRegistry.updateResumeToken(session.id, "claude_id", "tok-1");
+        sessionRegistry.updateBinding(node.id, { tmuxSession: sessionName, tmuxPane: "%7" });
+        const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+        rigRepo.setServicesRecord(rig.id, { kind: "compose", specJson: "{}", rigRoot: "/rig-root", composeFile: "compose.yaml" });
+
+        const guard = new SeatDeliveryGuard(db, (name) => resolveGuardTarget(db, name));
+        let release!: (outcome: { ok: false; error: string }) => void;
+        const booting = new Promise<{ ok: false; error: string }>((resolve) => { release = resolve; });
+        const boot = vi.fn(() => booting);
+        const serviceOrchestrator = { boot } as unknown as import("../src/domain/service-orchestrator.js").ServiceOrchestrator;
+        const tmux = Object.assign(mockTmux(), { deliveryGuard: guard });
+        // The core answers with no terminals at all (hc: an empty listing is an answer), as it does for a rig whose terminals are gone.
+        const core = { listSessions: async () => [], getPanePid: async () => null, getPaneCommand: async () => null, hostKind: "hc" as const };
+        let tick = 0;
+        const now = () => new Date(Date.UTC(2026, 10, 6, 12, 0, 5 * tick++));
+        const wired = new SeatIdentityReconciler({ db, tmux: core, now, lifecycleHeld: (id) => guard.lifecycleHeld(id), lifecycleHeldCount: () => guard.lifecycleHeldCount() });
+        const unwired = new SeatIdentityReconciler({ db, tmux: core, now });
+        const verdictOf = () => (db.prepare("SELECT reason FROM seat_identity_verdicts WHERE node_id = ?").get(node.id) as { reason: string } | undefined)?.reason ?? "(none)";
+
+        // Positive control: before the restore the row is running and its terminal absent, so the unwired reconciler reports it on the second poll.
+        await unwired.reconcileAll(); await unwired.reconcileAll();
+        expect(verdictOf(), "the seat reads missing when it is a running row without a terminal").toBe("session_missing");
+
+        const restoring = createOrchestrator({ tmux, serviceOrchestrator }).restore(snap.id, { fsOps: { exists: () => true } });
+        await vi.waitFor(() => expect(boot).toHaveBeenCalledTimes(1));
+        expect(guard.lifecycleHeld(node.id), "the lease holds the seat across the services boot").toBe(true);
+        expect(db.prepare("SELECT status FROM sessions WHERE node_id = ?").all(node.id), "the seat's rows while compose runs").toEqual([{ status: "detached" }]);
+        for (const reconciler of [wired, unwired, wired, unwired, wired, unwired]) await reconciler.reconcileAll();
+        expect(verdictOf(), "six polls (lease wired and not) while compose runs: the seat is not listed, so the lease excused nothing and nothing was reported").toBe("(none)");
+
+        release({ ok: false, error: "compose hung, then failed" });
+        expect(await restoring).toMatchObject({ ok: false, code: "service_boot_failed" });
+        expect(guard.lifecycleHeld(node.id)).toBe(false);
+      });
     });
   });
 
