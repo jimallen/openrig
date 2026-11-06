@@ -196,6 +196,18 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     // RECORDED: a deliberately obfuscated name AND subcommand ("s$''end" leaves `s$end` after the quotes go) is allowed: an accident guard, not a sandbox (CHANGELOG, guard header)
     expect(hook("r$''ig s$''end x $(y)", options)).toMatchObject(ALLOWED);
   });
+  it("R4-1: a TAB, newline or CR between a spelled-apart name and a plain subcommand is a separator, not nothing (r$''ig<TAB>send is r$''ig send)", () => {
+    const options = { script: "/nonexistent/rig-body-guard.cjs" };
+    for (const [label, sep] of [["TAB", "\t"], ["newline", "\n"], ["CR", "\r"]] as const) {
+      expect(hook(`r$''ig${sep}send s "$(touch m12)"`, options), label).toMatchObject(REFUSED);
+      expect(hook(`r"$(:)"ig${sep}queue create $(x)`, options), label).toMatchObject(REFUSED);
+    }
+    // the separators must not break the joins that were already right
+    expect(hook("ri\\\ng send s $(x)", options)).toMatchObject(REFUSED);            // backslash-newline inside the name is removed by the shell: rig
+    expect(hook("ri\\\ng s$''end x $(y)", options)).toMatchObject(REFUSED);           // the join is what makes the name rig: with a space instead it would read "ri g"
+    expect(hook("r\\\nig s$''end x $(y)", options)).toMatchObject(REFUSED);
+    expect(hook("echo resend\tit $(date)", options)).toMatchObject(ALLOWED);          // resend<TAB>it: still no whole word send
+  });
   it("R3-1: the subcommand list in the wrapper is the guard's own tables (MESSAGE_COMMANDS and FLAG_COMMANDS)", () => {
     const guard = createRequire(import.meta.url)(GUARD_SCRIPT) as { MESSAGE_COMMANDS: Record<string, unknown>; FLAG_COMMANDS: Record<string, unknown> };
     expect([...RIG_BODY_GUARD_SUBCOMMANDS].sort()).toEqual([...Object.keys(guard.MESSAGE_COMMANDS), ...Object.keys(guard.FLAG_COMMANDS)].sort());

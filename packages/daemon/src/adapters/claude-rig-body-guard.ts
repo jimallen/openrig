@@ -60,10 +60,11 @@ deg() {
     set -f
     IFS='\'; set -- $s; unset IFS
     r=$1; [ $# -gt 0 ] && shift
-    lit=0
+    lit=0; after=0
     for t in "$@"; do
       # an empty field is the first backslash of a JSON escaped backslash (\\): the field after it is plain text, not an escape letter (so \rig keeps its r)
-      if [ $lit = 1 ]; then r=$r$t; lit=0; continue; fi
+      if [ $lit = 1 ]; then r=$r$t; lit=0; [ -n "$t" ] || after=1; continue; fi
+      was=$after; after=0
       case $t in
         '') lit=1 ;;
         u0060*) r=$r$bt@@{t#u0060} ;;
@@ -71,7 +72,11 @@ deg() {
         u0072*) r=@@{r}r@@{t#u0072} ;;
         u0069*) r=@@{r}i@@{t#u0069} ;;
         u0067*) r=@@{r}g@@{t#u0067} ;;
-        [ntrbf]*) r=$r@@{t#?} ;;
+        # JSON n, t, r escapes are SEPARATORS (a space): r$''ig TAB send must not read as r$''igsend. The exception is a newline right after an escaped backslash
+        # (backslash-newline, which the shell removes, so ri BS NL g is rig). The b and f escapes are dropped.
+        n*) if [ $was = 1 ]; then r=$r@@{t#?}; else r="$r @@{t#?}"; fi ;;
+        [tr]*) r="$r @@{t#?}" ;;
+        [bf]*) r=$r@@{t#?} ;;
         *) r=$r$t ;;
       esac
     done

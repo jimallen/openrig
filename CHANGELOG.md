@@ -50,7 +50,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   before looking for the word `rig`, so `r""ig`, `r\ig` and `'r'ig` count (a hook text over 16 KB is not decoded and counts as mentioning rig when it holds a backtick or `$(`); a guard that
   ignores TERM is KILLed one second after the watchdog's TERM.
   Round 2 and 3: the degraded check decodes the JSON escapes, drops backslash-newline, quotes and backslashes, and refuses when the text holds a backtick or `$(` AND mentions rig: the substring `rig` anywhere, OR
-  a guarded rig subcommand word (`send`, `queue`, `seat`, ... the guard's own tables) as a whole word (so `r$''ig send s "$(x)"` is refused; "host" or "mode" next to a substitution is refused too, an accepted
+  a guarded rig subcommand word (`send`, `queue`, `seat`, ... the guard's own tables) as a whole word (so `r$''ig send s "$(x)"` is refused, and a TAB, newline or CR between the pieces counts as a separator, not as nothing; "host" or "mode" next to a substitution is refused too, an accepted
   over-refusal while the guard is unavailable). It reads the command's value only (a cwd such as `.../openrig` does not count), is linear in plain sh (field splitting instead of per-occurrence loops; 0.17 s at the 16 KB
   limit on macOS `/bin/sh`), and over 16 KB with a backtick or `$(` the command is refused. The hook now also carries `onFailure: "block"` (Claude Code 2.1.317 and 2.1.319: a hook that fails to run, times out or is killed blocks the tool call):
   **a seat whose wrapper itself fails (for example `/bin/sh` missing) now refuses EVERY Bash call until it is relaunched or restored**, instead of running commands unguarded.
