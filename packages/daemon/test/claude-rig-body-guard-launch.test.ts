@@ -46,6 +46,42 @@ describe("withRigBodyGuard", () => {
   it("more than one --settings going in is refused (they do not merge: the double-flag case measured on 2.1.318)", () => {
     expect(() => withRigBodyGuard(["--settings", TEAM, "--settings", GUARD_JSON])).toThrow(/more than one --settings/);
   });
+  // OF-252: off-shape input fails closed (a thrown Error, so the launch does not happen) instead of being replaced or mis-detected.
+  it("a PreToolUse that is not an array is refused, not silently replaced (a caller's hook would be dropped)", () => {
+    for (const pre of [{ matcher: "Bash", hooks: [{ type: "command", command: "team-hook" }] }, "team-hook", 5, null]) {
+      expect(() => withRigBodyGuard(["--settings", JSON.stringify({ hooks: { PreToolUse: pre } })])).toThrow(/PreToolUse of a Claude launch is not an array/);
+    }
+  });
+  it("a hooks value that is not an object is refused, not silently replaced", () => {
+    for (const hooks of [[{ matcher: "Bash" }], "x", 5, null]) {
+      expect(() => withRigBodyGuard(["--settings", JSON.stringify({ hooks })])).toThrow(/hooks of a Claude launch is not an object/);
+    }
+  });
+  it("the --settings=<json> form is a settings flag: it is merged in place, in its own form, and stays the only one", () => {
+    const out = withRigBodyGuard(["--x", `--settings=${TEAM}`, "--y"]);
+    expect(out.slice(0, 1)).toEqual(["--x"]);
+    expect(out[2]).toBe("--y");
+    expect(out).toHaveLength(3);
+    expect(out[1]!.startsWith("--settings=")).toBe(true);
+    expect(JSON.parse(out[1]!.slice("--settings=".length)).hooks.PreToolUse).toEqual([JSON.parse(TEAM).hooks.PreToolUse[0], GUARD_GROUP]);
+    expect(withRigBodyGuard(out)).toEqual(out);
+  });
+  it("the equals form counts toward exactly one, in every pairing", () => {
+    expect(() => withRigBodyGuard([`--settings=${TEAM}`, "--settings", GUARD_JSON])).toThrow(/more than one --settings/);
+    expect(() => withRigBodyGuard(["--settings", TEAM, `--settings=${GUARD_JSON}`])).toThrow(/more than one --settings/);
+    expect(() => withRigBodyGuard([`--settings=${TEAM}`, `--settings=${GUARD_JSON}`])).toThrow(/more than one --settings/);
+  });
+  it("a flag with no value, a value that is not JSON (a file path), or JSON that is not an object fails closed with a clear error", () => {
+    expect(() => withRigBodyGuard(["--x", "--settings"])).toThrow(/has no value/);
+    expect(() => withRigBodyGuard(["--settings", "/some/file.json"])).toThrow(/not valid JSON.*file path is not supported/);
+    expect(() => withRigBodyGuard(["--settings", "{"])).toThrow(/not valid JSON/);
+    expect(() => withRigBodyGuard(["--settings=nope"])).toThrow(/not valid JSON/);
+    for (const v of ["null", "[]", "5", "\"x\""]) expect(() => withRigBodyGuard(["--settings", v])).toThrow(/not a JSON object/);
+  });
+  it("malformed group entries are kept, not crashed on or dropped", () => {
+    const out = withRigBodyGuard(["--settings", JSON.stringify({ hooks: { PreToolUse: [null, { matcher: "X", hooks: "s" }] } })]);
+    expect(JSON.parse(out[1]!).hooks.PreToolUse).toEqual([null, { matcher: "X", hooks: "s" }, GUARD_GROUP]);
+  });
   it("a custom script path is used", () => {
     expect(JSON.parse(withRigBodyGuard([], "/x/y z.cjs")[1]!).hooks.PreToolUse[0].hooks[0].command).toBe(`'${process.execPath}' '/x/y z.cjs'`);
   });

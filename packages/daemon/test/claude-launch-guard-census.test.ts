@@ -2,6 +2,10 @@
 // The guard is added by operationalLaunchArgs / operationalLaunchArg (kernel-authority.ts) into the launch's one --settings; a site is covered when
 // its command is built from that function's output. A NEW site that builds `claude ...` without it fails here.
 //
+// OF-252 adds two more shapes the template/`.command` match was blind to (the OF-250 review probe survived them): (c) `spawn("claude", [...])` and its
+// siblings (spawnSync, execFile, execFileSync, exec, execSync, fork), and (d) `["claude", ...].join(" ")`. Each has a positive control that runs the
+// finder on in-memory source. Found at the base of OF-252: one (c) site, the `claude --help` probe, and no (d) site.
+//
 // Population: (a) every call `<x>.command([...])` on the managed launch, (b) every template/string text that starts a `claude` invocation with a flag or
 // an interpolated flag (`claude --`, `claude ${`). Found at the base of OF-250: 3 managed + 4 classic = 7 launch sites in two files, plus two NON-launch uses.
 import fs from "node:fs";
@@ -16,6 +20,7 @@ const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const NOT_A_LAUNCH: Record<string, string> = {
   "domain/native-resume-probe.ts": "buildNativeResumeCommand: the OPERATOR-facing resume line (and the resume-metadata probe's one-shot check in a throwaway session that is never sent input); no seat runs it with tools",
   "domain/rigspec-preflight.ts": "`claude --version`: a runtime availability probe the preflight runs; it starts no session",
+  "domain/permission-drift-observer.ts": "execFile(\"claude\", [\"--help\"]): reads the help text to see which permission flags exist; it starts no session and sends no model input",
   "domain/node-inventory.ts": "display text for `rig ps`/inventory (the command an operator could type); never executed by the daemon",
 };
 
@@ -23,14 +28,19 @@ function walk(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(nodePath.join(dir, e.name)) : e.name.endsWith(".ts") ? [nodePath.join(dir, e.name)] : []);
 }
 
-interface Site { file: string; line: number; kind: "managed" | "classic"; text: string; covered: boolean }
+interface Site { file: string; line: number; kind: "managed" | "classic" | "spawn" | "join"; text: string; covered: boolean }
 
 const CLAUDE_START = /\bclaude (--|\$\{)/;
 
+const SPAWNERS = /(^|\.)(spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)$/;
+const isClaudeLiteral = (n: ts.Node | undefined): boolean => !!n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && /^(.*\/)?claude$/.test(n.text);
+
 function sitesIn(file: string): Site[] {
-  const rel = nodePath.relative(SRC, file);
-  const text = fs.readFileSync(file, "utf8");
-  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  return sitesInText(nodePath.relative(SRC, file), fs.readFileSync(file, "utf8"));
+}
+
+function sitesInText(rel: string, text: string): Site[] {
+  const sf = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
   const out: Site[] = [];
   /** The variable initialisers in this file, so `${permissionMode}` can be traced to operationalLaunchArg. */
   const inits = new Map<string, string>();
@@ -41,6 +51,12 @@ function sitesIn(file: string): Site[] {
     const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
     if (ts.isCallExpression(n) && /(^|\.)command$/.test(n.expression.getText(sf)) && n.arguments[0] && ts.isArrayLiteralExpression(n.arguments[0]) && /--permission-mode/.test(n.arguments[0].getText(sf))) {
       out.push({ file: rel, line, kind: "managed", text: n.arguments[0].getText(sf).slice(0, 80), covered: usesOperational(n.arguments[0].getText(sf)) });
+    }
+    if (ts.isCallExpression(n) && SPAWNERS.test(n.expression.getText(sf)) && isClaudeLiteral(n.arguments[0])) {
+      out.push({ file: rel, line, kind: "spawn", text: n.getText(sf).slice(0, 80), covered: !!n.arguments[1] && usesOperational(n.arguments[1].getText(sf)) });
+    }
+    if (ts.isArrayLiteralExpression(n) && isClaudeLiteral(n.elements[0]) && ts.isPropertyAccessExpression(n.parent) && n.parent.name.text === "join" && ts.isCallExpression(n.parent.parent)) {
+      out.push({ file: rel, line, kind: "join", text: n.getText(sf).slice(0, 80), covered: usesOperational(n.getText(sf)) });
     }
     if (ts.isTemplateExpression(n)) {
       const whole = n.getText(sf);
@@ -92,6 +108,35 @@ describe("OF-250 census: every Claude launch command is built through operationa
     const v = (n: ts.Node): void => { if (ts.isTemplateExpression(n) && CLAUDE_START.test(n.getText(sf))) found.push("classic"); if (ts.isCallExpression(n) && /command$/.test(n.expression.getText(sf))) found.push("managed"); ts.forEachChild(n, v); };
     v(sf);
     expect(found).toEqual(["classic", "managed"]);
+  });
+
+  it("OF-252: the spawn and join shapes are in the population: one site today (the `claude --help` probe, listed as a non-launch), no join site", () => {
+    expect(all.filter((s) => s.kind === "spawn").map((s) => s.file)).toEqual(["domain/permission-drift-observer.ts"]);
+    expect(all.filter((s) => s.kind === "join")).toEqual([]);
+    expect(launchSites.filter((s) => s.kind === "spawn" || s.kind === "join")).toEqual([]);
+  });
+
+  describe("OF-252 positive and negative controls for the new shapes (the finder run on in-memory source)", () => {
+    const find = (src: string) => sitesInText("adapters/zz-new.ts", src);
+    it("spawn / execFile / sync and qualified forms of \"claude\" are found, uncovered", () => {
+      for (const call of [`spawn("claude", ["--resume", t])`, `cp.spawnSync('claude', args)`, `execFile("claude", ["--resume", t], cb)`, `execFileSync("/opt/homebrew/bin/claude", a)`, `child_process.execSync("claude")`, `fork("claude", [])`]) {
+        const sites = find(`const r = ${call};`);
+        expect(sites.map((s) => s.kind), call).toEqual(["spawn"]);
+        expect(sites[0]!.covered, call).toBe(false);
+      }
+    });
+    it("a [\"claude\", ...].join(\" \") command line is found, uncovered", () => {
+      const sites = find(`const cmd = ["claude", "--resume", token].join(" ");`);
+      expect(sites.map((s) => s.kind)).toEqual(["join"]);
+      expect(sites[0]!.covered).toBe(false);
+    });
+    it("a spawn or join built from operationalLaunchArgs counts as covered", () => {
+      expect(find(`spawn("claude", operationalLaunchArgs(choice, [x]))`).map((s) => s.covered)).toEqual([true]);
+      expect(find(`["claude", ...operationalLaunchArgs(c, [])].join(" ")`).map((s) => s.covered)).toEqual([true]);
+    });
+    it("negative controls: other programs, a bare claude array that is not joined, a join without claude first", () => {
+      expect(find(`spawn("git", ["status"]); execFile("node", ["x"]); const m = ["claude", MANIFEST]; const o = ["x", "claude"].join(" "); const t = ["a", "b"].map(f);`)).toEqual([]);
+    });
   });
 
   it("operationalLaunchArgs is where the guard is added, in the fixed order (native inbox first)", () => {

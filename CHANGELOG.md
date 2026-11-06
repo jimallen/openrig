@@ -47,6 +47,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   plain rig text, e.g. `ssh host "cd $(pwd) && rig send s hi"`, is allowed, as it is when run locally. A script given to `eval` in several words is read as one script
   (``eval rig send s "'`x`'"`` was not refused before OF-251).
 
+- OF-252: the launch-time merge fails closed on off-shape settings. A `PreToolUse` that is not an array, or `hooks` that is not an object, refuses the launch (it used to be
+  replaced, dropping a caller's hook). `--settings=<json>` is recognised as a settings flag, counts toward exactly one, and is merged in its own form. A flag with no value, a value
+  that is not a JSON object (a file path is not read) or malformed JSON refuses the launch with a clear error. No launch builder in the repo emits any of these today. The launch census
+  now also finds `spawn("claude", ...)` (and its exec siblings) and `["claude", ...].join(" ")`.
+
 ### A `rig send` body with backticks or `$(...)` in double quotes is refused before the shell runs it (OF-249)
 
 - The shell expands a command substitution before `rig` starts, so nothing inside `rig send` can stop it. In one run a double-quoted body ran an unbounded
