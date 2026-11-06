@@ -356,8 +356,8 @@ describe("OF-251 review (68f3b6c8) F-1: nested unquoted here-documents are scann
     expect(guard.DEFAULT_BUDGET_MS).toBeGreaterThan(0);
     expect(guard.DEFAULT_BUDGET_MS).toBeLessThanOrEqual(2000);
   });
-  it("the reviewer's ~100 KB shape: 20,000 shells in one pipeline, then a name spelled with a backslash-newline, is judged by the real parse in a fraction of the budget", () => {
-    const cmd = `true${" | sh".repeat(20_000)}\nri\\\ng send s "$(touch m8)"`;
+  it("the reviewer's shape, doubled to 200 KB: 40,000 shells in one pipeline, then a name spelled with a backslash-newline, is judged by the real parse in a fraction of the budget", () => {
+    const cmd = `true${" | sh".repeat(40_000)}\nri\\\ng send s "$(touch m8)"`;
     const t0 = Date.now();
     const verdict = guard.check(cmd);
     expect(verdict.block).toBe(true);

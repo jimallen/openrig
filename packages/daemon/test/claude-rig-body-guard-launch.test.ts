@@ -115,11 +115,11 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     writeFileSync(join(dir, "garbage.cjs"), 'console.log("not json"); \n');
   });
   afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
-  const hook = (command: string, options: { script?: string; node?: string; watchdog?: number; raw?: string; env?: Record<string, string>; shell?: string } = {}) => {
+  const hook = (command: string, options: { script?: string; node?: string; watchdog?: number; raw?: string; env?: Record<string, string>; shell?: string; cwd?: string } = {}) => {
     const g = claudeRigBodyGuardGroup(options.script ?? GUARD_SCRIPT, { ...(options.node ? { nodePath: options.node } : {}), watchdogSeconds: options.watchdog ?? 3 });
     const line = options.shell ? g.hooks[0]!.command.replace(/^\/bin\/sh /, `${options.shell} `) : g.hooks[0]!.command;
     const t0 = Date.now();
-    const r = spawnSync("/bin/sh", ["-c", line], { input: options.raw ?? event(command), encoding: "utf8", timeout: 60_000, ...(options.env ? { env: options.env } : {}) });
+    const r = spawnSync("/bin/sh", ["-c", line], { input: options.raw ?? event(command), encoding: "utf8", timeout: 60_000, ...(options.env ? { env: options.env } : {}), ...(options.cwd ? { cwd: options.cwd } : {}) });
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: Date.now() - t0 };
   };
   const REFUSED = { status: 2 };
@@ -186,9 +186,15 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
   });
   it("degraded check: a backslash-newline inside the name, and the reviewer's exact padded shape (OF-251 round 2, R2-1)", () => {
     const options = { script: "/nonexistent/rig-body-guard.cjs" };
-    for (const c of ['ri\\\ng send s "$(touch m8)"', 'r\\\nig send s $(touch m8)', "r\"\"i\\\n'g' send s `x`", 'true' + ' | sh'.repeat(3000) + '\nri\\\ng send s "$(touch m8)"']) {
+    for (const c of ["\\rig send s $(x)", "\\\\rig send s `x`", "ri\\\\\ng send s $(x)", 'ri\\\ng send s "$(touch m8)"', 'r\\\nig send s $(touch m8)', "r\"\"i\\\n'g' send s `x`", 'true' + ' | sh'.repeat(3000) + '\nri\\\ng send s "$(touch m8)"']) {
       expect(hook(c, options), c.slice(0, 40)).toMatchObject(REFUSED);
     }
+  });
+  it("degraded check: a JSON u00xx escape that decodes to nothing risky is not a refusal, and the split text is never glob-expanded", () => {
+    const options = { script: "/nonexistent/rig-body-guard.cjs" };
+    expect(hook("", { ...options, raw: '{"tool_input":{"command":"rig send s \\u0041"}}' })).toMatchObject(ALLOWED); // the precheck sees u00, the decoded text has no backtick or $(
+    writeFileSync(join(dir, "xrig"), "");                                                                             // a file whose name holds rig in the working directory
+    expect(hook("", { ...options, cwd: dir, raw: '{"tool_input":{"command":"\\\\*\\\\ `date`"}}' })).toMatchObject(ALLOWED); // a field that is exactly * (between two backslashes) must not expand into the file name xrig
   });
   it("degraded check reads only the command's value: a cwd or path that holds 'rig' (openrig) does not make an unrelated substitution a refusal", () => {
     const options = { script: "/nonexistent/rig-body-guard.cjs" };

@@ -51,8 +51,12 @@ deg() {
     set -f
     IFS='\'; set -- $s; unset IFS
     r=$1; [ $# -gt 0 ] && shift
+    lit=0
     for t in "$@"; do
+      # an empty field is the first backslash of a JSON escaped backslash (\\): the field after it is plain text, not an escape letter (so \rig keeps its r)
+      if [ $lit = 1 ]; then r=$r$t; lit=0; continue; fi
       case $t in
+        '') lit=1 ;;
         u0060*) r=$r$bt@@{t#u0060} ;;
         u0024*) r=$r'$'@@{t#u0024} ;;
         u0072*) r=@@{r}r@@{t#u0072} ;;

@@ -54,7 +54,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   backtick or `$(` the command is refused. The hook now also carries `onFailure: "block"` (Claude Code 2.1.317 and 2.1.319: a hook that fails to run, times out or is killed blocks the tool call):
   **a seat whose wrapper itself fails (for example `/bin/sh` missing) now refuses EVERY Bash call until it is relaunched or restored**, instead of running commands unguarded.
   The guard also reads a printf format and its arguments as the text it produces, `ssh host sh`, `bash /dev/stdin`, `source /dev/stdin` as shells that read the pipe, and `env -iS "<string>"`;
-  a pipeline of shells is scanned once (20,000 `| sh` is linear).
+  a pipeline of shells is scanned once (40,000 `| sh` is linear).
 - Not guarded: a Claude started outside OpenRig, or by a host whose daemon is older than this change; seats already running until they are relaunched or restored; Codex, OMP, and
   Claude tools other than `Bash`.
 - Also in this unit (OF-249 review F1, `17d58da`; narrowed by OF-251): the script word given to `ssh`, `sh -c` or `eval` is judged in the local shell's quoting, so
