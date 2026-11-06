@@ -471,7 +471,7 @@ function resolve(words) {
     while (k < words.length) {
       const t = words[k].text;
       if (t === "--") { k++; break; }
-      if (name === "env" && (t === "-S" || t === "--split-string") && k + 1 < words.length) { scripts.push(words[k + 1]); k += 2; continue; }
+      if (name === "env" && (t === "-S" || t === "--split-string" || /^-[A-Za-z]+S$/.test(t)) && k + 1 < words.length) { scripts.push(words[k + 1]); k += 2; continue; }
       if (name === "env" && (t.startsWith("-S") || t.startsWith("--split-string=")) && t.length > (t.startsWith("-S") ? 2 : 15)) { scripts.push(subWord(words[k], t.startsWith("-S") ? 2 : 15)); k++; continue; }
       if (t.startsWith("-") && t.length > 1) { k += w[0].has(t) ? 2 : 1; continue; }
       if (name === "env" && ASSIGN_RE.test(t)) { k++; continue; }
@@ -628,19 +628,23 @@ function scanScriptWords(words, depth, out) {
 /** A shell (or ssh) that reads its script from a pipe: what the earlier commands of the pipeline print is the script (OF-251 review F-3). */
 function scanPipeProducers(cmds, resolved, from, to, depth, out) {
   for (let j = from; j < to; j++) {
+    tick();
     scanStdinScript(cmds[j], depth, out);                          // cat <<EOF | sh
     const res = resolved[j];
     if (!res || !PRODUCERS.has(res.name)) continue;
     let words = res.args;
     while (words.length && /^-[neE]+$/.test(words[0].text)) words = words.slice(1);
-    if (res.name === "printf" && words.length && words[0].text.includes("%")) words = words.slice(1);   // the format is not the text
+    // A printf format and its arguments are the produced text together (`printf 'rig send s %s\\n' "$(id)" | sh`): all of the words are scanned as the script.
     if (words.length) scanScriptWords(words, depth, out);
   }
 }
 
 function scanPipeline(cmds, resolved, from, to, depth, out) {
   let message = null;
+  let producersDone = from;     // commands [from, producersDone) were already scanned as a stdin shell's producers: each is read once per pipeline (linear, not per shell)
+  const producers = (i) => { scanPipeProducers(cmds, resolved, producersDone, i, depth, out); if (i > producersDone) producersDone = i; };
   for (let i = from; i < to; i++) {
+    tick();
     const res = resolved[i];
     if (!res) continue;
     if (res.scripts) for (const sw of res.scripts) scanScriptWords([sw], depth, out);
@@ -654,9 +658,9 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       if (ci >= 0) {
         const script = res.args.slice(ci + 1).find((a) => !a.text.startsWith("-"));
         if (script) { outerExpansion([script], depth, out); scan(script.text, depth + 1, out); }
-      } else if (STDIN_SHELLS.has(res.name) && (res.args.every((a) => a.text.startsWith("-")) || res.args.some((a) => a.text === "-s"))) {
-        scanStdinScript(cmds[i], depth, out);        // bash <<'EOF' ... EOF / bash <<< '...': the text is the script
-        scanPipeProducers(cmds, resolved, from, i, depth, out);
+      } else if (STDIN_SHELLS.has(res.name) && (res.args.every((a) => a.text.startsWith("-")) || res.args.some((a) => a.text === "-s" || a.text === "/dev/stdin"))) {
+        scanStdinScript(cmds[i], depth, out);        // bash <<'EOF' ... EOF / bash <<< '...' / bash /dev/stdin: the text is the script
+        producers(i);
       } else handled = false;
     } else if (res.name === "eval") {
       scanScriptWords(res.args, depth, out);
@@ -667,12 +671,17 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
     } else if (res.name === "script" && res.args.some((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text) || a.text === "--command")) {
       const ci = res.args.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text) || a.text === "--command");
       if (res.args[ci + 1]) scanScriptWords([res.args[ci + 1]], depth, out);   // util-linux script -c "<script>"
+    } else if ((res.name === "source" || res.name === ".") && res.args.some((a) => a.text === "/dev/stdin")) {
+      scanStdinScript(cmds[i], depth, out);                // source /dev/stdin: the pipe or here-document is the script
+      producers(i);
     } else if (res.name === "ssh") {
       let k = 0;
       while (k < res.args.length && res.args[k].text.startsWith("-")) k += SSH_VALUED.has(res.args[k].text) ? 2 : 1;
       const remote = res.args.slice(k + 1);                 // after the host
-      if (remote.length) scanScriptWords(remote, depth, out);
-      else { scanStdinScript(cmds[i], depth, out); scanPipeProducers(cmds, resolved, from, i, depth, out); }   // ssh host <<'EOF' ... EOF, printf ... | ssh host
+      // ssh host sh / ssh host bash -s: the remote command is a bare shell, which reads its script from the stdin ssh forwards
+      const bareShell = remote.length > 0 && STDIN_SHELLS.has(baseName(remote[0].text)) && remote.slice(1).every((a) => a.text.startsWith("-"));
+      if (remote.length && !bareShell) scanScriptWords(remote, depth, out);
+      else { scanStdinScript(cmds[i], depth, out); producers(i); }   // ssh host <<'EOF' ... EOF, printf ... | ssh host [sh]
     } else handled = false;
     if (!handled && !NON_RUNNERS.has(res.name)) {
       // OF-251 review F-1/F-3: a runner this guard does not model (find -exec, parallel, docker exec, script, tmux, ...): `rig <guarded command> ...` among its
@@ -734,8 +743,11 @@ function check(command, options) {
     scan(command, 0, violations);
   } catch (error) {
     violations = [];
-    // The plain-text signal also reads through quotes and backslashes in the name (r""ig, r\ig, 'r'ig), which the shell removes before it runs rig.
-    if ((command.includes("`") || command.includes("$(")) && (FALLBACK_RE.test(command) || FALLBACK_RE.test(command.replace(/["'\\]/g, "")))) {
+    // Deliberately coarse (OF-251 re-review rounds 1 and 2: every finer spelling match was bypassed by another way to write the name): after removing
+    // backslash-newline pairs, quotes and backslashes, the text holds `rig` ANYWHERE as a substring (no word boundary: "right" next to a substitution is
+    // refused too) together with a backtick or `$(`. This runs only when the parse failed or the work budget ran out.
+    const coarse = command.replace(/\\\n/g, "").replace(/["'\\]/g, "");
+    if ((coarse.includes("`") || coarse.includes("$(")) && coarse.includes("rig")) {
       violations.push({ kind: "unparseable", command: null });
     }
   }

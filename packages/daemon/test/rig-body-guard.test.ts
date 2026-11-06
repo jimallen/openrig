@@ -228,6 +228,18 @@ const ROWS: Row[] = [
   { id: "BU3", deny: true, kind: "unparseable", note: "F-1: budget spent, quoted letter in the name", cmd: `'r'ig send s ${T}touch m9${T}`, budgetMs: -1 },
   { id: "BU6", deny: true, kind: "unparseable", note: "F-1: a long lex with a spent budget fails closed mid-scan (the loop's own tick, not only the entry check)", cmd: `echo ${"x ".repeat(100_000)}; rig send s '$(a)'`, budgetMs: 1 },
   { id: "BU7", deny: false, note: "F-1 control: the same command within the default budget parses fully: the $( ) is inside single quotes, so it is allowed", cmd: `echo ${"x ".repeat(100_000)}; rig send s '$(a)'` },
+  { id: "BU8", deny: true, kind: "unparseable", note: "round 2: budget spent, a backslash-newline inside the name (ri\\<newline>g)", cmd: `ri\\\ng send s "$(touch m8)"`, budgetMs: -1 },
+  { id: "BU9", deny: true, kind: "unparseable", note: "round 2: budget spent, a backslash-newline after the first letter (r\\<newline>ig)", cmd: `r\\\nig send s $(touch m8)`, budgetMs: -1 },
+  { id: "BU10", deny: true, kind: "unparseable", note: "round 2: the fallback is coarse on purpose: 'rig' inside another word next to a substitution is refused while out of budget", cmd: `echo right $(date)`, budgetMs: -1 },
+  { id: "BU11", deny: true, kind: "unparseable", note: "round 2: budget spent, doubled quotes plus a backslash-newline", cmd: `r""i\\\n'g' send s ${T}x${T}`, budgetMs: -1 },
+  { id: "PF1", deny: true, kind: "substitution", note: "R2-2: printf with a % format: the format and its arguments are the produced text", cmd: `printf 'rig send s %s\\n' "$(id)" | sh` },
+  { id: "PF2", deny: false, note: "R2-2 control: printf with a % format and no rig command", cmd: `printf 'cd %s\\n' "$(pwd)" | sh` },
+  { id: "SS1", deny: true, kind: "substitution", note: "R2-3: ssh host sh reads the pipe", cmd: `echo "rig send s $(id)" | ssh h sh` },
+  { id: "SS2", deny: true, kind: "substitution", note: "R2-3: ssh host bash -s reads the pipe", cmd: `echo "rig send s $(id)" | ssh h bash -s` },
+  { id: "SS3", deny: false, note: "R2-3 control: ssh host sh with a plain script on the pipe", cmd: `echo "cd /x" | ssh h sh` },
+  { id: "SD1", deny: true, kind: "substitution", note: "R2-3: bash /dev/stdin", cmd: `echo "rig send s $(id)" | bash /dev/stdin` },
+  { id: "SD2", deny: true, kind: "substitution", note: "R2-3: source /dev/stdin", cmd: `echo "rig send s $(id)" | source /dev/stdin` },
+  { id: "EI1", deny: true, kind: "substitution", note: "R2-3: env -iS with bundled options", cmd: `env -iS "rig send s $(id)"` },
   { id: "BU4", deny: false, note: "F-1 control: budget spent, no guarded rig text: allowed (fail closed only where the risk signal exists)", cmd: `echo $(date)`, budgetMs: -1 },
   { id: "BU5", deny: false, note: "F-1 control: budget spent, rig text with no substitution", cmd: `rig send s 'plain'`, budgetMs: -1 },
   { id: "L16", deny: false, note: "F-1 control: a bare substitution is not a rig command", cmd: `$(date)` },
@@ -344,6 +356,15 @@ describe("OF-251 review (68f3b6c8) F-1: nested unquoted here-documents are scann
     expect(guard.DEFAULT_BUDGET_MS).toBeGreaterThan(0);
     expect(guard.DEFAULT_BUDGET_MS).toBeLessThanOrEqual(2000);
   });
+  it("the reviewer's ~100 KB shape: 20,000 shells in one pipeline, then a name spelled with a backslash-newline, is judged by the real parse in a fraction of the budget", () => {
+    const cmd = `true${" | sh".repeat(20_000)}\nri\\\ng send s "$(touch m8)"`;
+    const t0 = Date.now();
+    const verdict = guard.check(cmd);
+    expect(verdict.block).toBe(true);
+    expect(verdict.violations[0]?.kind).toBe("substitution"); // "unparseable" would mean the budget ran out (the producers were re-walked per shell)
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(guard.check(cmd, { budgetMs: -1 }).block).toBe(true);
+  });
   it("a hard input that does outrun the budget is refused by the guard itself where a guarded rig command is named", () => {
     const cmd = nested(100_000, 7, `r""ig send s "$(touch m9)"`);
     const verdict = guard.check(cmd, { budgetMs: -1 });
@@ -390,6 +411,10 @@ describe("OF-251 differential: the verdict against what a real bash does (fake r
     { id: "d30", cmd: `env -S "rig send s @P@"`, lands: true },
     { id: "d31", cmd: `echo "rig send s hi" | sh`, lands: false },
     { id: "d32", cmd: `echo @P@ | sh`, lands: false },
+    { id: "d33", cmd: `printf 'rig send s %s\\n' "@P@" | sh`, lands: true },
+    { id: "d34", cmd: `echo "rig send s @P@" | bash /dev/stdin`, lands: true },
+    { id: "d35", cmd: `echo "rig send s @P@" | ssh h sh`, lands: true },
+    { id: "d36", cmd: `echo "cd /x" | ssh h sh`, lands: false },
   ];
   let bin = "";
   let work = "";
