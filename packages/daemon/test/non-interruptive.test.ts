@@ -123,7 +123,7 @@ describe("non-interruptive launch choice", () => {
     expect(fsOps.writeFile).not.toHaveBeenCalled();
     vi.mocked(tmux.sendText).mockClear();
     await adapter.launchHarness({ ...binding, nonInterruptive: false }, opts);
-    expect(vi.mocked(tmux.sendText).mock.calls[0]![1]).toBe(command.replace(` '--settings' ${shellQuote(NI_JSON)}`, ` ${GUARD_FLAG}`));
+    expect(vi.mocked(tmux.sendText).mock.calls[0]![1]).toBe(command.replace(` '--settings' ${shellQuote(NI_JSON)}`, () => ` ${GUARD_FLAG}`));
   });
 
   it.each(["fresh", "resume", "fork"] as const)("Codex %s uses the same notices without changing model, sandbox or profile", async mode => {
