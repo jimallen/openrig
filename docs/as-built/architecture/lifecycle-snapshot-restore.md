@@ -234,8 +234,10 @@ cited here by number with the code that carries them):
   a capture after a host loss does (OF-255, `snapshot-capture.ts`): a
   `detached` row (a reboot's reconcile detaches the rows it finds dead) is the
   seat's occupant, and so is a deliberate `rig seat launch --fresh` successor,
-  not the occupant it replaced. The routine `manual` and `auto-periodic`
-  snapshots keep the running-only rule.
+  not the occupant it replaced; `idle` and `unknown` rows count as live. A seat
+  stopped on purpose after that row (an `exited` row with the stop mark newer
+  than it), or whose fresh successor was stopped, is recorded with no occupant.
+  The routine `manual` and `auto-periodic` snapshots keep the running-only rule.
 - `rig up <rig-name>`: a source with no `/` and no
   `.yaml`/`.yml`/`.rigbundle`/`.rigtopology` extension is a rig name
   (`packages/daemon/src/domain/up-command-router.ts:49–50`). The CLI refuses

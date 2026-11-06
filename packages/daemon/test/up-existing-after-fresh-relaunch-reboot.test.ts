@@ -9,6 +9,10 @@ import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
 import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { deriveRehydrateOccupantsByNode } from "../src/domain/active-occupant.js";
+import { snapshotMatchesCurrentOccupants } from "../src/domain/rehydrate-eligibility.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows } from "../src/domain/restore-plan-preview.js";
+import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
 
 type Seat = "cos" | "arch" | "screen";
 
@@ -39,7 +43,8 @@ describe("rig up --existing after seats were relaunched fresh and the host shut 
     sessionRegistry.updateResumeToken(earlier.id, "claude_name", `${name}-earlier-native`, "hook");
     sessionRegistry.updateStatus(earlier.id, "running");
     if (fresh) {
-      sessionRegistry.updateStatus(earlier.id, "exited");
+      // As a real `rig seat launch --fresh` leaves it: the replaced row is superseded, not exited.
+      sessionRegistry.markSuperseded(earlier.id);
     }
     const live = fresh ? sessionRegistry.registerSession(node.id, `${name}@eztrack`, "fresh") : earlier;
     if (fresh) {
@@ -100,6 +105,50 @@ describe("rig up --existing after seats were relaunched fresh and the host shut 
     expect(sent.some((text) => text.includes("arch-fresh-native"))).toBe(true);
     expect(sent.some((text) => text.includes("screen-fresh-native"))).toBe(true);
     expect(sent.some((text) => text.includes("arch-earlier-native") || text.includes("screen-earlier-native"))).toBe(false);
+  });
+
+  // F1 (review of 9ed3c0fe9): a seat relaunched fresh and then STOPPED on purpose must neither block the rig nor be brought back.
+  it.each([
+    ["stopped with rig seat stop", true],
+    ["ended without the stop mark", false],
+  ] as const)("a fresh-relaunched seat that was then %s stays stopped and does not block the rig", async (_label, deliberate) => {
+    const rig = rigRepo.createRig("eztrack-of255-stopped");
+    const cos = seedSeat(rig.id, "cos", false);
+    const arch = seedSeat(rig.id, "arch", true);
+    const screen = seedSeat(rig.id, "screen", true);
+    snapshotCapture.captureSnapshot(rig.id, "auto-periodic"); // names the screen successor running: it must not be the way back
+    if (deliberate) sessionRegistry.markIntentionallyStopped(screen.live.id); else sessionRegistry.updateStatus(screen.live.id, "exited");
+    sessionRegistry.markDetached(arch.live.id);
+    expect(sessionRegistry.getSessionsForRig(rig.id).find((row) => row.id === cos.live.id)?.status).toBe("running");
+    const down = await post("/api/down", { rigId: rig.id, force: true });
+    expect(down.status).toBe(200);
+    const up = await post("/api/up", { sourceRef: rig.name });
+    const body = await up.json() as { error?: string; nodes?: Array<{ logicalId: string; status: string }> };
+    expect({ status: up.status, error: body.error }).toEqual({ status: 200, error: undefined });
+    const screenOutcome = body.nodes?.find((n) => n.logicalId === "screen")?.status;
+    expect(screenOutcome).toBe("awaiting-decision");
+    const sent = sentTexts();
+    expect(sent.some((text) => text.includes("arch-fresh-native"))).toBe(true);
+    expect(sent.some((text) => text.includes("screen-fresh-native"))).toBe(false);
+  });
+
+  // F2: what Jim accepted is seats a reboot left detached; a deliberate stop NEWER than the detached row wins.
+  it("a seat the operator stopped after its row was left detached stays stopped", async () => {
+    const rig = rigRepo.createRig("eztrack-of255-stop-after");
+    const cos = seedSeat(rig.id, "cos", false);
+    const arch = seedSeat(rig.id, "arch", false);
+    snapshotCapture.captureSnapshot(rig.id, "auto-periodic");
+    sessionRegistry.markDetached(arch.live.id);
+    const later = sessionRegistry.registerSession(arch.node.id, "arch@eztrack");
+    sessionRegistry.markIntentionallyStopped(later.id);
+    expect(sessionRegistry.getSessionsForRig(rig.id).find((row) => row.id === cos.live.id)?.status).toBe("running");
+    const down = await post("/api/down", { rigId: rig.id, force: true });
+    expect(down.status).toBe(200);
+    const up = await post("/api/up", { sourceRef: rig.name });
+    const body = await up.json() as { error?: string; nodes?: Array<{ logicalId: string; status: string }> };
+    expect({ status: up.status, error: body.error }).toEqual({ status: 200, error: undefined });
+    expect(body.nodes?.find((n) => n.logicalId === "arch")?.status).toBe("awaiting-decision");
+    expect(sentTexts().some((text) => text.includes("arch-earlier-native"))).toBe(false);
   });
 
   it("`rig restore-check` forecasts the same restore: no older-occupant refusal, no active-occupant ambiguity", async () => {
@@ -171,6 +220,90 @@ describe("rig up --existing after seats were relaunched fresh and the host shut 
       }));
       expect(rows[0]!.id).not.toBe(successor.id);
       expect(occupantIn(rig.id, "auto-pre-down", node.id)).toEqual({ kind: "resolved", sessionId: successor.id });
+    });
+
+    // F5: idle and unknown are live statuses (teardown and the live-session readers count them with running). The old
+    // running-only rule recorded such a seat as having no occupant and left it awaiting a decision, which is wrong for a
+    // seat that is up; the new rule names it. Confirmed right, and pinned.
+    it.each(["idle", "unknown"])("names a %s row as the occupant: it is a live seat, not a missing one", (status) => {
+      const { rig, node, rows } = seatWith(`live-${status}`, ["running"]);
+      sessionRegistry.updateStatus(rows[0]!.id, status);
+      expect(occupantIn(rig.id, "auto-pre-down", node.id)).toEqual({ kind: "resolved", sessionId: rows[0]!.id });
+    });
+
+    // F1: the fresh successor of record was stopped. Known state "no live occupant", never an ambiguity with no candidates.
+    function freshSuccessorThen(rigName: string, end: (id: string) => void) {
+      const { rig, node, rows } = seatWith(rigName, ["detached"]);
+      sessionRegistry.markSuperseded(rows[0]!.id);
+      const successor = sessionRegistry.registerSession(node.id, `seat@${rigName}`, "fresh");
+      db.prepare("INSERT INTO events (rig_id, type, payload) VALUES (?, 'seat.fresh_launched', ?)").run(rig.id, JSON.stringify({
+        nodeId: node.id, sessionId: successor.id, newGeneration: sessionRegistry.currentOccupantTenure(node.id)!.generationUuid,
+      }));
+      end(successor.id);
+      return { rig, node, successor };
+    }
+
+    it.each(["auto-pre-down", "auto-rehydrate"])("records a stopped fresh successor as no live occupant, not an ambiguity (%s)", (kind) => {
+      const { rig, node } = freshSuccessorThen(`stopped-successor-${kind}`, (id) => sessionRegistry.markIntentionallyStopped(id));
+      const data = snapshotCapture.captureSnapshot(rig.id, kind).data;
+      expect(data.activeOccupantsByNode?.[node.id]).toEqual({ kind: "absent" });
+      expect(data.activeSessionIdByNode?.[node.id]).toBeNull();
+    });
+
+    it("keeps a stopped fresh successor with a live row behind it loud: that contradiction is not guessed", () => {
+      // The registry fences a relation by generation, so a live row behind a stopped successor does not arise through it;
+      // the rule is asked directly.
+      const rows = [
+        { id: "01A", nodeId: "n", status: "exited", intentionallyStopped: true },
+        { id: "01B", nodeId: "n", status: "running" },
+      ];
+      expect(deriveRehydrateOccupantsByNode(rows, ["n"], { n: "01A" }).n).toEqual({ kind: "ambiguous", candidateIds: ["01B"] });
+    });
+
+    it("still refuses a relation that names a superseded row: only an ended occupant of record reads as stopped", () => {
+      const rows = [{ id: "01A", nodeId: "n", status: "superseded" }];
+      expect(deriveRehydrateOccupantsByNode(rows, ["n"], { n: "01A" }).n).toEqual({ kind: "ambiguous", candidateIds: [] });
+    });
+
+    it("still refuses a relation that names no row of the seat at all", () => {
+      const { rig, node } = freshSuccessorThen("dangling-successor", () => undefined);
+      db.prepare("UPDATE events SET payload = json_set(payload, '$.sessionId', 'missing') WHERE type = 'seat.fresh_launched'").run();
+      expect(occupantIn(rig.id, "auto-pre-down", node.id)).toMatchObject({ kind: "ambiguous" });
+    });
+
+    // F2: the key is the stop mark (exited + intentionally_stopped), set by markIntentionallyStopped (rig seat stop, rig down).
+    it("leaves a seat stopped after its row was left detached with no occupant", () => {
+      const { rig, node } = seatWith("stopped-after-detached", ["detached"]);
+      const later = sessionRegistry.registerSession(node.id, "seat@stopped-after-detached");
+      sessionRegistry.markIntentionallyStopped(later.id);
+      expect(occupantIn(rig.id, "auto-pre-down", node.id)).toEqual({ kind: "absent" });
+    });
+
+    it("keeps a detached row that only a plain observed exit (no stop mark) came after", () => {
+      const { rig, node, rows } = seatWith("exit-after-detached", ["detached", "exited"]);
+      expect(occupantIn(rig.id, "auto-pre-down", node.id)).toEqual({ kind: "resolved", sessionId: rows[0]!.id });
+    });
+
+    it("keeps a detached row that an OLDER deliberate stop precedes", () => {
+      const { rig, node } = seatWith("stop-before-detached", ["exited"]);
+      const stopped = sessionRegistry.getSessionsForRig(rig.id)[0]!;
+      sessionRegistry.markIntentionallyStopped(stopped.id);
+      const detached = sessionRegistry.registerSession(node.id, "seat@stop-before-detached");
+      sessionRegistry.markDetached(detached.id);
+      expect(occupantIn(rig.id, "auto-pre-down", node.id)).toEqual({ kind: "resolved", sessionId: detached.id });
+    });
+
+    it("agrees across the three readers: capture, the match check and the live preview all see the stopped-after seat as having no occupant", () => {
+      const { rig, node } = seatWith("three-readers", ["detached"]);
+      const later = sessionRegistry.registerSession(node.id, "seat@three-readers");
+      sessionRegistry.markIntentionallyStopped(later.id);
+      const current = rigRepo.getRig(rig.id)!;
+      const snapshot = snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      // match: current state (the stop wins over the older detached row) holds no occupant either, so the snapshot matches.
+      expect(snapshotMatchesCurrentOccupants(db, current, snapshot)).toBe(true);
+      // preview of the no-snapshot restore: the would-capture derivation, over the live rows.
+      const preview = buildRestorePlanPreview(current, null, collectPreviewSessionRows(db, current, null), undefined, Date.now(), readFreshOccupantRelations(db, rig.id));
+      expect(preview.nodes[0]!.intendedAction).not.toBe("resume-original");
     });
 
     // Scope pin: only the snapshot taken as a rig is stopped reads lost occupants. The routine snapshots keep the

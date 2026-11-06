@@ -9,7 +9,7 @@ import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type 
 import { liveSeatGateInputs, predictSeatStops } from "../domain/restore-seat-gates.js";
 import { findOtherSessionOwner } from "../domain/session-owner.js";
 import { activeOccupantAmbiguityError, deriveRehydrateOccupantsByNode } from "../domain/active-occupant.js";
-import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
+import { markDeliberateStops, readDeliberateStopIds, readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
 import { savedRowDamage } from "../domain/node-row-damage.js";
 import { classifyRunningSessions } from "../domain/restore-running-sessions.js";
 import { SessionRegistry } from "../domain/session-registry.js";
@@ -419,7 +419,7 @@ restoreCheckRoutes.get("/", async (c) => {
  */
 function withOccupantStops(db: import("better-sqlite3").Database, rig: NonNullable<ReturnType<RigRepository["getRig"]>>, eligibility: { ok: boolean; blockers: string[] }): { ok: boolean; blockers: string[]; occupantStops: string[] } {
   const sessions = new SessionRegistry(db).getSessionsForRig(rig.rig.id);
-  const states = deriveRehydrateOccupantsByNode(sessions, rig.nodes.map((n) => n.id), readFreshOccupantRelations(db, rig.rig.id));
+  const states = deriveRehydrateOccupantsByNode(markDeliberateStops(sessions, readDeliberateStopIds(db, rig.rig.id)), rig.nodes.map((n) => n.id), readFreshOccupantRelations(db, rig.rig.id));
   const occupantStops: string[] = [];
   for (const node of rig.nodes) {
     const state = states[node.id];

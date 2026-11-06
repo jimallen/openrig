@@ -19,10 +19,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   (needed first, since restore refuses a rig with live seats) then captured its `auto-pre-down` snapshot with the running-only rule, which recorded every detached seat as having
   no occupant. For a fresh-relaunched seat that contradicts current state (its successor is the occupant), so the snapshot was refused as naming an older occupant, and the
   current-state fallback had nothing left to read, because `rig down` had ended every row.
-- Fix: the `auto-pre-down` snapshot reads occupants as a capture after a host loss does (a detached row, and a fresh successor, are the seat's occupant). A stopped seat (only
-  ended rows) is still recorded with no occupant. `manual` and `auto-periodic` snapshots are unchanged.
+- Fix: the `auto-pre-down` snapshot reads occupants as a capture after a host loss does: a `detached` row, an `idle` or `unknown` row (live statuses, as `rig down` counts them), and a
+  fresh successor are the seat's occupant. `manual` and `auto-periodic` snapshots are unchanged.
+- A stopped seat stays stopped. These are recorded with no occupant (never as an ambiguity), so `rig up --existing` leaves the seat awaiting a decision instead of resuming it or refusing the rig:
+  a seat with no non-ended row; a seat whose fresh successor was then stopped (`rig seat stop`, or ended); and a seat whose last deliberate stop (an `exited` row with the stop mark) is newer than
+  its `detached` row. A plain observed exit without the stop mark does not override a detached row.
 - Behaviour you may notice: a rig stopped while some seats were `detached` (not only after a reboot) now brings those seats' conversations back on `rig up --existing`, where it
-  used to leave them awaiting a decision ("Original session not resumed").
+  used to leave them awaiting a decision ("Original session not resumed"), unless the operator stopped the seat afterwards.
 
 ### Every managed Claude launch carries the rig-body guard (OF-250)
 

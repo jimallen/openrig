@@ -110,6 +110,8 @@ export interface PreviewSessionRow {
   startupCompletedAt?: string | null;
   /** The launch was a deliberate fresh start; a failed one never lets the walk reach past it. */
   freshStart?: boolean;
+  /** OF-255: the live no-snapshot rows carry whether a supported stop ended them (the would-capture derivation reads it). */
+  intentionallyStopped?: boolean;
   /** Row id (ULID). Selection is by the shared ACTIVE-OCCUPANT resolution
    *  (active-occupant.ts) — the same truth the restore execution consumes —
    *  never by newest-id inference. */
@@ -192,8 +194,8 @@ export function collectPreviewSessionRows(
   if (nodeIds.length === 0) return [];
   const placeholders = nodeIds.map(() => "?").join(",");
   const rows = db.prepare(
-    `SELECT id, node_id, restore_policy, resume_type, resume_token, resume_provenance, resume_last_verified, resume_last_probe_status, startup_status, startup_completed_at, fresh_start, status FROM sessions WHERE node_id IN (${placeholders})`
-  ).all(...nodeIds) as Array<{ id: string; node_id: string; restore_policy: string | null; resume_type: string | null; resume_token: string | null; resume_provenance: string | null; resume_last_verified: string | null; resume_last_probe_status: string | null; startup_status: string | null; startup_completed_at: string | null; fresh_start: number | null; status: string | null }>;
+    `SELECT id, node_id, restore_policy, resume_type, resume_token, resume_provenance, resume_last_verified, resume_last_probe_status, startup_status, startup_completed_at, fresh_start, status, intentionally_stopped FROM sessions WHERE node_id IN (${placeholders})`
+  ).all(...nodeIds) as Array<{ id: string; node_id: string; restore_policy: string | null; resume_type: string | null; resume_token: string | null; resume_provenance: string | null; resume_last_verified: string | null; resume_last_probe_status: string | null; startup_status: string | null; startup_completed_at: string | null; fresh_start: number | null; status: string | null; intentionally_stopped: number | null }>;
   return rows.map((r) => ({
     nodeId: r.node_id,
     restorePolicy: r.restore_policy,
@@ -207,6 +209,7 @@ export function collectPreviewSessionRows(
     freshStart: r.fresh_start === 1,
     id: r.id,
     status: r.status,
+    ...(r.status === "exited" && r.intentionally_stopped === 1 ? { intentionallyStopped: true } : {}),
   }));
 }
 

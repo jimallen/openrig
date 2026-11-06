@@ -27,7 +27,7 @@ export function readNodeStartupSnapshot(db: Database.Database, nodeId: string): 
     runtime: ctx.runtime,
   } : null;
 }
-import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
+import { markDeliberateStops, readDeliberateStopIds, readFreshOccupantRelations } from "./fresh-occupant-relation.js";
 import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 
 interface SnapshotCaptureDeps {
@@ -116,11 +116,13 @@ export class SnapshotCapture {
     // refused it as naming an older occupant.
     const readsLostOccupants = kind === "auto-rehydrate" || kind === "auto-pre-down";
     const recorded = readsLostOccupants ? readFreshOccupantRelations(this.db, rigId) : {};
+    // The stop mark is read for the derivation only; the serialized sessions are the originals.
+    const occupantRows = readsLostOccupants ? markDeliberateStops(sessions, readDeliberateStopIds(this.db, rigId)) : sessions;
     const activeSessionIdByNode = readsLostOccupants
-      ? deriveRehydrateSessionIdByNode(sessions, rig.nodes.map((n) => n.id), recorded)
+      ? deriveRehydrateSessionIdByNode(occupantRows, rig.nodes.map((n) => n.id), recorded)
       : deriveActiveSessionIdByNode(sessions, rig.nodes.map((n) => n.id));
     const activeOccupantsByNode = readsLostOccupants
-      ? deriveRehydrateOccupantsByNode(sessions, rig.nodes.map((n) => n.id), recorded)
+      ? deriveRehydrateOccupantsByNode(occupantRows, rig.nodes.map((n) => n.id), recorded)
       : deriveActiveOccupantsByNode(sessions, rig.nodes.map((n) => n.id));
 
     const requestedRoster = opts?.intendedNodeIds;

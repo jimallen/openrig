@@ -22,6 +22,9 @@ export interface OccupantCandidateRow {
   id: string;
   nodeId: string;
   status: string | null;
+  /** OF-255: the row was ended by a supported stop (`rig seat stop`, `rig down`), not by a lost host. Optional: rows that
+   *  do not carry it (snapshots, narrow preview rows) never read as deliberately stopped. */
+  intentionallyStopped?: boolean;
 }
 
 export type ActiveOccupantResolution<T extends OccupantCandidateRow> =
@@ -223,6 +226,31 @@ export function deriveActiveOccupantsByNode(
   return relation;
 }
 
+/** OF-255: the resolution a capture of a rig with lost occupants makes for one seat.
+ *  Candidates are the seat's non-terminal rows (running, idle, unknown, detached), except a row a LATER deliberate stop of
+ *  the same seat ended behind: the operator stopped the seat after that row was left, and a stopped seat stays stopped
+ *  (ULIDs order the rows). A fresh-launch relation naming a row that is not a candidate because it ended (the successor was
+ *  stopped, or stopped behind) is the seat's known "no live occupant" state, `none`, never an ambiguity with no candidates:
+ *  the occupant of record is exactly known, and it is not live. A relation naming no row of the seat at all, a
+ *  superseded one, or a stopped one with a live row behind it is still loud. */
+export function resolveRehydrateOccupant<T extends OccupantCandidateRow>(
+  sessions: T[],
+  nodeId: string,
+  recorded: Record<string, string | null>,
+): ActiveOccupantResolution<T> {
+  const all = sessions.filter((session) => session.nodeId === nodeId);
+  const stops = all.filter((row) => row.status === "exited" && row.intentionallyStopped === true);
+  const candidates = all.filter((row) => row.status !== "superseded" && row.status !== "exited" && !stops.some((stop) => stop.id > row.id));
+  const hasRelation = Object.prototype.hasOwnProperty.call(recorded, nodeId);
+  if (hasRelation) {
+    const named = recorded[nodeId];
+    const ended = named ? all.find((row) => row.id === named && row.status !== "superseded" && !candidates.includes(row)) : undefined;
+    // Only while nothing live is newer than it: a live row behind a stopped successor is a contradiction, left loud.
+    if (ended && !candidates.some((row) => row.id > ended.id)) return { kind: "none" };
+  }
+  return resolveActiveOccupantRow(candidates, hasRelation ? recorded : undefined, nodeId);
+}
+
 /** Reboot capture equivalent: resolve one durable non-terminal occupant when
  * possible, otherwise preserve the exact absent/ambiguous candidate set. */
 export function deriveRehydrateOccupantsByNode(
@@ -230,16 +258,14 @@ export function deriveRehydrateOccupantsByNode(
   nodeIds: string[],
   recorded: Record<string, string | null> = {},
 ): Record<string, SnapshotOccupantState> {
-  const candidates = sessions.filter((session) => session.status !== "superseded" && session.status !== "exited");
   const relation: Record<string, SnapshotOccupantState> = {};
   for (const nodeId of nodeIds) {
-    const rows = candidates.filter((session) => session.nodeId === nodeId);
-    const resolved = resolveActiveOccupantRow(candidates, Object.prototype.hasOwnProperty.call(recorded, nodeId) ? recorded : undefined, nodeId);
+    const resolved = resolveRehydrateOccupant(sessions, nodeId, recorded);
     relation[nodeId] = resolved.kind === "resolved"
       ? { kind: "resolved", sessionId: resolved.session.id }
       : resolved.kind === "none"
         ? { kind: "absent" }
-        : { kind: "ambiguous", candidateIds: rows.map((row) => row.id) };
+        : { kind: "ambiguous", candidateIds: resolved.candidateIds };
   }
   return relation;
 }
@@ -254,10 +280,9 @@ export function deriveRehydrateSessionIdByNode(
   nodeIds: string[],
   recorded: Record<string, string | null> = {},
 ): Record<string, string | null> {
-  const candidates = sessions.filter((session) => session.status !== "superseded" && session.status !== "exited");
   const relation: Record<string, string | null> = {};
   for (const nodeId of nodeIds) {
-    const resolved = resolveActiveOccupantRow(candidates, Object.prototype.hasOwnProperty.call(recorded, nodeId) ? recorded : undefined, nodeId);
+    const resolved = resolveRehydrateOccupant(sessions, nodeId, recorded);
     relation[nodeId] = resolved.kind === "resolved" ? resolved.session.id : null;
   }
   return relation;

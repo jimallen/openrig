@@ -26,7 +26,8 @@ export function snapshotMatchesCurrentOccupants(
   const rows = db.prepare(
     `SELECT s.id, s.node_id AS nodeId, s.status,
             s.resume_type AS resumeType, s.resume_token AS resumeToken,
-            s.startup_status AS startupStatus, s.startup_completed_at AS startupCompletedAt, s.fresh_start AS freshStart
+            s.startup_status AS startupStatus, s.startup_completed_at AS startupCompletedAt, s.fresh_start AS freshStart,
+            s.intentionally_stopped AS stopMark
        FROM sessions s
        JOIN nodes n ON n.id = s.node_id
        WHERE n.rig_id = ?`
@@ -39,17 +40,26 @@ export function snapshotMatchesCurrentOccupants(
     startupStatus: string | null;
     startupCompletedAt: string | null;
     freshStart: number | null;
+    stopMark: number | null;
   }>;
 
   const recorded = readFreshOccupantRelations(db, rig.rig.id);
   // A clean down exits the fresh occupant without revoking its relation.
   // Keep that row for snapshot comparison, but exclude unrelated exited history.
-  const candidates = rows.filter((row) => row.status !== "superseded" && (row.status !== "exited" || recorded[row.nodeId] === row.id));
+  // OF-255: a row a LATER deliberate stop of the same seat ended behind is not the seat's occupant (the capture drops it too).
+  const stops = rows.filter((row) => row.status === "exited" && row.stopMark === 1);
+  const candidates = rows.filter((row) => row.status !== "superseded" && (row.status !== "exited" || recorded[row.nodeId] === row.id)
+    && !(row.status !== "exited" && stops.some((stop) => stop.nodeId === row.nodeId && stop.id > row.id)));
   for (const node of rig.nodes) {
     const current = resolveActiveOccupantRow(candidates, Object.prototype.hasOwnProperty.call(recorded, node.id) ? recorded : undefined, node.id);
     if (current.kind === "none") continue;
     if (current.kind === "ambiguous") return false;
     const captured = resolveActiveSnapshotSession(snapshot.data, node.id);
+    // OF-255: the seat's fresh successor was stopped before the snapshot, which recorded the seat with no occupant and kept
+    // the stopped successor's row (status exited). That is the same fact current state holds (a stopped seat, occupant of
+    // record X): a match. A snapshot that does not carry that exact row never matches this way.
+    if (captured.kind === "none" && current.session.status === "exited"
+      && snapshot.data.sessions.some((row) => row.id === current.session.id && row.status === "exited")) continue;
     // The snapshot resolves the occupant's resume identity through its whole history (a failed launch that
     // never reached ready inherits its predecessor's). The candidates above drop that history, so resolve
     // the current row's identity the same way, over every row the node has.

@@ -35,3 +35,17 @@ export function readFreshOccupantRelations(db: Database.Database, rigId: string)
   }
   return relation;
 }
+
+/** OF-255: the rows of the rig that a supported stop ended (`rig seat stop`, `rig down`): `exited` with the intent mark.
+ *  The sessions a snapshot serializes do not carry the mark, so a capture reads it here and lays it on its working rows. */
+export function readDeliberateStopIds(db: Database.Database, rigId: string): Set<string> {
+  const rows = db.prepare(
+    `SELECT s.id FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ? AND s.status = 'exited' AND s.intentionally_stopped = 1`,
+  ).all(rigId) as Array<{ id: string }>;
+  return new Set(rows.map((row) => row.id));
+}
+
+/** The rows with the deliberate-stop mark laid on (a copy; the originals are what a snapshot serializes). */
+export function markDeliberateStops<T extends { id: string }>(rows: T[], stopped: ReadonlySet<string>): Array<T & { intentionallyStopped?: boolean }> {
+  return rows.map((row) => (stopped.has(row.id) ? { ...row, intentionallyStopped: true } : row));
+}
