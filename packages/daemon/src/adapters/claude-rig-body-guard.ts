@@ -38,31 +38,35 @@ PATH=/usr/bin:/bin:@@{PATH:-/usr/bin:/bin}
 N=$1; S=$2; W=$3
 bt=$(printf '\140')
 in=$(cat)
-sub() {
-  r=
-  while :; do
-    case $s in
-      *"$1"*) r=$r@@{s%%"$1"*}$2; s=@@{s#*"$1"} ;;
-      *) break ;;
-    esac
-  done
-  s=$r$s
-}
 deg() {
-  s=$in; big=0
-  if [ "@@{#s}" -gt 16384 ]; then big=1; else
-    sub '\u0060' "$bt"; sub '\u0024' '$'; sub '\u0072' r; sub '\u0069' i; sub '\u0067' g
+  why=$1
+  # Nothing in the hook text can be a risk (no backtick, no "$(", no JSON u00xx escape that could spell one): done.
+  case $in in *"$bt"*|*'$('*|*'\u00'*) ;; *) exit 0 ;; esac
+  k='"command":'
+  s=@@{in#*"$k"}          # the command's value onward: cwd and transcript path come before it and may hold "rig" ("openrig")
+  if [ "@@{#s}" -gt 16384 ]; then
+    : # too long to decode in plain sh in time: with a risk signal in it, refuse
+  else
+    # Coarse on purpose: split on backslashes, decode u0060 u0024 u0072 u0069 u0067, drop the letter of a JSON escape pair (n t r b f), then drop quotes.
+    set -f
+    IFS='\'; set -- $s; unset IFS
+    r=$1; [ $# -gt 0 ] && shift
+    for t in "$@"; do
+      case $t in
+        u0060*) r=$r$bt@@{t#u0060} ;;
+        u0024*) r=$r'$'@@{t#u0024} ;;
+        u0072*) r=@@{r}r@@{t#u0072} ;;
+        u0069*) r=@@{r}i@@{t#u0069} ;;
+        u0067*) r=@@{r}g@@{t#u0067} ;;
+        [ntrbf]*) r=$r@@{t#?} ;;
+        *) r=$r$t ;;
+      esac
+    done
+    IFS=$(printf '\042\047'); set -- $r; IFS=; r="$*"; unset IFS
+    case $r in *"$bt"*|*'$('*) ;; *) exit 0 ;; esac
+    case $r in *rig*) ;; *) exit 0 ;; esac
   fi
-  risk=0
-  case $s in *"$bt"*|*'$('*) risk=1 ;; esac
-  [ $risk = 1 ] || exit 0
-  mention=$big
-  if [ $big = 0 ]; then
-    sub '\n' ' '; sub '\t' ' '; sub '\r' ' '; sub '\' ''; sub '"' ''; sub "'" ''
-    case " $s " in *[!A-Za-z0-9_]rig[!A-Za-z0-9_]*) mention=1 ;; esac
-  fi
-  [ $mention = 1 ] || exit 0
-  echo "rig-body-guard is unavailable ($1) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat." >&2
+  echo "rig-body-guard is unavailable ($why) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat." >&2
   exit 2
 }
 [ -x "$N" ] && [ -f "$S" ] || deg "node or the guard script is missing"
@@ -82,12 +86,13 @@ if [ "$rc" -eq 0 ]; then
 fi
 deg "the guard failed or timed out, exit $rc"`.split("@@{").join("${");
 
-/** The guard's PreToolUse group: a blocking command hook on Bash. It runs RIG_BODY_GUARD_WRAPPER with the daemon's own node (process.execPath, quoted, like the team hook: a bare `node`
+/** The guard's PreToolUse group: a blocking command hook on Bash. `onFailure: "block"` (measured on Claude Code 2.1.317 and 2.1.319, OF-251 round 2) makes a hook that fails to run block the tool call as well: a wrapper that cannot start
+ *  (a missing /bin/sh, a bad exit, a timeout, a kill) refuses every Bash call until the seat is relaunched, instead of letting the command run unguarded.  It runs RIG_BODY_GUARD_WRAPPER with the daemon's own node (process.execPath, quoted, like the team hook: a bare `node`
  *  fails open on a seat whose PATH has no node, OF-250 review F-1) and the guard script. */
-export function claudeRigBodyGuardGroup(scriptPath: string, options: { nodePath?: string; watchdogSeconds?: number } = {}): { matcher: string; hooks: Array<{ type: string; command: string; timeout: number }> } {
+export function claudeRigBodyGuardGroup(scriptPath: string, options: { nodePath?: string; watchdogSeconds?: number } = {}): { matcher: string; hooks: Array<{ type: string; command: string; timeout: number; onFailure: "block" }> } {
   const node = options.nodePath ?? process.execPath;
   const watchdog = options.watchdogSeconds ?? RIG_BODY_GUARD_WATCHDOG_SECONDS;
-  return { matcher: "Bash", hooks: [{ type: "command", command: `/bin/sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(node)} ${shellQuote(scriptPath)} ${watchdog}`, timeout: HOOK_TIMEOUT_SECONDS }] };
+  return { matcher: "Bash", hooks: [{ type: "command", command: `/bin/sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(node)} ${shellQuote(scriptPath)} ${watchdog}`, timeout: HOOK_TIMEOUT_SECONDS, onFailure: "block" }] };
 }
 
 const SETTINGS_FLAG = "--settings";

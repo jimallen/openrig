@@ -30,6 +30,9 @@ describe("withRigBodyGuard", () => {
     expect(GUARD_GROUP.hooks[0]!.command.startsWith("/bin/sh -c '")).toBe(true);
     expect(GUARD_GROUP.hooks[0]!.command.endsWith(` sh '${process.execPath}' '${GUARD_SCRIPT}' 3`)).toBe(true);
     expect(GUARD_GROUP.hooks[0]!.timeout).toBe(5);
+    // Jim (OF-251 round 2): onFailure "block" as a second layer, so a wrapper that cannot start refuses the Bash call instead of letting it run (measured on real Claude).
+    expect(GUARD_GROUP.hooks[0]!.onFailure).toBe("block");
+    expect(claudeRigBodyGuardGroup(GUARD_SCRIPT).hooks[0]!.onFailure).toBe("block");
     expect(GUARD_SCRIPT.endsWith("/assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs")).toBe(true);
   });
   it("one --settings in: the guard is appended as a SECOND PreToolUse group; permissions and the first hook are untouched", () => {
@@ -147,7 +150,8 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
       expect(hook("ls -la", options)).toMatchObject(ALLOWED);
       expect(hook("echo `date`", options)).toMatchObject(ALLOWED);           // a backtick with no rig
       expect(hook("rig send s 'plain'", options)).toMatchObject(ALLOWED);    // rig with no backtick or $(
-      expect(hook("echo a right $(date) b", options)).toMatchObject(ALLOWED); // "rig" inside another word is not rig
+      expect(hook("echo a right $(date) b", options)).toMatchObject(REFUSED);  // coarse on purpose: "rig" inside another word next to a substitution is refused too
+      expect(hook("echo a string $(date) b", options)).toMatchObject(ALLOWED); // no r-i-g in a row: allowed
     });
     it(`${label}: a SAFE quoted-heredoc rig send holding backticks is refused too (the documented cost of degraded mode)`, () => {
       expect(hook(HEREDOC, options)).toMatchObject(REFUSED);
@@ -179,6 +183,17 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     expect(hook("", { ...options, raw: '{"tool_input":{"command":"echo \\u0060date\\u0060"}}' })).toMatchObject(ALLOWED); // decoded backtick, no rig
     expect(hook("rig send s 'plain'", options)).toMatchObject(ALLOWED);
     expect(hook("echo a string $(date) b", options)).toMatchObject(ALLOWED);          // "string" holds r-i-g in order but is not rig
+  });
+  it("degraded check: a backslash-newline inside the name, and the reviewer's exact padded shape (OF-251 round 2, R2-1)", () => {
+    const options = { script: "/nonexistent/rig-body-guard.cjs" };
+    for (const c of ['ri\\\ng send s "$(touch m8)"', 'r\\\nig send s $(touch m8)', "r\"\"i\\\n'g' send s `x`", 'true' + ' | sh'.repeat(3000) + '\nri\\\ng send s "$(touch m8)"']) {
+      expect(hook(c, options), c.slice(0, 40)).toMatchObject(REFUSED);
+    }
+  });
+  it("degraded check reads only the command's value: a cwd or path that holds 'rig' (openrig) does not make an unrelated substitution a refusal", () => {
+    const options = { script: "/nonexistent/rig-body-guard.cjs" };
+    expect(hook("", { ...options, raw: '{"cwd":"/Users/x/Code/openrig/.worktrees/w","tool_name":"Bash","tool_input":{"command":"ls $(pwd)"}}' })).toMatchObject(ALLOWED);
+    expect(hook("", { ...options, raw: '{"cwd":"/Users/x/Code/openrig","tool_input":{"command":"rig send s `x`"}}' })).toMatchObject(REFUSED);
   });
   it("degraded check needs no grep or sed on PATH (shell builtins only), and cat and sleep are found even when PATH is empty", () => {
     const env = { PATH: "/nonexistent" };
