@@ -27,7 +27,7 @@ describe("withRigBodyGuard", () => {
   it("the guard group is a blocking Bash PreToolUse hook on the shipped rig-body-guard.cjs", () => {
     expect(GUARD_GROUP.matcher).toBe("Bash");
     // OF-253: an inline sh wrapper; the interpreter is the daemon's own node by absolute path (OF-250 F-1), never a bare `node`; the watchdog is 3 s, under the 5 s hook timeout.
-    expect(GUARD_GROUP.hooks[0]!.command.startsWith("sh -c '")).toBe(true);
+    expect(GUARD_GROUP.hooks[0]!.command.startsWith("/bin/sh -c '")).toBe(true);
     expect(GUARD_GROUP.hooks[0]!.command.endsWith(` sh '${process.execPath}' '${GUARD_SCRIPT}' 3`)).toBe(true);
     expect(GUARD_GROUP.hooks[0]!.timeout).toBe(5);
     expect(GUARD_SCRIPT.endsWith("/assets/plugins/openrig-core/hooks/scripts/rig-body-guard.cjs")).toBe(true);
@@ -112,10 +112,11 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     writeFileSync(join(dir, "garbage.cjs"), 'console.log("not json"); \n');
   });
   afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
-  const hook = (command: string, options: { script?: string; node?: string; watchdog?: number } = {}) => {
+  const hook = (command: string, options: { script?: string; node?: string; watchdog?: number; raw?: string; env?: Record<string, string>; shell?: string } = {}) => {
     const g = claudeRigBodyGuardGroup(options.script ?? GUARD_SCRIPT, { ...(options.node ? { nodePath: options.node } : {}), watchdogSeconds: options.watchdog ?? 3 });
+    const line = options.shell ? g.hooks[0]!.command.replace(/^\/bin\/sh /, `${options.shell} `) : g.hooks[0]!.command;
     const t0 = Date.now();
-    const r = spawnSync("sh", ["-c", g.hooks[0]!.command], { input: event(command), encoding: "utf8", timeout: 20_000 });
+    const r = spawnSync("/bin/sh", ["-c", line], { input: options.raw ?? event(command), encoding: "utf8", timeout: 20_000, ...(options.env ? { env: options.env } : {}) });
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: Date.now() - t0 };
   };
   const REFUSED = { status: 2 };
@@ -165,6 +166,47 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     const r = hook("ls", { script: join(dir, "garbage.cjs") });
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("not json\n");
+  });
+  it("the hook command names /bin/sh by absolute path, so a PATH without sh cannot skip the wrapper", () => {
+    expect(claudeRigBodyGuardGroup(GUARD_SCRIPT).hooks[0]!.command.startsWith("/bin/sh -c ")).toBe(true);
+  });
+  it("degraded check reads through quotes and backslashes in the name, and through JSON escapes (OF-251 re-review F-1, F-5)", () => {
+    const options = { script: "/nonexistent/rig-body-guard.cjs" };
+    for (const c of ['r""ig send s "x `date`"', "r\\ig send s $(date)", "'r'ig send s `date`", '"r"i\'g\' send s $(x)', "rig\tsend `x`"]) expect(hook(c, options), c).toMatchObject(REFUSED);
+    // the hook text as JSON with the characters escaped as the JSON grammar allows
+    expect(hook("", { ...options, raw: '{"tool_input":{"command":"\\u0072ig send s \\u0060x\\u0060"}}' })).toMatchObject(REFUSED);
+    expect(hook("", { ...options, raw: '{"tool_input":{"command":"r\\u0069g send s \\u0024(x)"}}' })).toMatchObject(REFUSED);
+    expect(hook("", { ...options, raw: '{"tool_input":{"command":"echo \\u0060date\\u0060"}}' })).toMatchObject(ALLOWED); // decoded backtick, no rig
+    expect(hook("rig send s 'plain'", options)).toMatchObject(ALLOWED);
+    expect(hook("echo a string $(date) b", options)).toMatchObject(ALLOWED);          // "string" holds r-i-g in order but is not rig
+  });
+  it("degraded check needs no grep or sed on PATH (shell builtins only), and cat and sleep are found even when PATH is empty", () => {
+    const env = { PATH: "/nonexistent" };
+    const options = { script: "/nonexistent/rig-body-guard.cjs", env };
+    expect(hook(BAD, options)).toMatchObject(REFUSED);
+    expect(hook('r""ig send s $(x)', options)).toMatchObject(REFUSED);
+    expect(hook("ls -la", options)).toMatchObject(ALLOWED);
+    expect(hook(BAD, { env })).toMatchObject({ status: 0 });                          // intact guard still answers with its deny JSON under that PATH
+  });
+  it("a hook text over 16 KB is not decoded: with a backtick or $( in it, it counts as mentioning rig", () => {
+    const options = { script: "/nonexistent/rig-body-guard.cjs" };
+    expect(hook(`echo ${"x".repeat(17_000)} $(date)`, options)).toMatchObject(REFUSED);
+    expect(hook(`echo ${"x".repeat(17_000)}`, options)).toMatchObject(ALLOWED);
+  });
+  const hasBash = spawnSync("bash", ["-c", "true"]).status === 0;
+  it.skipIf(!hasBash)("an inherited errexit (SHELLOPTS) cannot end the wrapper on the guard's exit code before the degraded check", () => {
+    const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", SHELLOPTS: "errexit" };
+    expect(hook(BAD, { script: join(dir, "exit1.cjs"), env, shell: "bash" })).toMatchObject(REFUSED);
+    expect(hook("ls -la", { script: join(dir, "exit1.cjs"), env, shell: "bash" })).toMatchObject(ALLOWED);
+  });
+  it("a guard that ignores TERM is KILLed one second after the watchdog's TERM, then the degraded check applies", () => {
+    writeFileSync(join(dir, "deaf.cjs"), 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);\n');
+    const bad = hook(BAD, { script: join(dir, "deaf.cjs"), watchdog: 1 });
+    expect(bad).toMatchObject(REFUSED);
+    expect(bad.stderr).toContain("exit 137");
+    expect(bad.ms).toBeGreaterThan(1800);
+    expect(bad.ms).toBeLessThan(6000);
+    expect(hook("ls -la", { script: join(dir, "deaf.cjs"), watchdog: 1 })).toMatchObject(ALLOWED);
   });
   it("the guard outruns the watchdog (1 s): stopped, then the degraded check applies; a safe command still runs", () => {
     const bad = hook(BAD, { script: join(dir, "hang.cjs"), watchdog: 1 });

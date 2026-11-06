@@ -45,6 +45,10 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   else runs. **Cost of degraded mode:** a safe quoted-heredoc `rig send` whose text holds backticks is refused too until the seat is relaunched or restored; the message says to write the text to a
   file with a command that does not mention rig and send it with `--file <path>`. Residual: the `sh` binary itself missing, Claude killing the hook before the 3 s watchdog fires on a host so loaded
   that sh cannot start, and Claude versions other than 2.1.319 (not measured).
+  Re-review (68f3b6c8) hardening of the wrapper: the hook command names `/bin/sh` by absolute path; the script starts with `set +e` (an inherited `SHELLOPTS=errexit` could end it on the guard's
+  exit code) and prefixes PATH with `/usr/bin:/bin`; the degraded check uses shell builtins only (no grep), decodes the JSON escapes for backtick, `$`, r, i, g and strips quotes and backslashes
+  before looking for the word `rig`, so `r""ig`, `r\ig` and `'r'ig` count (a hook text over 16 KB is not decoded and counts as mentioning rig when it holds a backtick or `$(`); a guard that
+  ignores TERM is KILLed one second after the watchdog's TERM.
 - Not guarded: a Claude started outside OpenRig, or by a host whose daemon is older than this change; seats already running until they are relaunched or restored; Codex, OMP, and
   Claude tools other than `Bash`.
 - Also in this unit (OF-249 review F1, `17d58da`; narrowed by OF-251): the script word given to `ssh`, `sh -c` or `eval` is judged in the local shell's quoting, so

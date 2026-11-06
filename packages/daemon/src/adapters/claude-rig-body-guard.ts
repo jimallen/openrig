@@ -28,21 +28,48 @@ const HOOK_TIMEOUT_SECONDS = 5;
  *  Measured on Claude Code 2.1.319: only exit 2 (or a deny decision) blocks a tool call; a missing interpreter (127), a missing script, exit 1, a SIGKILL and a timeout all let it run.
  *  So when the guard cannot answer (node or the script is missing, the guard crashes or exits non-zero, or it outruns the watchdog) this script applies a DEGRADED check
  *  of its own to the hook text: it refuses (exit 2, a message the model reads) only a command that mentions `rig` and holds a backtick or `$(`, and lets everything else run.
- *  No file other than node and the guard script is needed, so a package directory replaced under a running seat cannot remove it. The watchdog is plain sh (no `timeout` binary). */
-export const RIG_BODY_GUARD_WRAPPER = String.raw`N=$1; S=$2; W=$3
+ *  "Mentions rig" is read after decoding the JSON escapes for backtick, `$`, r, i, g and removing quotes and backslashes, so `r""ig`, `r\ig` and `'r'ig` count; the whole check uses shell
+ *  builtins (case, parameter expansion, printf), so a PATH without grep or sed cannot skip it, and PATH is prefixed with /usr/bin:/bin for cat and sleep. A hook text over 16 KB is not
+ *  decoded: with a backtick or `$(` in it, it counts as mentioning rig. `set +e` first, so an inherited errexit (SHELLOPTS) cannot end the script on the guard's exit code before the
+ *  degraded check. The watchdog is plain sh (no `timeout` binary): TERM at the deadline, KILL one second later. The two paths that cannot be made fail-closed from here: the shell binary
+ *  itself missing (the hook command names /bin/sh by absolute path) and the process being killed from outside before the watchdog. */
+export const RIG_BODY_GUARD_WRAPPER = String.raw`set +e
+PATH=/usr/bin:/bin:@@{PATH:-/usr/bin:/bin}
+N=$1; S=$2; W=$3
+bt=$(printf '\140')
 in=$(cat)
+sub() {
+  r=
+  while :; do
+    case $s in
+      *"$1"*) r=$r@@{s%%"$1"*}$2; s=@@{s#*"$1"} ;;
+      *) break ;;
+    esac
+  done
+  s=$r$s
+}
 deg() {
-  if printf '%s' "$in" | grep -Eq '(^|[^[:alnum:]_]|\\[nt])rig([^[:alnum:]_]|$)' && printf '%s' "$in" | grep -qF -e '` + "`" + String.raw`' -e '$('; then
-    echo "rig-body-guard is unavailable ($1) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat." >&2
-    exit 2
+  s=$in; big=0
+  if [ "@@{#s}" -gt 16384 ]; then big=1; else
+    sub '\u0060' "$bt"; sub '\u0024' '$'; sub '\u0072' r; sub '\u0069' i; sub '\u0067' g
   fi
-  exit 0
+  risk=0
+  case $s in *"$bt"*|*'$('*) risk=1 ;; esac
+  [ $risk = 1 ] || exit 0
+  mention=$big
+  if [ $big = 0 ]; then
+    sub '\n' ' '; sub '\t' ' '; sub '\r' ' '; sub '\' ''; sub '"' ''; sub "'" ''
+    case " $s " in *[!A-Za-z0-9_]rig[!A-Za-z0-9_]*) mention=1 ;; esac
+  fi
+  [ $mention = 1 ] || exit 0
+  echo "rig-body-guard is unavailable ($1) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat." >&2
+  exit 2
 }
 [ -x "$N" ] && [ -f "$S" ] || deg "node or the guard script is missing"
 out=$(
   printf '%s' "$in" | "$N" "$S" &
   p=$!
-  ( sleep "$W"; kill "$p" 2>/dev/null ) >/dev/null 2>&1 &
+  ( sleep "$W"; kill "$p" 2>/dev/null; sleep 1; kill -9 "$p" 2>/dev/null ) >/dev/null 2>&1 &
   k=$!
   wait "$p"; rc=$?
   kill "$k" 2>/dev/null
@@ -53,14 +80,14 @@ if [ "$rc" -eq 0 ]; then
   [ -z "$out" ] || printf '%s\n' "$out"
   exit 0
 fi
-deg "the guard failed or timed out, exit $rc"`;
+deg "the guard failed or timed out, exit $rc"`.split("@@{").join("${");
 
 /** The guard's PreToolUse group: a blocking command hook on Bash. It runs RIG_BODY_GUARD_WRAPPER with the daemon's own node (process.execPath, quoted, like the team hook: a bare `node`
  *  fails open on a seat whose PATH has no node, OF-250 review F-1) and the guard script. */
 export function claudeRigBodyGuardGroup(scriptPath: string, options: { nodePath?: string; watchdogSeconds?: number } = {}): { matcher: string; hooks: Array<{ type: string; command: string; timeout: number }> } {
   const node = options.nodePath ?? process.execPath;
   const watchdog = options.watchdogSeconds ?? RIG_BODY_GUARD_WATCHDOG_SECONDS;
-  return { matcher: "Bash", hooks: [{ type: "command", command: `sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(node)} ${shellQuote(scriptPath)} ${watchdog}`, timeout: HOOK_TIMEOUT_SECONDS }] };
+  return { matcher: "Bash", hooks: [{ type: "command", command: `/bin/sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(node)} ${shellQuote(scriptPath)} ${watchdog}`, timeout: HOOK_TIMEOUT_SECONDS }] };
 }
 
 const SETTINGS_FLAG = "--settings";

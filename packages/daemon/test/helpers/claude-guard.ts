@@ -5,7 +5,7 @@ import { shellQuote } from "../../src/adapters/shell-quote.js";
 
 export const GUARD_SCRIPT = claudeRigBodyGuardScriptPath();
 // OF-253: the hook is an inline `sh -c` wrapper (the script text itself is pinned by the behaviour rows of claude-rig-body-guard-launch.test.ts), then node, the guard script and the watchdog seconds.
-export const GUARD_GROUP = { matcher: "Bash", hooks: [{ type: "command", command: `sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(process.execPath)} ${shellQuote(GUARD_SCRIPT)} 3`, timeout: 5 }] };
+export const GUARD_GROUP = { matcher: "Bash", hooks: [{ type: "command", command: `/bin/sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(process.execPath)} ${shellQuote(GUARD_SCRIPT)} 3`, timeout: 5 }] };
 /** The --settings JSON of a launch that had no settings of its own. */
 export const GUARD_JSON = JSON.stringify({ hooks: { PreToolUse: [GUARD_GROUP] } });
 /** Classic (shell text) form, after the posture flag. */
