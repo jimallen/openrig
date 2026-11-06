@@ -79,9 +79,7 @@ describe("OF-247 (c): how long the compaction enforcer holds a seat's lifecycle 
       db, rigRepo, sessionRegistry, tmuxAdapter: tmux, agentActivityStore: activity,
       now: () => new Date(clock), sleep: async (ms: number) => { clock += ms; }, waitForIdlePollMs: 10,
     } as never);
-    const transport = {
-      deliveryGuard: guard,
-      send: async (name: string, text: string, opts: unknown) => {
+    const sendFake = async (name: string, text: string, opts: unknown) => {
         if (deliver) {
           const start = Date.now(), heldAtStart = heldNow();
           const waitForIdleMs = (opts as { waitForIdleMs?: unknown }).waitForIdleMs;
@@ -99,8 +97,10 @@ describe("OF-247 (c): how long the compaction enforcer holds a seat's lifecycle 
           writeFileSync(file, `# Completed fixture map\n${marker}\n`);
         }
         return { ok: true };
-      },
-    } as unknown as SessionTransport;
+    };
+    // A stand-in with the two members the enforcer reads here (as compaction-drain-readiness.test.ts has it); typed as `object` first so the cast is a plain narrowing.
+    const stand: object = { deliveryGuard: guard, send: sendFake };
+    const transport = stand as SessionTransport;
     const settings = new SettingsStore(join(home, "settings.json"));
     settings.set("policies.claude_compaction.enabled", "true");
     settings.set("policies.claude_compaction.threshold_percent", "80");

@@ -41,6 +41,7 @@ import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-obse
 import { observeClaudePermission, observeCodexSandbox, observePiResourceTrust, observeOmpApprovalMode, type AppliedLaunchObservation } from "../src/domain/permission-drift.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
+import { ServiceOrchestrator } from "../src/domain/service-orchestrator.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 import { GUARD_FLAG } from "./helpers/claude-guard.js";
@@ -2752,7 +2753,7 @@ describe("RestoreOrchestrator", () => {
     function guardedTmux(heldAtKill: boolean[], nodeId: () => string) {
       const guard = new SeatDeliveryGuard(db, (name) => resolveGuardTarget(db, name));
       const tmux = Object.assign(mockTmux(), { deliveryGuard: guard });
-      (tmux as unknown as { killSession: unknown }).killSession = vi.fn(async () => { heldAtKill.push(guard.lifecycleHeld(nodeId())); return { ok: true as const }; });
+      vi.mocked(tmux.killSession).mockImplementation(async () => { heldAtKill.push(guard.lifecycleHeld(nodeId())); return { ok: true as const }; });
       return { guard, tmux };
     }
     const failedResume = () => mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
@@ -2801,7 +2802,7 @@ describe("RestoreOrchestrator", () => {
         let release!: (outcome: { ok: false; error: string }) => void;
         const booting = new Promise<{ ok: false; error: string }>((resolve) => { release = resolve; });
         const boot = vi.fn(() => booting);
-        const serviceOrchestrator = { boot } as unknown as import("../src/domain/service-orchestrator.js").ServiceOrchestrator;
+        const serviceOrchestrator: ServiceOrchestrator = Object.assign(Object.create(ServiceOrchestrator.prototype), { boot });
         const tmux = Object.assign(mockTmux(), { deliveryGuard: guard });
         // The core answers with no terminals at all (hc: an empty listing is an answer), as it does for a rig whose terminals are gone.
         const core = { listSessions: async () => [], getPanePid: async () => null, getPaneCommand: async () => null, hostKind: "hc" as const };
