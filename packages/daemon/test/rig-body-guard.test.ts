@@ -5,11 +5,13 @@
 // the wrappers and nesting a model reaches for next, and the parse-failure policy.
 
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = join(here, "..", "assets", "plugins", "openrig-core");
@@ -19,6 +21,7 @@ const require = createRequire(import.meta.url);
 const guard = require(guardPath) as {
   check: (command: unknown) => { block: boolean; violations: Array<{ kind: string; command: string | null }>; reason: string };
   hookDecision: (raw: string) => { output: unknown; note: string | null };
+  maskPieces: (text: string, marks: Array<[number, number]>) => string;
 };
 
 const T = "`"; // a backtick, so the table below stays readable
@@ -174,6 +177,49 @@ const ROWS: Row[] = [
   { id: "B11", deny: true, kind: "substitution", note: "OF-251: the same with backticks", cmd: `ssh host rig send s "'"${T}x${T}"'"` },
   { id: "B12", deny: true, kind: "substitution", note: "OF-251: the same with a process substitution", cmd: `ssh host rig send s "'"<(x)"'"` },
   { id: "B13", deny: true, kind: "substitution", note: "OF-251: the same with an unquoted-level ${x:-$( )}", cmd: `ssh host rig send s "'"\${X:-$(d)}"'"` },
+  // OF-251 review F-1: a leading word that expands, and runners the guard does not model, no longer hide the rig command
+  { id: "L1", deny: true, kind: "substitution", note: "F-1: a leading $( ) word before the rig command (local)", cmd: `$(true) rig send s hi $(date)` },
+  { id: "L2", deny: true, kind: "substitution", note: "F-1: the same inside ssh", cmd: `ssh host "$(true) rig send s hi $(date)"` },
+  { id: "L3", deny: true, kind: "substitution", note: "F-1: the same inside eval", cmd: `eval "$(true) rig send s hi $(date)"` },
+  { id: "L4", deny: true, kind: "substitution", note: "F-1: the same inside sh -c", cmd: `sh -c "$(true) rig send s hi $(date)"` },
+  { id: "L5", deny: true, kind: "substitution", note: "F-1: the command name is a substitution and the next word is a guarded rig command", cmd: `$(command -v rig) send s hi $(date)` },
+  { id: "L6", deny: true, kind: "substitution", note: "F-1: the same inside ssh (the realistic accident form)", cmd: `ssh host "$(command -v rig) send s hi $(date)"` },
+  { id: "L7", deny: true, kind: "substitution", note: "F-1: xargs in ssh", cmd: `ssh host "cd /tmp && echo a | xargs rig send s $(date)"` },
+  { id: "L8", deny: true, kind: "substitution", note: "F-1: xargs, local, double-quoted substitution", cmd: `xargs rig send s "$(date)"` },
+  { id: "L9", deny: true, kind: "substitution", note: "F-1: find -exec in ssh", cmd: `ssh host "find . -maxdepth 0 -exec rig send s $(date) ;"` },
+  { id: "L10", deny: true, kind: "substitution", note: "F-1: watch in ssh", cmd: `ssh host "watch rig send s $(date)"` },
+  { id: "L11", deny: true, kind: "substitution", note: "F-1: parallel in ssh", cmd: `ssh host "parallel rig send s ::: $(date)"` },
+  { id: "L12", deny: true, kind: "substitution", note: "F-1: su -c in ssh", cmd: `ssh host "su -c 'rig send s hi $(date)'"` },
+  { id: "L13", deny: true, kind: "substitution", note: "F-1: script (an unmodelled runner) in ssh", cmd: `ssh host "script -q /dev/null rig send s hi $(date)"` },
+  { id: "L14", deny: true, kind: "substitution", note: "F-1: docker exec (an unmodelled runner), local", cmd: `docker exec c rig send s "$(date)"` },
+  { id: "L15", deny: true, kind: "substitution", note: "F-1: nice/xargs chain with options that take values", cmd: `echo a | nice -n 5 xargs -n 1 -I X rig queue create --body "$(date)"` },
+  { id: "L16", deny: false, note: "F-1 control: a bare substitution is not a rig command", cmd: `$(date)` },
+  { id: "L17", deny: false, note: "F-1 control: a leading substitution before a command that is not rig", cmd: `$(true) git status` },
+  { id: "L18", deny: false, note: "F-1 control: rig among the arguments of echo is text", cmd: `echo rig send $(date)` },
+  { id: "L19", deny: false, note: "F-1 control: rig among the arguments of grep is text", cmd: `grep -rn rig send $(pwd)` },
+  { id: "L20", deny: false, note: "F-1 control: xargs rig send with a file and no substitution", cmd: `echo a | xargs rig send s --file /tmp/x` },
+  { id: "L21", deny: false, note: "F-1 control: find -exec rig seat with a substitution in --cwd (a flag command, not a text option)", cmd: `find . -maxdepth 0 -exec rig seat ls --cwd $(pwd) ;` },
+  { id: "L22", deny: false, note: "F-1 control: su -c with plain rig text and an unrelated substitution after it", cmd: `ssh host "su -c 'rig send s hi'; echo $(date)"` },
+  // OF-251 review F-2: a literal marker-range character in the text is plain text
+  { id: "E1", deny: false, note: "F-2: U+E000 in a single-quoted body", cmd: `rig send s 'text \uE000 here'` },
+  { id: "E2", deny: false, note: "F-2: U+E000 in a quoted here-document body", cmd: `rig send s --file - <<'EOF'\ntext \uE000 here\nEOF` },
+  { id: "E3", deny: false, note: "F-2: U+E000 in a single-quoted body of a rig send inside ssh next to an unrelated substitution", cmd: `ssh host "cd $(pwd) && rig send s '\uE000'"` },
+  { id: "E4", deny: true, kind: "substitution", note: "F-2: U+E000 present AND a real substitution in the single-quoted body", cmd: `ssh host "rig send s '\uE000$(x)'"` },
+  // OF-251 review F-4: two marks in one word (mask order) and arithmetic with a live substitution
+  { id: "D1", deny: true, kind: "substitution", note: "F-4: a long first mark must not shift the second (mask order)", cmd: `ssh host "cd $(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa); rig send s '$(b)'; echo trailing filler text that is long enough to take the shifted marker"` },
+  { id: "D2", deny: true, kind: "substitution", note: "F-4: $(( )) with a live $( ) inside, double-quoted", cmd: `ssh host "rig send s '$(( $(date) + 1 ))'"` },
+  { id: "D3", deny: true, kind: "substitution", note: "F-4: the same unquoted-level", cmd: `ssh host rig send s "'"$(( $(date) + 1 ))"'"` },
+  { id: "D4", deny: false, note: "F-4 control: pure arithmetic in a script word is nothing to run", cmd: `ssh host "cd /x; rig send s 'n=$((1+2))'"` },
+  // OF-251 review F-3: bounded masking; over the bound a command naming a guarded rig command is refused, not timed out
+  { id: "Z1", deny: true, kind: "unparseable", note: "F-3: more substitutions in one script word than the mask bound, with rig text", cmd: `ssh h "${"$(a)".repeat(20_001)}; rig send s hi"` },
+  { id: "Z2", deny: true, kind: "unparseable", note: "F-3: a script word over the byte bound with a substitution and rig text", cmd: `ssh h "$(a) ${"x".repeat(270_000)} rig send s hi"` },
+  { id: "Z3", deny: false, note: "F-3 control: over the bound without any guarded rig text: allowed", cmd: `ssh h "${"$(a)".repeat(20_001)}; echo hi"` },
+  { id: "Z4", deny: false, note: "F-3 control: at the bound minus one", cmd: `ssh h "${"$(a)".repeat(19_999)}; rig send s hi"` },
+  // OF-251 review F-6: an UNQUOTED here-document fed to a shell is expanded by this shell first
+  { id: "HU1", deny: true, kind: "substitution", note: "F-6: bash <<EOF with a substitution inside the single quotes of the rig body", cmd: `bash <<EOF\nrig send s 'a $(date)'\nEOF` },
+  { id: "HU2", deny: true, kind: "substitution", note: "F-6: ssh host <<EOF with backticks inside single quotes", cmd: `ssh host <<EOF\nrig send s 'a ${T}x${T}'\nEOF` },
+  { id: "HU3", deny: false, note: "F-6 control: the same with a QUOTED delimiter: literal to the shell", cmd: `bash <<'EOF'\nrig send s 'a $(date)'\nEOF` },
+  { id: "HU4", deny: false, note: "F-6 control: unquoted delimiter, an unrelated substitution, plain rig text", cmd: `bash <<EOF\ncd $(pwd); rig send s hi\nEOF` },
   { id: "S32", deny: false, note: "2>&1 file descriptor redirect", cmd: `rig send a@b 'hi' 2>&1 | tail -3` },
 
   // ---- parse failures: refuse only when the plain-text signal is there
@@ -212,6 +258,83 @@ describe("rig-body-guard parser table", () => {
       expect(() => guard.check(bad)).not.toThrow();
     }
   });
+});
+
+describe("OF-251 review F-3: the mask is linear", () => {
+  it("maskPieces replaces ascending spans in order and keeps the text between them", () => {
+    expect(guard.maskPieces("ab$(x)cd`y`ef", [[2, 6], [8, 11]]).replace(/[\uE000-\uF8FF]/g, "#")).toBe("ab#cd#ef");
+    expect(guard.maskPieces("plain", [])).toBe("plain");
+  });
+  it("200,000 spans mask in well under the 5 s hook timeout (the quadratic version took 8.6 s at 150,000 marks)", () => {
+    const n = 200_000;
+    const text = "$(a)".repeat(n);
+    const marks: Array<[number, number]> = Array.from({ length: n }, (_, k) => [k * 4, k * 4 + 4]);
+    const t0 = Date.now();
+    const out = guard.maskPieces(text, marks);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(out.length).toBe(n);
+  });
+  it("a command just under the bound is judged in a few seconds at most, and one over it is refused before any masking", () => {
+    for (const marks of [19_999, 150_000]) {
+      const t0 = Date.now();
+      guard.check(`ssh h "${"$(a)".repeat(marks)}; rig send s hi"`);
+      expect(Date.now() - t0, `${marks} marks`).toBeLessThan(3000);
+    }
+  });
+});
+
+describe("OF-251 differential: the verdict against what a real bash does (fake rig logs argv, fake ssh runs the joined words in sh -c)", () => {
+  const P = "$(printf PW%sN X)";
+  const B = "`printf PW%sN X`";
+  // lands: the payload text reaches rig's argv or stdin when bash runs the command; block: what the guard must say (true whenever it lands)
+  const DIFF: Array<{ id: string; cmd: string; lands: boolean }> = [
+    { id: "d1", cmd: `$(true) rig send s hi @P@`, lands: true },
+    { id: "d2", cmd: `ssh host "$(true) rig send s hi @P@"`, lands: true },
+    { id: "d3", cmd: `eval "$(true) rig send s hi @P@"`, lands: true },
+    { id: "d4", cmd: `sh -c "$(true) rig send s hi @P@"`, lands: true },
+    { id: "d5", cmd: `$(command -v rig) send s hi @P@`, lands: true },
+    { id: "d6", cmd: `ssh host "cd /tmp && echo a | xargs rig send s @P@"`, lands: true },
+    { id: "d7", cmd: `ssh host "find . -maxdepth 0 -exec rig send s @P@ \\;"`, lands: true },
+    { id: "d8", cmd: `ssh host "rig send s '@P@'"`, lands: true },
+    { id: "d9", cmd: `ssh host "rig send s '@B@'"`, lands: true },
+    { id: "d10", cmd: `bash -c "rig send s '@P@'"`, lands: true },
+    { id: "d11", cmd: `eval "rig send s '@P@'"`, lands: true },
+    { id: "d12", cmd: `ssh host "cd /x; rig send s '@P@'"`, lands: true },
+    { id: "d13", cmd: `ssh host "echo @P@ | rig send s --file -"`, lands: true },
+    { id: "d14", cmd: `ssh host "rig send s --file - <<'EOF'\n@P@\nEOF"`, lands: true },
+    { id: "d15", cmd: `ssh host "rig send s '\${X:-@P@}'"`, lands: true },
+    { id: "d16", cmd: `bash <<EOF\nrig send s 'a @P@'\nEOF`, lands: true },
+    { id: "d17", cmd: `ssh host rig send s "'"@P@"'"`, lands: true },
+    { id: "d18", cmd: `ssh host "cd @P@; rig send s hi"`, lands: false },
+    { id: "d19", cmd: `ssh host "echo @P@; rig send s hi"`, lands: false },
+    { id: "d20", cmd: `bash -c "@P@; rig send s hi"`, lands: false },
+    { id: "d21", cmd: `ssh host "rig send s hi; echo @P@"`, lands: false },
+    { id: "d22", cmd: `bash <<EOF\ncd @P@; rig send s hi\nEOF`, lands: false },
+    { id: "d23", cmd: `echo rig send @P@`, lands: false },
+    { id: "d24", cmd: `bash <<'EOF'\nrig send s 'a @P@'\nEOF`, lands: false },
+  ];
+  let bin = "";
+  let work = "";
+  beforeAll(() => {
+    work = mkdtempSync(join(tmpdir(), "of251-diff-"));
+    bin = join(work, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "rig"), `#!/bin/sh\nprintf 'ARGV:%s\\n' "$*" >> "${join(work, "rig.log")}"\n[ -t 0 ] || cat >> "${join(work, "rig.log")}"\n`, { mode: 0o755 });
+    writeFileSync(join(bin, "ssh"), `#!/bin/sh\nshift\nexec sh -c "$*"\n`, { mode: 0o755 });
+  });
+  afterAll(() => { rmSync(work, { recursive: true, force: true }); });
+
+  for (const row of DIFF) {
+    it(`${row.id}: ${row.lands ? "the payload reaches rig, so the guard blocks" : "the payload never reaches rig, so the guard allows"}: ${row.cmd.replace(/\n/g, "\\n").slice(0, 70)}`, () => {
+      const cmd = row.cmd.replace(/@P@/g, P).replace(/@B@/g, B);
+      const log = join(work, "rig.log");
+      rmSync(log, { force: true });
+      const r = spawnSync("bash", ["-c", cmd], { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: work }, cwd: work, input: "", encoding: "utf8", timeout: 20_000 });
+      const landed = existsSync(log) && readFileSync(log, "utf8").includes("PWXN");
+      expect(landed, `oracle (bash ${r.status}, ${r.stderr.slice(0, 120)})`).toBe(row.lands);
+      expect(guard.check(cmd).block).toBe(row.lands);
+    });
+  }
 });
 
 describe("rig-body-guard refusal text", () => {

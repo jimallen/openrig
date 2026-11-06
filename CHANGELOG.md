@@ -46,6 +46,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   ``ssh host "rig send s '`x`'"`` is refused. Only a substitution that lands in the words (or the stdin) of a guarded rig command is refused: an unrelated one next to
   plain rig text, e.g. `ssh host "cd $(pwd) && rig send s hi"`, is allowed, as it is when run locally. A script given to `eval` in several words is read as one script
   (``eval rig send s "'`x`'"`` was not refused before OF-251).
+- OF-251 review follow-ups, same guard: a rig command behind a leading substitution word (``$(true) rig send s hi $(date)``, ``$(command -v rig) send ...``) and behind `xargs`,
+  `watch`, `find -exec`, `parallel`, `su -c`, `script`, `docker exec` or any other runner (any word `rig` followed by a guarded command among a runner's arguments) is judged as if it were run
+  directly, locally and inside ssh / `sh -c` / `eval`. An unquoted here-document fed to a shell is expanded by this shell first, so a substitution inside its single quotes is refused too.
+  The marker character is chosen per command from the private-use range and a literal U+E000 in a message is plain text. The mask is one linear pass; a script word with more than 20,000
+  substitutions or 262,144 bytes (with a substitution) is not masked and is refused where it names a guarded rig command (Claude Code fails open on a hook that times out).
+  Still not modelled, as before: a command assembled at run time (`rig${IFS}send`, `R=rig; $R send ...`, ANSI-C quoting of the name), and `script -c "<script>"`.
 
 - OF-252: the launch-time merge fails closed on off-shape settings. A `PreToolUse` that is not an array, or `hooks` that is not an object, refuses the launch (it used to be
   replaced, dropping a caller's hook). `--settings=<json>` is recognised as a settings flag, counts toward exactly one, and is merged in its own form. A flag with no value, a value
