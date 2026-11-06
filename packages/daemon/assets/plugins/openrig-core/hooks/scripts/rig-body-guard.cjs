@@ -27,6 +27,9 @@
 // here-document and sent in a later command, `hc send`, python/node -e shelling out, aliases.
 
 const MAX_LEN = 1_000_000;
+// OF-251: stands in, in a wrapper script's text, for a substitution the LOCAL shell runs before the wrapper starts. Private-use
+// character; any word or here-document holding it counts as expanded whatever quoting the inner text puts around it.
+const OUTER_SUB = "\uE000";
 const MAX_DEPTH = 8;
 
 class ParseError extends Error {}
@@ -180,6 +183,7 @@ function closeParen(src, i) {
 /** True when text (a here-document body or an arithmetic/parameter expansion) holds a substitution the
  *  shell would execute: an unescaped backtick or "$(" that is not "$((". */
 function bodyExpands(text) {
+  if (text.includes(OUTER_SUB)) return true;      // OF-251: a substitution the OUTER shell runs (see outerExpansion)
   const n = text.length;
   for (let i = 0; i < n; i++) {
     const c = text[i];
@@ -203,6 +207,7 @@ function readWord(src, i) {
   let expands = false;
   let quoted = false;
   const subs = [];
+  const marks = [];                                   // [from, to) spans of `text` that are substitutions the shell runs
   while (i < n) {
     const c = src[i];
     if (c === "\\") {
@@ -235,17 +240,18 @@ function readWord(src, i) {
         }
         if (d === "$" && src[i + 1] === "(" ) {
           const j = closeParen(src, i + 2);
+          const from = text.length;
           if (src[i + 2] === "(") {
             const inner = src.slice(i + 3, j - 1);
-            if (bodyExpands(inner)) { expands = true; subs.push(inner); }
-          } else { expands = true; subs.push(src.slice(i + 2, j)); }
+            if (bodyExpands(inner)) { expands = true; subs.push(inner); marks.push([from, from + (j + 1 - i)]); }
+          } else { expands = true; subs.push(src.slice(i + 2, j)); marks.push([from, from + (j + 1 - i)]); }
           text += src.slice(i, j + 1);
           i = j + 1;
           continue;
         }
         if (d === "$" && src[i + 1] === "{") {
           const j = closeBrace(src, i + 2);
-          if (bodyExpands(src.slice(i + 2, j))) expands = true;
+          if (bodyExpands(src.slice(i + 2, j))) { expands = true; marks.push([text.length, text.length + (j + 1 - i)]); }
           text += src.slice(i, j + 1);
           i = j + 1;
           continue;
@@ -254,6 +260,7 @@ function readWord(src, i) {
           const j = skipBacktick(src, i + 1);
           expands = true;
           subs.push(src.slice(i + 1, j - 1).replace(/\\([`$\\])/g, "$1"));
+          marks.push([text.length, text.length + (j - i)]);
           text += src.slice(i, j);
           i = j;
           continue;
@@ -266,17 +273,18 @@ function readWord(src, i) {
     if (c === "$") {
       if (src[i + 1] === "(") {
         const j = closeParen(src, i + 2);
+        const from = text.length;
         if (src[i + 2] === "(") {
           const inner = src.slice(i + 3, j - 1);
-          if (bodyExpands(inner)) { expands = true; subs.push(inner); }
-        } else { expands = true; subs.push(src.slice(i + 2, j)); }
+          if (bodyExpands(inner)) { expands = true; subs.push(inner); marks.push([from, from + (j + 1 - i)]); }
+        } else { expands = true; subs.push(src.slice(i + 2, j)); marks.push([from, from + (j + 1 - i)]); }
         text += src.slice(i, j + 1);
         i = j + 1;
         continue;
       }
       if (src[i + 1] === "{") {
         const j = closeBrace(src, i + 2);
-        if (bodyExpands(src.slice(i + 2, j))) expands = true;
+        if (bodyExpands(src.slice(i + 2, j))) { expands = true; marks.push([text.length, text.length + (j + 1 - i)]); }
         text += src.slice(i, j + 1);
         i = j + 1;
         continue;
@@ -298,6 +306,7 @@ function readWord(src, i) {
       const j = skipBacktick(src, i + 1);
       expands = true;
       subs.push(src.slice(i + 1, j - 1).replace(/\\([`$\\])/g, "$1"));
+      marks.push([text.length, text.length + (j - i)]);
       text += src.slice(i, j);
       i = j;
       continue;
@@ -306,6 +315,7 @@ function readWord(src, i) {
       const j = closeParen(src, i + 2);
       expands = true;
       subs.push(src.slice(i + 2, j));
+      marks.push([text.length, text.length + (j + 1 - i)]);
       text += src.slice(i, j + 1);
       i = j + 1;
       continue;
@@ -314,7 +324,7 @@ function readWord(src, i) {
     text += c;
     i++;
   }
-  return { word: { text, expands, quoted, subs, raw: src.slice(start, i) }, next: i };
+  return { word: { text, expands: expands || text.includes(OUTER_SUB), quoted, subs, marks, raw: src.slice(start, i) }, next: i };
 }
 
 /** Split shell text into simple commands. Returns { cmds, subs }. A cmd is
@@ -511,15 +521,21 @@ function scanStdinScript(cmd, depth, out) {
   for (const w of cmd.hereStrings) scan(w.text, depth + 1, out);
 }
 
-/** F1 (OF-249 review): the script handed to sh -c / eval / ssh is itself a word of THIS shell. When that word has a command substitution
- *  (outer double quotes or none), the local shell runs it before the wrapper starts, so judging the inner text against its own quoting
- *  ('...' inside) is the wrong context. A script word that expands AND mentions a guarded rig command is refused. */
-function outerExpansion(words, out) {
-  for (const w of words) {
-    if (!w.expands) continue;
-    const m = FALLBACK_NAME_RE.exec(w.text);
-    if (m) { out.push({ kind: "substitution", command: m[1] }); return; }
-  }
+/** The text of a script word with each substitution the LOCAL shell runs replaced by OUTER_SUB. */
+function maskedText(w) {
+  let t = w.text;
+  for (let k = w.marks.length - 1; k >= 0; k--) t = t.slice(0, w.marks[k][0]) + OUTER_SUB + t.slice(w.marks[k][1]);
+  return t;
+}
+
+/** F1 (OF-249 review), narrowed by OF-251: the script handed to sh -c / eval / ssh is itself a word of THIS shell. When that word has a command
+ *  substitution (outer double quotes or none), the local shell runs it before the wrapper starts, so judging the inner text against its own quoting
+ *  ('...' inside) is the wrong context. The script is therefore read again with each such substitution replaced by OUTER_SUB, which counts as expanded
+ *  wherever it sits in the inner text, quoted or not: it is refused only when it lands in the words or the stdin of a guarded rig command. An unrelated
+ *  substitution next to plain rig text (ssh host "cd $(pwd) && rig send s hi") stays allowed, as it is when run locally. */
+function outerExpansion(words, depth, out) {
+  if (!words.some((w) => w.marks.length > 0)) return;
+  scan(words.map(maskedText).join(" "), depth + 1, out);
 }
 
 function scanPipeline(cmds, resolved, from, to, depth, out) {
@@ -535,18 +551,18 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       const ci = res.args.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text));
       if (ci >= 0) {
         const script = res.args.slice(ci + 1).find((a) => !a.text.startsWith("-"));
-        if (script) { outerExpansion([script], out); scan(script.text, depth + 1, out); }
+        if (script) { outerExpansion([script], depth, out); scan(script.text, depth + 1, out); }
       } else if (res.args.every((a) => a.text.startsWith("-")) || res.args.some((a) => a.text === "-s")) {
         scanStdinScript(cmds[i], depth, out);        // bash <<'EOF' ... EOF / bash <<< '...': the text is the script
       }
     } else if (res.name === "eval") {
-      outerExpansion(res.args, out);
+      outerExpansion(res.args, depth, out);
       scan(res.args.map((a) => a.text).join(" "), depth + 1, out);
     } else if (res.name === "ssh") {
       let k = 0;
       while (k < res.args.length && res.args[k].text.startsWith("-")) k += SSH_VALUED.has(res.args[k].text) ? 2 : 1;
       const remote = res.args.slice(k + 1);                 // after the host
-      if (remote.length) { outerExpansion(remote, out); scan(remote.map((a) => a.text).join(" "), depth + 1, out); }
+      if (remote.length) { outerExpansion(remote, depth, out); scan(remote.map((a) => a.text).join(" "), depth + 1, out); }
       else scanStdinScript(cmds[i], depth, out);            // ssh host <<'EOF' ... EOF
     }
   }
@@ -555,7 +571,7 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
   // producers in the same pipeline as a message command.
   for (let i = from; i < to; i++) {
     const c = cmds[i];
-    for (const h of c.heredocs) if (!h.quoted && bodyExpands(h.body)) out.push({ kind: "heredoc", command: message });
+    for (const h of c.heredocs) if ((!h.quoted || h.body.includes(OUTER_SUB)) && bodyExpands(h.body)) out.push({ kind: "heredoc", command: message });
     for (const w of c.hereStrings) if (w.expands) out.push({ kind: "here-string", command: message });
     const res = resolved[i];
     if (res && PRODUCERS.has(res.name)) {
@@ -572,7 +588,6 @@ const FALLBACK_SRC =
     Object.keys(MESSAGE_COMMANDS).concat(Object.keys(FLAG_COMMANDS)).map((n) => n.replace(/-/g, "\\-")).join("|") +
     ")\\b";
 const FALLBACK_RE = new RegExp(FALLBACK_SRC);
-const FALLBACK_NAME_RE = new RegExp(FALLBACK_SRC);
 
 /** check(command) -> { block, violations, reason }. Never throws. */
 function check(command) {

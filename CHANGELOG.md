@@ -42,9 +42,10 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   refuses a launch when the script is missing; it does not make a running seat's guard permanent.
 - Not guarded: a Claude started outside OpenRig, or by a host whose daemon is older than this change; seats already running until they are relaunched or restored; Codex, OMP, and
   Claude tools other than `Bash`.
-- Also in this unit (OF-249 review F1, `17d58da`): the script word given to `ssh`, `sh -c` or `eval` is judged in the local shell's quoting, so ``ssh host "rig send s '`x`'"``
-  is refused. This is stricter than the plain case: such a word with ANY substitution next to plain rig text is refused too, e.g. `ssh host "cd $(pwd) && rig send s hi"`;
-  write the remote command in single quotes, or send the text with `--file - <<'EOF'`.
+- Also in this unit (OF-249 review F1, `17d58da`; narrowed by OF-251): the script word given to `ssh`, `sh -c` or `eval` is judged in the local shell's quoting, so
+  ``ssh host "rig send s '`x`'"`` is refused. Only a substitution that lands in the words (or the stdin) of a guarded rig command is refused: an unrelated one next to
+  plain rig text, e.g. `ssh host "cd $(pwd) && rig send s hi"`, is allowed, as it is when run locally. A script given to `eval` in several words is read as one script
+  (``eval rig send s "'`x`'"`` was not refused before OF-251).
 
 ### A `rig send` body with backticks or `$(...)` in double quotes is refused before the shell runs it (OF-249)
 
