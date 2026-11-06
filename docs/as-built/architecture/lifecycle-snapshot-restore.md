@@ -230,7 +230,12 @@ cited here by number with the code that carries them):
   rig returns at `:93–115` without one). Before that capture, teardown ends
   each seat's older duplicate live rows (a row with a later live row on the
   same seat, OF-116 F7): the snapshot then records one running occupant per
-  seat instead of an ambiguity.
+  seat instead of an ambiguity. The snapshot reads each seat's occupant the way
+  a capture after a host loss does (OF-255, `snapshot-capture.ts`): a
+  `detached` row (a reboot's reconcile detaches the rows it finds dead) is the
+  seat's occupant, and so is a deliberate `rig seat launch --fresh` successor,
+  not the occupant it replaced. The routine `manual` and `auto-periodic`
+  snapshots keep the running-only rule.
 - `rig up <rig-name>`: a source with no `/` and no
   `.yaml`/`.yml`/`.rigbundle`/`.rigtopology` extension is a rig name
   (`packages/daemon/src/domain/up-command-router.ts:49–50`). The CLI refuses

@@ -108,11 +108,18 @@ export class SnapshotCapture {
     // 2b. OPR.0.5.7.1 D1 — capture the ACTIVE-OCCUPANT relation explicitly,
     // through the ONE shared derivation (active-occupant.ts) that the live
     // no-snapshot preview also uses, so the sibling paths cannot drift.
-    const recorded = kind === "auto-rehydrate" ? readFreshOccupantRelations(this.db, rigId) : {};
-    const activeSessionIdByNode = kind === "auto-rehydrate"
+    // OF-255: a snapshot of a rig that is being stopped (`auto-pre-down`) reads its rows the way a snapshot after a host
+    // loss does (`auto-rehydrate`). After a reboot the startup reconcile detaches the rows it finds dead, and a restored
+    // empty shell can keep a sibling's row `running`; `rig down` then captures a rig that is part detached. The running-only
+    // rule below read every detached seat as having no occupant, so that snapshot named none for a seat whose occupant
+    // (a deliberate `rig seat launch --fresh` successor, above all) current state still identifies, and the restore check
+    // refused it as naming an older occupant.
+    const readsLostOccupants = kind === "auto-rehydrate" || kind === "auto-pre-down";
+    const recorded = readsLostOccupants ? readFreshOccupantRelations(this.db, rigId) : {};
+    const activeSessionIdByNode = readsLostOccupants
       ? deriveRehydrateSessionIdByNode(sessions, rig.nodes.map((n) => n.id), recorded)
       : deriveActiveSessionIdByNode(sessions, rig.nodes.map((n) => n.id));
-    const activeOccupantsByNode = kind === "auto-rehydrate"
+    const activeOccupantsByNode = readsLostOccupants
       ? deriveRehydrateOccupantsByNode(sessions, rig.nodes.map((n) => n.id), recorded)
       : deriveActiveOccupantsByNode(sessions, rig.nodes.map((n) => n.id));
 
