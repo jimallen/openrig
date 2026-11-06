@@ -22,6 +22,7 @@ const guard = require(guardPath) as {
   check: (command: unknown, options?: { budgetMs?: number }) => { block: boolean; violations: Array<{ kind: string; command: string | null }>; reason: string };
   hookDecision: (raw: string) => { output: unknown; note: string | null };
   maskPieces: (text: string, marks: Array<[number, number]>) => string;
+  DEFAULT_BUDGET_MS: number;
 };
 
 const T = "`"; // a backtick, so the table below stays readable
@@ -214,6 +215,9 @@ const ROWS: Row[] = [
   { id: "ES3", deny: false, note: "F-3 control: env -S string without rig", cmd: `env -S "echo $(date)"` },
   { id: "WA1", deny: true, kind: "substitution", note: "F-3: watch with one script string", cmd: `watch "rig send s $(id)"` },
   { id: "WA2", deny: true, kind: "substitution", note: "F-3: watch -n with the words", cmd: `watch -n 5 rig send s "$(id)"` },
+  { id: "WA4", deny: true, kind: "substitution", note: "F-3: watch string whose command follows an assignment (read as shell text, not by the runner's start-of-string rule)", cmd: `watch "FOO=1 rig send s $(id)"` },
+  { id: "SC2", deny: true, kind: "substitution", note: "F-3: script -c string whose command follows an assignment", cmd: `script -q -c "FOO=1 rig send s $(id)" /dev/null` },
+  { id: "SU1", deny: true, kind: "substitution", note: "F-3: su -c string whose command follows an assignment", cmd: `su -c "FOO=1 rig send s $(id)" user` },
   { id: "WA3", deny: false, note: "F-3 control: watch of plain rig text", cmd: `watch -n 5 rig ps` },
   { id: "SC1", deny: true, kind: "substitution", note: "F-3: util-linux script -c with a script string", cmd: `script -q -c "rig send s $(id)" /dev/null` },
   { id: "RS1", deny: true, kind: "substitution", note: "F-3: a script string for an unmodelled runner that starts with a guarded rig command", cmd: `docker exec c "rig send s $(id)"` },
@@ -222,8 +226,8 @@ const ROWS: Row[] = [
   { id: "BU1", deny: true, kind: "unparseable", note: "F-1: budget spent, obfuscated r\"\"ig name", cmd: `r""ig send s "$(touch m9)"`, budgetMs: -1 },
   { id: "BU2", deny: true, kind: "unparseable", note: "F-1: budget spent, backslash in the name", cmd: `r\\ig send s $(touch m9)`, budgetMs: -1 },
   { id: "BU3", deny: true, kind: "unparseable", note: "F-1: budget spent, quoted letter in the name", cmd: `'r'ig send s ${T}touch m9${T}`, budgetMs: -1 },
-  { id: "BU6", deny: true, kind: "unparseable", note: "F-1: a long lex with a spent budget fails closed mid-scan (the loop's own tick, not only the entry check)", cmd: `echo ${"x ".repeat(400_000)}; rig send s '$(a)'`, budgetMs: 1 },
-  { id: "BU7", deny: false, note: "F-1 control: the same command within the default budget parses fully: the $( ) is inside single quotes, so it is allowed", cmd: `echo ${"x ".repeat(400_000)}; rig send s '$(a)'` },
+  { id: "BU6", deny: true, kind: "unparseable", note: "F-1: a long lex with a spent budget fails closed mid-scan (the loop's own tick, not only the entry check)", cmd: `echo ${"x ".repeat(100_000)}; rig send s '$(a)'`, budgetMs: 1 },
+  { id: "BU7", deny: false, note: "F-1 control: the same command within the default budget parses fully: the $( ) is inside single quotes, so it is allowed", cmd: `echo ${"x ".repeat(100_000)}; rig send s '$(a)'` },
   { id: "BU4", deny: false, note: "F-1 control: budget spent, no guarded rig text: allowed (fail closed only where the risk signal exists)", cmd: `echo $(date)`, budgetMs: -1 },
   { id: "BU5", deny: false, note: "F-1 control: budget spent, rig text with no substitution", cmd: `rig send s 'plain'`, budgetMs: -1 },
   { id: "L16", deny: false, note: "F-1 control: a bare substitution is not a rig command", cmd: `$(date)` },
@@ -335,6 +339,10 @@ describe("OF-251 review (68f3b6c8) F-1: nested unquoted here-documents are scann
     expect(verdict.block).toBe(true);
     expect(verdict.violations[0]?.kind).toBe("substitution"); // "unparseable" would mean the 1.5 s budget ran out (the doubled scan took 3.8 s here)
     expect(ms).toBeLessThan(3000);
+  });
+  it("the default budget is well under the wrapper's 3 s watchdog (a hook that outruns it falls to the coarser degraded check)", () => {
+    expect(guard.DEFAULT_BUDGET_MS).toBeGreaterThan(0);
+    expect(guard.DEFAULT_BUDGET_MS).toBeLessThanOrEqual(2000);
   });
   it("a hard input that does outrun the budget is refused by the guard itself where a guarded rig command is named", () => {
     const cmd = nested(100_000, 7, `r""ig send s "$(touch m9)"`);

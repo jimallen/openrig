@@ -798,4 +798,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { check, hookDecision, refusal, lex, bodyExpands, maskPieces, MESSAGE_COMMANDS, FLAG_COMMANDS };
+module.exports = { check, hookDecision, refusal, lex, bodyExpands, maskPieces, DEFAULT_BUDGET_MS, MESSAGE_COMMANDS, FLAG_COMMANDS };
