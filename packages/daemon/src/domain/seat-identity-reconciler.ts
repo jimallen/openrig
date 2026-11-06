@@ -3,6 +3,8 @@ import { isShellForeground } from "./shell-classifier.js";
 import { registeredPaneSql } from "./binding-pane.js";
 import { claudeResumeRotation } from "./session-registry.js";
 import { STARTUP_TEXT_WAIT_MS } from "./startup-orchestrator.js";
+import { DEFAULT_READINESS_TIMEOUT_MS } from "./readiness-timeout.js";
+import { RESUME_SETTLE_MS } from "./resume-settle.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -26,9 +28,17 @@ export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
  *  core (hc 0.1.17, Sparky; Sparky's hc was 0.1.17 from 14:34 on 2026-11-05) took 0.55 s and 0.42 s, with 27 leases held at once for 0.39 s, about 15 ms per seat of
  *  OpenRig's own work; the OF-241 review re-measured it there at 0.50 s down, 0.43 s restore and 0.38 s for the longest lease. A real agent's start-up is not in
  *  that number and is what the per-seat term is for. 10 min is a margin of more than a thousand over the measurement, not a measurement. Finite: a lease held
- *  for ever hides a loss for at most this bound plus two polls. */
+ *  for ever hides a loss for at most this bound plus two polls.
+ *
+ *  The per-seat term is one seat's whole turn of the sequential restore, read from StartupOrchestrator.startNode (OF-247 a; a bound from the code, with the timing
+ *  pinned in startup-pump.test.ts): the readiness window (`runtime.readiness_timeout_seconds`, default 30 s, at most 600 s, resolved at each launch), then the
+ *  resume settle (RESUME_SETTLE_MS, 2.5 s, a resumed seat only), then at most ONE startup text wait (STARTUP_TEXT_WAIT_MS, 5 min: the first send the seat's gate does not
+ *  record latches `pumpStopped`, so later sends return at once). A seat whose readiness times out fails there and never reaches the text wait, so the terms add only
+ *  for a seat that becomes ready just inside its window. Before OF-247 the term was the text wait alone, 32.5 s short of that turn at the default window and 10 min
+ *  short at the largest. */
 export const LIFECYCLE_EXCUSE_BASE_MS = 10 * 60_000;
-export const LIFECYCLE_EXCUSE_PER_SEAT_MS = STARTUP_TEXT_WAIT_MS;
+/** The per-seat term at the default readiness window; the reconciler uses the window in force when `readinessTimeoutMs` is wired. */
+export const LIFECYCLE_EXCUSE_PER_SEAT_MS = STARTUP_TEXT_WAIT_MS + RESUME_SETTLE_MS + DEFAULT_READINESS_TIMEOUT_MS;
 
 /** Foreground commands that read as a bare shell (a seat that dropped to a
  *  prompt, or an orphan/QA-squat shell occupying the pane). Mirrors the
@@ -104,8 +114,10 @@ export interface SeatIdentityReconcilerDeps {
   lifecycleHeld?: (nodeId: string) => boolean;
   /** OF-235: how many seats the guard's lifecycle leases hold right now (`SeatDeliveryGuard.lifecycleHeldCount`); it scales the ceiling. Absent: one. */
   lifecycleHeldCount?: () => number;
-  /** Overrides LIFECYCLE_EXCUSE_BASE_MS / LIFECYCLE_EXCUSE_PER_SEAT_MS (tests). */
-  lifecycleExcuse?: { baseMs: number; perSeatMs: number };
+  /** OF-247 (a): the readiness window in force (`resolveReadinessTimeoutMs`), read at a poll that finds a lease holding a seat. Absent: DEFAULT_READINESS_TIMEOUT_MS. */
+  readinessTimeoutMs?: () => number;
+  /** Overrides LIFECYCLE_EXCUSE_BASE_MS and the whole per-seat term (tests); a base given alone keeps the derived per-seat term. */
+  lifecycleExcuse?: { baseMs: number; perSeatMs?: number };
 }
 
 /**
@@ -134,8 +146,9 @@ export class SeatIdentityReconciler {
   private readonly heldSince = new Map<string, number>();
   private readonly lifecycleHeld: ((nodeId: string) => boolean) | undefined;
   private readonly lifecycleHeldCount: (() => number) | undefined;
+  private readonly readinessTimeoutMs: (() => number) | undefined;
   private readonly excuseBaseMs: number;
-  private readonly excusePerSeatMs: number;
+  private readonly excusePerSeatMsOverride: number | undefined;
 
   constructor(deps: SeatIdentityReconcilerDeps) {
     this.db = deps.db;
@@ -146,7 +159,14 @@ export class SeatIdentityReconciler {
     this.lifecycleHeld = deps.lifecycleHeld;
     this.lifecycleHeldCount = deps.lifecycleHeldCount;
     this.excuseBaseMs = deps.lifecycleExcuse?.baseMs ?? LIFECYCLE_EXCUSE_BASE_MS;
-    this.excusePerSeatMs = deps.lifecycleExcuse?.perSeatMs ?? LIFECYCLE_EXCUSE_PER_SEAT_MS;
+    this.readinessTimeoutMs = deps.readinessTimeoutMs;
+    this.excusePerSeatMsOverride = deps.lifecycleExcuse?.perSeatMs;
+  }
+
+  /** How long a lease holding `held` seats may excuse a missing terminal, counted from the first poll that saw it (OF-247 a: the per-seat term follows the readiness window in force). */
+  excuseCeilingMs(held: number): number {
+    const perSeat = this.excusePerSeatMsOverride ?? STARTUP_TEXT_WAIT_MS + RESUME_SETTLE_MS + (this.readinessTimeoutMs?.() ?? DEFAULT_READINESS_TIMEOUT_MS);
+    return this.excuseBaseMs + perSeat * Math.max(1, held);
   }
 
   /** OF-235: a supported operation (stop, `rig down`, restart, handover, restore, launch) holds the seat's lifecycle lease from before it ends the
@@ -156,8 +176,7 @@ export class SeatIdentityReconciler {
     if (!this.lifecycleHeld?.(nodeId)) { this.heldSince.delete(nodeId); return false; }
     const since = this.heldSince.get(nodeId) ?? observedMs;
     this.heldSince.set(nodeId, since);
-    const held = Math.max(1, this.lifecycleHeldCount?.() ?? 1);
-    return observedMs - since < this.excuseBaseMs + this.excusePerSeatMs * held;
+    return observedMs - since < this.excuseCeilingMs(this.lifecycleHeldCount?.() ?? 1);
   }
 
   private runningSeats(): RunningSeatRow[] {

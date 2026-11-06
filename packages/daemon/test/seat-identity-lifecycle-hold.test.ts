@@ -19,6 +19,8 @@ import { HcUnavailableError } from "../src/adapters/hc-client.js";
 import { SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { LIFECYCLE_EXCUSE_BASE_MS, LIFECYCLE_EXCUSE_PER_SEAT_MS, SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
+import { DEFAULT_READINESS_TIMEOUT_MS } from "../src/domain/readiness-timeout.js";
+import { RESUME_SETTLE_MS } from "../src/domain/resume-settle.js";
 import { STARTUP_TEXT_WAIT_MS } from "../src/domain/startup-orchestrator.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { SeatLostHealthSource, inventoryOfLiveRigs } from "../src/domain/seat-lost-health.js";
@@ -29,7 +31,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 const SEATS = ["dev-a@solo-rig", "dev-b@solo-rig", "dev-c@solo-rig"];
 const [A, B, C] = SEATS as [string, string, string];
 
-function fixture(opts: { seats?: string[]; wired?: boolean; excuse?: { baseMs: number; perSeatMs: number } } = {}) {
+function fixture(opts: { seats?: string[]; wired?: boolean; excuse?: { baseMs: number; perSeatMs?: number }; readinessMs?: number } = {}) {
   const seatNames = opts.seats ?? [A];
   const db = createDb(); databases.push(db); migrate(db, ALL_MIGRATIONS);
   db.prepare("INSERT INTO rigs (id, name) VALUES ('rig-1', 'solo-rig')").run();
@@ -58,6 +60,7 @@ function fixture(opts: { seats?: string[]; wired?: boolean; excuse?: { baseMs: n
     ...(opts.wired === false ? {} : { lifecycleHeld: (id: string) => guard.lifecycleHeld(id) }),
     ...(opts.wired === false ? {} : { lifecycleHeldCount: () => guard.lifecycleHeldCount() }),
     ...(opts.excuse ? { lifecycleExcuse: opts.excuse } : {}),
+    ...(opts.readinessMs === undefined ? {} : { readinessTimeoutMs: () => opts.readinessMs! }),
   });
   const store = new SeatIdentityStore(db);
   const reason = (node: string) => store.getForNode(node)?.reason ?? "(no verdict)";
@@ -159,11 +162,44 @@ describe("OF-235: a seat a lifecycle lease holds is not reported lost while the 
     release(); await hung;
   });
 
-  it("the ceiling's terms: 10 min plus the startup wait of one seat (STARTUP_TEXT_WAIT_MS, 5 min) per seat held; a change to that wait shows up here", () => {
+  // OF-247 (a). The per-seat term was STARTUP_TEXT_WAIT_MS alone; a seat's turn of the restore also waits the readiness window first (StartupOrchestrator.startNode: readiness,
+  // then the resume settle, then at most one startup text wait). Production consequence: a seat that becomes ready just inside its window and then waits out the text wait
+  // was past its term by the window, and a user who raised `runtime.readiness_timeout_seconds` (to 600) by ten minutes.
+  // The constants are restated here as numbers, not imported as sums, so each one fails on its own.
+  it("the ceiling's terms: 10 min plus, per seat held, the seat's whole turn: readiness window 30 s + resume settle 2.5 s + the startup text wait 5 min", () => {
     expect(LIFECYCLE_EXCUSE_BASE_MS, "measured 0.4 s of OpenRig's own work for 27 stub seats (OF-241)").toBe(10 * 60_000);
-    expect(LIFECYCLE_EXCUSE_PER_SEAT_MS, "the bound one seat's turn of the sequential restore can wait").toBe(STARTUP_TEXT_WAIT_MS);
-    expect(STARTUP_TEXT_WAIT_MS, "the per-seat bound the ceiling relies on; if it changes, re-judge the ceiling").toBe(5 * 60_000);
-    expect(LIFECYCLE_EXCUSE_BASE_MS + 27 * LIFECYCLE_EXCUSE_PER_SEAT_MS, "the laptop's 27 seats").toBe(145 * 60_000);
+    expect(STARTUP_TEXT_WAIT_MS, "the text wait the ceiling relies on; if it changes, re-judge the ceiling").toBe(300_000);
+    expect(RESUME_SETTLE_MS).toBe(2_500);
+    expect(DEFAULT_READINESS_TIMEOUT_MS, "runtime.readiness_timeout_seconds default").toBe(30_000);
+    expect(LIFECYCLE_EXCUSE_PER_SEAT_MS, "the bound one seat's turn of the sequential restore can wait").toBe(332_500);
+    expect(LIFECYCLE_EXCUSE_BASE_MS + 27 * LIFECYCLE_EXCUSE_PER_SEAT_MS, "the laptop's 27 seats").toBe(600_000 + 27 * 332_500);
+  });
+
+  it("the per-seat term follows the readiness window in force: 30 s default, 600 s at the setting's largest, and none wired means the default", () => {
+    const ceiling = (readinessMs: number | undefined, held: number) => fixture(readinessMs === undefined ? {} : { readinessMs }).rec.excuseCeilingMs(held);
+    expect(ceiling(undefined, 1), "no window wired").toBe(600_000 + 332_500);
+    expect(ceiling(30_000, 1)).toBe(600_000 + 332_500);
+    expect(ceiling(600_000, 1), "the largest window the setting takes").toBe(600_000 + 302_500 + 600_000);
+    expect(ceiling(600_000, 27), "27 seats at that window").toBe(600_000 + 27 * 902_500);
+    expect(ceiling(30_000, 0), "a count of zero is one seat").toBe(600_000 + 332_500);
+  });
+
+  it("a lease that is never released stops excusing at the ceiling the window sets: 30 s of readiness and 90 s of it end 60 s of polls apart", async () => {
+    const firstLostAt = async (readinessMs: number) => {
+      const f = fixture({ readinessMs, excuse: { baseMs: 50_000 } });   // base 50 s + (302.5 s + window) for one seat
+      await f.poll(1);
+      let release!: () => void;
+      const hung = f.guard.lifecycle(["n0"], () => new Promise<void>((resolve) => { release = resolve; }));
+      await new Promise((r) => setImmediate(r));
+      f.core.live = [];
+      const seen = await f.poll(110);
+      release(); await hung;
+      return seen.findIndex((x) => x.length > 0);
+    };
+    // Ceiling 50 + 302.5 + 30 = 382.5 s: sweeps at t0 .. t0+380 s (77) are excused, the next reads, the one after records: index 78.
+    expect(await firstLostAt(30_000), "poll index (0-based) of the first seat.lost at a 30 s window").toBe(78);
+    // Ceiling 442.5 s: 89 excused sweeps, index 90.
+    expect(await firstLostAt(90_000), "at a 90 s window").toBe(90);
   });
 
   it("the hold clock of a seat that stopped running is forgotten: a new lease on it after a long gap starts a new clock", async () => {

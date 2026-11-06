@@ -372,4 +372,23 @@ describe("startup text through the pump", () => {
   it("the wait is long enough for a first turn to end: the next text is held behind it", () => {
     expect(STARTUP_TEXT_WAIT_MS).toBe(5 * 60_000);
   });
+
+  // OF-247 (a), the measurement behind SeatIdentityReconciler's per-seat excuse term (LIFECYCLE_EXCUSE_PER_SEAT_MS): one seat's startup is its readiness window and then ONE
+  // startup text wait, however many texts follow. Scaled to real time (window 1.1 s, text wait 0.2 s; the production values are 30 s default / 600 s largest and 5 min):
+  // the seat is ready only at the end of its window, no gate records its first text, and the run takes at least the window plus ONE wait (the lower bound: a loaded host
+  // only lengthens it). Two files are queued; the second is never attempted, so a second wait is not added (the row count is the proof; the existing "bytes leaving are not
+  // arrival" row pins the same latch).
+  it("a seat that becomes ready at the end of its readiness window and whose text is never recorded takes the window plus one text wait, and not one wait per text", async () => {
+    const WINDOW = 1100, WAIT = 200, readyAfter = 1050;
+    const started = Date.now();
+    onAttempt = () => ({ kind: "sent" });
+    const slowReady = Object.assign(adapter(), { checkReady: async () => ({ ready: Date.now() - started >= readyAfter }) });
+    const result = await orchestrator(WAIT).startNode(input({ adapter: slowReady, readinessTimeoutMs: WINDOW }));
+    const elapsed = Date.now() - started;
+    expect(result).toMatchObject({ ok: false, startupStatus: "failed" });
+    expect(JSON.stringify(result)).toContain("did not record startup text");
+    expect(elapsed, "ms from start to the failed startup").toBeGreaterThanOrEqual(readyAfter + WAIT - 30);
+    expect(rows(), "one row: the first text; the second file was never attempted").toHaveLength(1);
+    expect(typed()).toEqual(["first file"]);
+  });
 });

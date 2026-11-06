@@ -172,6 +172,7 @@ import { resolveSystemWorld } from "./domain/system-world.js";
 import { AgentImageLibraryService } from "./domain/agent-images/agent-image-library-service.js";
 import { SnapshotCapturer } from "./domain/agent-images/snapshot-capturer.js";
 import { SettingsStore as ContextPackSettingsStore } from "./domain/user-settings/settings-store.js";
+import { resolveReadinessTimeoutMs } from "./domain/readiness-timeout.js";
 import { WhoamiService } from "./domain/whoami-service.js";
 import { createAppWithWebSocket, type AppDeps } from "./server.js";
 import { ProviderServiceImpl } from "./domain/provider/provider-service-impl.js";
@@ -583,12 +584,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // (the THIRD axis). Reconciles each running seat's pane PID/command against
   // the registered binding and persists the verdict so node-inventory can gate
   // the running/active green derivations. Started post-bind in index.ts.
+  const readinessSettings = new ContextPackSettingsStore();
   const seatIdentityReconciler = new SeatIdentityReconciler({
     db,
     tmux: tmuxAdapter,
     // OF-235: a seat a lifecycle operation holds is not reported lost while the operation runs.
     lifecycleHeld: (nodeId) => deliveryGuard.lifecycleHeld(nodeId),
     lifecycleHeldCount: () => deliveryGuard.lifecycleHeldCount(),
+    // OF-247 (a): the ceiling's per-seat term includes the readiness window a seat's launch waits, as the launch resolves it.
+    readinessTimeoutMs: () => resolveReadinessTimeoutMs(undefined, readinessSettings),
   });
 
   // Read transcript config from env (passed by CLI via PNS-T02 config surface)

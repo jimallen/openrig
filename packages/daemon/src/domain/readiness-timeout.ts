@@ -1,6 +1,8 @@
 import { SettingsStore } from "./user-settings/settings-store.js";
 
 const DEFAULT_READINESS_TIMEOUT_SECONDS = 30;
+/** The readiness window when nothing sets one (`runtime.readiness_timeout_seconds`, an integer in [1, 600], default 30). */
+export const DEFAULT_READINESS_TIMEOUT_MS = DEFAULT_READINESS_TIMEOUT_SECONDS * 1000;
 
 /** Resolve at launch time so a config change applies to the next seat, while
  * preserving explicit millisecond overrides used by callers and tests. A
