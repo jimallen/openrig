@@ -222,6 +222,8 @@ const ROWS: Row[] = [
   { id: "BU1", deny: true, kind: "unparseable", note: "F-1: budget spent, obfuscated r\"\"ig name", cmd: `r""ig send s "$(touch m9)"`, budgetMs: -1 },
   { id: "BU2", deny: true, kind: "unparseable", note: "F-1: budget spent, backslash in the name", cmd: `r\\ig send s $(touch m9)`, budgetMs: -1 },
   { id: "BU3", deny: true, kind: "unparseable", note: "F-1: budget spent, quoted letter in the name", cmd: `'r'ig send s ${T}touch m9${T}`, budgetMs: -1 },
+  { id: "BU6", deny: true, kind: "unparseable", note: "F-1: a long lex with a spent budget fails closed mid-scan (the loop's own tick, not only the entry check)", cmd: `echo ${"x ".repeat(400_000)}; rig send s '$(a)'`, budgetMs: 1 },
+  { id: "BU7", deny: false, note: "F-1 control: the same command within the default budget parses fully: the $( ) is inside single quotes, so it is allowed", cmd: `echo ${"x ".repeat(400_000)}; rig send s '$(a)'` },
   { id: "BU4", deny: false, note: "F-1 control: budget spent, no guarded rig text: allowed (fail closed only where the risk signal exists)", cmd: `echo $(date)`, budgetMs: -1 },
   { id: "BU5", deny: false, note: "F-1 control: budget spent, rig text with no substitution", cmd: `rig send s 'plain'`, budgetMs: -1 },
   { id: "L16", deny: false, note: "F-1 control: a bare substitution is not a rig command", cmd: `$(date)` },
