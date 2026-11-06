@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerfile = readFileSync(join(REPO_ROOT, "docker", "testbed", "Dockerfile"), "utf8");
 const workflow = readFileSync(join(REPO_ROOT, ".github", "workflows", "tests.yml"), "utf8");
-const PINNED_HC = "0.1.16";
+const PINNED_HC = "0.1.17";
 
 const arg = (text, name) => text.match(new RegExp(`^ARG\\s+${name}=(\\S+)`, "m"))?.[1];
 const wfValue = (name) => workflow.match(new RegExp(`^\\s+${name}:\\s*"([^"]+)"`, "m"))?.[1];

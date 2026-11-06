@@ -43,8 +43,8 @@ RUN set -eux; \
 # The installer script is pinned by sha256 and verifies the release tarball against that version's manifest checksum itself.
 # Into /usr/local/bin (root, before USER openrig) so the non-root user finds `hc` on PATH. Bumping hc is a deliberate edit of
 # both ARGs here (and of the same two values in .github/workflows/tests.yml).
-ARG HC_VERSION=0.1.16
-ARG HC_INSTALLER_SHA256=4d052d135b76140a6e1ea998985fe9a92b639a8551a8f6d970fcf2226de09f90
+ARG HC_VERSION=0.1.17
+ARG HC_INSTALLER_SHA256=ac94d641e3ddb7cd1e8ec9b61babafe77a0a8f741a4eafea0844a00d0e14dd59
 RUN set -eux; \
     curl -fsSLo /tmp/hc-install.sh https://releases.herdr.dev/core/install.sh; \
     echo "${HC_INSTALLER_SHA256}  /tmp/hc-install.sh" | sha256sum -c -; \
