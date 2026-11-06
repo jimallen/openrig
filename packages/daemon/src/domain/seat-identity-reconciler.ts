@@ -37,8 +37,10 @@ export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
  *  for a seat that becomes ready just inside its window. Before OF-247 the term was the text wait alone, 32.5 s short of that turn at the default window and 10 min
  *  short at the largest. */
 export const LIFECYCLE_EXCUSE_BASE_MS = 10 * 60_000;
+/** One seat's turn of the restore for a readiness window of `readinessMs`: the window, the resume settle and one startup text wait. */
+function perSeatTermMs(readinessMs: number): number { return STARTUP_TEXT_WAIT_MS + RESUME_SETTLE_MS + readinessMs; }
 /** The per-seat term at the default readiness window; the reconciler uses the window in force when `readinessTimeoutMs` is wired. */
-export const LIFECYCLE_EXCUSE_PER_SEAT_MS = STARTUP_TEXT_WAIT_MS + RESUME_SETTLE_MS + DEFAULT_READINESS_TIMEOUT_MS;
+export const LIFECYCLE_EXCUSE_PER_SEAT_MS = perSeatTermMs(DEFAULT_READINESS_TIMEOUT_MS);
 
 /** Foreground commands that read as a bare shell (a seat that dropped to a
  *  prompt, or an orphan/QA-squat shell occupying the pane). Mirrors the
@@ -165,7 +167,7 @@ export class SeatIdentityReconciler {
 
   /** How long a lease holding `held` seats may excuse a missing terminal, counted from the first poll that saw it (OF-247 a: the per-seat term follows the readiness window in force). */
   excuseCeilingMs(held: number): number {
-    const perSeat = this.excusePerSeatMsOverride ?? STARTUP_TEXT_WAIT_MS + RESUME_SETTLE_MS + (this.readinessTimeoutMs?.() ?? DEFAULT_READINESS_TIMEOUT_MS);
+    const perSeat = this.excusePerSeatMsOverride ?? perSeatTermMs(this.readinessTimeoutMs?.() ?? DEFAULT_READINESS_TIMEOUT_MS);
     return this.excuseBaseMs + perSeat * Math.max(1, held);
   }
 
