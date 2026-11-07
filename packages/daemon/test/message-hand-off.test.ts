@@ -40,9 +40,10 @@ describe("SessionTransport and the pump", () => {
   let writes: string[];
   let hopCalls: string[];
   let transport: SessionTransport;
+  let activityStore: AgentActivityStore;
   const row = (id: string) => db.prepare("SELECT * FROM outbox_entries WHERE outbox_id = ?").get(id) as Record<string, unknown> | undefined;
 
-  function build(gated: boolean) {
+  function build(gated: boolean, now?: () => Date) {
     db = createDb();
     migrate(db, ALL_MIGRATIONS);
     writes = []; hopCalls = [];
@@ -64,7 +65,8 @@ describe("SessionTransport and the pump", () => {
       sendText: async (_t: string, text: string) => { writes.push(text); return { ok: true as const }; }, sendKeys: async () => { writes.push("<keys>"); return { ok: true as const }; },
     });
     tmuxAdapter.messageHandOff = new PumpHandOff(store, pump, ports);
-    transport = new SessionTransport({ db, rigRepo, sessionRegistry, agentActivityStore: new AgentActivityStore({ db, eventBus }), eventBus, tmuxAdapter, sleep: async () => undefined });
+    activityStore = new AgentActivityStore({ db, eventBus });
+    transport = new SessionTransport({ db, rigRepo, sessionRegistry, agentActivityStore: activityStore, eventBus, tmuxAdapter, sleep: async () => undefined, ...(now ? { now } : {}) });
     return { store, pump, tmuxAdapter };
   }
 
@@ -79,6 +81,55 @@ describe("SessionTransport and the pump", () => {
       expect(hopCalls).toEqual(["m1"]);
       expect(result).toMatchObject({ ok: true, sent: false, verified: false, outcome: "retained", reason: "handed_to_pump", outboxIds: ["m1"] });
       expect(row("m1")).toMatchObject({ message_state: "attempting", delivery_state: "pending", attempts: 1, body: "hello", sender_session: "lead@hr" });
+    });
+
+    // OF-267: "Accepted, not yet received" alone reads as a broken delivery path when the seat is only busy in a long tool call.
+    // Clock injected far from wall clock (2031); the hook is the measured build-arch shape (PreToolUse bash, then silence).
+    describe("what the answer says about the seat", () => {
+      const HOOK_AT = Date.parse("2031-03-04T16:04:41.008Z");
+      const clock = { now: HOOK_AT };
+      beforeEach(() => {
+        built = build(true, () => new Date(clock.now));
+        activityStore.recordHookEvent({ sessionName: SEAT, runtime: "claude-code", hookEvent: "PreToolUse", subtype: "bash", occurredAt: new Date(HOOK_AT).toISOString() });
+      });
+
+      it("a stale tool-start hook is carried as unknown-open-turn, in a field and in the one-line warning, never as busy", async () => {
+        clock.now = HOOK_AT + 66 * 60_000;
+        const result = await transport.send(SEAT, "hello", { deliveryId: "m1", actorSession: "lead@hr" });
+        expect(result.seatPosture).toMatchObject({ kind: "unknown-open-turn", source: "runtime_hook", tool: "bash", at: "2031-03-04T16:04:41.008Z" });
+        expect(result.warning).toBe("Accepted, not yet received: OpenRig carries it until the seat's gate records it. (seat unknown: last hook PreToolUse bash 16:04Z (66 min ago), no Stop since)");
+        expect(result.warning).not.toContain("busy");
+        expect(result.warning).not.toContain("\n");
+      });
+
+      it("a fresh running hook is busy", async () => {
+        clock.now = HOOK_AT + 2 * 60_000;
+        const result = await transport.send(SEAT, "hello", { deliveryId: "m1", actorSession: "lead@hr" });
+        expect(result.seatPosture).toMatchObject({ kind: "busy" });
+        expect(result.warning).toContain("(seat busy: last tool started 16:04Z (bash))");
+      });
+
+      it("a wake the drain already claimed gets the same answer", async () => {
+        clock.now = HOOK_AT + 66 * 60_000;
+        const outbox = new OutboxHandler(db);
+        outbox.record({ outboxId: "wake-intent-a", senderSession: "lead@hr", destinationSession: SEAT, body: "wake" });
+        outbox.claimForDelivery("wake-intent-a");
+        const result = await transport.send(SEAT, "wake", { committedOutboxIds: ["wake-intent-a"], actorSession: "lead@hr" });
+        expect(result.seatPosture?.kind).toBe("unknown-open-turn");
+      });
+
+      it("a seat with no hook says so", async () => {
+        built = build(true, () => new Date(clock.now));
+        const result = await transport.send(SEAT, "hello", { deliveryId: "m2" });
+        expect(result.seatPosture).toMatchObject({ kind: "unknown", source: null, line: "unknown: no runtime hook recorded" });
+      });
+
+      it("a store that throws leaves the answer exactly as it was", async () => {
+        activityStore.getLatestForNode = () => { throw new Error("db closed"); };
+        const result = await transport.send(SEAT, "hello", { deliveryId: "m3" });
+        expect(result).toMatchObject({ ok: true, reason: "handed_to_pump", warning: "Accepted, not yet received: OpenRig carries it until the seat's gate records it." });
+        expect(result.seatPosture).toBeUndefined();
+      });
     });
 
     it("keeps class, lane and occupant on the row", async () => {

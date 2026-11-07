@@ -757,6 +757,8 @@ export interface NodeInventoryEntry {
   resumeToken: string | null;
   startupCompletedAt: string | null;
   agentActivity?: AgentActivity;
+  /** OF-267 — what the seat's newest runtime hook supports saying about busy or idle (never busy from a stale hook). */
+  seatPosture?: import("./seat-posture.js").SeatPosture;
   contextUsage?: ContextUsage;
   /** Health of the daemon-owned transcript capture for this seat. */
   transcriptIngest?: import("./transcript-store.js").TranscriptIngestHealth & {

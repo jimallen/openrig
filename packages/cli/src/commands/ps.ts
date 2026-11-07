@@ -103,6 +103,8 @@ interface NodeEntry {
     stale?: boolean;
     fallback?: boolean;
   };
+  /** OF-267 — what the seat's newest runtime hook supports saying about busy or idle (never busy from a stale hook). */
+  seatPosture?: SeatPostureView;
   // PL-012: context-usage block surfaced from the daemon's
   // /api/rigs/:id/nodes route (already populated). Optional because
   // older daemons may not emit it.
@@ -226,6 +228,7 @@ const ALLOWED_NODE_FIELDS = new Set([
   "inProgressWorkCount",
   "blockedWorkCount",
   "agentActivity",
+  "seatPosture",
   "contextUsage",
   "heldReason",
 ]);
@@ -252,6 +255,22 @@ interface PsCliOptions {
   /** OPR.0.3.3.19 - include archived rigs (default excludes them). Parity
    *  with `rig stream list --include-archived`. */
   includeArchived?: boolean;
+}
+
+/** The daemon's `seatPosture` (domain/seat-posture.ts): `line` is the one human line, the rest is for tools. */
+export interface SeatPostureView {
+  kind: "busy" | "unknown-open-turn" | "idle" | "needs_input" | "unknown";
+  source: "runtime_hook" | "hc_status" | null;
+  at: string | null;
+  tool: string | null;
+  line: string;
+}
+
+/** The posture line a human table shows in its trailing cell: only where it explains a silent seat (busy, or an open turn the
+ *  hooks cannot confirm). Idle, needs-input and unknown are already what the ACTIVITY column says. */
+export function postureNote(n: Pick<NodeEntry, "seatPosture">): string | null {
+  const p = n.seatPosture;
+  return p && (p.kind === "busy" || p.kind === "unknown-open-turn") ? p.line : null;
 }
 
 export interface PsDeps extends StatusDeps {
@@ -684,6 +703,8 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       // freshest signal is agentActivity.sampledAt, then startupCompletedAt,
       // else null (documented FR-4 fallback — not a fabricated timestamp).
       lastActivity: n.agentActivity?.sampledAt ?? n.startupCompletedAt ?? null,
+      // OF-267 — null (not absent) when the daemon predates the field.
+      seatPosture: n.seatPosture ?? null,
     };
     if (n.intentionallyStopped !== undefined) compact.intentionallyStopped = n.intentionallyStopped;
     // held/attention reason (short) when present.
@@ -1242,7 +1263,7 @@ async function handleNodes(
       const attn = needsAttention(n);
       const reason = missingSessionGuidance(n, adviceRigs) ?? (attn || hasCurrentUsageLimit(n)
         ? (n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—")
-        : "—");
+        : postureNote(n) ?? "—");
       console.log(padCompactNodeRow(
         n.rigName,
         n.canonicalSessionName ?? "—",
@@ -1276,7 +1297,7 @@ async function handleNodes(
         formatActivity(n),
         formatContextUsage(n.contextUsage),
         n.restoreOutcome,
-        missingSessionGuidance(n, adviceRigs) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : "—"),
+        missingSessionGuidance(n, adviceRigs) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : postureNote(n) ?? "—"),
       ));
     }
   }

@@ -33,6 +33,7 @@ import { probePresence } from "./session-liveness.js";
 import { carriesDeliveryToken, deliveryKeyOf, deliveryTokenFor, withDeliveryToken } from "../adapters/hc-delivery-token.js";
 import type { DialogInput } from "../adapters/hc-dialog-input.js";
 import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
+import { deriveSeatPosture, type SeatPosture } from "./seat-posture.js";
 import { findLatestSessionNameMatch, isNodeInArchivedRig } from "./latest-session-name-match.js";
 import { liveRigsNamedBy, rigHadSeat } from "./seat-messaging/seat-history.js";
 import type { EventBus } from "./event-bus.js";
@@ -1150,6 +1151,8 @@ export interface SendResult {
   /** Set on the submit-only (bare Enter) mode's success — no text was typed. */
   submitOnly?: boolean;
   activity?: AgentActivity;
+  /** OF-267 — on a pump hand-off ("Accepted, not yet received"): what the seat's newest runtime hook supports saying about busy or idle. */
+  seatPosture?: SeatPosture;
   waitedMs?: number;
   attempts?: number;
   sent?: boolean;
@@ -1715,8 +1718,12 @@ export class SessionTransport {
    * which every consumer already reads correctly; `reason` says whose hands it is in.
    */
   private handToPump(handOff: MessageHandOff, sessionName: string, text: string, opts?: SendOpts): SendResult {
-    const handed = (ids: string[]): SendResult => ({ ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
-      warning: "Accepted, not yet received: OpenRig carries it until the seat's gate records it." });
+    const handed = (ids: string[]): SendResult => {
+      const seatPosture = this.seatPostureFor(sessionName);
+      return { ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
+        warning: `Accepted, not yet received: OpenRig carries it until the seat's gate records it.${seatPosture ? ` (seat ${seatPosture.line})` : ""}`,
+        ...(seatPosture ? { seatPosture } : {}) };
+    };
     const claimed = opts?.committedOutboxIds?.length ? opts.committedOutboxIds : opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX) ? [opts.deliveryId] : null;
     if (claimed) { handOff.adoptClaimed(claimed); return handed(claimed); }
     if (splitMarkedBlock(text).text.trim() === "") {
@@ -1735,6 +1742,18 @@ export class SessionTransport {
     if (accepted.kind === "conflict") return { ok: false, sessionName, sent: false, reason: "delivery_identity_conflict", error: "Delivery ID names different content/identity." };
     if (accepted.kind === "ended") return { ok: accepted.received, sessionName, sent: false, verified: accepted.received, reason: "message_already_ended" };
     return handed([accepted.id]);
+  }
+
+  /** OF-267: why a sender may see "not yet received" for a seat that is only busy. Best effort: any failure leaves the answer as it was. */
+  private seatPostureFor(sessionName: string): SeatPosture | undefined {
+    const store = this.agentActivityStore;
+    if (!store) return undefined;
+    try {
+      const now = this.now();
+      return deriveSeatPosture(store.getLatestForNode({ sessionName, now }), store.resolveSession({ sessionName })?.runtime ?? null, now);
+    } catch {
+      return undefined;
+    }
   }
 
   /** One attempt: the guards, the native inbox or the typing guard, then the write. */

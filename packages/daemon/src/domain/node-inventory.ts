@@ -10,6 +10,7 @@ import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { ContextUsageStore } from "./context-usage-store.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
+import { deriveSeatPosture } from "./seat-posture.js";
 import type { SeatActivityService } from "./seat-activity-service.js";
 import { deriveDisplayActivity } from "./activity-taxonomy.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -1369,7 +1370,7 @@ export async function attachAgentActivity(
 ): Promise<NodeInventoryEntry[]> {
   const sampledAt = deps.now ?? new Date();
   const captureFallback = deps.captureFallback ?? false;
-  return Promise.all(entries.map(async (entry) => {
+  const attachOne = async (entry: NodeInventoryEntry): Promise<NodeInventoryEntry> => {
     // A cached hook, pane sample or motion cannot revive a confirmed absent
     // session. Preserve the identity observation's provenance without probing.
     if (identityVerdictConfirmsSessionMissing(entry.identityVerdict)) {
@@ -1587,5 +1588,13 @@ export async function attachAgentActivity(
       binding: deps.captureObserver ? deps.observationBinding?.(entry) : undefined,
     }))),
     };
+  };
+  // OF-267 — the posture reads the newest runtime hook itself (a second capture-free store read), never the arbitrated
+  // agentActivity above, which pane motion or a background job may have upgraded.
+  return Promise.all(entries.map(async (entry) => {
+    const attached = await attachOne(entry);
+    if (identityVerdictConfirmsSessionMissing(entry.identityVerdict)) return attached;
+    const hook = deps.activityStore?.getLatestForNode({ sessionName: entry.canonicalSessionName, now: sampledAt });
+    return { ...attached, seatPosture: deriveSeatPosture(hook, entry.runtime ?? null, sampledAt) };
   }));
 }
