@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HC_GENERATION, HC_TESTED_VERSION, classifyHcCore, parseHcVersion, probeHcInstall, readHcHello } from "../src/tmux-health.js";
+import { HC_GENERATION, HC_TESTED_VERSIONS, classifyHcCore, parseHcVersion, probeHcInstall, readHcHello } from "../src/tmux-health.js";
 import { resolveHcSocket } from "@openrig/daemon/hc";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
@@ -43,9 +43,9 @@ describe.skipIf(!HC)("hc health against a private hc core", () => {
     const probe = probeHcInstall((cmd) => execFileSync("sh", ["-c", cmd], { env, encoding: "utf8" }));
     expect(probe.installed).toBe(true);
     expect(probe.version).toBe(parseHcVersion(execFileSync(HC, ["--version"], { env, encoding: "utf8" })));
-    // The same rule on the real binary's own version: the tested minor line from 0.1.15 up is accepted, and only the tested version is silent.
+    // The same rule on the real binary's own version: the tested minor line from 0.1.15 up is accepted, and only a tested version is silent (any of HC_TESTED_VERSIONS, not just the newest: OF-262).
     expect(probe.code).toBe(accepts(probe.version) ? "pinned" : "version_mismatch");
-    expect(probe.warning === undefined).toBe(probe.version === HC_TESTED_VERSION || !accepts(probe.version));
+    expect(probe.warning === undefined).toBe((HC_TESTED_VERSIONS as readonly string[]).includes(probe.version!) || !accepts(probe.version));
   });
 
   it("reads hello from a running core: this generation, and the version hc --version names", async () => {

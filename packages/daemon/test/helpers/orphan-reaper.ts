@@ -36,6 +36,14 @@ export interface OrphanReaperTargets {
   environ?: string[];
   /** The process whose death triggers the reaping; default: this process. */
   ownerPid?: number;
+  /** Test seam: which clock orders start times, "proc" (Linux, /proc ticks; the default there) or "ps" (`ps -o lstart=`; the default elsewhere). A Linux test can run the macOS arm with "ps". */
+  startSource?: "proc" | "ps";
+  /** Test seam: the process whose ancestors are protected besides the owner's (default: this process, the one that arms). */
+  armerPid?: number;
+  /** Test seam: the cap on one sweep's selection (default WATCHDOG_SELECTION_CAP). */
+  maxSelected?: number;
+  /** Test seam: a file descriptor for the watchdog's stderr (default: this process's stderr). */
+  stderrFd?: number;
   /** Names the watchdog in its argument list (`reaper:<label>`), so a test can tell one helper's watchdog from another's. */
   label?: string;
 }
@@ -123,23 +131,74 @@ export function listenerPids(port: number): number[] {
   }
 }
 
+/**
+ * OF-274. What the watchdog may signal is BOUNDED, on both platforms, by code shared between the Linux (/proc) and macOS (`ps -E`) selectors, because a selector that
+ * widens (a mutant, a typo, an unexpected `ps` format) once signalled every user process on a laptop and ended the login session:
+ *  (a) never a process that started before the owner (the owner's start is read at arming and passed in; a user session, loginwindow and launchd services all predate a test worker);
+ *  (b) never pid 1, the watchdog itself, or an ancestor of the owner or of the process that armed it (their chains are read in TypeScript at arming and passed in: an owner that dies first cannot be read);
+ *  (c) if one sweep selects more than `cap` processes, it signals none and writes ONE line to stderr.
+ * Every PID signal the watchdog sends goes through `may_signal` and, for the selected sets, the cap: the env holders, the macOS family (descendants), and the recorded `pid` identities
+ * (tmux servers among them). ONE path is outside both: `tmux -S <socket> kill-server`, on the TERM sweep, before the cap is evaluated. It selects no pid; it names a socket, and the socket was
+ * checked once, at arming, by assertOwnedTmuxSocket (an absolute path that is not in tmux's shared per-user directory; that check does NOT require the path to be inside a directory the test
+ * created, so the bound on this path is the callers' (scenario-daemon.ts, hermetic-env.ts, hc-scratch.ts pass their own scaffold sockets), not a start-time or ancestor test). The last line ends
+ * the watchdog's own process group only if the watchdog IS its group's leader (it is spawned detached, so the group holds only the watchdog and its children); run any other way, it kills nothing.
+ * An entry containing a backslash or a tab is never matched by the macOS (awk) selector (awk -v processes escapes, and index() treats only spaces as separators); that errs toward selecting fewer processes.
+ * The ancestor chains are read at arming, and a failed parent read while building either of them refuses to arm (fail closed, as for the owner's start time) rather than protecting a shorter chain.
+ *
+ * Start times: Linux compares /proc/<pid>/stat field 22 (ticks since boot, exact). `ps -o lstart=` on Linux can name a moment up to two seconds before the process started (OF-219),
+ * so it does not order processes there. Off Linux the same `ps -o lstart=` instrument as elsewhere, read under LC_ALL=C into civil seconds (second granularity, local time).
+ * A process in the SAME second as the owner is allowed, and that is justified: the exposure is bounded (only processes created in that one second, which cannot be a login session or
+ * a service that predates the worker, and the cap still holds), and it is needed (the processes a test starts for itself can begin within a second of the stand-in owner it started
+ * just before). The residue: a local-time change inside the window (a DST fall-back hour) can order two processes the wrong way; the cap bounds it.
+ */
+export const WATCHDOG_SELECTION_CAP = 32;
+
+/** awk: `ps -o lstart=` ("Sat Nov  7 18:27:03 2026") on stdin -> civil seconds on stdout, and nothing when it does not parse. Exported so a test runs the very program the watchdog runs. */
+export const LSTART_TO_SECONDS_AWK = `{ if (NF != 5 || $4 !~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ || $5 !~ /^[0-9][0-9][0-9][0-9]$/ || $3 !~ /^[0-9][0-9]?$/) exit
+  mi = index("JanFebMarAprMayJunJulAugSepOctNovDec", $2); if (mi == 0 || (mi - 1) % 3 != 0) exit
+  m = (mi - 1) / 3 + 1; y = $5 + 0; d = $3 + 0; if (m <= 2) y -= 1
+  era = int(y / 400); yoe = y - era * 400; doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
+  doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy; days = era * 146097 + doe - 719468
+  split($4, t, ":"); printf "%.0f\\n", days * 86400 + t[1] * 3600 + t[2] * 60 + t[3] }`;
+
 // `kill-server` runs in the background: against a stopped (starved) server the client never returns, and a watchdog waiting
-// on it would never reach the targets after it. The last line ends the watchdog's own process group (it was spawned detached,
-// so the group holds only the watchdog and its children), which also ends any such client still waiting.
-const WATCHDOG = `owner=$1; shift
+// on it would never reach the targets after it.
+export const WATCHDOG = `LC_ALL=C; export LC_ALL
+owner=$1; ownerstart=$2; startsrc=$3; cap=$4; armed=$5; shift 5
+protected=" 1 $$ $armed "
+lstart_key() { awk '${LSTART_TO_SECONDS_AWK}'; }
+startkey() {
+  case "$startsrc" in
+    proc) sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $20 }' ;;
+    *) ps -o lstart= -p "$1" 2>/dev/null | lstart_key ;;
+  esac
+}
+may_signal() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" -gt 1 ] || return 1
+  case "$protected" in *" $1 "*) return 1 ;; esac
+  [ -n "$ownerkey" ] || return 1
+  k=$(startkey "$1"); case "$k" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$k" -ge "$ownerkey" ]
+}
 while kill -0 "$owner" 2>/dev/null; do sleep 1; done
+# Read once the owner is gone, not at start: a forked subshell shows the watchdog's own argument list, and a test counts watchdogs by it.
+case "$startsrc" in proc) ownerkey=$ownerstart ;; *) ownerkey=$(printf '%s\\n' "$ownerstart" | lstart_key) ;; esac
+case "$ownerkey" in ''|*[!0-9]*) ownerkey= ;; esac
 same() { [ "$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$2" ] && [ "$(ps -o command= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$3" ]; }
+# stderr is silenced BEFORE the input is opened: a failed input redirection reports through the stderr in force at that moment (OF-274 follow-up).
+envhas() { tr '\\0' '\\n' 2>/dev/null < "$1" | grep -qxF -- "$2"; }
 holders() {
   if [ -r /proc/self/environ ]; then
     for e in /proc/[0-9]*/environ; do
       p=\${e#/proc/}; p=\${p%/environ}
       [ "$p" = "$$" ] && continue
-      tr '\\0' '\\n' < "$e" 2>/dev/null | grep -qxF -- "$1" && echo "$p"
+      envhas "$e" "$1" && echo "$p"
     done
   else
-    ps -axEwwo pid=,command= 2>/dev/null | while read -r p rest; do
-      [ "$p" = "$$" ] && continue
-      case " $rest " in *" $1 "*) ;; *) continue ;; esac
+    # awk picks the lines that name the entry; a shell read loop over this output (every process's whole environment, megabytes on a busy Mac) took seconds of CPU
+    # per call, three calls per watchdog, so the first TERM went out 7 to 9 s after the owner died (OF-261).
+    ps -axEwwo pid=,command= 2>/dev/null | awk -v self="$$" -v want=" $1 " '{ line = $0; sub(/^ *[0-9]+ +/, "", line); if ($1 != self && index(" " line " ", want) > 0) print $1 }' | while read -r p; do
       case " $(ps -o command= -p "$p" 2>/dev/null) " in *" $1 "*) continue ;; esac
       echo "$p"
     done
@@ -154,45 +213,123 @@ family() {
     END { do { ch = 0; for (i = 1; i <= NR; i++) { p = order[i]; if (!(p in mark) && (pp[p] in mark)) { mark[p] = 1; ch = 1 } } } while (ch); for (p in mark) print p }' |
   while read -r p; do echo "$p|$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//;s/ *$//')"; done
 }
-sweep() {
-  sig=$1; shift
+# Off Linux a terminal's program shows no environment: record the family while its holder is still alive, select it by pid and start time.
+famtake() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      tmux) if [ "$sig" = TERM ]; then tmux -S "$2" kill-server >/dev/null 2>&1 & fi; shift 2 ;;
-      env)
-        # Off Linux a terminal's program shows no environment: record the family while its holder is still alive, kill it by pid and start time.
-        if [ "$sig" = TERM ]; then fam="$fam
-$(family "$2")"; fi
-        for p in $(holders "$2"); do kill -$sig "$p" 2>/dev/null; done
-        printf '%s\n' "$fam" | while IFS='|' read -r p st; do
-          [ -n "$p" ] && [ "$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$st" ] && kill -$sig "$p" 2>/dev/null
-        done
-        shift 2 ;;
-      pid) if same "$2" "$3" "$4"; then kill -$sig "$2" 2>/dev/null; fi; shift 4 ;;
+      env) fam="$fam
+$(family "$2")"; shift 2 ;;
+      tmux) shift 2 ;;
+      pid) shift 4 ;;
       *) shift ;;
     esac
   done
+}
+tmuxkill() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      tmux) tmux -S "$2" kill-server >/dev/null 2>&1 & shift 2 ;;
+      env) shift 2 ;;
+      pid) shift 4 ;;
+      *) shift ;;
+    esac
+  done
+}
+selected() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      tmux) shift 2 ;;
+      env)
+        holders "$2"
+        printf '%s\\n' "$fam" | while IFS='|' read -r p st; do
+          [ -n "$p" ] && [ "$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$st" ] && echo "$p"
+        done
+        shift 2 ;;
+      pid) if same "$2" "$3" "$4"; then echo "$2"; fi; shift 4 ;;
+      *) shift ;;
+    esac
+  done
+}
+sweep() {
+  sig=$1; shift
+  if [ "$sig" = TERM ]; then famtake "$@"; tmuxkill "$@"; fi
+  list=$(selected "$@" | sort -un)
+  n=0; for p in $list; do n=$((n + 1)); done
+  if [ "$n" -gt "$cap" ]; then
+    echo "reaper: $n processes selected for $sig, more than the cap of $cap; signalling none" >&2
+    return 0
+  fi
+  for p in $list; do may_signal "$p" && kill -$sig "$p" 2>/dev/null; done
+  return 0
 }
 fam=
 sweep TERM "$@"
 sleep 3
 sweep KILL "$@"
-kill -KILL 0
+[ "$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" = "$$" ] && kill -KILL 0
+exit 0
 `;
+
+/** The token the watchdog compares start times against, read for `pid` NOW (at arming, while the owner lives): /proc stat field 22 on Linux, `ps -o lstart=` under LC_ALL=C elsewhere. "" when unreadable. */
+export function startToken(pid: number, source: "proc" | "ps"): string {
+  if (source === "proc") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const field = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? "";
+      return /^\d+$/.test(field) ? field : "";
+    } catch { return ""; }
+  }
+  const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+  return r.status === 0 ? r.stdout.trim().replace(/\s+/g, " ") : "";
+}
+
+/** The parent of `pid` now (null when unreadable): /proc stat field 4 for source "proc", `ps -o ppid=` for "ps". */
+function parentOf(pid: number, source: "proc" | "ps"): number | null {
+  if (source === "proc") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      return Number.isInteger(ppid) ? ppid : null;
+    } catch { return null; }
+  }
+  const r = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+  const ppid = Number(r.stdout.trim());
+  return r.status === 0 && r.stdout.trim() !== "" && Number.isInteger(ppid) ? ppid : null;
+}
+
+/**
+ * `pid` and its ancestors up to (not including) pid 1, read at arming, while the owner is alive: the watchdog must never signal them (OF-274 b). Passed in, because the watchdog cannot read an
+ * owner that dies first. A parent that cannot be read THROWS: a chain shortened by one failed `ps` would silently protect less, so the watchdog is not armed instead.
+ */
+export function ancestorsOf(pid: number, source: "proc" | "ps"): number[] {
+  const chain: number[] = [];
+  for (let p = pid; p > 1 && chain.length < 64 && !chain.includes(p);) {
+    chain.push(p);
+    const parent = parentOf(p, source);
+    if (parent === null) throw new Error(`cannot read the parent of pid ${p} (while building the ancestors of pid ${pid}); the watchdog cannot show which processes it must never signal, so it is not armed`);
+    p = parent;
+  }
+  return chain;
+}
 
 export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () => void; pid: number } {
   for (const socket of targets.tmuxSockets ?? []) assertOwnedTmuxSocket(socket);
   if ((targets.environ?.length ?? 0) > 0 && !canSweepEnviron()) {
     throw new Error("environ-based reaping needs /proc (Linux) or `ps -E` (macOS); on this platform record process identities instead");
   }
+  const owner = targets.ownerPid ?? process.pid;
+  const source = targets.startSource ?? (hasProcFs() ? "proc" : "ps");
+  const ownerStart = startToken(owner, source);
+  if (ownerStart === "") throw new Error(`cannot read the start time of the owner (pid ${owner}); the watchdog signals nothing that it cannot show started after its owner, so it is not armed`);
   const args = [
     ...(targets.tmuxSockets ?? []).flatMap((socket) => ["tmux", socket]),
     ...(targets.environ ?? []).flatMap((entry) => ["env", entry]),
     ...(targets.identities ?? []).flatMap((id) => ["pid", String(id.pid), id.started, id.command]),
   ];
-  const child = spawn("/bin/sh", ["-c", WATCHDOG, `reaper:${targets.label ?? "test"}`, String(targets.ownerPid ?? process.pid), ...args], {
+  const child = spawn("/bin/sh", ["-c", WATCHDOG, `reaper:${targets.label ?? "test"}`, String(owner), ownerStart, source, String(targets.maxSelected ?? WATCHDOG_SELECTION_CAP), [...new Set([...ancestorsOf(owner, source), ...ancestorsOf(targets.armerPid ?? process.pid, source)])].join(" "), ...args], {
     detached: true,
-    stdio: "ignore",
+    // stdout is unused; stderr carries the one overflow line (to this process's own stderr unless a test gives a file).
+    stdio: ["ignore", "ignore", targets.stderrFd ?? 2],
   });
   child.unref();
   const pid = child.pid;
