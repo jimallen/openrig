@@ -239,7 +239,9 @@ describe("reapWhenOwnerDies", () => {
 // programs running for 10 s or more longer than the watchdog's 4 s design, and the row that proves the guard fails on a busy host.
 // The oracle is CPU time, not wall time: it does not move with load, so the row cannot flake on the host it guards. Entrypoint: hc-scratch.ts and hermetic-env.ts arm
 // the watchdog through reapWhenOwnerDies on every test that starts a core or a tmux server; this row runs the watchdog's own script (exported as WATCHDOG).
-describe.skipIf(hasProcFs())("the watchdog's environment sweep on macOS (ps -E) costs little CPU", () => {
+// DISABLED (Jim, 2026-11-07): a run of this row was in progress when the laptop's whole login session went down at 18:27 local and the Mac restarted at 18:33.
+// Not proven as the cause; do not re-enable, and do not run this file on Jim's laptop, until that is settled. Evidence: openrig-6c handover RESUME.md, 2026-11-07.
+describe.skip("the watchdog's environment sweep on macOS (ps -E) costs little CPU", () => {
   it("12 MB of ps -E output is swept in under 3 s of CPU in total (three sweeps), and still finds the one holder and only it (not a longer value, not an argument)", async () => {
     const dir = tempDir();
     const entry = `OF261_FIXTURE=${process.pid}-${Date.now()}-${++counter}`;
