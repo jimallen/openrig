@@ -71,4 +71,26 @@ describe("createSeatTerminalStatusReader", () => {
     clock += 2; await read("a@b");
     expect(client.calls.length).toBe(3);
   });
+
+  // Review F4: the cache edge and the failure cache. A polled `rig ps` must not become a call per poll when the core is down or slow.
+  it("asks again at exactly the cache age (the entry is good only while younger than it)", async () => {
+    let clock = 1_000;
+    const client = fakeClient(() => ({ state: "live", status: { state: "working" }, status_ms: 1 }));
+    const read = createSeatTerminalStatusReader(client, { cacheMs: 5_000, now: () => clock });
+    await read("a@b");
+    clock += 5_000; await read("a@b");
+    expect(client.calls.length).toBe(2);
+  });
+
+  it("a failed read is cached too: a core that is down is asked once per cache window, not once per poll", async () => {
+    let clock = 1_000;
+    const client = fakeClient(() => { throw new Error("hc core not reachable"); });
+    const read = createSeatTerminalStatusReader(client, { cacheMs: 5_000, now: () => clock });
+    expect(await read("a@b")).toBeNull();
+    expect(await read("a@b")).toBeNull();
+    clock += 4_999; expect(await read("a@b")).toBeNull();
+    expect(client.calls.length).toBe(1);
+    clock += 2; await read("a@b");
+    expect(client.calls.length).toBe(2);
+  });
 });

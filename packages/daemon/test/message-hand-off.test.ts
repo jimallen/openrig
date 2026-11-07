@@ -179,6 +179,15 @@ describe("SessionTransport and the pump", () => {
         });
       });
 
+      // Review F5: the hook a seat left behind when it stopped running says nothing about busy.
+      it.each(["exited", "detached"])("a %s seat gets no posture and its warning is the plain one", async (status) => {
+        clock.now = HOOK_AT + 66 * 60_000;
+        db.prepare("UPDATE sessions SET status = ? WHERE session_name = ?").run(status, SEAT);
+        const result = await transport.send(SEAT, "hello", { deliveryId: "m1", actorSession: "lead@hr" });
+        expect(result).toMatchObject({ reason: "handed_to_pump", warning: "Accepted, not yet received: OpenRig carries it until the seat's gate records it." });
+        expect(result.seatPosture).toBeUndefined();
+      });
+
       it("a store that throws leaves the answer exactly as it was", async () => {
         activityStore.getLatestForNode = () => { throw new Error("db closed"); };
         const result = await transport.send(SEAT, "hello", { deliveryId: "m3" });

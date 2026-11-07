@@ -1596,6 +1596,8 @@ export async function attachAgentActivity(
   return Promise.all(entries.map(async (entry) => {
     const attached = await attachOne(entry);
     if (identityVerdictConfirmsSessionMissing(entry.identityVerdict)) return attached;
+    // A hook left behind by a seat that is no longer running (exited, detached) says nothing about busy.
+    if (entry.sessionStatus !== "running") return attached;
     const hook = deps.activityStore?.getLatestForNode({ sessionName: entry.canonicalSessionName, now: sampledAt });
     const runtime = entry.runtime ?? null;
     const seatPosture = await refineSeatPosture(deriveSeatPosture(hook, runtime, sampledAt), runtime, entry.canonicalSessionName ?? "", deps.seatTerminalStatus, sampledAt);

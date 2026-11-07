@@ -1755,7 +1755,11 @@ export class SessionTransport {
     if (!store) return undefined;
     try {
       const now = this.now();
-      const runtime = store.resolveSession({ sessionName })?.runtime ?? null;
+      const resolved = store.resolveSession({ sessionName });
+      // A seat that is not running left its hook behind; that says nothing about busy.
+      const status = resolved ? (this.db.prepare("SELECT status FROM sessions WHERE id = ?").get(resolved.sessionId) as { status: string } | undefined)?.status : undefined;
+      if (status !== "running") return undefined;
+      const runtime = resolved?.runtime ?? null;
       const fromHooks = deriveSeatPosture(store.getLatestForNode({ sessionName, now }), runtime, now);
       return await refineSeatPosture(fromHooks, runtime, sessionName, this.seatTerminalStatus, now);
     } catch {

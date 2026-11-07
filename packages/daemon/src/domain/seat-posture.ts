@@ -15,6 +15,9 @@ import { latestHookState } from "./agent-activity-store.js";
 // Pi records the START of each tool call (PreToolUse) and never its end, and Claude records the end (PostToolUse) and never the
 // start, so no runtime's hooks can say "a tool call is running since T". The wording says "last tool started" / "last hook".
 
+/** A timestamp more than this ahead of the reader's clock is not believed (clock skew, not evidence): a hook dated so, or an hc status begun so. */
+const FUTURE_SLACK_MS = 60_000;
+
 export type SeatPostureKind = "busy" | "unknown-open-turn" | "idle" | "needs_input" | "unknown";
 export type SeatPostureSource = "runtime_hook" | "hc_status";
 
@@ -58,6 +61,12 @@ export function deriveSeatPosture(activity: AgentActivity | null | undefined, se
   const at = activity.eventAt ?? null;
   const when = formatPostureTime(at, nowMs);
   const tool = activity.rawEvent === "PreToolUse" ? (activity.rawSubtype ?? null) : null;
+  // The store reads a hook dated ahead of its clock as fresh (a negative age is never past the window), which would make a skewed hook busy
+  // for hours. For the posture only, such a hook is not trusted at all (OF-275 tracks the store's own rule).
+  const atMs = at ? Date.parse(at) : Number.NaN;
+  if (Number.isFinite(atMs) && atMs > nowMs + FUTURE_SLACK_MS) {
+    return { source: "runtime_hook", at, tool, kind: "unknown", line: `unknown: last hook ${hookLabel(activity)} is dated ${when ?? "in the future"}, ahead of the clock` };
+  }
   const state = latestHookState(activity, seatRuntime);
   const fresh = activity.stale !== true;
   const base = { source: "runtime_hook" as const, at, tool };
@@ -100,9 +109,6 @@ export type SeatTerminalStatusReader = (sessionName: string) => Promise<SeatTerm
 
 /** Runtimes whose runner writes OSC 7501 itself, so a `working` read means the runner has an open run. */
 export const OPENRIG_WRITES_HC_STATUS: ReadonlySet<string> = new Set(["pi"]);
-
-/** A `working` status that began later than this ahead of the reader's clock is not believed (clock skew, not evidence). */
-const FUTURE_SLACK_MS = 60_000;
 
 export function withTerminalStatus(posture: SeatPosture, status: SeatTerminalStatus | null | undefined, now: Date): SeatPosture {
   if (posture.kind !== "unknown-open-turn" || !status || !status.live || status.status !== "working") return posture;

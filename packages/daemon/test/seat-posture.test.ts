@@ -114,7 +114,7 @@ describe("the measured case replayed through the real store", () => {
     const { store } = build();
     fire(store, "PreToolUse", "bash", 0);
     const rows = await attachAgentActivity(
-      [{ canonicalSessionName: SEAT, runtime: "pi", attachmentType: "hc", logicalId: "build.arch" }] as never,
+      [{ canonicalSessionName: SEAT, runtime: "pi", attachmentType: "hc", logicalId: "build.arch", sessionStatus: "running" }] as never,
       { tmuxAdapter: {} as never, activityStore: store, now: at(66) },
     );
     expect(rows[0]!.agentActivity).toMatchObject({ state: "unknown", reason: "stale_runtime_hook" });
@@ -218,7 +218,7 @@ describe("refineSeatPosture: a Pi seat's hc terminal status settles an open turn
     })();
     store.recordHookEvent({ sessionName: "build-arch@eztrack", runtime: "pi", hookEvent: "PreToolUse", subtype: "bash", occurredAt: at(0).toISOString() });
     store.recordHookEvent({ sessionName: "build-impl@eztrack", runtime: "pi", hookEvent: "Stop", subtype: "agent_end", occurredAt: at(0).toISOString() });
-    const entry = (s: string) => ({ canonicalSessionName: s, runtime: "pi", attachmentType: "hc", logicalId: s.split("@")[0] });
+    const entry = (s: string) => ({ canonicalSessionName: s, runtime: "pi", attachmentType: "hc", logicalId: s.split("@")[0], sessionStatus: "running" });
     const rows = await attachAgentActivity([entry("build-arch@eztrack"), entry("build-impl@eztrack")] as never, {
       tmuxAdapter: {} as never, activityStore: store, now: at(66),
       seatTerminalStatus: async (seat) => { asked.push(seat); return working; },
@@ -227,5 +227,111 @@ describe("refineSeatPosture: a Pi seat's hc terminal status settles an open turn
     expect(rows[1]!.seatPosture).toMatchObject({ kind: "idle", source: "runtime_hook" });
     expect(asked).toEqual(["build-arch@eztrack"]);
     expect(rows[0]!.agentActivity).toMatchObject({ state: "unknown", reason: "stale_runtime_hook" }); // ACTIVITY is untouched
+  });
+});
+
+// Review F2: a hook dated ahead of the daemon clock (skew, or a bad producer) is read by the store as fresh (a negative age is never past the
+// window), so the posture said "busy" for hours. For the posture only, a hook more than 60 s ahead is not trusted: plain unknown.
+// (The store's own rule is left alone; OF-275 tracks it.) 60 s is B's existing future guard.
+describe("a hook dated ahead of the clock never reads busy", () => {
+  const ahead = (seconds: number, over: Partial<AgentActivity> = {}) => hook({ eventAt: new Date(T0 + seconds * 1000).toISOString(), ...over });
+
+  it("3 h ahead: unknown, with the date it claims", () => {
+    const p = deriveSeatPosture(ahead(3 * 3600), "pi", at(0));
+    expect(p).toMatchObject({ kind: "unknown", source: "runtime_hook" });
+    expect(p.line).toBe("unknown: last hook PreToolUse bash is dated 19:04Z, ahead of the clock");
+  });
+
+  it("the edge: 60 s ahead is still the store's fresh busy, 61 s ahead is unknown", () => {
+    expect(deriveSeatPosture(ahead(60), "pi", at(0)).kind).toBe("busy");
+    expect(deriveSeatPosture(ahead(61), "pi", at(0)).kind).toBe("unknown");
+  });
+
+  it("every kind of future hook is unknown: a skewed Stop does not claim idle, a skewed prompt does not claim a wait", () => {
+    expect(deriveSeatPosture(ahead(3600, { rawEvent: "Stop", rawSubtype: "agent_end", state: "idle" }), "pi", at(0)).kind).toBe("unknown");
+    expect(deriveSeatPosture(ahead(3600, { rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input" }), "claude-code", at(0)).kind).toBe("unknown");
+  });
+
+  it("through the real store on an injected clock: busy when the clock reaches it only if it was within the guard", () => {
+    const db = createDb();
+    migrate(db, ALL_MIGRATIONS);
+    const repo = new RigRepository(db);
+    const sessions = new SessionRegistry(db);
+    const rig = repo.createRig("eztrack");
+    const node = repo.addNode(rig.id, "arch", { role: "worker", runtime: "pi" });
+    sessions.updateStatus(sessions.registerSession(node.id, "build-arch@eztrack").id, "running");
+    const store = new AgentActivityStore({ db, eventBus: new EventBus(db) });
+    store.recordHookEvent({ sessionName: "build-arch@eztrack", runtime: "pi", hookEvent: "PreToolUse", subtype: "bash", occurredAt: at(180).toISOString() });
+    const read = (minutes: number) => deriveSeatPosture(store.getLatestForNode({ sessionName: "build-arch@eztrack", now: at(minutes) }), "pi", at(minutes));
+    expect(store.getLatestForNode({ sessionName: "build-arch@eztrack", now: at(0) })).toMatchObject({ state: "running", stale: false }); // the store's own rule, unchanged
+    expect(read(0).kind).toBe("unknown");
+    expect(read(120).kind).toBe("unknown"); // 60 min ahead
+    expect(read(179).kind).toBe("busy");     // 1 min ahead: inside the guard
+    expect(read(180).kind).toBe("busy");
+    expect(read(180 + 6).kind).toBe("unknown-open-turn");
+  });
+});
+
+// Review F3: the freshness edge is the store's (`age > window` is stale), so exactly 5 min is still busy and 5 min + 1 ms is an open turn.
+// A change to the store's comparison, or to the posture's reading of it, moves these rows.
+describe("the freshness edge", () => {
+  const db = () => {
+    const d = createDb();
+    migrate(d, ALL_MIGRATIONS);
+    const repo = new RigRepository(d);
+    const sessions = new SessionRegistry(d);
+    const rig = repo.createRig("eztrack");
+    const node = repo.addNode(rig.id, "arch", { role: "worker", runtime: "pi" });
+    sessions.updateStatus(sessions.registerSession(node.id, "build-arch@eztrack").id, "running");
+    const store = new AgentActivityStore({ db: d, eventBus: new EventBus(d) });
+    store.recordHookEvent({ sessionName: "build-arch@eztrack", runtime: "pi", hookEvent: "PreToolUse", subtype: "bash", occurredAt: new Date(T0).toISOString() });
+    return store;
+  };
+  const kindAt = (store: AgentActivityStore, ms: number) => {
+    const now = new Date(T0 + ms);
+    return deriveSeatPosture(store.getLatestForNode({ sessionName: "build-arch@eztrack", now }), "pi", now).kind;
+  };
+
+  it("exactly 5 min is busy, 5 min + 1 ms is unknown-open-turn, 1 ms short of 5 min is busy", () => {
+    const store = db();
+    expect(kindAt(store, 5 * 60_000 - 1)).toBe("busy");
+    expect(kindAt(store, 5 * 60_000)).toBe("busy");
+    expect(kindAt(store, 5 * 60_000 + 1)).toBe("unknown-open-turn");
+  });
+
+  it("the age prints in minutes up to 119 min and in hours from 2 h", () => {
+    const stale = hook({ state: "unknown", reason: "stale_runtime_hook", stale: true });
+    expect(deriveSeatPosture(stale, "pi", at(119)).line).toContain("(119 min ago)");
+    expect(deriveSeatPosture(stale, "pi", at(120)).line).toContain("(2 h ago)");
+    expect(deriveSeatPosture(stale, "pi", at(121)).line).toContain("(2 h 1 min ago)");
+  });
+});
+
+// Review F5: a seat whose session is not running (exited, detached) has no busy report: on the DB copy at 17:53Z, 30 exited seats in archived rigs
+// read "busy" from the hook they left behind. Measured, not reproduced for an unarchived rig (every row there was running).
+describe("a seat that is not running gets no posture", () => {
+  const store = () => {
+    const d = createDb();
+    migrate(d, ALL_MIGRATIONS);
+    const repo = new RigRepository(d);
+    const sessions = new SessionRegistry(d);
+    const rig = repo.createRig("eztrack");
+    const node = repo.addNode(rig.id, "arch", { role: "worker", runtime: "pi" });
+    sessions.updateStatus(sessions.registerSession(node.id, "build-arch@eztrack").id, "running");
+    const s = new AgentActivityStore({ db: d, eventBus: new EventBus(d) });
+    s.recordHookEvent({ sessionName: "build-arch@eztrack", runtime: "pi", hookEvent: "PreToolUse", subtype: "bash", occurredAt: at(0).toISOString() });
+    return s;
+  };
+  const rowFor = async (sessionStatus: string | null | undefined) => (await attachAgentActivity(
+    [{ canonicalSessionName: "build-arch@eztrack", runtime: "pi", attachmentType: "hc", logicalId: "build.arch", ...(sessionStatus === undefined ? {} : { sessionStatus }) }] as never,
+    { tmuxAdapter: {} as never, activityStore: store(), now: at(2) },
+  ))[0]!;
+
+  it("running gets the posture", async () => {
+    expect((await rowFor("running")).seatPosture?.kind).toBe("busy");
+  });
+
+  it.each(["exited", "detached", "stopped", null, undefined])("%s gets none", async (status) => {
+    expect((await rowFor(status)).seatPosture).toBeUndefined();
   });
 });
