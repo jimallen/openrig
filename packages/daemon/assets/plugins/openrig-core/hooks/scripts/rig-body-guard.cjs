@@ -26,10 +26,15 @@
 // THREAT MODEL (OF-251): this guard stops ACCIDENTAL shell expansion in message bodies. It is not a sandbox against a deliberately obfuscated
 // command: whoever can write a command can run the substitution without rig at all.
 //
-// Not covered (residual, documented in the OF-249 report): a command assembled at run time
-// (variables used as the command or its text, `eval "$x"`, `rig${IFS}send`, `R=rig; $R send`, a shell function or positional parameter that carries
-// the text), ANSI-C quoting of the name ($'\x72ig'), globs and brace expansion that spell it (./r?g, r{i,}g), a file written with an unquoted
-// here-document and sent in a later command, `hc send`, `tmux send-keys`, python/node -e shelling out, aliases.
+// Covered since OF-264 (the name of a rig command assembled at run time): `rig${IFS}send`, `R=rig; $R send` (plain assignments in the same command, every reading
+// tried; an unknown variable directly before a guarded rig command word is an unknown prefix), ANSI-C quoting of the name or subcommand ($'\x72ig'), $"rig", and
+// `script -c "<script>"` in all its spellings (-c, -qc, -cSCRIPT, --command SCRIPT, --command=SCRIPT). Refused only when the same command carries a live substitution in
+// the guarded text, as for a plain `rig`; the bounds are in the constants above resolve().
+//
+// Not covered (residual, documented in the OF-249 report): `eval "$x"` where the text is built elsewhere, a shell function or positional parameter that carries
+// the text, globs and brace expansion that spell the name (./r?g, r{i,}g), a variable set outside the command (`export R=rig` in an earlier command) used
+// anywhere but directly before a guarded rig command word, a file written with an unquoted here-document and sent in a later command, `hc send`,
+// `tmux send-keys` (OF-265), python/node -e shelling out, aliases.
 
 const MAX_LEN = 1_000_000;
 // OF-251: stands in, in a wrapper script's text, for a substitution the LOCAL shell runs before the wrapper starts. A private-use
@@ -211,6 +216,28 @@ function bodyExpands(text) {
   return false;
 }
 
+const PARAM_START_RE = /^[A-Za-z_0-9@*#?!-]$/;
+
+/** The text of the body of an ANSI-C quoted string $'...' with its escapes decoded (OF-264). An unknown escape stays as written. */
+function ansiC(body) {
+  const simple = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"', "?": "?" };
+  const n = body.length;
+  let out = "";
+  for (let i = 0; i < n; i++) {
+    const c = body[i];
+    if (c !== "\\" || i + 1 >= n) { out += c; continue; }
+    const d = body[++i];
+    let m;
+    if (Object.prototype.hasOwnProperty.call(simple, d)) out += simple[d];
+    else if (d >= "0" && d <= "7" && (m = /^[0-7]{1,3}/.exec(body.slice(i)))) { out += String.fromCharCode(parseInt(m[0], 8) & 255); i += m[0].length - 1; }
+    else if (d === "x" && (m = /^[0-9a-fA-F]{1,2}/.exec(body.slice(i + 1)))) { out += String.fromCharCode(parseInt(m[0], 16)); i += m[0].length; }
+    else if ((d === "u" || d === "U") && (m = new RegExp("^[0-9a-fA-F]{1," + (d === "u" ? 4 : 8) + "}").exec(body.slice(i + 1)))) { const cp = parseInt(m[0], 16); out += cp <= 0x10ffff ? String.fromCodePoint(cp) : ""; i += m[0].length; }
+    else if (d === "c" && i + 1 < n) { out += String.fromCharCode(body.charCodeAt(++i) & 31); }
+    else out += "\\" + d;
+  }
+  return out;
+}
+
 const WORD_STOP = new Set([" ", "\t", "\n", ";", "&", "|", "(", ")", "<", ">"]);
 
 /** Read one shell word starting at i. Returns { word, next }. A word is
@@ -225,6 +252,7 @@ function readWord(src, i) {
   let quoted = false;
   const subs = [];
   const marks = [];                                   // [from, to) spans of `text` that are substitutions the shell runs
+  let param = false;                                  // OF-264: a parameter expansion ($R, ${IFS}) outside single quotes is in the text, kept unexpanded
   while (i < n) {
     const c = src[i];
     if (c === "\\") {
@@ -269,10 +297,12 @@ function readWord(src, i) {
         if (d === "$" && src[i + 1] === "{") {
           const j = closeBrace(src, i + 2);
           if (bodyExpands(src.slice(i + 2, j))) { expands = true; marks.push([text.length, text.length + (j + 1 - i)]); }
+          param = true;
           text += src.slice(i, j + 1);
           i = j + 1;
           continue;
         }
+        if (d === "$" && PARAM_START_RE.test(src[i + 1] || "")) param = true;
         if (d === "`") {
           const j = skipBacktick(src, i + 1);
           expands = true;
@@ -302,6 +332,7 @@ function readWord(src, i) {
       if (src[i + 1] === "{") {
         const j = closeBrace(src, i + 2);
         if (bodyExpands(src.slice(i + 2, j))) { expands = true; marks.push([text.length, text.length + (j + 1 - i)]); }
+        param = true;
         text += src.slice(i, j + 1);
         i = j + 1;
         continue;
@@ -311,10 +342,12 @@ function readWord(src, i) {
         let j = i + 2;
         while (j < n && src[j] !== "'") j += src[j] === "\\" ? 2 : 1;
         if (j >= n) throw new ParseError("unterminated $'");
-        text += src.slice(i + 2, j);
+        text += ansiC(src.slice(i + 2, j));          // OF-264: $'\x72ig' is the word rig
         i = j + 1;
         continue;
       }
+      if (src[i + 1] === '"') { i++; continue; }      // OF-264: $"rig" (locale string) is "rig"
+      if (PARAM_START_RE.test(src[i + 1] || "")) param = true;
       text += c;
       i++;
       continue;
@@ -341,7 +374,7 @@ function readWord(src, i) {
     text += c;
     i++;
   }
-  return { word: { text, expands: expands || text.includes(OUTER_SUB), quoted, subs, marks, raw: src.slice(start, i) }, next: i };
+  return { word: { text, expands: expands || text.includes(OUTER_SUB), quoted, param, subs, marks, raw: src.slice(start, i) }, next: i };
 }
 
 /** Split shell text into simple commands. Returns { cmds, subs }. A cmd is
@@ -454,6 +487,58 @@ function baseName(text) {
   return i < 0 ? text : text.slice(i + 1);
 }
 
+// OF-264: a command NAME assembled at run time. The shell expands a parameter in the name (`R=rig; $R send`, `rig${IFS}send`) before it runs, and
+// the guard reads the text before that, so it follows the plain-assignment forms it can see in the same command (flat, in order of appearance and
+// not scope-aware, which fails closed) and the IFS spelling of a space. A name it cannot resolve (`$R` set outside the command) is an unknown prefix,
+// handled like the `$(command -v rig)` prefix: it counts as rig only when the next word is a guarded rig command. Cost is bounded by the constants below.
+const ASSIGN_MAX_VALUES = 8;          // alternatives kept per variable
+const ASSIGN_MAX_LEN = 512;
+const NAME_MAX_COMBOS = 16;           // alternatives tried per command name word
+const NAME_MAX_LEN = 4096;
+const DECLARERS = new Set(["export", "declare", "typeset", "local", "readonly"]);
+const UNKNOWN = "\u0001";
+let ASSIGNS = new Map();
+
+/** Record the plain NAME=value assignments of these commands (also after export / declare / local / readonly). */
+function collectAssigns(cmds) {
+  for (const c of cmds) {
+    tick();
+    let k = 0;
+    if (c.words.length && DECLARERS.has(c.words[0].text)) { k = 1; while (k < c.words.length && c.words[k].text.startsWith("-")) k++; }
+    for (; k < c.words.length && ASSIGN_RE.test(c.words[k].text); k++) {
+      const w = c.words[k];
+      const eq = w.text.indexOf("=");
+      if (w.expands || w.param || w.text[eq - 1] === "+") continue;
+      const name = w.text.slice(0, eq);
+      const value = w.text.slice(eq + 1);
+      if (value.length > ASSIGN_MAX_LEN) continue;
+      const list = ASSIGNS.get(name) || [];
+      if (!list.includes(value)) { if (list.length >= ASSIGN_MAX_VALUES) throw new ParseError("too many values assigned to one variable"); list.push(value); }
+      ASSIGNS.set(name, list);
+    }
+  }
+}
+
+/** The ways a command-name word with a parameter expansion can read after the shell expands it: arrays of tokens (split on whitespace), or null when it holds no parameter. Too long or too many readings is a ParseError (refused where the command holds a substitution). */
+function nameCandidates(w) {
+  if (!w.param || w.expands) return null;
+  if (w.text.length > NAME_MAX_LEN) throw new ParseError("command name word too long");
+  let t = w.text.replace(/\$\{IFS[^}]*\}|\$IFS/g, " ").replace(/\$\{\d\}|\$\d/g, (m, off, all) => (all.length === m.length ? UNKNOWN : ""));
+  t = t.replace(/\$\{([A-Za-z_]\w*):?-([^}$]*)\}/g, (m, name, dflt) => ((ASSIGNS.has(name) ? "" : dflt) || UNKNOWN));
+  const names = [...new Set([...t.matchAll(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g)].map((m) => m[1] || m[2]))];
+  let combos = [t];
+  for (const name of names) {
+    const values = ASSIGNS.get(name) || [UNKNOWN];
+    const re = new RegExp("\\$\\{" + name + "\\}|\\$" + name + "(?![A-Za-z0-9_])", "g");
+    const next = [];
+    for (const base of combos) for (const v of values) { tick(); next.push(base.replace(re, () => v)); if (next.length > NAME_MAX_COMBOS) throw new ParseError("command name word has too many readings"); }
+    combos = next;
+  }
+  return combos.map((c) => c.split(/\s+/).filter(Boolean));
+}
+
+const synthetic = (text) => ({ text, expands: false, quoted: false, param: false, subs: [], marks: [], raw: text });
+
 /** The program a simple command runs and its arguments, after assignments, keywords and wrappers. */
 function resolve(words) {
   let k = 0;
@@ -464,6 +549,19 @@ function resolve(words) {
     // OF-251 review F-1: a leading word that expands (`$(true) rig send ...`, `$(command -v rig) send ...`) is an unknown prefix, not the end of resolution.
     while (k < words.length && (ASSIGN_RE.test(words[k].text) || KEYWORDS.has(words[k].text) || words[k].expands)) { if (words[k].expands && !ASSIGN_RE.test(words[k].text)) skipped = true; k++; }
     if (k >= words.length) return done(null);
+    if (words[k].param) {
+      const cands = nameCandidates(words[k]);
+      if (cands) {
+        const known = cands.filter((tokens) => tokens.length === 0 || !tokens[0].includes(UNKNOWN));
+        const asRig = known.find((tokens) => tokens.length > 0 && baseName(tokens[0]) === "rig");
+        if (asRig) return done({ name: "rig", args: [...asRig.slice(1).map(synthetic), ...words.slice(k + 1)] });
+        if (cands.some((tokens) => tokens.length === 1 && tokens[0] === UNKNOWN) && k + 1 < words.length && !words[k + 1].expands
+            && (Object.prototype.hasOwnProperty.call(MESSAGE_COMMANDS, words[k + 1].text) || Object.prototype.hasOwnProperty.call(FLAG_COMMANDS, words[k + 1].text))) {
+          return done({ name: "rig", args: words.slice(k + 1) });
+        }
+        if (known.length === 1 && cands.length === 1) { words = [...words.slice(0, k), ...known[0].map(synthetic), ...words.slice(k + 1)]; continue; }
+      }
+    }
     const name = baseName(words[k].text);
     const w = WRAPPERS[name];
     if (!w) {
@@ -541,6 +639,7 @@ function scan(src, depth, out) {
   if (depth > MAX_DEPTH) throw new ParseError("nested too deep");
   if (Date.now() > deadline) throw new ParseError("work budget exceeded");
   const { cmds, subs } = lex(src);
+  collectAssigns(cmds);
   const resolved = cmds.map((c) => resolve(c.words));
   // Pipelines: a run of commands joined by | or |&.
   let start = 0;
@@ -644,6 +743,19 @@ function scanPipeProducers(cmds, resolved, from, to, depth, out) {
   }
 }
 
+/** The script word of a util-linux `script` command line (-c SCRIPT, -qc SCRIPT, -cSCRIPT, --command SCRIPT, --command=SCRIPT), or null. */
+function scriptCommand(args) {
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    if (t === "--") return null;
+    if (t === "--command") return args[i + 1] || null;
+    if (t.startsWith("--command=")) return subWord(args[i], 10);
+    const m = /^-[a-zA-Z]*?c/.exec(t);
+    if (m && !t.startsWith("--")) return t.length > m[0].length ? subWord(args[i], m[0].length) : (args[i + 1] || null);
+  }
+  return null;
+}
+
 function scanPipeline(cmds, resolved, from, to, depth, out) {
   let message = null;
   let producersDone = from;     // commands [from, producersDone) were already scanned as a stdin shell's producers: each is read once per pipeline (linear, not per shell)
@@ -673,9 +785,8 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       let k = 0;                                      // watch joins its words and runs them with sh -c
       while (k < res.args.length && res.args[k].text.startsWith("-")) k += (res.args[k].text === "-n" || res.args[k].text === "--interval") ? 2 : 1;
       if (k < res.args.length) scanScriptWords(res.args.slice(k), depth, out);
-    } else if (res.name === "script" && res.args.some((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text) || a.text === "--command")) {
-      const ci = res.args.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a.text) || a.text === "--command");
-      if (res.args[ci + 1]) scanScriptWords([res.args[ci + 1]], depth, out);   // util-linux script -c "<script>"
+    } else if (res.name === "script" && scriptCommand(res.args)) {
+      scanScriptWords([scriptCommand(res.args)], depth, out);   // util-linux script -c "<script>", -qc, -c"<script>", --command[=]"<script>" (OF-264)
     } else if ((res.name === "source" || res.name === ".") && res.args.some((a) => a.text === "/dev/stdin")) {
       scanStdinScript(cmds[i], depth, out);                // source /dev/stdin: the pipe or here-document is the script
       producers(i);
@@ -744,6 +855,7 @@ function check(command, options) {
     if (command.length > MAX_LEN) throw new ParseError("command too long");
     OUTER_SUB = pickMarker(command);
     work = 0;
+    ASSIGNS = new Map();
     deadline = Date.now() + (options && typeof options.budgetMs === "number" ? options.budgetMs : DEFAULT_BUDGET_MS);
     scan(command, 0, violations);
   } catch (error) {

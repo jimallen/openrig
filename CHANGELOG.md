@@ -10,6 +10,19 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The rig-body guard reads a rig command name assembled at run time, and `script -c` in every spelling (OF-264); the Claude launch census sees four more shapes (OF-258)
+
+- Guard (`rig-body-guard.cjs`, Claude hook and Pi extension): `rig${IFS}send`, `R=rig; $R send`, `C="rig send"; $C ...`, `export R=rig`, `${R:-rig}`, `S=bash; $S <<EOF`, ANSI-C quoting of the name or the
+  subcommand (`$'\x72ig' send`, octal, `\u`), `$"rig"`, and `script -c`, `-qc`, `-c"<script>"`, `--command <script>`, `--command=<script>` are now judged as the rig command they spell. They are refused only
+  when the same command carries a live substitution in the guarded text, exactly as a plain `rig send "...$(x)..."` is. Plain assignments in the same command are followed (every reading tried, not scope-aware);
+  an unknown variable directly before a guarded rig command word (`$R send ...` with `R` set in an earlier command) is an unknown prefix, like `$(command -v rig) send`. A safe quoted-here-document send still passes.
+  Bounds: more than 8 values for one variable, more than 16 readings of one name word or a name word over 4,096 characters is a parse failure (refused where the command holds a backtick or `$(`).
+- Still not modelled: `eval "$x"` built elsewhere, shell functions, globs and brace expansion that spell the name, a variable set in an earlier command and used anywhere but directly before a guarded word,
+  `tmux send-keys`, `hc send` and other typing into another pane (OF-265), Codex and OMP seats.
+- Census (`claude-launch-guard-census.test.ts`): a binary held in a constant (also exported from another file, a default parameter, an object key, a class field), a conditional or `??` / `||` "claude",
+  `Bun.spawn([...])` / `Bun.spawn({ cmd: [...] })`, and an array that starts with the binary and is joined or spawned later through its variable are found, each with positive fixtures and negative controls.
+  `.exec` counts as a spawner only on `child_process` / `cp` / `Bun` / `Deno`, not on a RegExp. No new site in the tree.
+
 ### `rig up <rig> --existing` after a reboot no longer refuses a rig whose seats were relaunched fresh (OF-255)
 
 - Symptom (laptop, eztrack, 2026-11-06): two seats were relaunched with `rig seat launch --fresh`, the host shut down, and `rig up eztrack --existing` refused

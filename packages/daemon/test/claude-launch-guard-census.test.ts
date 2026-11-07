@@ -6,6 +6,11 @@
 // siblings (spawnSync, execFile, execFileSync, exec, execSync, fork), and (d) `["claude", ...].join(" ")`. Each has a positive control that runs the
 // finder on in-memory source. Found at the base of OF-252: one (c) site, the `claude --help` probe, and no (d) site.
 //
+// OF-258 adds the shapes OF-252 left: (b) the binary held in a name, (c) a conditional or defaulted "claude", (d) Bun.spawn's array command, (e) an array
+// joined or spawned later through its variable; each has positive fixtures and negative controls below. Found at the base of OF-258: nothing new in the tree
+// (the same one spawn site). NOT followed: an executable resolved at run time (`execFile(context.executable, ["--help"])` in domain/claude-managed-launch.ts is
+// the `claude --help` capability probe, found by hand), a command passed as a parameter, and a name held in another file's non-exported or non-constant value.
+//
 // Population: (a) every call `<x>.command([...])` on the managed launch, (b) every template/string text that starts a `claude` invocation with a flag or
 // an interpolated flag (`claude --`, `claude ${`). Found at the base of OF-250: 3 managed + 4 classic = 7 launch sites in two files, plus two NON-launch uses.
 import fs from "node:fs";
@@ -32,15 +37,65 @@ interface Site { file: string; line: number; kind: "managed" | "classic" | "spaw
 
 const CLAUDE_START = /\bclaude (--|\$\{)/;
 
-const SPAWNERS = /(^|\.)(spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)$/;
-const isClaudeLiteral = (n: ts.Node | undefined): boolean => !!n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && /^(.*\/)?claude$/.test(n.text);
+// A `.exec` on anything else is a RegExp (`RE.exec(text)`), not a process: only the child_process / Bun / Deno qualifiers count.
+const SPAWNERS = /^(?:(?:child_?process|cp|Bun|Deno|node:child_process)\.)?(spawn|spawnSync|execFile|execFileSync|exec|execSync|fork|execa|execaSync)$/;
+const isClaudeText = (n: ts.Node | undefined): boolean => !!n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && /^(.*\/)?claude$/.test(n.text);
 
-function sitesIn(file: string): Site[] {
-  return sitesInText(nodePath.relative(SRC, file), fs.readFileSync(file, "utf8"));
+// OF-258: the claude binary is also reached through (b) a name that holds it (`const BIN = "claude"`, an object key, a default parameter, a class field,
+// followed through `const B = A`), (c) a conditional or `||` / `??` default with "claude" on one branch, (d) Bun.spawn, whose command is an ARRAY (or
+// `{ cmd: [...] }`), and (e) an array that starts with the binary and is joined or passed to a spawner later through the variable that holds it.
+// A file's own names count in that file; across files only an exported constant counts. Matching is by identifier name, so an unrelated same-named constant that reaches a spawner would be listed and has to be classified.
+type Names = Set<string>;
+function claudish(n: ts.Node | undefined, names: Names, viaProperty = true): boolean {
+  if (!n) return false;
+  if (isClaudeText(n)) return true;
+  if (ts.isIdentifier(n)) return names.has(n.text);
+  // a property read counts at a call site; it is NOT followed when building the names (that chain reaches every `x.runtime`)
+  if (ts.isPropertyAccessExpression(n)) return viaProperty && names.has(n.name.text);
+  if (ts.isParenthesizedExpression(n) || ts.isAsExpression(n) || ts.isNonNullExpression(n) || ts.isSatisfiesExpression(n)) return claudish(n.expression, names, viaProperty);
+  if (ts.isConditionalExpression(n)) return claudish(n.whenTrue, names, viaProperty) || claudish(n.whenFalse, names, viaProperty);
+  if (ts.isBinaryExpression(n) && (n.operatorToken.kind === ts.SyntaxKind.BarBarToken || n.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)) return claudish(n.left, names, viaProperty) || claudish(n.right, names, viaProperty);
+  return false;
+}
+/** The names (variables, properties, parameters, class fields) initialised with the claude binary in this source, to a fixpoint. */
+function claudeNamesIn(text: string, seed: Names, exportedOnly = false): Names {
+  const sf = ts.createSourceFile("n.ts", text, ts.ScriptTarget.Latest, true);
+  const names = new Set(seed);
+  for (let changed = true; changed;) {
+    changed = false;
+    const add = (id: ts.Node, init: ts.Node | undefined): void => {
+      const nm = ts.isIdentifier(id) || ts.isStringLiteral(id) ? id.text : undefined;
+      if (nm && !names.has(nm) && claudish(init, names, false)) { names.add(nm); changed = true; }
+    };
+    const v = (n: ts.Node): void => {
+      // exportedOnly (the tree pass): only `export const X = ...`, the constants another file can import; the file's own pass sees all of its names
+      if (ts.isVariableDeclaration(n) && (!exportedOnly || ts.isVariableDeclarationList(n.parent) && ts.isVariableStatement(n.parent.parent) && n.parent.parent.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword))) add(n.name, n.initializer);
+      if (!exportedOnly) {
+        if ((ts.isParameter(n) || ts.isPropertyDeclaration(n) || ts.isPropertyAssignment(n)) && n.name && "initializer" in n) add(n.name, n.initializer);
+        if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(n.left)) add(n.left.name, n.right);
+      }
+      ts.forEachChild(n, v);
+    };
+    v(sf);
+  }
+  return names;
 }
 
-function sitesInText(rel: string, text: string): Site[] {
+const isArrayStartingClaude = (n: ts.Node | undefined, names: Names): n is ts.ArrayLiteralExpression => !!n && ts.isArrayLiteralExpression(n) && claudish(n.elements[0], names);
+/** The command of a spawner call: first argument a claude binary, an array that starts with it (Bun.spawn), or `{ cmd: [...] }`. */
+function spawnedClaude(arg: ts.Node | undefined, names: Names): boolean {
+  if (!arg) return false;
+  if (claudish(arg, names) || isArrayStartingClaude(arg, names)) return true;
+  return ts.isObjectLiteralExpression(arg) && arg.properties.some((p) => ts.isPropertyAssignment(p) && p.name.getText() === "cmd" && isArrayStartingClaude(p.initializer, names));
+}
+
+function sitesIn(file: string, names: Names): Site[] {
+  return sitesInText(nodePath.relative(SRC, file), fs.readFileSync(file, "utf8"), names);
+}
+
+function sitesInText(rel: string, text: string, treeNames: Names = new Set()): Site[] {
   const sf = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
+  const names = claudeNamesIn(text, treeNames);
   const out: Site[] = [];
   /** The variable initialisers in this file, so `${permissionMode}` can be traced to operationalLaunchArg. */
   const inits = new Map<string, string>();
@@ -52,11 +107,19 @@ function sitesInText(rel: string, text: string): Site[] {
     if (ts.isCallExpression(n) && /(^|\.)command$/.test(n.expression.getText(sf)) && n.arguments[0] && ts.isArrayLiteralExpression(n.arguments[0]) && /--permission-mode/.test(n.arguments[0].getText(sf))) {
       out.push({ file: rel, line, kind: "managed", text: n.arguments[0].getText(sf).slice(0, 80), covered: usesOperational(n.arguments[0].getText(sf)) });
     }
-    if (ts.isCallExpression(n) && SPAWNERS.test(n.expression.getText(sf)) && isClaudeLiteral(n.arguments[0])) {
-      out.push({ file: rel, line, kind: "spawn", text: n.getText(sf).slice(0, 80), covered: !!n.arguments[1] && usesOperational(n.arguments[1].getText(sf)) });
+    if (ts.isCallExpression(n) && SPAWNERS.test(n.expression.getText(sf)) && spawnedClaude(n.arguments[0], names)) {
+      // a Bun.spawn-style array carries its own arguments; the others take them as the second argument
+      const first = n.arguments[0]!;
+      const argText = isArrayStartingClaude(first, names) || ts.isObjectLiteralExpression(first) ? first.getText(sf) : n.arguments[1]?.getText(sf) ?? "";
+      out.push({ file: rel, line, kind: "spawn", text: n.getText(sf).slice(0, 80), covered: usesOperational(argText) });
     }
-    if (ts.isArrayLiteralExpression(n) && isClaudeLiteral(n.elements[0]) && ts.isPropertyAccessExpression(n.parent) && n.parent.name.text === "join" && ts.isCallExpression(n.parent.parent)) {
-      out.push({ file: rel, line, kind: "join", text: n.getText(sf).slice(0, 80), covered: usesOperational(n.getText(sf)) });
+    if (ts.isArrayLiteralExpression(n) && claudish(n.elements[0], names)) {
+      const p = n.parent;
+      const direct = ts.isPropertyAccessExpression(p) && p.name.text === "join" && ts.isCallExpression(p.parent);
+      // held in a variable that is joined or handed to a spawner (anywhere in the file) later
+      const holder = ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) ? p.name.text : undefined;
+      const later = holder !== undefined && usesLater(sf, holder);
+      if (direct || later) out.push({ file: rel, line, kind: "join", text: n.getText(sf).slice(0, 80), covered: usesOperational(n.getText(sf)) });
     }
     if (ts.isTemplateExpression(n)) {
       const whole = n.getText(sf);
@@ -76,7 +139,26 @@ function sitesInText(rel: string, text: string): Site[] {
   return out;
 }
 
-const all = walk(SRC).flatMap(sitesIn);
+/** True when `name` is `.join(...)`ed, or is the first argument of a spawner call, somewhere in the file. */
+function usesLater(sf: ts.SourceFile, name: string): boolean {
+  let found = false;
+  const v = (n: ts.Node): void => {
+    if (ts.isCallExpression(n)) {
+      const e = n.expression;
+      if (ts.isPropertyAccessExpression(e) && e.name.text === "join" && ts.isIdentifier(e.expression) && e.expression.text === name) found = true;
+      if (SPAWNERS.test(e.getText(sf)) && n.arguments[0] && ts.isIdentifier(n.arguments[0]) && n.arguments[0].text === name) found = true;
+    }
+    ts.forEachChild(n, v);
+  };
+  v(sf);
+  return found;
+}
+
+const SOURCES = walk(SRC);
+// pass 1: the EXPORTED constants that hold the binary anywhere in the tree (so one imported from another file is still known)
+let TREE_NAMES: Names = new Set();
+for (let round = 0; round < 3; round++) for (const f of SOURCES) TREE_NAMES = claudeNamesIn(fs.readFileSync(f, "utf8"), TREE_NAMES, true);
+const all = SOURCES.flatMap((f) => sitesIn(f, TREE_NAMES));
 const launchSites = all.filter((s) => !(s.file in NOT_A_LAUNCH));
 
 describe("OF-250 census: every Claude launch command is built through operationalLaunchArg(s), which adds the rig-body guard", () => {
@@ -136,6 +218,58 @@ describe("OF-250 census: every Claude launch command is built through operationa
     });
     it("negative controls: other programs, a bare claude array that is not joined, a join without claude first", () => {
       expect(find(`spawn("git", ["status"]); execFile("node", ["x"]); const m = ["claude", MANIFEST]; const o = ["x", "claude"].join(" "); const t = ["a", "b"].map(f);`)).toEqual([]);
+    });
+  });
+
+  describe("OF-258 positive and negative controls for the shapes the OF-252 finder was blind to (the finder run on in-memory source)", () => {
+    const find = (src: string, tree: Names = new Set()) => sitesInText("adapters/zz-new.ts", src, tree);
+    const kinds = (src: string, tree?: Names) => find(src, tree).map((s) => `${s.kind}:${s.covered}`);
+
+    // one `it` per fixture, so a mutant's kill set says which shape it removed
+    const B_CASES: Array<[string, Names?]> = [
+      [`const CLAUDE_BIN = "claude"; spawn(CLAUDE_BIN, ["--resume", t]);`],
+      [`const A = "/opt/homebrew/bin/claude"; const B = A; execFile(B, args, cb);`],
+      [`function run(bin = "claude") { return spawnSync(bin, ["--resume", t]); }`],
+      [`const cfg = { bin: "claude" }; spawn(cfg.bin, ["--resume", t]);`],
+      [`class L { private bin = "claude"; go() { fork(this.bin, []); } }`],
+      [`const h = {}; h.exe = "claude"; execFileSync(h.exe, a);`],
+      [`spawn(CLAUDE_BIN, ["--resume", t]);`, new Set(["CLAUDE_BIN"])],
+    ];
+    for (const [n, [src, tree]] of B_CASES.entries()) it(`(b${n}) a binary held in a name: ${src}`, () => { expect(kinds(src, tree)).toEqual(["spawn:false"]); });
+    const C_CASES = [
+      `spawn(useIt ? "claude" : other, ["--resume", t]);`,
+      `spawn(useIt ? other : "claude", args);`,
+      `spawn(override ?? "claude", args);`,
+      `spawn(process.env.CLAUDE_BIN || "claude", args);`,
+      `spawn((x ? "claude" : y) as string, args);`,
+      `const bin = ok ? "claude" : "fallback"; execFile(bin, args);`,
+    ];
+    for (const [n, src] of C_CASES.entries()) it(`(c${n}) a conditional or defaulted "claude": ${src}`, () => { expect(kinds(src)).toEqual(["spawn:false"]); });
+    const D_CASES: Array<[string, string]> = [
+      [`Bun.spawn(["claude", "--resume", t]);`, "spawn:false"],
+      [`Bun.spawnSync(["claude", ...rest]);`, "spawn:false"],
+      [`Bun.spawn({ cmd: ["claude", "--resume", t], cwd });`, "spawn:false"],
+      [`const B = "claude"; Bun.spawn([B, "--resume", t]);`, "spawn:false"],
+      [`Bun.spawn([ok ? "claude" : x, t]);`, "spawn:false"],
+      [`Bun.spawn(["claude", ...operationalLaunchArgs(choice, [x])]);`, "spawn:true"],
+      [`Bun.spawn({ cmd: ["claude", ...operationalLaunchArgs(choice, [x])] });`, "spawn:true"],
+    ];
+    for (const [n, [src, want]] of D_CASES.entries()) it(`(d${n}) Bun.spawn, the command an array or { cmd }: ${src}`, () => { expect(kinds(src)).toEqual([want]); });
+    const E_CASES: Array<[string, string]> = [
+      [`const parts = ["claude", "--resume", t]; run(parts.join(" "));`, "join:false"],
+      [`const argv = ["claude", "--resume", t]; Bun.spawn(argv);`, "join:false"],
+      [`const argv = ["claude", "--resume", t]; execa(argv);`, "join:false"],
+      [`const B = "claude"; const parts = [B, "--resume", t]; const line = parts.join(" ");`, "join:false"],
+      [`const parts = [bin ?? "claude", t]; send(parts.join(" "));`, "join:false"],
+      [`const parts = ["claude", ...operationalLaunchArgs(c, [])]; send(parts.join(" "));`, "join:true"],
+    ];
+    for (const [n, [src, want]] of E_CASES.entries()) it(`(e${n}) an array starting with the binary, joined or spawned later: ${src}`, () => { expect(kinds(src)).toEqual([want]); });
+    it("(l) documented limit: a property read of a claude-holding object is not followed through a second name (the chain reaches every `x.runtime`, so it is not followed)", () => {
+      expect(kinds(`const cfg = { bin: "claude" }; const b2 = cfg.bin; execFile(b2, args);`)).toEqual([]);
+      expect(kinds(`const cfg = { bin: "claude" }; execFile(cfg.bin, args);`)).toEqual(["spawn:false"]);
+    });
+    it("(n) negative controls: RegExp.exec, a runtime-name array never joined or spawned, a constant that is never spawned, other binaries", () => {
+      expect(find(`const RE = /^x$/; RE.exec(text); const c = "claude"; RE.exec(c); /a/.exec(b); const runtime = "claude"; if (runtime === "claude") go(); const names = ["claude", "codex"]; names.map(f); const parts = ["claude", "x"]; use(parts); spawn(flag ? "git" : "tmux", a); const g = "git"; execFile(g, a); Bun.spawn(["git", "status"]);`)).toEqual([]);
     });
   });
 

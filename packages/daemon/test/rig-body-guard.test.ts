@@ -281,6 +281,53 @@ const ROWS: Row[] = [
   { id: "HU4", deny: false, note: "F-6 control: unquoted delimiter, an unrelated substitution, plain rig text", cmd: `bash <<EOF\ncd $(pwd); rig send s hi\nEOF` },
   { id: "S32", deny: false, note: "2>&1 file descriptor redirect", cmd: `rig send a@b 'hi' 2>&1 | tail -3` },
 
+  // ---- OF-264: a rig command name assembled at run time, and script -c. Refused only when a live substitution is in the guarded text, as for a plain `rig`.
+  { id: "N1", deny: true, kind: "substitution", note: "OF-264: rig${IFS}send", cmd: `rig\${IFS}send s "$(id)"` },
+  { id: "N2", deny: true, kind: "substitution", note: "OF-264: rig$IFS (bare) send", cmd: `rig$IFS send s "$(id)"` },
+  { id: "N3", deny: true, kind: "substitution", note: "OF-264: ${IFS%?} spelling of the space", cmd: `rig\${IFS%?}send s "${T}id${T}"` },
+  { id: "N4", deny: true, kind: "substitution", note: "OF-264: R=rig; $R send", cmd: `R=rig; $R send s "$(id)"` },
+  { id: "N5", deny: true, kind: "substitution", note: "OF-264: assignment on its own line, quoted expansion \"$R\"", cmd: `R=rig\n"$R" send s ${T}id${T}` },
+  { id: "N6", deny: true, kind: "substitution", note: "OF-264: path value and braces", cmd: `R=/usr/local/bin/rig; \${R} send s "$(id)"` },
+  { id: "N7", deny: true, kind: "substitution", note: "OF-264: the variable holds the name AND the command (C=\"rig send\")", cmd: `C="rig send"; $C s "$(id)"` },
+  { id: "N8", deny: true, kind: "substitution", note: "OF-264: export, behind sudo", cmd: `export R=rig; sudo $R send s "$(id)"` },
+  { id: "N9", deny: true, kind: "substitution", note: "OF-264: unknown $R (set outside this command) directly before a guarded rig command: an unknown prefix", cmd: `$R send s "$(id)"` },
+  { id: "N10", deny: true, kind: "substitution", note: "OF-264: \${R:-rig} default", cmd: `\${R:-rig} send s "$(id)"` },
+  { id: "N11", deny: true, kind: "substitution", note: "OF-264: the variable names a shell, the script holds the rig command", cmd: `S=bash; $S -c "rig send s '$(id)'"` },
+  { id: "N12", deny: true, kind: "substitution", note: "OF-264: assembled name inside a bash -c script", cmd: `bash -c 'R=rig; $R send s "$(id)"'` },
+  { id: "N13", deny: true, kind: "substitution", note: "OF-264: assembled name in a script word of THIS shell's variable", cmd: `R=rig; bash -c "$R send s '$(id)'"` },
+  { id: "N14", deny: true, kind: "substitution", note: "OF-264: export of a two-word value (the unknown-prefix rule cannot see it: the next word is not a guarded command)", cmd: `export C="rig send"; $C s "$(id)"` },
+  { id: "N15", deny: true, kind: "substitution", note: "OF-264: rig$IFS$9send (an unset positional parameter in the name)", cmd: `rig$IFS$9send s "$(id)"` },
+  { id: "N16", deny: true, kind: "substitution", note: "OF-264: two assignments to one variable, the rig one second (every reading is tried, none is trusted to be the last)", cmd: `R=git; R=rig; $R send s "$(id)"` },
+  { id: "N17", deny: true, kind: "substitution", note: "OF-264: a shell named by a variable reads its script from an UNQUOTED here-document", cmd: `S=bash; $S <<EOF\nrig send s 'a $(date)'\nEOF` },
+  { id: "N18", deny: true, kind: "substitution", note: "OF-264: \"${R}\" in double quotes with braces", cmd: `R=rig; "\${R}" send s "$(id)"` },
+  { id: "N19", deny: true, kind: "substitution", note: "OF-264: a positional parameter as the command name is an unknown prefix", cmd: `$1 send s "$(id)"` },
+  { id: "A1", deny: true, kind: "substitution", note: "OF-264: ANSI-C quoted name $'\\x72ig'", cmd: `$'\\x72ig' send s "$(id)"` },
+  { id: "A2", deny: true, kind: "substitution", note: "OF-264: ANSI-C octal", cmd: `$'\\162ig' send s "$(id)"` },
+  { id: "A3", deny: true, kind: "substitution", note: "OF-264: ANSI-C unicode escape", cmd: `$'\\u0072ig' send s "$(id)"` },
+  { id: "A4", deny: true, kind: "substitution", note: "OF-264: ANSI-C quoted subcommand name", cmd: `rig $'\\x73end' s "$(id)"` },
+  { id: "A5", deny: true, kind: "substitution", note: "OF-264: locale string $\"rig\"", cmd: `$"rig" send s "$(id)"` },
+  { id: "X264-S1", deny: true, kind: "substitution", note: "OF-264: script -c with --command=", cmd: `script --command="rig send s \\$(id)" /dev/null` },
+  { id: "X264-S2", deny: true, kind: "substitution", note: "OF-264: script -c with the script attached (-c\"...\")", cmd: `script -c"rig send s \\$(id)" /dev/null` },
+  { id: "X264-S3", deny: true, kind: "substitution", note: "OF-264: script -qc", cmd: `script -qc "rig send s \\$(id)" /dev/null` },
+  { id: "X264-S4", deny: true, kind: "substitution", note: "OF-264: script -c whose script assembles the name", cmd: `script -c "rig\${IFS}send s \\$(id)" /dev/null` },
+  { id: "X264-S5", deny: true, kind: "substitution", note: "OF-264: script -c, plain form, live substitution of this shell in the double-quoted script", cmd: `script -c "rig send s $(id)" /dev/null` },
+  // the controls: the same shapes without a live substitution in the guarded text, and names that are not rig
+  { id: "NC1", deny: false, note: "OF-264 control: the safe quoted-heredoc send in normal mode", cmd: `rig send s --file - <<'EOF'\nhi ${T}x${T} $(y)\nEOF` },
+  { id: "NC2", deny: false, note: "OF-264 control: assembled name, safe body", cmd: `R=rig; $R send s hi` },
+  { id: "NC3", deny: false, note: "OF-264 control: assembled name, safe quoted heredoc", cmd: `R=rig; $R send s --file - <<'EOF'\n${T}x${T}\nEOF` },
+  { id: "NC4", deny: false, note: "OF-264 control: the variable is not rig", cmd: `R=git; $R status "$(pwd)"` },
+  { id: "NC5", deny: false, note: "OF-264 control: assembled rig name but a command that is not guarded", cmd: `R=rig; $R status "$(pwd)"` },
+  { id: "NC6", deny: false, note: "OF-264 control: unknown variable, first word is not a guarded rig command", cmd: `$EDITOR file "$(pwd)"` },
+  { id: "NC7", deny: false, note: "OF-264 control: ANSI-C text in echo is only text", cmd: `echo $'\\x72ig' send s` },
+  { id: "NC8", deny: false, note: "OF-264 control: script -c with plain rig text", cmd: `script -qc 'rig send s hi' /dev/null` },
+  { id: "NC9", deny: false, note: "OF-264 control: single-quoted $R is a literal", cmd: `'$R' send s "$(id)"` },
+  { id: "NC10", deny: false, note: "OF-264 control: an unrelated substitution before a plain rig send via a variable", cmd: `cd "$(pwd)"; R=rig; $R send s hi` },
+  { id: "NC11", deny: false, note: "OF-264 control: ANSI-C body text with a newline escape (not a substitution)", cmd: `rig send s $'line one\\nline two'` },
+  // bounded: too many readings of a name is a parse failure (refused with a substitution anywhere), not a silent pass
+  { id: "NB1", deny: true, kind: "unparseable", note: "OF-264: more readings of one name word than the bound", cmd: `A=1;A=2;B=1;B=2;C=1;C=2;D=1;D=2;E=1;E=2; $A$B$C$D$E send s "$(id)"` },
+  { id: "NB2", deny: true, kind: "unparseable", note: "OF-264: more distinct values for one variable than the bound", cmd: `${Array.from({ length: 9 }, (_, i) => `R=v${i};`).join("")} $R send s "$(id)"` },
+  { id: "NB3", deny: true, kind: "unparseable", note: "OF-264: a name word over the length bound", cmd: `r${"\${IFS}".repeat(1000)}send s "$(id)"` },
+
   // ---- parse failures: refuse only when the plain-text signal is there
   { id: "P1", deny: true, kind: "unparseable", note: "unterminated double quote around a rig send with a backtick", cmd: `rig send a@b "text ${T}x${T} still open` },
   { id: "P2", deny: true, kind: "unparseable", note: "truncated $(cat <<'EOF' wrapper", cmd: `rig send a@b "$(cat <<'EOF'\nreport that was cut off` },
@@ -423,6 +470,18 @@ describe("OF-251 differential: the verdict against what a real bash does (fake r
     { id: "d34", cmd: `echo "rig send s @P@" | bash /dev/stdin`, lands: true },
     { id: "d35", cmd: `echo "rig send s @P@" | ssh h sh`, lands: true },
     { id: "d36", cmd: `echo "cd /x" | ssh h sh`, lands: false },
+    // OF-264: a rig command name assembled at run time, and script -c (a fake `script` below runs the -c script with sh -c)
+    { id: "d37", cmd: `R=rig; $R send s hi @P@`, lands: true },
+    { id: "d38", cmd: `rig\${IFS}send s hi @P@`, lands: true },
+    { id: "d39", cmd: `$'\\x72ig' send s hi @P@`, lands: true },
+    { id: "d40", cmd: `C="rig send"; $C s hi @P@`, lands: true },
+    { id: "d41", cmd: `script -qc "rig send s hi @P@" /dev/null`, lands: true },
+    { id: "d42", cmd: `script --command="rig send s \\@P@" /dev/null`, lands: true },
+    { id: "d43", cmd: "script -c\"rig\\${IFS}send s \\@P@\" /dev/null", lands: true },
+    { id: "d47", cmd: `S=bash; $S <<EOF\nrig send s 'a @P@'\nEOF`, lands: true },
+    { id: "d44", cmd: `R=rig; $R send s hi; echo @P@`, lands: false },
+    { id: "d45", cmd: `R=echo; $R send s @P@`, lands: false },
+    { id: "d46", cmd: `script -qc "rig send s '\\@P@'" /dev/null`, lands: false },
   ];
   let bin = "";
   let work = "";
@@ -432,6 +491,8 @@ describe("OF-251 differential: the verdict against what a real bash does (fake r
     mkdirSync(bin);
     writeFileSync(join(bin, "rig"), `#!/bin/sh\nprintf 'ARGV:%s\\n' "$*" >> "${join(work, "rig.log")}"\n[ -t 0 ] || cat >> "${join(work, "rig.log")}"\n`, { mode: 0o755 });
     writeFileSync(join(bin, "ssh"), `#!/bin/sh\nshift\nexec sh -c "$*"\n`, { mode: 0o755 });
+    // util-linux script: -c SCRIPT, -qc SCRIPT, -cSCRIPT, --command=SCRIPT, then a typescript file (ignored)
+    writeFileSync(join(bin, "script"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in --command=*) exec sh -c "${"$"}{1#--command=}";; -*c) exec sh -c "$2";; -c?*) exec sh -c "${"$"}{1#-c}";; *) shift;; esac; done\n`, { mode: 0o755 });
   });
   afterAll(() => { rmSync(work, { recursive: true, force: true }); });
 
@@ -446,6 +507,35 @@ describe("OF-251 differential: the verdict against what a real bash does (fake r
       expect(guard.check(cmd).block).toBe(row.lands);
     });
   }
+});
+
+describe("OF-264: the cost of reading assembled command names stays bounded", () => {
+  const rep = (x: string, n: number): string => x.repeat(n);
+  // each shape carries a live substitution so the whole path runs; the bound is the 5 s hook timeout divided by a wide margin, not a benchmark
+  const SHAPES: Record<string, string> = {
+    "3000 assignments then an assembled send": `${rep("R=rig; ", 3000)}$R send s "$(id)"`,
+    "400 distinct variables": `${Array.from({ length: 400 }, (_, i) => `V${i}=rig;`).join("")}$V1 send s "$(id)"`,
+    "10,000 ${IFS} in one name": `r${rep("\${IFS}", 10_000)}send s "$(id)"`,
+    "5,000 commands, each an assembled send": rep(`$R send s "$(id)"; `, 5000),
+    "10,000 values for one variable": `${Array.from({ length: 10_000 }, (_, i) => `R=v${i};`).join("")}$R send s "$(id)"`,
+    "200 unknown references in one name": `R=rig; ${Array.from({ length: 200 }, (_, i) => `\${V${i}}`).join("")} send s $(id)`,
+    "2,000 ANSI-C names": rep(`$'\\x72ig' send s "$(id)"; `, 2000),
+    "2,000 script -c": rep(`script -c "rig send s \\$(id)" /dev/null; `, 2000),
+    "7 nested bash -c around an assembled send": (() => { let c = `R=rig; $R send s $(id)`; for (let i = 0; i < 7; i++) c = `bash -c "${c.replace(/(["\\$`])/g, "\\$1")}"`; return c; })(),
+  };
+  for (const [name, cmd] of Object.entries(SHAPES)) {
+    it(`${name}: judged (refused or not) within 1.5 s, never throws`, () => {
+      const t0 = Date.now();
+      const v = guard.check(cmd);
+      expect(Date.now() - t0).toBeLessThan(1500);
+      expect(typeof v.block).toBe("boolean");
+    });
+  }
+  it("the shapes that must refuse still refuse (the bound is not met by giving up open)", () => {
+    for (const name of ["3000 assignments then an assembled send", "5,000 commands, each an assembled send", "2,000 ANSI-C names", "7 nested bash -c around an assembled send", "10,000 ${IFS} in one name"]) {
+      expect(guard.check(SHAPES[name]!).block, name).toBe(true);
+    }
+  });
 });
 
 describe("rig-body-guard refusal text", () => {
