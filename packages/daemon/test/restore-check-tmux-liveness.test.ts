@@ -1,6 +1,7 @@
 // OF-29 — restore-check recovery advice must follow tmux liveness, not only the DB.
 // tmux is a test double (adapter-shaped, `hasSession`) or a real TmuxAdapter over an
 // injected exec; no real tmux is touched.
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -200,6 +201,40 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     expect(body.rigs[0].runningReadyNodes).toBe(0);
     expect(body.recovery.status).toBe("actionable");
     expect(body.recovery.actions[0].command).toBe("rig up --existing partly");
+  });
+
+  // OF-259: the advice reads liveness as restore does. A terminal host that restored an EMPTY shell under an agent seat's name is
+  // not that seat running, so the rig is recoverable with rig up --existing, not blocked until `rig down`. The terminal's pid is a real
+  // `sleep` process (the route lists real processes) with no child, which is what an idle shell looks like in the listing.
+  describe("an empty shell under an agent seat (OF-259)", () => {
+    let idle: ChildProcess | undefined;
+    afterEach(() => { idle?.kill(); idle = undefined; });
+
+    async function advise(runtime: string, paneCommand: string) {
+      idle = spawn("sleep", ["60"], { stdio: "ignore" });
+      const pid = idle.pid!;
+      const { adapter } = tmuxWith({ "up@partly": "present", "down@partly": "absent" });
+      const host = Object.assign(adapter, { getPaneCommand: async () => paneCommand, getPanePid: async () => pid });
+      const { app, rigName, rigId } = build(host);
+      db.prepare("UPDATE nodes SET runtime = ? WHERE rig_id = ? AND logical_id = 'up'").run(runtime, rigId);
+      return await restoreCheck(app, rigName);
+    }
+
+    it("a claude-code seat whose terminal is a bare shell is recoverable: rig up --existing, no rig_not_stopped", async () => {
+      const body = await advise("claude-code", "bash");
+      expect(body.recovery.status).toBe("actionable");
+      expect(body.recovery.actions.map((a: { command: string }) => a.command)).toEqual(["rig up --existing partly"]);
+    });
+    it("the same terminal under a terminal-runtime seat IS the seat running: blocked on rig_not_stopped", async () => {
+      const body = await advise("terminal", "bash");
+      expect(body.recovery.status).toBe("blocked");
+      expect(body.recovery.blocked[0].reason as string).toContain("rig_not_stopped, 409");
+    });
+    it("a non-shell foreground is a program: blocked on rig_not_stopped", async () => {
+      const body = await advise("claude-code", "node");
+      expect(body.recovery.status).toBe("blocked");
+      expect(body.recovery.blocked[0].reason as string).toContain("rig_not_stopped, 409");
+    });
   });
 
   it("DB says a lone seat is running/ready but tmux is dead: recovery is not 'not_needed'", async () => {

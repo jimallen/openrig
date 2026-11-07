@@ -167,6 +167,9 @@ Restore behavior, each point checked in `restore-orchestrator.ts`:
   has live sessions. Stop the rig with 'rig down' before restoring, or use the
   latest auto-pre-down snapshot."). A seat-host probe that fails also blocks it
   (`classifyRunningSessions`, `:612`).
+  A seat's terminal that is present but is only an empty shell does not count as live (OF-259, `classifySessionLiveness`): for a `claude-code`, `codex`, `pi`, `omp` or `pda` seat, a shell
+  foreground with no process under the terminal's pid is the shell the terminal host restored after a reboot, not the seat running. Restore ends that shell (it holds the seat's name)
+  before it launches the seat; `rig restore-check` reads it the same way. A `terminal`-runtime seat is a shell and stays live; anything unreadable stays live.
 - Checks that the harness actually resumed. The resume adapters judge the
   pane with `assessNativeResumeProbe` (`domain/native-resume-probe.ts:84`). A
   pod-aware resume counts as resumed only when startup reports `resumed`

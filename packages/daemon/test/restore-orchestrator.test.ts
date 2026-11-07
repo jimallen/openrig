@@ -29,7 +29,7 @@ import { deriveRestoreAttemptReceipt } from "../src/domain/restore-attempt-recei
 import { getNodeInventory } from "../src/domain/node-inventory.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
-import { TmuxAdapter, type TmuxResult } from "../src/adapters/tmux.js";
+import { TmuxAdapter, type SessionProbe, type TmuxResult } from "../src/adapters/tmux.js";
 import type { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import type { PiResumeAdapter } from "../src/adapters/pi-resume.js";
 import type { OmpResumeAdapter } from "../src/adapters/omp-resume.js";
@@ -755,6 +755,103 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("rig_not_stopped");
     expect(snapshotRepo.listSnapshots(rig.id)).toHaveLength(1);
+  });
+
+  // OF-259: after a reboot the terminal host restores an EMPTY shell under the seat's name with its seat label. That terminal
+  // is present, but nothing runs in it, so it is not the seat running: `rig up --existing` must not stop on rig_not_stopped and
+  // need `rig down` first. The process shapes below are the ones measured on a private hc 0.1.18 core (pid of the terminal 1234).
+  describe("OF-259 an empty shell under a seat's name is not the seat running", () => {
+    const BASH = { pid: 1234, ppid: 1, command: "-bash" };
+    function seedSeat(runtime: string): string {
+      const rig = rigRepo.createRig("shellrig");
+      const node = rigRepo.addNode(rig.id, "w", { role: "worker", runtime });
+      const session = sessionRegistry.registerSession(node.id, "dev-w@shellrig");
+      sessionRegistry.updateStatus(session.id, "running");
+      return snapshotCapture.captureSnapshot(rig.id, "manual").id;
+    }
+    function shellHost(paneCommand: string, rows: Array<{ pid: number; ppid: number; command: string }>) {
+      let ended = false;
+      const killSession = vi.fn(async (): Promise<TmuxResult> => { ended = true; return { ok: true }; });
+      const getPaneCommand = vi.fn(async (): Promise<string | null> => paneCommand);
+      const tmux = Object.assign(mockTmux(), { killSession, getPaneCommand, getPanePid: vi.fn(async () => 1234),
+        probeSession: async (): Promise<SessionProbe> => ({ state: ended ? "absent" : "present" }) });
+      return { tmux, killSession, getPaneCommand, listProcesses: async () => rows };
+    }
+
+    it.each([
+      ["claude-code"], ["codex"], ["pi"],
+    ])("a %s seat whose terminal is a bare shell is stale: restore is not refused, and the empty shell is ended so the launch can have its name", async (runtime) => {
+      const snapId = seedSeat(runtime);
+      const host = shellHost("bash", [BASH]);
+      const result = await createOrchestrator({ tmux: host.tmux, listProcesses: host.listProcesses }).restore(snapId);
+      if (!result.ok) expect(result.code).not.toBe("rig_not_stopped");
+      expect(host.killSession).toHaveBeenCalledWith("dev-w@shellrig");
+    });
+
+    it.each([
+      ["Claude run from the pane shell (foreground bash, claude two levels down)", "bash", [BASH, { pid: 1300, ppid: 1234, command: "/bin/bash -l" }, { pid: 1301, ppid: 1300, command: "claude --permission-mode default" }]],
+      ["Codex under its launcher (foreground sh at the terminal's pid, codex its child)", "sh", [{ pid: 1234, ppid: 1, command: "/bin/sh /tmp/x.sh" }, { pid: 1303, ppid: 1234, command: "codex" }]],
+      ["a program that replaced the shell (foreground is not a shell)", "node", [{ pid: 1234, ppid: 1, command: "node agent.js" }]],
+    ])("%s is still live: refused, and nothing is ended", async (_label, paneCommand, rows) => {
+      const snapId = seedSeat("claude-code");
+      const host = shellHost(paneCommand, rows);
+      const result = await createOrchestrator({ tmux: host.tmux, listProcesses: host.listProcesses }).restore(snapId);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("rig_not_stopped");
+      expect(host.killSession).not.toHaveBeenCalled();
+    });
+
+    it("a terminal-runtime seat IS a shell: a bare shell stays live, refused, and is never ended", async () => {
+      const snapId = seedSeat("terminal");
+      const host = shellHost("bash", [BASH]);
+      const result = await createOrchestrator({ tmux: host.tmux, listProcesses: host.listProcesses }).restore(snapId);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("rig_not_stopped");
+      expect(host.killSession).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["refuses", async () => ({ ok: false as const, code: "kill_incomplete", message: "hc reports the terminal still live" }), "kill_incomplete: hc reports the terminal still live"],
+      ["throws", async () => { throw new Error("hc socket closed (injected)"); }, "hc socket closed (injected)"],
+    ])("a killSession that %s leaves a line in the restore result naming the seat and the error", async (_label, kill, error) => {
+      const snapId = seedSeat("claude-code");
+      const host = shellHost("bash", [BASH]);
+      host.killSession.mockImplementation(kill);
+      const result = await createOrchestrator({ tmux: host.tmux, listProcesses: host.listProcesses }).restore(snapId);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const line = result.result.warnings.find((w) => w.includes("empty shell"));
+      expect(line, JSON.stringify(result.result.warnings)).toBeDefined();
+      expect(line).toContain("dev-w@shellrig");
+      expect(line).toContain(error);
+    });
+
+    it("a shell that is ended cleanly adds no warning", async () => {
+      const snapId = seedSeat("claude-code");
+      const host = shellHost("bash", [BASH]);
+      const result = await createOrchestrator({ tmux: host.tmux, listProcesses: host.listProcesses }).restore(snapId);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.result.warnings.filter((w) => w.includes("empty shell"))).toEqual([]);
+    });
+
+    it("the shell is read again before it is ended: a program that has started since the classification is not killed", async () => {
+      const snapId = seedSeat("claude-code");
+      const host = shellHost("bash", [BASH]);
+      // The classification sees a bare shell; by the time the stale rows are settled the terminal has a program in the foreground.
+      const answers = ["bash", "node"];
+      host.getPaneCommand.mockImplementation(async () => answers.shift() ?? "node");
+      await createOrchestrator({ tmux: host.tmux, listProcesses: host.listProcesses }).restore(snapId);
+      expect(host.killSession).not.toHaveBeenCalled();
+    });
+
+    it("a process listing that does not contain the terminal's pid proves nothing: live, refused", async () => {
+      const snapId = seedSeat("claude-code");
+      const host = shellHost("bash", [{ pid: 999, ppid: 1, command: "other" }]);
+      const result = await createOrchestrator({ tmux: host.tmux, listProcesses: host.listProcesses }).restore(snapId);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("rig_not_stopped");
+      expect(host.killSession).not.toHaveBeenCalled();
+    });
   });
 
   // OF-33: a wedged tmux (has-session never answers; the exec has no timeout of its own) used to hang

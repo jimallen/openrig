@@ -200,7 +200,7 @@ export function createRestoreCheckService(
     // as dead, exactly as `rig up --existing` reads it. A probe that throws or
     // outlives the deadline is "unreadable" (liveness unknown), never guessed.
     probeSeatLiveness: tmuxAdapter
-      ? (sessionName: string) => classifySessionLiveness(tmuxAdapter, sessionName, probeTimeoutMs)
+      ? (sessionName: string) => classifySessionLiveness(tmuxAdapter, sessionName, probeTimeoutMs, { runtimeOfSession: (name: string) => new SessionRegistry(rigRepo.db).runtimeOfSessionName(name) })
       : undefined,
     stateDir: OPENRIG_HOME,
     substrateRoot: dirname(resolveLegacyTopologyRigsRoot()),

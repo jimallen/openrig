@@ -706,6 +706,15 @@ export class SessionRegistry {
     this.db.prepare("DELETE FROM bindings WHERE node_id = ?").run(nodeId);
   }
 
+  /** OF-259: the runtime of the seat a session name belongs to: the node of the running session row of that name, else of the newest one (names are
+   *  reused across a rig's generations). Null when no row names it. */
+  runtimeOfSessionName(sessionName: string): string | null {
+    const row = this.db.prepare(
+      "SELECT n.runtime AS runtime FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.session_name = ? ORDER BY (s.status = 'running') DESC, s.created_at DESC, s.id DESC LIMIT 1",
+    ).get(sessionName) as { runtime: string | null } | undefined;
+    return row?.runtime ?? null;
+  }
+
   getSessionsForRig(rigId: string): Session[] {
     const rows = this.db
       .prepare(

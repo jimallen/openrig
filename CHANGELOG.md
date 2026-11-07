@@ -10,6 +10,19 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### `rig up <rig> --existing` no longer needs `rig down` first when the host restored empty shells (OF-259)
+
+- Symptom (laptop, after a reboot): the terminal host (Herdr) restored each seat's terminal as an empty shell that still carried its `openrig.seat` label, so restore read
+  those seats as live and `rig up --existing` stopped with `rig_not_stopped`; `rig down` was needed first.
+- Measured on a private hc 0.1.18 core (Linux): the foreground name alone cannot tell an empty shell from a running agent. Claude started from the pane shell shows foreground
+  `bash` (a subshell) with `claude` below it; Codex shows foreground `sh` at the terminal's own pid with `codex` as its child; a program that replaced the shell (Pi, the stub)
+  is itself the foreground. What does separate them is the process tree under the terminal's pid: an idle seat shell, and a kept terminal whose program was lost, have no child.
+- Fix: a present terminal of a `claude-code`, `codex`, `pi`, `omp` or `pda` seat reads as not running when its foreground is a shell and nothing descends from its pid.
+  `rig up --existing` then restores the seat, ending the empty shell first (the shell holds the seat's name, so the launch would otherwise be refused as a duplicate), and
+  `rig restore-check` forecasts the same. A `terminal`-runtime seat (operator-human) IS a shell and stays live. Anything unreadable (no foreground name, no pid, a process
+  listing without the terminal's pid) stays live, as before. If ending the empty shell fails, the restore result carries a warning naming the seat and the error.
+- Not measured: a shell restored by the real Herdr app. Pi, omp and pda were not run (Pi's shape is `exec`, so its foreground is the program).
+
 ### `rig up <rig> --existing` after a reboot no longer refuses a rig whose seats were relaunched fresh (OF-255)
 
 - Symptom (laptop, eztrack, 2026-11-06): two seats were relaunched with `rig seat launch --fresh`, the host shut down, and `rig up eztrack --existing` refused
