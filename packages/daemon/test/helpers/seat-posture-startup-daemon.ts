@@ -8,8 +8,7 @@ const { SPS_DB: db, SPS_OUT: out, SPS_SEAT: seat, SPS_RIG: rigId } = process.env
 if (!db || !out || !seat || !rigId) throw new Error("SPS_DB, SPS_OUT, SPS_SEAT and SPS_RIG are required");
 
 const daemon = await createDaemon({ dbPath: db });
-const transport = daemon.deps.sessionTransport as unknown as { seatPostureFor(sessionName: string): Promise<unknown> };
-const viaTransport = await transport.seatPostureFor(seat);
+const viaTransport = await daemon.deps.sessionTransport?.seatPostureFor(seat);
 const list = (await (await daemon.app.request(`/api/rigs/${rigId}/nodes`)).json()) as Array<{ canonicalSessionName?: string; seatPosture?: unknown }>;
 const viaRoute = list.find((n) => n.canonicalSessionName === seat)?.seatPosture ?? null;
 writeFileSync(out, JSON.stringify({ hasReaderInDeps: typeof daemon.deps.seatTerminalStatus === "function", viaTransport, viaRoute }));

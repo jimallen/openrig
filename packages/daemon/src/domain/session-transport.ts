@@ -1750,7 +1750,8 @@ export class SessionTransport {
   }
 
   /** OF-267: why a sender may see "not yet received" for a seat that is only busy. Best effort: any failure leaves the answer as it was. */
-  private async seatPostureFor(sessionName: string): Promise<SeatPosture | undefined> {
+  /** Public so a startup-level test can ask the daemon's own transport what it would say (seat-posture-startup.real.test.ts). */
+  async seatPostureFor(sessionName: string): Promise<SeatPosture | undefined> {
     const store = this.agentActivityStore;
     if (!store) return undefined;
     try {
