@@ -328,6 +328,18 @@ const ROWS: Row[] = [
   { id: "NB2", deny: true, kind: "unparseable", note: "OF-264: more distinct values for one variable than the bound", cmd: `${Array.from({ length: 9 }, (_, i) => `R=v${i};`).join("")} $R send s "$(id)"` },
   { id: "NB3", deny: true, kind: "unparseable", note: "OF-264: a name word over the length bound", cmd: `r${"\${IFS}".repeat(1000)}send s "$(id)"` },
 
+  // ---- OF-265: text typed into another pane (tmux send-keys; hc send is judged the same way) is shell text for that pane's shell when it starts with a guarded rig command
+  { id: "T1", deny: true, kind: "substitution", note: "OF-265: tmux send-keys types a rig send with a live substitution into a pane", cmd: `tmux send-keys -t p 'rig send s "$(id)"' Enter` },
+  { id: "T2", deny: true, kind: "substitution", note: "OF-265: send-keys -l (literal) form", cmd: `tmux send-keys -t p -l 'rig send s "${T}id${T}"'` },
+  { id: "T3", deny: true, kind: "substitution", note: "OF-265: typed text whose rig command follows a separator", cmd: `tmux send-keys -t p 'cd /x && rig send s "$(id)"' Enter` },
+  { id: "T4", deny: true, kind: "substitution", note: "OF-265: hc send is judged the same way (already so before OF-265)", cmd: `hc send t3 'rig send s "$(id)"'` },
+  { id: "TC1", deny: false, note: "OF-265 control: prose typed into a pane that mentions rig send and backticks does not start with the command", cmd: `tmux send-keys -t p 'please run rig send x with ${T}id${T} in it' Enter` },
+  { id: "TC2", deny: false, note: "OF-265 control: the same prose through hc send", cmd: `hc send t3 'please run rig send x with ${T}id${T} in it'` },
+  { id: "TC3", deny: false, note: "OF-265 control: typed rig send with a single-quoted (literal) substitution", cmd: `tmux send-keys -t p "rig send s '\\$(id)'" Enter` },
+  { id: "TC4", deny: false, note: "OF-265 control: typed rig send with no substitution", cmd: `tmux send-keys -t p 'rig send s hi' Enter` },
+  { id: "TC5", deny: false, note: "OF-265 control: typed text with a substitution and no rig command", cmd: `tmux send-keys -t p 'cd $(pwd)' Enter` },
+  { id: "TC6", deny: false, note: "OF-265 control: typed rig send fed by a quoted heredoc line", cmd: `tmux send-keys -t p "rig send s --file - <<'EOF'" Enter` },
+
   // ---- parse failures: refuse only when the plain-text signal is there
   { id: "P1", deny: true, kind: "unparseable", note: "unterminated double quote around a rig send with a backtick", cmd: `rig send a@b "text ${T}x${T} still open` },
   { id: "P2", deny: true, kind: "unparseable", note: "truncated $(cat <<'EOF' wrapper", cmd: `rig send a@b "$(cat <<'EOF'\nreport that was cut off` },
