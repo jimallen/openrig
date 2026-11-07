@@ -10,20 +10,20 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
-### The rig-body guard reads a rig command name assembled at run time, `script -c` in every spelling and `tmux send-keys` text (OF-264, OF-265); the Claude launch census sees four more shapes (OF-258)
+### The rig-body guard reads a rig command name assembled at run time, `script -c` and `tmux send-keys` text (OF-264, OF-265); the Claude launch census sees four more shapes (OF-258)
 
 - Guard (`rig-body-guard.cjs`, Claude hook and Pi extension): `rig${IFS}send`, `R=rig; $R send`, `C="rig send"; $C ...`, `export R=rig`, `${R:-rig}`, `S=bash; $S <<EOF`, ANSI-C quoting of the name or the
-  subcommand (`$'\x72ig' send`, octal, `\u`), `$"rig"`, and `script -c`, `-qc`, `-c"<script>"`, `--command <script>`, `--command=<script>` are now judged as the rig command they spell. They are refused only
+  subcommand (`$'\x72ig' send`, octal, `\u`), `$"rig"`, and `script -c`, `-qc`, `-c"<script>"`, `--command <script>`, `--command=<script>` are now judged as the rig command they spell (known gaps: a getopt abbreviation such as `--comm=<script>`, and a repeated `-c`, where util-linux runs the last one and the guard reads the first). They are refused only
   when the same command carries a live substitution in the guarded text, exactly as a plain `rig send "...$(x)..."` is. Plain assignments in the same command are followed (every reading tried, not scope-aware);
   an unknown variable directly before a guarded rig command word (`$R send ...` with `R` set in an earlier command) is an unknown prefix, like `$(command -v rig) send`. A safe quoted-here-document send still passes.
   Bounds: more than 8 values for one variable, more than 16 readings of one name word or a name word over 4,096 characters is a parse failure (refused where the command holds a backtick or `$(`).
 - Still not modelled: `eval "$x"` built elsewhere, shell functions, globs and brace expansion that spell the name, a variable set in an earlier command and used anywhere but directly before a guarded word,
-  text typed into another pane that does not start with a guarded rig command, Codex and OMP seats.
-- `tmux send-keys` (OF-265): text typed into another pane is read as shell text, as `hc send` text already was: `tmux send-keys -t p 'rig send s "$(id)"' Enter` is refused. Anchored at a guarded rig command
-  (at the start of the text or after `;`, `&`, `|`, `(`), so prose typed into an agent pane that merely mentions `rig send` and backticks still passes.
+  text typed into another pane that does not start with a guarded rig command (or starts a later line), `${V:-path/rig}` with a nested expansion, a variable-held rig name behind `xargs` or `find -exec`, Codex and OMP seats.
+- `tmux send-keys` and the other tmux subcommands that type or run text (send-keys, run-shell, new-window, split-window, new-session, respawn-pane and respawn-window, if-shell, pipe-pane, display-popup, with their aliases; OF-265): text given to them is read as shell text, as `hc send` text already was; display-message, set-buffer, set-option and the rest are unchanged. Example: `tmux send-keys -t p 'rig send s "$(id)"' Enter` is refused. Anchored at a guarded rig command
+  (at the start of the text or after `;`, `&`, `|`, `(`), so prose typed into an agent pane that merely mentions `rig send` and backticks still passes. A newline in the typed text is not read as a separator (residual).
 - Census (`claude-launch-guard-census.test.ts`): a binary held in a constant (also exported from another file, a default parameter, an object key, a class field), a conditional or `??` / `||` "claude",
   `Bun.spawn([...])` / `Bun.spawn({ cmd: [...] })`, and an array that starts with the binary and is joined or spawned later through its variable are found, each with positive fixtures and negative controls.
-  `.exec` counts as a spawner only on `child_process` / `cp` / `Bun` / `Deno`, not on a RegExp. No new site in the tree.
+  Spawn-style calls (`spawn`, `execFile`, `fork`, `execa`, ...) count on any receiver (`this.deps.spawn("claude", ...)`); a bare `.exec` counts only on `child_process` / `cp` / `Bun` / `Deno`, not on a RegExp or a db handle. No new site in the tree.
 
 ### `rig up <rig> --existing` after a reboot no longer refuses a rig whose seats were relaunched fresh (OF-255)
 

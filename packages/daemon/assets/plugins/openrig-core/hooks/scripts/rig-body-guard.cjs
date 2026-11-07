@@ -28,13 +28,16 @@
 //
 // Covered since OF-264 (the name of a rig command assembled at run time): `rig${IFS}send`, `R=rig; $R send` (plain assignments in the same command, every reading
 // tried; an unknown variable directly before a guarded rig command word is an unknown prefix), ANSI-C quoting of the name or subcommand ($'\x72ig'), $"rig", and
-// `script -c "<script>"` in all its spellings (-c, -qc, -cSCRIPT, --command SCRIPT, --command=SCRIPT). Refused only when the same command carries a live substitution in
+// `script -c "<script>"` in the spellings -c, -qc, -cSCRIPT, --command SCRIPT and --command=SCRIPT (known gaps: a getopt abbreviation such as --comm=SCRIPT, and a repeated -c, where util-linux runs the LAST one and this reads the first). Refused only when the same command carries a live substitution in
 // the guarded text, as for a plain `rig`; the bounds are in the constants above resolve().
 //
 // Not covered (residual, documented in the OF-249 report): `eval "$x"` where the text is built elsewhere, a shell function or positional parameter that carries
 // the text, globs and brace expansion that spell the name (./r?g, r{i,}g), a variable set outside the command (`export R=rig` in an earlier command) used
 // anywhere but directly before a guarded rig command word, a file written with an unquoted here-document and sent in a later command,
 // text typed into a pane that does not start with a guarded rig command, python/node -e shelling out, aliases.
+// Residuals recorded by the OF-258/264/265 review (not fixed): a newline in text typed into a pane is not read as a separator (a second line that starts with a rig command
+// is not judged; widening it would refuse prose whose second line starts with `rig send` and a substitution); a default holding a nested expansion
+// (`${V:-$HOME/bin/rig}`, `${V:-path/rig}`) and a variable-held rig name behind xargs or `find -exec` are not modelled.
 
 const MAX_LEN = 1_000_000;
 // OF-251: stands in, in a wrapper script's text, for a substitution the LOCAL shell runs before the wrapper starts. A private-use
@@ -756,6 +759,24 @@ function scriptCommand(args) {
   return null;
 }
 
+// OF-265 review F2: the tmux subcommands that type text into a pane or run a shell command, with their aliases (tmux 3.4 `list-commands`, measured on Sparky in a
+// private socket; the rest only display or store text and stay as they were at base: display-message, set-buffer, set-option, ...).
+const TMUX_TEXT_COMMANDS = new Set([
+  "send-keys", "send", "run-shell", "run", "new-window", "neww", "split-window", "splitw", "new-session", "new", "respawn-pane", "respawnp",
+  "respawn-window", "respawnw", "if-shell", "if", "pipe-pane", "pipep", "display-popup", "popup",
+]);
+const TMUX_VALUED = new Set(["-L", "-S", "-f", "-c", "-T"]);
+
+/** The tmux subcommand of an argument list: the first word that is not an option or an option's value. */
+function tmuxSubcommand(args) {
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    if (t.startsWith("-") && t.length > 1) { if (TMUX_VALUED.has(t)) i++; continue; }
+    return t;
+  }
+  return "";
+}
+
 function scanPipeline(cmds, resolved, from, to, depth, out) {
   let message = null;
   let producersDone = from;     // commands [from, producersDone) were already scanned as a stdin shell's producers: each is read once per pipeline (linear, not per shell)
@@ -812,7 +833,7 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
           if (Object.prototype.hasOwnProperty.call(MESSAGE_COMMANDS, top.name)) message = top.name;
         }
       }
-      for (const a of res.args) if (/\s/.test(a.text) && SCRIPT_START_RE.test(a.text)) scanScriptWords([a], depth, out);
+      if (res.name !== "tmux" || TMUX_TEXT_COMMANDS.has(tmuxSubcommand(res.args))) for (const a of res.args) if (/\s/.test(a.text) && SCRIPT_START_RE.test(a.text)) scanScriptWords([a], depth, out);
     }
   }
   if (!message) return;

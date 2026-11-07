@@ -37,8 +37,8 @@ interface Site { file: string; line: number; kind: "managed" | "classic" | "spaw
 
 const CLAUDE_START = /\bclaude (--|\$\{)/;
 
-// A `.exec` on anything else is a RegExp (`RE.exec(text)`), not a process: only the child_process / Bun / Deno qualifiers count.
-const SPAWNERS = /^(?:(?:child_?process|cp|Bun|Deno|node:child_process)\.)?(spawn|spawnSync|execFile|execFileSync|exec|execSync|fork|execa|execaSync)$/;
+// OF-258 review F5: spawn-style calls count on ANY receiver (`this.deps.spawn("claude", ...)`); a bare `exec` or `.exec` is a RegExp or a db handle (`RE.exec(text)`) unless the receiver is child_process / cp / Bun / Deno.
+const SPAWNERS = /^(?:(?:[\w$.]+\.)?(?:spawn|spawnSync|execFile|execFileSync|fork|execa|execaSync|execSync)|(?:(?:child_?process|cp|Bun|Deno|node:child_process)\.)?exec)$/;
 const isClaudeText = (n: ts.Node | undefined): boolean => !!n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && /^(.*\/)?claude$/.test(n.text);
 
 // OF-258: the claude binary is also reached through (b) a name that holds it (`const BIN = "claude"`, an object key, a default parameter, a class field,
