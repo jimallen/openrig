@@ -77,6 +77,15 @@ export function fixture() {
   const rig = (name: string, archivedAt: string | null = null) =>
     db.prepare("INSERT INTO rigs (id, name, archived_at) VALUES (?, ?, ?)").run(`rig-id-${++counter}`, name, archivedAt);
 
+  /** A seat's node row and its latest session, as the daemon saves them (`remote_control` is the spec's `remote_control: true`). */
+  const seatNode = (n: { seat: string; rigName?: string; runtime?: string; remoteControl?: boolean; archivedRig?: boolean; sessionName?: string }) => {
+    const rigId = `rig-of-${n.rigName ?? "rig-1"}-${n.archivedRig ? "archived" : "live"}`;
+    db.prepare("INSERT OR IGNORE INTO rigs (id, name, archived_at) VALUES (?, ?, ?)").run(rigId, n.rigName ?? "rig-1", n.archivedRig ? "2031-01-01 00:00:00" : null);
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime, remote_control) VALUES (?, ?, ?, ?, ?)")
+      .run(`node-${n.seat}`, rigId, n.seat.split("@")[0]!.replace("-", "."), n.runtime ?? "claude-code", n.remoteControl ? 1 : null);
+    db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, 'running')").run(`sess-${n.seat}`, `node-${n.seat}`, n.sessionName ?? n.seat);
+  };
+
   /** Runs `then` once, right after the first statement the source runs has returned its rows. */
   const afterFirstStatement = (source: { readonlyHandle(): Database.Database }, then: () => void) => {
     const handle = source.readonlyHandle();
@@ -105,7 +114,7 @@ export function fixture() {
   };
 
   const records = (source: HealthObservationSource): HealthRecord[] => new HealthProjectionService([source]).records();
-  return { dir, dbPath, db, deps, event, activity, fired, usage, outbox, stream, rig, afterFirstStatement, countStatements, records };
+  return { dir, dbPath, db, deps, event, activity, seatNode, fired, usage, outbox, stream, rig, afterFirstStatement, countStatements, records };
 }
 
 export function span(record: HealthRecord) {

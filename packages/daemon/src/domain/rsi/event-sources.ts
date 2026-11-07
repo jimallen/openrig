@@ -51,9 +51,13 @@ interface EventThresholdConfig {
   classLabel: string;
   /** An independent series that must agree with the judged events; a disagreement throws (source unavailable). */
   crossCheck?(db: Database.Database, since: string, judgedEvents: number): void;
+  /** What a reader of the coverage row must know about what this detector did NOT judge (seats exempt), read with the window's `since`. */
+  coverageNotes?(db: Database.Database, since: string): CoverageNote[];
   scope(row: { rigId: string | null; nodeId: string | null }, instanceId: string): HealthScope;
   describe(subject: string, n: number): { summary: string; thresholdText: string; suggestedInspection: string; fixHint: string };
 }
+
+interface CoverageNote { text: string }
 
 interface GroupRow {
   k: string; cls: string; hit: number; n: number; first_seq: number; last_seq: number;
@@ -138,10 +142,12 @@ class EventThresholdSource extends RsiFindingSource {
     // out, so a quiet detector is not read as "every event was judged". Nothing about which events are counted changes.
     const unjudged = db.prepare("SELECT count(*) AS n, min(seq) AS first_seq, max(seq) AS last_seq FROM events WHERE type = ? AND created_at >= ? AND NOT json_valid(payload)")
       .get(c.eventType, since) as { n: number; first_seq: number | null; last_seq: number | null };
-    const note = unjudged.n > 0
+    const unjudgedNote = unjudged.n > 0
       ? `${unjudged.n} ${c.eventType} event(s) in the window (seq ${unjudged.first_seq} to ${unjudged.last_seq}) have a payload that is not readable JSON and were not judged (a damaged payload cannot be classified, so this may include events the detector would have ignored); the counts above leave them out. Repair or remove the event rows.`
       : undefined;
-    return { findings, total: firing.length, unit: `${c.subjectNoun}s`, order: "count desc, subject", ...(note !== undefined ? { note } : {}) };
+    const coverageNotes = c.coverageNotes?.(db, since) ?? [];
+    const note = [unjudgedNote, ...coverageNotes.map((n) => n.text)].filter((t): t is string => t !== undefined).join(" ");
+    return { findings, total: firing.length, unit: `${c.subjectNoun}s`, order: "count desc, subject", ...(note !== "" ? { note } : {}) };
   }
 }
 
@@ -188,6 +194,17 @@ export function createCompactionStormSource(deps: RsiFindingSourceDeps): RsiFind
   });
 }
 
+/**
+ * A project rig's coordinator (OF-269; Jim, 2026-11-07: "Exempt coordinators"). Since 10-31 it asks Jim itself, in a modal, so its
+ * blocking questions to Jim are not stalls. The daemon has no coordinator field; the binding it holds is the node row's
+ * `remote_control`, the spec's `remote_control: true`, which jims-team declares on the CoS seat only (live database, 2026-11-07: 5 nodes
+ * carry it of 307, all exec.cos: eztrack four times over its rebuilds and ezhome once; among the 15 nodes of the live rigs only eztrack's). Never a name match.
+ */
+const COORDINATOR_NODE_SQL = `EXISTS (SELECT 1 FROM nodes cn WHERE cn.id = events.node_id AND cn.remote_control = 1)`;
+const NAMED_SEATS_SHOWN = 20;
+const seatList = (names: readonly string[]): string =>
+  names.length === 0 ? "" : ` (${names.slice(0, NAMED_SEATS_SHOWN).join(", ")}${names.length > NAMED_SEATS_SHOWN ? `, and ${names.length - NAMED_SEATS_SHOWN} more` : ""})`;
+
 /** D9: one seat records at least 8 `needs_input` activity events in 24 h. */
 export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFindingSource {
   return new EventThresholdSource(deps, {
@@ -199,7 +216,8 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
     threshold: PERMISSION_STALL_THRESHOLD,
     subjectSql: `json_extract(payload, '$.sessionName')`,
     subjectNoun: "seat",
-    universeSql: `1`,
+    // A coordinator seat is not judged at all (OF-269): it is in neither the population nor the hits. coverageNotes says how many it left out.
+    universeSql: `NOT ${COORDINATOR_NODE_SQL}`,
     // A pda runner's held-message report reads needs_input so the seat shows in rig ps (OF-89); it is a delivery
     // hold, re-reported while it lasts, not a permission stall, so it is not a hit.
     // A question to Jim is not a stall either (Jim, 2026-10-31: the rig asks in a modal). Claude Code reports its
@@ -222,6 +240,15 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
       + ` ORDER BY nx.seq LIMIT 1), '') = 'AskUserQuestion')`,
     classSql: `CASE WHEN json_extract(payload, '$.activity.state') IN ${KNOWN_ACTIVITY_STATES} THEN json_extract(payload, '$.activity.state') ELSE 'other' END`,
     classLabel: "activity events by state",
+    coverageNotes: (db, since) => {
+      const exempt = db.prepare(`SELECT json_extract(payload, '$.sessionName') AS seat, count(*) AS n FROM events
+        WHERE type = 'agent.activity' AND created_at >= ? AND json_valid(payload) AND json_extract(payload, '$.activity.state') = 'needs_input' AND ${COORDINATOR_NODE_SQL}
+        GROUP BY seat`).all(since) as Array<{ seat: string | null; n: number }>;
+      const exemptNames = exempt.map((r) => r.seat ?? "(unattributed)").sort();
+      return [
+        { text: `Coordinator seats (nodes declaring remote_control) are exempt: they ask Jim in a modal and were not judged. ${exempt.reduce((t, r) => t + r.n, 0)} needs_input event(s) from ${exempt.length} coordinator seat(s) in the last ${PERMISSION_STALL_WINDOW_HOURS} h were left out${seatList(exemptNames)}.` },
+      ];
+    },
     scope: seatScope,
     describe: (seat, n) => ({
       summary: `Seat ${seat} stalled for input ${n} times in the last ${PERMISSION_STALL_WINDOW_HOURS} h.`,

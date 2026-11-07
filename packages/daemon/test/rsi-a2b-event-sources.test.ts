@@ -5,7 +5,7 @@ import {
 import { RSI_COMPACTION_STORM, RSI_PERMISSION_STALL, RSI_WATCHDOG_DELIVERY_FAILURE } from "../src/domain/rsi/detector-ids.js";
 import type { RsiFindingSource, RsiFindingSourceDeps } from "../src/domain/rsi/finding-builder.js";
 import { HealthProjectionService } from "../src/domain/health-detectors.js";
-import { INSTANCE, NOW, cleanupFixtures, fixture, span } from "./rsi-a2b-fixture.js";
+import { INSTANCE, NOW, cleanupFixtures, fixture, span, stamp } from "./rsi-a2b-fixture.js";
 
 afterEach(cleanupFixtures);
 
@@ -65,7 +65,7 @@ const cases: Case[] = [
     wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: null, state: "needs_input", hoursAgo: h, type: "agent.session_identity" }),
     fingerprint: (key) => `rsi.permission-stall/seat:${key}`,
     scope: (key) => ({ type: "seat", rigId: "rig-1", seatId: `node-${key}` }),
-    statements: 2,
+    statements: 3,  // the grouped pass and the unjudged count, plus the one constant coverage-note read (coordinator events left out)
   },
   {
     label: "D12 watchdog delivery failure", detectorId: RSI_WATCHDOG_DELIVERY_FAILURE, create: createWatchdogDeliveryFailureSource, threshold: 3, windowHours: 168,
@@ -462,5 +462,85 @@ describe("OF-117: an event whose payload is not JSON is left out of the count, n
     const source = create(f.deps());
     expect(() => source.read()).not.toThrow();
     expect(source.read()).toHaveLength(1);
+  });
+});
+
+describe("OF-269 D9: a project rig's coordinator asks Jim itself and is not judged for stalls (Jim, 2026-11-07: \"Exempt coordinators\")", () => {
+  // The binding is the node row's `remote_control` (the spec's `remote_control: true`, declared on the CoS seat only: measured on the
+  // live database, 5 of 307 nodes carry it, all exec.cos: 4 of rig eztrack, 1 of ezhome). It is not a name match.
+  // These are REAL prompts (a denied one, no PostToolUse): without the exemption eight of them fire, so a quiet read is the exemption.
+  const real = (f: F, seat: string, n = 8) => { for (let i = 0; i < n; i++) f.activity({ seat, rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 2, generation: `g-${seat}-${i}` }); };
+  const read = (f: F) => { const source = createPermissionStallSource(f.deps()); const records = f.records(source); return { records, coverage: source.coverage()[0]! }; };
+  const note = (c: { note?: string } | undefined) => (c as { note?: string }).note ?? "";
+
+  it("a seat whose node declares remote_control is not counted, and the same prompts on a plain seat fire", () => {
+    const f = fixture();
+    f.seatNode({ seat: "exec-cos@eztrack", remoteControl: true }); f.seatNode({ seat: "build-impl@eztrack" });
+    real(f, "exec-cos@eztrack"); real(f, "build-impl@eztrack");
+
+    const { records } = read(f);
+
+    expect(records).toHaveLength(1);
+    expect(span(records[0]!)).toMatchObject({ fingerprint: "rsi.permission-stall/seat:build-impl@eztrack", count: 8 });
+  });
+
+  it("the binding is the node, not the name: exec-cos without remote_control fires, and another seat that declares it is exempt", () => {
+    const f = fixture();
+    f.seatNode({ seat: "exec-cos@eztrack" }); f.seatNode({ seat: "verify-qa@eztrack", remoteControl: true });
+    real(f, "exec-cos@eztrack"); real(f, "verify-qa@eztrack");
+
+    const { records } = read(f);
+
+    expect(records.map((r) => span(r).fingerprint)).toEqual(["rsi.permission-stall/seat:exec-cos@eztrack"]);
+  });
+
+  it("the exemption belongs to the node row of the event: the same seat name under a node without the declaration still counts", () => {
+    const f = fixture();
+    f.seatNode({ seat: "exec-cos@eztrack", remoteControl: true });
+    real(f, "exec-cos@eztrack", 7);
+    // One more prompt for the same session name, recorded under another node that does not declare it.
+    f.activity({ seat: "exec-cos@eztrack", nodeId: "node-other", rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 2, generation: "g-other" });
+
+    expect(read(f).records).toHaveLength(0);  // 1 counted event only: below the threshold
+  });
+
+  it("leaves the coordinator out of the judged population: the other seats' counts and controls are unchanged", () => {
+    const f = fixture();
+    f.seatNode({ seat: "exec-cos@eztrack", remoteControl: true }); f.seatNode({ seat: "build-impl@eztrack" }); f.seatNode({ seat: "build-ux@eztrack" });
+    real(f, "exec-cos@eztrack", 12); real(f, "build-impl@eztrack", 9); real(f, "build-ux@eztrack", 2);
+
+    const { records } = read(f);
+
+    expect(span(records[0]!)).toMatchObject({ count: 9, controlTotal: 1, population: 2 });
+    expect(records[0]!.explanation).toContain("9 of 11 judged events");
+  });
+
+  it("says on the coverage row that coordinators are exempt and how many needs_input events it left out, naming the seat", () => {
+    const f = fixture();
+    f.seatNode({ seat: "exec-cos@eztrack", remoteControl: true }); f.seatNode({ seat: "build-impl@eztrack" });
+    real(f, "exec-cos@eztrack", 12); real(f, "build-impl@eztrack", 3);
+    f.activity({ seat: "exec-cos@eztrack", rawEvent: "Stop", rawSubtype: null, state: "idle", hoursAgo: 2 });  // not needs_input: not part of the count
+    f.activity({ seat: "exec-cos@eztrack", rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 40 });  // outside the window
+
+    const { coverage } = read(f);
+
+    expect(note(coverage)).toContain("Coordinator seats (nodes declaring remote_control) are exempt: they ask Jim in a modal and were not judged");
+    expect(note(coverage)).toContain("12 needs_input event(s) from 1 coordinator seat(s) in the last 24 h were left out (exec-cos@eztrack)");
+  });
+
+  it("reports zero rather than saying nothing when no coordinator seat recorded anything", () => {
+    const f = fixture();
+    f.seatNode({ seat: "build-impl@eztrack" });
+    real(f, "build-impl@eztrack", 2);
+
+    expect(note(read(f).coverage)).toContain("0 needs_input event(s) from 0 coordinator seat(s) in the last 24 h were left out");
+  });
+
+  it("leaves events whose node_id is missing alone: an unattributed event is still judged", () => {
+    const f = fixture();
+    f.seatNode({ seat: "exec-cos@eztrack", remoteControl: true });
+    for (let i = 0; i < 8; i++) f.event("agent.activity", { type: "agent.activity", sessionName: "ghost@r", activity: { state: "needs_input", rawEvent: "Notification", rawSubtype: "permission_prompt" } }, stamp(2));
+
+    expect(read(f).records).toHaveLength(1);
   });
 });
