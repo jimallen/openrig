@@ -65,7 +65,7 @@ const cases: Case[] = [
     wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: null, state: "needs_input", hoursAgo: h, type: "agent.session_identity" }),
     fingerprint: (key) => `rsi.permission-stall/seat:${key}`,
     scope: (key) => ({ type: "seat", rigId: "rig-1", seatId: `node-${key}` }),
-    statements: 3,  // the grouped pass and the unjudged count, plus the one constant coverage-note read (coordinator events left out)
+    statements: 4,  // the grouped pass and the unjudged count, plus the two constant coverage-note reads (coordinator events left out, Pi seats not judged)
   },
   {
     label: "D12 watchdog delivery failure", detectorId: RSI_WATCHDOG_DELIVERY_FAILURE, create: createWatchdogDeliveryFailureSource, threshold: 3, windowHours: 168,
@@ -542,5 +542,137 @@ describe("OF-269 D9: a project rig's coordinator asks Jim itself and is not judg
     for (let i = 0; i < 8; i++) f.event("agent.activity", { type: "agent.activity", sessionName: "ghost@r", activity: { state: "needs_input", rawEvent: "Notification", rawSubtype: "permission_prompt" } }, stamp(2));
 
     expect(read(f).records).toHaveLength(1);
+  });
+});
+
+describe("OF-268 D5: Pi seats' compactions are counted from their own activity record", () => {
+  // Measured on a backup of the live database (2026-11-07 09:10Z): the Pi runner posts `agent.activity` rawEvent active / rawSubtype
+  // compaction (state running, runtime pi) for each compaction_start; 47 in 24 h for 4 seats, equal to the `compaction` records in the
+  // seats' Pi session files (10 + 15 + 21 for the three verify seats, 1 for build-arch). Pi seats post no SessionStart and no hook identity.
+  const pi = (f: F, seat: string, hoursAgo: number, over: { rawEvent?: string; rawSubtype?: string; runtime?: string } = {}) =>
+    f.activity({ seat, rawEvent: over.rawEvent ?? "active", rawSubtype: over.rawSubtype ?? "compaction", state: "running", hoursAgo, runtime: over.runtime ?? "pi" });
+  const seed = (f: F, seat: string, n: number, over?: Parameters<typeof pi>[3]) => { for (let i = 0; i < n; i++) pi(f, seat, 2, over); };
+  const fingerprints = (f: F) => f.records(createCompactionStormSource(f.deps())).map((r) => span(r).fingerprint);
+
+  it("a Pi seat with eight compactions in 24 h fires, and seven do not", () => {
+    const f = fixture();
+    seed(f, "verify-sec@eztrack", 8); seed(f, "verify-qa@eztrack", 7);
+    expect(fingerprints(f)).toEqual(["rsi.compaction-storm/seat:verify-sec@eztrack"]);
+  });
+
+  it("an OMP seat's compaction is counted the same way", () => {
+    const f = fixture();
+    seed(f, "omp-seat@r", 8, { runtime: "omp" });
+    expect(fingerprints(f)).toEqual(["rsi.compaction-storm/seat:omp-seat@r"]);
+  });
+
+  it("only a Pi runner's active/compaction counts: other Pi activity, other raw events and other runtimes do not", () => {
+    const f = fixture();
+    seed(f, "a@r", 7);
+    seed(f, "a@r", 5, { rawSubtype: "agent_start" });
+    seed(f, "a@r", 5, { rawSubtype: "auto_retry" });
+    seed(f, "a@r", 5, { rawEvent: "PreToolUse" });
+    seed(f, "a@r", 5, { runtime: "claude-code" });
+    expect(fingerprints(f)).toEqual([]);
+  });
+
+  it("a Pi compaction and a hook compact add up for one seat name", () => {
+    const f = fixture();
+    seed(f, "mixed@r", 4);
+    for (let i = 0; i < 4; i++) f.activity({ seat: "mixed@r", rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: 2 });
+    expect(fingerprints(f)).toEqual(["rsi.compaction-storm/seat:mixed@r"]);
+  });
+
+  it("splits every judged event over the closed list, the Pi compactions as their own class", () => {
+    const f = fixture();
+    seed(f, "verify-sec@eztrack", 9);
+    f.activity({ seat: "hook@r", rawEvent: "SessionStart", rawSubtype: "startup", hoursAgo: 2 });
+    f.activity({ seat: "hook@r", rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: 2 });
+
+    const [record] = f.records(createCompactionStormSource(f.deps()));
+
+    expect(span(record!)).toMatchObject({ count: 9, controlTotal: 1, population: 2 });
+    expect(record!.explanation).toContain("compact 1, pi-compaction 9, startup 1 = 11");
+    expect(record!.explanation).toContain("9 of 11 judged events");
+  });
+
+  it("the identity cross-check still compares hook SessionStarts only, with Pi compactions in the window", () => {
+    const f = fixture();
+    seed(f, "verify-sec@eztrack", 9);
+    for (let i = 0; i < 3; i++) f.activity({ seat: "hook@r", rawEvent: "SessionStart", rawSubtype: "startup", hoursAgo: 2 });
+    expect(() => createCompactionStormSource(f.deps()).read()).not.toThrow();  // 3 SessionStarts = 3 hook identities; the 9 Pi events are not SessionStarts
+  });
+
+  it("the cross-check is not bypassed: a hook SessionStart without its identity still makes the source unavailable, Pi compactions or not", () => {
+    const f = fixture();
+    seed(f, "verify-sec@eztrack", 9);
+    f.activity({ seat: "hook@r", rawEvent: "SessionStart", rawSubtype: "startup", hoursAgo: 2, identity: false });
+    expect(() => createCompactionStormSource(f.deps()).read()).toThrowError(/1 SessionStart activity events disagree with 0 hook agent.session_identity/);
+  });
+
+  it("says on the coverage row which runtimes it counts and how", () => {
+    const f = fixture();
+    const source = createCompactionStormSource(f.deps());
+    source.read();
+    expect((source.coverage()[0] as { note?: string }).note).toContain("Hook seats are counted from SessionStart/compact; pi and omp seats from their active/compaction activity");
+  });
+});
+
+describe("OF-268 D9: Pi seats cannot raise a permission-prompt signal, and the coverage says so", () => {
+  // Measured (backup of the live database, all time): the 13,964 agent.activity events of Pi seats are 13,774 running and 190 idle; none is
+  // needs_input. The Pi runner reports needs_input only for an open or leftover paste. So a quiet permission-stall read says nothing about them.
+  // The standing blind spot is a `notice` row, never `partial`: the health-finding wake carries a partial source's fingerprints forward and
+  // activates none of its new ones, so a partial row here would silence D9 for every seat.
+  const rows = (f: F, deps = f.deps()) => { const source = createPermissionStallSource(deps); source.read(); return source.coverage(); };
+  const noticeOf = (f: F) => rows(f).filter((r) => r.status === "notice") as Array<{ reason: string; partial: boolean; source: string }>;
+
+  it("names the live Pi seats (by session name) in a notice row beside the source's own row, and nothing is partial", () => {
+    const f = fixture();
+    f.seatNode({ seat: "verify-qa@eztrack", runtime: "pi" }); f.seatNode({ seat: "verify-sec@eztrack", runtime: "pi" }); f.seatNode({ seat: "build-impl@eztrack" });
+
+    const all = rows(f);
+
+    expect(all).toHaveLength(2);
+    expect(all[0]).toMatchObject({ source: "rsi-permission-stall", total: 0, partial: false });
+    expect(all[1]).toMatchObject({ source: "rsi-permission-stall", status: "notice", partial: false });
+    expect((all[1] as { reason: string }).reason).toContain("2 seat(s) on runtime pi or omp are not judged: the runner reports no permission prompts (verify-qa@eztrack, verify-sec@eztrack)");
+  });
+
+  it("the notice does not stop the wake's reading of the source: a firing seat is still served and no row is partial or unavailable", () => {
+    const f = fixture();
+    f.seatNode({ seat: "verify-qa@eztrack", runtime: "pi" });
+    for (let i = 0; i < 8; i++) f.activity({ seat: "build-impl@eztrack", rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 2, generation: `g-${i}` });
+    const source = createPermissionStallSource(f.deps());
+    const projection = new HealthProjectionService([source]);
+
+    expect(projection.records()).toHaveLength(1);
+    expect(projection.coverage().every((r) => r.partial === false && r.status !== "unavailable")).toBe(true);
+  });
+
+  it("an archived rig's Pi seat and a non-Pi seat are not named, and with no Pi seat there is no notice", () => {
+    const f = fixture();
+    f.seatNode({ seat: "old-pi@gone", runtime: "pi", rigName: "gone", archivedRig: true }); f.seatNode({ seat: "build-impl@eztrack" });
+
+    expect(rows(f)).toHaveLength(1);
+  });
+
+  it("names the seat by its latest session, not an older one", () => {
+    const f = fixture();
+    f.seatNode({ seat: "verify-qa@eztrack", runtime: "pi" });
+    f.db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES ('old', 'node-verify-qa@eztrack', 'verify-qa-OLD@eztrack', 'stopped', '2000-01-01 00:00:00')").run();
+
+    expect(noticeOf(f)[0]!.reason).toContain("(verify-qa@eztrack)");
+    expect(noticeOf(f)[0]!.reason).not.toContain("OLD");
+  });
+
+  it("bounds the names it lists and counts the rest", () => {
+    const f = fixture();
+    for (let i = 0; i < 23; i++) f.seatNode({ seat: `pi-${String(i).padStart(2, "0")}@r`, runtime: "pi" });
+
+    const reason = noticeOf(f)[0]!.reason;
+
+    expect(reason).toContain("23 seat(s) on runtime pi or omp");
+    expect(reason).toContain("pi-19@r, and 3 more)");
+    expect(reason).not.toContain("pi-20@r");
   });
 });

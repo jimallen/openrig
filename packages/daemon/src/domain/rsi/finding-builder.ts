@@ -134,6 +134,10 @@ export interface SourceResult {
   order: string;
   /** Served verbatim on the coverage row (daemon-authored text only). */
   note?: string;
+  /** What the source did not judge (seats it cannot see), served as `notice` coverage rows beside its own row. Never `partial`: the
+   *  health-finding wake carries a partial source's fingerprints forward and activates none of its new ones (health-finding-wake.ts,
+   *  invariant 2), so a standing blind spot marked partial would silence the detector for every seat. */
+  notices?: string[];
 }
 
 export interface RsiFindingSourceDeps {
@@ -175,7 +179,7 @@ export abstract class RsiFindingSource implements HealthObservationSource {
       source: this.name, evaluatedAt, unit: result.unit, limit, total: result.total, evaluated: result.findings.length,
       omitted: Math.max(0, result.total - result.findings.length), partial: result.total > result.findings.length,
       order: result.order, ...(result.note !== undefined ? { note: result.note } : {}),
-    }];
+    }, ...(result.notices ?? []).map((reason): HealthSourceCoverage => ({ source: this.name, evaluatedAt, status: "notice", partial: false, reason }))];
     return result.findings.map((finding) => buildTelemetryFinding(finding, evaluatedAt));
   }
 }
