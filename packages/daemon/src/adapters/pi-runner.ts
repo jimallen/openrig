@@ -1269,7 +1269,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // A refusal (a symlinked or unreadable models.json, a failed write) ends the launch with the reason on the pane: a seat
   // that runs with a window other than the one its spec states is the worse outcome.
   if (runtime === "pi" && args.modelOverrides !== undefined) {
-    const applied = applyPiModelOverrides({ agentDir: paths.agentDir, overrides: args.modelOverrides });
+    const applied = applyPiModelOverrides({ stateRoot: args.stateRoot, agentDir: paths.agentDir, overrides: args.modelOverrides });
     if (!applied.ok) {
       console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} launch: model_overrides: ${applied.error}`));
       const at = new Date().toISOString();

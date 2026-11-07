@@ -24,7 +24,7 @@ const read = () => JSON.parse(fs.readFileSync(models(), "utf8"));
 
 describe("merge without clobbering", () => {
   it("creates models.json holding only the override when the seat has none (mode 600)", () => {
-    const r = applyPiModelOverrides({ agentDir, overrides: LUNA });
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     expect(r).toEqual({ ok: true, wrote: true, changes: ["providers.openai-codex.modelOverrides.gpt-6-luna.contextWindow unset -> 820000"] });
     expect(read()).toEqual({ providers: { "openai-codex": { modelOverrides: { "gpt-6-luna": { contextWindow: 820000 } } } } });
     expect(fs.statSync(models()).mode & 0o777).toBe(0o600);
@@ -38,7 +38,7 @@ describe("merge without clobbering", () => {
         "openai-codex": { name: "n", modelOverrides: { "gpt-6-luna": { contextWindow: 128000, maxTokens: 9, name: "L" }, other: { contextWindow: 5 } } },
       },
     }));
-    const r = applyPiModelOverrides({ agentDir, overrides: LUNA });
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     expect(r).toEqual({ ok: true, wrote: true, changes: ["providers.openai-codex.modelOverrides.gpt-6-luna.contextWindow 128000 -> 820000"] });
     expect(read()).toEqual({
       $schema: "x", extra: { keep: [1, 2] },
@@ -51,15 +51,15 @@ describe("merge without clobbering", () => {
 
   it("adds a provider and a model beside existing ones", () => {
     put(JSON.stringify({ providers: { "openai-codex": { modelOverrides: { a: { contextWindow: 1 } } } } }));
-    applyPiModelOverrides({ agentDir, overrides: { "openai-codex": { b: { contextWindow: 2 } }, zed: { c: { contextWindow: 3 } } } });
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: { "openai-codex": { b: { contextWindow: 2 } }, zed: { c: { contextWindow: 3 } } } });
     expect(read()).toEqual({ providers: { "openai-codex": { modelOverrides: { a: { contextWindow: 1 }, b: { contextWindow: 2 } } }, zed: { modelOverrides: { c: { contextWindow: 3 } } } } });
   });
 
   it("is idempotent: a second launch with the same values reports no change and leaves the file byte-identical", () => {
-    applyPiModelOverrides({ agentDir, overrides: LUNA });
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     const before = fs.readFileSync(models());
     const mtime = fs.statSync(models()).mtimeMs;
-    const r = applyPiModelOverrides({ agentDir, overrides: LUNA });
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     expect(r).toEqual({ ok: true, wrote: false, changes: [] });
     expect(fs.readFileSync(models()).equals(before)).toBe(true);
     expect(fs.statSync(models()).mtimeMs).toBe(mtime);
@@ -68,11 +68,11 @@ describe("merge without clobbering", () => {
 
 describe("with no spec override the file is left exactly as it is", () => {
   it("absent overrides: no create, no rewrite, odd content and a loose mode untouched", () => {
-    expect(applyPiModelOverrides({ agentDir, overrides: undefined })).toEqual({ ok: true, wrote: false, changes: [] });
+    expect(applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: undefined })).toEqual({ ok: true, wrote: false, changes: [] });
     expect(fs.existsSync(models())).toBe(false);
     const odd = '// a comment\n{ "providers": {}, }\n';
     put(odd, 0o644);
-    applyPiModelOverrides({ agentDir, overrides: undefined });
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: undefined });
     expect(fs.readFileSync(models(), "utf8")).toBe(odd);
     expect(fs.statSync(models()).mode & 0o777).toBe(0o644);
   });
@@ -84,7 +84,7 @@ describe("never write through a symlink", () => {
     const body = '{"providers":{"brick":{"apiKey":"SECRET-DO-NOT-ECHO"}}}';
     fs.writeFileSync(real, body, { mode: 0o600 });
     fs.symlinkSync(real, models());
-    const r = applyPiModelOverrides({ agentDir, overrides: LUNA });
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     expect(r.ok).toBe(false);
     const error = (r as { error: string }).error;
     expect(error).toContain(models());
@@ -99,13 +99,13 @@ describe("never write through a symlink", () => {
   it("refuses a dangling symlink too (nothing is created at the target)", () => {
     const missing = nodePath.join(dir, "nowhere.json");
     fs.symlinkSync(missing, models());
-    expect(applyPiModelOverrides({ agentDir, overrides: LUNA }).ok).toBe(false);
+    expect(applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA }).ok).toBe(false);
     expect(fs.existsSync(missing)).toBe(false);
   });
 
   it("a symlink with no spec override is not an error (the launch is unchanged for build-arch)", () => {
     fs.symlinkSync(nodePath.join(dir, "x.json"), models());
-    expect(applyPiModelOverrides({ agentDir, overrides: undefined })).toEqual({ ok: true, wrote: false, changes: [] });
+    expect(applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: undefined })).toEqual({ ok: true, wrote: false, changes: [] });
   });
 });
 
@@ -121,7 +121,7 @@ describe("a file the runner will not rewrite", () => {
     ["a model entry that is not an object", '{"providers":{"openai-codex":{"modelOverrides":{"gpt-6-luna":3}}}}', /gpt-6-luna is not an object/],
   ])("refuses %s and leaves it byte-identical", (_n, text, message) => {
     put(text);
-    const r = applyPiModelOverrides({ agentDir, overrides: LUNA });
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     expect(r.ok).toBe(false);
     expect((r as { error: string }).error).toMatch(message);
     expect(fs.readFileSync(models(), "utf8")).toBe(text);
@@ -129,17 +129,17 @@ describe("a file the runner will not rewrite", () => {
 
   it("refuses a directory in its place and an oversized file", () => {
     fs.mkdirSync(models());
-    expect((applyPiModelOverrides({ agentDir, overrides: LUNA }) as { error: string }).error).toMatch(/not a regular file/);
+    expect((applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA }) as { error: string }).error).toMatch(/not a regular file/);
     fs.rmdirSync(models());
     put(`{"x":"${"a".repeat(1024 * 1024)}"}`);
-    expect((applyPiModelOverrides({ agentDir, overrides: LUNA }) as { error: string }).error).toMatch(/larger than/);
+    expect((applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA }) as { error: string }).error).toMatch(/larger than/);
   });
 });
 
 describe("the write is atomic, 0600, and verified", () => {
   it("replaces a loose-mode file with a 0600 one (the mode is the file's, not the old one)", () => {
     put('{"providers":{}}', 0o644);
-    applyPiModelOverrides({ agentDir, overrides: LUNA });
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     expect(fs.statSync(models()).mode & 0o777).toBe(0o600);
   });
 
@@ -150,7 +150,7 @@ describe("the write is atomic, 0600, and verified", () => {
       createExclusive: (p, d) => { calls.push(`create ${nodePath.dirname(p) === agentDir ? "same-dir" : "other-dir"} ${nodePath.basename(p)}`); realPiModelOverridesFs.createExclusive(p, d); },
       rename: (a, b) => { calls.push(`rename ${nodePath.dirname(a) === nodePath.dirname(b) ? "same-dir" : "cross-dir"} -> ${nodePath.basename(b)}`); realPiModelOverridesFs.rename(a, b); },
     };
-    applyPiModelOverrides({ agentDir, overrides: LUNA, fsOps: spy, tempSuffix: () => "t1" });
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA, fsOps: spy, tempSuffix: () => "t1" });
     expect(calls).toEqual(["create same-dir .models.json.t1.tmp", "rename same-dir -> models.json"]);
     expect(fs.readdirSync(agentDir)).toEqual(["models.json"]);
   });
@@ -159,7 +159,7 @@ describe("the write is atomic, 0600, and verified", () => {
     const old = '{"providers":{"keep":{}}}';
     put(old);
     const failing: PiModelOverridesFs = { ...realPiModelOverridesFs, rename: () => { throw Object.assign(new Error("x"), { code: "EXDEV" }); } };
-    const r = applyPiModelOverrides({ agentDir, overrides: LUNA, fsOps: failing, tempSuffix: () => "t2" });
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA, fsOps: failing, tempSuffix: () => "t2" });
     expect(r).toMatchObject({ ok: false });
     expect((r as { error: string }).error).toContain("the previous file is unchanged");
     expect(fs.readFileSync(models(), "utf8")).toBe(old);
@@ -168,16 +168,142 @@ describe("the write is atomic, 0600, and verified", () => {
 
   it("a mode other than 600 read back after the write is a refusal", () => {
     const loose: PiModelOverridesFs = { ...realPiModelOverridesFs, rename: (a, b) => { fs.chmodSync(a, 0o644); realPiModelOverridesFs.rename(a, b); } };
-    const r = applyPiModelOverrides({ agentDir, overrides: LUNA, fsOps: loose });
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA, fsOps: loose });
     expect((r as { error: string }).error).toMatch(/mode 644 after the write, not 600/);
   });
 
   it("never touches auth.json (an existing one is left byte-identical, and none is created)", () => {
-    applyPiModelOverrides({ agentDir, overrides: LUNA });
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
     expect(fs.existsSync(nodePath.join(agentDir, "auth.json"))).toBe(false);
     fs.writeFileSync(nodePath.join(agentDir, "auth.json"), "A", { mode: 0o600 });
-    applyPiModelOverrides({ agentDir, overrides: { "openai-codex": { "gpt-6-luna": { contextWindow: 900000 } } } });
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: { "openai-codex": { "gpt-6-luna": { contextWindow: 900000 } } } });
     expect(fs.readFileSync(nodePath.join(agentDir, "auth.json"), "utf8")).toBe("A");
+  });
+});
+
+describe("never write through a symlinked seat dir or agent dir (state root -> seat -> agent)", () => {
+  // layout: dir/state/<seat>/agent, with an OUTSIDE directory the links point at
+  let state: string; let outside: string;
+  beforeEach(() => { state = nodePath.join(dir, "state"); outside = nodePath.join(dir, "outside"); fs.mkdirSync(state); fs.mkdirSync(outside); });
+  const seatAgent = () => nodePath.join(state, "seat", "agent");
+
+  it("P1: an agent dir that is a symlink is refused, naming it; the outside models.json is byte-identical", () => {
+    fs.mkdirSync(nodePath.join(state, "seat"));
+    fs.writeFileSync(nodePath.join(outside, "models.json"), '{"keep":1}', { mode: 0o600 });
+    fs.symlinkSync(outside, seatAgent());
+    const r = applyPiModelOverrides({ stateRoot: state, agentDir: seatAgent(), overrides: LUNA });
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain(`${seatAgent()} is a symlink`);
+    expect(fs.readFileSync(nodePath.join(outside, "models.json"), "utf8")).toBe('{"keep":1}');
+    expect(fs.readdirSync(outside)).toEqual(["models.json"]);
+  });
+
+  it("P2: a seat dir that is a symlink is refused, naming it; nothing is created outside", () => {
+    fs.mkdirSync(nodePath.join(outside, "agent"));
+    fs.symlinkSync(outside, nodePath.join(state, "seat"));
+    const r = applyPiModelOverrides({ stateRoot: state, agentDir: seatAgent(), overrides: LUNA });
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain(`${nodePath.join(state, "seat")} is a symlink`);
+    expect(fs.readdirSync(nodePath.join(outside, "agent"))).toEqual([]);
+  });
+
+  it("an agent dir that is not a directory is refused", () => {
+    fs.mkdirSync(nodePath.join(state, "seat"));
+    fs.writeFileSync(seatAgent(), "x");
+    expect((applyPiModelOverrides({ stateRoot: state, agentDir: seatAgent(), overrides: LUNA }) as { error: string }).error).toMatch(/not a directory/);
+  });
+
+  it("an agent dir outside the state root is refused", () => {
+    expect((applyPiModelOverrides({ stateRoot: state, agentDir: outside, overrides: LUNA }) as { error: string }).error).toMatch(/not below the Pi state root/);
+  });
+
+  it("the realpath of the agent dir must be exactly the expected path (a resolver that disagrees refuses)", () => {
+    fs.mkdirSync(nodePath.join(state, "seat"));
+    fs.mkdirSync(seatAgent());
+    const lying: PiModelOverridesFs = { ...realPiModelOverridesFs, realpath: (p) => (p === seatAgent() ? outside : realPiModelOverridesFs.realpath(p)) };
+    const r = applyPiModelOverrides({ stateRoot: state, agentDir: seatAgent(), overrides: LUNA, fsOps: lying });
+    expect((r as { error: string }).error).toMatch(/resolves to .*not /);
+    expect(fs.readdirSync(seatAgent())).toEqual([]);
+  });
+
+  it("control: a symlinked STATE ROOT is allowed (only what lies below it is judged) and the file is written inside it", () => {
+    const link = nodePath.join(dir, "state-link");
+    fs.symlinkSync(state, link);
+    fs.mkdirSync(nodePath.join(state, "seat")); fs.mkdirSync(seatAgent());
+    const r = applyPiModelOverrides({ stateRoot: link, agentDir: nodePath.join(link, "seat", "agent"), overrides: LUNA });
+    expect(r).toMatchObject({ ok: true, wrote: true });
+    expect(fs.existsSync(nodePath.join(seatAgent(), "models.json"))).toBe(true);
+  });
+
+  it("main(): a symlinked SEAT dir ends the launch with exit 78 and writes nothing outside", async () => {
+    fs.mkdirSync(nodePath.join(outside, "agent"));
+    fs.symlinkSync(outside, nodePath.join(state, "verify-qa@t"));
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...a) => { errors.push(a.join(" ")); });
+    try {
+      await main(["--session-name", "verify-qa@t", "--state-root", state, "--cwd", dir, "--launch-id", "L7", "--approve", "--model-overrides", JSON.stringify(LUNA)]);
+      expect(process.exitCode).toBe(78);
+      expect(errors.join("\n")).toMatch(/model_overrides: .*verify-qa@t is a symlink/);
+      expect(fs.readdirSync(nodePath.join(outside, "agent"))).toEqual([]);
+    } finally { process.exitCode = undefined; vi.restoreAllMocks(); }
+  });
+
+  it("main(): a symlinked agent dir ends the launch with exit 78 and writes nothing outside", async () => {
+    fs.mkdirSync(nodePath.join(state, "verify-qa@t"), { recursive: true });
+    fs.writeFileSync(nodePath.join(outside, "models.json"), "{}", { mode: 0o600 });
+    fs.symlinkSync(outside, nodePath.join(state, "verify-qa@t", "agent"));
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...a) => { errors.push(a.join(" ")); });
+    try {
+      await main(["--session-name", "verify-qa@t", "--state-root", state, "--cwd", dir, "--launch-id", "L8", "--approve", "--model-overrides", JSON.stringify(LUNA)]);
+      expect(process.exitCode).toBe(78);
+      expect(errors.join("\n")).toMatch(/model_overrides: .*symlink/);
+      expect(fs.readFileSync(nodePath.join(outside, "models.json"), "utf8")).toBe("{}");
+    } finally { process.exitCode = undefined; vi.restoreAllMocks(); }
+  });
+});
+
+describe("the temp file is created exclusively, the directory is fsynced, and unsafe integers are not rewritten", () => {
+  it("a temp name planted as a symlink refuses: the victim is untouched, the planted entry stays, models.json is unchanged", () => {
+    const victim = nodePath.join(dir, "victim.txt");
+    fs.writeFileSync(victim, "VICTIM");
+    fs.symlinkSync(victim, nodePath.join(agentDir, ".models.json.fixed.tmp"));
+    const old = '{"providers":{}}';
+    put(old);
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA, tempSuffix: () => "fixed" });
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toMatch(/EEXIST/);
+    expect(fs.readFileSync(victim, "utf8")).toBe("VICTIM");
+    expect(fs.lstatSync(nodePath.join(agentDir, ".models.json.fixed.tmp")).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(models(), "utf8")).toBe(old);
+  });
+
+  it("the directory is fsynced AFTER the rename, and a failing directory fsync is reported", () => {
+    const calls: string[] = [];
+    const io: PiModelOverridesFs = {
+      ...realPiModelOverridesFs,
+      rename: (a, b) => { calls.push("rename"); realPiModelOverridesFs.rename(a, b); },
+      fsyncDir: (p) => { calls.push(`fsyncDir ${p === agentDir ? "agent" : "other"}`); },
+    };
+    applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA, fsOps: io });
+    expect(calls).toEqual(["rename", "fsyncDir agent"]);
+    const failing: PiModelOverridesFs = { ...realPiModelOverridesFs, fsyncDir: () => { throw Object.assign(new Error("x"), { code: "EIO" }); } };
+    put('{"providers":{}}');
+    expect((applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA, fsOps: failing }) as { error: string }).error).toMatch(/could not fsync its directory \(EIO\)/);
+  });
+
+  it("refuses to rewrite a file holding an integer beyond 2^53, says why, and leaves it byte-identical", () => {
+    const text = '{"providers":{"x":{"big":12345678901234567890}}}';
+    put(text);
+    const r = applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA });
+    expect((r as { error: string }).error).toMatch(/integer beyond 2\^53.*round/);
+    expect(fs.readFileSync(models(), "utf8")).toBe(text);
+  });
+
+  it("controls: 2^53-1, a negative safe integer, a float and a long digit string inside a string are all rewritten", () => {
+    put('{"a":9007199254740991,"b":-9007199254740991,"c":1.5e300,"d":"12345678901234567890"}');
+    expect(applyPiModelOverrides({ stateRoot: dir, agentDir, overrides: LUNA })).toMatchObject({ ok: true, wrote: true });
+    expect(read()).toMatchObject({ a: 9007199254740991, b: -9007199254740991, d: "12345678901234567890" });
   });
 });
 

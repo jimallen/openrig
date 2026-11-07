@@ -217,3 +217,28 @@ describe("OF-235 — the identity reconciler is wired to the delivery guard's li
     expect(count()).toBe(0);
   });
 });
+
+describe("OF-270 — a Pi seat's stored model_overrides reach BOTH launch adapters through the composed createDaemon", () => {
+  const OVERRIDES = { "openai-codex": { "gpt-6-luna": { contextWindow: 820000 } } };
+  const SESSION = "verify-qa@of270wire";
+
+  it("the launch adapter and the resume adapter each look up the seat's overrides by session name; a seat without them gets undefined", () => {
+    const rigRepo = new RigRepository(db);
+    const registry = new SessionRegistry(db);
+    const rig = rigRepo.createRig("of270wire");
+    const node = rigRepo.addNode(rig.id, "verify.qa", { runtime: "pi", modelOverrides: OVERRIDES });
+    registry.registerSession(node.id, SESSION);
+    const bare = rigRepo.addNode(rig.id, "verify.sec", { runtime: "pi" });
+    registry.registerSession(bare.id, "verify-sec@of270wire");
+
+    const launch = priv<(s: string) => unknown>(deps.runtimeAdapters!["pi"], "modelOverridesFor");
+    const resume = priv<(s: string) => unknown>(priv(priv(deps.restoreOrchestrator, "piResume"), "options"), "modelOverridesFor");
+    expect(launch, "PiRuntimeAdapter carries a lookup (startup hands it over)").toBeTypeOf("function");
+    expect(resume, "PiResumeAdapter carries a lookup (startup hands it over)").toBeTypeOf("function");
+    for (const [name, lookup] of [["launch adapter", launch], ["resume adapter", resume]] as const) {
+      expect(lookup(SESSION), `${name}: the stored overrides`).toEqual(OVERRIDES);
+      expect(lookup("verify-sec@of270wire"), `${name}: a seat without overrides`).toBeUndefined();
+      expect(lookup("nobody@of270wire"), `${name}: an unknown session`).toBeUndefined();
+    }
+  });
+});
