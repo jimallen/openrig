@@ -10,6 +10,7 @@ import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { ContextUsageStore } from "./context-usage-store.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
+import { deriveSeatPosture, refineSeatPosture, type SeatTerminalStatusReader } from "./seat-posture.js";
 import type { SeatActivityService } from "./seat-activity-service.js";
 import { deriveDisplayActivity } from "./activity-taxonomy.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -1350,6 +1351,8 @@ export async function attachAgentActivity(
      *  Falls back to `structuralActivity` when absent. */
     backgroundJobActivity?: { getStructuralActivity(sessionName: string): StructuralObservation | null };
     now?: Date;
+    /** OF-267 (B): a Pi seat's herdr-core terminal status, read only for a seat whose hooks left an open turn. */
+    seatTerminalStatus?: SeatTerminalStatusReader;
     // OPR.0.4.3 healthz-wedge amplification fix: cheap by default. The per-node
     // tmux `capturePaneContent` fallback (probeSessionActivity) is the storm that
     // amplifies fleet-scale under the CLI `rig ps --nodes` fan-out + the graph/nodes
@@ -1369,7 +1372,7 @@ export async function attachAgentActivity(
 ): Promise<NodeInventoryEntry[]> {
   const sampledAt = deps.now ?? new Date();
   const captureFallback = deps.captureFallback ?? false;
-  return Promise.all(entries.map(async (entry) => {
+  const attachOne = async (entry: NodeInventoryEntry): Promise<NodeInventoryEntry> => {
     // A cached hook, pane sample or motion cannot revive a confirmed absent
     // session. Preserve the identity observation's provenance without probing.
     if (identityVerdictConfirmsSessionMissing(entry.identityVerdict)) {
@@ -1587,5 +1590,17 @@ export async function attachAgentActivity(
       binding: deps.captureObserver ? deps.observationBinding?.(entry) : undefined,
     }))),
     };
+  };
+  // OF-267 — the posture reads the newest runtime hook itself (a second capture-free store read), never the arbitrated
+  // agentActivity above, which pane motion or a background job may have upgraded.
+  return Promise.all(entries.map(async (entry) => {
+    const attached = await attachOne(entry);
+    if (identityVerdictConfirmsSessionMissing(entry.identityVerdict)) return attached;
+    // A hook left behind by a seat that is no longer running (exited, detached) says nothing about busy.
+    if (entry.sessionStatus !== "running") return attached;
+    const hook = deps.activityStore?.getLatestForNode({ sessionName: entry.canonicalSessionName, now: sampledAt });
+    const runtime = entry.runtime ?? null;
+    const seatPosture = await refineSeatPosture(deriveSeatPosture(hook, runtime, sampledAt), runtime, entry.canonicalSessionName ?? "", deps.seatTerminalStatus, sampledAt);
+    return { ...attached, seatPosture };
   }));
 }

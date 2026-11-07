@@ -33,6 +33,7 @@ import { probePresence } from "./session-liveness.js";
 import { carriesDeliveryToken, deliveryKeyOf, deliveryTokenFor, withDeliveryToken } from "../adapters/hc-delivery-token.js";
 import type { DialogInput } from "../adapters/hc-dialog-input.js";
 import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
+import { deriveSeatPosture, refineSeatPosture, type SeatPosture, type SeatTerminalStatusReader } from "./seat-posture.js";
 import { findLatestSessionNameMatch, isNodeInArchivedRig } from "./latest-session-name-match.js";
 import { liveRigsNamedBy, rigHadSeat } from "./seat-messaging/seat-history.js";
 import type { EventBus } from "./event-bus.js";
@@ -1150,6 +1151,8 @@ export interface SendResult {
   /** Set on the submit-only (bare Enter) mode's success — no text was typed. */
   submitOnly?: boolean;
   activity?: AgentActivity;
+  /** OF-267 — on a pump hand-off ("Accepted, not yet received"): what the seat's newest runtime hook supports saying about busy or idle. */
+  seatPosture?: SeatPosture;
   waitedMs?: number;
   attempts?: number;
   sent?: boolean;
@@ -1201,6 +1204,8 @@ interface SessionTransportDeps {
   /** hc cutover: delivery to seats whose binding is `hc`. Absent = the tmux-shaped calls, as before the switch; tmux
    *  seats never use it. */
   hcDelivery?: HcSeatDelivery;
+  /** OF-267 (B): a Pi seat's herdr-core terminal status, to tell a silent tool call from a lost turn in the "not yet received" answer. */
+  seatTerminalStatus?: SeatTerminalStatusReader;
 }
 
 /** What the transport needs to write to an hc seat: HcDelivery. One call is paste and submit as one `terminal.send`,
@@ -1315,6 +1320,7 @@ export class SessionTransport {
   private listProcesses?: NativeProcessLister;
   private runnerSendReadiness?: SessionTransportDeps["runnerSendReadiness"];
   private hcDelivery?: HcSeatDelivery;
+  private seatTerminalStatus?: SeatTerminalStatusReader;
 
   constructor(deps: SessionTransportDeps) {
     this.db = deps.db;
@@ -1334,6 +1340,7 @@ export class SessionTransport {
     this.listProcesses = deps.listProcesses;
     this.runnerSendReadiness = deps.runnerSendReadiness;
     this.hcDelivery = deps.hcDelivery;
+    this.seatTerminalStatus = deps.seatTerminalStatus;
   }
 
   /** Freeze the registration and binding before asking tmux about this name. */
@@ -1714,11 +1721,16 @@ export class SessionTransport {
    * to the seat and nothing races it. `outcome: "retained"` is the existing word for "a durable row holds this, nothing was delivered",
    * which every consumer already reads correctly; `reason` says whose hands it is in.
    */
-  private handToPump(handOff: MessageHandOff, sessionName: string, text: string, opts?: SendOpts): SendResult {
-    const handed = (ids: string[]): SendResult => ({ ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
-      warning: "Accepted, not yet received: OpenRig carries it until the seat's gate records it." });
+  private async handToPump(handOff: MessageHandOff, sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
+    // Read after the row is committed: the seat's posture is best effort and must never delay or fail the commit.
+    const handed = async (ids: string[]): Promise<SendResult> => {
+      const seatPosture = await this.seatPostureFor(sessionName);
+      return { ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
+        warning: `Accepted, not yet received: OpenRig carries it until the seat's gate records it.${seatPosture ? ` (seat ${seatPosture.line})` : ""}`,
+        ...(seatPosture ? { seatPosture } : {}) };
+    };
     const claimed = opts?.committedOutboxIds?.length ? opts.committedOutboxIds : opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX) ? [opts.deliveryId] : null;
-    if (claimed) { handOff.adoptClaimed(claimed); return handed(claimed); }
+    if (claimed) { handOff.adoptClaimed(claimed); return await handed(claimed); }
     if (splitMarkedBlock(text).text.trim() === "") {
       return { ok: false, sessionName, sent: false, reason: "empty_message", error: "The message has no text once marker lines are set aside, so a gate could never pass it to the agent. Nothing was sent." };
     }
@@ -1734,7 +1746,26 @@ export class SessionTransport {
     }
     if (accepted.kind === "conflict") return { ok: false, sessionName, sent: false, reason: "delivery_identity_conflict", error: "Delivery ID names different content/identity." };
     if (accepted.kind === "ended") return { ok: accepted.received, sessionName, sent: false, verified: accepted.received, reason: "message_already_ended" };
-    return handed([accepted.id]);
+    return await handed([accepted.id]);
+  }
+
+  /** OF-267: why a sender may see "not yet received" for a seat that is only busy. Best effort: any failure leaves the answer as it was. */
+  /** Public so a startup-level test can ask the daemon's own transport what it would say (seat-posture-startup.real.test.ts). */
+  async seatPostureFor(sessionName: string): Promise<SeatPosture | undefined> {
+    const store = this.agentActivityStore;
+    if (!store) return undefined;
+    try {
+      const now = this.now();
+      const resolved = store.resolveSession({ sessionName });
+      // A seat that is not running left its hook behind; that says nothing about busy.
+      const status = resolved ? (this.db.prepare("SELECT status FROM sessions WHERE id = ?").get(resolved.sessionId) as { status: string } | undefined)?.status : undefined;
+      if (status !== "running") return undefined;
+      const runtime = resolved?.runtime ?? null;
+      const fromHooks = deriveSeatPosture(store.getLatestForNode({ sessionName, now }), runtime, now);
+      return await refineSeatPosture(fromHooks, runtime, sessionName, this.seatTerminalStatus, now);
+    } catch {
+      return undefined;
+    }
   }
 
   /** One attempt: the guards, the native inbox or the typing guard, then the write. */

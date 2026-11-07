@@ -38,6 +38,7 @@ import { SeatIdentityStore } from "../domain/seat-identity-store.js";
 import { parseSqliteUtcMs } from "../domain/sqlite-time.js";
 import { requestPdaRelease } from "../domain/pda-release.js";
 import { transportSenderSession } from "./require-sender-identity.js";
+import type { SeatTerminalStatusReader } from "../domain/seat-posture.js";
 import { registeredPaneOf } from "../domain/binding-pane.js";
 
 const generationCensus = new ProcessCensus({ freshnessMs: 0 }); // coalesce concurrent receipts; recheck each later read
@@ -57,6 +58,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     agentActivityStore: c.get("agentActivityStore" as never) as AgentActivityStore | undefined,
     seatActivityService: c.get("seatActivityService" as never) as SeatActivityService | undefined,
     seatStructuralActivityService: c.get("seatStructuralActivityService" as never) as SeatStructuralActivityService | undefined,
+    seatTerminalStatus: c.get("seatTerminalStatus" as never) as SeatTerminalStatusReader | undefined,
     rigLifecycleService: c.get("rigLifecycleService" as never) as RigLifecycleService | undefined,
     restoreOrchestrator: c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined,
   };
@@ -132,6 +134,7 @@ nodesRoutes.get("/", observeInventoryHandler, async (c) => {
     tmuxAdapter: deps.tmuxAdapter,
     activityStore: deps.agentActivityStore,
     structuralActivity: deps.seatStructuralActivityService,
+    seatTerminalStatus: deps.seatTerminalStatus,
     // ACTIVITY D1+D2 — the SAME SeatActivityService instance `attachTerminalActivityAndWork` reads
     // just below. One observation now feeds both the TERMINAL column and the ACTIVITY verdict.
     //
@@ -177,13 +180,14 @@ nodesRoutes.get("/:logicalId", async (c) => {
   if (!detail) return c.json({ error: `Node "${logicalId}" not found in rig "${rigId}". Check node IDs with: rig ps --nodes` }, 404);
   // Node DETAIL is a single node — the per-node tmux capture is cheap here, so
   // detail always runs the full fallback (freshest needs_input for the one seat).
-  const [detailWithActivity] = await attachAgentActivity([detail], { ...inventoryCaptureOptions(deps.rigRepo.db, deps.shadowCapture), tmuxAdapter: deps.tmuxAdapter, activityStore: deps.agentActivityStore, seatActivity: deps.seatActivityService, backgroundJobActivity: deps.seatStructuralActivityService, captureFallback: true });
+  const [detailWithActivity] = await attachAgentActivity([detail], { ...inventoryCaptureOptions(deps.rigRepo.db, deps.shadowCapture), tmuxAdapter: deps.tmuxAdapter, activityStore: deps.agentActivityStore, seatActivity: deps.seatActivityService, backgroundJobActivity: deps.seatStructuralActivityService, seatTerminalStatus: deps.seatTerminalStatus, captureFallback: true });
   const [detailWithTerminalAndWork] = attachTerminalActivityAndWork(detailWithActivity ? [detailWithActivity] : [detail], {
     db: deps.rigRepo.db,
     seatActivity: deps.seatActivityService,
   });
   Object.assign(detail, {
     agentActivity: detailWithTerminalAndWork?.agentActivity,
+    seatPosture: detailWithTerminalAndWork?.seatPosture,
     terminalActive: detailWithTerminalAndWork?.terminalActive,
     // ARCH RULING 3a947fb1: serve the raw lastActivityAt fact on node-detail too
     // (the list route serves the whole entry wholesale) — same per-seat surface.
