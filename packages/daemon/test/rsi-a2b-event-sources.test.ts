@@ -471,7 +471,7 @@ describe("OF-269 D9: a project rig's coordinator asks Jim itself and is not judg
   // These are REAL prompts (a denied one, no PostToolUse): without the exemption eight of them fire, so a quiet read is the exemption.
   const real = (f: F, seat: string, n = 8) => { for (let i = 0; i < n; i++) f.activity({ seat, rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 2, generation: `g-${seat}-${i}` }); };
   const read = (f: F) => { const source = createPermissionStallSource(f.deps()); const records = f.records(source); return { records, coverage: source.coverage()[0]! }; };
-  const note = (c: { note?: string } | undefined) => (c as { note?: string }).note ?? "";
+  const note = (c: unknown) => (c as { note?: string }).note ?? "";
 
   it("a seat whose node declares remote_control is not counted, and the same prompts on a plain seat fire", () => {
     const f = fixture();
@@ -646,7 +646,7 @@ describe("OF-268 D9: Pi seats cannot raise a permission-prompt signal, and the c
     const projection = new HealthProjectionService([source]);
 
     expect(projection.records()).toHaveLength(1);
-    expect(projection.coverage().every((r) => r.partial === false && r.status !== "unavailable")).toBe(true);
+    expect(projection.coverage().every((r) => r.partial === false && (r.status as string) !== "unavailable")).toBe(true);
   });
 
   it("an archived rig's Pi seat and a non-Pi seat are not named, and with no Pi seat there is no notice", () => {
