@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import {
   hasProcFs, identityOf, ownedDefaultSocket, ownedTmuxServer, procStartedAtMs, processAlive, reapWhenOwnerDies, sameProcess, startedWithin,
-  stopOwnedTmuxServer, stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, type ProcessIdentity, type TmuxStopOptions,
+  stopOwnedTmuxServer, stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, WATCHDOG, type ProcessIdentity, type TmuxStopOptions,
 } from "./helpers/orphan-reaper.js";
 import { spawnScenarioDaemon } from "./helpers/scenario-daemon.js";
 import { runScenarioFile, ScenarioTeardownError } from "./helpers/scenario-pipeline.js";
@@ -229,6 +229,47 @@ describe("reapWhenOwnerDies", () => {
     expect(await waitGone(victim, 30_000)).toBe(true);
     expect(processAlive(lookalike) && processAlive(bystander), "a longer value and an unmarked process are never touched").toBe(true);
   }, 60_000);
+});
+
+// OF-261. On macOS the watchdog finds a session's processes by reading `ps -axEwwo`, which prints every process's whole environment (6.6 MB for 2,147 processes
+// on the loaded Mac that showed the flake). The first version read that output with a shell `while read` loop, three times per watchdog: about 2.5 s of CPU per call
+// on an idle shell, many times that at nice 19 on a loaded host. The first TERM went out 7 to 9 s after the owner died (measured by instrumenting the watchdog: 10
+// runs, first TERM at 7.26 to 9.25 s), so the hc-scratch row's 15 s limit (a 1 s poll, the sweeps, the 3 s grace) had a few seconds of slack that a starved host used
+// up (about 3 failures in 30 runs, all three processes dying together at 15.93 s). Production consequence: a test run killed mid-way leaves its hc core and terminal
+// programs running for 10 s or more longer than the watchdog's 4 s design, and the row that proves the guard fails on a busy host.
+// The oracle is CPU time, not wall time: it does not move with load, so the row cannot flake on the host it guards. Entrypoint: hc-scratch.ts and hermetic-env.ts arm
+// the watchdog through reapWhenOwnerDies on every test that starts a core or a tmux server; this row runs the watchdog's own script (exported as WATCHDOG).
+describe.skipIf(hasProcFs())("the watchdog's environment sweep on macOS (ps -E) costs little CPU", () => {
+  it("12 MB of ps -E output is swept in under 3 s of CPU in total (three sweeps), and still finds the one holder and only it", async () => {
+    const dir = tempDir();
+    const entry = `OF261_FIXTURE=${process.pid}-${Date.now()}-${++counter}`;
+    const victim = longSleeper(), lookalike = longSleeper();
+    const filler = "X".repeat(3000);
+    const lines: string[] = [];
+    for (let i = 0; i < 4000; i++) lines.push(`${String(10_000_000 + i).padStart(9)} /usr/bin/fixture-proc --flag HOME=/Users/x PATH=/usr/bin A=${filler}`);
+    lines.push(`${String(victim).padStart(9)} /bin/sh -c sleep 600 HOME=/Users/x ${entry} TERM=xterm`);
+    lines.push(`${String(lookalike).padStart(9)} /bin/sh -c sleep 600 HOME=/Users/x ${entry}-other TERM=xterm`);
+    fs.writeFileSync(path.join(dir, "ps-e.txt"), lines.join("\n") + "\n");
+    fs.mkdirSync(path.join(dir, "bin"));
+    fs.writeFileSync(path.join(dir, "bin", "ps"), `#!/bin/sh\ncase "$*" in *-axEwwo*) exec cat "$FAKE_PS_E" ;; esac\nexec "$REAL_PS" "$@"\n`, { mode: 0o755 });
+    const realPs = execFileSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).trim();
+    const gone = spawn("true", [], { stdio: "ignore" });
+    await new Promise((resolve) => gone.once("exit", resolve));
+    expect(WATCHDOG.endsWith("kill -KILL 0\n"), "the script's last line is the group kill, replaced below by the CPU report").toBe(true);
+    const script = WATCHDOG.replace(/kill -KILL 0\n$/, "times >&2\n");
+    const watchdog = spawn("/bin/sh", ["-c", script, "reaper:of261", String(gone.pid), "env", entry],
+      { stdio: ["ignore", "ignore", "pipe"], env: { PATH: `${path.join(dir, "bin")}:${process.env.PATH}`, FAKE_PS_E: path.join(dir, "ps-e.txt"), REAL_PS: realPs } });
+    let err = "";
+    watchdog.stderr!.on("data", (d: Buffer) => { err += d.toString(); });
+    await new Promise((resolve) => watchdog.once("exit", resolve));
+    const cpu = (line: string) => [...line.matchAll(/(\d+)m([\d.]+)s/g)].reduce((sum, m) => sum + Number(m[1]) * 60 + Number(m[2]), 0);
+    const reports = err.trim().split("\n").filter((l) => /^\s*\d+m[\d.]+s\s+\d+m[\d.]+s\s*$/.test(l));
+    expect(reports.length, `the shell's own and its children's CPU (times), from: ${JSON.stringify(err.slice(-300))}`).toBe(2);
+    const children = cpu(reports[1]!);
+    expect(processAlive(victim), "positive control: the one process that names the entry was found and stopped").toBe(false);
+    expect(processAlive(lookalike), "a longer value is not the entry").toBe(true);
+    expect(children, "CPU seconds the watchdog's children used").toBeLessThan(3);
+  }, 120_000);
 });
 
 const stopVariants: Array<[string, (socket: string, env: NodeJS.ProcessEnv, options?: TmuxStopOptions) => Promise<void>]> = [

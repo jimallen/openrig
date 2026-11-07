@@ -126,7 +126,7 @@ export function listenerPids(port: number): number[] {
 // `kill-server` runs in the background: against a stopped (starved) server the client never returns, and a watchdog waiting
 // on it would never reach the targets after it. The last line ends the watchdog's own process group (it was spawned detached,
 // so the group holds only the watchdog and its children), which also ends any such client still waiting.
-const WATCHDOG = `owner=$1; shift
+export const WATCHDOG = `owner=$1; shift
 while kill -0 "$owner" 2>/dev/null; do sleep 1; done
 same() { [ "$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$2" ] && [ "$(ps -o command= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$3" ]; }
 holders() {
@@ -137,9 +137,9 @@ holders() {
       tr '\\0' '\\n' < "$e" 2>/dev/null | grep -qxF -- "$1" && echo "$p"
     done
   else
-    ps -axEwwo pid=,command= 2>/dev/null | while read -r p rest; do
-      [ "$p" = "$$" ] && continue
-      case " $rest " in *" $1 "*) ;; *) continue ;; esac
+    # awk picks the lines that name the entry; a shell read loop over this output (every process's whole environment, megabytes on a busy Mac) took seconds of CPU
+    # per call, three calls per watchdog, so the first TERM went out 7 to 9 s after the owner died (OF-261).
+    ps -axEwwo pid=,command= 2>/dev/null | awk -v self="$$" -v want=" $1 " '{ line = $0; sub(/^ *[0-9]+ +/, "", line); if ($1 != self && index(" " line " ", want) > 0) print $1 }' | while read -r p; do
       case " $(ps -o command= -p "$p" 2>/dev/null) " in *" $1 "*) continue ;; esac
       echo "$p"
     done
