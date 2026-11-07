@@ -340,6 +340,23 @@ const ROWS: Row[] = [
   { id: "TC5", deny: false, note: "OF-265 control: typed text with a substitution and no rig command", cmd: `tmux send-keys -t p 'cd $(pwd)' Enter` },
   { id: "TC6", deny: false, note: "OF-265 control: typed rig send fed by a quoted heredoc line", cmd: `tmux send-keys -t p "rig send s --file - <<'EOF'" Enter` },
 
+  // ---- OF-265 review F2: tmux is judged only for the subcommands that type or run text (measured: tmux 3.4 `list-commands`); every other subcommand is as at base
+  { id: "TS1", deny: true, kind: "substitution", note: "F2: run-shell runs the text", cmd: `tmux run-shell 'rig send s "$(id)"'` },
+  { id: "TS2", deny: true, kind: "substitution", note: "F2: new-window runs the text", cmd: `tmux new-window 'rig send s "$(id)"'` },
+  { id: "TS3", deny: true, kind: "substitution", note: "F2: split-window runs the text", cmd: `tmux split-window -h 'rig send s "$(id)"'` },
+  { id: "TS4", deny: true, kind: "substitution", note: "F2: new-session runs the text", cmd: `tmux new-session -d 'rig send s "$(id)"'` },
+  { id: "TS5", deny: true, kind: "substitution", note: "F2: respawn-pane runs the text", cmd: `tmux respawn-pane -k -t p 'rig send s "$(id)"'` },
+  { id: "TS6", deny: true, kind: "substitution", note: "F2: aliases (send, run, neww, splitw, new, respawnp)", cmd: `tmux send -t p 'rig send s "$(id)"' Enter; tmux run 'rig send s "$(id)"'` },
+  { id: "TS7", deny: true, kind: "substitution", note: "F2: tmux options before the subcommand (-L name, -S path, -f file)", cmd: `tmux -L w -S /tmp/s -f /dev/null send-keys -t p 'rig send s "$(id)"' Enter` },
+  { id: "TS8", deny: true, kind: "substitution", note: "F2: other subcommands that run a shell command (if-shell, pipe-pane, display-popup, respawn-window)", cmd: `tmux if-shell true 'rig send s "$(id)"'; tmux pipe-pane -t p 'rig send s "$(id)"'; tmux display-popup 'rig send s "$(id)"'; tmux respawn-window 'rig send s "$(id)"'` },
+  { id: "TSC1", deny: false, note: "F2: display-message only shows the text (as at base)", cmd: `tmux display-message "rig send done $(date)"` },
+  { id: "TSC2", deny: false, note: "F2: set-buffer stores the text", cmd: `tmux set-buffer 'rig send s "$(id)"'` },
+  { id: "TSC3", deny: false, note: "F2: set-option stores the text", cmd: `tmux set-option status-left 'rig send s "$(id)"'` },
+  { id: "TSC4", deny: false, note: "F2: a -L/-S value is not mistaken for the subcommand", cmd: `tmux -L send-keys display-message 'rig send s "$(id)"'` },
+  // ---- OF-265 review F6: pins that must bite
+  { id: "F6a", deny: true, kind: "substitution", note: "F6: script -qc whose script is not a bare rig command (only scriptCommand reads it)", cmd: `script -qc 'R=rig; $R send s "$(id)"' /dev/null` },
+  { id: "F6b", deny: true, kind: "substitution", note: "F6: ${R:-rig send} default holding the command AND the subcommand (the unknown-prefix rule cannot see it)", cmd: `\${R:-rig send} s "$(id)"` },
+
   // ---- parse failures: refuse only when the plain-text signal is there
   { id: "P1", deny: true, kind: "unparseable", note: "unterminated double quote around a rig send with a backtick", cmd: `rig send a@b "text ${T}x${T} still open` },
   { id: "P2", deny: true, kind: "unparseable", note: "truncated $(cat <<'EOF' wrapper", cmd: `rig send a@b "$(cat <<'EOF'\nreport that was cut off` },
@@ -491,6 +508,7 @@ describe("OF-251 differential: the verdict against what a real bash does (fake r
     { id: "d42", cmd: `script --command="rig send s \\@P@" /dev/null`, lands: true },
     { id: "d43", cmd: "script -c\"rig\\${IFS}send s \\@P@\" /dev/null", lands: true },
     { id: "d47", cmd: `S=bash; $S <<EOF\nrig send s 'a @P@'\nEOF`, lands: true },
+    { id: "d48", cmd: "${R:-rig send} s hi @P@", lands: true },
     { id: "d44", cmd: `R=rig; $R send s hi; echo @P@`, lands: false },
     { id: "d45", cmd: `R=echo; $R send s @P@`, lands: false },
     { id: "d46", cmd: `script -qc "rig send s '\\@P@'" /dev/null`, lands: false },

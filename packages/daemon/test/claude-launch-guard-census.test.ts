@@ -156,8 +156,12 @@ function usesLater(sf: ts.SourceFile, name: string): boolean {
 
 const SOURCES = walk(SRC);
 // pass 1: the EXPORTED constants that hold the binary anywhere in the tree (so one imported from another file is still known)
-let TREE_NAMES: Names = new Set();
-for (let round = 0; round < 3; round++) for (const f of SOURCES) TREE_NAMES = claudeNamesIn(fs.readFileSync(f, "utf8"), TREE_NAMES, true);
+function treeNamesFrom(texts: string[]): Names {
+  let names: Names = new Set();
+  for (let round = 0; round < 3; round++) for (const t of texts) names = claudeNamesIn(t, names, true);
+  return names;
+}
+const TREE_NAMES: Names = treeNamesFrom(SOURCES.map((f) => fs.readFileSync(f, "utf8")));
 const all = SOURCES.flatMap((f) => sitesIn(f, TREE_NAMES));
 const launchSites = all.filter((s) => !(s.file in NOT_A_LAUNCH));
 
@@ -264,6 +268,26 @@ describe("OF-250 census: every Claude launch command is built through operationa
       [`const parts = ["claude", ...operationalLaunchArgs(c, [])]; send(parts.join(" "));`, "join:true"],
     ];
     for (const [n, [src, want]] of E_CASES.entries()) it(`(e${n}) an array starting with the binary, joined or spawned later: ${src}`, () => { expect(kinds(src)).toEqual([want]); });
+    // F5: the receiver of spawn / execFile / spawnSync / fork / execa-style calls is not restricted; only .exec (a RegExp or a db handle too) is
+    const R_CASES = [`this.deps.spawn("claude", ["--resume", t]);`, `ctx.execFile("claude", args, cb);`, `deps.child.spawnSync("claude", args);`, `const CLAUDE = "claude"; this.runner.fork(CLAUDE, []);`, `cp.exec("claude");`];
+    for (const [n, src] of R_CASES.entries()) it(`(r${n}) any receiver on a spawner call: ${src}`, () => { expect(kinds(src)).toEqual(["spawn:false"]); });
+    it("(r5) .exec on a RegExp, a db handle or this is not a spawner, whatever it is given", () => {
+      expect(find(`const c = "claude"; RE.exec(c); db.exec(c); this.exec(c); /x/.exec(c);`)).toEqual([]);
+    });
+    // F6: the tree-wide pass, factored so it can be fed in-memory files (the real tree holds no exported claude constant)
+    it("(t0) an exported constant in one file is a name in another, in either file order, through an alias in a third", () => {
+      const a = `export const CLAUDE_BIN = "claude";`;
+      const b = `import { CLAUDE_BIN } from "./a"; export const ALIAS = CLAUDE_BIN;`;
+      const c = `import { ALIAS } from "./b"; spawn(ALIAS, ["--resume", t]);`;
+      for (const order of [[a, b, c], [c, b, a]]) {
+        const names = treeNamesFrom(order);
+        expect([...names].sort()).toEqual(["ALIAS", "CLAUDE_BIN"]);
+        expect(sitesInText("adapters/zz-c.ts", c, names).map((s) => s.kind)).toEqual(["spawn"]);
+      }
+    });
+    it("(t1) the tree pass takes exported constants only", () => {
+      expect([...treeNamesFrom([`const LOCAL = "claude"; export const OTHER = 1;`, `const o = { bin: "claude" };`])]).toEqual([]);
+    });
     it("(l) documented limit: a property read of a claude-holding object is not followed through a second name (the chain reaches every `x.runtime`, so it is not followed)", () => {
       expect(kinds(`const cfg = { bin: "claude" }; const b2 = cfg.bin; execFile(b2, args);`)).toEqual([]);
       expect(kinds(`const cfg = { bin: "claude" }; execFile(cfg.bin, args);`)).toEqual(["spawn:false"]);
