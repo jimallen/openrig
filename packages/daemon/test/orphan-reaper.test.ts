@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import {
   hasProcFs, identityOf, ownedDefaultSocket, ownedTmuxServer, procStartedAtMs, processAlive, reapWhenOwnerDies, sameProcess, startedWithin,
-  stopOwnedTmuxServer, stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, WATCHDOG, type ProcessIdentity, type TmuxStopOptions,
+  stopOwnedTmuxServer, stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, WATCHDOG, LSTART_TO_SECONDS_AWK, startToken, type ProcessIdentity, type TmuxStopOptions,
 } from "./helpers/orphan-reaper.js";
 import { spawnScenarioDaemon } from "./helpers/scenario-daemon.js";
 import { runScenarioFile, ScenarioTeardownError } from "./helpers/scenario-pipeline.js";
@@ -261,14 +261,15 @@ describe.skip("the watchdog's environment sweep on macOS (ps -E) costs little CP
     fs.mkdirSync(path.join(dir, "bin"));
     fs.writeFileSync(path.join(dir, "bin", "ps"), `#!/bin/sh\ncase "$*" in *-axEwwo*) exec cat "$FAKE_PS_E" ;; esac\nexec "$REAL_PS" "$@"\n`, { mode: 0o755 });
     const realPs = execFileSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).trim();
-    const gone = spawn("true", [], { stdio: "ignore" });
-    await new Promise((resolve) => gone.once("exit", resolve));
-    expect(WATCHDOG.endsWith("kill -KILL 0\n"), "the script's last line is the group kill, replaced below by the CPU report").toBe(true);
-    const script = WATCHDOG.replace(/kill -KILL 0\n$/, "times >&2\n");
-    const watchdog = spawn("/bin/sh", ["-c", script, "reaper:of261", String(gone.pid), "env", entry],
+    const owner = longSleeper();
+    const GROUP_KILL = /\[ "\$\(ps -o pgid= -p \$\$ 2>\/dev\/null \| tr -d ' '\)" = "\$\$" \] && kill -KILL 0\nexit 0\n$/;
+    expect(GROUP_KILL.test(WATCHDOG), "the script's last lines are the guarded group kill, replaced below by the CPU report").toBe(true);
+    const script = WATCHDOG.replace(GROUP_KILL, "times >&2\n");
+    const watchdog = spawn("/bin/sh", ["-c", script, "reaper:of261", String(owner), startToken(owner, "ps"), "ps", "1000", "", "env", entry],
       { stdio: ["ignore", "ignore", "pipe"], env: { PATH: `${path.join(dir, "bin")}:${process.env.PATH}`, FAKE_PS_E: path.join(dir, "ps-e.txt"), REAL_PS: realPs } });
     let err = "";
     watchdog.stderr!.on("data", (d: Buffer) => { err += d.toString(); });
+    process.kill(owner, "SIGKILL");
     await new Promise((resolve) => watchdog.once("exit", resolve));
     const cpu = (line: string) => [...line.matchAll(/(\d+)m([\d.]+)s/g)].reduce((sum, m) => sum + Number(m[1]) * 60 + Number(m[2]), 0);
     const reports = err.trim().split("\n").filter((l) => /^\s*\d+m[\d.]+s\s+\d+m[\d.]+s\s*$/.test(l));
@@ -813,4 +814,169 @@ esac
     expect(watchdogs.length, "the watchdog stays armed").toBeGreaterThan(0);
     expect(fs.existsSync(scaffold.root), "the scaffold was not deleted").toBe(true);
   }, 90_000);
+});
+
+// ---- OF-274: what the watchdog may signal is bounded ----------------------------------------------------------------------------------------------------------------------------
+// Incident, 2026-11-07 18:27 local: a mutant of the macOS env selector (`index(...) > 0` -> `>= 0`, always true) made the watchdog TERM and then KILL every process `ps -axE` listed, loginwindow
+// included, and ended the laptop's login session. Production consequence: a selector that widens, for any reason, must not be able to reach a process the test did not start. The watchdog now
+// refuses (a) any process that started before its owner, (b) pid 1 and the ancestors of itself and of the owner, and (c) a sweep that selects more than a cap, signalling none and writing one line
+// to stderr. Entrypoint: reapWhenOwnerDies, armed by hc-scratch.ts, hermetic-env.ts and scenario-daemon.ts on every test that starts a core, a tmux server or a daemon.
+// These rows run on Linux only (they use /proc and, for the macOS clock, `ps -o lstart=` under startSource "ps"); the macOS selector itself is covered only by the shared bound (argued, not measured).
+// They kill only processes they start. A MUTANT of the kill code must never be run against this file on a host: only inside a container with its own PID namespace (the rows print the process count).
+const nap = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** A plain `sleep 600` (no shell around it), detached, with `env` added; killed at cleanup. */
+function plainSleeper(env: Record<string, string> = {}): number {
+  const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore", env: { ...process.env, ...env } });
+  child.unref();
+  const pid = child.pid!;
+  cleanups.push(() => { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } });
+  return pid;
+}
+const fixtureEntry = () => `OF274_FIXTURE=${process.pid}-${Date.now()}-${++counter}`;
+const asEnv = (entry: string): Record<string, string> => ({ [entry.slice(0, entry.indexOf("="))]: entry.slice(entry.indexOf("=") + 1) });
+const pgidOf = (pid: number): number => Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim());
+/** Waits until the watchdog (the group leader `pid`) has ended: its last act is the group kill. */
+const watchdogEnded = (pid: number) => waitGone(pid, 40_000);
+
+describe("OF-274: the lstart parser the watchdog uses off Linux (pure awk, no process is touched)", () => {
+  const run = (line: string): string => execFileSync("awk", [LSTART_TO_SECONDS_AWK], { input: line + "\n", encoding: "utf8" }).trim();
+  const civil = (y: number, mo: number, d: number, h: number, mi: number, s: number) => String(Date.UTC(y, mo - 1, d, h, mi, s) / 1000);
+  it.each([
+    ["Sat Nov  7 18:27:03 2026", civil(2026, 11, 7, 18, 27, 3)],           // macOS pads a one-digit day with a second space
+    ["Sat Nov 14 18:27:03 2026", civil(2026, 11, 14, 18, 27, 3)],
+    ["Thu Feb 29 12:00:00 2024", civil(2024, 2, 29, 12, 0, 0)],            // a leap day
+    ["Mon Mar  1 00:00:00 2100", civil(2100, 3, 1, 0, 0, 0)],              // 2100 is not a leap year
+    ["Fri Dec 31 23:59:59 1999", civil(1999, 12, 31, 23, 59, 59)],
+    ["Thu Jan  1 00:00:00 1970", "0"],
+  ])("%s", (line, seconds) => { expect(run(line)).toBe(seconds); });
+  it("orders a later second after an earlier one, and the same second equal", () => {
+    expect(Number(run("Sat Nov  7 18:27:04 2026"))).toBe(Number(run("Sat Nov  7 18:27:03 2026")) + 1);
+    expect(run("Sat Nov  7 18:27:03 2026")).toBe(run("Sat Nov  7 18:27:03 2026"));
+  });
+  it.each([["a locale's month name", "sam. nov.  7 18:27:03 2026"], ["no year", "Sat Nov  7 18:27:03"], ["a bad time", "Sat Nov  7 18:27 2026"], ["junk", "not a date at all"], ["empty", ""]])(
+    "prints nothing for %s, so the watchdog refuses", (_name, line) => { expect(run(line)).toBe(""); });
+});
+
+describe.skipIf(!hasProcFs())("OF-274: the watchdog's bound", () => {
+  for (const source of ["proc", "ps"] as const) {
+    it(`(${source} clock) never signals a process that started before the owner, and does signal one that started after it, the same second included`, async () => {
+      const entry = fixtureEntry(), env = asEnv(entry);
+      const older = plainSleeper(env);
+      await nap(source === "ps" ? 1200 : 150);   // lstart has second granularity
+      const owner = plainSleeper();
+      const newer = plainSleeper(env);           // started right after the owner: the same second on the ps clock
+      const reaper = reapWhenOwnerDies({ ownerPid: owner, environ: [entry], startSource: source });
+      cleanups.push(() => reaper.disarm());
+      process.kill(owner, "SIGKILL");
+      expect(await waitGone(newer, 30_000), "the newer carrier of the entry is stopped").toBe(true);
+      expect(await watchdogEnded(reaper.pid), "the watchdog has finished its TERM and KILL sweeps").toBe(true);
+      expect(processAlive(older), "the carrier that predates the owner is never signalled").toBe(true);
+    }, 90_000);
+  }
+
+  it("never signals an ancestor of the owner, even one the clock allows (same second) and that carries the entry; its non-ancestor sibling is signalled", async () => {
+    while (Date.now() % 1000 > 150) await nap(20);   // start everything inside one second, so only the ancestor rule can protect the parent
+    const entry = fixtureEntry(), env = asEnv(entry);
+    const parent = spawn("/bin/sh", ["-c", "sleep 600 & echo $!; wait $!; while :; do sleep 1; done"], { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, ...env } });
+    cleanups.push(() => { try { process.kill(-parent.pid!, "SIGKILL"); } catch { /* gone */ } });
+    const owner = await new Promise<number>((resolve) => parent.stdout!.once("data", (d: Buffer) => resolve(Number(d.toString().trim()))));
+    const sibling = plainSleeper(env);
+    const reaper = reapWhenOwnerDies({ ownerPid: owner, environ: [entry], startSource: "ps" });
+    cleanups.push(() => reaper.disarm());
+    process.kill(owner, "SIGKILL");
+    expect(await waitGone(sibling, 30_000), "positive control: a same-second carrier that is no ancestor is stopped").toBe(true);
+    expect(await watchdogEnded(reaper.pid)).toBe(true);
+    expect(processAlive(parent.pid!), "the owner's parent, which carries the entry, is an ancestor and is never signalled").toBe(true);
+  }, 90_000);
+
+  it.skipIf(!fs.existsSync("/.dockerenv"))("never signals pid 1, even recorded by identity (container only: pid 1 is the container's own init)", async () => {
+    const owner = plainSleeper();
+    const init = identity(1);
+    const reaper = reapWhenOwnerDies({ ownerPid: owner, identities: [init] });
+    cleanups.push(() => reaper.disarm());
+    process.kill(owner, "SIGKILL");
+    expect(await watchdogEnded(reaper.pid)).toBe(true);
+    expect(processAlive(1) && sameProcess(init), "pid 1 is still the recorded process").toBe(true);
+  }, 90_000);
+
+  it("a sweep that selects more than the cap signals none and writes one line to stderr per sweep; at exactly the cap it signals all", async () => {
+    const run = async (cap: number) => {
+      const entry = fixtureEntry(), env = asEnv(entry);
+      const owner = plainSleeper();
+      const carriers = [1, 2, 3, 4].map(() => plainSleeper(env));
+      const errFile = path.join(tempDir(), "stderr");
+      const fd = fs.openSync(errFile, "w");
+      const reaper = reapWhenOwnerDies({ ownerPid: owner, environ: [entry], maxSelected: cap, stderrFd: fd });
+      cleanups.push(() => reaper.disarm());
+      process.kill(owner, "SIGKILL");
+      expect(await watchdogEnded(reaper.pid)).toBe(true);
+      fs.closeSync(fd);
+      return { alive: carriers.map(processAlive), lines: fs.readFileSync(errFile, "utf8").split("\n").filter(Boolean) };
+    };
+    const over = await run(3);
+    expect(over.alive, "four carriers, cap 3: none signalled").toEqual([true, true, true, true]);
+    expect(over.lines.length, "one line for the TERM sweep and one for the KILL sweep").toBe(2);
+    expect(over.lines[0]).toBe("reaper: 4 processes selected for TERM, more than the cap of 3; signalling none");
+    expect(over.lines[1]).toBe("reaper: 4 processes selected for KILL, more than the cap of 3; signalling none");
+    const exact = await run(4);
+    expect(exact.alive, "four carriers, cap 4: all signalled").toEqual([false, false, false, false]);
+    expect(exact.lines).toEqual([]);
+  }, 120_000);
+
+  it("a watchdog with the default cap stops the one carrier among 40 newer bystanders and leaves every bystander alone", async () => {
+    const entry = fixtureEntry();
+    const owner = plainSleeper();
+    const bystanders = Array.from({ length: 40 }, () => plainSleeper());
+    const carrier = plainSleeper(asEnv(entry));
+    const reaper = reapWhenOwnerDies({ ownerPid: owner, environ: [entry] });
+    cleanups.push(() => reaper.disarm());
+    console.log(`OF274 PIDNS processes visible: ${execFileSync("sh", ["-c", "ps -e | wc -l"], { encoding: "utf8" }).trim()}`);
+    process.kill(owner, "SIGKILL");
+    expect(await waitGone(carrier, 30_000), "the carrier is stopped").toBe(true);
+    expect(await watchdogEnded(reaper.pid)).toBe(true);
+    expect(bystanders.map(processAlive).every(Boolean), "none of the 40 bystanders, all newer than the owner, was signalled").toBe(true);
+  }, 90_000);
+
+  it("the watchdog is the leader of its own process group, which is not the test's", () => {
+    const owner = plainSleeper();
+    const reaper = reapWhenOwnerDies({ ownerPid: owner, identities: [] });
+    cleanups.push(() => reaper.disarm());
+    expect(pgidOf(reaper.pid)).toBe(reaper.pid);
+    expect(pgidOf(reaper.pid)).not.toBe(pgidOf(process.pid));
+  });
+
+  it("run as a member of someone else's group (not its leader), the watchdog ends without killing that group", async () => {
+    const owner = plainSleeper();
+    const outer = spawn("/bin/sh", ["-c", 'sleep 600 & echo $!; /bin/sh -c "$WD" reaper:g "$OWNER" "$TOK" proc 32 ""; echo done'],
+      { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, WD: WATCHDOG, OWNER: String(owner), TOK: startToken(owner, "proc") } });
+    cleanups.push(() => { try { process.kill(-outer.pid!, "SIGKILL"); } catch { /* gone */ } });
+    let out = "";
+    outer.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
+    await nap(500);
+    process.kill(owner, "SIGKILL");
+    for (let i = 0; i < 200 && !out.includes("done"); i++) await nap(100);
+    const canary = Number(out.split("\n")[0]);
+    expect(out, "the outer shell got past the watchdog").toContain("done");
+    expect(processAlive(canary), "the canary in the outer group survives the watchdog's last line").toBe(true);
+  }, 60_000);
+
+  it("is not armed when the owner's start time cannot be read", () => {
+    const gone = spawn("true", [], { stdio: "ignore" });
+    return new Promise<void>((resolve) => gone.once("exit", () => {
+      expect(() => reapWhenOwnerDies({ ownerPid: gone.pid!, environ: [fixtureEntry()] })).toThrow(/cannot read the start time of the owner/);
+      resolve();
+    }));
+  });
+
+  it("a watchdog given no usable owner start signals nothing", async () => {
+    const entry = fixtureEntry();
+    const owner = plainSleeper();
+    const carrier = plainSleeper(asEnv(entry));
+    const wd = spawn("/bin/sh", ["-c", WATCHDOG, "reaper:nokey", String(owner), "", "proc", "32", "", "env", entry], { detached: true, stdio: "ignore" });
+    wd.unref();
+    cleanups.push(() => { try { process.kill(-wd.pid!, "SIGKILL"); } catch { /* gone */ } });
+    process.kill(owner, "SIGKILL");
+    expect(await watchdogEnded(wd.pid!)).toBe(true);
+    expect(processAlive(carrier)).toBe(true);
+  }, 60_000);
 });
