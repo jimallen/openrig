@@ -31,6 +31,7 @@ import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
   PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER, piSidecarAlive, PI_SIDECAR_ALIVE_WINDOW_MS,
   type PiRunnerState, type RunnerRuntime,
+  type PiModelOverrides,
 } from "./pi-runner-protocol.js";
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
@@ -68,6 +69,8 @@ export interface PiRuntimeAdapterDeps {
   openRouterChargeEnabled?: () => boolean;
   /** The seat's extra environment names (spec `env_passthrough`), by session name; absent or [] = the baseline. */
   envPassthroughFor?: (sessionName: string) => string[];
+  /** OF-270: the seat's model overrides (spec `model_overrides`), by session name, read at each launch; absent or undefined = none. */
+  modelOverridesFor?: (sessionName: string) => PiModelOverrides | undefined;
   /** The clock `sendReadiness` judges the sidecar's alive tick against (tests inject; defaults to the wall clock). */
   now?: () => Date;
 }
@@ -85,6 +88,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   private usageFactsEnabled: () => boolean;
   private openRouterChargeEnabled: () => boolean;
   private envPassthroughFor: (sessionName: string) => string[];
+  private modelOverridesFor: (sessionName: string) => PiModelOverrides | undefined;
   private now: () => Date;
 
   constructor(deps: PiRuntimeAdapterDeps) {
@@ -92,6 +96,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     this.usageFactsEnabled = deps.usageFactsEnabled ?? (() => false);
     this.openRouterChargeEnabled = deps.openRouterChargeEnabled ?? (() => false);
     this.envPassthroughFor = deps.envPassthroughFor ?? (() => []);
+    this.modelOverridesFor = deps.modelOverridesFor ?? (() => undefined);
     this.tmux = deps.tmux;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
@@ -293,6 +298,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       usageFacts: this.runtime === "pi" && this.usageFactsEnabled(),
       openRouterCharge: this.runtime === "pi" && this.openRouterChargeEnabled(),
       envPassthrough: this.envPassthroughFor(sessionName),
+      modelOverrides: this.runtime === "pi" ? this.modelOverridesFor(sessionName) : undefined,
     });
 
     const command = this.runtime === "pi" && this.seatLaunchEnvironment

@@ -19,7 +19,7 @@ import type {
 } from "./types.js";
 import { PdaLaunchReservations, type PdaClaimPhase, type PdaLaunchReservation } from "./pda-launch-reservations.js";
 import { PDA_RESUME_TYPE, PDA_RUNTIME, parsePdaResumeToken, parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
-import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX } from "../adapters/pi-runner-protocol.js";
+import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX, normalizePiModelOverrides, piModelOverridesErrors, type PiModelOverrides } from "../adapters/pi-runner-protocol.js";
 
 /**
  * Free helper: returns the latest snapshot for a rig whose data carries non-null
@@ -131,6 +131,8 @@ interface NodeOptions {
   pda?: PdaBinding;
   /** A Pi seat's extra environment names (spec `env_passthrough`): persisted as nodes.env_passthrough. */
   envPassthrough?: string[];
+  /** A Pi seat's model overrides (spec `model_overrides`): persisted as nodes.model_overrides (JSON text). */
+  modelOverrides?: PiModelOverrides;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
@@ -607,6 +609,15 @@ export class RigRepository {
       this.db.prepare("UPDATE nodes SET env_passthrough = ? WHERE id = ?").run(JSON.stringify(opts.envPassthrough), id);
     }
 
+    if (opts?.modelOverrides !== undefined) {
+      // No silent skip, no silent repair: a seat whose overrides were not stored would launch with the window the
+      // model has by default, and a malformed value stored would be refused at every launch.
+      const normalized = normalizePiModelOverrides(opts.modelOverrides);
+      if (!normalized) throw new Error(`model_overrides is not valid: ${piModelOverridesErrors(opts.modelOverrides).join("; ")}`);
+      if (!this.hasNodeColumn("model_overrides")) throw new Error("nodes.model_overrides is missing (migration 126 has not run); the model_overrides cannot be stored");
+      this.db.prepare("UPDATE nodes SET model_overrides = ? WHERE id = ?").run(JSON.stringify(normalized), id);
+    }
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
@@ -818,6 +829,20 @@ export class RigRepository {
       .prepare("UPDATE nodes SET model = ? WHERE id = ?")
       .run(model, nodeId);
     return result.changes > 0;
+  }
+
+  /** A Pi seat's stored model overrides (spec `model_overrides`), or undefined when it has none. Unlike the env names this
+   *  FAILS LOUD: a stored value that is not valid throws, so the launch that asks refuses instead of starting a seat with
+   *  a window other than the one its spec stated. */
+  getNodeModelOverrides(nodeId: string): PiModelOverrides | undefined {
+    if (!this.hasNodeColumn("model_overrides")) return undefined;
+    const row = this.db.prepare("SELECT model_overrides AS v FROM nodes WHERE id = ?").get(nodeId) as { v: string | null } | undefined;
+    if (!row?.v) return undefined;
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.v); } catch { throw new Error(`nodes.model_overrides for node ${nodeId} is not JSON; repair the row or re-declare model_overrides`); }
+    const normalized = normalizePiModelOverrides(parsed);
+    if (!normalized) throw new Error(`nodes.model_overrides for node ${nodeId} is not valid (${piModelOverridesErrors(parsed).join("; ")}); repair the row or re-declare model_overrides`);
+    return normalized;
   }
 
   /** A Pi seat's extra environment names, as its launch passes them to the runner. Fails closed: a missing

@@ -36,10 +36,11 @@ import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSes
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
 import {
-  piSeatPaths, buildPiChildArgs, buildPiChildEnv, buildPendingRunnerState, parsePiRunnerState, piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX,
+  piSeatPaths, buildPiChildArgs, buildPiChildEnv, buildPendingRunnerState, parsePiRunnerState, piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX, piModelOverridesErrors, normalizePiModelOverrides, type PiModelOverrides,
   PI_RUNNER_READY_MARKER, PI_RUNNER_EXIT_MARKER, PI_RUNNER_ERROR_MARKER, PI_PROVIDER_ENV_VARS, PI_SIDECAR_TICK_MS, PI_SIDECAR_CHECK_MS,
   type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
+import { applyPiModelOverrides } from "./pi-model-overrides.js";
 
 // ── Submitted input boundaries ─────────────────────────────────────────────
 // pda L0: the editor and the activity endpoint lookup live in runner-pane-io.ts, shared with other
@@ -951,6 +952,8 @@ interface RunnerArgs {
   openRouterCharge?: boolean;
   /** The seat's extra environment names for the pi child (spec `env_passthrough`). */
   envPassthrough?: string[];
+  /** OF-270: Pi only. The seat's model overrides (spec `model_overrides`), merged into its models.json at launch. */
+  modelOverrides?: PiModelOverrides;
 }
 
 /** OF-87: the pane editor for the Pi and OMP runners. A Ctrl-C byte inside a bracketed paste is pasted text, so one
@@ -1040,6 +1043,14 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
         args.envPassthrough = names;
         break;
       }
+      case "--model-overrides": {
+        let parsed: unknown;
+        try { parsed = JSON.parse(next()); } catch { throw new Error("--model-overrides is not JSON"); }
+        const errors = piModelOverridesErrors(parsed);
+        if (errors.length > 0) throw new Error(`--model-overrides: ${errors.join("; ")}`);
+        args.modelOverrides = normalizePiModelOverrides(parsed)!;
+        break;
+      }
       case "--approve": args.trust = "approve"; break;
       case "--no-approve": args.trust = "no-approve"; break;
       case "--approval-mode": {
@@ -1055,6 +1066,7 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
   if (!args.stateRoot) throw new Error("--state-root is required");
   if (!args.cwd) throw new Error("--cwd is required");
   if (!args.launchId) throw new Error("--launch-id is required (launch-attempt scoping)");
+  if (args.runtime === "omp" && args.modelOverrides !== undefined) throw new Error("--model-overrides is for Pi seats only");
   if (args.runtime === "omp") {
     if (!argv.includes("--approval-mode") || argv.some((flag) => flag === "--approve" || flag === "--no-approve")) {
       throw new Error("OMP requires --approval-mode yolo or always-ask, not Pi trust flags");
@@ -1252,6 +1264,24 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     } catch { /* the pane ERROR marker still fails readiness */ }
     process.exitCode = 127;
     return;
+  }
+  // OF-270: the seat's spec model overrides, merged into its own models.json before pi (and the credential notice) reads it.
+  // A refusal (a symlinked or unreadable models.json, a failed write) ends the launch with the reason on the pane: a seat
+  // that runs with a window other than the one its spec states is the worse outcome.
+  if (runtime === "pi" && args.modelOverrides !== undefined) {
+    const applied = applyPiModelOverrides({ stateRoot: args.stateRoot, agentDir: paths.agentDir, overrides: args.modelOverrides });
+    if (!applied.ok) {
+      console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} launch: model_overrides: ${applied.error}`));
+      const at = new Date().toISOString();
+      try {
+        const pending = parsePiRunnerState(fs.readFileSync(paths.runnerStatePath, "utf8"));
+        const exitedState: PiRunnerState = { ready: false, launchId: args.launchId, lastEntryId: pending?.lastEntryId, updatedAt: at, exited: { code: 78, at } };
+        fs.writeFileSync(paths.runnerStatePath, JSON.stringify(exitedState));
+      } catch { /* the pane ERROR marker still fails readiness */ }
+      process.exitCode = 78;
+      return;
+    }
+    for (const change of applied.changes) console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: model override from the spec changed ${change}`));
   }
   const childArgs = buildPiChildArgs({
     sessionsDir: paths.sessionsDir,

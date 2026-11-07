@@ -195,6 +195,32 @@ describe("explicit first-start retry after projection failure", () => {
     });
   });
 
+  describe("model_overrides", () => {
+    const wins = (w: number) => ({ "openai-codex": { "gpt-6-luna": { contextWindow: w } } });
+
+    it("a retry that states the same overrides relaunches", async () => {
+      const f = await failedAdd({ model_overrides: wins(820000) });
+      const res = await f.request({ ...member, model_overrides: wins(820000) });
+      const body = await res.json();
+      expect({ status: res.status, body }, JSON.stringify(body)).toMatchObject({ status: 201, body: { ok: true, status: "launched" } });
+      expect(f.rigRepo.getNodeModelOverrides(f.node.id)).toEqual(wins(820000));
+    });
+
+    it.each([
+      ["drops them", { ...member }, { model_overrides: wins(820000) }],
+      ["adds them", { ...member, model_overrides: wins(820000) }, {}],
+      ["changes them", { ...member, model_overrides: wins(900000) }, { model_overrides: wins(820000) }],
+    ])("refuses a retry member that %s, without projection or launch", async (_label, retryMember, seatOverrides) => {
+      const f = await failedAdd(seatOverrides);
+      const changes = f.db.prepare("SELECT total_changes() AS n").get();
+      const res = await f.request(retryMember);
+      expect({ status: res.status, body: await res.json() }).toMatchObject({ status: 409, body: { message: expect.stringContaining("disagrees wi") } });
+      expect(f.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
+      expect(f.adapter.launchHarness).not.toHaveBeenCalled();
+      expect(f.adapter.project).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // pda: the binding is the seat's identity on the pda server. A retry runs through the pi fixture here (runtime pda
   // cannot pass preflight until L2a), so the retained seat is a pi seat that has a binding written on it: the
   // member the operator re-supplies has none, which is a different seat. The agent/base URL comparison itself is

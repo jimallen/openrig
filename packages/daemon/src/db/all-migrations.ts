@@ -125,6 +125,7 @@ import { nodeEnvPassthroughSchema } from "./migrations/120_node_env_passthrough.
 import { seatMessageStateSchema } from "./migrations/123_seat_message_state.js";
 import { seatMessageGroupSchema } from "./migrations/124_seat_message_group.js";
 import { occupantConversationSchema } from "./migrations/125_occupant_conversation.js";
+import { nodeModelOverridesSchema } from "./migrations/126_node_model_overrides.js";
 import { bindingTerminalAddressSchema } from "./migrations/121_binding_terminal_address.js";
 import { seatMessageSchema } from "./migrations/122_seat_message.js";
 
@@ -262,4 +263,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   seatMessageStateSchema,
   seatMessageGroupSchema,
   occupantConversationSchema,
+  nodeModelOverridesSchema,
 ];

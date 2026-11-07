@@ -167,6 +167,8 @@ export class RigExpansionService {
             // env_passthrough: PRESENCE-preserving RAW carry like pda -- a present-invalid list reaches the canonical
             // validator and rejects there; only an absent key is omitted.
             ...("envPassthrough" in member && member.envPassthrough !== undefined ? { env_passthrough: member.envPassthrough } : {}),
+            // model_overrides (OF-270): PRESENCE-preserving RAW carry like env_passthrough; the canonical validator owns the checks.
+            ...("modelOverrides" in member && member.modelOverrides !== undefined ? { model_overrides: member.modelOverrides } : {}),
             ...(member.cwd ? { cwd: member.cwd } : {}),
             ...(member.model ? { model: member.model } : {}),
             ...(member.effort ? { effort: member.effort } : {}),

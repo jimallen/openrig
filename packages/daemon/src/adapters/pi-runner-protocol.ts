@@ -255,6 +255,70 @@ export function piEnvPassthroughRefusal(name: string): string | null {
   return null;
 }
 
+/** OF-270: a Pi seat's model overrides (spec member `model_overrides`), the shape of Pi's own models.json
+ *  `providers.<provider>.modelOverrides.<model>`: `{ <provider>: { <model>: { contextWindow: <tokens> } } }`. The runner
+ *  merges them into the seat's agent-dir models.json at every launch. Only `contextWindow` is accepted today; a
+ *  further Pi field is one more entry in PI_MODEL_OVERRIDE_FIELDS and its check below, never a pass-through. */
+export type PiModelOverrides = Record<string, Record<string, { contextWindow: number }>>;
+export const PI_MODEL_OVERRIDE_FIELDS: readonly string[] = ["contextWindow"];
+export const PI_MODEL_OVERRIDES_MAX_PROVIDERS = 16;
+export const PI_MODEL_OVERRIDES_MAX_MODELS = 32;
+export const PI_MODEL_OVERRIDE_MAX_CONTEXT_WINDOW = 100_000_000;
+const PI_MODEL_OVERRIDE_UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const piOwn = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+const isPlainRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function piModelOverrideKeyRefusal(key: string): string | null {
+  if (key.length === 0 || key.length > 128) return "must be 1 to 128 characters";
+  if (/[\u0000-\u001f\u007f]/.test(key) || key !== key.trim()) return "must not hold control characters or leading or trailing spaces";
+  if (PI_MODEL_OVERRIDE_UNSAFE_KEYS.has(key)) return "is not allowed as a name";
+  return null;
+}
+
+/** Every reason `value` is not a valid `model_overrides` (empty = valid). Paths are relative; the caller prefixes them. */
+export function piModelOverridesErrors(value: unknown): string[] {
+  const errors: string[] = [];
+  if (!isPlainRecord(value) || Object.keys(value).length === 0) return ["must be a non-empty mapping of provider -> model -> { contextWindow }"];
+  const providers = Object.keys(value);
+  if (providers.length > PI_MODEL_OVERRIDES_MAX_PROVIDERS) errors.push(`at most ${PI_MODEL_OVERRIDES_MAX_PROVIDERS} providers`);
+  for (const provider of providers) {
+    const providerRefusal = piModelOverrideKeyRefusal(provider);
+    if (providerRefusal) { errors.push(`provider name ${JSON.stringify(provider)} ${providerRefusal}`); continue; }
+    const models = value[provider];
+    if (!isPlainRecord(models) || Object.keys(models).length === 0) { errors.push(`${provider}: must be a non-empty mapping of model -> { contextWindow }`); continue; }
+    if (Object.keys(models).length > PI_MODEL_OVERRIDES_MAX_MODELS) errors.push(`${provider}: at most ${PI_MODEL_OVERRIDES_MAX_MODELS} models`);
+    for (const model of Object.keys(models)) {
+      const modelRefusal = piModelOverrideKeyRefusal(model);
+      if (modelRefusal) { errors.push(`${provider}: model name ${JSON.stringify(model)} ${modelRefusal}`); continue; }
+      const entry = models[model];
+      const at = `${provider}.${model}`;
+      if (!isPlainRecord(entry) || Object.keys(entry).length === 0) { errors.push(`${at}: must be a mapping holding contextWindow`); continue; }
+      for (const field of Object.keys(entry)) {
+        if (!PI_MODEL_OVERRIDE_FIELDS.includes(field)) errors.push(`${at}: unknown key ${JSON.stringify(field)} (only ${PI_MODEL_OVERRIDE_FIELDS.join(", ")} is accepted)`);
+      }
+      if (piOwn(entry, "contextWindow")) {
+        const w = entry["contextWindow"];
+        if (typeof w !== "number" || !Number.isSafeInteger(w) || w <= 0) errors.push(`${at}.contextWindow: must be a positive integer (tokens)`);
+        else if (w > PI_MODEL_OVERRIDE_MAX_CONTEXT_WINDOW) errors.push(`${at}.contextWindow: at most ${PI_MODEL_OVERRIDE_MAX_CONTEXT_WINDOW}`);
+      }
+    }
+  }
+  return errors;
+}
+
+/** A validated copy in a stable key order (so the persisted text and the runner flag are canonical), or null if invalid. */
+export function normalizePiModelOverrides(value: unknown): PiModelOverrides | null {
+  if (piModelOverridesErrors(value).length > 0) return null;
+  const input = value as Record<string, Record<string, { contextWindow: number }>>;
+  const out: PiModelOverrides = {};
+  for (const provider of Object.keys(input).sort()) {
+    const models: Record<string, { contextWindow: number }> = {};
+    for (const model of Object.keys(input[provider]!).sort()) models[model] = { contextWindow: input[provider]![model]!.contextWindow };
+    out[provider] = models;
+  }
+  return out;
+}
+
 /** Model declaration: Pi accepts `--model provider/id`. The provider segment
  *  (before the first "/") selects the env passthrough var, if any. */
 export function providerFromModel(model: string | undefined): string | null {
@@ -336,6 +400,8 @@ export interface PiRunnerLaunchOpts {
   openRouterCharge?: boolean;
   /** The seat's extra environment names (spec `env_passthrough`); names only, refused names dropped. */
   envPassthrough?: readonly string[];
+  /** OF-270: Pi only. The seat's model overrides (spec `model_overrides`); the runner merges them into the seat's models.json. */
+  modelOverrides?: PiModelOverrides;
   /** Session file path or id to fork from via CLI --fork (FR-6). */
   forkRef?: string;
   /** Launch-attempt scope stamped into every runner sidecar write. */
@@ -371,6 +437,8 @@ export function buildPiRunnerCommand(opts: PiRunnerLaunchOpts): string {
   }
   const extra = [...new Set(opts.envPassthrough ?? [])].filter((name) => piEnvPassthroughRefusal(name) === null);
   if (extra.length > 0) parts.push("--env-pass", shellQuote(extra.join(",")));
+  const overrides = opts.runtime === "omp" || opts.modelOverrides === undefined ? null : normalizePiModelOverrides(opts.modelOverrides);
+  if (overrides) parts.push("--model-overrides", shellQuote(JSON.stringify(overrides)));
   return parts.join(" ");
 }
 

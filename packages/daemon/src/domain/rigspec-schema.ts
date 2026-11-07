@@ -1,4 +1,4 @@
-import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX } from "../adapters/pi-runner-protocol.js";
+import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX, piModelOverridesErrors, normalizePiModelOverrides } from "../adapters/pi-runner-protocol.js";
 import type {
   LegacyRigSpec,
   LegacyRigSpecNode,
@@ -55,7 +55,7 @@ const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startu
 export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
-  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough",
+  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough", "model_overrides",
 ]);
 
 /** Member keys a pda seat cannot take: OpenRig delivers no startup content to a pda agent (D4), and the model,
@@ -533,6 +533,16 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
         else if (seen.has(name)) errors.push(`${prefix}.env_passthrough: ${name} is listed twice`);
         seen.add(name);
       }
+    }
+  }
+  // OF-270: a Pi seat's model overrides, merged by its runner into the seat's own models.json at every launch. Pi only (the
+  // OMP runner has no such file semantics here, and a declaration that does nothing is refused like env_passthrough's);
+  // a positive integer contextWindow per provider and model, no other key; a malformed block is refused, never partly applied.
+  if (member["model_overrides"] !== undefined) {
+    if (member["runtime"] !== "pi") {
+      errors.push(`${prefix}.model_overrides: only valid when runtime is "pi"`);
+    } else {
+      for (const problem of piModelOverridesErrors(member["model_overrides"])) errors.push(`${prefix}.model_overrides: ${problem}`);
     }
   }
   // Claude Code Remote Control: `remote_control: true` makes every claude launch of this seat carry
@@ -1261,6 +1271,7 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     remoteControl: m["remote_control"] === true ? true : undefined,
     pda: normalizePdaBinding(m["pda"]),
     envPassthrough: Array.isArray(m["env_passthrough"]) ? (m["env_passthrough"] as string[]) : undefined,
+    modelOverrides: normalizePiModelOverrides(m["model_overrides"]) ?? undefined,
     role: m["role"] as string | undefined,
     permissionPolicy: m["permission_policy"] as string | undefined,
     cwd: m["cwd"] as string,
