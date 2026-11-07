@@ -703,10 +703,11 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       // freshest signal is agentActivity.sampledAt, then startupCompletedAt,
       // else null (documented FR-4 fallback — not a fabricated timestamp).
       lastActivity: n.agentActivity?.sampledAt ?? n.startupCompletedAt ?? null,
-      // OF-267 — null (not absent) when the daemon predates the field.
-      seatPosture: n.seatPosture ?? null,
     };
     if (n.intentionallyStopped !== undefined) compact.intentionallyStopped = n.intentionallyStopped;
+    // OF-267 — only where it explains a silent seat (busy, or an open turn the hooks cannot confirm): the compact projection is held to
+    // a token budget (ps-compact.test.ts) and idle / unknown postures are what agentActivity already says. --full and --fields carry it whole.
+    if (postureNote(n)) compact.seatPosture = n.seatPosture;
     // held/attention reason (short) when present.
     if (n.heldReason) compact.heldReason = n.heldReason;
     if (attention && n.latestError) {

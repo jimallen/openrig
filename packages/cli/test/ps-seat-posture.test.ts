@@ -37,6 +37,7 @@ async function capture(fn: () => Promise<void>): Promise<string[]> {
 const POSTURE = {
   busy: { kind: "busy", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "busy: last tool started 16:04Z (bash)" },
   open: { kind: "unknown-open-turn", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "unknown: last hook PreToolUse bash 16:04Z (66 min ago), no Stop since" },
+  hc: { kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.000Z", tool: null, line: "busy: working since 16:04Z (hc status)" },
   idle: { kind: "idle", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: null, line: "idle: last hook Stop 16:04Z" },
 };
 
@@ -57,6 +58,7 @@ function piNode(logicalId: string, state: string, seatPosture?: unknown) {
 const NODES = [
   piNode("lab.busy", "running", POSTURE.busy),
   piNode("lab.open", "unknown", POSTURE.open),
+  piNode("lab.hc", "unknown", POSTURE.hc),
   piNode("lab.idle", "idle", POSTURE.idle),
   piNode("lab.old", "unknown"),
 ];
@@ -73,7 +75,7 @@ describe("OF-267: rig ps reports what a seat's hooks support about busy", () => 
       res.writeHead(200, { "Content-Type": "application/json" });
       if (req.url?.match(/^\/api\/rigs\/rig-p\/nodes/)) res.end(JSON.stringify(NODES));
       else if (req.url === "/api/ps") {
-        res.end(JSON.stringify([{ rigId: "rig-p", name: "pi-rig", rigName: "pi-rig", nodeCount: 4, runningCount: 4, status: "running", lifecycleState: "running", uptime: "1h", latestSnapshot: null }]));
+        res.end(JSON.stringify([{ rigId: "rig-p", name: "pi-rig", rigName: "pi-rig", nodeCount: 5, runningCount: 5, status: "running", lifecycleState: "running", uptime: "1h", latestSnapshot: null }]));
       } else res.end("[]");
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -106,6 +108,7 @@ describe("OF-267: rig ps reports what a seat's hooks support about busy", () => 
     const lines = await capture(async () => { await cmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]); });
     expect(line(lines, "lab-busy@pi-rig"), lines.join("\n")).toContain(POSTURE.busy.line);
     expect(line(lines, "lab-open@pi-rig")).toContain(POSTURE.open.line);
+    expect(line(lines, "lab-hc@pi-rig")).toContain(POSTURE.hc.line); // busy from the core's status, named as such
     expect(line(lines, "lab-idle@pi-rig")).toBeDefined();
     expect(line(lines, "lab-idle@pi-rig")).not.toContain("idle: last hook");
     expect(line(lines, "lab-old@pi-rig")).not.toMatch(/busy|last hook/);
@@ -123,12 +126,22 @@ describe("OF-267: rig ps reports what a seat's hooks support about busy", () => 
     expect(line(lines, "lab-idle@pi-rig")).not.toContain("idle: last hook");
   });
 
-  it("--json carries seatPosture whole, and null for a daemon that does not serve it", async () => {
+  it("--json (compact) carries seatPosture whole for a busy or open-turn seat and leaves the key off every other row (token budget)", async () => {
     const lines = await capture(async () => { await cmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json"]); });
-    const nodes = JSON.parse(lines.join("")) as Array<{ canonicalSessionName: string; seatPosture: unknown }>;
+    const nodes = JSON.parse(lines.join("")) as Array<{ canonicalSessionName: string; seatPosture?: unknown }>;
+    const of = (s: string) => nodes.find((n) => n.canonicalSessionName === s)!;
+    expect(of("lab-open@pi-rig").seatPosture).toEqual(POSTURE.open);
+    expect(of("lab-busy@pi-rig").seatPosture).toEqual(POSTURE.busy);
+    expect(of("lab-hc@pi-rig").seatPosture).toEqual(POSTURE.hc);
+    expect("seatPosture" in of("lab-idle@pi-rig")).toBe(false);
+    expect("seatPosture" in of("lab-old@pi-rig")).toBe(false);
+  });
+
+  it("--full --json carries seatPosture on every row the daemon served it for", async () => {
+    const lines = await capture(async () => { await cmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--full", "--json"]); });
+    const nodes = JSON.parse(lines.join("")) as Array<{ canonicalSessionName: string; seatPosture?: unknown }>;
+    expect(nodes.find((n) => n.canonicalSessionName === "lab-idle@pi-rig")!.seatPosture).toEqual(POSTURE.idle);
     expect(nodes.find((n) => n.canonicalSessionName === "lab-open@pi-rig")!.seatPosture).toEqual(POSTURE.open);
-    expect(nodes.find((n) => n.canonicalSessionName === "lab-busy@pi-rig")!.seatPosture).toEqual(POSTURE.busy);
-    expect(nodes.find((n) => n.canonicalSessionName === "lab-old@pi-rig")!.seatPosture).toBeNull();
   });
 
   it("--fields seatPosture selects it", async () => {
