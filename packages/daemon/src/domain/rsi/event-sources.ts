@@ -216,11 +216,14 @@ export function createCompactionStormSource(deps: RsiFindingSourceDeps): RsiFind
 
 /**
  * A project rig's coordinator (OF-269; Jim, 2026-11-07: "Exempt coordinators"). Since 10-31 it asks Jim itself, in a modal, so its
- * blocking questions to Jim are not stalls. The daemon has no coordinator field; the binding it holds is the node row's
- * `remote_control`, the spec's `remote_control: true`, which jims-team declares on the CoS seat only (live database, 2026-11-07: 5 nodes
- * carry it of 307, all exec.cos: eztrack four times over its rebuilds and ezhome once; among the 15 nodes of the live rigs only eztrack's). Never a name match.
+ * blocking questions to Jim are not stalls. The daemon has no coordinator field; the role binding it holds is the node row's
+ * `agent_ref`: the coordinator is the seat whose persona is chief-of-staff, matched on the ref's final path segment (`local:agents/`,
+ * `local:../../agents/` and `path:/.../agents/` forms all end `/chief-of-staff`), never the seat name and never `remote_control`
+ * (a feature flag any seat may turn on). The daemon does not record that a rig is a project rig (no column; the flag is read from the
+ * spec at launch only), so the rig is not part of the binding. Live database, 2026-11-07: 36 of 307 nodes resolve, all `exec.cos`;
+ * among the 15 nodes of the live rigs only eztrack's, and the kernel has none.
  */
-const COORDINATOR_NODE_SQL = `EXISTS (SELECT 1 FROM nodes cn WHERE cn.id = events.node_id AND cn.remote_control = 1)`;
+const COORDINATOR_NODE_SQL = `EXISTS (SELECT 1 FROM nodes cn WHERE cn.id = events.node_id AND (cn.agent_ref LIKE '%/chief-of-staff' OR cn.agent_ref LIKE '%:chief-of-staff'))`;
 const NAMED_SEATS_SHOWN = 20;
 const seatList = (names: readonly string[]): string =>
   names.length === 0 ? "" : ` (${names.slice(0, NAMED_SEATS_SHOWN).join(", ")}${names.length > NAMED_SEATS_SHOWN ? `, and ${names.length - NAMED_SEATS_SHOWN} more` : ""})`;
@@ -271,7 +274,7 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
         JOIN sessions s ON s.node_id = n.id AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.created_at DESC, s2.id DESC LIMIT 1)
         WHERE r.archived_at IS NULL AND n.runtime IN ('pi', 'omp') ORDER BY s.session_name`).all() as Array<{ name: string }>;
       return [
-        { kind: "note" as const, text: `Coordinator seats (nodes declaring remote_control) are exempt: they ask Jim in a modal and were not judged. ${exempt.reduce((t, r) => t + r.n, 0)} needs_input event(s) from ${exempt.length} coordinator seat(s) in the last ${PERMISSION_STALL_WINDOW_HOURS} h were left out${seatList(exemptNames)}.` },
+        { kind: "note" as const, text: `Coordinator seats (nodes whose agent_ref is the chief-of-staff persona) are exempt: they ask Jim in a modal and were not judged. ${exempt.reduce((t, r) => t + r.n, 0)} needs_input event(s) from ${exempt.length} coordinator seat(s) in the last ${PERMISSION_STALL_WINDOW_HOURS} h were left out${seatList(exemptNames)}.` },
         ...(blind.length > 0
           ? [{ kind: "notice" as const, text: `${blind.length} seat(s) on runtime pi or omp are not judged: the runner reports no permission prompts${seatList(blind.map((b) => b.name))}.` }]
           : []),

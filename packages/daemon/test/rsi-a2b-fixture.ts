@@ -77,12 +77,12 @@ export function fixture() {
   const rig = (name: string, archivedAt: string | null = null) =>
     db.prepare("INSERT INTO rigs (id, name, archived_at) VALUES (?, ?, ?)").run(`rig-id-${++counter}`, name, archivedAt);
 
-  /** A seat's node row and its latest session, as the daemon saves them (`remote_control` is the spec's `remote_control: true`). */
-  const seatNode = (n: { seat: string; rigName?: string; runtime?: string; remoteControl?: boolean; archivedRig?: boolean; sessionName?: string }) => {
+  /** A seat's node row and its latest session, as the daemon saves them (`agentRef` is the spec's agent_ref, `remoteControl` its `remote_control: true`). */
+  const seatNode = (n: { seat: string; rigName?: string; runtime?: string; remoteControl?: boolean; agentRef?: string; archivedRig?: boolean; sessionName?: string }) => {
     const rigId = `rig-of-${n.rigName ?? "rig-1"}-${n.archivedRig ? "archived" : "live"}`;
     db.prepare("INSERT OR IGNORE INTO rigs (id, name, archived_at) VALUES (?, ?, ?)").run(rigId, n.rigName ?? "rig-1", n.archivedRig ? "2031-01-01 00:00:00" : null);
-    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime, remote_control) VALUES (?, ?, ?, ?, ?)")
-      .run(`node-${n.seat}`, rigId, n.seat.split("@")[0]!.replace("-", "."), n.runtime ?? "claude-code", n.remoteControl ? 1 : null);
+    db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime, remote_control, agent_ref) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(`node-${n.seat}`, rigId, n.seat.split("@")[0]!.replace("-", "."), n.runtime ?? "claude-code", n.remoteControl ? 1 : null, n.agentRef ?? null);
     db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, 'running')").run(`sess-${n.seat}`, `node-${n.seat}`, n.sessionName ?? n.seat);
   };
 
