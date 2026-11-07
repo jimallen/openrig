@@ -240,7 +240,9 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
     subjectSql: `json_extract(payload, '$.sessionName')`,
     subjectNoun: "seat",
     // A coordinator seat is not judged at all (OF-269): it is in neither the population nor the hits. coverageNotes says how many it left out.
-    universeSql: `NOT ${COORDINATOR_NODE_SQL}`,
+    // Nor is a pi or omp seat (OF-268 review F2): the coverage notice says they are not judged, and the runner reports needs_input only for an
+    // open or leftover paste, never a permission prompt, so they are out of the population and the controls too.
+    universeSql: `NOT ${COORDINATOR_NODE_SQL} AND COALESCE(json_extract(payload, '$.runtime'), '') NOT IN ('pi', 'omp')`,
     // A pda runner's held-message report reads needs_input so the seat shows in rig ps (OF-89); it is a delivery
     // hold, re-reported while it lasts, not a permission stall, so it is not a hit.
     // A question to Jim is not a stall either (Jim, 2026-10-31: the rig asks in a modal). Claude Code reports its

@@ -673,6 +673,28 @@ describe("OF-268 D9: Pi seats cannot raise a permission-prompt signal, and the c
     expect(rows(f)).toHaveLength(1);
   });
 
+  it("names an omp seat too, so dropping omp from the query is seen", () => {
+    const f = fixture();
+    f.seatNode({ seat: "omp-seat@r", runtime: "omp" }); f.seatNode({ seat: "pi-seat@r", runtime: "pi" });
+
+    expect(noticeOf(f)[0]!.reason).toContain("2 seat(s) on runtime pi or omp are not judged: the runner reports no permission prompts (omp-seat@r, pi-seat@r)");
+  });
+
+  it("OF-268 review F2: a pi or omp seat is not judged at all, as the notice says: its needs_input events neither fire nor count in the population or the controls", () => {
+    // The Pi adapter emits needs_input for an open or leftover paste (pi-runtime-adapter.ts). The notice says these seats are not judged, so they are out of
+    // the universe: eight of them fire nothing and the other seats' numbers do not move.
+    const f = fixture();
+    const need = (seat: string, runtime: string, n: number) => { for (let i = 0; i < n; i++) f.activity({ seat, rawEvent: "Notification", rawSubtype: "paste", state: "needs_input", hoursAgo: 2, generation: `g-${seat}-${i}`, runtime }); };
+    need("pi-seat@r", "pi", 8); need("omp-seat@r", "omp", 8); need("build-impl@r", "claude-code", 9); need("build-ux@r", "claude-code", 2);
+
+    const source = createPermissionStallSource(f.deps());
+    const records = f.records(source);
+
+    expect(records).toHaveLength(1);
+    expect(span(records[0]!)).toMatchObject({ fingerprint: "rsi.permission-stall/seat:build-impl@r", count: 9, controlTotal: 1, population: 2 });
+    expect(records[0]!.explanation).toContain("9 of 11 judged events");
+  });
+
   it("names the seat by its latest session, not an older one", () => {
     const f = fixture();
     f.seatNode({ seat: "verify-qa@eztrack", runtime: "pi" });

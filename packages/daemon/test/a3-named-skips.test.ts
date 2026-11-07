@@ -345,6 +345,10 @@ describe("RSI event-threshold detectors (D9 permission stall)", () => {
     return { records: service.records(), coverage: service.coverage()[0] };
   };
 
+  // The D9 note always ends with the coordinator exemption (OF-269); none was recorded in these fixtures, so it counts zero.
+  const COORDINATOR_NOTE = "Coordinator seats (nodes whose agent_ref is the chief-of-staff persona) are exempt: they ask Jim in a modal and were not judged. 0 needs_input event(s) from 0 coordinator seat(s) in the last 24 h were left out.";
+  const unjudgedNoteOf = (coverage: unknown) => ((coverage as { note?: string }).note ?? "").replace(COORDINATOR_NOTE, "").trim();
+
   it("says how many events in the window were not judged because their payload is not JSON, with their seq range; the findings are unchanged", () => {
     const f = fixture();
     for (let i = 1; i <= 8; i += 1) needsInput(f, i);
@@ -354,16 +358,16 @@ describe("RSI event-threshold detectors (D9 permission stall)", () => {
 
     const { records, coverage } = noteOf(f);
 
-    expect(coverage).toMatchObject({ note: `2 agent.activity event(s) in the window (seq ${first} to ${last}) have a payload that is not readable JSON and were not judged (a damaged payload cannot be classified, so this may include events the detector would have ignored); the counts above leave them out. Repair or remove the event rows.` });
+    expect(coverage).toMatchObject({ note: `2 agent.activity event(s) in the window (seq ${first} to ${last}) have a payload that is not readable JSON and were not judged (a damaged payload cannot be classified, so this may include events the detector would have ignored); the counts above leave them out. Repair or remove the event rows. ${COORDINATOR_NOTE}` });
     expect(records).toEqual(before);
     expect(records).toHaveLength(1);
   });
 
-  it("control: nothing damaged, no note", () => {
+  it("control: nothing damaged, no unjudged-payload note (only the coordinator sentence)", () => {
     const f = fixture();
     for (let i = 1; i <= 3; i += 1) needsInput(f, i);
 
-    expect(noteOf(f).coverage).not.toHaveProperty("note");
+    expect(noteOf(f).coverage).toMatchObject({ note: COORDINATOR_NOTE });
   });
 
   it("a damaged event outside the window, or of another event type, is not counted", () => {
@@ -372,7 +376,7 @@ describe("RSI event-threshold detectors (D9 permission stall)", () => {
     f.event("agent.activity", NOT_JSON, stamp(30));
     f.event("agent.activity_shadow", NOT_JSON, stamp(2));
 
-    expect(noteOf(f).coverage).not.toHaveProperty("note");
+    expect(unjudgedNoteOf(noteOf(f).coverage)).toBe("");
   });
 });
 
