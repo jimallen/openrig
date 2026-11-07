@@ -341,14 +341,7 @@ const ROWS: Row[] = [
   { id: "TC6", deny: false, note: "OF-265 control: typed rig send fed by a quoted heredoc line", cmd: `tmux send-keys -t p "rig send s --file - <<'EOF'" Enter` },
 
   // ---- OF-265 review F2: tmux is judged only for the subcommands that type or run text (measured: tmux 3.4 `list-commands`); every other subcommand is as at base
-  { id: "TS1", deny: true, kind: "substitution", note: "F2: run-shell runs the text", cmd: `tmux run-shell 'rig send s "$(id)"'` },
-  { id: "TS2", deny: true, kind: "substitution", note: "F2: new-window runs the text", cmd: `tmux new-window 'rig send s "$(id)"'` },
-  { id: "TS3", deny: true, kind: "substitution", note: "F2: split-window runs the text", cmd: `tmux split-window -h 'rig send s "$(id)"'` },
-  { id: "TS4", deny: true, kind: "substitution", note: "F2: new-session runs the text", cmd: `tmux new-session -d 'rig send s "$(id)"'` },
-  { id: "TS5", deny: true, kind: "substitution", note: "F2: respawn-pane runs the text", cmd: `tmux respawn-pane -k -t p 'rig send s "$(id)"'` },
-  { id: "TS6", deny: true, kind: "substitution", note: "F2: aliases (send, run, neww, splitw, new, respawnp)", cmd: `tmux send -t p 'rig send s "$(id)"' Enter; tmux run 'rig send s "$(id)"'` },
   { id: "TS7", deny: true, kind: "substitution", note: "F2: tmux options before the subcommand (-L name, -S path, -f file)", cmd: `tmux -L w -S /tmp/s -f /dev/null send-keys -t p 'rig send s "$(id)"' Enter` },
-  { id: "TS8", deny: true, kind: "substitution", note: "F2: other subcommands that run a shell command (if-shell, pipe-pane, display-popup, respawn-window)", cmd: `tmux if-shell true 'rig send s "$(id)"'; tmux pipe-pane -t p 'rig send s "$(id)"'; tmux display-popup 'rig send s "$(id)"'; tmux respawn-window 'rig send s "$(id)"'` },
   { id: "TSC1", deny: false, note: "F2: display-message only shows the text (as at base)", cmd: `tmux display-message "rig send done $(date)"` },
   { id: "TSC2", deny: false, note: "F2: set-buffer stores the text", cmd: `tmux set-buffer 'rig send s "$(id)"'` },
   { id: "TSC3", deny: false, note: "F2: set-option stores the text", cmd: `tmux set-option status-left 'rig send s "$(id)"'` },
@@ -367,6 +360,14 @@ const ROWS: Row[] = [
   { id: "P6", deny: true, kind: "unparseable", note: "over the length cap with the signal", cmd: `rig send a@b "x ${T}y${T}" ${"#".repeat(1_100_000)}` },
   { id: "P7", deny: false, note: "over the length cap without the signal", cmd: `echo hi ${"#".repeat(1_100_000)}` },
 ];
+
+// OF-265 review F2, one row per subcommand: the tmux subcommands that type text or run a shell command (tmux 3.4 `list-commands`: name and alias) are judged; the rest are not.
+const TMUX_JUDGED = ["send-keys", "send", "run-shell", "run", "new-window", "neww", "split-window", "splitw", "new-session", "new", "respawn-pane", "respawnp",
+  "respawn-window", "respawnw", "if-shell", "if", "pipe-pane", "pipep", "display-popup", "popup"];
+const TMUX_NOT_JUDGED = ["display-message", "display", "set-buffer", "setb", "set-option", "set", "display-menu", "command-prompt", "confirm-before", "set-hook", "bind-key", "source-file",
+  "load-buffer", "paste-buffer", "wait-for", "select-window", "rename-session", "rename-window", "send-prefix", "capture-pane", "list-keys"];
+for (const name of TMUX_JUDGED) ROWS.push({ id: `TS-${name}`, deny: true, kind: "substitution", note: `F2: tmux ${name} types or runs the text`, cmd: `tmux ${name} 'rig send s "$(id)"'` });
+for (const name of TMUX_NOT_JUDGED) ROWS.push({ id: `TN-${name}`, deny: false, note: `F2: tmux ${name} only shows or stores the text (as at base)`, cmd: `tmux ${name} 'rig send s "$(id)"'` });
 
 describe("rig-body-guard parser table", () => {
   it("has a unique id per row and both verdict classes", () => {
