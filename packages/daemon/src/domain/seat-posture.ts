@@ -79,3 +79,48 @@ export function deriveSeatPosture(activity: AgentActivity | null | undefined, se
   }
   return { ...base, kind: "unknown", line: `unknown: ${activity.reason || "no usable runtime hook"}` };
 }
+
+// OF-267 (B) — a Pi seat's runner tells herdr-core what it is doing (OSC 7501: `working` at agent_start / tool start, `idle` at
+// agent_end; adapters/runner-hc-status.ts), and says nothing in between. So the core's terminal status, unlike the hook store,
+// does not go stale during a silent tool call. Measured on a private core (test/seat-hc-status.real.test.ts): `working` at every poll
+// through the call, `status_ms` unmoving, `status_ms` the epoch time the status began (the start of the run; later tool starts in the
+// run do not move it), and a dead runner leaves a `finished` terminal, never a live one reading `working`.
+// It refines only what the hooks could not settle (unknown-open-turn) and only for runtimes whose status OpenRig itself writes.
+// Claude and Codex seats get the hook posture alone.
+
+/** The slice of an hc terminal the posture reads. `sinceMs` is hc's `status_ms`: when the current status began, epoch ms. */
+export interface SeatTerminalStatus {
+  live: boolean;
+  status: string | null;
+  sinceMs: number | null;
+}
+
+/** Reads a seat's terminal status. Resolves null when it cannot say (no core, no such terminal, a timeout): the caller keeps its answer. */
+export type SeatTerminalStatusReader = (sessionName: string) => Promise<SeatTerminalStatus | null>;
+
+/** Runtimes whose runner writes OSC 7501 itself, so a `working` read means the runner has an open run. */
+export const OPENRIG_WRITES_HC_STATUS: ReadonlySet<string> = new Set(["pi"]);
+
+/** A `working` status that began later than this ahead of the reader's clock is not believed (clock skew, not evidence). */
+const FUTURE_SLACK_MS = 60_000;
+
+export function withTerminalStatus(posture: SeatPosture, status: SeatTerminalStatus | null | undefined, now: Date): SeatPosture {
+  if (posture.kind !== "unknown-open-turn" || !status || !status.live || status.status !== "working") return posture;
+  const since = status.sinceMs;
+  if (since === null || !Number.isFinite(since) || since > now.getTime() + FUTURE_SLACK_MS) return posture;
+  const at = new Date(since).toISOString();
+  return { kind: "busy", source: "hc_status", at, tool: null, line: `busy: working since ${formatPostureTime(at, now.getTime())} (hc status)` };
+}
+
+/** `posture`, refined by the seat's terminal status when the hooks left an open turn and the runtime's status is OpenRig's own.
+ *  Any failure of the read leaves `posture` exactly as it was. */
+export async function refineSeatPosture(
+  posture: SeatPosture, seatRuntime: string | null, sessionName: string, reader: SeatTerminalStatusReader | undefined, now: Date,
+): Promise<SeatPosture> {
+  if (!reader || posture.kind !== "unknown-open-turn" || seatRuntime === null || !OPENRIG_WRITES_HC_STATUS.has(seatRuntime)) return posture;
+  try {
+    return withTerminalStatus(posture, await reader(sessionName), now);
+  } catch {
+    return posture;
+  }
+}

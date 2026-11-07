@@ -45,6 +45,7 @@ import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
 import { connectHcCore, pinCallsToCore, type HcCoreWatch } from "./adapters/hc-core-watch.js";
 import { HcDelivery } from "./adapters/hc-delivery.js";
+import { createSeatTerminalStatusReader } from "./adapters/hc-seat-terminal-status.js";
 import { TmuxAdapter } from "./adapters/tmux.js";
 import { setDaemonTmuxServer, tmuxServerArgs } from "./adapters/tmux-server.js";
 import { execArgvCommand, execCommand } from "./adapters/tmux-exec.js";
@@ -551,6 +552,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Not a startup gate only: every later call, attach and size watch to this core passes the same pin.
   if (hcClient && hcCoreWatch) pinCallsToCore(hcClient.socketPath, hcCoreWatch);
   const hcDelivery = hcAdapter ? new HcDelivery(hcAdapter.client, hcAdapter) : undefined;
+  // OF-267 (B): the busy report reads a Pi seat's terminal status from the same core the seats run on.
+  const seatTerminalStatus = hcClient ? createSeatTerminalStatusReader(hcClient) : undefined;
   const tmuxAdapter: TmuxAdapter = hcAdapter ?? new TmuxAdapter(opts?.tmuxExec ?? execCommand, undefined, argvExec);
   // The real tmux runs with this process's environment, so its server is the one $TMUX names.
   // An injected exec has no server of its own: printed attach commands stay in the default form.
@@ -1539,6 +1542,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // queue/assignment state (non-inference contract; see slice 15 IMPL-PRD §2.3).
     seatActivityService,
     seatStructuralActivityService,
+    seatTerminalStatus,
     seatIdentityReconciler,
     // OPR.0.4.4.21 — agentActivity feeds the rig-rollup attention
     // predicate's needs_input signal (synchronous events lookup only).
@@ -1569,6 +1573,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         activityEndpointFile: () => readActivityEndpointFile(OPENRIG_HOME),
         nativeInbox: claudeNativeInbox,
         ...(hcDelivery ? { hcDelivery } : {}),
+        ...(seatTerminalStatus ? { seatTerminalStatus } : {}),
         captureObserver: shadow.capture?.observer,
         runnerSendReadiness: runnerSendReadinessFromAdapters(runtimeAdapterMap),
       });

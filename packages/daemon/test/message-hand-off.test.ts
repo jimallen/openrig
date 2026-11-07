@@ -13,6 +13,7 @@ import { classifyWakeResult } from "../src/domain/queue-wake-ladder.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { HANDED_TO_PUMP, SessionTransport } from "../src/domain/session-transport.js";
+import type { SeatTerminalStatusReader } from "../src/domain/seat-posture.js";
 import { PumpHandOff } from "../src/domain/seat-messaging/hand-off.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
@@ -43,7 +44,7 @@ describe("SessionTransport and the pump", () => {
   let activityStore: AgentActivityStore;
   const row = (id: string) => db.prepare("SELECT * FROM outbox_entries WHERE outbox_id = ?").get(id) as Record<string, unknown> | undefined;
 
-  function build(gated: boolean, now?: () => Date) {
+  function build(gated: boolean, extra: { now?: () => Date; runtime?: string; seatTerminalStatus?: SeatTerminalStatusReader } = {}) {
     db = createDb();
     migrate(db, ALL_MIGRATIONS);
     writes = []; hopCalls = [];
@@ -51,7 +52,7 @@ describe("SessionTransport and the pump", () => {
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
     const rig = rigRepo.createRig("hr");
-    const node = rigRepo.addNode(rig.id, "dev", { role: "worker", runtime: "claude-code" });
+    const node = rigRepo.addNode(rig.id, "dev", { role: "worker", runtime: extra.runtime ?? "claude-code" });
     sessionRegistry.updateStatus(sessionRegistry.registerSession(node.id, SEAT).id, "running");
     sessionRegistry.updateBinding(node.id, { attachmentType: "tmux", tmuxSession: SEAT, tmuxPane: "%1" });
     const gate: SeatGate = { version: 1, lookup: async () => ({ kind: "not_seen" }) };
@@ -66,7 +67,7 @@ describe("SessionTransport and the pump", () => {
     });
     tmuxAdapter.messageHandOff = new PumpHandOff(store, pump, ports);
     activityStore = new AgentActivityStore({ db, eventBus });
-    transport = new SessionTransport({ db, rigRepo, sessionRegistry, agentActivityStore: activityStore, eventBus, tmuxAdapter, sleep: async () => undefined, ...(now ? { now } : {}) });
+    transport = new SessionTransport({ db, rigRepo, sessionRegistry, agentActivityStore: activityStore, eventBus, tmuxAdapter, sleep: async () => undefined, ...(extra.now ? { now: extra.now } : {}), ...(extra.seatTerminalStatus ? { seatTerminalStatus: extra.seatTerminalStatus } : {}) });
     return { store, pump, tmuxAdapter };
   }
 
@@ -89,7 +90,7 @@ describe("SessionTransport and the pump", () => {
       const HOOK_AT = Date.parse("2031-03-04T16:04:41.008Z");
       const clock = { now: HOOK_AT };
       beforeEach(() => {
-        built = build(true, () => new Date(clock.now));
+        built = build(true, { now: () => new Date(clock.now) });
         activityStore.recordHookEvent({ sessionName: SEAT, runtime: "claude-code", hookEvent: "PreToolUse", subtype: "bash", occurredAt: new Date(HOOK_AT).toISOString() });
       });
 
@@ -119,9 +120,63 @@ describe("SessionTransport and the pump", () => {
       });
 
       it("a seat with no hook says so", async () => {
-        built = build(true, () => new Date(clock.now));
+        built = build(true, { now: () => new Date(clock.now) });
         const result = await transport.send(SEAT, "hello", { deliveryId: "m2" });
         expect(result.seatPosture).toMatchObject({ kind: "unknown", source: null, line: "unknown: no runtime hook recorded" });
+      });
+
+      // OF-267 (B): for a Pi seat the core's terminal status settles what the hooks could not. Reader is injected; the real core's behaviour
+      // is pinned in seat-hc-status.real.test.ts.
+      describe("a Pi seat, with the hc terminal status", () => {
+        const sinceMs = Date.parse("2031-03-04T16:04:40.000Z");
+        const piSeat = (reader: SeatTerminalStatusReader | undefined, runtime = "pi") => {
+          built = build(true, { now: () => new Date(clock.now), runtime, ...(reader ? { seatTerminalStatus: reader } : {}) });
+          activityStore.recordHookEvent({ sessionName: SEAT, runtime, hookEvent: "PreToolUse", subtype: "bash", occurredAt: new Date(HOOK_AT).toISOString() });
+          clock.now = HOOK_AT + 66 * 60_000;
+        };
+
+        it("working since the run began: busy, sourced to hc status, in the field and in the warning", async () => {
+          const asked: string[] = [];
+          piSeat(async (seat) => { asked.push(seat); return { live: true, status: "working", sinceMs }; });
+          const result = await transport.send(SEAT, "hello", { deliveryId: "m1", actorSession: "lead@hr" });
+          expect(asked).toEqual([SEAT]);
+          expect(result.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.000Z" });
+          expect(result.warning).toBe("Accepted, not yet received: OpenRig carries it until the seat's gate records it. (seat busy: working since 16:04Z (hc status))");
+        });
+
+        it.each([
+          ["idle", { live: true, status: "idle", sinceMs }],
+          ["blocked", { live: true, status: "blocked", sinceMs }],
+          ["not reported", { live: true, status: null, sinceMs: null }],
+          ["a finished terminal still carrying working", { live: false, status: "working", sinceMs }],
+          ["the core could not say", null],
+        ] as const)("%s keeps the hook answer, unknown-open-turn", async (_name, status) => {
+          piSeat(async () => status as never);
+          const result = await transport.send(SEAT, "hello", { deliveryId: "m1" });
+          expect(result.seatPosture?.kind).toBe("unknown-open-turn");
+          expect(result.seatPosture?.source).toBe("runtime_hook");
+        });
+
+        it("a read that throws keeps the hook answer", async () => {
+          piSeat(async () => { throw new Error("core gone"); });
+          expect((await transport.send(SEAT, "hello", { deliveryId: "m1" })).seatPosture?.kind).toBe("unknown-open-turn");
+        });
+
+        it("a Claude seat is never asked: its hook answer stands even when a reader would say working", async () => {
+          let asked = 0;
+          piSeat(async () => { asked++; return { live: true, status: "working", sinceMs }; }, "claude-code");
+          const result = await transport.send(SEAT, "hello", { deliveryId: "m1" });
+          expect(asked).toBe(0);
+          expect(result.seatPosture?.kind).toBe("unknown-open-turn");
+        });
+
+        it("a fresh hook is not second-guessed: the reader is not asked", async () => {
+          let asked = 0;
+          piSeat(async () => { asked++; return { live: true, status: "working", sinceMs }; });
+          clock.now = HOOK_AT + 60_000;
+          expect((await transport.send(SEAT, "hello", { deliveryId: "m1" })).seatPosture).toMatchObject({ kind: "busy", source: "runtime_hook" });
+          expect(asked).toBe(0);
+        });
       });
 
       it("a store that throws leaves the answer exactly as it was", async () => {
