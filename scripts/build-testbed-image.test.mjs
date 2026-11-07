@@ -123,7 +123,7 @@ test("image-load success, failure and deadline all retain status and remove only
     writeFileSync(join(root, "scripts/testbed-build-inputs.mjs"), "export const readBaseImage = () => ({ref:'fixture@sha256:abc'});\n");
     writeFileSync(join(root, "scripts/testbed-emit-manifest.mjs"), "import fs from 'node:fs';fs.writeFileSync(process.argv[3]+'/manifest.json','{}');\n");
     writeFileSync(join(root, "docker/testbed/Dockerfile"), "ARG NODE_VERSION=22.22.1\n");
-    for (const p of ["docker/testbed/entrypoint.sh", "docker/testbed/base-image", "docker/testbed/stub-assets.list"]) writeFileSync(join(root, p), "");
+    for (const p of ["docker/testbed/entrypoint.sh", "docker/testbed/hc-pin.env", "docker/testbed/install-pinned-hc.sh", "docker/testbed/base-image", "docker/testbed/stub-assets.list"]) writeFileSync(join(root, p), "");
     writeFileSync(join(root, "bin/git"), "#!/bin/sh\nprintf 'fake-source\\n'\n", { mode: 0o755 });
     writeFileSync(join(root, "bin/npm"), "#!/bin/sh\ntouch fixture.tgz\nprintf 'fixture.tgz\\n'\n", { mode: 0o755 });
     writeFileSync(join(root, "bin/mktemp"), '#!/bin/sh\nexec /usr/bin/mktemp "$@" "$HOME/tmp.XXXXXXXX"\n', { mode: 0o755 });

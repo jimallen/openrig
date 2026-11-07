@@ -10,6 +10,21 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The testbed image and CI install hc from its pinned tarball, not from upstream's install.sh (OF-254)
+
+- Symptom: the installer script at `https://releases.herdr.dev/core/install.sh` changed without an hc version bump, so the sha256 pinned on it (`4d052d13...`) no longer matched
+  (live `ac94d641...`, 119 lines) and the CI package-tests job and the testbed image build failed for every change, whatever it touched. The pin would have gone stale again
+  whenever the script changed.
+- Fix: `docker/testbed/hc-pin.env` pins the hc version and the sha256 of the release tarball for each of `linux-x86_64`, `linux-aarch64` and `macos-aarch64`, read from
+  `https://releases.herdr.dev/core/0.1.17/manifest.json` (manifest sha256 `a7668813...`) and checked by downloading each tarball. `docker/testbed/install-pinned-hc.sh` downloads that one tarball from the
+  version's own path on `releases.herdr.dev`, refuses it unless its checksum equals the pinned literal, and installs nothing unless the binary reports `hc <pinned version>`. The Dockerfile, the
+  workflow and `scripts/testbed-hc-pin.test.mjs` read the same pin file; a wrong literal, a missing target or a non-hex value fails the test and the install.
+- What the replacement no longer does that `install.sh` did (named here on purpose): the bundled-app install path (`Herdr Core.app` via `--hc-install-bundle`, macOS user installs under `$HOME` only), the
+  `codesign --verify` check of that app (`dev.herdr.core`, team `2W9652Q7QR`), the `?src=install` download-counter mark, and the update/downgrade comparison. The bundle path runs only when the tarball holds the app (and, on macOS, the install dir is under `$HOME`, as the CI runner's is), so none of it ran for the CI or Docker installs at 0.1.17:
+  the tarballs for all three targets hold `herdr-core`, `LICENSE` and `THIRD-PARTY-NOTICES` and no app bundle. A future hc release that ships the bundle in the tarball would need this installer revisited.
+- What CI downloads changed: the installer script and the manifest are no longer fetched; the tarball is, from the same host and the same URL the manifest gave. Bumping hc is a deliberate edit of
+  `hc-pin.env` and of the values restated in the test.
+
 ### `rig up <rig> --existing` after a reboot no longer refuses a rig whose seats were relaunched fresh (OF-255)
 
 - Symptom (laptop, eztrack, 2026-11-06): two seats were relaunched with `rig seat launch --fresh`, the host shut down, and `rig up eztrack --existing` refused
