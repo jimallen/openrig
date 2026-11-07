@@ -898,7 +898,7 @@ describe.skipIf(!hasProcFs())("OF-274: the watchdog's bound", () => {
     cleanups.push(() => reaper.disarm());
     process.kill(owner, "SIGKILL");
     expect(await watchdogEnded(reaper.pid)).toBe(true);
-    expect(processAlive(1) && sameProcess(init), "pid 1 is still the recorded process").toBe(true);
+    expect(identityOf(1), "pid 1 is still the recorded process (read through ps, which works whoever owns pid 1)").toEqual(init);
   }, 90_000);
 
   it("a sweep that selects more than the cap signals none and writes one line to stderr per sweep; at exactly the cap it signals all", async () => {
@@ -985,6 +985,30 @@ describe.skipIf(!hasProcFs())("OF-274: the watchdog's bound", () => {
       const owner = plainSleeper(), armer = plainSleeper();
       expect(() => armWithFailingPpid(armer, { ownerPid: owner, armerPid: armer })).toThrow(/cannot read the parent of pid \d+/);
     });
+  });
+
+  // OF-274 follow-up (release 73, Sparky host suite): the cap row counted 952 stderr lines, not 2. The Linux selector opened `/proc/<pid>/environ` as `tr < "$e" 2>/dev/null`: the shell
+  // processes redirections left to right, so when the input cannot be opened (another user's process: EACCES; one that exited after the glob: ENOENT) its "cannot open" message went to
+  // the still-open stderr before 2>/dev/null applied. On a host with ~1000 processes of other users that is hundreds of lines per sweep, twice. Production consequence: the one line a
+  // refused sweep writes (the only sign that the cap fired) is buried in noise, and a test that counts lines fails on a busy host while passing in a container with only its own processes.
+  // This row drives the very function the selector uses, on inputs that cannot be opened, and needs no other user's process.
+  it("reading a process's environment writes nothing to stderr when the file cannot be opened (missing, or unreadable), and still finds an entry in a readable one", () => {
+    const def = /^envhas\(\) \{.*\}$/m.exec(WATCHDOG)?.[0];
+    expect(def, "the watchdog defines envhas() on one line").toBeDefined();
+    const dir = tempDir();
+    const readable = path.join(dir, "environ"), locked = path.join(dir, "locked");
+    fs.writeFileSync(readable, "A=1\0B=2\0");
+    fs.writeFileSync(locked, "B=2\0", { mode: 0o000 });
+    const run = (file: string, entry: string) => spawnSync("sh", ["-c", `${def}\nenvhas "$1" "$2"`, "w", file, entry], { encoding: "utf8" });
+    const found = run(readable, "B=2"), absent = run(readable, "C=3"), missing = run(path.join(dir, "gone"), "B=2");
+    expect([found.status, absent.status], "positive controls: a readable file is searched").toEqual([0, 1]);
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr, "a file that does not exist").toBe("");
+    if (process.getuid?.() !== 0) {   // root can open a mode-000 file
+      const refused = run(locked, "B=2");
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr, "a file that exists and cannot be opened").toBe("");
+    }
   });
 
   it("the watchdog is the leader of its own process group, which is not the test's", () => {

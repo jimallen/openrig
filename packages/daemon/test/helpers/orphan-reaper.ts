@@ -186,12 +186,14 @@ while kill -0 "$owner" 2>/dev/null; do sleep 1; done
 case "$startsrc" in proc) ownerkey=$ownerstart ;; *) ownerkey=$(printf '%s\\n' "$ownerstart" | lstart_key) ;; esac
 case "$ownerkey" in ''|*[!0-9]*) ownerkey= ;; esac
 same() { [ "$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$2" ] && [ "$(ps -o command= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$3" ]; }
+# stderr is silenced BEFORE the input is opened: a failed input redirection reports through the stderr in force at that moment (OF-274 follow-up).
+envhas() { tr '\\0' '\\n' 2>/dev/null < "$1" | grep -qxF -- "$2"; }
 holders() {
   if [ -r /proc/self/environ ]; then
     for e in /proc/[0-9]*/environ; do
       p=\${e#/proc/}; p=\${p%/environ}
       [ "$p" = "$$" ] && continue
-      tr '\\0' '\\n' < "$e" 2>/dev/null | grep -qxF -- "$1" && echo "$p"
+      envhas "$e" "$1" && echo "$p"
     done
   else
     # awk picks the lines that name the entry; a shell read loop over this output (every process's whole environment, megabytes on a busy Mac) took seconds of CPU
