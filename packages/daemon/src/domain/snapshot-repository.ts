@@ -332,7 +332,10 @@ export function isRestoreUsableSnapshotData(data: unknown): data is SnapshotData
         continue;
       }
       if (state.kind === "ambiguous" && Array.isArray(state.candidateIds)) {
-        if (state.candidateIds.length < 2 || new Set(state.candidateIds).size !== state.candidateIds.length) return false;
+        // OF-263: any number of candidates. A seat whose fresh-launch records name no single resumable row (dangling, damaged
+        // or contradictory) is recorded as ambiguous over zero or one row; requiring two made that one seat's state turn the
+        // WHOLE snapshot unusable, so no seat of the rig could be restored. Restore fails the ambiguous seat on its own and goes on.
+        if (new Set(state.candidateIds).size !== state.candidateIds.length) return false;
         if (state.candidateIds.some((id) => typeof id !== "string" || id.length === 0 || sessionsById.get(id)?.nodeId !== nodeId)) return false;
         continue;
       }

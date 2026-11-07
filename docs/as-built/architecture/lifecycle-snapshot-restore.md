@@ -133,7 +133,9 @@ Restore behavior, each point checked in `restore-orchestrator.ts`:
   maps, not by picking the newest session row
   (`resolveActiveSnapshotSession`, `active-occupant.ts:74`, called at
   `restore-orchestrator.ts:774` and `:971`). An ambiguous occupant fails the
-  node loudly (`activeOccupantAmbiguityError`, `active-occupant.ts:97`).
+  node loudly (`activeOccupantAmbiguityError`, `active-occupant.ts:97`). That node alone (OF-263): a
+  snapshot may record a seat as ambiguous over any number of rows (fewer than two when a fresh-launch record names no single resumable row), the other seats still restore, and the
+  current-state eligibility check does not refuse the rig for that seat.
 - Consults live `continuity_state`; preserves state when a node is already
   `restoring` (`:777–791` — `SELECT status FROM continuity_state …` at
   `:780`; if `status === "restoring"` the node is skipped with a warning and
@@ -167,6 +169,9 @@ Restore behavior, each point checked in `restore-orchestrator.ts`:
   has live sessions. Stop the rig with 'rig down' before restoring, or use the
   latest auto-pre-down snapshot."). A seat-host probe that fails also blocks it
   (`classifyRunningSessions`, `:612`).
+  A seat's terminal that is present but is only an empty shell does not count as live (OF-259, `classifySessionLiveness`): for a `claude-code`, `codex`, `pi`, `omp` or `pda` seat, a shell
+  foreground with no process under the terminal's pid is the shell the terminal host restored after a reboot, not the seat running. Restore ends that shell (it holds the seat's name)
+  before it launches the seat; `rig restore-check` reads it the same way. A `terminal`-runtime seat is a shell and stays live; anything unreadable stays live.
 - Checks that the harness actually resumed. The resume adapters judge the
   pane with `assessNativeResumeProbe` (`domain/native-resume-probe.ts:84`). A
   pod-aware resume counts as resumed only when startup reports `resumed`
@@ -259,6 +264,8 @@ cited here by number with the code that carries them):
   eligible (`routes/up.ts:137–146`). Otherwise it errors with code
   `no_snapshot` and guidance ("… current DB state is insufficient for
   rehydrate. Start fresh with: rig up <spec-path>", `routes/up.ts:118–123`).
+  The eligibility check and the `--plan` preview (when there is no snapshot) read each seat's occupant by the capture's own rule (OF-260): a seat with no live occupant whose history holds a
+  resume token is stopped for a decision by restore, so it does not make the rig ineligible, and the plan forecasts it as awaiting a decision, not as an ambiguity.
 - Post-command handoff: `down` output includes the snapshot ID and
   `To restore: rig up <name>` (or `rig restore <snapshotId> --rig <rigId>`
   when the name is not unique); `up` output includes node statuses and an

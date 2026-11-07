@@ -56,7 +56,7 @@ import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seat
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { launchPrecedence } from "./rig-edge-service.js";
 import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
-import { classifySessionLiveness, probePresence, type SessionPresence } from "./session-liveness.js";
+import { classifySessionLiveness, isEmptyAgentShell, probePresence, type SessionPresence } from "./session-liveness.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 
 // L3: result shape for runtime-truth reconciliation. A reconciliation that
@@ -336,7 +336,8 @@ export class RestoreOrchestrator {
     // This determines whether the rig is safe to restore before any state
     // changes occur — critical for pre_restore snapshot ordering (snapshot
     // must capture original DB state, not post-reconciliation state).
-    const classification = await this.classifyRunningSessions(rigId);
+    const emptyShellNames = new Set<string>();
+    const classification = await this.classifyRunningSessions(rigId, emptyShellNames);
     if (classification.live.length > 0) {
       return { ok: false, code: "rig_not_stopped", message: `Rig ${rigId} has live sessions. Stop the rig with 'rig down' before restoring, or use the latest auto-pre-down snapshot.` };
     }
@@ -439,6 +440,7 @@ export class RestoreOrchestrator {
       for (const sessionId of classification.stale) {
         this.sessionRegistry.markDetached(sessionId);
       }
+      await this.endEmptySeatShells(rigId, classification.stale, emptyShellNames, captureWarnings);
 
       // 3. Emit restore.started — the persisted event seq IS the attempt id
       //    (Decision 1: no separate restore_attempts table).
@@ -797,9 +799,34 @@ export class RestoreOrchestrator {
    * restore-check): live sessions block restore, stale sessions get marked detached AFTER the pre_restore snapshot is
    * captured, unknown sessions fail closed.
    */
-  private classifyRunningSessions(rigId: string): Promise<RunningSessionClassification> {
+  private classifyRunningSessions(rigId: string, emptyShellNames: Set<string>): Promise<RunningSessionClassification> {
     // The probe is shared with restore-check's advice (classifySessionLiveness) so the two cannot drift.
-    return classifyRunningSessions(this.sessionRegistry.getSessionsForRig(rigId), (sessionName) => classifySessionLiveness(this.tmuxAdapter, sessionName));
+    return classifyRunningSessions(this.sessionRegistry.getSessionsForRig(rigId), (sessionName) => classifySessionLiveness(this.tmuxAdapter, sessionName, undefined, this.seatLivenessContext(emptyShellNames)));
+  }
+
+  /** OF-259: what makes a present terminal "the seat running" here is the agent under it, so an empty agent shell reads dead. */
+  private seatLivenessContext(emptyShellNames?: Set<string>): { runtimeOfSession: (sessionName: string) => string | null; listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>; onEmptyShell?: (sessionName: string) => void } {
+    return { runtimeOfSession: (sessionName: string) => this.sessionRegistry.runtimeOfSessionName(sessionName), ...(this.listProcesses ? { listProcesses: this.listProcesses } : {}), ...(emptyShellNames ? { onEmptyShell: (name: string) => { emptyShellNames.add(name); } } : {}) };
+  }
+
+  /** OF-259: a stale row whose terminal the classification read as an empty shell is the shell the host restored under the seat's
+   *  name. It would hold the name against the launch (`duplicate_session`), so it is ended, but only on positive evidence read again
+   *  now: the terminal answers with a shell foreground, runs no program, and belongs to an agent runtime. `rig down` does the same
+   *  by hand today. A stale row the host said was gone is not asked about again. */
+  private async endEmptySeatShells(rigId: string, staleSessionIds: string[], emptyShellNames: ReadonlySet<string>, warnings: string[]): Promise<void> {
+    const context = this.seatLivenessContext();
+    const sessions = this.sessionRegistry.getSessionsForRig(rigId);
+    for (const sessionId of staleSessionIds) {
+      const session = sessions.find((s) => s.id === sessionId);
+      if (!session || !emptyShellNames.has(session.sessionName)) continue;
+      try {
+        if (!(await isEmptyAgentShell(this.tmuxAdapter, session.sessionName, context.runtimeOfSession(session.sessionName), context.listProcesses))) continue;
+        const ended = await this.tmuxAdapter.killSession(session.sessionName);
+        if (!ended.ok) warnings.push(`Restore: ${session.sessionName}: the empty shell the terminal host restored under the seat's name could not be ended (${ended.code}: ${ended.message}); the launch may be refused as a duplicate session.`);
+      } catch (err) {
+        warnings.push(`Restore: ${session.sessionName}: the empty shell the terminal host restored under the seat's name could not be ended (${err instanceof Error ? err.message : String(err)}); the launch may be refused as a duplicate session.`);
+      }
+    }
   }
 
   private clearStaleState(nodeId: string, rigId: string): void {

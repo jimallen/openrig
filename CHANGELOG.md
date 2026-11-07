@@ -40,6 +40,39 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - What CI downloads changed: the installer script and the manifest are no longer fetched; the tarball is, from the same host and the same URL the manifest gave. Bumping hc is a deliberate edit of
   `hc-pin.env` and of the values restated in the test.
 
+### One ambiguous seat no longer refuses the whole rig on `rig up --existing` (OF-263)
+
+- Two things made one seat's unsettled occupant refuse every seat of the rig: a snapshot that records a seat as ambiguous over fewer than two rows (a fresh-launch record that names a row the
+  seat cannot resume, a damaged one, or two that contradict each other) was judged not restore-usable, so none of its seats could be restored from it; and the current-state fallback
+  refused the rig for that seat's missing startup context or token although restore fails an ambiguous seat before starting anything in it.
+- Now the refusal is the seat's alone. Restore starts the other seats and reports the ambiguous one as `failed` with its reason (`Active-occupant ambiguity: N candidate session rows ... Seat unrecoverable until resolved`;
+  with fewer than two rows the reason says the snapshot could not settle the seat's occupant, not that it recorded several). A snapshot that records a seat ambiguous also matches a present state that is
+  ambiguous for that seat; one that names an occupant, or none, does not. How an operator resolves the ambiguous seat is unchanged (it was already a per-seat failure when the seat had two or more candidate rows).
+- A duplicated candidate id, or a candidate that is not a row of that seat, still makes a snapshot unusable.
+
+### A seat whose occupant of record has ended is a seat with no live occupant in the restore preview and the eligibility gate too (OF-260)
+
+- The OF-255 capture already records such a seat (its `rig seat launch --fresh` successor was stopped, or a deliberate stop came after its last live row) as having no occupant. Two
+  other readers of the current state did not: the plan that `rig up --existing --plan` and `rig restore-check` show when there is no snapshot forecast it as `Active-occupant ambiguity: N
+  candidate session rows`, and the gate in front of the current-state fallback refused the whole rig for it ("no startup context or resume token", because it looked only at live rows).
+- Now both follow the capture's rule: the plan forecasts the seat as awaiting a decision ("Original session not resumed"), and a seat that restore stops for a decision (no occupant,
+  a resume token in its history) cannot make the rig ineligible. A fresh-launch record that names a row the seat does not hold stays a loud ambiguity.
+- Stored snapshots are not changed. One `auto-pre-down` snapshot written before OF-255 still records six seats as having no occupant although each has a `detached` row
+  (`01M6R2MB838F15WSE4HQAQ3R9F`, eztrack, 2026-11-06); ten newer `auto-periodic` snapshots outrank it, so restore does not select it.
+
+### `rig up <rig> --existing` no longer needs `rig down` first when the host restored empty shells (OF-259)
+
+- Symptom (laptop, after a reboot): the terminal host (Herdr) restored each seat's terminal as an empty shell that still carried its `openrig.seat` label, so restore read
+  those seats as live and `rig up --existing` stopped with `rig_not_stopped`; `rig down` was needed first.
+- Measured on a private hc 0.1.18 core (Linux): the foreground name alone cannot tell an empty shell from a running agent. Claude started from the pane shell shows foreground
+  `bash` (a subshell) with `claude` below it; Codex shows foreground `sh` at the terminal's own pid with `codex` as its child; a program that replaced the shell (Pi, the stub)
+  is itself the foreground. What does separate them is the process tree under the terminal's pid: an idle seat shell, and a kept terminal whose program was lost, have no child.
+- Fix: a present terminal of a `claude-code`, `codex`, `pi`, `omp` or `pda` seat reads as not running when its foreground is a shell and nothing descends from its pid.
+  `rig up --existing` then restores the seat, ending the empty shell first (the shell holds the seat's name, so the launch would otherwise be refused as a duplicate), and
+  `rig restore-check` forecasts the same. A `terminal`-runtime seat (operator-human) IS a shell and stays live. Anything unreadable (no foreground name, no pid, a process
+  listing without the terminal's pid) stays live, as before. If ending the empty shell fails, the restore result carries a warning naming the seat and the error.
+- Not measured: a shell restored by the real Herdr app. Pi, omp and pda were not run (Pi's shape is `exec`, so its foreground is the program).
+
 ### `rig up <rig> --existing` after a reboot no longer refuses a rig whose seats were relaunched fresh (OF-255)
 
 - Symptom (laptop, eztrack, 2026-11-06): two seats were relaunched with `rig seat launch --fresh`, the host shut down, and `rig up eztrack --existing` refused

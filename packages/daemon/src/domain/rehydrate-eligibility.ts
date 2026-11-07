@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { inheritResumeIdentityBehindFailedLaunches, resolveActiveOccupantRow, resolveActiveSnapshotSession } from "./active-occupant.js";
-import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
+import { absentSeatResumeHistory, inheritResumeIdentityBehindFailedLaunches, resolveActiveOccupantRow, resolveActiveSnapshotSession, resolveRehydrateOccupant } from "./active-occupant.js";
+import { markDeliberateStops, readDeliberateStopIds, readFreshOccupantRelations } from "./fresh-occupant-relation.js";
 import type { RigWithRelations, Snapshot } from "./types.js";
 
 export interface CurrentStateRehydrateEligibility {
@@ -53,8 +53,14 @@ export function snapshotMatchesCurrentOccupants(
   for (const node of rig.nodes) {
     const current = resolveActiveOccupantRow(candidates, Object.prototype.hasOwnProperty.call(recorded, node.id) ? recorded : undefined, node.id);
     if (current.kind === "none") continue;
-    if (current.kind === "ambiguous") return false;
     const captured = resolveActiveSnapshotSession(snapshot.data, node.id);
+    // OF-263: a seat whose occupant is ambiguous now AND was recorded ambiguous names no conversation to revive: restore fails
+    // that seat on its own, so it cannot make the snapshot stale for the other seats. An ambiguous present against a snapshot that
+    // names an occupant is still positive evidence that the snapshot is not about the current state.
+    if (current.kind === "ambiguous") {
+      if (captured.kind === "ambiguous") continue;
+      return false;
+    }
     // OF-255: the seat's fresh successor was stopped before the snapshot, which recorded the seat with no occupant and kept
     // the stopped successor's row (status exited). That is the same fact current state holds (a stopped seat, occupant of
     // record X): a match. A snapshot that does not carry that exact row never matches this way.
@@ -116,6 +122,22 @@ export function assessCurrentStateRehydrateEligibility(
     sessionByNode.set(session.node_id, rows);
   }
 
+  // OF-260: the seat the capture records as having NO occupant (its fresh successor was stopped, or a deliberate stop came after
+  // its last live row) and whose history holds a resume token is stopped for a decision by restore, which starts nothing in
+  // it. It needs no startup context or live token, so it cannot make the rig ineligible. The rule is the capture's own.
+  const allRows = db.prepare(
+    `SELECT s.id, s.node_id AS nodeId, s.status, s.resume_type AS resumeType, s.resume_token AS resumeToken,
+            s.restore_policy AS restorePolicy, s.intentionally_stopped AS stopMark
+       FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ?`,
+  ).all(rig.rig.id) as Array<{ id: string; nodeId: string; status: string; resumeType: string | null; resumeToken: string | null; restorePolicy: string; stopMark: number | null }>;
+  const occupantRows = markDeliberateStops(allRows, readDeliberateStopIds(db, rig.rig.id));
+  const recorded = readFreshOccupantRelations(db, rig.rig.id);
+  // OF-263: likewise a seat whose occupant is ambiguous: restore fails that seat before starting anything in it.
+  const startsNothing = (nodeId: string): boolean => {
+    const occupant = resolveRehydrateOccupant(occupantRows, nodeId, recorded);
+    return occupant.kind === "ambiguous" || (occupant.kind === "none" && absentSeatResumeHistory(allRows, nodeId) !== null);
+  };
+
   for (const node of rig.nodes) {
     const runtime = node.runtime ?? "";
     const isAgentRuntime = runtime.length > 0 && runtime !== "terminal";
@@ -131,7 +153,7 @@ export function assessCurrentStateRehydrateEligibility(
       continue;
     }
 
-    if (isAgentRuntime && !hasStartupContext && !hasResumeToken) {
+    if (isAgentRuntime && !hasStartupContext && !hasResumeToken && !startsNothing(node.id)) {
       blockers.push(`node ${node.logicalId} has runtime ${runtime} but no startup context or resume token`);
     }
   }
