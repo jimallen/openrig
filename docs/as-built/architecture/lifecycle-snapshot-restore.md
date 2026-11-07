@@ -262,6 +262,8 @@ cited here by number with the code that carries them):
   eligible (`routes/up.ts:137–146`). Otherwise it errors with code
   `no_snapshot` and guidance ("… current DB state is insufficient for
   rehydrate. Start fresh with: rig up <spec-path>", `routes/up.ts:118–123`).
+  The eligibility check and the `--plan` preview (when there is no snapshot) read each seat's occupant by the capture's own rule (OF-260): a seat with no live occupant whose history holds a
+  resume token is stopped for a decision by restore, so it does not make the rig ineligible, and the plan forecasts it as awaiting a decision, not as an ambiguity.
 - Post-command handoff: `down` output includes the snapshot ID and
   `To restore: rig up <name>` (or `rig restore <snapshotId> --rig <rigId>`
   when the name is not unique); `up` output includes node statuses and an

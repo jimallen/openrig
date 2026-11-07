@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { inheritResumeIdentityBehindFailedLaunches, resolveActiveOccupantRow, resolveActiveSnapshotSession } from "./active-occupant.js";
-import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
+import { absentSeatResumeHistory, inheritResumeIdentityBehindFailedLaunches, resolveActiveOccupantRow, resolveActiveSnapshotSession, resolveRehydrateOccupant } from "./active-occupant.js";
+import { markDeliberateStops, readDeliberateStopIds, readFreshOccupantRelations } from "./fresh-occupant-relation.js";
 import type { RigWithRelations, Snapshot } from "./types.js";
 
 export interface CurrentStateRehydrateEligibility {
@@ -116,6 +116,19 @@ export function assessCurrentStateRehydrateEligibility(
     sessionByNode.set(session.node_id, rows);
   }
 
+  // OF-260: the seat the capture records as having NO occupant (its fresh successor was stopped, or a deliberate stop came after
+  // its last live row) and whose history holds a resume token is stopped for a decision by restore, which starts nothing in
+  // it. It needs no startup context or live token, so it cannot make the rig ineligible. The rule is the capture's own.
+  const allRows = db.prepare(
+    `SELECT s.id, s.node_id AS nodeId, s.status, s.resume_type AS resumeType, s.resume_token AS resumeToken,
+            s.restore_policy AS restorePolicy, s.intentionally_stopped AS stopMark
+       FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ?`,
+  ).all(rig.rig.id) as Array<{ id: string; nodeId: string; status: string; resumeType: string | null; resumeToken: string | null; restorePolicy: string; stopMark: number | null }>;
+  const occupantRows = markDeliberateStops(allRows, readDeliberateStopIds(db, rig.rig.id));
+  const recorded = readFreshOccupantRelations(db, rig.rig.id);
+  const stoppedForDecision = (nodeId: string): boolean =>
+    resolveRehydrateOccupant(occupantRows, nodeId, recorded).kind === "none" && absentSeatResumeHistory(allRows, nodeId) !== null;
+
   for (const node of rig.nodes) {
     const runtime = node.runtime ?? "";
     const isAgentRuntime = runtime.length > 0 && runtime !== "terminal";
@@ -131,7 +144,7 @@ export function assessCurrentStateRehydrateEligibility(
       continue;
     }
 
-    if (isAgentRuntime && !hasStartupContext && !hasResumeToken) {
+    if (isAgentRuntime && !hasStartupContext && !hasResumeToken && !stoppedForDecision(node.id)) {
       blockers.push(`node ${node.logicalId} has runtime ${runtime} but no startup context or resume token`);
     }
   }

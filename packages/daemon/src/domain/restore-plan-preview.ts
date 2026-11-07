@@ -11,7 +11,7 @@
 // only reported as would-happen), no projection writes.
 
 import type Database from "better-sqlite3";
-import { resolveActiveOccupantRow, resolveActiveSnapshotSession, deriveRehydrateSessionIdByNode, type ActiveOccupantResolution, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
+import { resolveActiveSnapshotSession, deriveRehydrateOccupantsByNode, type ActiveOccupantResolution, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
 import type { RigWithRelations, Snapshot, SnapshotData } from "./types.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { predictListedSeatRefusals, type ListedSeatDecisionDeps } from "./fresh-seat-restore-decision.js";
@@ -246,13 +246,12 @@ export function buildRestorePlanPreview(
   /** OF-135: how the plan's advice names the rig (`rigAdviceHandle`: its name while that reaches it alone, else its id). */
   adviceRig: string = rig.rig.name,
 ): RestorePlanPreview {
-  // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own
-  // when previewing a snapshot; for the live no-snapshot case, the SAME
-  // would-capture derivation SnapshotCapture uses (shared helper — the
-  // sibling paths cannot drift).
-  const relationMap = snapshot
-    ? snapshot.data.activeSessionIdByNode
-    : deriveRehydrateSessionIdByNode(sessionRows, rig.nodes.map((n) => n.id), recorded);
+  // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own when previewing a snapshot; for the live
+  // no-snapshot case, the SAME would-capture derivation SnapshotCapture uses (shared helper — the sibling paths cannot
+  // drift). OF-260: that is the full three-way state (resolved / absent / ambiguous), read the way restore reads a captured
+  // one. The id-only map lost it: a seat the capture records as having no occupant (its fresh successor was stopped, or it
+  // was stopped behind a detached row) came out of the map as an explicit null and was forecast as an ambiguity over every row.
+  const wouldCapture = snapshot ? null : deriveRehydrateOccupantsByNode(sessionRows, rig.nodes.map((n) => n.id), recorded);
   // The gate input restore reads: the captured snapshot, or (no snapshot) the rows an auto-rehydrate capture would copy.
   const data = snapshot ? snapshot.data : ({ nodes: [], sessions: sessionRows } as unknown as SnapshotData);
   const forecast = (input: {
@@ -320,9 +319,7 @@ export function buildRestorePlanPreview(
   };
   const resolveOccupant = (savedNodeId: string, nodeId: string): ActiveOccupantResolution<PreviewSessionRow> => snapshot
     ? resolveActiveSnapshotSession(snapshot.data, savedNodeId) as unknown as ActiveOccupantResolution<PreviewSessionRow>
-    : sessionRows.some((row) => row.nodeId === nodeId)
-      ? resolveActiveOccupantRow(sessionRows, relationMap, nodeId)
-      : { kind: "none" as const };
+    : resolveActiveSnapshotSession({ activeOccupantsByNode: wouldCapture!, sessions: sessionRows } as unknown as SnapshotData, nodeId) as unknown as ActiveOccupantResolution<PreviewSessionRow>;
   const nodes: RestorePlanPreviewNode[] = rig.nodes.map((node) => {
     const savedNode = snapshot?.data.nodes?.find(saved => saved.logicalId === node.logicalId);
     const savedNodeId = savedNode?.id ?? node.id;

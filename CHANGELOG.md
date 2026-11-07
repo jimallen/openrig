@@ -10,6 +10,16 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A seat whose occupant of record has ended is a seat with no live occupant in the restore preview and the eligibility gate too (OF-260)
+
+- The OF-255 capture already records such a seat (its `rig seat launch --fresh` successor was stopped, or a deliberate stop came after its last live row) as having no occupant. Two
+  other readers of the current state did not: the plan that `rig up --existing --plan` and `rig restore-check` show when there is no snapshot forecast it as `Active-occupant ambiguity: N
+  candidate session rows`, and the gate in front of the current-state fallback refused the whole rig for it ("no startup context or resume token", because it looked only at live rows).
+- Now both follow the capture's rule: the plan forecasts the seat as awaiting a decision ("Original session not resumed"), and a seat that restore stops for a decision (no occupant,
+  a resume token in its history) cannot make the rig ineligible. A fresh-launch record that names a row the seat does not hold stays a loud ambiguity.
+- Stored snapshots are not changed. One `auto-pre-down` snapshot written before OF-255 still records six seats as having no occupant although each has a `detached` row
+  (`01M6R2MB838F15WSE4HQAQ3R9F`, eztrack, 2026-11-06); ten newer `auto-periodic` snapshots outrank it, so restore does not select it.
+
 ### `rig up <rig> --existing` no longer needs `rig down` first when the host restored empty shells (OF-259)
 
 - Symptom (laptop, after a reboot): the terminal host (Herdr) restored each seat's terminal as an empty shell that still carried its `openrig.seat` label, so restore read
