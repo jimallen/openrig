@@ -240,14 +240,20 @@ describe("reapWhenOwnerDies", () => {
 // The oracle is CPU time, not wall time: it does not move with load, so the row cannot flake on the host it guards. Entrypoint: hc-scratch.ts and hermetic-env.ts arm
 // the watchdog through reapWhenOwnerDies on every test that starts a core or a tmux server; this row runs the watchdog's own script (exported as WATCHDOG).
 describe.skipIf(hasProcFs())("the watchdog's environment sweep on macOS (ps -E) costs little CPU", () => {
-  it("12 MB of ps -E output is swept in under 3 s of CPU in total (three sweeps), and still finds the one holder and only it", async () => {
+  it("12 MB of ps -E output is swept in under 3 s of CPU in total (three sweeps), and still finds the one holder and only it (not a longer value, not an argument)", async () => {
     const dir = tempDir();
     const entry = `OF261_FIXTURE=${process.pid}-${Date.now()}-${++counter}`;
     const victim = longSleeper(), lookalike = longSleeper();
+    // A process that names the entry only in its ARGUMENTS (as the watchdog itself does) is not a holder: the fake ps shows it with the entry, the real ps -o command= shows where.
+    const decoyChild = spawn("/bin/sh", ["-c", "sleep 600; :", "of261-decoy", entry], { detached: true, stdio: "ignore" });
+    decoyChild.unref();
+    const decoy = decoyChild.pid!;
+    cleanups.push(() => { try { process.kill(-decoy, "SIGKILL"); } catch { /* gone */ } });
     const filler = "X".repeat(3000);
     const lines: string[] = [];
     for (let i = 0; i < 4000; i++) lines.push(`${String(10_000_000 + i).padStart(9)} /usr/bin/fixture-proc --flag HOME=/Users/x PATH=/usr/bin A=${filler}`);
     lines.push(`${String(victim).padStart(9)} /bin/sh -c sleep 600 HOME=/Users/x ${entry} TERM=xterm`);
+    lines.push(`${String(decoy).padStart(9)} /bin/sh -c sleep 600; : of261-decoy HOME=/Users/x ${entry} TERM=xterm`);
     lines.push(`${String(lookalike).padStart(9)} /bin/sh -c sleep 600 HOME=/Users/x ${entry}-other TERM=xterm`);
     fs.writeFileSync(path.join(dir, "ps-e.txt"), lines.join("\n") + "\n");
     fs.mkdirSync(path.join(dir, "bin"));
@@ -268,6 +274,7 @@ describe.skipIf(hasProcFs())("the watchdog's environment sweep on macOS (ps -E) 
     const children = cpu(reports[1]!);
     expect(processAlive(victim), "positive control: the one process that names the entry was found and stopped").toBe(false);
     expect(processAlive(lookalike), "a longer value is not the entry").toBe(true);
+    expect(processAlive(decoy), "a process that names the entry only in its arguments is not a holder").toBe(true);
     expect(children, "CPU seconds the watchdog's children used").toBeLessThan(3);
   }, 120_000);
 });
