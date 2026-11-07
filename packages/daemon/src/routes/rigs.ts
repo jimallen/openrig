@@ -181,6 +181,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       const mcpServers = readMemberSpelling(m, "mcp_servers", "mcp_servers");
       const pda = readMemberSpelling(m, "pda", "pda");
       const envPassthrough = readMemberSpelling(m, "env_passthrough", "envPassthrough");
+      const modelOverrides = readMemberSpelling(m, "model_overrides", "modelOverrides");
       return {
         id: typeof m["id"] === "string" ? m["id"] : "",
         runtime: typeof m["runtime"] === "string" ? m["runtime"] : "",
@@ -206,6 +207,8 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         // env_passthrough: PRESENCE-preserving RAW carry like remote_control; the canonical validator owns the
         // pi-only, list and name checks, so a present-invalid value rejects exactly as it does for `rig up`.
         ...(envPassthrough.present ? { envPassthrough: envPassthrough.value } : {}),
+        // model_overrides (OF-270): PRESENCE-preserving RAW carry like env_passthrough; the canonical validator owns the checks.
+        ...(modelOverrides.present ? { modelOverrides: modelOverrides.value } : {}),
         label: typeof m["label"] === "string" ? m["label"] : undefined,
         // role / starter_ref: PRESENCE-preserving like permission_policy/remote_control above. A
         // present-invalid value (role "", 7, null; starter_ref {}, {name:""}, a string, null, []) must

@@ -1184,6 +1184,9 @@ export interface RigSpecPodMember {
   /** A Pi seat's extra environment names (`env_passthrough`): its child keeps these, taken by name from the
    *  seat pane's environment. Names only. */
   envPassthrough?: string[];
+  /** A Pi seat's model overrides (`model_overrides`, OF-270): { <provider>: { <model>: { contextWindow } } }, merged by the
+   *  runner into the seat's models.json at every launch. Pi only. */
+  modelOverrides?: Record<string, Record<string, { contextWindow: number }>>;
   /**
    * OPR.0.4.6.FAC1: optional seat-side role declaration (writes the
    * existing `nodes.role` column via createMemberNode → addNode). The

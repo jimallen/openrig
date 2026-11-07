@@ -178,6 +178,9 @@ export class RigSpecExporter {
         // A Pi or OMP seat's extra environment names round-trip export -> import (names only).
         const envPassthrough = this.rigRepo.getNodeEnvPassthrough(node.id);
         if (envPassthrough.length > 0) member.envPassthrough = envPassthrough;
+        // A Pi seat's model overrides round-trip export -> import (OF-270).
+        const modelOverrides = this.rigRepo.getNodeModelOverrides(node.id);
+        if (modelOverrides) member.modelOverrides = modelOverrides;
         // OPR.0.4.6.FAC1: a declared seat role exports with the pod
         // member (round-trip fidelity — export→import keeps the role).
         if (node.role) member.role = node.role;

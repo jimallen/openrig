@@ -16,6 +16,7 @@ import type { ResumeResult } from "./claude-resume.js";
 import { piTrust, yoloEnabled } from "./yolo-mode.js";
 import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState, type RunnerRuntime,
+  type PiModelOverrides,
 } from "./pi-runner-protocol.js";
 import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
 
@@ -42,6 +43,8 @@ interface PiResumeOptions {
   openRouterChargeEnabled?: () => boolean;
   /** The seat's extra environment names (spec `env_passthrough`), by session name; absent or [] = the baseline. */
   envPassthroughFor?: (sessionName: string) => string[];
+  /** OF-270: the seat's model overrides (spec `model_overrides`), by session name, read at each resume; absent or undefined = none. */
+  modelOverridesFor?: (sessionName: string) => PiModelOverrides | undefined;
 }
 
 export class PiResumeAdapter {
@@ -117,6 +120,7 @@ export class PiResumeAdapter {
       usageFacts: this.runtime === "pi" && (this.options.usageFactsEnabled?.() ?? false),
       openRouterCharge: this.runtime === "pi" && (this.options.openRouterChargeEnabled?.() ?? false),
       envPassthrough: this.options.envPassthroughFor?.(tmuxSessionName) ?? [],
+      modelOverrides: this.runtime === "pi" ? this.options.modelOverridesFor?.(tmuxSessionName) : undefined,
     });
 
     const command = this.runtime === "pi" && this.options.seatLaunchEnvironment

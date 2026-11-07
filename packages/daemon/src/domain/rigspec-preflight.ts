@@ -243,6 +243,24 @@ export function permissionPolicyDiscoveryWarnings(
   return warnings;
 }
 
+/**
+ * OF-270: say what a Pi seat's `model_overrides` will do, so a reader of `rig spec preflight` or the `rig up --plan`
+ * preflight stage sees it before launch. Informational only (readiness and state unchanged): the runner writes these
+ * values into the seat's own models.json at every launch, and refuses the launch if that file is a symlink.
+ */
+export function modelOverrideDiscoveryWarnings(rigSpec: PodRigSpec): string[] {
+  const warnings: string[] = [];
+  for (const pod of rigSpec.pods) {
+    for (const member of pod.members) {
+      if (!member.modelOverrides) continue;
+      const entries = Object.entries(member.modelOverrides).flatMap(([provider, models]) =>
+        Object.entries(models).map(([model, o]) => `${provider}/${model} contextWindow=${o.contextWindow}`));
+      warnings.push(`${pod.id}.${member.id}: model_overrides ${entries.join(", ")}; the runner writes these into the seat's models.json at every launch and refuses the launch if that file is a symlink`);
+    }
+  }
+  return warnings;
+}
+
 /** A seat's cwd must be an existing directory, except one the launch is about to create (see cwdsCreatedByLaunch). */
 function seatCwdPresenceError(resolvedCwd: string, ctx: PreflightSpecContext): string | null {
   const willBeCreated = (ctx.cwdsCreatedByLaunch ?? []).some((dir) => nodePath.resolve(dir) === nodePath.resolve(resolvedCwd));
@@ -468,6 +486,7 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
   // SEMANTIC FENCE: this order is PRESENTATION ONLY. Any consumer that treats the first warning as
   // higher-priority is a FINDING, not an ordering input — the pin freezes presentation, never semantics.
   warnings.push(...permissionPolicyDiscoveryWarnings(rigSpec, preflightCtx));
+  warnings.push(...modelOverrideDiscoveryWarnings(rigSpec));
   return { ready: errors.length === 0, errors, warnings };
 }
 
