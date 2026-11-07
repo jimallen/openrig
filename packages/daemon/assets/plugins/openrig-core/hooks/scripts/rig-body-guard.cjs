@@ -33,8 +33,8 @@
 //
 // Not covered (residual, documented in the OF-249 report): `eval "$x"` where the text is built elsewhere, a shell function or positional parameter that carries
 // the text, globs and brace expansion that spell the name (./r?g, r{i,}g), a variable set outside the command (`export R=rig` in an earlier command) used
-// anywhere but directly before a guarded rig command word, a file written with an unquoted here-document and sent in a later command, `hc send`,
-// `tmux send-keys` (OF-265), python/node -e shelling out, aliases.
+// anywhere but directly before a guarded rig command word, a file written with an unquoted here-document and sent in a later command,
+// text typed into a pane that does not start with a guarded rig command, python/node -e shelling out, aliases.
 
 const MAX_LEN = 1_000_000;
 // OF-251: stands in, in a wrapper script's text, for a substitution the LOCAL shell runs before the wrapper starts. A private-use
@@ -802,7 +802,8 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
     if (!handled && !NON_RUNNERS.has(res.name)) {
       // OF-251 review F-1/F-3: a runner this guard does not model (find -exec, parallel, docker exec, script, tmux, ...): `rig <guarded command> ...` among its
       // arguments is judged as if it were run directly, and an argument that is itself a script string naming a guarded rig command is read as shell text
-      // (fail closed). tmux send-keys types into another pane, a different vector that is left alone: only the first rule applies to it.
+      // (fail closed). tmux send-keys and hc send type into another pane, whose shell expands the text: it is read as shell text by the same rule (OF-265), anchored
+      // at a guarded rig command, so prose typed into an agent pane that merely mentions `rig send` is not a script.
       const j = res.args.findIndex((a) => !a.expands && baseName(a.text) === "rig");
       if (j >= 0) {
         const top = topLevel(res.args.slice(j + 1));
@@ -811,7 +812,7 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
           if (Object.prototype.hasOwnProperty.call(MESSAGE_COMMANDS, top.name)) message = top.name;
         }
       }
-      if (res.name !== "tmux") for (const a of res.args) if (/\s/.test(a.text) && SCRIPT_START_RE.test(a.text)) scanScriptWords([a], depth, out);
+      for (const a of res.args) if (/\s/.test(a.text) && SCRIPT_START_RE.test(a.text)) scanScriptWords([a], depth, out);
     }
   }
   if (!message) return;
