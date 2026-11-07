@@ -133,7 +133,9 @@ Restore behavior, each point checked in `restore-orchestrator.ts`:
   maps, not by picking the newest session row
   (`resolveActiveSnapshotSession`, `active-occupant.ts:74`, called at
   `restore-orchestrator.ts:774` and `:971`). An ambiguous occupant fails the
-  node loudly (`activeOccupantAmbiguityError`, `active-occupant.ts:97`).
+  node loudly (`activeOccupantAmbiguityError`, `active-occupant.ts:97`). That node alone (OF-263): a
+  snapshot may record a seat as ambiguous over any number of rows (fewer than two when a fresh-launch record names no single resumable row), the other seats still restore, and the
+  current-state eligibility check does not refuse the rig for that seat.
 - Consults live `continuity_state`; preserves state when a node is already
   `restoring` (`:777–791` — `SELECT status FROM continuity_state …` at
   `:780`; if `status === "restoring"` the node is skipped with a warning and

@@ -10,6 +10,16 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### One ambiguous seat no longer refuses the whole rig on `rig up --existing` (OF-263)
+
+- Two things made one seat's unsettled occupant refuse every seat of the rig: a snapshot that records a seat as ambiguous over fewer than two rows (a fresh-launch record that names a row the
+  seat cannot resume, a damaged one, or two that contradict each other) was judged not restore-usable, so none of its seats could be restored from it; and the current-state fallback
+  refused the rig for that seat's missing startup context or token although restore fails an ambiguous seat before starting anything in it.
+- Now the refusal is the seat's alone. Restore starts the other seats and reports the ambiguous one as `failed` with its reason (`Active-occupant ambiguity: N candidate session rows ... Seat unrecoverable until resolved`;
+  with fewer than two rows the reason says the snapshot could not settle the seat's occupant, not that it recorded several). A snapshot that records a seat ambiguous also matches a present state that is
+  ambiguous for that seat; one that names an occupant, or none, does not. How an operator resolves the ambiguous seat is unchanged (it was already a per-seat failure when the seat had two or more candidate rows).
+- A duplicated candidate id, or a candidate that is not a row of that seat, still makes a snapshot unusable.
+
 ### A seat whose occupant of record has ended is a seat with no live occupant in the restore preview and the eligibility gate too (OF-260)
 
 - The OF-255 capture already records such a seat (its `rig seat launch --fresh` successor was stopped, or a deliberate stop came after its last live row) as having no occupant. Two

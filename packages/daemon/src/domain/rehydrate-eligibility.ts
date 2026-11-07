@@ -53,8 +53,14 @@ export function snapshotMatchesCurrentOccupants(
   for (const node of rig.nodes) {
     const current = resolveActiveOccupantRow(candidates, Object.prototype.hasOwnProperty.call(recorded, node.id) ? recorded : undefined, node.id);
     if (current.kind === "none") continue;
-    if (current.kind === "ambiguous") return false;
     const captured = resolveActiveSnapshotSession(snapshot.data, node.id);
+    // OF-263: a seat whose occupant is ambiguous now AND was recorded ambiguous names no conversation to revive: restore fails
+    // that seat on its own, so it cannot make the snapshot stale for the other seats. An ambiguous present against a snapshot that
+    // names an occupant is still positive evidence that the snapshot is not about the current state.
+    if (current.kind === "ambiguous") {
+      if (captured.kind === "ambiguous") continue;
+      return false;
+    }
     // OF-255: the seat's fresh successor was stopped before the snapshot, which recorded the seat with no occupant and kept
     // the stopped successor's row (status exited). That is the same fact current state holds (a stopped seat, occupant of
     // record X): a match. A snapshot that does not carry that exact row never matches this way.
@@ -126,8 +132,11 @@ export function assessCurrentStateRehydrateEligibility(
   ).all(rig.rig.id) as Array<{ id: string; nodeId: string; status: string; resumeType: string | null; resumeToken: string | null; restorePolicy: string; stopMark: number | null }>;
   const occupantRows = markDeliberateStops(allRows, readDeliberateStopIds(db, rig.rig.id));
   const recorded = readFreshOccupantRelations(db, rig.rig.id);
-  const stoppedForDecision = (nodeId: string): boolean =>
-    resolveRehydrateOccupant(occupantRows, nodeId, recorded).kind === "none" && absentSeatResumeHistory(allRows, nodeId) !== null;
+  // OF-263: likewise a seat whose occupant is ambiguous: restore fails that seat before starting anything in it.
+  const startsNothing = (nodeId: string): boolean => {
+    const occupant = resolveRehydrateOccupant(occupantRows, nodeId, recorded);
+    return occupant.kind === "ambiguous" || (occupant.kind === "none" && absentSeatResumeHistory(allRows, nodeId) !== null);
+  };
 
   for (const node of rig.nodes) {
     const runtime = node.runtime ?? "";
@@ -144,7 +153,7 @@ export function assessCurrentStateRehydrateEligibility(
       continue;
     }
 
-    if (isAgentRuntime && !hasStartupContext && !hasResumeToken && !stoppedForDecision(node.id)) {
+    if (isAgentRuntime && !hasStartupContext && !hasResumeToken && !startsNothing(node.id)) {
       blockers.push(`node ${node.logicalId} has runtime ${runtime} but no startup context or resume token`);
     }
   }

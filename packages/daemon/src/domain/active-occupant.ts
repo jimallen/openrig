@@ -133,7 +133,13 @@ export function resolveActiveSnapshotSession(data: SnapshotData, nodeId: string)
     }
     if (state.kind === "absent") return { kind: "none" };
     if (state.kind === "ambiguous") {
-      return { kind: "ambiguous", candidateIds: [...state.candidateIds], detail: "the snapshot recorded multiple live occupant candidates at capture" };
+      return {
+        kind: "ambiguous", candidateIds: [...state.candidateIds],
+        // OF-263: fewer than two candidates is not "multiple": the seat's fresh-launch records named no single resumable row.
+        detail: state.candidateIds.length >= 2
+          ? "the snapshot recorded multiple live occupant candidates at capture"
+          : "the snapshot could not settle this seat's occupant at capture: its fresh-launch records name no single row it can resume (dangling, damaged or contradictory)",
+      };
     }
     const session = rows.find((row) => row.id === state.sessionId);
     if (!session) {
