@@ -40,17 +40,16 @@ RUN set -eux; \
     node --version; npm --version
 
 # --- layer 2b: herdr-core (hc), pinned, beside tmux (hc cutover W8; tmux stays while tmux code remains in src) ---
-# The installer script is pinned by sha256 and verifies the release tarball against that version's manifest checksum itself.
+# Installed from the release TARBALL, checked against the per-target sha256 in hc-pin.env (OF-254; the upstream install.sh is no longer
+# downloaded: it changed under a fixed hc version and broke its own pin). hc-pin.env is also read by the CI job and by
+# scripts/testbed-hc-pin.test.mjs; install-pinned-hc.sh says what it does not do that install.sh did (bundled app, codesign).
 # Into /usr/local/bin (root, before USER openrig) so the non-root user finds `hc` on PATH. Bumping hc is a deliberate edit of
-# both ARGs here (and of the same two values in .github/workflows/tests.yml).
-ARG HC_VERSION=0.1.17
-ARG HC_INSTALLER_SHA256=ac94d641e3ddb7cd1e8ec9b61babafe77a0a8f741a4eafea0844a00d0e14dd59
+# hc-pin.env (and of the test's restated values).
+COPY hc-pin.env install-pinned-hc.sh /tmp/
 RUN set -eux; \
-    curl -fsSLo /tmp/hc-install.sh https://releases.herdr.dev/core/install.sh; \
-    echo "${HC_INSTALLER_SHA256}  /tmp/hc-install.sh" | sha256sum -c -; \
-    HC_VERSION="${HC_VERSION}" HC_INSTALL_DIR=/usr/local/bin sh /tmp/hc-install.sh; \
-    rm -f /tmp/hc-install.sh; \
-    test "$(hc --version)" = "hc ${HC_VERSION}"
+    sh /tmp/install-pinned-hc.sh /tmp/hc-pin.env /usr/local/bin; \
+    . /tmp/hc-pin.env; test "$(hc --version)" = "hc ${HC_VERSION}"; \
+    rm -f /tmp/hc-pin.env /tmp/install-pinned-hc.sh
 
 # --- layer 3: the OpenRig package from the LOCAL pack tarball, never the npm registry ---
 ARG OPENRIG_TARBALL

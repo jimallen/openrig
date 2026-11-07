@@ -46,7 +46,7 @@ cleanup() {
   rm -rf "${CONTEXT}"
 }
 trap cleanup EXIT
-cp "${TESTBED_DIR}/Dockerfile" "${TESTBED_DIR}/entrypoint.sh" "${CONTEXT}/"
+cp "${TESTBED_DIR}/Dockerfile" "${TESTBED_DIR}/entrypoint.sh" "${TESTBED_DIR}/hc-pin.env" "${TESTBED_DIR}/install-pinned-hc.sh" "${CONTEXT}/"
 
 # OpenRig CLI from the TREE (never the npm registry). ASSEMBLE the publishable @openrig/cli first
 # (build-package.sh bundles daemon/ui/tui + the `rig` bin into packages/cli), then pack THAT. Packing

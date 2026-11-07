@@ -94,21 +94,14 @@ jobs:
           cache: npm
       # tmux stays while any tmux code remains in src (the hc cutover removes it in steps); hc is installed beside it.
       - run: brew install tmux
-      # herdr-core (hc), pinned. The installer script is pinned by sha256 and verifies the release tarball against the
-      # version's manifest checksum itself; it installs into a job-local directory that later steps put on PATH. Bumping hc
-      # is a deliberate edit of both values here (and of HC_VERSION in docker/testbed/Dockerfile).
-      - name: Install hc (herdr-core) 0.1.17
-        env:
-          HC_VERSION: "0.1.17"
-          HC_INSTALLER_SHA256: "ac94d641e3ddb7cd1e8ec9b61babafe77a0a8f741a4eafea0844a00d0e14dd59"
+      # herdr-core (hc), pinned: the release tarball for this runner, checked against the sha256 in docker/testbed/hc-pin.env (the same
+      # file the testbed image reads; OF-254). It installs into a job-local directory that later steps put on PATH. Bumping hc is a
+      # deliberate edit of that file and of scripts/testbed-hc-pin.test.mjs.
+      - name: Install hc (herdr-core) from the pinned tarball
         run: |
           set -euo pipefail
           hc_bin="$RUNNER_TEMP/hc-bin"
-          mkdir -p "$hc_bin"
-          curl -fsSL https://releases.herdr.dev/core/install.sh -o "$RUNNER_TEMP/hc-install.sh"
-          echo "$HC_INSTALLER_SHA256  $RUNNER_TEMP/hc-install.sh" | shasum -a 256 -c -
-          HC_VERSION="$HC_VERSION" HC_INSTALL_DIR="$hc_bin" sh "$RUNNER_TEMP/hc-install.sh"
-          test "$("$hc_bin/herdr-core" --version)" = "hc $HC_VERSION"
+          sh docker/testbed/install-pinned-hc.sh docker/testbed/hc-pin.env "$hc_bin"
           echo "$hc_bin" >> "$GITHUB_PATH"
       - run: npm ci
       - name: Build the packages the tests import
