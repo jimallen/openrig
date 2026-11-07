@@ -2783,7 +2783,7 @@ describe("RestoreOrchestrator", () => {
       const probe = tmux.probeSession;
       tmux.probeSession = async (name: string) => { if (name === otherSession) heldAtProbe.push(guard.lifecycleHeld(other.id)); return probe.call(tmux, name); };
       const result = await createOrchestrator({ tmux, claude: mockClaudeResume() }).launchNodeSubset(rig.id, ["dev.impl"], { snapshotId: snap.id });
-      expect(result.ok ? result.held.map((h) => h.logicalId) : result, "positive control: the non-target was probed and held").toEqual(["dev.other"]);
+      expect(result.ok ? (result.held ?? []).map((h) => h.logicalId) : result, "positive control: the non-target was probed and held").toEqual(["dev.other"]);
       expect(heldAtProbe, "probes of the non-target's session, and whether the lease held it at each").toEqual([true]);
       expect(guard.lifecycleHeld(other.id)).toBe(false);
     });
