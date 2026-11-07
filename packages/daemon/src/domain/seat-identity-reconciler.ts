@@ -32,9 +32,12 @@ export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
  *
  *  The per-seat term is one seat's whole turn of the sequential restore, read from StartupOrchestrator.startNode (OF-247 a; a bound from the code, with the timing
  *  pinned in startup-pump.test.ts): the readiness window (`runtime.readiness_timeout_seconds`, default 30 s, at most 600 s, resolved at each launch), then the
- *  resume settle (RESUME_SETTLE_MS, 2.5 s, a resumed seat only), then at most ONE startup text wait (STARTUP_TEXT_WAIT_MS, 5 min: the first send the seat's gate does not
- *  record latches `pumpStopped`, so later sends return at once). A seat whose readiness times out fails there and never reaches the text wait, so the terms add only
- *  for a seat that becomes ready just inside its window. Before OF-247 the term was the text wait alone, 32.5 s short of that turn at the default window and 10 min
+ *  resume settle (RESUME_SETTLE_MS, 2.5 s, a resumed seat only), then ONE startup text wait (STARTUP_TEXT_WAIT_MS, 5 min). That is a bound for a seat whose
+ *  send FAILS: the first send the seat's gate does not record latches `pumpStopped`, so later sends return at once (pinned in startup-pump.test.ts). It is not a bound
+ *  for a seat whose texts are each recorded late: every send gets its own fresh wait (awaitStartupText), a seat has several sends (post-launch file, challenge, actions,
+ *  initial prompt, restore preload), so its worst case is the window, the settle and k waits (OF-257 F1, review-of247-54797a70.md; k >= 2 needs each text recorded just
+ *  under 5 min, which no measurement here shows). The 10 min base is the margin for that case, and the ceiling is finite either way. A seat whose readiness times out
+ *  fails there and never reaches the text wait, so the terms add only for a seat that becomes ready just inside its window. Before OF-247 the term was the text wait alone, 32.5 s short of that turn at the default window and 10 min
  *  short at the largest. */
 export const LIFECYCLE_EXCUSE_BASE_MS = 10 * 60_000;
 /** One seat's turn of the restore for a readiness window of `readinessMs`: the window, the resume settle and one startup text wait. */
@@ -151,6 +154,8 @@ export class SeatIdentityReconciler {
   private readonly readinessTimeoutMs: (() => number) | undefined;
   private readonly excuseBaseMs: number;
   private readonly excusePerSeatMsOverride: number | undefined;
+  /** OF-257 F3: the per-seat term as read at the start of the current sweep (the settings file is read once per sweep, not once per held seat); null outside a sweep or before the first held seat. */
+  private sweepPerSeatMs: number | null = null;
 
   constructor(deps: SeatIdentityReconcilerDeps) {
     this.db = deps.db;
@@ -171,6 +176,14 @@ export class SeatIdentityReconciler {
     return this.excuseBaseMs + perSeat * Math.max(1, held);
   }
 
+  /** `excuseCeilingMs` for the sweep under way: the readiness setting (a synchronous read of the settings file) is read at most once per sweep, by the first held seat
+   *  that needs it, and every later held seat of the same sweep shares it (OF-257 F3). The next sweep reads again, so a changed setting is seen at the next poll. */
+  private excuseCeilingForSweep(held: number): number {
+    if (this.excusePerSeatMsOverride !== undefined) return this.excuseCeilingMs(held);
+    this.sweepPerSeatMs ??= perSeatTermMs(this.readinessTimeoutMs?.() ?? DEFAULT_READINESS_TIMEOUT_MS);
+    return this.excuseBaseMs + this.sweepPerSeatMs * Math.max(1, held);
+  }
+
   /** OF-235: a supported operation (stop, `rig down`, restart, handover, restore, launch) holds the seat's lifecycle lease from before it ends the
    *  terminal until after the new one is bound, however long that takes, so a terminal missing under the lease is the operation's doing, not a crash.
    *  True while the lease holds the seat and has held it for less than the ceiling; the clock is the sweep's own observation time. */
@@ -178,7 +191,7 @@ export class SeatIdentityReconciler {
     if (!this.lifecycleHeld?.(nodeId)) { this.heldSince.delete(nodeId); return false; }
     const since = this.heldSince.get(nodeId) ?? observedMs;
     this.heldSince.set(nodeId, since);
-    return observedMs - since < this.excuseCeilingMs(this.lifecycleHeldCount?.() ?? 1);
+    return observedMs - since < this.excuseCeilingForSweep(this.lifecycleHeldCount?.() ?? 1);
   }
 
   private runningSeats(): RunningSeatRow[] {
@@ -213,6 +226,7 @@ export class SeatIdentityReconciler {
   }
 
   private async reconcileSweep(generation: number): Promise<void> {
+    this.sweepPerSeatMs = null;
     const seats = this.runningSeats();
     // Prune verdicts for nodes no longer running (keep the table bounded).
     this.store.pruneExcept(seats.map((s) => s.node_id));

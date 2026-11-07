@@ -31,7 +31,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 const SEATS = ["dev-a@solo-rig", "dev-b@solo-rig", "dev-c@solo-rig"];
 const [A, B, C] = SEATS as [string, string, string];
 
-function fixture(opts: { seats?: string[]; wired?: boolean; excuse?: { baseMs: number; perSeatMs?: number }; readinessMs?: number } = {}) {
+function fixture(opts: { seats?: string[]; wired?: boolean; excuse?: { baseMs: number; perSeatMs?: number }; readinessMs?: number; readinessReads?: { n: number } } = {}) {
   const seatNames = opts.seats ?? [A];
   const db = createDb(); databases.push(db); migrate(db, ALL_MIGRATIONS);
   db.prepare("INSERT INTO rigs (id, name) VALUES ('rig-1', 'solo-rig')").run();
@@ -60,7 +60,7 @@ function fixture(opts: { seats?: string[]; wired?: boolean; excuse?: { baseMs: n
     ...(opts.wired === false ? {} : { lifecycleHeld: (id: string) => guard.lifecycleHeld(id) }),
     ...(opts.wired === false ? {} : { lifecycleHeldCount: () => guard.lifecycleHeldCount() }),
     ...(opts.excuse ? { lifecycleExcuse: opts.excuse } : {}),
-    ...(opts.readinessMs === undefined ? {} : { readinessTimeoutMs: () => opts.readinessMs! }),
+    ...(opts.readinessMs === undefined ? {} : { readinessTimeoutMs: () => { if (opts.readinessReads) opts.readinessReads.n++; return opts.readinessMs!; } }),
   });
   const store = new SeatIdentityStore(db);
   const reason = (node: string) => store.getForNode(node)?.reason ?? "(no verdict)";
@@ -163,7 +163,7 @@ describe("OF-235: a seat a lifecycle lease holds is not reported lost while the 
   });
 
   // OF-247 (a). The per-seat term was STARTUP_TEXT_WAIT_MS alone; a seat's turn of the restore also waits the readiness window first (StartupOrchestrator.startNode: readiness,
-  // then the resume settle, then at most one startup text wait). Production consequence: a seat that becomes ready just inside its window and then waits out the text wait
+  // then the resume settle, then one startup text wait: the bound for a failing send, see the reconciler's doc comment for a seat whose texts are each recorded late). Production consequence: a seat that becomes ready just inside its window and then waits out the text wait
   // was past its term by the window, and a user who raised `runtime.readiness_timeout_seconds` (to 600) by ten minutes.
   // The constants are restated here as numbers, not imported as sums, so each one fails on its own.
   it("the ceiling's terms: 10 min plus, per seat held, the seat's whole turn: readiness window 30 s + resume settle 2.5 s + the startup text wait 5 min", () => {
@@ -182,6 +182,23 @@ describe("OF-235: a seat a lifecycle lease holds is not reported lost while the 
     expect(ceiling(600_000, 1), "the largest window the setting takes").toBe(600_000 + 302_500 + 600_000);
     expect(ceiling(600_000, 27), "27 seats at that window").toBe(600_000 + 27 * 902_500);
     expect(ceiling(30_000, 0), "a count of zero is one seat").toBe(600_000 + 332_500);
+  });
+
+  // OF-257 F3 (review-of247-54797a70.md): the ceiling read the settings file once per held seat per sweep (and `excusedByLifecycle` runs twice per held seat per sweep).
+  // Production consequence: 27 held seats made 54 synchronous config reads in every 5 s sweep, on the event loop, each with a stderr warning when config.json is invalid.
+  // Entrypoint: startup.ts constructs the reconciler with `readinessTimeoutMs: () => resolveReadinessTimeoutMs(undefined, readinessSettings)` (a file read) and starts its 5 s timer.
+  it("the readiness setting is read once per sweep however many seats the lease holds, and again at the next sweep", async () => {
+    const readinessReads = { n: 0 };
+    const f = fixture({ seats: SEATS, readinessMs: 30_000, readinessReads });
+    await f.poll(1);
+    expect(readinessReads.n, "no lease, no seat to excuse, no read").toBe(0);
+    await f.guard.lifecycle(["n0", "n1", "n2"], async () => {
+      f.core.live = [];
+      await f.poll(1);
+      expect(readinessReads.n, "three held seats missing in one sweep: one read").toBe(1);
+      await f.poll(2);
+      expect(readinessReads.n, "one read per sweep, so a changed setting is seen at the next poll").toBe(3);
+    });
   });
 
   it("a lease that is never released stops excusing at the ceiling the window sets: 30 s of readiness and 90 s of it end 60 s of polls apart", async () => {

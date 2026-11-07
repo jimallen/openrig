@@ -2769,6 +2769,25 @@ describe("RestoreOrchestrator", () => {
       expect(guard.lifecycleHeld(newNode.id)).toBe(false);
     });
 
+    // OF-257 F2 (review-of247-54797a70.md, mutant M12 survived): the subset launch's lease also covers the NON-target seats it detaches and holds
+    // (`...nonTargetNodes.map(...)` in launchNodeTargets' guardedIds). Production consequence: without them a held seat's stale row is marked detached and
+    // its `node.held` is emitted with no lifecycle lease on that seat, so a concurrent stop or launch of it is not serialized behind the subset launch.
+    // Entrypoint: routes/sessions.ts (subset launch) -> RestoreOrchestrator.launchNodeSubset, constructed by startup.ts with the delivery guard on the tmux adapter.
+    it("a subset launch also holds the NON-target seats it detaches, for as long as it probes and marks them, and releases them after", async () => {
+      const { rig, snap, newNode } = snapshotThenRegrow("of257-subset-nontarget-rig");
+      const other = rigRepo.addNode(rig.id, "dev.other", { runtime: "claude-code" });
+      const otherSession = "dev-other@of257-subset-nontarget-rig";
+      sessionRegistry.updateStatus(sessionRegistry.registerSession(other.id, otherSession).id, "running");
+      const { guard, tmux } = guardedTmux([], () => newNode.id);
+      const heldAtProbe: boolean[] = [];
+      const probe = tmux.probeSession;
+      tmux.probeSession = async (name: string) => { if (name === otherSession) heldAtProbe.push(guard.lifecycleHeld(other.id)); return probe.call(tmux, name); };
+      const result = await createOrchestrator({ tmux, claude: mockClaudeResume() }).launchNodeSubset(rig.id, ["dev.impl"], { snapshotId: snap.id });
+      expect(result.ok ? result.held.map((h) => h.logicalId) : result, "positive control: the non-target was probed and held").toEqual(["dev.other"]);
+      expect(heldAtProbe, "probes of the non-target's session, and whether the lease held it at each").toEqual([true]);
+      expect(guard.lifecycleHeld(other.id)).toBe(false);
+    });
+
     it("a full restore: the same rollback is held (the control for the restore() entry)", async () => {
       const { snap, newNode } = snapshotThenRegrow("of247-restore-rig");
       const heldAtKill: boolean[] = [];
@@ -2786,6 +2805,11 @@ describe("RestoreOrchestrator", () => {
     // reported, however long compose hangs: the lease excuses nothing there, and a real loss cannot be hidden by it. Neither a timeout (which would fail a
     // legitimate cold image pull) nor releasing the lease (the restore body runs inside it) is chosen; the row pins the premise. What a hung compose does cost is the
     // lease itself: every lifecycle operation on the rig's seats waits behind it, which this unit does not change (see the PR's Boundary).
+    // ASSUMPTION (OF-257 F4, review-of247-54797a70.md; an argument from code at 659b989b, not a measurement and not pinned): "nothing is excused" holds only while no other
+    // writer marks a seat of this rig `running` between step 2b and the boot. The writers of a `running` row in src are node-launcher.ts (under the launch's own per-seat lease),
+    // session-registry.registerClaimedSession (callers: seat-handover-service.ts, which holds its own lease, and session-reconciler.ts:395, which adopts a session found in
+    // tmux and holds none), and restore-orchestrator.ts:840 (a status put back inside the restore's lease). So the one open case is the session reconciler adopting a live
+    // tmux session for a rig seat while compose hangs; the seat is then excused until the ceiling if its terminal later goes missing. Not reproduced.
     describe("(b) a restore waiting on the services boot", () => {
       it("holds the lease on the rig's seat, while the seat is no running row and so nothing is excused or reported", async () => {
         const rig = rigRepo.createRig("of247-compose-rig");
