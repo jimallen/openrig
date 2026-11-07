@@ -9,7 +9,9 @@
 # releases.herdr.dev; it is unpacked only after its checksum matches, and nothing is installed unless the binary reports the pinned version.
 # Not done here, as install.sh did: the bundled-app install and the codesign check of "Herdr Core.app" (macOS user installs only; the
 # 0.1.17 tarballs hold no app bundle), the `?src=install` download-counter mark, and the update/downgrade logic.
-# HC_RELEASES_URL replaces the host for tests only (a file:// tree); the pinned checksum still has to match.
+# HC_RELEASES_URL replaces the host for tests only (a file:// tree); the pinned checksum still has to match. Nothing that ships sets it
+# (Dockerfile, workflow, build verb: pinned by the test). curl is held to https, redirects included; file: is allowed on the first hop only
+# when HC_RELEASES_URL is set. A checksum comes from the pin file only: any HC_SHA256_* in the environment is unset before the pin file is read.
 set -eu
 
 fail() { printf '%s\n' "hc: $*" >&2; exit 1; }
@@ -20,6 +22,7 @@ releases=${HC_RELEASES_URL:-https://releases.herdr.dev}
 
 [ -r "$pin" ] || fail "cannot read the pin file $pin"
 HC_VERSION=
+for v in $(env | sed -n 's/^\(HC_SHA256_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 # shellcheck disable=SC1090
 . "$pin"
 [ -n "$HC_VERSION" ] || fail "$pin names no HC_VERSION"
@@ -48,7 +51,9 @@ sha256() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 url="$releases/core/$HC_VERSION/herdr-core-$target.tar.gz"
-curl -fsSL "$url" -o "$tmp/hc.tar.gz" || fail "download failed: $url"
+proto='=https'
+[ -z "${HC_RELEASES_URL:-}" ] || proto='=https,file'
+curl -fsSL --proto "$proto" --proto-redir '=https' "$url" -o "$tmp/hc.tar.gz" || fail "download failed: $url"
 got=$(sha256 "$tmp/hc.tar.gz")
 [ "$got" = "$want" ] || fail "checksum mismatch for $url: got $got, the pin says $want"
 tar -xzf "$tmp/hc.tar.gz" -C "$tmp" herdr-core || fail "the tarball holds no herdr-core"

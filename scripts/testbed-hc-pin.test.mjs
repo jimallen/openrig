@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -166,4 +166,122 @@ test("installer: the default release host is releases.herdr.dev and the tarball 
   assert.match(text, /\$releases\/core\/\$HC_VERSION\/herdr-core-\$target\.tar\.gz/);
   assert.doesNotMatch(text, /install\.sh|manifest\.json|latest\.json/, "the installer reads no manifest and no script; the literals are in the pin file");
   assert.deepEqual([...text.matchAll(/https?:\/\/[^\s"')]+/g)].map((m) => m[0]).filter((u) => !u.includes("herdr.dev")), []);
+});
+
+// ---- OF-254 review nits: https-only curl, no checksum from the environment, non-hex literal, one named tar member ----
+
+/** A PATH directory holding a logging `curl` (fails by default, so no transfer happens; or runs the real one) and a logging `tar` (then runs the real one); returns the PATH to use and the log paths. */
+function shims(root, { curlFails = true } = {}) {
+  const dir = join(root, "shims");
+  mkdirSync(dir, { recursive: true });
+  const curlLog = join(root, "curl.args");
+  const tarLog = join(root, "tar.args");
+  const realTar = spawnSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).stdout.trim();
+  const realCurl = spawnSync("sh", ["-c", "command -v curl"], { encoding: "utf8" }).stdout.trim();
+  const curlEnd = curlFails ? "exit 22" : `exec "${realCurl}" "$@"`;
+  writeFileSync(join(dir, "curl"), `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done >> "${curlLog}"\n${curlEnd}\n`);
+  writeFileSync(join(dir, "tar"), `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done >> "${tarLog}"\nexec "${realTar}" "$@"\n`);
+  chmodSync(join(dir, "curl"), 0o755);
+  chmodSync(join(dir, "tar"), 0o755);
+  const lines = (f) => (existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean) : []);
+  return { path: `${dir}:${process.env.PATH}`, curl: () => lines(curlLog), tar: () => lines(tarLog) };
+}
+/** The value following `flag` in an argv list. */
+const argAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+const PIN_X86 = (h) => `HC_VERSION=9.9.9\nHC_SHA256_LINUX_X86_64=${h}\n`;
+const GOOD_HEX = "a".repeat(64);
+
+test("installer: production (HC_RELEASES_URL unset) lets curl use https only, redirects included; file: is allowed only when the test override is set", () => {
+  withRoot((root) => {
+    const sh = shims(root);
+    install(root, PIN_X86(GOOD_HEX), "linux-x86_64", { PATH: sh.path });
+    const prod = sh.curl();
+    assert.ok(prod.length > 0, "the fake curl was reached");
+    assert.equal(argAfter(prod, "--proto"), "=https", "first hop: https only, no file:");
+    assert.equal(argAfter(prod, "--proto-redir"), "=https", "redirects: https only");
+    assert.ok(prod.some((a) => a.startsWith("https://releases.herdr.dev/core/9.9.9/")), "the production URL is https on the release host");
+  });
+  withRoot((root) => {
+    const sh = shims(root);
+    install(root, PIN_X86(GOOD_HEX), "linux-x86_64", { PATH: sh.path, HC_RELEASES_URL: "file:///nonexistent" });
+    const test = sh.curl();
+    assert.equal(argAfter(test, "--proto"), "=https,file", "the test override may read file: on the first hop");
+    assert.equal(argAfter(test, "--proto-redir"), "=https", "a redirect still has to be https");
+  });
+});
+
+test("installer: nothing that ships sets HC_RELEASES_URL (Dockerfile, workflow, build verb), so production never reaches the file: allowance", () => {
+  assert.doesNotMatch(dockerfile, /HC_RELEASES_URL/);
+  assert.doesNotMatch(workflow, /HC_RELEASES_URL/);
+  assert.doesNotMatch(buildVerb, /HC_RELEASES_URL/);
+});
+
+test("installer: a checksum preset in the environment never supplies a target the pin file lacks", () => {
+  withRoot((root) => {
+    const { base, hashes } = releaseTree(root, "9.9.9", ["linux-aarch64"]);
+    const { run, dest } = install(root, PIN_X86(GOOD_HEX), "linux-aarch64", { HC_RELEASES_URL: base, HC_SHA256_LINUX_AARCH64: hashes["linux-aarch64"] });
+    assert.notEqual(run.status, 0, "the right hash in the environment must not make this install succeed");
+    assert.match(run.stderr, /no pinned checksum for linux-aarch64/);
+    assert.equal(existsSync(join(dest, "herdr-core")), false);
+  });
+});
+
+test("installer: a checksum preset in the environment never supplies an unknown target either (the variable is derived from any target name)", () => {
+  withRoot((root) => {
+    const { base, hashes } = releaseTree(root, "9.9.9", ["linux-riscv"]);
+    const { run, dest } = install(root, PIN_X86(GOOD_HEX), "linux-riscv", { HC_RELEASES_URL: base, HC_SHA256_LINUX_RISCV: hashes["linux-riscv"] });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /no pinned checksum for linux-riscv/);
+    assert.equal(existsSync(join(dest, "herdr-core")), false);
+  });
+});
+
+test("installer: a checksum preset in the environment never replaces the pin file's value (the pin file's wrong literal still fails)", () => {
+  withRoot((root) => {
+    const { base, hashes } = releaseTree(root, "9.9.9", ["linux-x86_64"]);
+    const { run, dest } = install(root, PIN_X86(GOOD_HEX), "linux-x86_64", { HC_RELEASES_URL: base, HC_SHA256_LINUX_X86_64: hashes["linux-x86_64"] });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /checksum mismatch/);
+    assert.equal(existsSync(join(dest, "herdr-core")), false);
+  });
+});
+
+test("installer: a 64-character pinned value with a non-hex character (or upper case) is refused as not a sha256, before any download", () => {
+  for (const bad of ["z".repeat(64), `${"a".repeat(63)}g`, "A".repeat(64)]) {
+    withRoot((root) => {
+      const sh = shims(root);
+      const { run } = install(root, PIN_X86(bad), "linux-x86_64", { PATH: sh.path, HC_RELEASES_URL: "file:///nonexistent-no-download-expected" });
+      assert.notEqual(run.status, 0, bad);
+      assert.match(run.stderr, /not a 64-digit sha256/, bad);
+      assert.deepEqual(sh.curl(), [], `${bad}: curl never ran`);
+    });
+  }
+});
+
+test("installer: only the named member herdr-core is extracted from the tarball", () => {
+  withRoot((root) => {
+    const { base, hashes } = releaseTree(root, "9.9.9", ["linux-x86_64"]);
+    const sh = shims(root, { curlFails: false });
+    const { run } = install(root, PIN_X86(hashes["linux-x86_64"]), "linux-x86_64", { PATH: sh.path, HC_RELEASES_URL: base });
+    assert.equal(run.status, 0, run.stderr);
+    const args = sh.tar();
+    assert.equal(args.at(-1), "herdr-core", "the last tar argument is the member name");
+    assert.ok(args.includes("-xzf") && args.includes("-C"), "an extraction into a directory");
+  });
+});
+
+test("installer: a tarball without a herdr-core member is refused with that message", () => {
+  withRoot((root) => {
+    const { base } = releaseTree(root, "9.9.9", ["linux-x86_64"]);
+    const stage = join(root, "other");
+    mkdirSync(stage);
+    writeFileSync(join(stage, "LICENSE"), "x\n");
+    const tgz = join(root, "rel", "core", "9.9.9", "herdr-core-linux-x86_64.tar.gz");
+    assert.equal(spawnSync("tar", ["-czf", tgz, "-C", stage, "LICENSE"]).status, 0);
+    const { run, dest } = install(root, PIN_X86(sha256(readFileSync(tgz))), "linux-x86_64", { HC_RELEASES_URL: base });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /the tarball holds no herdr-core/);
+    assert.equal(existsSync(join(dest, "herdr-core")), false);
+  });
 });
