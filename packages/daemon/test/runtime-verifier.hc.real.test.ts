@@ -12,7 +12,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
-import { HC_TESTED_VERSION, judgeHcVersion } from "../src/adapters/hc-version.js";
+import { HC_TESTED_VERSION, HC_TESTED_VERSIONS, judgeHcVersion } from "../src/adapters/hc-version.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const run = promisify(execFile);
@@ -52,13 +52,14 @@ describe.skipIf(!HC)("RuntimeVerifier.verifyHc against a private hc core", () =>
     expect(existsSync(socket)).toBe(false);
   });
 
-  it("with a core: verified at the pin, naming the generation it answered", async () => {
+  it("with a core: verified (silently at any tested version, with a warning at an untested one), naming the generation it answered", async () => {
     execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
     started = true;
     const result = await verifier().verifyHc();
-    if (installed === HC_TESTED_VERSION) {
+    if (installed !== undefined && (HC_TESTED_VERSIONS as readonly string[]).includes(installed)) {
+      // Any tested release is silent, not only the newest (OF-262: a host on an older tested hc failed this row when it compared with HC_TESTED_VERSION alone).
       expect(result.status).toBe("verified");
-      expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: 1, coreVersion: HC_TESTED_VERSION });
+      expect(JSON.parse(result.capabilitiesJson!)).toEqual({ generation: 1, coreVersion: installed });
       expect(result.error).toBeNull();
     } else if (accepted) {
       // Accepted by the version rule (same minor, at or above the floor) and not the tested one: verified, with the warning naming both.
