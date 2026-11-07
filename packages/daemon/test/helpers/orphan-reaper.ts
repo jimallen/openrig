@@ -38,6 +38,8 @@ export interface OrphanReaperTargets {
   ownerPid?: number;
   /** Test seam: which clock orders start times, "proc" (Linux, /proc ticks; the default there) or "ps" (`ps -o lstart=`; the default elsewhere). A Linux test can run the macOS arm with "ps". */
   startSource?: "proc" | "ps";
+  /** Test seam: the process whose ancestors are protected besides the owner's (default: this process, the one that arms). */
+  armerPid?: number;
   /** Test seam: the cap on one sweep's selection (default WATCHDOG_SELECTION_CAP). */
   maxSelected?: number;
   /** Test seam: a file descriptor for the watchdog's stderr (default: this process's stderr). */
@@ -135,9 +137,13 @@ export function listenerPids(port: number): number[] {
  *  (a) never a process that started before the owner (the owner's start is read at arming and passed in; a user session, loginwindow and launchd services all predate a test worker);
  *  (b) never pid 1, the watchdog itself, or an ancestor of the owner or of the process that armed it (their chains are read in TypeScript at arming and passed in: an owner that dies first cannot be read);
  *  (c) if one sweep selects more than `cap` processes, it signals none and writes ONE line to stderr.
- * Every kill goes through `may_signal`: the env holders, the macOS family (descendants), and the recorded `pid` identities (tmux servers among them). `tmux kill-server` signals by an
- * explicit, test-owned socket path (assertOwnedTmuxSocket), selects nothing by pattern and is not a pid selection. The last line ends the watchdog's own process group only if the
- * watchdog IS its group's leader (it is spawned detached, so the group holds only the watchdog and its children); run any other way, it kills nothing.
+ * Every PID signal the watchdog sends goes through `may_signal` and, for the selected sets, the cap: the env holders, the macOS family (descendants), and the recorded `pid` identities
+ * (tmux servers among them). ONE path is outside both: `tmux -S <socket> kill-server`, on the TERM sweep, before the cap is evaluated. It selects no pid; it names a socket, and the socket was
+ * checked once, at arming, by assertOwnedTmuxSocket (an absolute path that is not in tmux's shared per-user directory; that check does NOT require the path to be inside a directory the test
+ * created, so the bound on this path is the callers' (scenario-daemon.ts, hermetic-env.ts, hc-scratch.ts pass their own scaffold sockets), not a start-time or ancestor test). The last line ends
+ * the watchdog's own process group only if the watchdog IS its group's leader (it is spawned detached, so the group holds only the watchdog and its children); run any other way, it kills nothing.
+ * An entry containing a backslash or a tab is never matched by the macOS (awk) selector (awk -v processes escapes, and index() treats only spaces as separators); that errs toward selecting fewer processes.
+ * The ancestor chains are read at arming, and a failed parent read while building either of them refuses to arm (fail closed, as for the owner's start time) rather than protecting a shorter chain.
  *
  * Start times: Linux compares /proc/<pid>/stat field 22 (ticks since boot, exact). `ps -o lstart=` on Linux can name a moment up to two seconds before the process started (OF-219),
  * so it does not order processes there. Off Linux the same `ps -o lstart=` instrument as elsewhere, read under LC_ALL=C into civil seconds (second granularity, local time).
@@ -275,9 +281,9 @@ export function startToken(pid: number, source: "proc" | "ps"): string {
   return r.status === 0 ? r.stdout.trim().replace(/\s+/g, " ") : "";
 }
 
-/** The parent of `pid` now (0/null when unreadable): /proc stat field 4 on Linux, `ps -o ppid=` elsewhere. */
-function parentOf(pid: number): number | null {
-  if (hasProcFs()) {
+/** The parent of `pid` now (null when unreadable): /proc stat field 4 for source "proc", `ps -o ppid=` for "ps". */
+function parentOf(pid: number, source: "proc" | "ps"): number | null {
+  if (source === "proc") {
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
@@ -286,13 +292,21 @@ function parentOf(pid: number): number | null {
   }
   const r = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
   const ppid = Number(r.stdout.trim());
-  return r.status === 0 && Number.isInteger(ppid) && r.stdout.trim() !== "" ? ppid : null;
+  return r.status === 0 && r.stdout.trim() !== "" && Number.isInteger(ppid) ? ppid : null;
 }
 
-/** `pid` and its ancestors up to (not including) pid 1, read at arming, while the owner is alive: the watchdog must never signal them (OF-274 b). Passed in, because the watchdog cannot read an owner that dies first. */
-export function ancestorsOf(pid: number): number[] {
+/**
+ * `pid` and its ancestors up to (not including) pid 1, read at arming, while the owner is alive: the watchdog must never signal them (OF-274 b). Passed in, because the watchdog cannot read an
+ * owner that dies first. A parent that cannot be read THROWS: a chain shortened by one failed `ps` would silently protect less, so the watchdog is not armed instead.
+ */
+export function ancestorsOf(pid: number, source: "proc" | "ps"): number[] {
   const chain: number[] = [];
-  for (let p: number | null = pid; p !== null && p > 1 && chain.length < 64 && !chain.includes(p); p = parentOf(p)) chain.push(p);
+  for (let p = pid; p > 1 && chain.length < 64 && !chain.includes(p);) {
+    chain.push(p);
+    const parent = parentOf(p, source);
+    if (parent === null) throw new Error(`cannot read the parent of pid ${p} (while building the ancestors of pid ${pid}); the watchdog cannot show which processes it must never signal, so it is not armed`);
+    p = parent;
+  }
   return chain;
 }
 
@@ -310,7 +324,7 @@ export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () =>
     ...(targets.environ ?? []).flatMap((entry) => ["env", entry]),
     ...(targets.identities ?? []).flatMap((id) => ["pid", String(id.pid), id.started, id.command]),
   ];
-  const child = spawn("/bin/sh", ["-c", WATCHDOG, `reaper:${targets.label ?? "test"}`, String(owner), ownerStart, source, String(targets.maxSelected ?? WATCHDOG_SELECTION_CAP), [...new Set([...ancestorsOf(owner), ...ancestorsOf(process.pid)])].join(" "), ...args], {
+  const child = spawn("/bin/sh", ["-c", WATCHDOG, `reaper:${targets.label ?? "test"}`, String(owner), ownerStart, source, String(targets.maxSelected ?? WATCHDOG_SELECTION_CAP), [...new Set([...ancestorsOf(owner, source), ...ancestorsOf(targets.armerPid ?? process.pid, source)])].join(" "), ...args], {
     detached: true,
     // stdout is unused; stderr carries the one overflow line (to this process's own stderr unless a test gives a file).
     stdio: ["ignore", "ignore", targets.stderrFd ?? 2],

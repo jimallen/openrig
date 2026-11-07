@@ -5,7 +5,7 @@
 // process. Identity is pid + start time + command (ps), which works on Linux and macOS; nothing here reads another
 // process's environment except the explicitly Linux-only rows. Nothing here touches another process, a default tmux
 // socket, a real daemon or ~/.openrig.
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
@@ -889,7 +889,9 @@ describe.skipIf(!hasProcFs())("OF-274: the watchdog's bound", () => {
     expect(processAlive(parent.pid!), "the owner's parent, which carries the entry, is an ancestor and is never signalled").toBe(true);
   }, 90_000);
 
-  it.skipIf(!fs.existsSync("/.dockerenv"))("never signals pid 1, even recorded by identity (container only: pid 1 is the container's own init)", async () => {
+  // NON-BITING guard check (OF-274 review N4): inside a container the kernel ignores signals sent to the namespace's init, so this row stays green even with every pid-1 guard removed
+  // (measured by the reviewer: M4b). It records that pid 1 survives an armed watchdog; the row below pins the DECISION for pid 1, which is what can fail.
+  it.skipIf(!fs.existsSync("/.dockerenv"))("non-biting: pid 1 recorded by identity is still there after the watchdog ran (container only; the decision itself is pinned by the gate row)", async () => {
     const owner = plainSleeper();
     const init = identity(1);
     const reaper = reapWhenOwnerDies({ ownerPid: owner, identities: [init] });
@@ -923,7 +925,9 @@ describe.skipIf(!hasProcFs())("OF-274: the watchdog's bound", () => {
     expect(exact.lines).toEqual([]);
   }, 120_000);
 
-  it("a watchdog with the default cap stops the one carrier among 40 newer bystanders and leaves every bystander alone", async () => {
+  // This row tests SELECTION, not the cap: the 40 bystanders carry no entry, so a correct selector never picks them (the cap is pinned by the cap row alone). It is the row that fails when a
+  // widened selector with the cap removed signals processes that started after the owner (mutant C4).
+  it("selects only the carrier: 40 bystanders that started after the owner and do not carry the entry are left alone", async () => {
     const entry = fixtureEntry();
     const owner = plainSleeper();
     const bystanders = Array.from({ length: 40 }, () => plainSleeper());
@@ -936,6 +940,52 @@ describe.skipIf(!hasProcFs())("OF-274: the watchdog's bound", () => {
     expect(await watchdogEnded(reaper.pid)).toBe(true);
     expect(bystanders.map(processAlive).every(Boolean), "none of the 40 bystanders, all newer than the owner, was signalled").toBe(true);
   }, 90_000);
+
+  it("the gate refuses pid 1 even when the clock would allow it, and allows an ordinary newer process (the decision, checked without signalling anything)", () => {
+    const sleeper = plainSleeper();
+    const prefix = WATCHDOG.slice(0, WATCHDOG.indexOf('while kill -0 "$owner"'));   // the definitions: protected, startkey, may_signal
+    const decide = (pid: number, armed = "") => spawnSync("sh", ["-c", `${prefix}\nownerkey=0\nmay_signal ${pid}; echo $?`, "gate", "1", "0", "proc", "32", armed], { encoding: "utf8" }).stdout.trim();
+    expect(decide(sleeper), "positive control: ownerkey 0 lets any live process through the clock").toBe("0");
+    expect(decide(1), "pid 1 is refused although its start key passes the clock").toBe("1");
+    expect(decide(sleeper, String(sleeper)), "a pid in the armed (ancestor) list is refused").toBe("1");
+  });
+
+  it("an ancestor of the ARMING process is never signalled, even when the owner is a stranger to its lineage (same second, so only the chain protects it)", async () => {
+    while (Date.now() % 1000 > 150) await nap(20);
+    const entry = fixtureEntry(), env = asEnv(entry);
+    const armer = spawn("/bin/sh", ["-c", "while :; do sleep 1; done"], { detached: true, stdio: "ignore", env: { ...process.env, ...env } });
+    cleanups.push(() => { try { process.kill(-armer.pid!, "SIGKILL"); } catch { /* gone */ } });
+    const owner = plainSleeper();   // a stranger: neither the armer nor its descendant
+    const sibling = plainSleeper(env);
+    const reaper = reapWhenOwnerDies({ ownerPid: owner, armerPid: armer.pid!, environ: [entry], startSource: "ps" });
+    cleanups.push(() => reaper.disarm());
+    process.kill(owner, "SIGKILL");
+    expect(await waitGone(sibling, 30_000), "positive control: a same-second carrier that is no ancestor is stopped").toBe(true);
+    expect(await watchdogEnded(reaper.pid)).toBe(true);
+    expect(processAlive(armer.pid!), "the arming process, which carries the entry, is protected by its own chain").toBe(true);
+  }, 90_000);
+
+  describe("a failed parent read while building an ancestor chain refuses to arm (the macOS ps path, run on Linux through the ps seam)", () => {
+    const realPs = execFileSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).trim();
+    /** Arms with a `ps` that fails `-o ppid=` for `failPid` only, everything else real; returns what happened. */
+    const armWithFailingPpid = (failPid: number, targets: { ownerPid: number; armerPid?: number }) => {
+      const dir = tempDir();
+      fs.writeFileSync(path.join(dir, "ps"), `#!/bin/sh\ncase "$*" in *ppid=*"-p ${failPid}") exit 1 ;; esac\nexec ${realPs} "$@"\n`, { mode: 0o755 });
+      const saved = process.env.PATH;
+      process.env.PATH = `${dir}:${saved}`;
+      try { return reapWhenOwnerDies({ ...targets, environ: [fixtureEntry()], startSource: "ps" }); } finally { process.env.PATH = saved; }
+    };
+    it("the owner's chain", () => {
+      const owner = plainSleeper();
+      expect(() => armWithFailingPpid(owner, { ownerPid: owner })).toThrow(/cannot read the parent of pid \d+ \(while building the ancestors of pid \d+\)/);
+      const control = armWithFailingPpid(-1, { ownerPid: owner });   // positive control: a ps that fails for no pid arms
+      cleanups.push(() => control.disarm());
+    });
+    it("the arming process's chain", () => {
+      const owner = plainSleeper(), armer = plainSleeper();
+      expect(() => armWithFailingPpid(armer, { ownerPid: owner, armerPid: armer })).toThrow(/cannot read the parent of pid \d+/);
+    });
+  });
 
   it("the watchdog is the leader of its own process group, which is not the test's", () => {
     const owner = plainSleeper();
