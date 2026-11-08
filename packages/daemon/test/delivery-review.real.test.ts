@@ -20,6 +20,7 @@ import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { fakePi } from "./helpers/fake-pi.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CHILD = resolve(here, "helpers/delivery-daemon.ts");
@@ -347,6 +348,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         const s = fixture([], runtime);
         const pi = fakePi(s.dir);
         const root = join(HOME, "state", runtime);
+        if (runtime === "pi") seedPiFixtureCredential(root, s.name, "openrouter");
         const flags = runtime === "omp" ? ["--runtime", "omp", "--approval-mode", "yolo"] : ["--no-approve", "--model", "openrouter/fixture"];
         await core.client.call("terminal.run", {
           argv: [process.execPath, "--import", "tsx", RUNNER, "--session-name", s.name, "--state-root", root, "--cwd", s.dir, "--launch-id", "l1", ...flags], name: s.address, cwd: resolve(here, ".."),

@@ -17,6 +17,7 @@ import { HcAttach } from "../src/adapters/hc-attach.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 import { startFakePda, type FakePda } from "./helpers/fake-pda.js";
 import { BEARER } from "./helpers/pda-runner-rig.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
@@ -84,6 +85,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     return bin;
   }
   async function startPi(name: string, mode: "forge-model" | "hold" | "silent" | "long", rpcLog?: string): Promise<void> {
+    seedPiFixtureCredential(path.join(temp, `state-${name}`), name, "openrouter");
     await run(name, [process.execPath, "--import", "tsx", path.join(RUNNERS, "pi-runner.ts"), "--session-name", name, "--state-root", path.join(temp, `state-${name}`), "--cwd", temp, "--launch-id", "w41", "--no-approve", "--model", "openrouter/fixture"],
       { PATH: `${fakePi(mode, rpcLog)}${path.delimiter}${path.dirname(process.execPath)}`, OPENRIG_HOME: path.join(temp, "home") });
     await until(() => screen(name), (t) => t.includes(PI_RUNNER_READY_MARKER), `${name} READY`);
