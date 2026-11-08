@@ -334,7 +334,7 @@ describe("SeatQuestionService", () => {
     const svc = build();
     expect((await svc.wait(asked())).action).toBe("wait");
     db.prepare("UPDATE rigs SET question_auto_answer_minutes = 0 WHERE id = ?").run(rigId);
-    clock = T0 + 6 * MIN;
+    expect((await svc.wait(asked())).action).toBe("wait");              // a poll while it is off: the wait is not over, so nothing is decided
     db.prepare("UPDATE rigs SET question_auto_answer_minutes = 15 WHERE id = ?").run(rigId);
     expect((await askUntilSettled(svc)).action).toBe("answer");
   });

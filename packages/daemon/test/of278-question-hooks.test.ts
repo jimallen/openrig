@@ -73,7 +73,8 @@ describe("question-wait.cjs", () => {
 
   it.each([[400], [401]])("stops, printing nothing, when the daemon refuses the request with %d (it would be refused again)", async (status) => {
     const { fetchImpl, seen } = fakeFetch([{ ok: false, status, code: "invalid_question_request" }]);
-    expect(await hook.run(PAYLOAD, ENV, { fetch: fetchImpl, ...instant })).toBeNull();
+    let reads = 0; const now = () => { if (++reads > 5000) throw new Error("runaway: asked again after a refusal"); return 0; };
+    expect(await hook.run(PAYLOAD, ENV, { fetch: fetchImpl, ...instant, now })).toBeNull();
     expect(seen).toHaveLength(1);
   });
 
