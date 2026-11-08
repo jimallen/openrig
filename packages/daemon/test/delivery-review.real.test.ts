@@ -383,6 +383,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       const s = fixture([], "pi");
       const pi = fakePi(s.dir);
       const root = join(HOME, "state", "pi");
+      seedPiFixtureCredential(root, s.name, "openrouter");
       const canary = join(s.dir, "it-ran");
       mkdirSync(join(root, s.name), { recursive: true });
       writeFileSync(join(root, s.name, "runner-state.json"), JSON.stringify({ ready: true, updatedAt: new Date().toISOString(), aliveAt: new Date().toISOString(), seatGate: 1 }));
