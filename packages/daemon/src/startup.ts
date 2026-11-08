@@ -41,6 +41,7 @@ import { MessageObligations, NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messa
 import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
 import { watchdogDeliveryOutcome, watchdogWakeObligation } from "./domain/watchdog-delivery-status.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
+import { createHerdrAppCli } from "./domain/terminal/herdr-app-provider.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
 import { connectHcCore, pinCallsToCore, type HcCoreWatch } from "./adapters/hc-core-watch.js";
@@ -545,7 +546,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   let hcCoreVersion: string | null = null;
   /** Why the latest core start was refused or failed (connectHcCore), null while starts go through; `rig health` shows it. */
   let hcCoreStartFailure: string | null = null;
-  const hcAdapter = hcClient ? new HcAdapter(hcClient) : undefined;
+  // OF-281: a relaunched seat's Herdr space and tab names are put back through `herdr-app` (rename only; each call bounded to 2 s; no app or no window is a no-op).
+  const hcAdapter = hcClient ? new HcAdapter(hcClient, { app: createHerdrAppCli(resolveOnPath("herdr-app", process.env.PATH) ?? "herdr-app", undefined, 2000) }) : undefined;
   // A wrong generation or version throws here: the daemon must not start against a core it can't speak to.
   // Kept, not discarded: stopped at shutdown (index.ts), and a refusal after the first attempt refuses the client's calls.
   const hcCoreWatch = hcClient ? await connectHcCore({ socketPath: hcClient.socketPath, client: hcClient, onCoreVersion: (version) => { hcCoreVersion = version; }, onCoreStartFailure: (why) => { hcCoreStartFailure = why; } }) : undefined;

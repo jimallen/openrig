@@ -1,6 +1,9 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { hcExactTerminalRef, sessionEnvFromLabels } from "./hc-identity.js";
 import { refusedLaunch } from "./hc-launch-refusal.js";
+import { SPACE_LABEL, TAB_LABEL } from "./hc-placement.js";
+import { placementNamesOf, withoutAppOwnedLabels } from "./hc-placement-carry.js";
+import type { PlacementNameRestorer } from "./hc-placement-names.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatLaunchRecords } from "./hc-seat.js";
 import { DeliveryGuardError, type SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import type { SeatLaunchHints, TmuxResult } from "./tmux.js";
@@ -24,6 +27,8 @@ export interface HcLifecycleOptions {
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   /** What the seats' terminals were made with (the host's createSession writes it), so a respawn that names no env keeps the seat's own. */
   launches?: SeatLaunchRecords;
+  /** OF-281: puts the old terminal's Herdr space and tab names back after the run. Absent: names are not restored (no app port). */
+  placementNames?: PlacementNameRestorer;
 }
 
 /** A terminal that is a seat's: it carries the seat label and the name that seat's terminal has, so a label alone is not enough. */
@@ -211,8 +216,9 @@ export class HcLifecycle {
       check();
       started = await this.client.call<{ address: string }>("terminal.run", {
         argv, env: launch.env, name: hcTerminalName(seat), cwd,
-        // Everything that placed the old terminal (the app's space and tab labels) follows to the new one.
-        labels: { ...before.labels, [SEAT_LABEL]: seat },
+        // What placed the old terminal (the app's space and tab labels) follows to the new one, and so do OpenRig's own labels (the launch env's
+        // identity, which the next respawn reads back). The app's other labels (`herdr.seen`, `herdr.pinned`, `where`...) are the app's: not carried (OF-281).
+        labels: { ...withoutAppOwnedLabels(before.labels), [SEAT_LABEL]: seat },
         no_parent: true, no_notify: true, outlive_parent: true,
       });
     } catch (err) {
@@ -223,6 +229,15 @@ export class HcLifecycle {
       return result.ok ? result : { ...result, message: `${result.message} (the previous program had already ended)` };
     }
     const warnings = [...launch.warnings, ...await this.prunePredecessors(seat, [before.address, started.address])];
+    // OF-281: the app drops a one-pane tab when its terminal ends (8 ms after the kill is already too late) and names the tab it makes again by position.
+    const names = this.options.placementNames ? placementNamesOf(before.labels) : null;
+    if (this.options.placementNames && names && typeof started?.address === "string" && (before.labels[SPACE_LABEL] !== undefined || before.labels[TAB_LABEL] !== undefined)) {
+      try {
+        warnings.push(...await this.options.placementNames(seat, started.address, names));
+      } catch (err) {
+        warnings.push(`${seat}: its Herdr space and tab names were not restored (${err instanceof Error ? err.message : String(err)})`);
+      }
+    }
     return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
   }
 

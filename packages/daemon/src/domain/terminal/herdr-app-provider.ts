@@ -78,11 +78,12 @@ const nodeExec: HerdrAppExec = (file, args, timeoutMs) => new Promise((resolve) 
 const APP_TIMEOUT_MS = 30_000;
 
 /** The real `AppPort`: `herdr-app ls` and `herdr-app do <command> <json>`. The binary is the daemon's own resolution of
- *  `herdr-app` (an absolute path), or a bare name left to PATH. Never starts the app: `ls` exits non-zero when no window is open. */
-export function createHerdrAppCli(binary = "herdr-app", exec: HerdrAppExec = nodeExec): AppPort {
+ *  `herdr-app` (an absolute path), or a bare name left to PATH. Never starts the app: `ls` exits non-zero when no window is open.
+ *  `timeoutMs` bounds each call (default 30 s; the seat host passes 2 s, OF-281). */
+export function createHerdrAppCli(binary = "herdr-app", exec: HerdrAppExec = nodeExec, timeoutMs: number = APP_TIMEOUT_MS): AppPort {
   return {
     async ls(): Promise<AppLs> {
-      const out = await exec(binary, ["ls"], APP_TIMEOUT_MS);
+      const out = await exec(binary, ["ls"], timeoutMs);
       if (out.missing) throw new HerdrAppUnavailableError("herdr-app is not installed", FIX_NOT_INSTALLED);
       if (out.code !== 0) throw new HerdrAppUnavailableError("the Herdr app is not running (herdr-app ls found no window)", FIX_NOT_RUNNING);
       try {
@@ -92,7 +93,7 @@ export function createHerdrAppCli(binary = "herdr-app", exec: HerdrAppExec = nod
       throw new HerdrAppCommandError("herdr-app ls answered something unreadable");
     },
     async do(command, args): Promise<Record<string, unknown>> {
-      const out = await exec(binary, ["do", command, JSON.stringify(args)], APP_TIMEOUT_MS);
+      const out = await exec(binary, ["do", command, JSON.stringify(args)], timeoutMs);
       if (out.missing) throw new HerdrAppUnavailableError("herdr-app is not installed", FIX_NOT_INSTALLED);
       let body: unknown = {};
       try { body = JSON.parse(out.stdout); } catch { /* an error answer need not be JSON */ }

@@ -3,6 +3,7 @@ import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment, type
 import { sessionEnvLabels } from "./hc-identity.js";
 import { refusedLaunch } from "./hc-launch-refusal.js";
 import { carriedPlacement } from "./hc-placement-carry.js";
+import type { PlacementNameRestorer } from "./hc-placement-names.js";
 import type { SeatLaunchHints, SessionProbe, TmuxResult } from "./tmux.js";
 
 export { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment } from "./hc-seat.js";
@@ -13,6 +14,8 @@ export interface HcHostOptions {
   daemonEnv?: NodeJS.ProcessEnv;
   /** Where a created seat's env is kept for a later respawn (see SeatLaunchRecords). */
   launches?: SeatLaunchRecords;
+  /** OF-281: puts the previous terminal's Herdr space and tab names back after the run. Absent: names are not restored (no app port). */
+  placementNames?: PlacementNameRestorer;
 }
 
 /** The seat host on herdr-core, behind the method names of the tmux adapter it replaces. */
@@ -38,11 +41,19 @@ export class HcHost {
     const previous = await carriedPlacement(this.client, name);
     const warnings = [...seat.warnings, ...previous.warnings];
     try {
-      await this.client.call("terminal.run", {
+      const started = await this.client.call<{ address?: string }>("terminal.run", {
         argv, env: seat.env, name: hcTerminalName(name), labels: { ...previous.labels, ...sessionEnvLabels(env ?? {}), [SEAT_LABEL]: name },
         ...(cwd != null ? { cwd } : {}), no_parent: true, no_notify: true, outlive_parent: true,
       });
       this.options.launches?.remember(name, { ...(cwd != null ? { cwd } : {}), env: env ?? {}, ...(hints ? { hints } : {}) });
+      // OF-281: the app drops a one-pane tab when its terminal ends and names the tab it makes again by position; give the names back. Best-effort, bounded.
+      if (this.options.placementNames && previous.names && typeof started?.address === "string") {
+        try {
+          warnings.push(...await this.options.placementNames(name, started.address, previous.names));
+        } catch (err) {
+          warnings.push(`${name}: its Herdr space and tab names were not restored (${err instanceof Error ? err.message : String(err)})`);
+        }
+      }
       return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
     } catch (err) {
       if (err instanceof HcError && err.kind === "name_taken") {

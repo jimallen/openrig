@@ -7,6 +7,8 @@ import { HcIdentity } from "./hc-identity.js";
 import { HcInput } from "./hc-input.js";
 import { HcLifecycle } from "./hc-lifecycle.js";
 import { SeatLaunchRecords } from "./hc-seat.js";
+import { createPlacementNameRestorer, type PlacementNameOptions, type PlacementNameRestorer } from "./hc-placement-names.js";
+import type { AppPort } from "./hc-placement.js";
 import { HcViewer } from "./hc-viewer.js";
 import { TmuxAdapter, type SessionWindowSnapshot, type TmuxResult } from "./tmux.js";
 
@@ -25,8 +27,13 @@ export class HcAdapter extends TmuxAdapter {
   private readonly launches = new SeatLaunchRecords();
   private wired?: { guard: SeatDeliveryGuard | undefined; host: HcHost; input: HcInput; lifecycle: HcLifecycle; viewer: HcViewer };
 
-  constructor(readonly client: HcClient = new HcClient()) {
+  /** OF-281: puts a relaunched seat's Herdr space and tab names back. Absent without an app port. */
+  private readonly placementNames: PlacementNameRestorer | undefined;
+
+  /** `app` is the Herdr app's command port (`herdr-app`); the daemon passes it, a suite does not, and then no name is restored. */
+  constructor(readonly client: HcClient = new HcClient(), options: { app?: AppPort; placementNames?: PlacementNameOptions } = {}) {
     super(async (cmd) => refuseTmux(cmd), undefined, async (argv) => refuseTmux(argv.join(" ")));
+    this.placementNames = options.app ? createPlacementNameRestorer(options.app, options.placementNames) : undefined;
     this.identity = new HcIdentity(client);
     this.capture = new HcCapture(client);
   }
@@ -43,11 +50,11 @@ export class HcAdapter extends TmuxAdapter {
       const client = this.client;
       // The same core as every other call: a default attach would resolve the socket from the env on its own.
       const opener = new HcAttach(client.socketPath);
-      const lifecycle = new HcLifecycle(client, guard ? { guard, isManagedSeat: (name) => !!guard.maybeTarget(name), launches: this.launches } : { launches: this.launches });
+      const lifecycle = new HcLifecycle(client, { ...(guard ? { guard, isManagedSeat: (name: string) => !!guard.maybeTarget(name) } : {}), launches: this.launches, ...(this.placementNames ? { placementNames: this.placementNames } : {}) });
       const input = new HcInput(client, opener, guard ? { guard, admission: lifecycle } : {});
       this.wired = {
         guard,
-        host: new HcHost(client, guard ? { ownsLifecycle: (nodeId) => guard.ownsLifecycle(nodeId), launches: this.launches } : { launches: this.launches }),
+        host: new HcHost(client, { ...(guard ? { ownsLifecycle: (nodeId: string) => guard.ownsLifecycle(nodeId) } : {}), launches: this.launches, ...(this.placementNames ? { placementNames: this.placementNames } : {}) }),
         input,
         lifecycle,
         // A person at a view may answer a dialog, which a delivery refuses by default.

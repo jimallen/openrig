@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "../src/adapters/hc-client.js";
 import { HcHost, SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-host.js";
 import { HcLifecycle } from "../src/adapters/hc-lifecycle.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { createPlacementNameRestorer, type PlacementNameRestorer } from "../src/adapters/hc-placement-names.js";
+import { HerdrAppUnavailableError } from "../src/domain/terminal/herdr-app-provider.js";
+import type { AppLs, AppPort } from "../src/adapters/hc-placement.js";
 
 /**
  * OF-280. A new terminal for an existing seat carries the `herdr.space` and `herdr.tab` labels of the seat's most recent terminal.
@@ -237,6 +241,169 @@ describe("a relaunched seat keeps its Herdr placement (OF-280)", () => {
   });
 });
 
+/** The state the scratch app was measured in after a one-pane tab's terminal was replaced (Herdr 0.1.13, hc 0.1.18): the ids from the labels, the
+ *  space named after its folder, the tab by its position. It shows whichever terminal the core made last, by address. */
+class AppAfterRelaunch implements AppPort {
+  calls: [string, unknown][] = [];
+  failWith: Error | null = null;
+  constructor(private readonly core: FakeCore, private readonly ids = { space: PLACED[SPACE]!, tab: PLACED[TAB]! }) {}
+  async ls(): Promise<AppLs> {
+    this.calls.push(["ls", null]);
+    if (this.failWith) throw this.failWith;
+    const run = this.core.records[this.core.records.length - 1];
+    return { spaces: run ? [{ id: this.ids.space, name: "cel-identity", tabs: [{ id: this.ids.tab, name: "1", terminals: [{ terminal: run.address, pane: "p1" }] }] }] : [] };
+  }
+  async do(command: string, args: Record<string, unknown>): Promise<Record<string, unknown>> { this.calls.push([command, args]); return { ok: true }; }
+  renames() { return this.calls.filter(([c]) => c !== "ls"); }
+}
+const WHERE = "rig:cel-identity / cos";
+const placedWithNames = (core: FakeCore, seat = SEAT, where: string | null = WHERE) => core.place(seat, where === null ? PLACED : { ...PLACED, where });
+const RENAMES = [["space.rename", { id: "rig:cel-identity", name: "rig:cel-identity" }], ["tab.rename", { id: "rig:cel-identity/cos", name: "cos" }]];
+
+describe("a relaunched seat gets its Herdr space and tab names back (OF-281)", () => {
+  const hostWith = (core: FakeCore, restorer: PlacementNameRestorer | undefined) => new HcHost(core, { daemonEnv: { SHELL: "/bin/sh" }, ...(restorer ? { placementNames: restorer } : {}) });
+  const lifecycleWith = (core: FakeCore, restorer: PlacementNameRestorer | undefined) => new HcLifecycle(core, { daemonEnv: { SHELL: "/bin/sh" }, ...(restorer ? { placementNames: restorer } : {}) });
+
+  it("stop + launch (createSession): the names come back after the run, by the new terminal's address", async () => {
+    const core = new FakeCore();
+    await hostOn(core).createSession(SEAT, "/w", seatEnv);
+    placedWithNames(core);
+    await new HcLifecycle(core).killSession(SEAT);
+    const app = new AppAfterRelaunch(core);
+    await expect(hostWith(core, createPlacementNameRestorer(app)).createSession(SEAT, "/w", seatEnv)).resolves.toEqual({ ok: true });
+    expect(app.renames()).toEqual(RENAMES);
+    expect(core.records[core.records.length - 1]!.address).not.toBe(core.records[0]!.address);
+  });
+
+  it("handover successor / restart in place (respawnPane): the same, and the new terminal carries the placement", async () => {
+    const core = new FakeCore();
+    await hostOn(core).createSession(SEAT, "/w", seatEnv);
+    placedWithNames(core);
+    const app = new AppAfterRelaunch(core);
+    await expect(lifecycleWith(core, createPlacementNameRestorer(app)).respawnPane(SEAT, "true", { cwd: "/w", env: seatEnv })).resolves.toEqual({ ok: true });
+    expect(app.renames()).toEqual(RENAMES);
+    expect(lastRun(core).labels).toMatchObject(PLACED);
+  });
+
+  it("the whole launch goes through HcAdapter: both the host and the lifecycle are given the restorer", async () => {
+    const core = new FakeCore();
+    const app = new AppAfterRelaunch(core);
+    const adapter = new HcAdapter(core, { app });
+    await adapter.createSession(SEAT, "/w", seatEnv);
+    placedWithNames(core);
+    await adapter.killSession(SEAT);
+    await expect(adapter.createSession(SEAT, "/w", seatEnv)).resolves.toMatchObject({ ok: true });
+    expect(app.renames()).toEqual(RENAMES);
+    app.calls.length = 0;
+    placedWithNames(core);
+    await expect(adapter.respawnPane(SEAT, "true", { cwd: "/w", env: seatEnv })).resolves.toMatchObject({ ok: true });
+    expect(app.renames()).toEqual(RENAMES);
+  });
+
+  it("an adapter given no app port restores nothing and launches as before", async () => {
+    const core = new FakeCore();
+    const adapter = new HcAdapter(core);
+    await adapter.createSession(SEAT, "/w", seatEnv);
+    placedWithNames(core);
+    await adapter.killSession(SEAT);
+    await expect(adapter.createSession(SEAT, "/w", seatEnv)).resolves.toEqual({ ok: true });
+  });
+
+  it.each([
+    ["has no where label", null],
+    ["has a where label with no separator", "just-a-folder"],
+    ["has a where label with an empty tab name", "rig:cel-identity / "],
+  ])("a previous terminal that %s: the app is not asked anything", async (_why, where) => {
+    const core = new FakeCore();
+    await hostOn(core).createSession(SEAT, "/w", seatEnv);
+    placedWithNames(core, SEAT, where);
+    await new HcLifecycle(core).killSession(SEAT);
+    const app = new AppAfterRelaunch(core);
+    await expect(hostWith(core, createPlacementNameRestorer(app)).createSession(SEAT, "/w", seatEnv)).resolves.toEqual({ ok: true });
+    expect(app.calls).toEqual([]);
+  });
+
+  it("a seat that never had a terminal, and one with names but no placement labels, ask the app nothing", async () => {
+    const core = new FakeCore();
+    const app = new AppAfterRelaunch(core);
+    await expect(hostWith(core, createPlacementNameRestorer(app)).createSession("new@rig", "/w", { ...seatEnv, OPENRIG_SESSION_NAME: "new@rig" })).resolves.toEqual({ ok: true });
+    core.place("new@rig", { where: WHERE });
+    await new HcLifecycle(core).killSession("new@rig");
+    await hostWith(core, createPlacementNameRestorer(app)).createSession("new@rig", "/w", { ...seatEnv, OPENRIG_SESSION_NAME: "new@rig" });
+    expect(app.calls).toEqual([]);
+  });
+
+  it("the same for a respawn: a terminal with names but no placement labels asks the app nothing", async () => {
+    const core = new FakeCore();
+    await hostOn(core).createSession("new@rig", "/w", { ...seatEnv, OPENRIG_SESSION_NAME: "new@rig" });
+    core.place("new@rig", { where: WHERE });
+    const app = new AppAfterRelaunch(core);
+    await expect(lifecycleWith(core, createPlacementNameRestorer(app)).respawnPane("new@rig", "true", { cwd: "/w", env: seatEnv })).resolves.toEqual({ ok: true });
+    expect(app.calls).toEqual([]);
+  });
+
+  describe("the launch never fails for the rename", () => {
+    it("no app or no window: createSession and respawnPane answer exactly as before, with no warning", async () => {
+      const core = new FakeCore();
+      await hostOn(core).createSession(SEAT, "/w", seatEnv);
+      placedWithNames(core);
+      const app = new AppAfterRelaunch(core);
+      app.failWith = new HerdrAppUnavailableError("the Herdr app is not running");
+      await expect(lifecycleWith(core, createPlacementNameRestorer(app)).respawnPane(SEAT, "true", { cwd: "/w", env: seatEnv })).resolves.toEqual({ ok: true });
+      await new HcLifecycle(core).killSession(SEAT);
+      await expect(hostWith(core, createPlacementNameRestorer(app)).createSession(SEAT, "/w", seatEnv)).resolves.toEqual({ ok: true });
+    });
+    it("an app that fails: one warning line, the terminal is made, ok stays true", async () => {
+      const core = new FakeCore();
+      await hostOn(core).createSession(SEAT, "/w", seatEnv);
+      placedWithNames(core);
+      await new HcLifecycle(core).killSession(SEAT);
+      const app = new AppAfterRelaunch(core);
+      app.failWith = new Error("socket closed");
+      const result = await hostWith(core, createPlacementNameRestorer(app)).createSession(SEAT, "/w", seatEnv);
+      expect(result).toEqual({ ok: true, warnings: [`${SEAT}: its Herdr space and tab names were not restored (socket closed)`] });
+      expect(core.records.filter((t) => t.state === "live")).toHaveLength(1);
+    });
+    it("a restorer that throws is caught in both paths: ok stays true, the throw becomes the warning", async () => {
+      const boom: PlacementNameRestorer = async () => { throw new Error("boom"); };
+      const core = new FakeCore();
+      await hostOn(core).createSession(SEAT, "/w", seatEnv);
+      placedWithNames(core);
+      const respawned = await lifecycleWith(core, boom).respawnPane(SEAT, "true", { cwd: "/w", env: seatEnv });
+      expect(respawned).toEqual({ ok: true, warnings: [`${SEAT}: its Herdr space and tab names were not restored (boom)`] });
+      placedWithNames(core);  // the app wrote `where` on the respawned terminal too
+      await new HcLifecycle(core).killSession(SEAT);
+      const created = await hostWith(core, boom).createSession(SEAT, "/w", seatEnv);
+      expect(created).toEqual({ ok: true, warnings: [`${SEAT}: its Herdr space and tab names were not restored (boom)`] });
+    });
+    it("a launch the core refuses never reaches the app", async () => {
+      const core = new FakeCore();
+      await hostOn(core).createSession(SEAT, "/w", seatEnv);
+      placedWithNames(core);
+      const app = new AppAfterRelaunch(core);
+      await expect(hostWith(core, createPlacementNameRestorer(app)).createSession(SEAT, "/w", seatEnv)).resolves.toMatchObject({ ok: false, code: "duplicate_session" });
+      expect(app.calls).toEqual([]);
+    });
+  });
+
+  describe("what a respawn carries (the createSession and respawnPane paths carry one label set)", () => {
+    it("drops the app's own labels (herdr.seen, herdr.pinned, where) and keeps the placement, the seat and the launch identity", async () => {
+      const core = new FakeCore();
+      await hostOn(core).createSession(SEAT, "/w", seatEnv);
+      placedWithNames(core);
+      Object.assign(core.records[0]!.labels, { "herdr.seen": "57", "herdr.pinned": "1", "herdr.right-click": "program" });
+      const identity = Object.entries(core.records[0]!.labels).filter(([k]) => k.startsWith("openrig.env."));
+      expect(identity.length).toBeGreaterThan(0);  // positive control: the launch wrote identity labels, so keeping them is observable
+      await new HcLifecycle(core).respawnPane(SEAT, "true", { cwd: "/w", env: seatEnv });
+      const labels = lastRun(core).labels as Record<string, string>;
+      expect(Object.keys(labels).filter((k) => k.startsWith("herdr.")).sort()).toEqual([SPACE, TAB]);
+      expect(labels.where).toBeUndefined();
+      expect(labels[SEAT_LABEL]).toBe(SEAT);
+      for (const [k, v] of identity) expect(labels[k]).toBe(v);
+    });
+  });
+});
+
 // The census: every place the daemon makes a terminal for a seat, from the source, not from a list in this file.
 describe("census of the code that makes a seat's terminal (OF-280)", () => {
   const src = join(here, "..", "src");
@@ -262,7 +429,9 @@ describe("census of the code that makes a seat's terminal (OF-280)", () => {
     expect(sitesOf(/call(?:<[^>]*>)?\(\s*["']terminal\.run["']/)).toEqual(["adapters/hc-host.ts", "adapters/hc-lifecycle.ts"]);
     const lifecycle = readFileSync(join(src, "adapters/hc-lifecycle.ts"), "utf8");
     expect(lifecycle.match(/call(?:<[^>]*>)?\(\s*["']terminal\.run["']/g)).toHaveLength(2); // respawn (carries before.labels) and createProbeSession (a probe, never a seat)
-    expect(lifecycle).toContain("...before.labels");
+    // OF-281: it carries the old terminal's labels except the app's own (herdr.seen, herdr.pinned, where...), which are the app's to write.
+    expect(lifecycle).toContain("...withoutAppOwnedLabels(before.labels)");
+    expect(lifecycle).not.toContain("...before.labels");
   });
 
   it("a seat's session is created only by NodeLauncher (the metadata probe's fallback is a probe, not a seat)", () => {
@@ -274,6 +443,12 @@ describe("census of the code that makes a seat's terminal (OF-280)", () => {
     expect(sitesOf(/\bnodeLauncher\.launchNode\(/)).toEqual([
       "domain/restore-orchestrator.ts", "domain/rigspec-instantiator.ts", "domain/seat-lifecycle-service.ts", "routes/sessions.ts",
     ]);
+  });
+
+  it("the daemon gives the seat host the Herdr app's port, bounded to 2 s a call (OF-281)", () => {
+    const startup = readFileSync(join(src, "startup.ts"), "utf8");
+    expect(startup).toContain("new HcAdapter(hcClient, { app: createHerdrAppCli(resolveOnPath(\"herdr-app\", process.env.PATH) ?? \"herdr-app\", undefined, 2000) })");
+    expect(sitesOf(/new HcAdapter\(/)).toEqual(["startup.ts"]);
   });
 
   it("the paths that reach respawnPane (which carries the placement itself): restart in place, successor", () => {
