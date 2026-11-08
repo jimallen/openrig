@@ -34,7 +34,7 @@ export class HcHost {
     }
     const argv = ["env", ...seat.unset.flatMap((key) => ["-u", key]), daemon.SHELL || "/bin/sh", "-l"];
     // OF-280: the seat's previous terminal (the core keeps a finished one readable under the seat's name) placed it in the app;
-    // its `herdr.*` labels follow to the new one, as they follow a restart in place. Read before the run: the name is free by then.
+    // its `herdr.space` and `herdr.tab` labels follow to the new one (a restart in place carries all the old labels). Read before the run: the name is free by then.
     const previous = await carriedPlacement(this.client, name);
     const warnings = [...seat.warnings, ...previous.warnings];
     try {

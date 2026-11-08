@@ -7,7 +7,7 @@ import { HcHost, SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-host.js";
 import { HcLifecycle } from "../src/adapters/hc-lifecycle.js";
 
 /**
- * OF-280. A new terminal for an existing seat carries the `herdr.*` labels of the seat's most recent terminal.
+ * OF-280. A new terminal for an existing seat carries the `herdr.space` and `herdr.tab` labels of the seat's most recent terminal.
  *
  * Why it matters: the placer (rig-here) puts a seat in the app by labelling its terminal straight in the core, so the daemon never
  * sees the placement. A relaunch that made the seat's new terminal with only the session and seat labels left it off-screen until the
@@ -147,7 +147,7 @@ describe("a relaunched seat keeps its Herdr placement (OF-280)", () => {
     expect(lastRun(core).labels).toMatchObject({ ...PLACED, [SEAT_LABEL]: SEAT });
   });
 
-  it("carries only herdr.* labels: the old terminal's identity and session labels stay behind", async () => {
+  it("carries only herdr.space and herdr.tab: the old terminal's identity, session and other labels stay behind", async () => {
     const core = new FakeCore();
     await placedAndStopped(core);
     core.records[0]!.labels["openrig.session.OPENRIG_NODE_ID"] = "OLD-NODE";
@@ -155,6 +155,8 @@ describe("a relaunched seat keeps its Herdr placement (OF-280)", () => {
     core.records[0]!.labels["other"] = "kept-off";
     await hostOn(core).createSession(SEAT, "/w", { ...seatEnv, OPENRIG_NODE_ID: "NEW-NODE" });
     const labels = lastRun(core).labels as Record<string, string>;
+    expect(labels[SPACE]).toBe(PLACED[SPACE]);
+    expect(labels[TAB]).toBe(PLACED[TAB]);
     expect(Object.keys(labels).filter((k) => k.startsWith("herdr.")).sort()).toEqual([SPACE, TAB]);
     expect(JSON.stringify(labels)).not.toContain("OLD-NODE");
     expect(labels["openrig.seat.stale"]).toBeUndefined();
@@ -162,12 +164,27 @@ describe("a relaunched seat keeps its Herdr placement (OF-280)", () => {
     expect(labels[SEAT_LABEL]).toBe(SEAT);
   });
 
-  it("a herdr.* key the placer adds later is carried too, whatever its name", async () => {
+  it("does not carry herdr.seen (the app's own bookkeeping, meaning unmeasured) or any other herdr.* key", async () => {
     const core = new FakeCore();
     await placedAndStopped(core);
+    core.records[0]!.labels["herdr.seen"] = "7";
     core.records[0]!.labels["herdr.pane"] = "p9";
+    core.records[0]!.labels["herdrx"] = "near-prefix";
     await hostOn(core).createSession(SEAT, "/w", seatEnv);
-    expect(lastRun(core).labels).toMatchObject({ ...PLACED, "herdr.pane": "p9" });
+    const labels = lastRun(core).labels as Record<string, string>;
+    expect(labels).toMatchObject(PLACED);
+    expect(labels["herdr.seen"]).toBeUndefined();
+    expect(labels["herdr.pane"]).toBeUndefined();
+    expect(labels["herdrx"]).toBeUndefined();
+  });
+
+  it("carries a space with no tab, and a tab with no space, as they are", async () => {
+    const core = new FakeCore();
+    await placedAndStopped(core);
+    delete core.records[0]!.labels[TAB];
+    await hostOn(core).createSession(SEAT, "/w", seatEnv);
+    expect(lastRun(core).labels).toMatchObject({ [SPACE]: PLACED[SPACE] });
+    expect((lastRun(core).labels as Record<string, string>)[TAB]).toBeUndefined();
   });
 
   it("a seat that never had a terminal is launched exactly as before: seat label and session labels only", async () => {
@@ -246,12 +263,6 @@ describe("census of the code that makes a seat's terminal (OF-280)", () => {
     const lifecycle = readFileSync(join(src, "adapters/hc-lifecycle.ts"), "utf8");
     expect(lifecycle.match(/call(?:<[^>]*>)?\(\s*["']terminal\.run["']/g)).toHaveLength(2); // respawn (carries before.labels) and createProbeSession (a probe, never a seat)
     expect(lifecycle).toContain("...before.labels");
-  });
-
-  it("the host's run carries the previous placement", () => {
-    const host = readFileSync(join(src, "adapters/hc-host.ts"), "utf8");
-    expect(host).toContain("carriedPlacement(this.client, name)");
-    expect(host).toMatch(/labels: \{ \.\.\.previous\.labels,/);
   });
 
   it("a seat's session is created only by NodeLauncher (the metadata probe's fallback is a probe, not a seat)", () => {
