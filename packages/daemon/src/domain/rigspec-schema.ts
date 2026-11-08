@@ -24,6 +24,7 @@ import { COMPOSE_PROJECT_NAME_PATTERN, deriveComposeProjectName } from "./compos
 import { validateMcpServersBlock, normalizeMcpServers } from "./codex-mcp-servers.js";
 import { PDA_RUNTIME, parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
 import * as path from "node:path";
+import { MAX_AUTO_ANSWER_MINUTES } from "./seat-question-limits.js";
 
 // -- Canonical pod-aware RigSpec validation (AgentSpec reboot) --
 
@@ -47,9 +48,23 @@ const VALID_DOWN_POLICIES = new Set(["leave_running", "down", "down_and_volumes"
 const VALID_WAIT_TARGET_CONDITIONS = new Set(["healthy"]);
 const VALID_WORKSPACE_KINDS = new Set<string>(WORKSPACE_KINDS as readonly string[]);
 
+const QUESTION_POLICY_KEYS = new Set(["auto_answer_after"]);
+
+/** `question_policy: { auto_answer_after: <minutes> }` — a whole number from 0 (off) to the longest wait the seat's hook outlives. */
+function validateQuestionPolicy(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return ["question_policy: must be a mapping"];
+  const obj = value as Record<string, unknown>;
+  const errors = Object.keys(obj).filter((k) => !QUESTION_POLICY_KEYS.has(k)).map((k) => `question_policy: unknown key "${k}"`);
+  const minutes = obj["auto_answer_after"];
+  if (minutes !== undefined && (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < 0 || minutes > MAX_AUTO_ANSWER_MINUTES)) {
+    errors.push(`question_policy.auto_answer_after: must be a whole number of minutes from 0 (off) to ${MAX_AUTO_ANSWER_MINUTES}`);
+  }
+  return errors;
+}
+
 const RIG_KEYS = new Set([
   "version", "name", "summary", "culture_file", "permission_policy", "managed_blocks", "docs",
-  "startup", "services", "workspace", "pods", "edges", "non_interruptive", "project_rig",
+  "startup", "services", "workspace", "pods", "edges", "non_interruptive", "project_rig", "question_policy",
 ]);
 const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startup", "members", "edges"]);
 export const MEMBER_KEYS: ReadonlySet<string> = new Set([
@@ -193,6 +208,8 @@ export class RigSpecSchema {
     if (obj["project_rig"] !== undefined && typeof obj["project_rig"] !== "boolean") {
       errors.push("project_rig: must be a boolean");
     }
+    // OF-278: how long an unanswered AskUserQuestion waits before it takes its "(Recommended)" answer. Minutes; 0 turns it off.
+    if (obj["question_policy"] !== undefined) errors.push(...validateQuestionPolicy(obj["question_policy"]));
 
     // #25: optional per-runtime managed-block destination. Only claude-code is
     // configurable in this release; Codex stays on AGENTS.md.
@@ -271,6 +288,7 @@ export class RigSpecSchema {
       cultureFile: raw["culture_file"] as string | undefined,
       permissionPolicy: raw["permission_policy"] as string | undefined,
       nonInterruptive: raw["non_interruptive"] as boolean | undefined,
+      ...(raw["question_policy"] !== undefined ? { questionPolicy: { autoAnswerAfter: (raw["question_policy"] as { auto_answer_after?: number }).auto_answer_after } } : {}),
       managedBlocks: raw["managed_blocks"] as RigSpec["managedBlocks"],
       docs,
       startup: raw["startup"] ? normalizeStartupBlock(raw["startup"]) : undefined,

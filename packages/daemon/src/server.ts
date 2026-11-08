@@ -358,6 +358,8 @@ export interface AppDeps {
    */
   occupantInvalidator?: import("./domain/occupant-invalidator.js").OccupantInvalidator;
   agentActivityStore?: AgentActivityStore;
+  /** OF-278: the long-poll behind a seat's AskUserQuestion hook (routes/activity.ts). */
+  seatQuestions?: import("./domain/seat-question-policy.js").SeatQuestionService;
   /** Native comms step 3: inbox endpoint registration and marker acks (routes/activity.ts). */
   claudeNativeInbox?: import("./domain/claude-native-inbox.js").ClaudeNativeInbox;
   seatAttentionReconciler?: import("./domain/seat-attention-reconciler.js").SeatAttentionReconciler;
@@ -618,6 +620,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("compactionEnforcer" as never, deps.compactionEnforcer);
     c.set("occupantInvalidator" as never, deps.occupantInvalidator);
     c.set("agentActivityStore" as never, deps.agentActivityStore);
+    c.set("seatQuestions" as never, deps.seatQuestions);
     c.set("claudeNativeInbox" as never, deps.claudeNativeInbox);
     c.set("seatAttentionReconciler" as never, deps.seatAttentionReconciler);
     // Slice 15 — wire seatActivityService into request context so the

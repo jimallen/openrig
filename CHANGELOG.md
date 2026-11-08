@@ -10,6 +10,20 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### An unanswered question takes its recommended answer, and the messages waiting behind a question are counted (OF-278)
+
+- Symptom: on 2026-11-07 a coordinator opened an `AskUserQuestion` to the human; seven rig messages waited 160 to 382 minutes behind it, the seat was reported as
+  `permission_prompt`, and nothing said that messages were piling up.
+- A Claude seat's question now reads `question_dialog` (state `needs_input`): the `PermissionRequest` hook for `AskUserQuestion` is relayed (it fires ~15 ms after the tool call and
+  carries the question, 6.5 s ahead of the Notification, measured on Claude Code 2.1.319), and the Notification that follows keeps the reason. Other permission requests are not relayed.
+- New rig key `question_policy: { auto_answer_after: <minutes> }` (default 15, 0 = off, at most 60): after the wait an unanswered question takes its `(Recommended)` option, for every question,
+  irreversible ones included (Jim, 2026-11-08). A dialog with any multi-select question, or any question without exactly one recommended option, stays held and is named in `rig health`.
+  Each answer is an event `seat.question_auto_answered`, one queue item to `human@kernel`, and a line in `rig health`. See `docs/reference/question-policy.md`.
+- `rig ps`, `rig send` and `rig health` say `N held, oldest Xm` for a seat with messages waiting more than a minute.
+- Migration 127 adds `seat_questions` and `rigs.question_auto_answer_minutes`. Seats launched before this build have no question hook and keep today's behaviour until they are relaunched.
+- The hook-script delivery now writes a second script (`question-wait.cjs`) beside the relay and gives an event group its tool matcher; the permission-stall detector ignores the new
+  AskUserQuestion `PermissionRequest` row so a dialog is still counted once.
+
 ### The rig-body guard reads a rig command name assembled at run time, `script -c` and `tmux send-keys` text (OF-264, OF-265); the Claude launch census sees four more shapes (OF-258)
 
 - Guard (`rig-body-guard.cjs`, Claude hook and Pi extension): `rig${IFS}send`, `R=rig; $R send`, `C="rig send"; $C ...`, `export R=rig`, `${R:-rig}`, `S=bash; $S <<EOF`, ANSI-C quoting of the name or the

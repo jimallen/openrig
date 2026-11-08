@@ -395,6 +395,12 @@ export class MessageStore {
     this.db.transaction(() => { for (const id of ids) adopt.run(MESSAGE_LANES.content, group, id); })();
   }
 
+  /** The seat's open messages: how many, and when the oldest was accepted (by time, not by lane). One query; SELECT only. */
+  openFor(seat: string): { open: number; oldestAcceptedAt: string } | null {
+    const row = this.db.prepare(`SELECT count(*) AS open, min(ts_dispatched) AS oldest FROM outbox_entries WHERE destination_session = ? AND ${OPEN}`).get(seat) as { open: number; oldest: string | null };
+    return row.open > 0 && row.oldest ? { open: row.open, oldestAcceptedAt: row.oldest } : null;
+  }
+
   /** One line per seat with an open message: how many, and the oldest. SELECT only. */
   openBySeat(): OpenSeatSummary[] {
     const rows = this.db.prepare(`SELECT destination_session AS seat, count(*) AS open FROM outbox_entries WHERE ${OPEN} GROUP BY destination_session ORDER BY min(rowid)`)

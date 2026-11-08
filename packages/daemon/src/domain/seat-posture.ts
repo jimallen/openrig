@@ -71,7 +71,9 @@ export function deriveSeatPosture(activity: AgentActivity | null | undefined, se
   const fresh = activity.stale !== true;
   const base = { source: "runtime_hook" as const, at, tool };
   if (state === "needs_input") {
-    return { ...base, kind: "needs_input", line: `needs input: ${activity.rawSubtype ?? activity.rawEvent}${when ? ` since ${when}` : ""}` };
+    // OF-278: an AskUserQuestion dialog is a question to the human, not a permission prompt (Claude reports both as permission_prompt).
+    const what = activity.dialog === "question" ? "waiting on a question to the human" : `needs input: ${activity.rawSubtype ?? activity.rawEvent}`;
+    return { ...base, kind: "needs_input", line: `${what}${when ? ` since ${when}` : ""}` };
   }
   if (state === "idle") {
     return { ...base, kind: "idle", line: `idle: last hook ${hookLabel(activity)}${when ? ` ${when}` : ""}` };

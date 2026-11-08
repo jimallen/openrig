@@ -300,6 +300,27 @@ describe("D9: a question to Jim in a modal is not a stall (Jim, 2026-10-31)", ()
     expect(count(f)).toBe(8);
   });
 
+  // OF-278: the relay now reports the AskUserQuestion PermissionRequest, 6.5 s ahead of the Notification of the same dialog (measured, 2.1.319).
+  const ask = (f: F) => f.activity({ seat: S, rawEvent: "PermissionRequest", rawSubtype: "AskUserQuestion", state: "needs_input", hoursAgo: 2, generation: G });
+
+  it("OF-278: a dialog reported as a PermissionRequest and then its Notification, answered: not counted", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { ask(f); prompt(f); post(f, "AskUserQuestion"); stop(f); }
+    expect(count(f)).toBe(0);
+  });
+
+  it("OF-278: a dialog answered inside 6.5 s (a PermissionRequest and no Notification): not counted", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { ask(f); post(f, "AskUserQuestion"); stop(f); }
+    expect(count(f)).toBe(0);
+  });
+
+  it("OF-278: an unanswered dialog counts once, by its Notification, not twice for the two rows it now leaves", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { ask(f); prompt(f); }
+    expect(count(f)).toBe(8);
+  });
+
   it("review: a PermissionRequest is always a real request, even before an AskUserQuestion answer", () => {
     const f = fixture();
     for (let i = 0; i < 8; i++) {

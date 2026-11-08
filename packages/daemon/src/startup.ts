@@ -727,6 +727,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // S2: a Codex seat's restart settles its seen store against the thread's rollout. `contextUsageStore` is read at the restart, not here.
   const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
   const seatMessages = new MessageStore(db);
+  // OF-278: the questions seats put to the human, and the messages that wait behind them.
+  const { SeatQuestionStore } = await import("./domain/seat-question-policy.js");
+  const { describeHeld } = await import("./domain/seat-messaging/held-messages.js");
+  const seatQuestionStore = new SeatQuestionStore(db);
   // Each consumer registers its own (S4), before the pump starts.
   const messageObligations = new MessageObligations();
   const reconcileCodexSeat = (sessionName: string, threadId: string | null) => {
@@ -1361,7 +1365,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     inventory: () => inventoryOfLiveRigs(db),
     waiting: (seat) => { const open = seatMessages.openBySeat().find((row) => row.seat === seat); return open ? { open: open.open, oldestId: open.oldestId } : null; },
   });
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, seatLostHealth, ...seatMessagingHealth, ...gateUnconfirmedHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, seatLostHealth, ...seatMessagingHealth, ...gateUnconfirmedHealth, new (await import("./domain/seat-question-health.js")).SeatQuestionHealthSource(seatQuestionStore, (sessionName, now) => describeHeld(seatMessages.openFor(sessionName), now.getTime()))], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
@@ -1402,12 +1406,32 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // tenure (a same-session relaunch is a continuation with no new generation); node_id is the stable-
   // across-handover key, not this. null = UNKNOWN, honored by the store as abstain (never a stale claim
   // rendered live). No tmux exec — a better-sqlite3 read on the hot path.
+  // OF-278: the questions seats put to the human. The store settles them from the seat's own activity (an AskUserQuestion
+  // PostToolUse is an answer; the end of the turn abandons what waited).
+  const { SeatQuestionService, activityBackedPorts } = await import("./domain/seat-question-policy.js");
   const agentActivityStore = new AgentActivityStore({
     db,
     eventBus,
     resolveOccupantGeneration: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.generationUuid ?? null,
     isRegisteredOccupantGeneration: (nodeId, generation) =>
       sessionRegistry.isOccupantGenerationRegistered(nodeId, generation),
+    heldMessages: (sessionName, now) => describeHeld(seatMessages.openFor(sessionName), now.getTime()),
+    onActivityRecorded: (activity, session) => { seatQuestionStore.settleFromActivity(session.nodeId, activity.rawEvent ?? null, activity.rawSubtype ?? null, activity.eventAt ?? new Date().toISOString()); },
+  });
+  const seatQuestions = new SeatQuestionService({
+    store: seatQuestionStore,
+    now: () => new Date(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    resolveSeat: (input) => agentActivityStore.resolveSession(input),
+    ...activityBackedPorts(agentActivityStore),
+    emit: (event) => { eventBus.emit(event); },
+    tell: async (note) => {
+      await queueRepoInstance.create({
+        qitemId: note.qitemId, sourceSession: "daemon@kernel", destinationSession: "human@kernel", nudge: false,
+        tags: ["seat-question:auto-answered"], summary: note.summary, body: note.body,
+      });
+    },
+    howToOverride: (seat) => `the model has the answer as the user's; correct it with rig send ${seat} "<what you actually want>".`,
   });
   // #763 — Codex usage-limit banner detector. The reactive tap only accepts a
   // typed at_limit hook row and no hook producer emits one for Codex, so the
@@ -1656,6 +1680,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     })(),
     whoamiService,
     agentActivityStore,
+    seatQuestions,
     claudeNativeInbox,
     seatAttentionReconciler,
     activityHookToken: resolvedActivityHookToken,

@@ -105,6 +105,8 @@ interface NodeEntry {
   };
   /** OF-267 — what the seat's newest runtime hook supports saying about busy or idle (never busy from a stale hook). */
   seatPosture?: SeatPostureView;
+  /** OF-278 — messages waiting for the seat, when that is a wait worth saying: `line` is "3 held, oldest 381m". */
+  heldMessages?: { count: number; oldestAt: string; line: string };
   // PL-012: context-usage block surfaced from the daemon's
   // /api/rigs/:id/nodes route (already populated). Optional because
   // older daemons may not emit it.
@@ -229,6 +231,7 @@ const ALLOWED_NODE_FIELDS = new Set([
   "blockedWorkCount",
   "agentActivity",
   "seatPosture",
+  "heldMessages",
   "contextUsage",
   "heldReason",
 ]);
@@ -271,6 +274,17 @@ export interface SeatPostureView {
 export function postureNote(n: Pick<NodeEntry, "seatPosture">): string | null {
   const p = n.seatPosture;
   return p && (p.kind === "busy" || p.kind === "unknown-open-turn") ? p.line : null;
+}
+
+/** OF-278 — "3 held, oldest 381m": shown wherever a seat has messages waiting, whatever the seat is doing. */
+export function heldNote(n: Pick<NodeEntry, "heldMessages">): string | null {
+  return n.heldMessages?.line ?? null;
+}
+
+/** The trailing cell's quiet notes, joined: the posture where it explains a silent seat, then the held count. */
+export function quietNote(n: Pick<NodeEntry, "seatPosture" | "heldMessages">): string | null {
+  const notes = [postureNote(n), heldNote(n)].filter((x): x is string => x !== null);
+  return notes.length > 0 ? notes.join("; ") : null;
 }
 
 export interface PsDeps extends StatusDeps {
@@ -708,6 +722,7 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
     // OF-267 — only where it explains a silent seat (busy, or an open turn the hooks cannot confirm): the compact projection is held to
     // a token budget (ps-compact.test.ts) and idle / unknown postures are what agentActivity already says. --full and --fields carry it whole.
     if (postureNote(n)) compact.seatPosture = n.seatPosture;
+    if (heldNote(n)) compact.heldMessages = n.heldMessages;
     // held/attention reason (short) when present.
     if (n.heldReason) compact.heldReason = n.heldReason;
     if (attention && n.latestError) {
@@ -1264,7 +1279,7 @@ async function handleNodes(
       const attn = needsAttention(n);
       const reason = missingSessionGuidance(n, adviceRigs) ?? (attn || hasCurrentUsageLimit(n)
         ? (n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—")
-        : postureNote(n) ?? "—");
+        : quietNote(n) ?? "—");
       console.log(padCompactNodeRow(
         n.rigName,
         n.canonicalSessionName ?? "—",
@@ -1298,7 +1313,7 @@ async function handleNodes(
         formatActivity(n),
         formatContextUsage(n.contextUsage),
         n.restoreOutcome,
-        missingSessionGuidance(n, adviceRigs) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : postureNote(n) ?? "—"),
+        missingSessionGuidance(n, adviceRigs) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : quietNote(n) ?? "—"),
       ));
     }
   }

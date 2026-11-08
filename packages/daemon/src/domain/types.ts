@@ -197,6 +197,8 @@ export type RigEvent =
   // (`reconcile_capture`). NEVER carries the raw token (credential-class);
   // `redacted: true` marks that the token value is intentionally omitted.
   /** pda L2a: an operator asked a pda seat's runner to retry its held message (ids and codes only, never content). */
+  | { type: "seat.question_auto_answered"; rigId: string; nodeId: string; sessionName: string; questionId: string; askedAt: string; takenAt: string; waitedMs: number; waitConfiguredMs: number; questions: Array<{ question: string; chosen: string }> }
+  | { type: "seat.question_held"; rigId: string; nodeId: string; sessionName: string; questionId: string; askedAt: string; reason: string }
   | { type: "seat.pda_release_requested"; rigId: string; nodeId: string; sessionName: string; heldRequestId: string; heldCode: string; reason: string; actor: string | null }
   | { type: "session.resume_token_set"; rigId: string; nodeId: string; sessionName: string; sessionId: string; resumeType: string; previousProvenance: "hook" | "scrape" | "operator" | null; newProvenance: "operator" | "scrape"; source: "operator_set" | "reconcile_capture"; reason?: string; operator?: string; redacted: true }
   // OPR.0.4.3.20 FR-3 — append-only observability of an adoption-boundary
@@ -619,6 +621,9 @@ export interface AgentActivity {
    *  than dropped or bare-attributed (pm ruling 2026-08-08, the P21 claimed-era pattern). Absent when
    *  no resolver is wired (legacy clock-only path). */
   generationProvenance?: "resolved" | "unresolved";
+  /** OF-278: this wait is a question put to the human (Claude's AskUserQuestion dialog), whatever the hook that reported it was called. Survives
+   *  the stale and generation transforms, which replace `reason`: a question open for hours must still read as one. */
+  dialog?: "question";
 }
 
 export interface NodeRecoveryGuidance {
@@ -759,6 +764,8 @@ export interface NodeInventoryEntry {
   agentActivity?: AgentActivity;
   /** OF-267 — what the seat's newest runtime hook supports saying about busy or idle (never busy from a stale hook). */
   seatPosture?: import("./seat-posture.js").SeatPosture;
+  /** OF-278: messages waiting for this seat, when there is a wait worth saying (domain/seat-messaging/held-messages.ts). */
+  heldMessages?: import("./seat-messaging/held-messages.js").HeldMessages;
   contextUsage?: ContextUsage;
   /** Health of the daemon-owned transcript capture for this seat. */
   transcriptIngest?: import("./transcript-store.js").TranscriptIngestHealth & {
@@ -1281,6 +1288,8 @@ export interface WorkspaceSpec {
 export interface RigSpec {
   /** Authored launch-warning choice; an explicit launch option takes precedence. */
   nonInterruptive?: boolean;
+  /** OF-278: `question_policy.auto_answer_after` (minutes, 0 = off). Absent: the default wait. */
+  questionPolicy?: { autoAnswerAfter?: number };
   version: string;
   name: string;
   summary?: string;

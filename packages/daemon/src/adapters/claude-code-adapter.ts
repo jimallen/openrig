@@ -22,7 +22,7 @@ import { claudeRemoteControlArg, claudeRemoteControlArgs, claudeRemoteControlNam
 import { shellQuote } from "./shell-quote.js";
 import { shellWord } from "./tmux-server.js";
 import { claudeRigBodyGuardRefusal, claudeRigBodyGuardScriptPath } from "./claude-rig-body-guard.js";
-import { validateClaudeActivityHookDelivery, claudeActivityRelayPath, CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH } from "../domain/claude-activity-hooks.js";
+import { validateClaudeActivityHookDelivery, claudeActivityRelayPath, claudeManagedHookPath, CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH, CLAUDE_MANAGED_HOOK_SCRIPTS, type ClaudeManagedHookScript } from "../domain/claude-activity-hooks.js";
 import { isFilesystemRoot } from "../domain/cwd-resolution.js";
 import { observeClaudePermission } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
@@ -870,7 +870,6 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
    */
   private reconcileClaudeActivityHooks(cwd: string, enabled: boolean): ActivityHookOutcome {
     const relayDest = claudeActivityRelayPath(this.stateDir ?? undefined);
-    const ownedCmd = `node ${shellQuote(relayDest)}`;
     const settingsPath = nodePath.join(cwd, ".claude", "settings.local.json");
 
     // PREVALIDATE BEFORE ANY MUTATION using the SHARED delivery validation (same gate
@@ -880,7 +879,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // NOTHING — no strip, no copy, no write — so existing managed hooks + settings bytes
     // are preserved and the resource is NOT claimed delivered/projected (⇒ warn + skip).
     const delivery = validateClaudeActivityHookDelivery(this.fs, this.activityRelayPath, this.claudeHooksManifestPath);
-    const derivedEvents = delivery.events;
+    // OF-278: a companion script is delivered only when its source sits beside the relay's; otherwise its entries are left out (no dangling command).
+    const scriptSource = (script: ClaudeManagedHookScript): string | null =>
+      script === "activity-relay.cjs" ? this.activityRelayPath ?? null
+        : this.activityRelayPath && this.fs.exists(nodePath.join(nodePath.dirname(this.activityRelayPath), script)) ? nodePath.join(nodePath.dirname(this.activityRelayPath), script) : null;
+    const derivedEvents = delivery.events.filter((e) => scriptSource(e.script ?? "activity-relay.cjs") !== null);
     const deliverable = enabled && delivery.deliverable;
     if (enabled && !deliverable) {
       return {
@@ -926,17 +929,20 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     //    PREVALIDATED relay event (derived from the canonical manifest above).
     if (deliverable) {
       this.fs.mkdirp(nodePath.dirname(relayDest));
-      // Sibling seats share this relay. Do not truncate identical bytes while a hook reads it.
-      if (!this.fs.exists(relayDest) || this.fs.readFile(relayDest) !== this.fs.readFile(this.activityRelayPath!)) {
-        this.fs.copyFile(this.activityRelayPath!, relayDest);
+      // Sibling seats share these scripts. Do not truncate identical bytes while a hook reads one.
+      for (const script of CLAUDE_MANAGED_HOOK_SCRIPTS) {
+        const source = scriptSource(script);
+        if (source === null || !derivedEvents.some((e) => (e.script ?? "activity-relay.cjs") === script)) continue;
+        const dest = claudeManagedHookPath(script, this.stateDir ?? undefined);
+        if (!this.fs.exists(dest) || this.fs.readFile(dest) !== this.fs.readFile(source)) this.fs.copyFile(source, dest);
+        this.preserveMode(source, dest);
       }
-      this.preserveMode(this.activityRelayPath!, relayDest);
-      for (const { event, timeout, async: background } of derivedEvents) {
+      for (const { event, timeout, async: background, matcher, script } of derivedEvents) {
         const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
-        const hook: Record<string, unknown> = { type: "command", command: ownedCmd };
+        const hook: Record<string, unknown> = { type: "command", command: `node ${shellQuote(claudeManagedHookPath(script ?? "activity-relay.cjs", this.stateDir ?? undefined))}` };
         if (typeof timeout === "number") hook["timeout"] = timeout;
         if (background) hook["async"] = true;
-        groups.push({ hooks: [hook] });
+        groups.push(matcher ? { matcher, hooks: [hook] } : { hooks: [hook] });
         hooks[event] = groups;
         changed = true;
       }
@@ -970,6 +976,7 @@ interface ActivityHookOutcome {
 // OpenRig-owned relay path suffix. Ownership is the EXACT `node <arg>` command whose single
 // argument ends with this path — a changed prefix still matches (replace, not duplicate); a
 // user command that merely contains the path (echo, or node with extra args) does NOT.
+const CLAUDE_QUESTION_WAIT_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "question-wait.cjs");
 const LEGACY_OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
 
 function hookCommand(hook: unknown): string | undefined {
@@ -1011,7 +1018,8 @@ function isOwnedRelayCommand(cmd: string | undefined): boolean {
   // must never be recognised as owned and deleted.
   if (shellQuote(decoded) !== arg) return false;
   return decoded.endsWith(LEGACY_OWNED_RELAY_SUFFIX)
-    || decoded.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`);
+    || decoded.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`)
+    || decoded.endsWith(`/${CLAUDE_QUESTION_WAIT_RELATIVE_PATH}`);
 }
 
 /** Decode ONE POSIX single-quoted shell token as produced by shellQuote (outer `'…'` with an

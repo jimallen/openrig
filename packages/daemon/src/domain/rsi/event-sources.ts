@@ -250,12 +250,14 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
     // exec-cos@eztrack's 49 needs_input in 7 days followed an AskUserQuestion call by 6-12 s). What tells them apart is
     // the seat's NEXT PostToolUse in the same generation: AskUserQuestion after an answered modal, with no other
     // needs_input in between (a denied prompt right before a modal must not borrow the modal's answer). Only a
-    // Notification row can be a modal (a PermissionRequest is always a real request). A permission prompt is followed by its own
+    // Notification row can be a modal (a PermissionRequest is always a real request), except the AskUserQuestion PermissionRequest
+    // that OF-278 relays 6.5 s ahead of that Notification: it is the same dialog, counted once by the Notification, and never by itself. A permission prompt is followed by its own
     // tool's PostToolUse, a denied one by none, and an unanswered modal by none yet: all still count. Another tool's
     // PostToolUse first (a racing or subagent tool) also counts: ambiguous, so reported. The answer must come within
     // 12 hours: Jim answered all 151 of exec-cos's modals within 11.7 h (median 0.7 min, p95 4.4 h), and a later
     // answer must not hide an old prompt. The lookup walks idx_events_node_type_seq from the row's own seq.
     hitSql: `json_extract(payload, '$.activity.state') = 'needs_input' AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'Notification' AND COALESCE(json_extract(payload, '$.activity.rawSubtype'), '') IN (${PDA_HELD_CODES.map((c) => `'${c}'`).join(", ")}))`
+      + ` AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'PermissionRequest' AND json_extract(payload, '$.activity.rawSubtype') IS 'AskUserQuestion')`
       + ` AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'Notification' AND COALESCE((SELECT CASE WHEN json_extract(nx.payload, '$.activity.rawEvent') = 'PostToolUse' THEN json_extract(nx.payload, '$.activity.rawSubtype') END`
       + ` FROM events nx WHERE nx.node_id = events.node_id AND nx.type = 'agent.activity' AND nx.seq > events.seq`
       + ` AND nx.created_at <= datetime(events.created_at, '+12 hours')`

@@ -39,6 +39,10 @@ interface AgentActivityStoreDeps {
   /** Confirm that a carried generation is registered for this node. A side-effect-free reservation
    * that never committed must remain unresolvable, not become positive mismatch evidence. */
   isRegisteredOccupantGeneration?: (nodeId: string, generation: string) => boolean;
+  /** OF-278: the messages waiting for a seat, for the inventory (best effort: a failure reads as none). */
+  heldMessages?: (sessionName: string, now: Date) => import("./seat-messaging/held-messages.js").HeldMessages | null;
+  /** OF-278: told of every activity this store records, after it is emitted (the seat's open questions settle from it). Never throws into ingest. */
+  onActivityRecorded?: (activity: AgentActivity, session: { rigId: string; nodeId: string; sessionName: string }) => void;
 }
 
 interface SessionLookupRow {
@@ -62,6 +66,8 @@ export class AgentActivityStore {
   readonly freshnessMs: number;
   private readonly resolveOccupantGeneration?: (nodeId: string) => string | null;
   private readonly isRegisteredOccupantGeneration?: (nodeId: string, generation: string) => boolean;
+  private readonly heldMessages?: (sessionName: string, now: Date) => import("./seat-messaging/held-messages.js").HeldMessages | null;
+  private readonly onActivityRecorded?: (activity: AgentActivity, session: { rigId: string; nodeId: string; sessionName: string }) => void;
 
   constructor(deps: AgentActivityStoreDeps) {
     this.db = deps.db;
@@ -70,6 +76,8 @@ export class AgentActivityStore {
     this.freshnessMs = deps.freshnessMs ?? AGENT_ACTIVITY_FRESHNESS_MS;
     this.resolveOccupantGeneration = deps.resolveOccupantGeneration;
     this.isRegisteredOccupantGeneration = deps.isRegisteredOccupantGeneration;
+    this.onActivityRecorded = deps.onActivityRecorded;
+    this.heldMessages = deps.heldMessages;
   }
 
   recordHookEvent(input: HookActivityInput): RecordHookActivityResult {
@@ -113,6 +121,17 @@ export class AgentActivityStore {
       generation,
     });
 
+    // OF-278: Claude's Notification/permission_prompt for an AskUserQuestion dialog arrives ~6.5 s after the PermissionRequest that
+    // already named it (measured, 2.1.319). It carries no tool, so it keeps the reason the dialog already has.
+    if (activity.rawEvent === "Notification" && activity.rawSubtype === "permission_prompt" && activity.state === "needs_input") {
+      const previous = this.db.prepare("SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT 1").get(session.node_id) as EventPayloadRow | undefined;
+      const before = previous ? parseActivityPayload(previous.payload)?.activity : null;
+      if (before?.dialog === "question" && before.state === "needs_input" && (before.generation ?? null) === (activity.generation ?? null)) {
+        activity.reason = QUESTION_DIALOG_REASON;
+        activity.dialog = "question";
+      }
+    }
+
     const event = this.eventBus.emit({
       type: "agent.activity",
       rigId: session.rig_id,
@@ -121,8 +140,21 @@ export class AgentActivityStore {
       runtime: activity.runtime ?? session.runtime,
       activity,
     });
+    try { this.onActivityRecorded?.(activity, { rigId: session.rig_id, nodeId: session.node_id, sessionName: session.session_name }); } catch { /* ingest never fails on a listener */ }
 
     return { ok: true, activity, event };
+  }
+
+  /** OF-278: what waits for a seat's messages, or null. Never throws. */
+  heldMessagesFor(sessionName: string, now: Date): import("./seat-messaging/held-messages.js").HeldMessages | null {
+    try { return this.heldMessages?.(sessionName, now) ?? null; } catch { return null; }
+  }
+
+  /** OF-278: the newest activity as it was recorded: no freshness window, no generation verdict. A question that has waited an hour is
+   *  still open, and the staleness transform would call it unknown. Null when the node has recorded none. */
+  getLatestRecorded(nodeId: string): AgentActivity | null {
+    const rows = this.db.prepare(`SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${LATEST_SCAN_ROWS}`).all(nodeId) as EventPayloadRow[];
+    return pickLatestByOrdering(rows.map((r) => parseActivityPayload(r.payload)))?.activity ?? null;
   }
 
   getLatestForNode(input: {
@@ -440,7 +472,8 @@ function normalizeHookActivity(input: {
   const state = hookEventState(rawEvent, rawSubtype, input.seatRuntime);
   let normalizedReason = reason;
   if (rawEvent === "PermissionRequest") {
-    normalizedReason = "permission_request";
+    // OF-278: Claude's AskUserQuestion dialog is a question to the human, not a permission prompt (hook payloads measured on 2.1.319).
+    normalizedReason = rawSubtype === QUESTION_DIALOG_TOOL ? QUESTION_DIALOG_REASON : "permission_request";
   } else if (rawEvent === "at_limit") {
     normalizedReason = "usage_limit";
   } else if (rawEvent === "Notification") {
@@ -454,6 +487,7 @@ function normalizeHookActivity(input: {
   return {
     state,
     reason: normalizedReason,
+    ...(rawEvent === "PermissionRequest" && rawSubtype === QUESTION_DIALOG_TOOL ? { dialog: "question" as const } : {}),
     evidenceSource: "runtime_hook",
     sampledAt: input.sampledAt,
     evidence: rawSubtype ?? rawEvent,
@@ -466,6 +500,10 @@ function normalizeHookActivity(input: {
     generation: input.generation ?? null,
   };
 }
+
+/** The tool whose PermissionRequest is a question to the human, and the reason the store gives that wait (OF-278). */
+export const QUESTION_DIALOG_TOOL = "AskUserQuestion";
+export const QUESTION_DIALOG_REASON = "question_dialog";
 
 function normalizeReason(value: string): string {
   return value

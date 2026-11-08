@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { getOpenRigHome } from "../openrig-compat.js";
 
 // Single source of truth for whether the OpenRig-managed Claude activity-relay hooks can be
@@ -23,8 +23,21 @@ export interface ActivityHookFsRead {
   readFile(path: string): string;
 }
 
+/** The managed hook scripts the adapter delivers into the instance state directory, side by side (question-wait.cjs requires the relay). */
+export const CLAUDE_MANAGED_HOOK_SCRIPTS = ["activity-relay.cjs", "question-wait.cjs"] as const;
+export type ClaudeManagedHookScript = (typeof CLAUDE_MANAGED_HOOK_SCRIPTS)[number];
+
+/** Where a managed hook script is delivered: next to the relay. */
+export function claudeManagedHookPath(script: ClaudeManagedHookScript, openrigHome = getOpenRigHome()): string {
+  return resolve(dirname(claudeActivityRelayPath(openrigHome)), script);
+}
+
 export interface ActivityRelayEvent {
   event: string;
+  /** Which managed script this entry runs. Absent: the relay. */
+  script?: ClaudeManagedHookScript;
+  /** The hook group's tool matcher (OF-278: PermissionRequest is relayed for AskUserQuestion only). Absent: unscoped, as before. */
+  matcher?: string;
   timeout?: number;
   /** Claude Code's documented `async: true`: the hook "runs in the background without blocking". Set for events that
    *  fire on every tool call (PostToolUse), where a blocking relay (~135 ms per run, measured) would slow each call. */
@@ -79,7 +92,17 @@ export function deriveRelayEvents(fs: ActivityHookFsRead, manifestPath: string |
       if (relay) {
         const t = isPlainObject(relay) ? relay["timeout"] : undefined;
         const background = isPlainObject(relay) && relay["async"] === true;
-        out.push({ event, timeout: typeof t === "number" ? t : undefined, ...(background ? { async: true } : {}) });
+        const matcher = typeof group["matcher"] === "string" && group["matcher"] !== "" ? group["matcher"] : undefined;
+        out.push({ event, ...(matcher ? { matcher } : {}), timeout: typeof t === "number" ? t : undefined, ...(background ? { async: true } : {}) });
+        // OF-278: a managed companion in the same group (question-wait.cjs) is delivered with the same matcher.
+        const companion = (group["hooks"] as unknown[]).find((h) => {
+          const c = isPlainObject(h) && typeof h["command"] === "string" ? (h["command"] as string) : "";
+          return c.includes("question-wait.cjs");
+        });
+        if (companion) {
+          const ct = isPlainObject(companion) ? companion["timeout"] : undefined;
+          out.push({ event, script: "question-wait.cjs", ...(matcher ? { matcher } : {}), timeout: typeof ct === "number" ? ct : undefined });
+        }
         seen.add(event);
         break;
       }

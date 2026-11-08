@@ -119,6 +119,29 @@ describe("SessionTransport and the pump", () => {
         expect(result.seatPosture?.kind).toBe("unknown-open-turn");
       });
 
+      // OF-278: on 2026-11-07 seven messages waited 160 to 382 min behind one question and the sender was told only the seat's state.
+      it("OF-278: says how many messages wait for the seat and how long the oldest has waited, and that the seat waits on a question", async () => {
+        built = build(true);
+        activityStore.recordHookEvent({ sessionName: SEAT, runtime: "claude-code", hookEvent: "PermissionRequest", subtype: "AskUserQuestion", occurredAt: new Date().toISOString() });
+        const first = await transport.send(SEAT, "one", { deliveryId: "h1", actorSession: "lead@hr" });
+        expect(first.heldMessages).toBeUndefined();   // just accepted: a delivery in flight
+        db.prepare("UPDATE outbox_entries SET ts_dispatched = ? WHERE outbox_id = 'h1'").run(new Date(Date.now() - 381 * 60_000).toISOString());
+        const second = await transport.send(SEAT, "two", { deliveryId: "h2", actorSession: "lead@hr" });
+        expect(second.heldMessages).toMatchObject({ count: 2 });
+        expect(second.heldMessages?.line).toMatch(/^2 held, oldest 6h2[01]m$/);
+        expect(second.seatPosture).toMatchObject({ kind: "needs_input" });
+        expect(second.seatPosture?.line).toMatch(/^waiting on a question to the human since /);
+        expect(second.warning).toMatch(/\(seat waiting on a question to the human since .*\) \(2 held, oldest 6h2[01]m for this seat\)$/);
+        expect(second.warning).not.toContain("permission_prompt");
+      });
+
+      it("OF-278: a message that has only just been accepted is a delivery in flight, not a wait: nothing is said", async () => {
+        built = build(true);
+        const result = await transport.send(SEAT, "hello", { deliveryId: "h3", actorSession: "lead@hr" });
+        expect(result.heldMessages).toBeUndefined();
+        expect(result.warning).not.toContain("held");
+      });
+
       it("a seat with no hook says so", async () => {
         built = build(true, { now: () => new Date(clock.now) });
         const result = await transport.send(SEAT, "hello", { deliveryId: "m2" });

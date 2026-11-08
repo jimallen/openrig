@@ -22,6 +22,8 @@ import { OutboxHandler, WAKE_INTENT_PREFIX, type SeatMessageClass, type SeatMess
 import { MessageLedger, mintMessageId } from "./seat-messaging/message-ledger.js";
 import type { MessageHandOff } from "./seat-messaging/hand-off.js";
 import { messageId } from "./seat-messaging/ports.js";
+import { MessageStore } from "./seat-messaging/message-store.js";
+import { describeHeld, type HeldMessages } from "./seat-messaging/held-messages.js";
 import { splitMarkedBlock } from "../adapters/seat-gate-marker.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
@@ -1153,6 +1155,8 @@ export interface SendResult {
   activity?: AgentActivity;
   /** OF-267 — on a pump hand-off ("Accepted, not yet received"): what the seat's newest runtime hook supports saying about busy or idle. */
   seatPosture?: SeatPosture;
+  /** OF-278: on a pump hand-off, the messages already waiting for the seat (this one included), when that is a wait worth saying. */
+  heldMessages?: HeldMessages;
   waitedMs?: number;
   attempts?: number;
   sent?: boolean;
@@ -1725,9 +1729,12 @@ export class SessionTransport {
     // Read after the row is committed: the seat's posture is best effort and must never delay or fail the commit.
     const handed = async (ids: string[]): Promise<SendResult> => {
       const seatPosture = await this.seatPostureFor(sessionName);
+      // Wall clock, not this.now(): the rows' ts_dispatched is stamped by the wall clock, so the age must be read against it.
+      let heldMessages: HeldMessages | null = null;
+      try { heldMessages = describeHeld(new MessageStore(this.db).openFor(sessionName), Date.now()); } catch { /* best effort, like the posture */ }
       return { ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
-        warning: `Accepted, not yet received: OpenRig carries it until the seat's gate records it.${seatPosture ? ` (seat ${seatPosture.line})` : ""}`,
-        ...(seatPosture ? { seatPosture } : {}) };
+        warning: `Accepted, not yet received: OpenRig carries it until the seat's gate records it.${seatPosture ? ` (seat ${seatPosture.line})` : ""}${heldMessages ? ` (${heldMessages.line} for this seat)` : ""}`,
+        ...(seatPosture ? { seatPosture } : {}), ...(heldMessages ? { heldMessages } : {}) };
     };
     const claimed = opts?.committedOutboxIds?.length ? opts.committedOutboxIds : opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX) ? [opts.deliveryId] : null;
     if (claimed) { handOff.adoptClaimed(claimed); return await handed(claimed); }

@@ -15,6 +15,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
+import { QUESTION_WAIT_MAX_BODY_BYTES } from "../domain/seat-question-policy.js";
 import { ACTIVITY_HOOK_MAX_BODY_BYTES, USAGE_MAX_BODY_BYTES, USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
 import { pdaSeatCosts } from "../domain/usage-series.js";
@@ -302,6 +303,27 @@ activityRoutes.post("/native-ack", async (c) => {
     : [];
   const result = inbox.ack({ nodeId: seat.nodeId, sessionName: seat.sessionName, markers, promptId: stringOrNull(body.promptId) });
   return c.json({ ok: true, acked: result.acked, block: result.block });
+});
+
+// OF-278: the long-poll behind a Claude seat's PermissionRequest hook for an AskUserQuestion dialog. The hook asks again after each
+// `wait` (and after any failure), under the one request id it minted, so a daemon restart in the wait costs nothing and answers nothing twice.
+activityRoutes.post("/question-wait", async (c) => {
+  const service = c.get("seatQuestions" as never) as import("../domain/seat-question-policy.js").SeatQuestionService | undefined;
+  const expectedToken = c.get("activityHookToken" as never) as string | undefined;
+  if (!service || !expectedToken) return c.json({ ok: false, code: "question_policy_unconfigured", error: "Question handling is not configured for this daemon." }, 503);
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : null;
+  if (bearerToken !== expectedToken && (c.req.header("x-openrig-activity-token") ?? null) !== expectedToken) {
+    return c.json({ ok: false, code: "activity_hook_unauthorized", error: "Question handling requires the configured local hook token." }, 401);
+  }
+  const read = await readCappedJson(c, "question wait", QUESTION_WAIT_MAX_BODY_BYTES, "hook_body_too_large");
+  if ("error" in read) return read.error;
+  const body = read.value as Record<string, unknown>;
+  const requestId = stringOrNull(body.requestId);
+  const askedAtMs = typeof body.askedAtMs === "number" && Number.isFinite(body.askedAtMs) ? body.askedAtMs : Date.now();
+  if (!requestId || !/^[A-Za-z0-9._-]{8,80}$/.test(requestId)) return c.json({ ok: false, code: "invalid_question_request", error: "question-wait requires a requestId of 8-80 safe characters" }, 400);
+  const reply = await service.wait({ requestId, sessionName: stringOrNull(body.sessionName), nodeId: stringOrNull(body.nodeId), generation: stringOrNull(body.generation), toolInput: body.toolInput, askedAtMs });
+  return c.json({ ok: true, ...reply });
 });
 
 activityRoutes.post("/hooks", async (c) => {

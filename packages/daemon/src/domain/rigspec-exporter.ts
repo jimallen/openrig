@@ -245,6 +245,7 @@ export class RigSpecExporter {
       name: rig.rig.name,
       ...(rigPermissionPolicy ? { permissionPolicy: rigPermissionPolicy } : {}),
       ...(this.rigRepo.getRigNonInterruptive(rigId) ? { nonInterruptive: true } : {}),
+      ...(this.rigRepo.getRigQuestionAutoAnswerMinutes(rigId) !== null ? { questionPolicy: { autoAnswerAfter: this.rigRepo.getRigQuestionAutoAnswerMinutes(rigId)! } } : {}),
       ...(claudeManagedBlockFile ? { managedBlocks: { "claude-code": claudeManagedBlockFile } } : {}),
       ...(workspace ? { workspace } : {}),
       pods: podSpecs,

@@ -334,6 +334,19 @@ export class RigRepository {
     }
   }
 
+  /** OF-278: the rig's `question_policy.auto_answer_after`, in minutes (0 = off). null clears it back to the default wait. */
+  setRigQuestionAutoAnswerMinutes(rigId: string, minutes: number | null): void {
+    if (!this.hasRigColumn("question_auto_answer_minutes")) return;
+    this.db.prepare("UPDATE rigs SET question_auto_answer_minutes = ?, updated_at = ? WHERE id = ?").run(minutes, new Date().toISOString(), rigId);
+  }
+
+  /** The stored wait in minutes, or null for the default. */
+  getRigQuestionAutoAnswerMinutes(rigId: string): number | null {
+    if (!this.hasRigColumn("question_auto_answer_minutes")) return null;
+    const row = this.db.prepare("SELECT question_auto_answer_minutes AS m FROM rigs WHERE id = ?").get(rigId) as { m: number | null } | undefined;
+    return row?.m ?? null;
+  }
+
   setRigNonInterruptive(rigId: string, enabled: boolean): void {
     if (!this.hasRigColumn("non_interruptive")) return;
     this.db.prepare("UPDATE rigs SET non_interruptive = ?, updated_at = ? WHERE id = ?")

@@ -1601,6 +1601,7 @@ export async function attachAgentActivity(
     const hook = deps.activityStore?.getLatestForNode({ sessionName: entry.canonicalSessionName, now: sampledAt });
     const runtime = entry.runtime ?? null;
     const seatPosture = await refineSeatPosture(deriveSeatPosture(hook, runtime, sampledAt), runtime, entry.canonicalSessionName ?? "", deps.seatTerminalStatus, sampledAt);
-    return { ...attached, seatPosture };
+    const heldMessages = deps.activityStore?.heldMessagesFor(entry.canonicalSessionName ?? "", sampledAt) ?? undefined;
+    return { ...attached, seatPosture, ...(heldMessages ? { heldMessages } : {}) };
   }));
 }
