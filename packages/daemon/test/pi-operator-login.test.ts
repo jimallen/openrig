@@ -8,12 +8,55 @@ import nodePath from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { linkPiOperatorLogin, realPiOperatorLoginFs, type PiOperatorLoginFs } from "../src/adapters/pi-operator-login.js";
-import { PI_FULLY_DEFINED_CREDENTIAL_ENV, piCredentialLaunchGate, piCredentialSource } from "../src/adapters/pi-readiness.js";
+import { PI_CREDENTIAL_TABLE_PI_VERSION, PI_FULLY_DEFINED_CREDENTIAL_ENV, piCredentialLaunchGate, piCredentialSource, piVersionNumber } from "../src/adapters/pi-readiness.js";
 import { main, parseRunnerArgs } from "../src/adapters/pi-runner.js";
 import { buildPiRunnerCommand, PI_PROVIDER_ENV_VARS, type PiRunnerLaunchOpts } from "../src/adapters/pi-runner-protocol.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNER = nodePath.join(PACKAGE_DIR, "src", "adapters", "pi-runner.ts");
+// The measured table, written out independently of the source constant (Pi 1.4.0; see scripts/measure-pi-credential-env.mjs).
+const PINNED_TABLE: Record<string, string[]> = {
+  "github-copilot": ["COPILOT_GITHUB_TOKEN"],
+  anthropic: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_IDENTITY_TOKEN_FILE"],
+  "openai-codex": [],
+  "ant-ling": ["ANT_LING_API_KEY"],
+  "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
+  "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
+  "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  azure: ["AZURE_OPENAI_API_KEY"],
+  nvidia: ["NVIDIA_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  google: ["GEMINI_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  typesafe: ["TYPESAFE_API_KEY"],
+  radius: ["RADIUS_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  "vercel-ai-gateway": ["AI_GATEWAY_API_KEY"],
+  zai: ["ZAI_API_KEY"],
+  "zai-coding-cn": ["ZAI_CODING_CN_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  minimax: ["MINIMAX_API_KEY"],
+  "minimax-cn": ["MINIMAX_CN_API_KEY"],
+  moonshotai: ["MOONSHOT_API_KEY"],
+  "moonshotai-cn": ["MOONSHOT_API_KEY"],
+  huggingface: ["HF_TOKEN"],
+  fireworks: ["FIREWORKS_API_KEY"],
+  together: ["TOGETHER_API_KEY"],
+  baseten: ["BASETEN_API_KEY"],
+  opencode: ["OPENCODE_API_KEY"],
+  "opencode-go": ["OPENCODE_API_KEY"],
+  "kimi-coding": ["KIMI_API_KEY"],
+  meta: ["META_API_KEY"],
+  "cloudflare-workers-ai": ["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID"],
+  "cloudflare-ai-gateway": ["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID"],
+  xiaomi: ["XIAOMI_API_KEY"],
+  "xiaomi-token-plan-cn": ["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
+  "xiaomi-token-plan-ams": ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"],
+  "xiaomi-token-plan-sgp": ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
+};
 const OAUTH = { "openai-codex": { type: "oauth", access: "dummy-access", refresh: "dummy-refresh", expires: 4102444800000 } };
 
 let dir: string;
@@ -249,6 +292,39 @@ describe("review F2: the operator's file must resolve outside the Pi state root"
   });
 });
 
+// Review N2: on a case-insensitive disk (the daemon's macOS) a differently-cased spelling of the seat's own folder is the same folder.
+const caseInsensitive = (() => { const probe = fs.mkdtempSync(nodePath.join(os.tmpdir(), "of279-case-")); try { return fs.existsSync(probe.toUpperCase().replace(/^\/PRIVATE/, "/private")) && probe !== probe.toUpperCase(); } finally { fs.rmSync(probe, { recursive: true, force: true }); } })();
+describe("review N2: the state-root check is on the platform's canonical path", () => {
+  it.runIf(caseInsensitive)("the seat's own agent dir spelled with different letter case (case-insensitive disk) is refused: no looping link, the stub is kept", () => {
+    fs.writeFileSync(seatAuth(), "{}");
+    const swapped = nodePath.join(dir, "STATE", "VERIFY-QA@T", "AGENT");
+    expect(fs.existsSync(swapped), "precondition: the swapped spelling reaches the same folder").toBe(true);
+    const r = link({ operatorDir: swapped });
+    expect(r.ok).toBe(false);
+    expect(err(r)).toMatch(/inside the Pi state root/);
+    expect(fs.readFileSync(seatAuth(), "utf8")).toBe("{}");
+    expect(fs.lstatSync(seatAuth()).isSymbolicLink()).toBe(false);
+  });
+  it("the real filesystem handle resolves with the native realpath (the JS realpath keeps the spelling it is given)", () => {
+    const probeFile = nodePath.join(dir, "Probe.json"); fs.writeFileSync(probeFile, "{}");
+    expect(realPiOperatorLoginFs.realpath(probeFile)).toBe(fs.realpathSync.native(probeFile));
+  });
+  it("review R2: a sibling folder that merely starts with the state root's name is NOT inside it (accepted)", () => {
+    const sibling = nodePath.join(dir, "state-ops"); fs.mkdirSync(sibling);
+    fs.writeFileSync(nodePath.join(sibling, "auth.json"), OPERATOR_AUTH_TEXT);
+    const r = link({ operatorDir: sibling });
+    expect(r.ok).toBe(true);
+    expect(target(seatAuth())).toBe(nodePath.join(sibling, "auth.json"));
+  });
+  it("review R5: a state root that is itself a symlink is resolved: the operator dir given by the real path of a seat is refused", () => {
+    const alias = nodePath.join(dir, "state-alias"); fs.symlinkSync(state, alias);
+    fs.writeFileSync(seatAuth(), "{}");
+    const r = link({ stateRoot: alias, agentDir: nodePath.join(alias, "verify-qa@t", "agent"), operatorDir: agentDir });
+    expect(r.ok).toBe(false);
+    expect(fs.readFileSync(seatAuth(), "utf8")).toBe("{}");
+  });
+});
+
 describe("review F4: an operator auth.json that is a symlink to a regular file is accepted (a dotfile-manager layout)", () => {
   it("the seat is linked to the operator's path as given, and the file behind it is untouched", () => {
     const real = nodePath.join(dir, "dotfiles-auth.json");
@@ -305,7 +381,7 @@ describe("rule 4: refuse a launch with no credential (the gate)", () => {
     for (const env of [{}, { ANTHROPIC_API_KEY: "  " }, { ANTHROPIC_API_KEY: "" }, { OPENAI_API_KEY: "dummy" }]) {
       const g = piCredentialLaunchGate({ kind: "none", provider: "anthropic", envVar: undefined }, "none", "/a", env);
       expect(g.action, JSON.stringify(env)).toBe("refuse");
-      expect((g as { message: string }).message).toMatch(/pass ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY through the member's env_passthrough/);
+      expect((g as { message: string }).message).toMatch(/pass ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY or .* through the member's env_passthrough/);
     }
   });
   it("review F1: openai-codex reads no environment: a stub with no passthrough is refused, and no variable rescues it", () => {
@@ -315,6 +391,47 @@ describe("rule 4: refuse a launch with no credential (the gate)", () => {
       expect(g.action).toBe("refuse");
       expect((g as { message: string }).message).not.toMatch(/env_passthrough/);
     }
+  });
+  it("review N1: anthropic's workload identity federation names count: any one present (ambient or passthrough) is not refused; the refusal message explains the triple", () => {
+    for (const name of ["ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_IDENTITY_TOKEN_FILE"]) {
+      expect(piCredentialLaunchGate({ kind: "none", provider: "anthropic", envVar: undefined }, "none", "/a", { [name]: "dummy" }).action, name).toBe("exempt");
+    }
+    const refused = piCredentialLaunchGate({ kind: "none", provider: "anthropic", envVar: undefined }, "none", "/a", {}) as { message: string };
+    expect(refused.message).toMatch(/federation needs ANTHROPIC_FEDERATION_RULE_ID, ANTHROPIC_ORGANIZATION_ID and ANTHROPIC_IDENTITY_TOKEN_FILE together/i);
+  });
+  it("review N1: cloudflare needs several names together; any one of them present is not refused", () => {
+    for (const [provider, names] of [["cloudflare-workers-ai", ["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID"]], ["cloudflare-ai-gateway", ["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID"]]] as const) {
+      for (const name of names) expect(piCredentialLaunchGate({ kind: "none", provider, envVar: undefined }, "none", "/a", { [name]: "dummy" }).action, `${provider} ${name}`).toBe("exempt");
+      expect(piCredentialLaunchGate({ kind: "none", provider, envVar: undefined }, "none", "/a", {}).action).toBe("refuse");
+    }
+  });
+  it("review G12: the WHOLE table is pinned: every provider -> its names (a wrong, missing or extra name for any provider fails here)", () => {
+    expect(PI_FULLY_DEFINED_CREDENTIAL_ENV).toEqual(PINNED_TABLE);
+    expect(Object.keys(PINNED_TABLE).length, "positive control: the pin is the whole table").toBe(Object.keys(PI_FULLY_DEFINED_CREDENTIAL_ENV).length);
+  });
+  it("the Pi version gate: refuses only on the measured version; any other version, or none readable, withholds the refusal and says the table needs re-measuring", () => {
+    const calls: number[] = [];
+    const gate = (version: string | undefined) => piCredentialLaunchGate(none, "none", "/a", {}, () => { calls.push(1); return version; });
+    expect(PI_CREDENTIAL_TABLE_PI_VERSION).toBe("1.4.0");
+    expect(gate("1.4.0").action).toBe("refuse");
+    for (const other of ["1.4.1", "1.5.0", "1.3.0", "2.0.0", undefined]) {
+      const g = gate(other);
+      expect(g.action, String(other)).toBe("exempt");
+      expect((g as { message: string }).message).toMatch(/refusal table was measured on Pi 1\.4\.0 and this seat's Pi is .*not refused.*re-measuring/);
+    }
+    expect(calls.length, "the version is read once per verdict, only when a refusal is the verdict").toBe(6);
+    calls.length = 0;
+    piCredentialLaunchGate({ kind: "stored-sign-in", provider: "openai-codex" }, "none", "/a", {}, () => { calls.push(1); return "1.4.0"; });
+    piCredentialLaunchGate(none, "present", "/a", {}, () => { calls.push(1); return "1.4.0"; });
+    piCredentialLaunchGate({ ...none, provider: "ollama" }, "none", "/a", {}, () => { calls.push(1); return "1.4.0"; });
+    piCredentialLaunchGate({ kind: "none", provider: "anthropic", envVar: undefined }, "none", "/a", { ANTHROPIC_API_KEY: "x" }, () => { calls.push(1); return "1.4.0"; });
+    expect(calls, "no other verdict spawns anything").toEqual([]);
+  });
+  it("piVersionNumber reads the shapes `pi --version` prints, and nothing else", () => {
+    expect(piVersionNumber("1.4.0")).toBe("1.4.0");
+    expect(piVersionNumber("pi 1.4.0\n")).toBe("1.4.0");
+    expect(piVersionNumber("v1.4.0-beta.1")).toBe("1.4.0");
+    for (const bad of ["", "pi", "1.4", "banana", "1.4.0 and more"]) expect(piVersionNumber(bad), bad).toBeUndefined();
   });
   it("review F1 census: the table agrees with OpenRig's own forwarded keys, and leaves out the ambient-credential providers", () => {
     for (const [provider, name] of Object.entries(PI_PROVIDER_ENV_VARS)) expect(PI_FULLY_DEFINED_CREDENTIAL_ENV[provider], provider).toContain(name);
@@ -380,10 +497,17 @@ describe("main(): the refusals end the launch with exit 78 and the exit recorded
     finally { process.exitCode = undefined; vi.restoreAllMocks(); }
   }
   const recorded = () => (JSON.parse(fs.readFileSync(nodePath.join(seat, "runner-state.json"), "utf8")) as { ready: boolean; exited?: { code: number } });
+  // A `pi` that answers --version (and nothing else): the refusal reads the version once, so a refusal row needs one that says 1.4.0.
+  const withFakePi = async <T,>(version: string | undefined, body: () => Promise<T>): Promise<T> => {
+    const bin = nodePath.join(dir, "fakebin"); fs.mkdirSync(bin, { recursive: true });
+    if (version !== undefined) fs.writeFileSync(nodePath.join(bin, "pi"), `#!${process.execPath}\nif (process.argv.includes("--version")) { console.log(${JSON.stringify(version)}); process.exit(0); }\nsetTimeout(() => process.exit(0), 100);\n`, { mode: 0o700 });
+    const saved = process.env.PATH; process.env.PATH = `${bin}${nodePath.delimiter}${nodePath.dirname(process.execPath)}`;
+    try { return await body(); } finally { process.env.PATH = saved; }
+  };
 
   it("no credential for the provider (the {} stub, no host setting): refused before Pi starts, one line naming provider and fix", async () => {
     fs.writeFileSync(seatAuth(), "{}");
-    const r = await run(baseArgs("L1"));
+    const r = await withFakePi("1.4.0", () => run(baseArgs("L1")));
     expect(r.code).toBe(78);
     expect(r.errors).toMatch(/launch: No Pi credential for provider openai-codex .*pi\.operator_login_dir/);
     expect(recorded().exited?.code).toBe(78);
@@ -427,13 +551,22 @@ describe("main(): the refusals end the launch with exit 78 and the exit recorded
   });
 
   it("review F1: the same anthropic seat WITHOUT the passthrough (the variable is in the runner's environment but not named) is refused", async () => {
-    const saved = { PATH: process.env.PATH, K: process.env.ANTHROPIC_API_KEY };
-    process.env.PATH = nodePath.dirname(process.execPath); process.env.ANTHROPIC_API_KEY = "dummy-not-a-key";
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "dummy-not-a-key";
     try {
-      const r = await run(["--session-name", "verify-qa@t", "--state-root", state, "--cwd", dir, "--launch-id", "L7", "--approve", "--model", "anthropic/claude-x"]);
+      const r = await withFakePi("1.4.0", () => run(["--session-name", "verify-qa@t", "--state-root", state, "--cwd", dir, "--launch-id", "L7", "--approve", "--model", "anthropic/claude-x"]));
       expect(r.code).toBe(78);
       expect(r.errors).toMatch(/No Pi credential for provider anthropic/);
-    } finally { process.env.PATH = saved.PATH; if (saved.K === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved.K; }
+    } finally { if (saved === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved; }
+  });
+
+  it("the Pi version: a Pi that is not 1.4.0 is not refused and the log says the table needs re-measuring; an unreadable version is the same", async () => {
+    fs.writeFileSync(seatAuth(), "{}");
+    for (const version of ["1.5.0", undefined]) {
+      const r = await withFakePi(version, () => run(baseArgs(`LV-${version}`)));
+      expect(r.errors, String(version)).not.toMatch(/No Pi credential/);
+      expect(r.logs, String(version)).toMatch(/refusal table was measured on Pi 1\.4\.0 and this seat's Pi is (1\.5\.0|of unknown version), so the launch is not refused/);
+    }
   });
 
   it("review F1: a provider the table does not name (ollama, no models.json) gets the notice only: launch continues", async () => {
@@ -461,7 +594,7 @@ describe("the real runner process with a fake pi (dummy login, nothing real)", (
   async function runReal(launch: string, extra: string[], files: (bin: string) => void) {
     const bin = nodePath.join(dir, "bin"); fs.mkdirSync(bin);
     const argvFile = nodePath.join(dir, "argv.json");
-    fs.writeFileSync(nodePath.join(bin, "pi"), `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(argvFile)}, "started");\nsetTimeout(() => process.exit(0), 300);\n`, { mode: 0o700 });
+    fs.writeFileSync(nodePath.join(bin, "pi"), `#!${process.execPath}\nif (process.argv.includes("--version")) { console.log("1.4.0"); process.exit(0); }\nrequire("node:fs").writeFileSync(${JSON.stringify(argvFile)}, "started");\nsetTimeout(() => process.exit(0), 300);\n`, { mode: 0o700 });
     files(bin);
     const env = { PATH: `${bin}${nodePath.delimiter}${nodePath.dirname(process.execPath)}${nodePath.delimiter}/usr/bin${nodePath.delimiter}/bin`, OPENRIG_HOME: nodePath.join(dir, "home"), HOME: dir };
     const out: string[] = [];

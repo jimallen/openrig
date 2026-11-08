@@ -45,7 +45,9 @@ export interface PiOperatorLoginFs {
 export const realPiOperatorLoginFs: PiOperatorLoginFs = {
   lstat: (p) => fs.lstatSync(p),
   stat: (p) => fs.statSync(p),
-  realpath: (p) => fs.realpathSync(p),
+  // .native: the platform's canonical path, case included (the JS realpath keeps the case it was given, and on a case-insensitive disk that
+  // lets a differently-cased spelling of a seat's own path slip past the state-root check; review N2).
+  realpath: (p) => fs.realpathSync.native(p),
   readlink: (p) => fs.readlinkSync(p),
   readFile: (p) => fs.readFileSync(p, "utf8"),
   symlink: (target, p) => fs.symlinkSync(target, p),

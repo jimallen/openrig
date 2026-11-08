@@ -48,17 +48,27 @@ refuses the launch.
 
 The runner refuses a launch before Pi starts (exit 78, one line on the pane naming the provider and the fixes) only when all of these hold:
 
-- the provider the spec names (the part of `model` before the first `/`) is one whose credential sources Pi's own code fully defines. That is
-  a table measured in Pi 1.4.0 `pi-ai/dist/env-api-keys.js` (every provider with an environment variable there, including anthropic's three,
-  plus `openai-codex`, which reads no environment and has only a stored sign-in or a `models.json` key);
+- the provider the spec names (the part of `model` before the first `/`) is in a table of providers whose every credential source in Pi
+  1.4.0 is an environment variable this check can see by name, besides the stored sign-in and `models.json` key it also reads. The
+  table is **re-derived by behaviour**, not read off one file: `scripts/measure-pi-credential-env.mjs <pi-ai dist dir>` loads Pi's builtin
+  providers and finds, for each, the sets of environment names that make its api-key resolver return a credential. That found two things
+  `env-api-keys.js` alone does not show: anthropic's workload identity federation (`ANTHROPIC_FEDERATION_RULE_ID`,
+  `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE` together, `providers/anthropic.js`) and cloudflare's credentials
+  (`CLOUDFLARE_API_KEY` with `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_GATEWAY_ID` for the gateway). Where several names are needed
+  together, any one of them present counts as "present" (fewer refusals is the safe side). `openai-codex` is oauth only (a stored sign-in or
+  a `models.json` key) and reads no environment;
 - the seat has no stored sign-in or key for it in `auth.json` or `models.json`;
-- none of that provider's Pi environment variables is present in the seat's environment. A name passed through `env_passthrough` counts
-  (an `anthropic/...` seat with `ANTHROPIC_API_KEY` passed through is not refused: the log says the key is present);
-- no Pi extension is configured (or the extension configuration could not be read): an extension can supply a provider and its credential.
+- none of that provider's names is present in the seat's environment. A name passed through `env_passthrough` counts;
+- no Pi extension is configured (or the extension configuration could not be read);
+- **the seat's Pi is the version the table was measured on (1.4.0).** Only when a refusal is the verdict, the runner runs one bounded
+  `pi --version` (3 s, the environment and PATH the real Pi gets). Any other version, or none readable, withholds the refusal and the log
+  says the table needs re-measuring for that Pi (run the script above and update the table). After a Pi upgrade, re-measure and bump
+  `PI_CREDENTIAL_TABLE_PI_VERSION`.
 
 Everything else keeps the advisory notice and the launch continues: a provider the table does not name (custom providers such as ollama,
-extension providers, anything newer than the measured Pi), `google-vertex` and `amazon-bedrock` (ambient ADC or AWS credentials this check
-cannot see), and "unknown" (no provider named, an unreadable or odd file, a key written as `$VAR` or `!command`).
+extension providers, anything newer than the measured Pi), `google-vertex` (an api key variable, but also Application Default Credentials
+found through a file check) and `amazon-bedrock` (AWS profile, roles and container credentials: ambient), and "unknown" (no provider named,
+an unreadable or odd file, a key written as `$VAR` or `!command`).
 
 ## The shared login: what is and is not known
 

@@ -31,7 +31,7 @@ import { installPaneGuard, paneGuard, rawWriterOf, sanitizeForPane } from "./run
 import { createPaneFrame, type FrameStream, type PaneFrame } from "./runner-pane-frame.js";
 import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
 import { SeatGateStore, seatGateLogPath, userMessageText, type GateIntent } from "./seat-gate-store.js";
-import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialLaunchGate, piCredentialNotice, piCredentialSource, type PiCredentialEvidence } from "./pi-readiness.js";
+import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialLaunchGate, piCredentialNotice, piCredentialSource, piVersionNumber, type PiCredentialEvidence } from "./pi-readiness.js";
 import { linkPiOperatorLogin } from "./pi-operator-login.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
@@ -1335,7 +1335,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   let credentialGateNote: string | undefined;
   if (runtime === "pi") {
     const source = piCredentialSource({ model: args.model, agentDir: paths.agentDir, env: childEnv, readFile: readMetadata });
-    const gate = piCredentialLaunchGate(source, source.kind === "none" ? credentialEvidence().extensions : "none", paths.agentDir, childEnv);
+    const gate = piCredentialLaunchGate(source, source.kind === "none" ? credentialEvidence().extensions : "none", paths.agentDir, childEnv, () => {
+      // Only reached when a refusal is the verdict: one bounded `pi --version`, with the environment and PATH the real Pi child gets.
+      const v = spawnSync("pi", ["--version"], { cwd: args.cwd, env: childEnv, encoding: "utf8", timeout: 3000, killSignal: "SIGKILL", maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
+      if (v.error || v.status !== 0) return undefined;
+      return piVersionNumber(v.stdout.trim() || v.stderr.trim());
+    });
     if (gate.action === "refuse") { refuseLaunch(gate.message); return; }
     if (gate.action === "exempt") credentialGateNote = gate.message;
   }

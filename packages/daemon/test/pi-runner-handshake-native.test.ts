@@ -57,7 +57,7 @@ console.error('Error: Unknown options: --name, --no-approve'); process.exit(1);
     const bin = path.join(temp, "bin");
     fs.mkdirSync(bin);
     const pidPath = path.join(temp, "child.pid");
-    fs.writeFileSync(path.join(bin, "pi"), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));\n`, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, "pi"), `#!${process.execPath}\nif (process.argv.includes('--version')) { console.log('1.4.0'); process.exit(0); }\nrequire('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));\n`, { mode: 0o700 });
     const stateRoot = path.join(temp, "state");
     const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../src/adapters/pi-runner.ts", import.meta.url)),
       "--session-name", "fixture", "--state-root", stateRoot, "--cwd", temp,
