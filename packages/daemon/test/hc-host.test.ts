@@ -120,7 +120,9 @@ describe("HcHost.createSession", () => {
     const client = new FakeClient(() => terminal("live"));
     const host = new HcHost(client, { daemonEnv: { SHELL: "/bin/zsh" } });
     await expect(host.createSession("qa@rig", "/w", seatEnv)).resolves.toEqual({ ok: true });
-    const [method, params] = client.calls[0]!;
+    // OF-280: the run is preceded by one read of the seat's previous terminal (its placement); that read is pinned in hc-seat-placement-carry.test.ts.
+    expect(client.calls.map(([m]) => m)).toEqual(["terminal.get", "terminal.run"]);
+    const [method, params] = client.calls[1]!;
     expect(method).toBe("terminal.run");
     expect(params).toMatchObject({ name: hcTerminalName("qa@rig"), cwd: "/w", labels: { "openrig.seat": "qa@rig" }, no_parent: true, no_notify: true, outlive_parent: true });
     expect(params).not.toHaveProperty("keep");
@@ -135,7 +137,7 @@ describe("HcHost.createSession", () => {
     const client = new FakeClient(() => terminal("live"));
     const host = new HcHost(client, { daemonEnv: { SHELL: "/bin/zsh", OPENRIG_AUTH_BEARER_TOKEN: "op-secret", OPENRIG_TERMINAL_BEARER_TOKEN: "t-secret" } });
     await host.createSession("qa@rig", "/w", seatEnv);
-    const params = client.calls[0]![1]!;
+    const params = client.calls.find(([m]) => m === "terminal.run")![1]!;
     expect(JSON.stringify(params)).not.toContain("-secret");
     expect((params.argv as string[]).join(" ")).toContain("-u OPENRIG_AUTH_BEARER_TOKEN");
     expect((params.argv as string[]).join(" ")).toContain("-u OPENRIG_TERMINAL_BEARER_TOKEN");

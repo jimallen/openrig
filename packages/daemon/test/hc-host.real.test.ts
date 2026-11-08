@@ -69,4 +69,19 @@ describe.skipIf(!HC)("HcHost launch against a private hc core", () => {
     await expect.poll(() => bad.probeSession("noshell@rig")).toEqual({ state: "absent" });
     writeFileSync(join(root, "done"), "");
   });
+  // OF-280, on a real core (private: its own HC_SESSION, HOME and XDG paths). The placer's labels are set after creation, as rig-here
+  // sets them; the seat's terminal is ended; the core is stopped and started (a finished record must survive that, which is what
+  // makes the core, not the daemon, the source); and the relaunch must carry the herdr.* labels and nothing else of the old one.
+  it("a relaunched seat carries its Herdr placement from the finished record, across a core stop and start", async () => {
+    await host.createSession("placed@rig", root, { OPENRIG_NODE_ID: "old-node" });
+    await client.call("terminal.label", { terminal: hcTerminalName("placed@rig"), labels: { "herdr.space": "rig:rig", "herdr.tab": "rig:rig/team" } });
+    await client.call("terminal.kill", { terminal: hcTerminalName("placed@rig") });
+    await expect.poll(() => host.probeSession("placed@rig")).toEqual({ state: "absent" });
+    spawnSync(HC, ["server", "stop"], { env, stdio: "ignore" });
+    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    await expect(host.createSession("placed@rig", root, { OPENRIG_NODE_ID: "new-node" })).resolves.toEqual({ ok: true });
+    const terminal = await client.call<HcTerminal>("terminal.get", { terminal: hcTerminalName("placed@rig") });
+    expect(terminal.state).toBe("live");
+    expect(terminal.labels).toMatchObject({ "openrig.seat": "placed@rig", "herdr.space": "rig:rig", "herdr.tab": "rig:rig/team", "openrig.env.OPENRIG_NODE_ID": "new-node" });
+  });
 });
