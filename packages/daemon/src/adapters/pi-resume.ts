@@ -45,6 +45,10 @@ interface PiResumeOptions {
   envPassthroughFor?: (sessionName: string) => string[];
   /** OF-270: the seat's model overrides (spec `model_overrides`), by session name, read at each resume; absent or undefined = none. */
   modelOverridesFor?: (sessionName: string) => PiModelOverrides | undefined;
+  /** OF-279: the host's operator Pi login folder (`pi.operator_login_dir`), read at each resume; absent or undefined = no link. */
+  operatorLoginDirFor?: () => string | undefined;
+  /** OF-279: the seat's `pi.link_operator_models`, by session name, read at each resume; absent = false. */
+  linkOperatorModelsFor?: (sessionName: string) => boolean;
 }
 
 export class PiResumeAdapter {
@@ -121,6 +125,8 @@ export class PiResumeAdapter {
       openRouterCharge: this.runtime === "pi" && (this.options.openRouterChargeEnabled?.() ?? false),
       envPassthrough: this.options.envPassthroughFor?.(tmuxSessionName) ?? [],
       modelOverrides: this.runtime === "pi" ? this.options.modelOverridesFor?.(tmuxSessionName) : undefined,
+      operatorLoginDir: this.runtime === "pi" ? this.options.operatorLoginDirFor?.() : undefined,
+      linkOperatorModels: this.runtime === "pi" ? (this.options.linkOperatorModelsFor?.(tmuxSessionName) ?? false) : false,
     });
 
     const command = this.runtime === "pi" && this.options.seatLaunchEnvironment

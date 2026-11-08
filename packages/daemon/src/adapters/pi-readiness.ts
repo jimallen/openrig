@@ -143,6 +143,25 @@ export function piCredentialNotice(opts: {
   }
 }
 
+/** OF-279: what a launch does with {@link piCredentialSource}. Only a definite "none" refuses (a provider the spec names
+ *  and no stored sign-in, models.json key or managed environment key for it); "unknown" (no provider named, an odd or
+ *  unreadable file, a non-literal key) keeps the advisory notice, since the seat may hold a login the metadata cannot
+ *  show. A seat with a configured Pi extension, or one whose extension configuration could not be read, is exempt and
+ *  says so: an extension can supply a provider and its credential. Pure; the file reads happened in the caller. */
+export type PiCredentialLaunchGate =
+  | { action: "proceed" }
+  | { action: "refuse"; message: string }
+  | { action: "exempt"; message: string };
+
+export function piCredentialLaunchGate(source: PiCredentialSource, extensions: PiCredentialEvidence["extensions"], agentDir: string): PiCredentialLaunchGate {
+  if (source.kind !== "none") return { action: "proceed" };
+  if (extensions !== "none") {
+    return { action: "exempt", message: `No stored sign-in or provider key was found for Pi provider ${source.provider}, but ${extensions === "present" ? "a Pi extension is configured" : "this seat's Pi extension configuration could not be read"} and may supply the credential, so the launch is not refused.` };
+  }
+  const own = source.envVar ? `set ${source.envVar} in the daemon environment and add its name to recovery.provider_auth_env_allowlist` : `sign in for this seat (run Pi once with PI_CODING_AGENT_DIR=${agentDir} and /login ${source.provider})`;
+  return { action: "refuse", message: `No Pi credential for provider ${source.provider} in this managed seat; the launch is refused before Pi starts. Fix: set pi.operator_login_dir to the operator's Pi agent folder (rig config set pi.operator_login_dir <folder>) and relaunch the seat${source.envVar ? "" : " (a provider the operator configures in models.json also needs the member's pi: { link_operator_models: true })"}, or ${own}.` };
+}
+
 /** OPR.0.7.0.2 K4: what metadata shows about Pi's OpenRouter credential at one moment. Pi records no
  *  per-request credential, so a request's credential is established by two of these, taken before and after
  *  it (see judgeChargeProvenance). Metadata only: credential files are classified, never used; settings are

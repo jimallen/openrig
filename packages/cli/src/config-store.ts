@@ -1,6 +1,6 @@
 import { readFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import { writeTextAtomically } from "./atomic-text-write.js";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 import {
   getDefaultOpenRigPath,
@@ -108,6 +108,10 @@ export interface RiggedConfig {
   // RSI B1 — the improvement steward's session; "" = unset (boot disarms the RSI jobs). Twin of the daemon key.
   rsi: {
     stewardSession: string;
+  };
+  // OF-279 — the operator's Pi login folder; "" = unset (no seat's Pi login is linked). Twin of the daemon key.
+  pi: {
+    operatorLoginDir: string;
   };
   // V1 attempt-3 Phase 5 P5-3 — For You feed subscription toggles per
   // for-you-feed.md L144–L151. SC-29 EXCEPTION declared in Phase 5
@@ -305,6 +309,9 @@ const DEFAULTS = {
   },
   rsi: {
     stewardSession: "",
+  },
+  pi: {
+    operatorLoginDir: "",
   },
   // V1 Phase 5 P5-3 — feed subscription defaults per for-you-feed.md
   // L144–L151. action_required forced ON in UI (load-bearing
@@ -528,6 +535,8 @@ export const VALID_KEYS = [
   // canonical '<member>@<rig>' session; unset (the default "") or invalid DISARMS both (terminal).
   // Twin of the other side.
   "rsi.steward_session",
+  // OF-279 — the operator's Pi login folder (unset links nothing). Twin of the daemon key.
+  "pi.operator_login_dir",
 ] as const;
 
 export type ValidKey = typeof VALID_KEYS[number];
@@ -629,6 +638,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "queue.wake_swap_grace_seconds": { primary: "OPENRIG_QUEUE_WAKE_SWAP_GRACE_SECONDS" },
   "queue.wake_human_rung": { primary: "OPENRIG_QUEUE_WAKE_HUMAN_RUNG" },
   "rsi.steward_session": { primary: "OPENRIG_RSI_STEWARD_SESSION" },
+  "pi.operator_login_dir": { primary: "OPENRIG_PI_OPERATOR_LOGIN_DIR" },
 };
 
 // Maps dotted-string config keys to the camelCase RiggedConfig path.
@@ -719,6 +729,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "queue.wake_swap_grace_seconds": ["queue", "wakeSwapGraceSeconds"],
   "queue.wake_human_rung": ["queue", "wakeHumanRung"],
   "rsi.steward_session": ["rsi", "stewardSession"],
+  "pi.operator_login_dir": ["pi", "operatorLoginDir"],
 };
 
 function isValidKey(key: string): key is ValidKey {
@@ -933,6 +944,11 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
     const port = parseInt(String(coerced), 10);
     if (Number.isNaN(port) || port < 0 || port > 65535) {
       throw new Error(`Invalid value for daemon.port: must be an integer in [0, 65535], got "${raw}"`);
+    }
+  },
+  "pi.operator_login_dir": (raw, value) => {
+    if (typeof value !== "string" || (value !== "" && (!isAbsolute(value) || value !== value.trim() || value.includes("\0") || value.split(sep).includes("..")))) {
+      throw new Error(`Invalid pi.operator_login_dir: use "" (unset) or an absolute folder path with no ".." part, got "${String(raw)}"`);
     }
   },
   "ui.timezone": (_raw, value) => {
@@ -1215,6 +1231,9 @@ export class ConfigStore {
       },
       rsi: {
         stewardSession: v("rsi.steward_session") as string,
+      },
+      pi: {
+        operatorLoginDir: v("pi.operator_login_dir") as string,
       },
       feed: {
         subscriptions: {

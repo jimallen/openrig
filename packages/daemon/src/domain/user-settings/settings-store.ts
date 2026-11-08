@@ -238,6 +238,11 @@ export const SETTINGS_VALID_KEYS = [
   // canonical '<member>@<rig>' session; unset (the default "") or invalid DISARMS both (terminal).
   // Twin of the other side.
   "rsi.steward_session",
+  // OF-279 — the host's operator Pi login folder (holds the operator's auth.json and models.json). Unset (the default "")
+  // links nothing. When set, every Pi seat's runner links <seat agent dir>/auth.json to <this>/auth.json at each launch.
+  // The login is then SHARED with the operator's own Pi and every other linked seat (see docs/reference/pi-operator-login.md).
+  // Twin of the other side.
+  "pi.operator_login_dir",
 ] as const;
 
 export type SettingsValidKey = typeof SETTINGS_VALID_KEYS[number];
@@ -338,6 +343,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
   "queue.wake_human_rung": { primary: "OPENRIG_QUEUE_WAKE_HUMAN_RUNG" },
   "rsi.steward_session": { primary: "OPENRIG_RSI_STEWARD_SESSION" },
+  "pi.operator_login_dir": { primary: "OPENRIG_PI_OPERATOR_LOGIN_DIR" },
   "queue.wake_swap_grace_seconds": { primary: "OPENRIG_QUEUE_WAKE_SWAP_GRACE_SECONDS" },
 };
 
@@ -426,6 +432,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
   "queue.wake_human_rung": ["queue", "wakeHumanRung"],
   "rsi.steward_session": ["rsi", "stewardSession"],
+  "pi.operator_login_dir": ["pi", "operatorLoginDir"],
   "queue.wake_swap_grace_seconds": ["queue", "wakeSwapGraceSeconds"],
 };
 
@@ -717,6 +724,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "queue.wake_swap_grace_seconds": return 180;
     case "queue.wake_human_rung": return "always";
     case "rsi.steward_session": return ""; // unset: boot disarms the RSI jobs
+    case "pi.operator_login_dir": return ""; // unset: no seat's Pi login is linked
     default: return "";
   }
 }
@@ -801,6 +809,11 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
     const port = parseInt(String(coerced), 10);
     if (Number.isNaN(port) || port < 0 || port > 65535) {
       throw new Error(`Invalid value for daemon.port: must be an integer in [0, 65535], got "${raw}"`);
+    }
+  },
+  "pi.operator_login_dir": (raw, value) => {
+    if (typeof value !== "string" || (value !== "" && (!path.isAbsolute(value) || value !== value.trim() || value.includes("\0") || value.split(path.sep).includes("..")))) {
+      throw new Error(`Invalid pi.operator_login_dir: use "" (unset) or an absolute folder path with no ".." part, got "${String(raw)}"`);
     }
   },
   "ui.timezone": (_raw, value) => {

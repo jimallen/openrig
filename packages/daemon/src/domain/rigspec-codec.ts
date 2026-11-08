@@ -165,6 +165,7 @@ export class RigSpecCodec {
         if (m.pda) member["pda"] = { agent: m.pda.agent, base_url: m.pda.baseUrl };
         if (m.envPassthrough && m.envPassthrough.length > 0) member["env_passthrough"] = [...m.envPassthrough];
         if (m.modelOverrides) member["model_overrides"] = JSON.parse(JSON.stringify(m.modelOverrides));
+        if (m.piLinkOperatorModels) member["pi"] = { link_operator_models: true };
         // OPR.0.4.6.FAC1: role round-trips through spec serialization.
         if (m.role) member["role"] = m.role;
         // OPR.0.4.8.3 Seam B: per-seat permission_policy ref round-trips through spec serialization.

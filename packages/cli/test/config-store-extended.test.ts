@@ -64,6 +64,7 @@ function clearEnv(): () => void {
     "OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST",
     "OPENRIG_AGENTS_ADVISOR_SESSION", "OPENRIG_AGENTS_OPERATOR_SESSION",
     "OPENRIG_RSI_STEWARD_SESSION",
+    "OPENRIG_PI_OPERATOR_LOGIN_DIR",
     "OPENRIG_FEED_SUBSCRIPTIONS_ACTION_REQUIRED", "OPENRIG_FEED_SUBSCRIPTIONS_APPROVALS",
     "OPENRIG_FEED_SUBSCRIPTIONS_SHIPPED", "OPENRIG_FEED_SUBSCRIPTIONS_PROGRESS",
     "OPENRIG_FEED_SUBSCRIPTIONS_AUDIT_LOG",
@@ -209,6 +210,8 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "queue.wake_human_rung",
       // RSI B1 — the improvement steward's session (unset arms nothing).
       "rsi.steward_session",
+      // OF-279 — the operator's Pi login folder (unset links nothing).
+      "pi.operator_login_dir",
     ];
     expect([...VALID_KEYS]).toEqual(expected);
   });

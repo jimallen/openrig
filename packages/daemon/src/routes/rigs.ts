@@ -182,6 +182,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       const pda = readMemberSpelling(m, "pda", "pda");
       const envPassthrough = readMemberSpelling(m, "env_passthrough", "envPassthrough");
       const modelOverrides = readMemberSpelling(m, "model_overrides", "modelOverrides");
+      const pi = readMemberSpelling(m, "pi", "pi");
       return {
         id: typeof m["id"] === "string" ? m["id"] : "",
         runtime: typeof m["runtime"] === "string" ? m["runtime"] : "",
@@ -209,6 +210,8 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         ...(envPassthrough.present ? { envPassthrough: envPassthrough.value } : {}),
         // model_overrides (OF-270): PRESENCE-preserving RAW carry like env_passthrough; the canonical validator owns the checks.
         ...(modelOverrides.present ? { modelOverrides: modelOverrides.value } : {}),
+        // pi (OF-279): PRESENCE-preserving RAW carry like model_overrides; the canonical validator owns the checks.
+        ...(pi.present ? { pi: pi.value } : {}),
         label: typeof m["label"] === "string" ? m["label"] : undefined,
         // role / starter_ref: PRESENCE-preserving like permission_policy/remote_control above. A
         // present-invalid value (role "", 7, null; starter_ref {}, {name:""}, a string, null, []) must

@@ -1263,7 +1263,7 @@ export class PodRigInstantiator {
     const initialRefusal = eligible();
     if (initialRefusal) return refuse(initialRefusal);
 
-    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides"]);
+    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides", "pi"]);
     if (Object.keys(memberFragment).some(key => !retainedFields.has(key))) return refuse("Retry accepts only retained member fields; topology and startup overrides require a separate change.");
     const rawSpec = { version: "0.2", name: rig.rig.name, pods: [{ id: podRow.namespace, label: podRow.label, members: [memberFragment], edges: [] }], edges: [] };
     const validation = PodRigSpecSchema.validate(rawSpec);
@@ -1290,7 +1290,8 @@ export class PodRigInstantiator {
       || (member.remoteControl === true) !== (node.remoteControl === true)
       || !retainedPdaBindingAgrees(member.pda, node)
       || JSON.stringify(member.envPassthrough ?? []) !== JSON.stringify(this.deps.rigRepo.getNodeEnvPassthrough(node.id))
-      || JSON.stringify(member.modelOverrides ?? null) !== JSON.stringify(this.deps.rigRepo.getNodeModelOverrides(node.id) ?? null)) return refuse("Member source disagrees with the retained seat identity or policy.");
+      || JSON.stringify(member.modelOverrides ?? null) !== JSON.stringify(this.deps.rigRepo.getNodeModelOverrides(node.id) ?? null)
+      || (member.piLinkOperatorModels === true) !== this.deps.rigRepo.getNodeLinkOperatorModels(node.id)) return refuse("Member source disagrees with the retained seat identity or policy.");
     const resolved = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
     if (!resolved.ok) return refuse(agentRefFailureMessage(resolved));
     if (!node.resolvedSpecHash || resolved.resolved.hash !== node.resolvedSpecHash) return refuse("Agent source hash differs from the failed first start.");
@@ -1621,6 +1622,7 @@ export class PodRigInstantiator {
             pda: member.pda,
             envPassthrough: member.envPassthrough,
             modelOverrides: member.modelOverrides,
+            piLinkOperatorModels: member.piLinkOperatorModels,
             codexConfigProfile: member.codexConfigProfile,
             // OPR.0.4.8.3 Seam B: bootstrap inline addNode is the FOURTH node-creation
             // site (see the role wire note above) — same member-ref persistence as
@@ -1994,6 +1996,7 @@ export class PodRigInstantiator {
       pda: input.member.pda,
       envPassthrough: input.member.envPassthrough,
       modelOverrides: input.member.modelOverrides,
+      piLinkOperatorModels: input.member.piLinkOperatorModels,
       codexConfigProfile: input.member.codexConfigProfile,
       // OPR.0.4.8.3 Seam B: the member's OWN raw ref persists on the node (like role);
       // rig-level lives on the rig row; precedence applies at RESOLUTION, not storage.

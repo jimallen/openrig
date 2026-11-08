@@ -31,7 +31,8 @@ import { installPaneGuard, paneGuard, rawWriterOf, sanitizeForPane } from "./run
 import { createPaneFrame, type FrameStream, type PaneFrame } from "./runner-pane-frame.js";
 import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
 import { SeatGateStore, seatGateLogPath, userMessageText, type GateIntent } from "./seat-gate-store.js";
-import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
+import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialLaunchGate, piCredentialNotice, piCredentialSource, type PiCredentialEvidence } from "./pi-readiness.js";
+import { linkPiOperatorLogin } from "./pi-operator-login.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
@@ -954,6 +955,10 @@ interface RunnerArgs {
   envPassthrough?: string[];
   /** OF-270: Pi only. The seat's model overrides (spec `model_overrides`), merged into its models.json at launch. */
   modelOverrides?: PiModelOverrides;
+  /** OF-279: Pi only. The host's operator Pi login folder (`pi.operator_login_dir`); auth.json is linked to <it>/auth.json at launch. */
+  operatorLoginDir?: string;
+  /** OF-279: Pi only. The member's `pi.link_operator_models`: models.json is linked to <operatorLoginDir>/models.json too. */
+  linkOperatorModels?: boolean;
 }
 
 /** OF-87: the pane editor for the Pi and OMP runners. A Ctrl-C byte inside a bracketed paste is pasted text, so one
@@ -1051,6 +1056,13 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
         args.modelOverrides = normalizePiModelOverrides(parsed)!;
         break;
       }
+      case "--operator-login-dir": {
+        const dir = next();
+        if (!nodePath.isAbsolute(dir) || dir !== dir.trim() || dir.split(nodePath.sep).includes("..")) throw new Error("--operator-login-dir must be an absolute folder path without \"..\"");
+        args.operatorLoginDir = dir;
+        break;
+      }
+      case "--link-operator-models": args.linkOperatorModels = true; break;
       case "--approve": args.trust = "approve"; break;
       case "--no-approve": args.trust = "no-approve"; break;
       case "--approval-mode": {
@@ -1067,6 +1079,8 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
   if (!args.cwd) throw new Error("--cwd is required");
   if (!args.launchId) throw new Error("--launch-id is required (launch-attempt scoping)");
   if (args.runtime === "omp" && args.modelOverrides !== undefined) throw new Error("--model-overrides is for Pi seats only");
+  if (args.runtime === "omp" && (args.operatorLoginDir !== undefined || args.linkOperatorModels)) throw new Error("--operator-login-dir and --link-operator-models are for Pi seats only");
+  if (args.linkOperatorModels && args.modelOverrides !== undefined) throw new Error("--link-operator-models and --model-overrides cannot be combined: a linked models.json is the operator's, and model_overrides are written into the seat's own (use one or the other)");
   if (args.runtime === "omp") {
     if (!argv.includes("--approval-mode") || argv.some((flag) => flag === "--approve" || flag === "--no-approve")) {
       throw new Error("OMP requires --approval-mode yolo or always-ask, not Pi trust flags");
@@ -1250,6 +1264,21 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     openrigUrl: endpoint?.baseUrl ?? process.env.OPENRIG_URL,
     extraNames: args.envPassthrough,
   });
+  const readMetadata = (file: string): string => {
+    if (fs.statSync(file).size > 1024 * 1024) throw new Error("Unbounded metadata");
+    return fs.readFileSync(file, "utf8");
+  };
+  const credentialEvidence = (): PiCredentialEvidence => piCredentialEvidence({
+    agentDir: paths.agentDir, cwd: args.cwd, env: childEnv, now: () => Date.now(), readFile: readMetadata,
+    statId: (file) => {
+      try { const st = fs.statSync(file); return `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`; }
+      catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return "absent"; throw error; }
+    },
+    listDir: (dir) => {
+      try { return fs.readdirSync(dir); }
+      catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return []; throw error; }
+    },
+  });
   // OF-249: every Pi seat loads the rig-body guard, which refuses a bash tool call that would let the shell run a command
   // substitution inside `rig send` text before rig starts. Without the file the seat does not start (an unguarded seat
   // that looks guarded is the worse outcome); Pi itself also refuses to start on a missing --extension path.
@@ -1283,6 +1312,33 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     for (const change of applied.changes) console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: model override from the spec changed ${change}`));
   }
+  // OF-279: the operator's Pi login, linked into the seat's agent dir at every launch when the host declares one. A refusal
+  // (a missing operator file, a link that would dangle, a symlinked seat dir) ends the launch with the reason on the pane.
+  const refuseLaunch = (message: string): void => {
+    console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} launch: ${message}`));
+    const at = new Date().toISOString();
+    try {
+      const pending = parsePiRunnerState(fs.readFileSync(paths.runnerStatePath, "utf8"));
+      const exitedState: PiRunnerState = { ready: false, launchId: args.launchId, lastEntryId: pending?.lastEntryId, updatedAt: at, exited: { code: 78, at } };
+      fs.writeFileSync(paths.runnerStatePath, JSON.stringify(exitedState));
+    } catch { /* the pane ERROR marker still fails readiness */ }
+    process.exitCode = 78;
+  };
+  let operatorLoginLines: string[] = [];
+  if (runtime === "pi") {
+    const linked = linkPiOperatorLogin({ stateRoot: args.stateRoot, agentDir: paths.agentDir, sessionName: args.sessionName, operatorDir: args.operatorLoginDir, linkModels: args.linkOperatorModels === true });
+    if (!linked.ok) { refuseLaunch(`operator login: ${linked.error}`); return; }
+    operatorLoginLines = linked.lines;
+    for (const line of operatorLoginLines) console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: Pi ${line}`));
+  }
+  // OF-279: a launch with no credential for the provider the spec names is refused before Pi starts ("unknown" is not).
+  let credentialGateNote: string | undefined;
+  if (runtime === "pi") {
+    const source = piCredentialSource({ model: args.model, agentDir: paths.agentDir, env: childEnv, readFile: readMetadata });
+    const gate = piCredentialLaunchGate(source, source.kind === "none" ? credentialEvidence().extensions : "none", paths.agentDir);
+    if (gate.action === "refuse") { refuseLaunch(gate.message); return; }
+    if (gate.action === "exempt") credentialGateNote = gate.message;
+  }
   const childArgs = buildPiChildArgs({
     sessionsDir: paths.sessionsDir,
     sessionName: args.sessionName,
@@ -1301,7 +1357,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const frame = openPaneFrame(banner);
   console.log(banner);
 
-  if (runtime === "pi") {
+  if (runtime === "pi" && credentialGateNote) {
+    console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: ${credentialGateNote}`));
+  } else if (runtime === "pi") {
     console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: ${piCredentialNotice({
       model: args.model, agentDir: paths.agentDir, env: childEnv,
       readFile: (file) => {
@@ -1337,21 +1395,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   // OPR.0.7.0.2 K4: OpenRouter's charge, looked up with the key this runner forwarded to Pi, only for requests whose
   // credential is established as that key by the observations before and after them.
-  const readMetadata = (file: string): string => {
-    if (fs.statSync(file).size > 1024 * 1024) throw new Error("Unbounded metadata");
-    return fs.readFileSync(file, "utf8");
-  };
-  const credentialEvidence = (): PiCredentialEvidence => piCredentialEvidence({
-    agentDir: paths.agentDir, cwd: args.cwd, env: childEnv, now: () => Date.now(), readFile: readMetadata,
-    statId: (file) => {
-      try { const st = fs.statSync(file); return `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`; }
-      catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return "absent"; throw error; }
-    },
-    listDir: (dir) => {
-      try { return fs.readdirSync(dir); }
-      catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return []; throw error; }
-    },
-  });
   // Observed before Pi is spawned, so whatever Pi loads at its start was there for this observation to see
   // (or was added after it, and is then seen by the next one).
   const launchCredentialEvidence = args.openRouterCharge === true && runtime === "pi" ? credentialEvidence() : undefined;
