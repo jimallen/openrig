@@ -29,10 +29,12 @@ a rig-mode setting.
 
 - An event `seat.question_auto_answered` (rig, seat, question and option for each question, when it was asked, when the answer was taken, the
   wait it waited and the wait that was set). A held question records `seat.question_held` with the reason.
-- One queue item to `human@kernel` per answer taken. The answer is sent only once the event and the item are written: if the queue cannot take the
-  item, the answer waits and the hook asks again until it can. It names the seat, each question and the option taken, when, and how to correct it:
+- One queue item to `human@kernel` per answer taken. The item is filed first, then the event, then the answer is sent: if the queue cannot take the
+  item, no event is written and no answer is sent, and the hook asks again until it can. The event means the answer was sent; that the seat took it is
+  said by `rig health` only when the seat reports it landed. It names the seat, each question and the option taken, when, and how to correct it:
   the model has the answer as the user's, so `rig send <seat> "<what you actually want>"`.
-- `rig health` lists a question that is waiting or held, the messages waiting behind it, and the answers taken in the last 24 hours.
+- `rig health` lists a question that is waiting or held, the messages waiting behind it, and the answers of the last 24 hours, said apart: "took their
+  (Recommended) answer" only for an answer the seat reported landed; "sent and not yet reported landed"; and "withheld" while the item cannot be filed.
 
 ## How it works
 
@@ -65,3 +67,8 @@ reads `waiting on a question to the human`, not `permission_prompt`.
   dialog 2 is not auto-answered. It stays open for the human.
 - **A marker is the seat's own.** "(Recommended)" is written by the model that asks. A seat whose context was injected can mark a destructive option;
   it is taken after the wait, logged and filed. That is the policy as decided, with no exception for irreversible questions.
+- **A start time is bounded by the longest wait, not by the rig's.** The daemon refuses a start older than 20 minutes plus 5 (a live hook's limit), not older than
+  the rig's own wait. A caller with the shared hook token can therefore ask for a shorter wait than the rig set, for its own request. It needs the same token as
+  `/api/activity/hooks` and answers only the caller's own request, never the seat's real dialog.
+- **A seat's held waits are capped (4), and the daemon's (64).** A caller with the token can fill a seat's cap with requests of its own; the seat's real hook is
+  then refused (429) and retries. The question stays open for the human, so this fails safe: the cost is that it is not auto-answered. A refused request writes nothing.

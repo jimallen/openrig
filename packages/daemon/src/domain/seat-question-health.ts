@@ -34,11 +34,16 @@ export class SeatQuestionHealthSource implements HealthObservationSource {
         rows.push(notice(`${q.sessionName} has asked you a question for ${formatHeldAge(ageMs)}; it takes its (Recommended) answer at ${q.dueAt ?? "the end of the wait"} if nobody answers.${waiting}`));
       }
     }
+    // Three different things, said apart: an answer the seat reported landed (took), one sent that the seat has not reported (sent), and one the daemon
+    // holds back because the event or the note to the human is not written yet (withheld: the hook is retrying, the question is open for the human).
     const taken = this.store.autoAnsweredSince(new Date(now.getTime() - WINDOW_MS).toISOString());
-    if (taken.length > 0) {
-      const unconfirmed = taken.filter((t) => t.state === "answered_auto").length;
-      rows.push(notice(`${taken.length} unanswered question(s) took their (Recommended) answer in the last 24 h (${taken.map((t) => t.sessionName).join(", ")})${unconfirmed > 0 ? `; ${unconfirmed} not yet seen to land` : ""}. Each is on a queue item to human@kernel.`));
-    }
+    const names = (list: Array<{ sessionName: string }>) => list.map((t) => t.sessionName).join(", ");
+    const confirmed = taken.filter((t) => t.state === "confirmed_auto");
+    const sent = taken.filter((t) => t.state === "answered_auto" && t.logged && t.noted);
+    const withheld = taken.filter((t) => t.state === "answered_auto" && !(t.logged && t.noted));
+    if (confirmed.length > 0) rows.push(notice(`${confirmed.length} unanswered question(s) took their (Recommended) answer in the last 24 h (${names(confirmed)}). Each is on a queue item to human@kernel.`));
+    if (sent.length > 0) rows.push(notice(`${sent.length} answer(s) were sent and the seat has not yet reported them landed (${names(sent)}). Each is on a queue item to human@kernel.`));
+    if (withheld.length > 0) rows.push(notice(`${withheld.length} answer(s) are withheld, because the event or the note to human@kernel could not be written yet (${names(withheld)}); the question stays open for the human and the hook is retrying.`));
     return rows;
   }
 }

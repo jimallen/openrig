@@ -153,13 +153,21 @@ describe("SeatQuestionHealthSource", () => {
     store.settle("q2", ["waiting"], "answered_human", iso(T0));
     expect(source(T0 + 10_000).coverage()).toEqual([]);
   });
-  it("counts the answers taken in the last 24 h, and those not yet seen to land", () => {
-    ask("q1", "s@r", "waiting", T0 - 3_600_000); ask("q2", "t@r", "waiting", T0 - 3_600_000); ask("q3", "u@r", "waiting", T0 - 30 * 3_600_000);
-    store.claimAutoAnswer("q1", iso(T0 - 600_000), { Q: "A" }); store.claimAutoAnswer("q2", iso(T0 - 500_000), { Q: "A" }); store.claimAutoAnswer("q3", iso(T0 - 29 * 3_600_000), { Q: "A" });
-    store.settleFromActivity("n-s@r", "PostToolUse", "AskUserQuestion", iso(T0 - 400_000));
-    const rows = source(T0).coverage();
-    expect(rows).toHaveLength(1);
-    expect(reasonOf(rows[0]!)).toBe("2 unanswered question(s) took their (Recommended) answer in the last 24 h (t@r, s@r); 1 not yet seen to land. Each is on a queue item to human@kernel.");
+  it("says an answer took only when the seat reported it landed; one sent and not yet seen is said so; one withheld by the queue is said so", () => {
+    for (const [id, seat] of [["q1", "s@r"], ["q2", "t@r"], ["q3", "u@r"], ["q4", "v@r"]] as const) ask(id, seat, "waiting", T0 - 3_600_000);
+    ask("q5", "w@r", "waiting", T0 - 30 * 3_600_000);
+    store.claimAutoAnswer("q1", iso(T0 - 600_000), { Q: "A" }); store.markLogged("q1", iso(T0 - 590_000)); store.markNoted("q1", iso(T0 - 590_000));   // sent
+    store.claimAutoAnswer("q2", iso(T0 - 500_000), { Q: "A" }); store.markLogged("q2", iso(T0 - 490_000)); store.markNoted("q2", iso(T0 - 490_000));   // sent, then landed
+    store.settleFromActivity("n-t@r", "PostToolUse", "AskUserQuestion", iso(T0 - 400_000));
+    store.claimAutoAnswer("q3", iso(T0 - 300_000), { Q: "A" });                                                                                       // taken, the queue never took the note
+    store.claimAutoAnswer("q4", iso(T0 - 200_000), { Q: "A" }); store.markNoted("q4", iso(T0 - 190_000));                                             // note filed, event not yet written
+    store.claimAutoAnswer("q5", iso(T0 - 29 * 3_600_000), { Q: "A" });                                                                                // older than 24 h
+    const text = source(T0).coverage().map(reasonOf);
+    expect(text).toEqual([
+      "1 unanswered question(s) took their (Recommended) answer in the last 24 h (t@r). Each is on a queue item to human@kernel.",
+      "1 answer(s) were sent and the seat has not yet reported them landed (s@r). Each is on a queue item to human@kernel.",
+      "2 answer(s) are withheld, because the event or the note to human@kernel could not be written yet (u@r, v@r); the question stays open for the human and the hook is retrying.",
+    ]);
   });
 });
 

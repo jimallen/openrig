@@ -76,9 +76,9 @@ export class SqliteSeatQuestionStore implements SeatQuestionRepository {
   }
 
   /** Questions the daemon answered since `sinceIso` (sent, or sent and seen to land). SELECT only. */
-  autoAnsweredSince(sinceIso: string): Array<{ id: string; sessionName: string; state: SeatQuestionState }> {
-    return (this.db.prepare("SELECT id, session_name, state FROM seat_questions WHERE state IN ('answered_auto', 'confirmed_auto') AND settled_at >= ? ORDER BY settled_at").all(sinceIso) as Array<{ id: string; session_name: string; state: string }>)
-      .map((r) => ({ id: r.id, sessionName: r.session_name, state: r.state as SeatQuestionState }));
+  autoAnsweredSince(sinceIso: string): Array<{ id: string; sessionName: string; state: SeatQuestionState; logged: boolean; noted: boolean }> {
+    return (this.db.prepare("SELECT id, session_name, state, logged_at IS NOT NULL AS logged, noted_at IS NOT NULL AS noted FROM seat_questions WHERE state IN ('answered_auto', 'confirmed_auto') AND settled_at >= ? ORDER BY settled_at").all(sinceIso) as Array<{ id: string; session_name: string; state: string; logged: number; noted: number }>)
+      .map((r) => ({ id: r.id, sessionName: r.session_name, state: r.state as SeatQuestionState, logged: r.logged === 1, noted: r.noted === 1 }));
   }
 
   /** The rig's stored wait: null is the default, 0 is off. */

@@ -10,6 +10,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
+import { SeatQuestionHealthSource } from "../src/domain/seat-question-health.js";
 import {
   SeatQuestionService, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller, SeatQuestionRefusal, MAX_AUTO_ANSWER_MINUTES, type SeatQuestionServiceDeps,
   DEFAULT_AUTO_ANSWER_MINUTES, type SeatQuestionReply,
@@ -222,12 +223,12 @@ describe("SeatQuestionService", () => {
     let stopped = true;
     const dying = build(5 * MIN, { emit: (e) => { if (stopped) throw new Error("daemon stopped"); events.push(e); } });
     await expect(askUntilSettled(dying)).rejects.toThrow("daemon stopped");
-    expect(events).toEqual([]); expect(told).toEqual([]);
-    expect(db.prepare("SELECT state, logged_at FROM seat_questions").get()).toEqual({ state: "answered_auto", logged_at: null });
+    expect(events).toEqual([]); expect(told).toHaveLength(1);                         // the note is filed first; the event is the step that stopped
+    expect(db.prepare("SELECT state, logged_at, noted_at IS NOT NULL AS n FROM seat_questions").get()).toEqual({ state: "answered_auto", logged_at: null, n: 1 });
     stopped = false;
     const reply = await build().wait(asked());                       // the hook asks again; the restarted daemon finds the answer taken and unwritten
     expect(reply).toMatchObject({ action: "answer", updatedInput: { answers: { "Which target?": "Staging (Recommended)" } } });
-    expect(events).toHaveLength(1); expect(told).toHaveLength(1);
+    expect(events).toHaveLength(1); expect(told).toHaveLength(1);                     // the note is not filed again
     expect(events[0]).toMatchObject({ type: "seat.question_auto_answered", takenAt: new Date(T0 + 15 * MIN).toISOString(), waitedMs: 15 * MIN });
     await build().wait(asked()); await build().wait(asked());
     expect(events).toHaveLength(1); expect(told).toHaveLength(1);    // written, so not written again
@@ -300,10 +301,10 @@ describe("SeatQuestionService", () => {
     let queueUp = false; const filed: string[] = [];
     const svc = build(5 * MIN, { tell: async (n) => { if (!queueUp) throw new Error("queue down"); filed.push(n.qitemId); } });
     await expect(askUntilSettled(svc)).rejects.toThrow("queue down");
-    expect(events).toHaveLength(1);                                    // the event is written first and stays
-    expect(db.prepare("SELECT state, logged_at IS NOT NULL AS l, noted_at IS NOT NULL AS n FROM seat_questions").get()).toEqual({ state: "answered_auto", l: 1, n: 0 });
-    await expect(svc.wait(asked())).rejects.toThrow("queue down");     // the queue is still down: still no answer, no second event
-    expect(events).toHaveLength(1);
+    expect(events).toEqual([]);                                        // N1: no auto_answered event while the note cannot be filed
+    expect(db.prepare("SELECT state, logged_at IS NOT NULL AS l, noted_at IS NOT NULL AS n FROM seat_questions").get()).toEqual({ state: "answered_auto", l: 0, n: 0 });
+    await expect(svc.wait(asked())).rejects.toThrow("queue down");     // the queue is still down: still no answer, still no event
+    expect(events).toEqual([]);
     queueUp = true;
     const reply = await svc.wait(asked());
     expect(reply).toMatchObject({ action: "answer", updatedInput: { answers: { "Which target?": "Staging (Recommended)" } } });
@@ -374,6 +375,42 @@ describe("SeatQuestionService", () => {
       await Promise.all([a1, a2, b1]);
       expect((await svc.wait(asked({ requestId: "req-00000006" }))).action).not.toBe(undefined);   // the polls ended: room again
     });
+  });
+
+  it("N1: a queue that never recovers leaves no auto_answered event, no answer sent, and nothing in rig health that says the answer was taken", async () => {
+    dialogOpens();
+    const svc = build(5 * MIN, { tell: async () => { throw new Error("queue down"); } });
+    for (let i = 0; i < 4; i++) await expect(askUntilSettled(svc)).rejects.toThrow("queue down");
+    expect(events).toEqual([]);
+    expect(db.prepare("SELECT state, logged_at, noted_at FROM seat_questions").get()).toEqual({ state: "answered_auto", logged_at: null, noted_at: null });
+    const rows = new SeatQuestionHealthSource(store, () => null, () => new Date(clock)).coverage();
+    const text = rows.map((r) => ("reason" in r ? r.reason : "")).join("\n");
+    expect(text).not.toMatch(/took/);
+    expect(text).toContain("withheld");
+  });
+
+  it("F4: requests refused at the cap write nothing: no row, no dialog recorded for the seat", async () => {
+    const other = new RigRepository(db).addNode(rigId, "dev.qa", { runtime: "claude-code" });
+    const sess = new SessionRegistry(db); sess.updateStatus(sess.registerSession(other.id, "dev-qa@qrig").id, "running");
+    dialogOpens();
+    const releases: Array<() => void> = []; let open = true;
+    const svc = build(5 * MIN, { maxWaitsPerSeat: 2, maxWaitsTotal: 2, sleep: async (ms) => { if (open) await new Promise<void>((r) => releases.push(r)); clock += ms; } });
+    const a1 = svc.wait(asked({ requestId: "req-00000001" })); const a2 = svc.wait(asked({ requestId: "req-00000002" }));
+    const rowsBefore = db.prepare("SELECT count(*) AS n FROM seat_questions").get(); const activityBefore = db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.activity'").get();
+    let refused = 0;
+    for (let i = 0; i < 50; i++) {
+      // the same seat (per-seat cap) and a seat that has no dialog on record (total cap)
+      for (const over of [{ requestId: `req-1000${String(i).padStart(4, "0")}` }, { requestId: `req-2000${String(i).padStart(4, "0")}`, sessionName: "dev-qa@qrig", nodeId: other.id }]) {
+        const err = await svc.wait(asked(over)).then(() => null, (e: unknown) => e);
+        if (err instanceof SeatQuestionRefusal && err.status === 429) refused += 1;
+      }
+    }
+    expect(refused).toBe(100);
+    expect(db.prepare("SELECT count(*) AS n FROM seat_questions").get()).toEqual(rowsBefore);
+    expect(db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.activity'").get()).toEqual(activityBefore);
+    expect(activity.getLatestRecorded(other.id)).toBeNull();
+    open = false; releases.splice(0).forEach((r) => r());
+    await Promise.all([a1, a2]);
   });
 
   it("M16: a question dialog of another occupant generation is not this question: it is not answered", async () => {

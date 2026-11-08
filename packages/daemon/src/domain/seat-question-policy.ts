@@ -98,7 +98,7 @@ export interface SeatQuestionRepository {
   /** Records that an auto-answer's note to the human is filed. */
   markNoted(id: string, atIso: string): boolean;
   /** Questions the daemon answered since `sinceIso` (sent, or sent and seen to land). */
-  autoAnsweredSince(sinceIso: string): Array<{ id: string; sessionName: string; state: SeatQuestionState }>;
+  autoAnsweredSince(sinceIso: string): Array<{ id: string; sessionName: string; state: SeatQuestionState; logged: boolean; noted: boolean }>;
   /** The rig's stored wait in minutes: null is the default, 0 is off. */
   rigWaitMinutes(rigId: string): number | null;
 }
@@ -165,6 +165,19 @@ export class SeatQuestionService {
     }
     const seat = this.deps.resolveSeat({ sessionName: req.sessionName, nodeId: req.nodeId });
     if (!seat || seat.runtime !== "claude-code") return { action: "none", why: "not a managed Claude seat" };
+    // The cap comes before anything is written: a request refused here leaves no row and no dialog on record for the seat. A poll costs a database
+    // read a second, so a seat may hold a few and the daemon a bounded number; a request that returns at once is counted only while it runs.
+    const mine = this.active.get(seat.nodeId) ?? 0;
+    if (mine >= (this.deps.maxWaitsPerSeat ?? MAX_QUESTION_WAITS_PER_SEAT) || this.activeTotal >= (this.deps.maxWaitsTotal ?? MAX_QUESTION_WAITS_TOTAL)) {
+      throw new SeatQuestionRefusal(429, "too_many_question_waits", "too many question waits are held; ask again shortly");
+    }
+    this.active.set(seat.nodeId, mine + 1); this.activeTotal += 1;
+    try { return await this.serve(req, seat); }
+    finally { this.active.set(seat.nodeId, (this.active.get(seat.nodeId) ?? 1) - 1); this.activeTotal -= 1; }
+  }
+
+  private async serve(req: SeatQuestionRequest, seat: { rigId: string; nodeId: string; sessionName: string; runtime: string | null }): Promise<SeatQuestionReply> {
+    const { store, now } = this.deps;
     const id = SeatQuestionService.rowId(seat.nodeId, req.requestId);
     let row = store.get(id);
     if (!row) {
@@ -183,14 +196,7 @@ export class SeatQuestionService {
       row = store.get(id);
     }
     if (!row) return { action: "none", why: "the question could not be recorded" };
-    // A held poll costs a database read a second: a seat may hold a few, and the daemon a bounded number.
-    const mine = this.active.get(seat.nodeId) ?? 0;
-    if (mine >= (this.deps.maxWaitsPerSeat ?? MAX_QUESTION_WAITS_PER_SEAT) || this.activeTotal >= (this.deps.maxWaitsTotal ?? MAX_QUESTION_WAITS_TOTAL)) {
-      throw new SeatQuestionRefusal(429, "too_many_question_waits", "too many question waits are held; ask again shortly");
-    }
-    this.active.set(seat.nodeId, mine + 1); this.activeTotal += 1;
-    try { return await this.hold(row, seat); }
-    finally { this.active.set(seat.nodeId, (this.active.get(seat.nodeId) ?? 1) - 1); this.activeTotal -= 1; }
+    return await this.hold(row, seat);
   }
 
   private async hold(first: SeatQuestionRow, seat: { rigId: string; nodeId: string; sessionName: string; runtime: string | null }): Promise<SeatQuestionReply> {
@@ -242,7 +248,7 @@ export class SeatQuestionService {
     return { action: "answer", updatedInput: { ...(row.toolInput as Record<string, unknown>), answers: plan.answers } };
   }
 
-  /** Writes down an answer that was taken: the event (the durable record), then the note to the human. Neither may fail silently: an event or a note
+  /** Writes down an answer that was taken: the note to the human, then the event (the durable record). Neither may fail silently: an event or a note
    *  that cannot be written stops here, so the hook asks again and the answer is not sent unreported.
    *  `logged_at` and `noted_at` are set as each is done, so a daemon that stopped between them finishes the rest on the hook's next ask. */
   private async record(row: SeatQuestionRow): Promise<void> {
@@ -261,13 +267,9 @@ export class SeatQuestionService {
     const takenAt = row.settledAt ?? this.deps.now().toISOString();
     const waitedMs = Math.max(0, Date.parse(takenAt) - Date.parse(row.askedAt));
     const waitConfiguredMs = row.dueAt ? Date.parse(row.dueAt) - Date.parse(row.askedAt) : waitedMs;
-    // The event first: it is the durable record, and it is written once (logged_at). Then the note to the human, filed once (noted_at). A note that
-    // cannot be filed throws: the answer is not sent unreported, the hook asks again after the error, and the next ask files it (the queue item is one
-    // item by its id) and sends the answer.
-    if (row.loggedAt === null) {
-      this.deps.emit({ type: "seat.question_auto_answered", rigId: row.rigId, nodeId: row.nodeId, sessionName: row.sessionName, questionId: row.id, askedAt: row.askedAt, takenAt, waitedMs, waitConfiguredMs, questions: chosen });
-      this.deps.store.markLogged(row.id, this.deps.now().toISOString());
-    }
+    // The note to the human first, then the event, then (in the caller) the answer. The note is filed once (noted_at); a note that cannot be filed throws,
+    // so no `seat.question_auto_answered` event is written and no answer is sent for an answer nobody was told of: the hook asks again after the error and
+    // the next ask files the note (the queue item is one item by its id). The event is the durable record that the answer was sent, written once (logged_at).
     if (row.notedAt === null) {
       const lines = chosen.map((c) => `  - ${c.question} -> ${c.chosen}`).join("\n");
       await this.deps.tell({
@@ -276,6 +278,10 @@ export class SeatQuestionService {
         body: `${row.sessionName} asked a question and nobody answered it within ${Math.round(waitConfiguredMs / 60_000)} min, so OpenRig sent the (Recommended) answer at ${takenAt}:\n${lines}\n\nHow to override: ${this.deps.howToOverride(row.sessionName)}`,
       });
       this.deps.store.markNoted(row.id, this.deps.now().toISOString());
+    }
+    if (row.loggedAt === null) {
+      this.deps.emit({ type: "seat.question_auto_answered", rigId: row.rigId, nodeId: row.nodeId, sessionName: row.sessionName, questionId: row.id, askedAt: row.askedAt, takenAt, waitedMs, waitConfiguredMs, questions: chosen });
+      this.deps.store.markLogged(row.id, this.deps.now().toISOString());
     }
   }
 }
