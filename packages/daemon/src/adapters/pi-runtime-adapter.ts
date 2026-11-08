@@ -71,6 +71,10 @@ export interface PiRuntimeAdapterDeps {
   envPassthroughFor?: (sessionName: string) => string[];
   /** OF-270: the seat's model overrides (spec `model_overrides`), by session name, read at each launch; absent or undefined = none. */
   modelOverridesFor?: (sessionName: string) => PiModelOverrides | undefined;
+  /** OF-279: the host's operator Pi login folder (`pi.operator_login_dir`), read at each launch; absent or undefined = no link. */
+  operatorLoginDirFor?: () => string | undefined;
+  /** OF-279: the seat's `pi.link_operator_models`, by session name, read at each launch; absent = false. */
+  linkOperatorModelsFor?: (sessionName: string) => boolean;
   /** The clock `sendReadiness` judges the sidecar's alive tick against (tests inject; defaults to the wall clock). */
   now?: () => Date;
 }
@@ -89,6 +93,8 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   private openRouterChargeEnabled: () => boolean;
   private envPassthroughFor: (sessionName: string) => string[];
   private modelOverridesFor: (sessionName: string) => PiModelOverrides | undefined;
+  private operatorLoginDirFor: () => string | undefined;
+  private linkOperatorModelsFor: (sessionName: string) => boolean;
   private now: () => Date;
 
   constructor(deps: PiRuntimeAdapterDeps) {
@@ -97,6 +103,8 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     this.openRouterChargeEnabled = deps.openRouterChargeEnabled ?? (() => false);
     this.envPassthroughFor = deps.envPassthroughFor ?? (() => []);
     this.modelOverridesFor = deps.modelOverridesFor ?? (() => undefined);
+    this.operatorLoginDirFor = deps.operatorLoginDirFor ?? (() => undefined);
+    this.linkOperatorModelsFor = deps.linkOperatorModelsFor ?? (() => false);
     this.tmux = deps.tmux;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
@@ -299,6 +307,8 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       openRouterCharge: this.runtime === "pi" && this.openRouterChargeEnabled(),
       envPassthrough: this.envPassthroughFor(sessionName),
       modelOverrides: this.runtime === "pi" ? this.modelOverridesFor(sessionName) : undefined,
+      operatorLoginDir: this.runtime === "pi" ? this.operatorLoginDirFor() : undefined,
+      linkOperatorModels: this.runtime === "pi" ? this.linkOperatorModelsFor(sessionName) : false,
     });
 
     const command = this.runtime === "pi" && this.seatLaunchEnvironment

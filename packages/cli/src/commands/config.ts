@@ -90,6 +90,7 @@ Keys:
   transport.message_pump   resend each message to a gated seat until its gate records the id; read at boot; a seat with no gate is unchanged (default on)
   agents.*               advisor_session, operator_session
   rsi.steward_session    the improvement steward's <member>@<rig>; the daemon arms its hourly finding wake, and daily report at boot (default unset; unset or invalid disarms both at the next boot; the operator restarts the daemon to apply)
+  pi.operator_login_dir  the host's operator Pi login folder (holds auth.json, models.json); when set, each Pi seat's auth.json is linked to it at every launch, SHARING the login with the operator (default unset = no link; see docs/reference/pi-operator-login.md)
   feed.subscriptions.*   action_required, approvals, shipped, progress, audit_log
   runtime.codex.*        hooks_enabled
   runtime.readiness_timeout_seconds

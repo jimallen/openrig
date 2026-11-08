@@ -17,6 +17,7 @@ import { PDA_RUNNER_READY_MARKER } from "../src/adapters/pda-runner-protocol.js"
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 import { startFakePda, type FakePda } from "./helpers/fake-pda.js";
 import { BEARER } from "./helpers/pda-runner-rig.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
@@ -67,6 +68,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   if (cmd.type !== "get_state" && cmd.type !== "get_entries") require("node:fs").appendFileSync(${JSON.stringify(rpcLog)}, JSON.stringify(cmd) + "\\n");
   if (cmd.type === "get_state") out({ type: "response", id: cmd.id, success: true, data: { sessionFile: ${JSON.stringify(sessionFile)}, sessionId: "offline" } });
 });\n`, { mode: 0o700 });
+    seedPiFixtureCredential(path.join(temp, `state-${name}`), name, "openrouter");
     await run(name, [process.execPath, "--import", "tsx", path.join(RUNNERS, "pi-runner.ts"), "--session-name", name, "--state-root", path.join(temp, `state-${name}`), "--cwd", temp, "--launch-id", "w47", "--no-approve", "--model", "openrouter/fixture"],
       { PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}`, OPENRIG_HOME: path.join(temp, "home") });
     await until(() => screen(name), (t) => t.includes(PI_RUNNER_READY_MARKER), `${name} READY`);

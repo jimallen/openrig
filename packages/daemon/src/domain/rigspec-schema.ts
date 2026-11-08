@@ -55,7 +55,7 @@ const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startu
 export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
-  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough", "model_overrides",
+  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough", "model_overrides", "pi",
 ]);
 
 /** Member keys a pda seat cannot take: OpenRig delivers no startup content to a pda agent (D4), and the model,
@@ -543,6 +543,27 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.model_overrides: only valid when runtime is "pi"`);
     } else {
       for (const problem of piModelOverridesErrors(member["model_overrides"])) errors.push(`${prefix}.model_overrides: ${problem}`);
+    }
+  }
+  // OF-279: `pi: { link_operator_models: true }` makes the Pi runner link the seat's models.json to the operator's at every launch
+  // (the host setting pi.operator_login_dir names where). Pi only; one known key, a boolean; and never beside model_overrides,
+  // which writes into the seat's own models.json (a link would make that a write into the operator's file, and the override
+  // path must never quietly turn off), so a member that declares both is refused here.
+  if (member["pi"] !== undefined) {
+    const pi = member["pi"];
+    if (member["runtime"] !== "pi") {
+      errors.push(`${prefix}.pi: only valid when runtime is "pi"`);
+    } else if (typeof pi !== "object" || pi === null || Array.isArray(pi)) {
+      errors.push(`${prefix}.pi: must be a mapping (for example { link_operator_models: true })`);
+    } else {
+      for (const key of Object.keys(pi as Record<string, unknown>)) {
+        if (key !== "link_operator_models") errors.push(`${prefix}.pi: unknown key ${JSON.stringify(key)} (only link_operator_models is accepted)`);
+      }
+      const link = (pi as Record<string, unknown>)["link_operator_models"];
+      if (link !== undefined && typeof link !== "boolean") errors.push(`${prefix}.pi.link_operator_models: must be true or false`);
+      else if (link === true && member["model_overrides"] !== undefined) {
+        errors.push(`${prefix}: pi.link_operator_models and model_overrides conflict: a linked models.json is the operator's file and model_overrides are written into the seat's own, so the override would never apply or would edit the operator's file. Use one or the other.`);
+      }
     }
   }
   // Claude Code Remote Control: `remote_control: true` makes every claude launch of this seat carry
@@ -1272,6 +1293,8 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     pda: normalizePdaBinding(m["pda"]),
     envPassthrough: Array.isArray(m["env_passthrough"]) ? (m["env_passthrough"] as string[]) : undefined,
     modelOverrides: normalizePiModelOverrides(m["model_overrides"]) ?? undefined,
+    // Only a validated `true` survives; false/absent normalize to undefined (nothing is linked).
+    piLinkOperatorModels: typeof m["pi"] === "object" && m["pi"] !== null && (m["pi"] as Record<string, unknown>)["link_operator_models"] === true ? true : undefined,
     role: m["role"] as string | undefined,
     permissionPolicy: m["permission_policy"] as string | undefined,
     cwd: m["cwd"] as string,

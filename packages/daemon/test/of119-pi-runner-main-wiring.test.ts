@@ -28,6 +28,9 @@ data:{sessionFile:${JSON.stringify(sessionFile)},sessionId:'offline'}}));
 });\n`, { mode: 0o700 });
     const stateRoot = path.join(temp, "state");
     const runnerStatePath = piSeatPaths(stateRoot, "fixture").runnerStatePath;
+    // OF-279: a launch whose provider has no credential is refused, so the seat holds a (dummy) stored key for its provider.
+    fs.mkdirSync(piSeatPaths(stateRoot, "fixture").agentDir, { recursive: true });
+    fs.writeFileSync(path.join(piSeatPaths(stateRoot, "fixture").agentDir, "auth.json"), JSON.stringify({ openrouter: { type: "api_key", key: "dummy-key" } }));
     const renameLog = path.join(temp, "renames.log");
     const preload = fileURLToPath(new URL("./helpers/pi-runner-wiring-preload.mjs", import.meta.url));
     const child = spawn(process.execPath, ["--import", "tsx", "--import", preload, fileURLToPath(new URL("../src/adapters/pi-runner.ts", import.meta.url)),

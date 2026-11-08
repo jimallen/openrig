@@ -181,6 +181,8 @@ export class RigSpecExporter {
         // A Pi seat's model overrides round-trip export -> import (OF-270).
         const modelOverrides = this.rigRepo.getNodeModelOverrides(node.id);
         if (modelOverrides) member.modelOverrides = modelOverrides;
+        // A Pi seat's models link round-trips export -> import (OF-279).
+        if (this.rigRepo.getNodeLinkOperatorModels(node.id)) member.piLinkOperatorModels = true;
         // OPR.0.4.6.FAC1: a declared seat role exports with the pod
         // member (round-trip fidelity — export→import keeps the role).
         if (node.role) member.role = node.role;

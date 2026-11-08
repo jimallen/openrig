@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { PI_RUNNER_READY_MARKER } from "../src/adapters/pi-runner-protocol.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
@@ -69,6 +70,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
 
   async function startRunner(name: string, dir: string, hold: number): Promise<number> {
     const bin = fakePi(dir, hold);
+    seedPiFixtureCredential(path.join(dir, "state"), name, "openrouter");
     await scratch.client().call("terminal.run", {
       argv: [process.execPath, "--import", "tsx", path.join(RUNNERS, "pi-runner.ts"), "--session-name", name, "--state-root", path.join(dir, "state"), "--cwd", dir,
         "--launch-id", name, "--no-approve", "--model", "openrouter/fixture"],

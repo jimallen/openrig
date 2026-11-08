@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { PI_RUNNER_READY_MARKER } from "../src/adapters/pi-runner-protocol.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
@@ -91,6 +92,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   if (cmd.type === "prompt") { if (String(cmd.message).includes("flood")) for (let i = 0; i < 300; i++) process.stderr.write("flood line " + i + "\\n"); process.stderr.write("\\x1b]2;hijacked-by-pi-stderr\\x07 pi-stderr-oops\\n"); out({ type: "agent_start" }); setTimeout(() => out({ type: "agent_end", messages: [], willRetry: false }), 300); }
 });\n`, { mode: 0o700 });
     }
+    seedPiFixtureCredential(path.join(temp, "state"), sessionName, "openai-codex");
     await scratch.client().call("terminal.run", {
       argv: [process.execPath, "--import", "tsx", path.join(RUNNERS, "pi-runner.ts"), "--session-name", sessionName, "--state-root", path.join(temp, "state"),
         "--cwd", temp, "--launch-id", "of213", "--no-approve", "--model", "openai-codex/gpt-6-luna:medium", ...extraArgs],

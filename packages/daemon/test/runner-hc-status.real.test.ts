@@ -19,6 +19,7 @@ import { PDA_RUNNER_READY_MARKER } from "../src/adapters/pda-runner-protocol.js"
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 import { startFakePda, type FakePda } from "./helpers/fake-pda.js";
 import { BEARER } from "./helpers/pda-runner-rig.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
@@ -71,6 +72,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   if (cmd.type === "get_state") out({ type: "response", id: cmd.id, success: true, data: { sessionFile: ${JSON.stringify(sessionFile)}, sessionId: "offline" } });
   if (cmd.type === "prompt") { out({ type: "agent_start" }); setTimeout(() => out({ type: "agent_end", messages: [], willRetry: false }), 600); }
 });\n`, { mode: 0o700 });
+    seedPiFixtureCredential(path.join(temp, "state"), "w37pi", "openrouter");
     await runRunner("w37pi", [
       path.join(RUNNERS, "pi-runner.ts"), "--session-name", "w37pi", "--state-root", path.join(temp, "state"), "--cwd", temp,
       "--launch-id", "w37", "--no-approve", "--model", "openrouter/fixture",

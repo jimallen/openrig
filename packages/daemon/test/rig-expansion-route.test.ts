@@ -842,7 +842,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
   // Census derived from the schema's own MEMBER_KEYS: every member key `rig up` accepts is classified
   // here as either single-spelling or dual-spelling. A newly added key fails this test until it is
   // classified (and, if dual, given a shadow row and a camel-only row).
-  const SINGLE_SPELLING = ["cwd", "effort", "id", "label", "mcp_servers", "mechanic", "model", "pda", "profile", "role", "runtime", "startup"];
+  const SINGLE_SPELLING = ["cwd", "effort", "id", "label", "mcp_servers", "mechanic", "model", "pda", "pi", "profile", "role", "runtime", "startup"];
   it("census: every MEMBER_KEYS entry is classified, and each dual-spelling field has a shadow row", () => {
     const dual = [...new Set(rows.map((r) => r[0]))].sort();
     expect([...SINGLE_SPELLING, ...dual].sort()).toEqual([...MEMBER_KEYS].sort());
@@ -864,6 +864,9 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     ["agent_ref", 5, "terminal"],
     ["agent_ref", null, "terminal"],
     ["agent_ref", "", "terminal"],
+    // pi (OF-279): a present-invalid declaration reaches the canonical validator and rejects exactly as `rig up` does
+    ["pi", true, "pi"],
+    ["pi", { link_operator_models: "yes" }, "pi"],
   ];
   it.each(snakeOnly)("%s=%j alone: expand rejects with the same errors as rig up", async (snake, bad, runtime) => {
     const member = { id: "seat", ...base, runtime, [snake]: bad };
@@ -885,12 +888,14 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
           sessionSource: { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } } },
         { id: "cx", runtime: "codex", profile: "default", cwd: ".", agentRef: "local:agents/impl", codexConfigProfile: "fast" },
         { id: "px", runtime: "pi", profile: "default", cwd: ".", agentRef: "local:agents/impl", envPassthrough: ["DOCKER_HOST"], modelOverrides: { "openai-codex": { "gpt-6-luna": { contextWindow: 820000 } } } },
+        { id: "pl", runtime: "pi", profile: "default", cwd: ".", agentRef: "local:agents/impl", pi: { link_operator_models: true } },
       ], edges: [] } }),
     });
     expect(res.status, JSON.stringify(await res.clone().json())).not.toBe(400);
     const spec = spy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
-    const [cc, ss, cx, px] = spec.pods[0]!.members;
+    const [cc, ss, cx, px, pl] = spec.pods[0]!.members;
     expect(px).toMatchObject({ env_passthrough: ["DOCKER_HOST"], model_overrides: { "openai-codex": { "gpt-6-luna": { contextWindow: 820000 } } } });
+    expect(pl).toMatchObject({ pi: { link_operator_models: true } });
     expect(cc).toMatchObject({
       agent_ref: "local:agents/impl",
       permission_policy: "builtin:yolo",

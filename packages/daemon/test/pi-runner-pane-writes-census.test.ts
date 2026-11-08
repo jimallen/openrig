@@ -85,7 +85,7 @@ describe("every pane write in the Pi runner is sanitized", () => {
 
   it("finds the writes it should: console.error sites and stdout writes, in the population the rule is applied to", () => {
     expect(writes.length, "all pane writes found in pi-runner.ts").toBeGreaterThanOrEqual(12);
-    expect(writes.filter((w) => w.callee === "console.error").length, "the seven error lines (five from OF-217, OF-249's missing-guard refusal, and OF-270's model_overrides refusal)").toBe(7);
+    expect(writes.filter((w) => w.callee === "console.error").length, "the eight error lines (five from OF-217, OF-249's missing-guard refusal, OF-270's model_overrides refusal, and OF-279's refuseLaunch)").toBe(8);
     expect(writes.filter((w) => w.callee === "process.stdout.write").length, "the stdout writes").toBeGreaterThanOrEqual(5);
   });
 
@@ -94,8 +94,8 @@ describe("every pane write in the Pi runner is sanitized", () => {
     expect(/const banner = sanitizeForPane\(/.test(source), "the banner variable is made by sanitizeForPane").toBe(true);
   });
 
-  it("each of the seven error lines is sanitized (the census the ticket named, every one of them; OF-249 added the sixth, OF-270 the seventh)", () => {
+  it("each of the eight error lines is sanitized (the census the ticket named, every one of them; OF-249 added the sixth, OF-270 the seventh, OF-279 the eighth)", () => {
     const errors = writes.filter((w) => w.callee === "console.error");
-    expect(errors.map((w) => w.kind)).toEqual(["sanitized", "sanitized", "sanitized", "sanitized", "sanitized", "sanitized", "sanitized"]);
+    expect(errors.map((w) => w.kind)).toEqual(["sanitized", "sanitized", "sanitized", "sanitized", "sanitized", "sanitized", "sanitized", "sanitized"]);
   });
 });

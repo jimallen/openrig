@@ -50,9 +50,41 @@ console.error('Error: Unknown options: --name, --no-approve'); process.exit(1);
     }
   }, 20000);
 
+  // OF-279: a provider with no stored sign-in, models.json key or managed environment key is refused before Pi starts
+  // (it used to log an advisory and continue). The fake pi is never spawned, and the exit is recorded as 78.
+  it("refuses the launch before Pi starts when the declared provider has no credential (credential='absent')", async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-rpc-absent-"));
+    const bin = path.join(temp, "bin");
+    fs.mkdirSync(bin);
+    const pidPath = path.join(temp, "child.pid");
+    fs.writeFileSync(path.join(bin, "pi"), `#!${process.execPath}\nif (process.argv.includes('--version')) { console.log('1.4.0'); process.exit(0); }\nrequire('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));\n`, { mode: 0o700 });
+    const stateRoot = path.join(temp, "state");
+    const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../src/adapters/pi-runner.ts", import.meta.url)),
+      "--session-name", "fixture", "--state-root", stateRoot, "--cwd", temp,
+      "--launch-id", "owned-attempt", "--no-approve", "--model", "openrouter/fixture"], {
+      env: { PATH: bin + path.delimiter + path.dirname(process.execPath), HOME: temp, OPENRIG_HOME: path.join(temp, "home") },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", d => { output += d.toString(); });
+    child.stderr.on("data", d => { output += d.toString(); });
+    try {
+      const code = await new Promise<number | null>((resolve) => { child.on("exit", (c) => resolve(c)); setTimeout(() => resolve(null), 15000); });
+      expect(code, output).toBe(78);
+      expect(output).toContain("No Pi credential for provider openrouter");
+      expect(output).toContain("OPENROUTER_API_KEY");
+      expect(output).not.toContain("starting pi --mode rpc");
+      expect(fs.existsSync(pidPath)).toBe(false);
+      const state = JSON.parse(fs.readFileSync(piSeatPaths(stateRoot, "fixture").runnerStatePath, "utf8"));
+      expect(state.ready).toBe(false);
+      expect(state.exited.code).toBe(78);
+    } finally {
+      child.kill("SIGTERM");
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  }, 20000);
+
   it.each([
-    { success: false, credential: "absent" },
-    { success: true, credential: "absent" },
     { success: true, credential: "dynamic" },
     { success: true, credential: "present" },
   ])("publishes ready only after successful get_state (success=$success, credential=$credential)", async ({ success, credential }) => {
@@ -71,7 +103,7 @@ if(cmd.type==='prompt') { console.error('Unknown option: --name'); console.error
 });\n`, { mode: 0o700 });
     const stateRoot = path.join(temp, "state");
     const runnerStatePath = piSeatPaths(stateRoot, "fixture").runnerStatePath;
-    if (credential !== "absent") {
+    {
       const agentDir = piSeatPaths(stateRoot, "fixture").agentDir;
       fs.mkdirSync(agentDir, { recursive: true });
       fs.writeFileSync(path.join(agentDir, "auth.json"), JSON.stringify({ openrouter: {
@@ -93,8 +125,7 @@ if(cmd.type==='prompt') { console.error('Unknown option: --name'); console.error
         await new Promise(resolve => setTimeout(resolve, 20));
       }
       expect(fs.existsSync(pidPath), output).toBe(true);
-      const notice = credential === "absent" ? "No stored sign-in or provider key was found"
-        : credential === "dynamic" ? "Pi credential status unknown" : "Pi stored provider key present";
+      const notice = credential === "dynamic" ? "Pi credential status unknown" : "Pi stored provider key present";
       expect(output).toContain(notice);
       expect(output.indexOf(notice)).toBeLessThan(output.indexOf("starting pi --mode rpc"));
       expect(output.toLowerCase()).toContain("launch continues");
