@@ -125,6 +125,9 @@ describe("MessageStore.openFor counts what waits for one seat, oldest by time", 
   });
 });
 
+/** A coverage row of any status carries a `reason`; the union only says so in the notice and unavailable shapes. */
+const reasonOf = (c: object): string => ("reason" in c && typeof c.reason === "string" ? c.reason : "");
+
 describe("SeatQuestionHealthSource", () => {
   let db: Database.Database; let store: SeatQuestionStore;
   beforeEach(() => { db = createFullTestDb(); store = new SeatQuestionStore(db); });
@@ -138,11 +141,11 @@ describe("SeatQuestionHealthSource", () => {
     const rows = source(T0 + 381 * 60_000, () => ({ count: 7, oldestAt: iso(T0), line: "7 held, oldest 6h21m" })).coverage();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ source: "seat-questions", status: "notice" });
-    expect(rows[0]!.reason).toBe('exec-cos@eztrack has asked you a question for 6h21m that cannot take a recommended answer ("Colour?" has no (Recommended) option). Only you can answer it. 7 message(s) wait behind it, oldest 6h21m.');
+    expect(reasonOf(rows[0]!)).toBe('exec-cos@eztrack has asked you a question for 6h21m that cannot take a recommended answer ("Colour?" has no (Recommended) option). Only you can answer it. 7 message(s) wait behind it, oldest 6h21m.');
   });
   it("names a waiting question and when it takes its answer", () => {
     ask("q1", "s@r", "waiting", T0);
-    expect(source(T0 + 5 * 60_000).coverage()[0]!.reason).toBe(`s@r has asked you a question for 5m; it takes its (Recommended) answer at ${iso(T0 + 15 * 60_000)} if nobody answers.`);
+    expect(reasonOf(source(T0 + 5 * 60_000).coverage()[0]!)).toBe(`s@r has asked you a question for 5m; it takes its (Recommended) answer at ${iso(T0 + 15 * 60_000)} if nobody answers.`);
   });
   it("says nothing of a question asked a moment ago, or of one already settled", () => {
     ask("q1", "s@r", "waiting", T0);
@@ -156,7 +159,7 @@ describe("SeatQuestionHealthSource", () => {
     store.settleFromActivity("n-s@r", "PostToolUse", "AskUserQuestion", iso(T0 - 400_000));
     const rows = source(T0).coverage();
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.reason).toBe("2 unanswered question(s) took their (Recommended) answer in the last 24 h (t@r, s@r); 1 not yet seen to land. Each is on a queue item to human@kernel.");
+    expect(reasonOf(rows[0]!)).toBe("2 unanswered question(s) took their (Recommended) answer in the last 24 h (t@r, s@r); 1 not yet seen to land. Each is on a queue item to human@kernel.");
   });
 });
 

@@ -7,6 +7,7 @@ import { shellQuote } from "../src/adapters/shell-quote.js";
 import { deriveRelayEvents } from "../src/domain/claude-activity-hooks.js";
 import { QUESTION_HOOK_TIMEOUT_SECONDS } from "../src/domain/seat-question-policy.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
+import { tmuxStub } from "./helpers/tmux-stub.js";
 import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-planner.js";
 
 // OF-278: the seat-side half. Claude Code runs a PermissionRequest hook for the AskUserQuestion dialog while the dialog is open
@@ -25,13 +26,13 @@ const ENV = { OPENRIG_SESSION_NAME: "dev-impl@qrig", OPENRIG_NODE_ID: "node-1", 
 type Seen = Array<{ url: string; body: Record<string, unknown>; auth: string }>;
 function fakeFetch(replies: Array<unknown | Error>, seen: Seen = []) {
   let i = 0;
-  const fetchImpl = async (url: string, init: { body: string; headers: Record<string, string> }) => {
-    seen.push({ url, body: JSON.parse(init.body), auth: init.headers["authorization"]! });
+  const fetchImpl: typeof fetch = async (input, init) => {
+    seen.push({ url: String(input), body: JSON.parse(String(init?.body)), auth: new Headers(init?.headers).get("authorization") ?? "" });
     const next = replies[Math.min(i++, replies.length - 1)];
     if (next instanceof Error) throw next;
-    return { ok: true, json: async () => next };
+    return new Response(JSON.stringify(next), { status: 200, headers: { "content-type": "application/json" } });
   };
-  return { fetchImpl: fetchImpl as unknown as typeof fetch, seen };
+  return { fetchImpl, seen };
 }
 const instant = { sleep: async () => {} };
 
@@ -133,13 +134,12 @@ describe("delivery into a seat's settings.local.json", () => {
 
   function setup(withCompanion: boolean, seeded?: string) {
     const store: Record<string, string> = { [`${SRC_DIR}/activity-relay.cjs`]: "// relay", "/assets/claude.json": MANIFEST, ...(withCompanion ? { [`${SRC_DIR}/question-wait.cjs`]: "// wait" } : {}), ...(seeded ? { [SETTINGS]: seeded } : {}) };
-    const fs = {
+    const fs: ClaudeAdapterFsOps = {
       readFile: (p: string) => { if (p in store) return store[p]!; throw new Error(`Not found: ${p}`); }, writeFile: (p: string, c: string) => { store[p] = c; },
       exists: (p: string) => p in store, mkdirp: () => {}, copyFile: (s: string, d: string) => { store[d] = store[s] ?? ""; },
       listFiles: () => [], statMode: () => 0o755, chmod: () => {}, homedir: "/home/test",
-    } as unknown as ClaudeAdapterFsOps;
-    const tmux = { sessionExists: async () => true, sendKeys: async () => {}, capturePaneContent: async () => "", getPaneCommand: async () => "", listSessions: async () => [], runCommandInSession: async () => ({ stdout: "", stderr: "", exitCode: 0 }), setEnvVar: async () => {} };
-    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: fs, stateDir: STATE, activityRelayPath: `${SRC_DIR}/activity-relay.cjs`, claudeHooksManifestPath: "/assets/claude.json" } as unknown as ConstructorParameters<typeof ClaudeCodeAdapter>[0]);
+    };
+    const adapter = new ClaudeCodeAdapter({ tmux: tmuxStub({}), fsOps: fs, stateDir: STATE, activityRelayPath: `${SRC_DIR}/activity-relay.cjs`, claudeHooksManifestPath: "/assets/claude.json" });
     return { store, adapter };
   }
   const binding = { id: "b1", nodeId: "n1", tmuxSession: "t", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "/project" } as NodeBinding;
