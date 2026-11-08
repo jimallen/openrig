@@ -12,7 +12,7 @@ import type { Migration } from "../migrate.js";
  * `rigs.question_auto_answer_minutes`: the rig spec's `question_policy.auto_answer_after`. NULL is the default wait; 0 is off.
  */
 export const seatQuestionsSchema: Migration = {
-  name: "127_seat_questions.sql",
+  name: "128_seat_questions.sql",
   sql: `
     ALTER TABLE rigs ADD COLUMN question_auto_answer_minutes INTEGER;
     CREATE TABLE seat_questions (

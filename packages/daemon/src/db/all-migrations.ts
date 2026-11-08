@@ -126,7 +126,7 @@ import { seatMessageStateSchema } from "./migrations/123_seat_message_state.js";
 import { seatMessageGroupSchema } from "./migrations/124_seat_message_group.js";
 import { occupantConversationSchema } from "./migrations/125_occupant_conversation.js";
 import { nodeModelOverridesSchema } from "./migrations/126_node_model_overrides.js";
-import { seatQuestionsSchema } from "./migrations/127_seat_questions.js";
+import { seatQuestionsSchema } from "./migrations/128_seat_questions.js";
 import { bindingTerminalAddressSchema } from "./migrations/121_binding_terminal_address.js";
 import { seatMessageSchema } from "./migrations/122_seat_message.js";
 

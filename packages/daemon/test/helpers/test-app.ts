@@ -52,7 +52,7 @@ import { watchdogJobsSchema } from "../../src/db/migrations/031_watchdog_jobs.js
 import { occupantGenerationStampsSchema } from "../../src/db/migrations/063_occupant_generation_stamps.js";
 import { occupantConversationSchema } from "../../src/db/migrations/125_occupant_conversation.js";
 import { nodeModelOverridesSchema } from "../../src/db/migrations/126_node_model_overrides.js";
-import { seatQuestionsSchema } from "../../src/db/migrations/127_seat_questions.js";
+import { seatQuestionsSchema } from "../../src/db/migrations/128_seat_questions.js";
 import { projectionManifestSchema } from "../../src/db/migrations/064_projection_manifest.js";
 import { watchdogTargetGenerationSchema } from "../../src/db/migrations/066_watchdog_target_generation.js";
 import { appliedLaunchObservationsSchema } from "../../src/db/migrations/069_applied_launch_observations.js";

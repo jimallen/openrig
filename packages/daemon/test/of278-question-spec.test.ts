@@ -6,7 +6,7 @@ import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
-import { seatQuestionsSchema } from "../src/db/migrations/127_seat_questions.js";
+import { seatQuestionsSchema } from "../src/db/migrations/128_seat_questions.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";

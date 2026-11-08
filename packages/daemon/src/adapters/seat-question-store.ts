@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { SeatQuestionRepository, SeatQuestionRow, SeatQuestionState } from "../domain/seat-question-policy.js";
 
-// OF-278 — the SQLite side of the record of questions seats put to the human (migration 127). Every move is a compare-and-set on `state`.
+// OF-278 — the SQLite side of the record of questions seats put to the human (migration 128). Every move is a compare-and-set on `state`.
 
 interface Row {
   id: string; rig_id: string; node_id: string; session_name: string; generation: string | null; state: string; tool_input: string;
