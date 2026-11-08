@@ -12,7 +12,7 @@ const crypto = require("node:crypto");
 const { parseJson, resolveEndpoint } = require("./activity-relay.cjs");
 
 // Same number as QUESTION_HOOK_TIMEOUT_SECONDS (domain/seat-question-policy.ts) and this hook's `timeout` in hooks/claude.json (pinned by test).
-const HOOK_TIMEOUT_SECONDS = 3900;
+const HOOK_TIMEOUT_SECONDS = 1500;
 const RETRY_MS = 5000;
 
 function firstString(...values) {
@@ -46,6 +46,9 @@ async function ask(request, env, fetchImpl) {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify(request), signal: controller.signal,
     });
+    // A request the daemon refused as malformed or unauthorised will be refused again: stop, leaving the dialog to the human. Anything else (a
+    // restart, a 5xx, the daemon's cap of 429) is asked again.
+    if (res.status === 400 || res.status === 401) return { ok: true, action: "none" };
     if (!res.ok) return null;
     return await res.json();
   } catch {

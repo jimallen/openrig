@@ -149,7 +149,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/question-wait.cjs\"",
-            "timeout": 3900
+            "timeout": 1500
           }
         ]
       }

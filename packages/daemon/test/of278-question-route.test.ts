@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { activityRoutes } from "../src/routes/activity.js";
-import type { SeatQuestionRequest, SeatQuestionService } from "../src/domain/seat-question-policy.js";
+import { SeatQuestionRefusal, type SeatQuestionRequest, type SeatQuestionService } from "../src/domain/seat-question-policy.js";
 
 // OF-278: POST /api/activity/question-wait is the long-poll the seat's PermissionRequest hook asks, with the same local hook token as /hooks.
 const TOKEN = "test-token";
@@ -60,5 +60,18 @@ describe("POST /api/activity/question-wait", () => {
     expect(called).toBe(0);
     expect((await post(a, { ...GOOD, toolInput: { pad: "x".repeat(60 * 1024) } })).status).toBe(200);
     expect(called).toBe(1);
+  });
+  it.each([
+    [400, "invalid_question_request"],
+    [429, "too_many_question_waits"],
+  ] as const)("F4: a refusal from the service (%d) goes back as that status with its code, not as a server error", async (status, code) => {
+    const res = await post(app({ wait: async () => { throw new SeatQuestionRefusal(status, code, "refused for a reason"); } }), GOOD);
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ ok: false, code, error: "refused for a reason" });
+  });
+  it("passes the hook's start time to the service as it sent it, so the service can judge it", async () => {
+    const seen: number[] = [];
+    await post(app({ wait: async (r) => { seen.push(r.askedAtMs); return { action: "wait" }; } }), { ...GOOD, askedAtMs: 0 });
+    expect(seen).toEqual([0]);
   });
 });

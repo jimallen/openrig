@@ -19,7 +19,7 @@ import { existingRigRoot } from "./helpers/existing-rig-root.js";
 const raw = { version: "0.2", name: "choice", pods: [{ id: "dev", label: "Dev", members: [{ id: "shell", runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "." }], edges: [] }], edges: [] };
 
 describe("question_policy in the rig spec", () => {
-  it.each([0, 1, 15, 45, MAX_AUTO_ANSWER_MINUTES])("accepts auto_answer_after: %s and round-trips it", (minutes) => {
+  it.each([0, 1, 15, 19, MAX_AUTO_ANSWER_MINUTES])("accepts auto_answer_after: %s and round-trips it", (minutes) => {
     const spec = { ...raw, question_policy: { auto_answer_after: minutes } };
     expect(RigSpecSchema.validate(spec).errors).toEqual([]);
     const normalized = RigSpecSchema.normalize(spec);

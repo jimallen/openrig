@@ -15,7 +15,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
-import { QUESTION_WAIT_MAX_BODY_BYTES } from "../domain/seat-question-policy.js";
+import { QUESTION_WAIT_MAX_BODY_BYTES, SeatQuestionRefusal } from "../domain/seat-question-policy.js";
 import { ACTIVITY_HOOK_MAX_BODY_BYTES, USAGE_MAX_BODY_BYTES, USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
 import { pdaSeatCosts } from "../domain/usage-series.js";
@@ -322,8 +322,14 @@ activityRoutes.post("/question-wait", async (c) => {
   const requestId = stringOrNull(body.requestId);
   const askedAtMs = typeof body.askedAtMs === "number" && Number.isFinite(body.askedAtMs) ? body.askedAtMs : Date.now();
   if (!requestId || !/^[A-Za-z0-9._-]{8,80}$/.test(requestId)) return c.json({ ok: false, code: "invalid_question_request", error: "question-wait requires a requestId of 8-80 safe characters" }, 400);
-  const reply = await service.wait({ requestId, sessionName: stringOrNull(body.sessionName), nodeId: stringOrNull(body.nodeId), generation: stringOrNull(body.generation), toolInput: body.toolInput, askedAtMs });
-  return c.json({ ok: true, ...reply });
+  try {
+    const reply = await service.wait({ requestId, sessionName: stringOrNull(body.sessionName), nodeId: stringOrNull(body.nodeId), generation: stringOrNull(body.generation), toolInput: body.toolInput, askedAtMs });
+    return c.json({ ok: true, ...reply });
+  } catch (error) {
+    // A request the service will not take is the caller's to hear about; anything else is a server error and the hook asks again.
+    if (error instanceof SeatQuestionRefusal) return c.json({ ok: false, code: error.code, error: error.message }, error.status);
+    throw error;
+  }
 });
 
 activityRoutes.post("/hooks", async (c) => {

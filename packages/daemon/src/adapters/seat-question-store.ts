@@ -5,14 +5,14 @@ import type { SeatQuestionRepository, SeatQuestionRow, SeatQuestionState } from 
 
 interface Row {
   id: string; rig_id: string; node_id: string; session_name: string; generation: string | null; state: string; tool_input: string;
-  asked_at: string; due_at: string | null; settled_at: string | null; logged_at: string | null; answers: string | null; note: string | null;
+  asked_at: string; due_at: string | null; settled_at: string | null; logged_at: string | null; noted_at: string | null; answers: string | null; note: string | null;
 }
 
 function toRow(r: Row): SeatQuestionRow {
   const parse = (text: string | null): unknown => { try { return text === null ? null : JSON.parse(text); } catch { return null; } };
   return {
     id: r.id, rigId: r.rig_id, nodeId: r.node_id, sessionName: r.session_name, generation: r.generation, state: r.state as SeatQuestionState,
-    toolInput: parse(r.tool_input), askedAt: r.asked_at, dueAt: r.due_at, settledAt: r.settled_at, loggedAt: r.logged_at,
+    toolInput: parse(r.tool_input), askedAt: r.asked_at, dueAt: r.due_at, settledAt: r.settled_at, loggedAt: r.logged_at, notedAt: r.noted_at,
     answers: parse(r.answers) as Record<string, string> | null, note: r.note,
   };
 }
@@ -68,6 +68,11 @@ export class SqliteSeatQuestionStore implements SeatQuestionRepository {
   /** Records that an auto-answer's event and note are written. */
   markLogged(id: string, atIso: string): boolean {
     return this.db.prepare("UPDATE seat_questions SET logged_at = ? WHERE id = ? AND state IN ('answered_auto', 'confirmed_auto') AND logged_at IS NULL").run(atIso, id).changes === 1;
+  }
+
+  /** Records that an auto-answer's note to the human is filed. */
+  markNoted(id: string, atIso: string): boolean {
+    return this.db.prepare("UPDATE seat_questions SET noted_at = ? WHERE id = ? AND state IN ('answered_auto', 'confirmed_auto') AND noted_at IS NULL").run(atIso, id).changes === 1;
   }
 
   /** Questions the daemon answered since `sinceIso` (sent, or sent and seen to land). SELECT only. */

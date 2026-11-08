@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { deriveRelayEvents } from "../src/domain/claude-activity-hooks.js";
-import { QUESTION_HOOK_TIMEOUT_SECONDS } from "../src/domain/seat-question-policy.js";
+import { QUESTION_HOOK_TIMEOUT_SECONDS, MAX_AUTO_ANSWER_MINUTES } from "../src/domain/seat-question-policy.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
 import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-planner.js";
@@ -30,7 +30,8 @@ function fakeFetch(replies: Array<unknown | Error>, seen: Seen = []) {
     seen.push({ url: String(input), body: JSON.parse(String(init?.body)), auth: new Headers(init?.headers).get("authorization") ?? "" });
     const next = replies[Math.min(i++, replies.length - 1)];
     if (next instanceof Error) throw next;
-    return new Response(JSON.stringify(next), { status: 200, headers: { "content-type": "application/json" } });
+    const status = typeof next === "object" && next !== null && "status" in next && typeof next.status === "number" ? next.status : 200;
+    return new Response(JSON.stringify(next), { status, headers: { "content-type": "application/json" } });
   };
   return { fetchImpl, seen };
 }
@@ -68,6 +69,19 @@ describe("question-wait.cjs", () => {
     expect(new Set(seen.map((s) => s.body["requestId"])).size).toBe(1);
     expect(new Set(seen.map((s) => s.body["askedAtMs"]))).toEqual(new Set([5_000_000]));
     expect(slept).toBe(3 * 5000);   // a failure waits 5 s; a "wait" reply does not
+  });
+
+  it.each([[400], [401]])("stops, printing nothing, when the daemon refuses the request with %d (it would be refused again)", async (status) => {
+    const { fetchImpl, seen } = fakeFetch([{ ok: false, status, code: "invalid_question_request" }]);
+    expect(await hook.run(PAYLOAD, ENV, { fetch: fetchImpl, ...instant })).toBeNull();
+    expect(seen).toHaveLength(1);
+  });
+
+  it.each([[429], [500], [503]])("asks again after a %d, as after any failure that may pass", async (status) => {
+    const updatedInput = { ...QUESTION, answers: { "Which target?": "Staging (Recommended)" } };
+    const { fetchImpl, seen } = fakeFetch([{ ok: false, status }, { ok: true, action: "answer", updatedInput }]);
+    expect(await hook.run(PAYLOAD, ENV, { fetch: fetchImpl, ...instant })).not.toBeNull();
+    expect(seen).toHaveLength(2);
   });
 
   it("gives up, printing nothing, when the daemon never comes back within the hook's own timeout", async () => {
@@ -110,7 +124,10 @@ describe("the shipped manifest", () => {
     const wait = manifest.hooks.PermissionRequest[0].hooks[1];
     expect(wait.timeout).toBe(QUESTION_HOOK_TIMEOUT_SECONDS);
     expect(hook.HOOK_TIMEOUT_SECONDS).toBe(QUESTION_HOOK_TIMEOUT_SECONDS);
-    expect(QUESTION_HOOK_TIMEOUT_SECONDS).toBeGreaterThan(60 * 60);
+    // The longest wait is the longest one measured on Claude Code 2.1.319 (a hook with timeout 1200 s honoured at 960 s), plus five minutes of margin.
+    expect(MAX_AUTO_ANSWER_MINUTES).toBe(20);
+    expect(QUESTION_HOOK_TIMEOUT_SECONDS).toBe(1500);
+    expect(QUESTION_HOOK_TIMEOUT_SECONDS).toBeGreaterThan(MAX_AUTO_ANSWER_MINUTES * 60);
   });
 
   it("derives a scoped relay entry and a question-wait entry for PermissionRequest, and no new unscoped event", () => {

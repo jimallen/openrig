@@ -11,7 +11,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import {
-  SeatQuestionService, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller, type SeatQuestionServiceDeps,
+  SeatQuestionService, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller, SeatQuestionRefusal, MAX_AUTO_ANSWER_MINUTES, type SeatQuestionServiceDeps,
   DEFAULT_AUTO_ANSWER_MINUTES, type SeatQuestionReply,
 } from "../src/domain/seat-question-policy.js";
 
@@ -31,6 +31,19 @@ describe("planAnswer: what a dialog supports answering", () => {
   it("answers every question of a multi-question dialog when each has exactly one", () => {
     const input = { questions: [single().questions[0], single("Which region?", [{ label: "eu" }, { label: "us (Recommended)" }]).questions[0]] };
     expect(planAnswer(input)).toMatchObject({ kind: "answer", answers: { "Which target?": "Staging (Recommended)", "Which region?": "us (Recommended)" } });
+  });
+  it.each([["__proto__"], ["constructor"], ["prototype"]])("F1: holds a dialog whose question text is %s, which cannot be a key of the answers map", (text) => {
+    expect(planAnswer(single(text))).toMatchObject({ kind: "held", reason: expect.stringContaining(text) });
+    expect(planAnswer({ questions: [single("Fine?").questions[0], single(text).questions[0]] }).kind).toBe("held");
+  });
+  it("F1: the answers it builds are own keys of an object with no prototype, so no question text can name an inherited slot", () => {
+    const plan = planAnswer(single("toString"));
+    expect(plan.kind).toBe("answer");
+    if (plan.kind === "answer") {
+      expect(Object.getPrototypeOf(plan.answers)).toBeNull();
+      expect(Object.keys(plan.answers)).toEqual(["toString"]);
+      expect(JSON.stringify(plan.answers)).toBe('{"toString":"Staging (Recommended)"}');
+    }
   });
   it.each([
     ["no option is recommended", single("Q?", [{ label: "Red" }, { label: "Blue" }])],
@@ -133,7 +146,7 @@ describe("SeatQuestionService", () => {
     expect((await svc.wait(asked())).action).toBe("wait");
     clock += 3 * MIN; seatSays("PostToolUse", "AskUserQuestion");
     expect(await svc.wait(asked())).toEqual({ action: "none", why: "the question is answered_human" });
-    clock += 30 * MIN;
+    clock += 10 * MIN;
     expect((await svc.wait(asked())).action).toBe("none");
     expect(events).toEqual([]); expect(told).toEqual([]);
   });
@@ -144,7 +157,7 @@ describe("SeatQuestionService", () => {
     const req = asked({ toolInput: single("Colour?", [{ label: "Red" }, { label: "Blue" }]) });
     expect(await svc.wait(req)).toMatchObject({ action: "none" });
     expect(await svc.wait(req)).toMatchObject({ action: "none" });  // asking again changes nothing
-    clock += 5 * 60 * MIN;
+    clock += 10 * MIN;
     expect(await svc.wait(req)).toMatchObject({ action: "none" });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "seat.question_held", sessionName, reason: expect.stringContaining("no (Recommended) option") });
@@ -238,7 +251,7 @@ describe("SeatQuestionService", () => {
     expect((await first.wait(asked())).action).toBe("wait");
     seatSays("PostToolUse", "AskUserQuestion");                   // the human answered (and the seat went on)
     seatSays("Stop");
-    clock += 40 * MIN;
+    clock += 20 * MIN;
     const reply = await build().wait(asked());
     expect(reply.action).toBe("none");
     expect(events).toEqual([]); expect(told).toEqual([]);
@@ -281,14 +294,116 @@ describe("SeatQuestionService", () => {
     expect(await build().wait(asked({ sessionName: "dev-cx@qrig", nodeId: codex.id }))).toEqual({ action: "none", why: "not a managed Claude seat" });
   });
 
-  it("a failed note to the human does not withhold the answer, and the event is still logged", async () => {
+  // ---- review of 1bdf959d (Security Engineer): F2, F3, F4 and the survivors M9, M15, M16, M17
+  it("F3: a note that fails is retried on the hook's next ask; the answer is sent once the note is filed; one event, one note", async () => {
     dialogOpens();
-    const svc = new SeatQuestionService({
-      store, now: () => new Date(clock), sleep: async (ms) => { clock += ms; }, resolveSeat: (i) => activity.resolveSession(i), ...activityBackedPorts(activity),
-      emit: (e) => { events.push(e); }, tell: async () => { throw new Error("queue down"); }, howToOverride: () => "x", chunkMs: 5 * MIN,
-    });
-    expect((await askUntilSettled(svc)).action).toBe("answer");
+    let queueUp = false; const filed: string[] = [];
+    const svc = build(5 * MIN, { tell: async (n) => { if (!queueUp) throw new Error("queue down"); filed.push(n.qitemId); } });
+    await expect(askUntilSettled(svc)).rejects.toThrow("queue down");
+    expect(events).toHaveLength(1);                                    // the event is written first and stays
+    expect(db.prepare("SELECT state, logged_at IS NOT NULL AS l, noted_at IS NOT NULL AS n FROM seat_questions").get()).toEqual({ state: "answered_auto", l: 1, n: 0 });
+    await expect(svc.wait(asked())).rejects.toThrow("queue down");     // the queue is still down: still no answer, no second event
     expect(events).toHaveLength(1);
+    queueUp = true;
+    const reply = await svc.wait(asked());
+    expect(reply).toMatchObject({ action: "answer", updatedInput: { answers: { "Which target?": "Staging (Recommended)" } } });
+    expect(events).toHaveLength(1); expect(filed).toHaveLength(1);
+    await svc.wait(asked()); await build().wait(asked());
+    expect(events).toHaveLength(1); expect(filed).toHaveLength(1);     // filed, so not filed again
+    expect(db.prepare("SELECT noted_at IS NOT NULL AS n FROM seat_questions").get()).toEqual({ n: 1 });
+  });
+
+  it("F2: a rig that turned the policy off while a question waited answers nothing: the question is held and named", async () => {
+    dialogOpens();
+    const svc = build();
+    expect((await svc.wait(asked())).action).toBe("wait");
+    db.prepare("UPDATE rigs SET question_auto_answer_minutes = 0 WHERE id = ?").run(rigId);
+    const reply = await askUntilSettled(svc);
+    expect(reply.action).toBe("none");
+    expect(clock - T0).toBeGreaterThanOrEqual(15 * MIN - 1);          // it waited out the original time before deciding
+    expect(events.map((e) => (e as { type: string }).type)).toEqual(["seat.question_held"]);
+    expect(events[0]).toMatchObject({ reason: expect.stringContaining("auto-answer off") });
+    expect(told).toEqual([]);
+    expect(store.get(SeatQuestionService.rowId(nodeId, "req-aaaaaaaa"))).toMatchObject({ state: "held" });
+    expect((await build().wait(asked())).action).toBe("none");        // and a later ask changes nothing
+    expect(events).toHaveLength(1);
+  });
+
+  it("F2: turning the policy off before the wait ends is judged at the end of it, not at every poll (a rig turned on again in time still answers)", async () => {
+    dialogOpens();
+    const svc = build();
+    expect((await svc.wait(asked())).action).toBe("wait");
+    db.prepare("UPDATE rigs SET question_auto_answer_minutes = 0 WHERE id = ?").run(rigId);
+    clock = T0 + 6 * MIN;
+    db.prepare("UPDATE rigs SET question_auto_answer_minutes = 15 WHERE id = ?").run(rigId);
+    expect((await askUntilSettled(svc)).action).toBe("answer");
+  });
+
+  describe("F4: what a caller with the hook token can ask for", () => {
+    const refusal = async (p: Promise<unknown>) => p.then(() => null, (e: unknown) => e);
+    it.each([[0], [-1], [-86_400_000]])("refuses askedAtMs %d", async (askedAtMs) => {
+      const err = await refusal(build().wait(asked({ askedAtMs })));
+      expect(err).toBeInstanceOf(SeatQuestionRefusal);
+      expect(err).toMatchObject({ status: 400, code: "invalid_question_request" });
+      expect(db.prepare("SELECT count(*) AS n FROM seat_questions").get()).toEqual({ n: 0 });
+    });
+    it("refuses a start older than the longest wait plus the margin, and takes one exactly at the edge", async () => {
+      const edge = (MAX_AUTO_ANSWER_MINUTES + 5) * MIN;
+      dialogOpens();
+      expect(await refusal(build().wait(asked({ askedAtMs: T0 - edge - 1 })))).toMatchObject({ status: 400, code: "invalid_question_request" });
+      expect((await build().wait(asked({ askedAtMs: T0 - edge }))).action).not.toBe(undefined);
+    });
+    it("a start in the future counts from now (M9: the clamp)", async () => {
+      dialogOpens();
+      const reply = await askUntilSettled(build(), asked({ askedAtMs: T0 + 60 * MIN }));
+      expect(reply.action).toBe("answer");
+      expect(clock - T0).toBe(15 * MIN);
+    });
+    it("caps the held polls per seat and in all, refusing above the cap with a 429, and counts a poll out when it ends", async () => {
+      const other = new RigRepository(db).addNode(rigId, "dev.qa", { runtime: "claude-code" });
+      const sess = new SessionRegistry(db); sess.updateStatus(sess.registerSession(other.id, "dev-qa@qrig").id, "running");
+      activity.recordHookEvent({ runtime: "claude-code", sessionName: "dev-qa@qrig", hookEvent: "PermissionRequest", subtype: "AskUserQuestion", occurredAt: new Date(clock).toISOString(), generation: "gen-1" });
+      dialogOpens();
+      const releases: Array<() => void> = []; let open = true;
+      const svc = build(5 * MIN, { maxWaitsPerSeat: 2, maxWaitsTotal: 3, sleep: async (ms) => { if (open) await new Promise<void>((r) => releases.push(r)); clock += ms; } });
+      const a1 = svc.wait(asked({ requestId: "req-00000001" })); const a2 = svc.wait(asked({ requestId: "req-00000002" }));
+      expect(await refusal(svc.wait(asked({ requestId: "req-00000003" })))).toMatchObject({ status: 429, code: "too_many_question_waits" });     // per seat
+      const b1 = svc.wait(asked({ requestId: "req-00000004", sessionName: "dev-qa@qrig", nodeId: other.id }));
+      expect(await refusal(svc.wait(asked({ requestId: "req-00000005", sessionName: "dev-qa@qrig", nodeId: other.id })))).toMatchObject({ status: 429, code: "too_many_question_waits" });  // in all
+      open = false; releases.splice(0).forEach((r) => r());
+      await Promise.all([a1, a2, b1]);
+      expect((await svc.wait(asked({ requestId: "req-00000006" }))).action).not.toBe(undefined);   // the polls ended: room again
+    });
+  });
+
+  it("M16: a question dialog of another occupant generation is not this question: it is not answered", async () => {
+    dialogOpens();
+    const svc = build();
+    expect((await svc.wait(asked())).action).toBe("wait");
+    activity.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "PermissionRequest", subtype: "AskUserQuestion", occurredAt: new Date(clock + 1000).toISOString(), generation: "gen-2" });
+    const reply = await askUntilSettled(svc);
+    expect(reply.action).toBe("none");
+    expect(events).toEqual([]); expect(told).toEqual([]);
+    expect(store.get(SeatQuestionService.rowId(nodeId, "req-aaaaaaaa"))).toMatchObject({ state: "abandoned" });
+  });
+
+  it("M17: a seat now waiting on something that is not a question (a permission prompt) is not answered as if it were one", async () => {
+    dialogOpens();
+    const svc = build();
+    expect((await svc.wait(asked())).action).toBe("wait");
+    activity.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "PermissionRequest", subtype: "Bash", occurredAt: new Date(clock + 1000).toISOString(), generation: "gen-1" });
+    expect((await askUntilSettled(svc)).action).toBe("none");
+    expect(events).toEqual([]); expect(told).toEqual([]);
+    expect(store.get(SeatQuestionService.rowId(nodeId, "req-aaaaaaaa"))).toMatchObject({ state: "abandoned" });
+  });
+
+  it("M15: a stored wait longer than the longest is capped at the service, not only by the spec validator", async () => {
+    expect(MAX_AUTO_ANSWER_MINUTES).toBe(20);
+    expect(autoAnswerWaitMs(600)).toBe(20 * MIN);
+    db.prepare("UPDATE rigs SET question_auto_answer_minutes = 600 WHERE id = ?").run(rigId);
+    dialogOpens();
+    expect((await askUntilSettled(build())).action).toBe("answer");
+    expect(clock - T0).toBe(20 * MIN);
   });
 });
 

@@ -2,11 +2,17 @@
 
 /** The wait when a rig names none (openrig-66's pick, 2026-11-08; not measured). */
 export const DEFAULT_AUTO_ANSWER_MINUTES = 15;
-/** The longest wait a rig may name. The seat's hook must outlive it. A fixed bound, not derived per rig: hooks/claude.json is one static
- *  asset for every rig. Measured on Claude Code 2.1.319: a hook with `timeout` 1200 s was honoured at 960 s; nothing longer was run. */
-export const MAX_AUTO_ANSWER_MINUTES = 60;
+/** The longest wait a rig may name: the longest one measured. The seat's hook must outlive it. A fixed bound, not derived per rig:
+ *  hooks/claude.json is one static asset for every rig. Measured on Claude Code 2.1.319: a hook with `timeout` 1200 s (20 min) was honoured at
+ *  960 s; nothing longer was run. Raising it needs a measured run at the new length (follow-up). */
+export const MAX_AUTO_ANSWER_MINUTES = 20;
 /** Seconds the hook's `timeout` carries: the longest wait plus a margin. hooks/claude.json and question-wait.cjs hold the same number (pinned by test). */
 export const QUESTION_HOOK_TIMEOUT_SECONDS = MAX_AUTO_ANSWER_MINUTES * 60 + 300;
+/** A hook that started longer ago than the longest wait plus this is dead (its own timeout is that sum), so its start time is not believed. */
+export const QUESTION_ASKED_AT_MARGIN_MS = 5 * 60_000;
+/** Held question-wait connections: at most this many for one seat, and this many for the whole daemon (each polls the database once a second). */
+export const MAX_QUESTION_WAITS_PER_SEAT = 4;
+export const MAX_QUESTION_WAITS_TOTAL = 64;
 /** One daemon reply holds the hook's request open this long, then says `wait`: well under the 300 s a fetch gives a silent response. */
 export const QUESTION_POLL_CHUNK_MS = 55_000;
 

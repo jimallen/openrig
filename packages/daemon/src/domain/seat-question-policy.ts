@@ -10,8 +10,8 @@ import { QUESTION_DIALOG_TOOL, type AgentActivityStore } from "./agent-activity-
 //
 // Nothing here guesses. A question with no single safe answer is HELD: it stays open for the human and is surfaced.
 
-export { DEFAULT_AUTO_ANSWER_MINUTES, MAX_AUTO_ANSWER_MINUTES, QUESTION_HOOK_TIMEOUT_SECONDS, QUESTION_POLL_CHUNK_MS } from "./seat-question-limits.js";
-import { DEFAULT_AUTO_ANSWER_MINUTES, MAX_AUTO_ANSWER_MINUTES, QUESTION_POLL_CHUNK_MS } from "./seat-question-limits.js";
+export { DEFAULT_AUTO_ANSWER_MINUTES, MAX_AUTO_ANSWER_MINUTES, QUESTION_HOOK_TIMEOUT_SECONDS, QUESTION_POLL_CHUNK_MS, MAX_QUESTION_WAITS_PER_SEAT, MAX_QUESTION_WAITS_TOTAL, QUESTION_ASKED_AT_MARGIN_MS } from "./seat-question-limits.js";
+import { DEFAULT_AUTO_ANSWER_MINUTES, MAX_AUTO_ANSWER_MINUTES, QUESTION_POLL_CHUNK_MS, MAX_QUESTION_WAITS_PER_SEAT, MAX_QUESTION_WAITS_TOTAL, QUESTION_ASKED_AT_MARGIN_MS } from "./seat-question-limits.js";
 
 /** A dialog's whole input: up to four questions, each with up to four options and their descriptions. */
 export const QUESTION_WAIT_MAX_BODY_BYTES = 64 * 1024;
@@ -25,6 +25,8 @@ export function autoAnswerWaitMs(storedMinutes: number | null | undefined): numb
 }
 
 const RECOMMENDED = /\(recommended\)/i;
+/** Question texts that name a slot every object has: as a key of the answers map they would be silently dropped (`__proto__`) or shadow a built-in. */
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 
 export type AnswerPlan =
   | { kind: "answer"; answers: Record<string, string>; chosen: Array<{ question: string; chosen: string }> }
@@ -35,12 +37,15 @@ export type AnswerPlan =
 export function planAnswer(toolInput: unknown): AnswerPlan {
   const questions = (toolInput as { questions?: unknown } | null)?.questions;
   if (!Array.isArray(questions) || questions.length === 0) return { kind: "held", reason: "the dialog has no questions this daemon can read" };
-  const answers: Record<string, string> = {};
+  const answers: Record<string, string> = Object.create(null) as Record<string, string>;
+  const seen = new Set<string>();
   const chosen: Array<{ question: string; chosen: string }> = [];
   for (const q of questions) {
     const question = typeof q?.question === "string" ? q.question : null;
     if (question === null || question === "") return { kind: "held", reason: "a question has no text" };
-    if (Object.prototype.hasOwnProperty.call(answers, question)) return { kind: "held", reason: "two questions have the same text" };
+    if (UNSAFE_KEYS.has(question)) return { kind: "held", reason: `"${question}" cannot be a key of the answers` };
+    if (seen.has(question)) return { kind: "held", reason: "two questions have the same text" };
+    seen.add(question);
     if (q.multiSelect === true) return { kind: "held", reason: `"${question}" allows several answers` };
     const options: unknown[] = Array.isArray(q.options) ? q.options : [];
     const labels = options.map((o) => (typeof (o as { label?: unknown })?.label === "string" ? (o as { label: string }).label : null));
@@ -67,6 +72,8 @@ export interface SeatQuestionRow {
   settledAt: string | null;
   /** When the auto-answer's event and note were written; null until then, so a reconnect after a crash writes them. */
   loggedAt: string | null;
+  /** When the note to the human was filed; null until then, so a later ask files it. */
+  notedAt: string | null;
   answers: Record<string, string> | null;
   note: string | null;
 }
@@ -88,6 +95,8 @@ export interface SeatQuestionRepository {
   openUnanswered(): SeatQuestionRow[];
   /** Records that an auto-answer's event and note are written. */
   markLogged(id: string, atIso: string): boolean;
+  /** Records that an auto-answer's note to the human is filed. */
+  markNoted(id: string, atIso: string): boolean;
   /** Questions the daemon answered since `sinceIso` (sent, or sent and seen to land). */
   autoAnsweredSince(sinceIso: string): Array<{ id: string; sessionName: string; state: SeatQuestionState }>;
   /** The rig's stored wait in minutes: null is the default, 0 is off. */
@@ -110,6 +119,11 @@ export type SeatQuestionReply =
   | { action: "wait" }
   | { action: "answer"; updatedInput: Record<string, unknown> };
 
+/** A request the service will not take; the route turns it into this status and code. */
+export class SeatQuestionRefusal extends Error {
+  constructor(readonly status: 400 | 429, readonly code: "invalid_question_request" | "too_many_question_waits", message: string) { super(message); }
+}
+
 export interface SeatQuestionServiceDeps {
   store: SeatQuestionRepository;
   now: () => Date;
@@ -125,6 +139,9 @@ export interface SeatQuestionServiceDeps {
   /** How to override an answer taken, worded for the note. */
   howToOverride: (seat: string) => string;
   chunkMs?: number;
+  /** Held polls allowed for one seat, and in all. */
+  maxWaitsPerSeat?: number;
+  maxWaitsTotal?: number;
 }
 
 /** The daemon's side of the long-poll: the seat's hook asks, the daemon replies `wait`, `none` or `answer`. */
@@ -136,8 +153,16 @@ export class SeatQuestionService {
     return `qa-${createHash("sha256").update(`${nodeId}\0${requestId}`).digest("hex").slice(0, 32)}`;
   }
 
+  private readonly active = new Map<string, number>();
+  private activeTotal = 0;
+
   async wait(req: SeatQuestionRequest): Promise<SeatQuestionReply> {
     const { store, now } = this.deps;
+    // The start time is the hook's own claim. One that is not a time, or older than any live hook could be, is refused: it would make the wait
+    // end at once. A start in the future counts from now.
+    if (!Number.isFinite(req.askedAtMs) || req.askedAtMs <= 0 || now().getTime() - req.askedAtMs > MAX_AUTO_ANSWER_MINUTES * 60_000 + QUESTION_ASKED_AT_MARGIN_MS) {
+      throw new SeatQuestionRefusal(400, "invalid_question_request", "askedAtMs is not the start time of a live hook");
+    }
     const seat = this.deps.resolveSeat({ sessionName: req.sessionName, nodeId: req.nodeId });
     if (!seat || seat.runtime !== "claude-code") return { action: "none", why: "not a managed Claude seat" };
     const id = SeatQuestionService.rowId(seat.nodeId, req.requestId);
@@ -158,7 +183,14 @@ export class SeatQuestionService {
       row = store.get(id);
     }
     if (!row) return { action: "none", why: "the question could not be recorded" };
-    return await this.hold(row, seat);
+    // A held poll costs a database read a second: a seat may hold a few, and the daemon a bounded number.
+    const mine = this.active.get(seat.nodeId) ?? 0;
+    if (mine >= (this.deps.maxWaitsPerSeat ?? MAX_QUESTION_WAITS_PER_SEAT) || this.activeTotal >= (this.deps.maxWaitsTotal ?? MAX_QUESTION_WAITS_TOTAL)) {
+      throw new SeatQuestionRefusal(429, "too_many_question_waits", "too many question waits are held; ask again shortly");
+    }
+    this.active.set(seat.nodeId, mine + 1); this.activeTotal += 1;
+    try { return await this.hold(row, seat); }
+    finally { this.active.set(seat.nodeId, (this.active.get(seat.nodeId) ?? 1) - 1); this.activeTotal -= 1; }
   }
 
   private async hold(first: SeatQuestionRow, seat: { rigId: string; nodeId: string; sessionName: string; runtime: string | null }): Promise<SeatQuestionReply> {
@@ -168,9 +200,9 @@ export class SeatQuestionService {
       const row = store.get(first.id);
       if (!row) return { action: "none", why: "the question is gone" };
       if (row.state === "answered_auto") {
-        // A reconnect after the answer was sent (the reply was lost, or the daemon restarted): the same answer again. If the daemon stopped between
-        // taking the answer and writing it down, the record is written now; one that is written is not written again.
-        if (row.loggedAt === null) await this.record(row);
+        // A reconnect after the answer was taken (the reply was lost, the daemon restarted, or the note could not be filed): the same answer again,
+        // once what was left undone (the event, the note) is done. What is written is not written again.
+        if (row.loggedAt === null || row.notedAt === null) await this.record(row);
         return { action: "answer", updatedInput: { ...(row.toolInput as Record<string, unknown>), answers: row.answers ?? {} } };
       }
       if (row.state !== "waiting") return { action: "none", why: `the question is ${row.state}` };
@@ -185,6 +217,14 @@ export class SeatQuestionService {
   private async take(row: SeatQuestionRow, seat: { rigId: string; nodeId: string; sessionName: string; runtime: string | null }): Promise<SeatQuestionReply> {
     const { store, now } = this.deps;
     const atIso = now().toISOString();
+    // The rig's setting now, not the one the question was asked under: a rig that turned the policy off while this waited gets no answer.
+    if (autoAnswerWaitMs(store.rigWaitMinutes(row.rigId)) === 0) {
+      const reason = "the rig turned auto-answer off while this question waited";
+      if (store.settle(row.id, ["waiting"], "held", atIso, reason)) {
+        this.deps.emit({ type: "seat.question_held", rigId: row.rigId, nodeId: row.nodeId, sessionName: row.sessionName, questionId: row.id, askedAt: row.askedAt, reason });
+      }
+      return { action: "none", why: reason };
+    }
     // The dialog must still be the seat's newest word. If the seat moved on while the daemon could not hear it (it was down), the
     // question was answered or is gone: nothing is sent and nothing is claimed.
     if (!this.deps.stillAsking(row.nodeId, row.generation)) {
@@ -202,9 +242,9 @@ export class SeatQuestionService {
     return { action: "answer", updatedInput: { ...(row.toolInput as Record<string, unknown>), answers: plan.answers } };
   }
 
-  /** Writes down an answer that was taken: the event (the durable record), then the note to the human. A note that fails does not withhold the
-   *  answer and does not unwrite the event; an event that cannot be written stops here, so the hook asks again and the answer is not sent unrecorded.
-   *  `logged_at` is set last, so a daemon that stopped before it is set writes both on the hook's next ask (the queue item is one item by its id). */
+  /** Writes down an answer that was taken: the event (the durable record), then the note to the human. Neither may fail silently: an event or a note
+   *  that cannot be written stops here, so the hook asks again and the answer is not sent unreported.
+   *  `logged_at` and `noted_at` are set as each is done, so a daemon that stopped between them finishes the rest on the hook's next ask. */
   private async record(row: SeatQuestionRow): Promise<void> {
     // Two polls of one question in this process share one write: the second waits for the first, then finds it written.
     const running = this.recording.get(row.id);
@@ -221,16 +261,22 @@ export class SeatQuestionService {
     const takenAt = row.settledAt ?? this.deps.now().toISOString();
     const waitedMs = Math.max(0, Date.parse(takenAt) - Date.parse(row.askedAt));
     const waitConfiguredMs = row.dueAt ? Date.parse(row.dueAt) - Date.parse(row.askedAt) : waitedMs;
-    this.deps.emit({ type: "seat.question_auto_answered", rigId: row.rigId, nodeId: row.nodeId, sessionName: row.sessionName, questionId: row.id, askedAt: row.askedAt, takenAt, waitedMs, waitConfiguredMs, questions: chosen });
-    try {
+    // The event first: it is the durable record, and it is written once (logged_at). Then the note to the human, filed once (noted_at). A note that
+    // cannot be filed throws: the answer is not sent unreported, the hook asks again after the error, and the next ask files it (the queue item is one
+    // item by its id) and sends the answer.
+    if (row.loggedAt === null) {
+      this.deps.emit({ type: "seat.question_auto_answered", rigId: row.rigId, nodeId: row.nodeId, sessionName: row.sessionName, questionId: row.id, askedAt: row.askedAt, takenAt, waitedMs, waitConfiguredMs, questions: chosen });
+      this.deps.store.markLogged(row.id, this.deps.now().toISOString());
+    }
+    if (row.notedAt === null) {
       const lines = chosen.map((c) => `  - ${c.question} -> ${c.chosen}`).join("\n");
       await this.deps.tell({
         qitemId: row.id, seat: row.sessionName,
         summary: `${row.sessionName}: unanswered question took its recommended answer`,
         body: `${row.sessionName} asked a question and nobody answered it within ${Math.round(waitConfiguredMs / 60_000)} min, so OpenRig sent the (Recommended) answer at ${takenAt}:\n${lines}\n\nHow to override: ${this.deps.howToOverride(row.sessionName)}`,
       });
-    } catch { /* the event above is the record; a failed note must not withhold the answer */ }
-    this.deps.store.markLogged(row.id, this.deps.now().toISOString());
+      this.deps.store.markNoted(row.id, this.deps.now().toISOString());
+    }
   }
 }
 
