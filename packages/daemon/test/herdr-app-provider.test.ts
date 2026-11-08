@@ -172,6 +172,28 @@ describe("HerdrAppProvider.openView", () => {
   });
 });
 
+describe("createHerdrAppCli bounds each call (OF-281)", () => {
+  // The seat host builds the port with 2000 ms so that a hung app cannot hold a seat launch; the provider for `rig terminal open` keeps the 30 s default.
+  const timeouts = (): { seen: number[]; exec: HerdrAppExec } => {
+    const seen: number[] = [];
+    return { seen, exec: async (_file, _args, timeoutMs) => { seen.push(timeoutMs); return { code: 0, stdout: '{"spaces":[],"ok":true}', stderr: "" }; } };
+  };
+  it("passes the given timeout to `ls` and to `do`", async () => {
+    const { seen, exec } = timeouts();
+    const app = createHerdrAppCli("h", exec, 1234);
+    await app.ls();
+    await app.do("tab.rename", { id: "t", name: "n" });
+    expect(seen).toEqual([1234, 1234]);
+  });
+  it("without one, keeps the 30 s default for both", async () => {
+    const { seen, exec } = timeouts();
+    const app = createHerdrAppCli("h", exec);
+    await app.ls();
+    await app.do("tab.rename", { id: "t", name: "n" });
+    expect(seen).toEqual([30_000, 30_000]);
+  });
+});
+
 describe("createHerdrAppCli (the process boundary, exec injected)", () => {
   const exec = (answer: Awaited<ReturnType<HerdrAppExec>>, seen: Array<[string, string[]]> = []): HerdrAppExec => async (file, args) => { seen.push([file, args]); return answer; };
 

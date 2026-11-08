@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HerdrAppCommandError, HerdrAppUnavailableError } from "../src/domain/terminal/herdr-app-provider.js";
 import { createPlacementNameRestorer, restorePlacementNames } from "../src/adapters/hc-placement-names.js";
 import { isAppOwnedLabel, placementNamesOf, withoutAppOwnedLabels } from "../src/adapters/hc-placement-carry.js";
@@ -138,6 +138,32 @@ describe("restorePlacementNames (OF-281)", () => {
       await new Promise((r) => setTimeout(r, 30));
       expect(app.renames().map(([c]) => c)).toEqual(["space.rename"]);  // the space rename was already on its way; the tab's was never sent
     });
+  });
+});
+
+describe("the production bound of the step is 2000 ms (OF-281)", () => {
+  afterEach(() => { vi.useRealTimers(); });
+  // A seat launch waits on this step, so its default is the number that decides how long a hung app can hold a launch.
+  const hungApp = () => { const app = new FakeApp([madeAgain()]); app.ls = () => new Promise(() => {}); return app; };
+
+  it("restorePlacementNames with no options gives up at 2000 ms: not before, and not after", async () => {
+    vi.useFakeTimers();
+    let outcome: unknown = null;
+    void restorePlacementNames(hungApp(), ADDRESS, NAMES).then((o) => { outcome = o; });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(outcome).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toEqual({ kind: "failed", reason: "timed out after 2000 ms" });
+  });
+
+  it("the restorer the daemon builds (no options) has the same bound and reports it as the warning", async () => {
+    vi.useFakeTimers();
+    let warnings: string[] | null = null;
+    void createPlacementNameRestorer(hungApp())("exec-cos@eztrack", ADDRESS, NAMES).then((w) => { warnings = w; });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(warnings).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(warnings).toEqual(["exec-cos@eztrack: its Herdr space and tab names were not restored (timed out after 2000 ms)"]);
   });
 });
 
