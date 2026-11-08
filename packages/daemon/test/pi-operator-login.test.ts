@@ -8,9 +8,9 @@ import nodePath from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { linkPiOperatorLogin, realPiOperatorLoginFs, type PiOperatorLoginFs } from "../src/adapters/pi-operator-login.js";
-import { piCredentialLaunchGate, piCredentialSource } from "../src/adapters/pi-readiness.js";
+import { PI_FULLY_DEFINED_CREDENTIAL_ENV, piCredentialLaunchGate, piCredentialSource } from "../src/adapters/pi-readiness.js";
 import { main, parseRunnerArgs } from "../src/adapters/pi-runner.js";
-import { buildPiRunnerCommand, type PiRunnerLaunchOpts } from "../src/adapters/pi-runner-protocol.js";
+import { buildPiRunnerCommand, PI_PROVIDER_ENV_VARS, type PiRunnerLaunchOpts } from "../src/adapters/pi-runner-protocol.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNER = nodePath.join(PACKAGE_DIR, "src", "adapters", "pi-runner.ts");
@@ -216,6 +216,52 @@ describe("the seat and agent directories are judged like the model_overrides wri
   });
 });
 
+describe("review F2: the operator's file must resolve outside the Pi state root", () => {
+  it("the operator folder equal to the seat's own agent dir (holding its stub) is refused: no looping link, the stub is kept", () => {
+    fs.writeFileSync(seatAuth(), "{}");
+    const r = link({ operatorDir: agentDir });
+    expect(r.ok).toBe(false);
+    expect(err(r)).toMatch(/inside the Pi state root .*a seat's own file, not the operator's login/);
+    expect(fs.lstatSync(seatAuth()).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(seatAuth(), "utf8")).toBe("{}");
+  });
+  it("the operator folder set to ANOTHER seat's dir under the state root is refused, and nothing is linked", () => {
+    const other = nodePath.join(state, "verify-ops@t", "agent");
+    fs.mkdirSync(other, { recursive: true });
+    fs.writeFileSync(nodePath.join(other, "auth.json"), JSON.stringify(OAUTH));
+    const r = link({ operatorDir: other });
+    expect(r.ok).toBe(false);
+    expect(fs.readdirSync(agentDir)).toEqual([]);
+  });
+  it("a symlinked operator folder that leads into a seat dir is refused (judged on the real path)", () => {
+    const via = nodePath.join(dir, "via"); fs.symlinkSync(agentDir, via);
+    fs.writeFileSync(seatAuth(), "{}");
+    expect(link({ operatorDir: via }).ok).toBe(false);
+    expect(fs.readFileSync(seatAuth(), "utf8")).toBe("{}");
+  });
+  it("an operator auth.json that is a link into a seat's file is refused too", () => {
+    const other = nodePath.join(state, "verify-ops@t", "agent");
+    fs.mkdirSync(other, { recursive: true });
+    fs.writeFileSync(nodePath.join(other, "auth.json"), JSON.stringify(OAUTH));
+    fs.symlinkSync(nodePath.join(other, "auth.json"), opAuth());
+    expect(link().ok).toBe(false);
+    expect(fs.readdirSync(agentDir)).toEqual([]);
+  });
+});
+
+describe("review F4: an operator auth.json that is a symlink to a regular file is accepted (a dotfile-manager layout)", () => {
+  it("the seat is linked to the operator's path as given, and the file behind it is untouched", () => {
+    const real = nodePath.join(dir, "dotfiles-auth.json");
+    fs.writeFileSync(real, OPERATOR_AUTH_TEXT, { mode: 0o600 });
+    fs.symlinkSync(real, opAuth());
+    const r = link();
+    expect(r.ok).toBe(true);
+    expect(target(seatAuth())).toBe(opAuth());
+    expect(fs.readFileSync(seatAuth(), "utf8")).toBe(OPERATOR_AUTH_TEXT);
+    expect(fs.readFileSync(real, "utf8")).toBe(OPERATOR_AUTH_TEXT);
+  });
+});
+
 describe("failure mid-replacement leaves the stub as it was", () => {
   it("a rename that fails removes the temp link and keeps the 2-byte file", () => {
     putOperator();
@@ -242,8 +288,39 @@ describe("rule 4: refuse a launch with no credential (the gate)", () => {
   it("a provider with a known key variable names it instead of the sign-in", () => {
     expect((piCredentialLaunchGate({ ...none, provider: "openrouter", envVar: "OPENROUTER_API_KEY" }, "none", "/a") as { message: string }).message).toMatch(/OPENROUTER_API_KEY .*recovery\.provider_auth_env_allowlist/);
   });
-  it("an unlinked models.json provider says to declare link_operator_models", () => {
-    expect((piCredentialLaunchGate({ ...none, provider: "ollama" }, "none", "/a") as { message: string }).message).toMatch(/link_operator_models/);
+  it("review F1: a provider the table does not name is never refused (ollama and other custom providers, google-vertex, amazon-bedrock, a newer provider, prototype names)", () => {
+    for (const provider of ["ollama", "google-vertex", "amazon-bedrock", "some-newer-provider", "constructor", "__proto__", "toString"]) {
+      expect(piCredentialLaunchGate({ ...none, provider }, "none", "/a", {}), provider).toEqual({ action: "proceed" });
+    }
+  });
+  it("review F1: a key Pi reads for the provider, present in the child environment (an env_passthrough name), is not refused and the note names it", () => {
+    const g = piCredentialLaunchGate({ kind: "none", provider: "anthropic", envVar: undefined }, "none", "/a", { ANTHROPIC_API_KEY: "dummy" });
+    expect(g.action).toBe("exempt");
+    expect((g as { message: string }).message).toMatch(/ANTHROPIC_API_KEY is present in the seat's environment .*env_passthrough/);
+    for (const name of ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN"]) {
+      expect(piCredentialLaunchGate({ kind: "none", provider: "anthropic", envVar: undefined }, "none", "/a", { [name]: "dummy" }).action, name).toBe("exempt");
+    }
+  });
+  it("review F1: the same anthropic seat with no such variable (or a blank one, or a variable for another provider) is still refused, and the message offers env_passthrough", () => {
+    for (const env of [{}, { ANTHROPIC_API_KEY: "  " }, { ANTHROPIC_API_KEY: "" }, { OPENAI_API_KEY: "dummy" }]) {
+      const g = piCredentialLaunchGate({ kind: "none", provider: "anthropic", envVar: undefined }, "none", "/a", env);
+      expect(g.action, JSON.stringify(env)).toBe("refuse");
+      expect((g as { message: string }).message).toMatch(/pass ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY through the member's env_passthrough/);
+    }
+  });
+  it("review F1: openai-codex reads no environment: a stub with no passthrough is refused, and no variable rescues it", () => {
+    expect(PI_FULLY_DEFINED_CREDENTIAL_ENV["openai-codex"]).toEqual([]);
+    for (const env of [{}, { OPENAI_API_KEY: "dummy", OPENAI_CODEX_OAUTH_TOKEN: "dummy" }]) {
+      const g = piCredentialLaunchGate(none, "none", "/a", env);
+      expect(g.action).toBe("refuse");
+      expect((g as { message: string }).message).not.toMatch(/env_passthrough/);
+    }
+  });
+  it("review F1 census: the table agrees with OpenRig's own forwarded keys, and leaves out the ambient-credential providers", () => {
+    for (const [provider, name] of Object.entries(PI_PROVIDER_ENV_VARS)) expect(PI_FULLY_DEFINED_CREDENTIAL_ENV[provider], provider).toContain(name);
+    expect(Object.keys(PI_FULLY_DEFINED_CREDENTIAL_ENV)).not.toContain("google-vertex");
+    expect(Object.keys(PI_FULLY_DEFINED_CREDENTIAL_ENV)).not.toContain("amazon-bedrock");
+    expect(Object.keys(PI_FULLY_DEFINED_CREDENTIAL_ENV).length, "positive control: the table is the measured population").toBeGreaterThanOrEqual(40);
   });
   it.each([["present", /a Pi extension is configured/], ["unknown", /could not be read/]] as const)("none with extensions %s is exempt and says so", (ext, re) => {
     const g = piCredentialLaunchGate(none, ext, "/a");
@@ -335,6 +412,37 @@ describe("main(): the refusals end the launch with exit 78 and the exit recorded
       const r = await run(baseArgs("L4"));
       expect(r.errors).not.toMatch(/No Pi credential/);
       expect(r.logs).toMatch(/a Pi extension is configured and may supply the credential/);
+    } finally { process.env.PATH = savedPath; }
+  });
+
+  it("review F1: an anthropic seat whose key arrives through env_passthrough is NOT refused, and the log says the key is present", async () => {
+    const saved = { PATH: process.env.PATH, K: process.env.ANTHROPIC_API_KEY };
+    process.env.PATH = nodePath.dirname(process.execPath); process.env.ANTHROPIC_API_KEY = "dummy-not-a-key";
+    try {
+      const r = await run(["--session-name", "verify-qa@t", "--state-root", state, "--cwd", dir, "--launch-id", "L6", "--approve", "--model", "anthropic/claude-x", "--env-pass", "ANTHROPIC_API_KEY"]);
+      expect(r.errors).not.toMatch(/No Pi credential/);
+      expect(r.logs).toMatch(/ANTHROPIC_API_KEY is present in the seat's environment/);
+      expect(r.logs + r.errors).not.toContain("dummy-not-a-key");
+    } finally { process.env.PATH = saved.PATH; if (saved.K === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved.K; }
+  });
+
+  it("review F1: the same anthropic seat WITHOUT the passthrough (the variable is in the runner's environment but not named) is refused", async () => {
+    const saved = { PATH: process.env.PATH, K: process.env.ANTHROPIC_API_KEY };
+    process.env.PATH = nodePath.dirname(process.execPath); process.env.ANTHROPIC_API_KEY = "dummy-not-a-key";
+    try {
+      const r = await run(["--session-name", "verify-qa@t", "--state-root", state, "--cwd", dir, "--launch-id", "L7", "--approve", "--model", "anthropic/claude-x"]);
+      expect(r.code).toBe(78);
+      expect(r.errors).toMatch(/No Pi credential for provider anthropic/);
+    } finally { process.env.PATH = saved.PATH; if (saved.K === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved.K; }
+  });
+
+  it("review F1: a provider the table does not name (ollama, no models.json) gets the notice only: launch continues", async () => {
+    fs.writeFileSync(seatAuth(), "{}");
+    const savedPath = process.env.PATH; process.env.PATH = nodePath.dirname(process.execPath);
+    try {
+      const r = await run(["--session-name", "verify-qa@t", "--state-root", state, "--cwd", dir, "--launch-id", "L8", "--approve", "--model", "ollama/kimi-k3.1-pro:cloud:high"]);
+      expect(r.errors).not.toMatch(/No Pi credential/);
+      expect(r.logs).toMatch(/No stored sign-in or provider key was found for Pi provider ollama/);
     } finally { process.env.PATH = savedPath; }
   });
 

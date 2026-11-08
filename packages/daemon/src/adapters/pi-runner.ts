@@ -1335,7 +1335,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   let credentialGateNote: string | undefined;
   if (runtime === "pi") {
     const source = piCredentialSource({ model: args.model, agentDir: paths.agentDir, env: childEnv, readFile: readMetadata });
-    const gate = piCredentialLaunchGate(source, source.kind === "none" ? credentialEvidence().extensions : "none", paths.agentDir);
+    const gate = piCredentialLaunchGate(source, source.kind === "none" ? credentialEvidence().extensions : "none", paths.agentDir, childEnv);
     if (gate.action === "refuse") { refuseLaunch(gate.message); return; }
     if (gate.action === "exempt") credentialGateNote = gate.message;
   }

@@ -27,8 +27,16 @@ directory (`<state>/pi/<seat>/agent`) the first time it runs, and the seat then 
 | a link to the operator's file | leaves it; logs the line below |
 | a link somewhere else | leaves it alone; the launch log names where it points |
 
-The one file read is the parse of a seat's 2-byte `auth.json`. The operator's files are only checked to exist and to
-be regular files; they are never opened by the link. A regular seat `models.json` is left alone and named in the log.
+The link step itself reads one file: the parse of a seat's own 2-byte `auth.json`. It only checks (stat, realpath) that the operator's
+files exist and are regular files, and that they resolve outside the Pi state root (a folder or link that leads into a seat's own
+directory, or to the seat's own file, is refused: it would be a seat's file, not the operator's login). A regular seat `models.json` is left alone
+and named in the log.
+
+**The runner does parse the operator's `auth.json` (and `models.json`, when linked) afterwards, through the link.** Its credential check
+(the same one that produced the launch notice before this change) reads the seat's `auth.json` and `models.json` to classify the credential
+source for the provider the spec names. That is a parse only: nothing from the file is printed, copied or written, a parse error is reported
+as "unknown" without its message, and the operator's files are never opened for writing by the runner. (Pi itself, once started, reads and
+rewrites the file; that is the shared-login section below.)
 
 **It never creates a dangling link.** If `<folder>/auth.json` (or `models.json`, when declared) is missing or is not a
 regular file, the launch is refused before Pi starts: Pi's `ensureFileExists` writes `{}` when `existsSync` is false, and
@@ -38,15 +46,19 @@ refuses the launch.
 
 ## A launch with no credential is refused
 
-When the provider the spec names (the part of `model` before the first `/`) has no stored sign-in, no `models.json`
-key and no managed environment key in the seat, the runner refuses the launch before Pi starts (exit 78, one line on
-the pane naming the provider and the fix: set `pi.operator_login_dir`, or sign in for this seat). Two things keep a
-launch going:
+The runner refuses a launch before Pi starts (exit 78, one line on the pane naming the provider and the fixes) only when all of these hold:
 
-- **"unknown"** (no provider named, an unreadable or odd file, a key written as `$VAR` or `!command`): the advisory
-  notice stays, because the seat may hold a login the metadata cannot show.
-- **A configured Pi extension** (or an extension configuration that cannot be read): an extension can supply a provider and
-  its credential. The launch continues and the log line says so.
+- the provider the spec names (the part of `model` before the first `/`) is one whose credential sources Pi's own code fully defines. That is
+  a table measured in Pi 1.4.0 `pi-ai/dist/env-api-keys.js` (every provider with an environment variable there, including anthropic's three,
+  plus `openai-codex`, which reads no environment and has only a stored sign-in or a `models.json` key);
+- the seat has no stored sign-in or key for it in `auth.json` or `models.json`;
+- none of that provider's Pi environment variables is present in the seat's environment. A name passed through `env_passthrough` counts
+  (an `anthropic/...` seat with `ANTHROPIC_API_KEY` passed through is not refused: the log says the key is present);
+- no Pi extension is configured (or the extension configuration could not be read): an extension can supply a provider and its credential.
+
+Everything else keeps the advisory notice and the launch continues: a provider the table does not name (custom providers such as ollama,
+extension providers, anything newer than the measured Pi), `google-vertex` and `amazon-bedrock` (ambient ADC or AWS credentials this check
+cannot see), and "unknown" (no provider named, an unreadable or odd file, a key written as `$VAR` or `!command`).
 
 ## The shared login: what is and is not known
 

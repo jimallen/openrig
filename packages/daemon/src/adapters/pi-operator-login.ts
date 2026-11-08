@@ -8,6 +8,7 @@
 //
 // The rules, each pinned by test/pi-operator-login.test.ts:
 // - a link, never a copy: <agent dir>/auth.json (and models.json when declared) becomes a symlink to the operator's file;
+// - the operator's file must resolve outside the Pi state root (review F2), so a seat is never linked to a seat's file or to itself;
 // - never a dangling link: if <operator dir>/auth.json (or models.json) is missing or is not a regular file the launch is
 //   refused, because Pi would otherwise create "{}" through the link into the operator's own folder (Pi's
 //   FileAuthStorageBackend.ensureFileExists writes "{}" when existsSync is false, and existsSync follows the link);
@@ -15,7 +16,8 @@
 //   ensureFileExists leaves behind: a regular file of EXACTLY 2 bytes that parses as an empty object is replaced (the
 //   symlink is created under a temp name and renamed over it, so the seat never has a moment without the file). That parse
 //   is the only read of a seat credential file, and it happens for a 2-byte file only; the operator's files are never
-//   opened here (stat only);
+//   opened by THIS module (stat and realpath only). The runner's credential check afterwards parses the file through the link, only to classify
+//   the credential source (see pi-readiness.ts); nothing is printed, copied or written;
 // - a symlink that already points at the operator's file is left as it is; a symlink pointing elsewhere is left alone and
 //   the launch log names where it points (a link target is a path, not a credential);
 // - a regular models.json is the seat's own (it may hold keys, or the OF-270 overrides): left alone and named in the log;
@@ -101,6 +103,15 @@ export function linkPiOperatorLogin(opts: {
       return { ok: false, error: `the operator's ${name} (${target}) cannot be inspected (${code(err)}); not linking, because a link to a missing file would make Pi create "{}" in the operator's folder. Log in to Pi as the operator first (or fix pi.operator_login_dir).` };
     }
     if (!st.isFile()) return { ok: false, error: `the operator's ${name} (${target}) is not a regular file; not linking it.` };
+    // Review F2: the operator's file must not live under the Pi state root (it would be a seat's own file, or the seat's own stub: linking a
+    // seat's auth.json to itself makes a looping link). Judged on the real paths, so a link or a symlinked folder into a seat dir refuses too.
+    let realTarget: string; let realState: string;
+    try { realTarget = io.realpath(target); realState = io.realpath(opts.stateRoot); } catch (err) {
+      return { ok: false, error: `cannot resolve the operator's ${name} (${target}) or the Pi state root (${code(err)}); not linking.` };
+    }
+    if (realTarget === realState || realTarget.startsWith(realState + nodePath.sep)) {
+      return { ok: false, error: `the operator's ${name} (${target}) resolves to ${realTarget}, inside the Pi state root ${realState}; that is a seat's own file, not the operator's login. Point pi.operator_login_dir at the operator's own Pi folder.` };
+    }
   }
   for (const name of names) {
     const target = nodePath.join(operatorDir, name);
