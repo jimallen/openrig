@@ -1,6 +1,6 @@
 import type { HealthDetectorObservation, HealthObservationSource, HealthSourceCoverage } from "./health-detectors.js";
 import { formatHeldAge, HELD_NOTICE_AFTER_MS, type HeldMessages } from "./seat-messaging/held-messages.js";
-import type { SeatQuestionStore } from "./seat-question-policy.js";
+import type { SeatQuestionRepository } from "./seat-question-policy.js";
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -12,7 +12,7 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 export class SeatQuestionHealthSource implements HealthObservationSource {
   readonly name = "seat-questions";
   constructor(
-    private readonly store: SeatQuestionStore,
+    private readonly store: SeatQuestionRepository,
     private readonly held: (sessionName: string, now: Date) => HeldMessages | null,
     private readonly clock: () => Date = () => new Date(),
   ) {}

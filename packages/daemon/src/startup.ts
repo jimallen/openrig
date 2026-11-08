@@ -728,9 +728,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
   const seatMessages = new MessageStore(db);
   // OF-278: the questions seats put to the human, and the messages that wait behind them.
-  const { SeatQuestionStore } = await import("./domain/seat-question-policy.js");
+  const { SqliteSeatQuestionStore } = await import("./adapters/seat-question-store.js");
   const { describeHeld } = await import("./domain/seat-messaging/held-messages.js");
-  const seatQuestionStore = new SeatQuestionStore(db);
+  const seatQuestionStore = new SqliteSeatQuestionStore(db);
   // Each consumer registers its own (S4), before the pump starts.
   const messageObligations = new MessageObligations();
   const reconcileCodexSeat = (sessionName: string, threadId: string | null) => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { SqliteSeatQuestionStore as SeatQuestionStore } from "../src/adapters/seat-question-store.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
@@ -10,7 +11,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import {
-  SeatQuestionService, SeatQuestionStore, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller,
+  SeatQuestionService, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller,
   DEFAULT_AUTO_ANSWER_MINUTES, type SeatQuestionReply,
 } from "../src/domain/seat-question-policy.js";
 

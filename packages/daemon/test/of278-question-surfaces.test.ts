@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { SqliteSeatQuestionStore as SeatQuestionStore } from "../src/adapters/seat-question-store.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
@@ -12,7 +13,6 @@ import { deriveSeatPosture } from "../src/domain/seat-posture.js";
 import { describeHeld, formatHeldAge, HELD_NOTICE_AFTER_MS } from "../src/domain/seat-messaging/held-messages.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { SeatQuestionHealthSource } from "../src/domain/seat-question-health.js";
-import { SeatQuestionStore } from "../src/domain/seat-question-policy.js";
 import { attachAgentActivity } from "../src/domain/node-inventory.js";
 
 // OF-278. A question to the human is named for what it is (question_dialog, not permission_prompt) wherever the seat's state is read,
