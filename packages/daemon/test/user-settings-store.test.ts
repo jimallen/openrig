@@ -189,6 +189,8 @@ describe("SettingsStore (User Settings v0)", () => {
       "queue.wake_human_rung",
       // RSI B1 — the improvement steward's session (unset arms nothing).
       "rsi.steward_session",
+      // OF-279 — the operator's Pi login folder (unset links nothing).
+      "pi.operator_login_dir",
     ]);
   });
 

@@ -19,6 +19,14 @@ export function piVersionNotice(output: string): string {
     : `Pi version ${version} answered on the daemon's PATH; this does not verify the pane's executable or provider access. Credentials are checked for the managed seat before Pi starts.`;
 }
 
+/** The Pi version the credential table below was measured on. A launch is refused only when the seat's Pi reports exactly this. */
+export const PI_CREDENTIAL_TABLE_PI_VERSION = "1.4.0";
+
+/** "1.4.0" from `pi --version` output (the same shapes piVersionNotice accepts), or undefined. */
+export function piVersionNumber(output: string): string | undefined {
+  return /^(?:pi\s+)?v?(\d{1,6}\.\d{1,6}\.\d{1,6})(?:[-+][\w.-]{1,40})?$/i.exec(output.trim())?.[1];
+}
+
 type JsonObject = Record<string, unknown>;
 function object(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -141,6 +149,107 @@ export function piCredentialNotice(opts: {
       return `No stored sign-in or provider key was found for Pi provider ${source.provider} in this managed seat. ${fix} Pi may resolve another credential source; launch continues. Default Pi logins are not automatically shared.`;
     }
   }
+}
+
+/** OF-279 (review F1, N1): the providers for which this check can say "no credential" because every credential source Pi 1.4.0 has for them is
+ *  an environment variable we can see by name (plus the stored sign-in and models.json key the caller already checks). Not "fully
+ *  defined by env-api-keys.js": that file misses anthropic's workload identity federation and cloudflare's multi-name credentials.
+ *  The table was RE-DERIVED by behaviour, from every provider's own resolver, with `scripts/measure-pi-credential-env.mjs` (it
+ *  loads Pi's builtin providers and finds, per provider, the sets of environment names that make its api-key resolver return a
+ *  credential): see docs/reference/pi-operator-login.md. Measured on Pi 1.4.0, pi-ai/dist/env-api-keys.js sha256 8166f316e3c8adaa....
+ *  Where a credential needs several names together (anthropic federation: the rule id, the organization id and the identity token
+ *  file; cloudflare: key and account id, plus the gateway id), ANY of them present means "not refused": fewer refusals is the safe side.
+ *  `openai-codex` has an oauth method only (providers/openai-codex.js): a stored sign-in or a models.json key, no environment.
+ *  Deliberately NOT in the table: `google-vertex` (an api key variable, but also Application Default Credentials found through a file
+ *  check) and `amazon-bedrock` (AWS profile, roles and container credentials: ambient) and every provider the table does not name
+ *  (custom providers such as ollama, extension providers, anything newer than 1.4.0). For those the evidence is incomplete, so the
+ *  verdict is never "refuse". Pi reads these from its own process environment, which is exactly the child environment the runner
+ *  builds (baseline, the mapped provider key, and the member's env_passthrough names). The refusal also requires the installed Pi to
+ *  be the measured version ({@link PI_CREDENTIAL_TABLE_PI_VERSION}). */
+export const PI_FULLY_DEFINED_CREDENTIAL_ENV: Readonly<Record<string, readonly string[]>> = {
+  "github-copilot": ["COPILOT_GITHUB_TOKEN"],
+  anthropic: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_IDENTITY_TOKEN_FILE"],
+  "openai-codex": [],
+  "ant-ling": ["ANT_LING_API_KEY"],
+  "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
+  "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
+  "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  azure: ["AZURE_OPENAI_API_KEY"],
+  nvidia: ["NVIDIA_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  google: ["GEMINI_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  typesafe: ["TYPESAFE_API_KEY"],
+  radius: ["RADIUS_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  "vercel-ai-gateway": ["AI_GATEWAY_API_KEY"],
+  zai: ["ZAI_API_KEY"],
+  "zai-coding-cn": ["ZAI_CODING_CN_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  minimax: ["MINIMAX_API_KEY"],
+  "minimax-cn": ["MINIMAX_CN_API_KEY"],
+  moonshotai: ["MOONSHOT_API_KEY"],
+  "moonshotai-cn": ["MOONSHOT_API_KEY"],
+  huggingface: ["HF_TOKEN"],
+  fireworks: ["FIREWORKS_API_KEY"],
+  together: ["TOGETHER_API_KEY"],
+  baseten: ["BASETEN_API_KEY"],
+  opencode: ["OPENCODE_API_KEY"],
+  "opencode-go": ["OPENCODE_API_KEY"],
+  "kimi-coding": ["KIMI_API_KEY"],
+  meta: ["META_API_KEY"],
+  "cloudflare-workers-ai": ["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID"],
+  "cloudflare-ai-gateway": ["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID"],
+  xiaomi: ["XIAOMI_API_KEY"],
+  "xiaomi-token-plan-cn": ["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
+  "xiaomi-token-plan-ams": ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"],
+  "xiaomi-token-plan-sgp": ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
+};
+
+/** OF-279: what a launch does with {@link piCredentialSource}. Only a definite "none" for a provider in
+ *  {@link PI_FULLY_DEFINED_CREDENTIAL_ENV}, with none of that provider's Pi environment variables present in the child environment
+ *  (a passthrough name counts), refuses. A provider outside the table, or one with such a variable present, is not refused: the
+ *  advisory notice stays (or a precise note says the key is in the environment). "unknown" (no provider named, an odd or unreadable
+ *  file, a non-literal key) keeps the notice too, since the seat may hold a login the metadata cannot show. A seat with a configured
+ *  Pi extension, or one whose extension configuration could not be read, is exempt and says so. Pure; the file reads happened in the caller. */
+export type PiCredentialLaunchGate =
+  | { action: "proceed" }
+  | { action: "refuse"; message: string }
+  | { action: "exempt"; message: string };
+
+/** Notes for the providers whose credential needs several names together (the table lists every name; any one present exempts). */
+const PI_CREDENTIAL_ENV_NOTE: Readonly<Record<string, string>> = {
+  anthropic: " (Pi's workload identity federation needs ANTHROPIC_FEDERATION_RULE_ID, ANTHROPIC_ORGANIZATION_ID and ANTHROPIC_IDENTITY_TOKEN_FILE together)",
+  "cloudflare-workers-ai": " (Pi needs CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID together)",
+  "cloudflare-ai-gateway": " (Pi needs CLOUDFLARE_API_KEY, CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GATEWAY_ID together)",
+};
+
+export function piCredentialLaunchGate(source: PiCredentialSource, extensions: PiCredentialEvidence["extensions"], agentDir: string,
+  env: Readonly<Record<string, string | undefined>> = {}, piVersion?: () => string | undefined): PiCredentialLaunchGate {
+  if (source.kind !== "none") return { action: "proceed" };
+  const piEnv = Object.hasOwn(PI_FULLY_DEFINED_CREDENTIAL_ENV, source.provider) ? PI_FULLY_DEFINED_CREDENTIAL_ENV[source.provider] : undefined;
+  if (piEnv === undefined) return { action: "proceed" };
+  const present = piEnv.find((name) => !!env[name]?.trim());
+  if (present !== undefined) {
+    return { action: "exempt", message: `No stored sign-in or models.json key was found for Pi provider ${source.provider}, but ${present} is present in the seat's environment (for example through env_passthrough), which Pi reads for this provider; validity is unverified. Launch continues.` };
+  }
+  if (extensions !== "none") {
+    return { action: "exempt", message: `No stored sign-in or provider key was found for Pi provider ${source.provider}, but ${extensions === "present" ? "a Pi extension is configured" : "this seat's Pi extension configuration could not be read"} and may supply the credential, so the launch is not refused.` };
+  }
+  // The table is true of the Pi it was measured on. Read the version only now, when a refusal is the verdict (one `pi --version`, in the
+  // caller); any other version, or none readable, withholds the refusal and says the table needs re-measuring. Omitted: not checked (pure callers).
+  if (piVersion !== undefined) {
+    const version = piVersion();
+    if (version !== PI_CREDENTIAL_TABLE_PI_VERSION) {
+      return { action: "exempt", message: `No stored sign-in or provider key was found for Pi provider ${source.provider}, but the refusal table was measured on Pi ${PI_CREDENTIAL_TABLE_PI_VERSION} and this seat's Pi is ${version ?? "of unknown version"}, so the launch is not refused. The table needs re-measuring for this Pi (scripts/measure-pi-credential-env.mjs; docs/reference/pi-operator-login.md).` };
+    }
+  }
+  const viaEnv = piEnv.length > 0 ? `, or pass ${piEnv.join(" or ")} through the member's env_passthrough${PI_CREDENTIAL_ENV_NOTE[source.provider] ?? ""}` : "";
+  const own = source.envVar ? `set ${source.envVar} in the daemon environment and add its name to recovery.provider_auth_env_allowlist` : `sign in for this seat (run Pi once with PI_CODING_AGENT_DIR=${agentDir} and /login ${source.provider})`;
+  return { action: "refuse", message: `No Pi credential for provider ${source.provider} in this managed seat; the launch is refused before Pi starts. Fix: set pi.operator_login_dir to the operator's Pi agent folder (rig config set pi.operator_login_dir <folder>) and relaunch the seat${viaEnv}, or ${own}.` };
 }
 
 /** OPR.0.7.0.2 K4: what metadata shows about Pi's OpenRouter credential at one moment. Pi records no

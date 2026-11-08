@@ -402,6 +402,10 @@ export interface PiRunnerLaunchOpts {
   envPassthrough?: readonly string[];
   /** OF-270: Pi only. The seat's model overrides (spec `model_overrides`); the runner merges them into the seat's models.json. */
   modelOverrides?: PiModelOverrides;
+  /** OF-279: Pi only. The host's operator Pi login folder (`pi.operator_login_dir`); the runner links the seat's auth.json to <it>/auth.json. Unset or "" = no link. */
+  operatorLoginDir?: string;
+  /** OF-279: Pi only. The member's `pi.link_operator_models`: the runner also links models.json to <operatorLoginDir>/models.json. */
+  linkOperatorModels?: boolean;
   /** Session file path or id to fork from via CLI --fork (FR-6). */
   forkRef?: string;
   /** Launch-attempt scope stamped into every runner sidecar write. */
@@ -439,6 +443,11 @@ export function buildPiRunnerCommand(opts: PiRunnerLaunchOpts): string {
   if (extra.length > 0) parts.push("--env-pass", shellQuote(extra.join(",")));
   const overrides = opts.runtime === "omp" || opts.modelOverrides === undefined ? null : normalizePiModelOverrides(opts.modelOverrides);
   if (overrides) parts.push("--model-overrides", shellQuote(JSON.stringify(overrides)));
+  if (opts.runtime !== "omp") {
+    const operatorLoginDir = opts.operatorLoginDir?.trim();
+    if (operatorLoginDir) parts.push("--operator-login-dir", shellQuote(operatorLoginDir));
+    if (opts.linkOperatorModels) parts.push("--link-operator-models");
+  }
   return parts.join(" ");
 }
 

@@ -759,6 +759,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const row = db.prepare("SELECT node_id AS nodeId FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(sessionName) as { nodeId: string } | undefined;
     return row ? rigRepo.getNodeModelOverrides(row.nodeId) : undefined;
   };
+  // OF-279: the host's operator Pi login folder (pi.operator_login_dir; "" = unset = no link), read at each launch and resume.
+  // An invalid stored value (the setting validates on write, so this is a hand-edited file) reads as unset: nothing is linked.
+  const piOperatorLoginDir = (): string | undefined => {
+    try {
+      const value = new ContextPackSettingsStore().resolveOne("pi.operator_login_dir").value;
+      return typeof value === "string" && value.trim() ? value : undefined;
+    } catch { return undefined; }
+  };
+  // OF-279: the member's pi.link_operator_models, by session name, for every launch and resume (like the model overrides).
+  const piLinkOperatorModelsFor = (sessionName: string): boolean => {
+    const row = db.prepare("SELECT node_id AS nodeId FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(sessionName) as { nodeId: string } | undefined;
+    return row ? rigRepo.getNodeLinkOperatorModels(row.nodeId) : false;
+  };
   const piUsageFactsEnabled = (): boolean => {
     try { return new ContextPackSettingsStore().resolveOne("usage.pi_cost_facts").value === true; } catch { return false; }
   };
@@ -771,7 +784,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     tmuxAdapter,
     { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }) },
     { stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath },
-    { seatLaunchEnvironment, usageFactsEnabled: piUsageFactsEnabled, openRouterChargeEnabled: piOpenRouterChargeEnabled, envPassthroughFor: piEnvPassthroughFor, modelOverridesFor: piModelOverridesFor },
+    { seatLaunchEnvironment, usageFactsEnabled: piUsageFactsEnabled, openRouterChargeEnabled: piOpenRouterChargeEnabled, envPassthroughFor: piEnvPassthroughFor, modelOverridesFor: piModelOverridesFor, operatorLoginDirFor: piOperatorLoginDir, linkOperatorModelsFor: piLinkOperatorModelsFor },
   );
   const ompResume = new OmpResumeAdapter(
     tmuxAdapter,
@@ -968,7 +981,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const codexAdapter = new CodexRuntimeAdapter({ reconcileSeatGate: reconcileCodexSeat, prepareTeamWorkspace, tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), detectVersion: codexVersionProbe(process.env.PATH, undefined, configuredCodexHome), readNetworkDefault: readCodexNetworkDefault, readSeatMcpServers: (nodeId: string) => readSeatMcpServers(db, nodeId), existingMcpServerNames, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs"), configWritePolicy: codexConfigWritePolicy });
   // OPR.0.4.6.PI1 — the RPC-first Pi adapter (runner-in-a-pane). Same fsOps
   // shape as the Codex adapter; seat isolation roots under piStateRoot.
-  const piAdapter = new PiRuntimeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m) }, stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath, usageFactsEnabled: piUsageFactsEnabled, openRouterChargeEnabled: piOpenRouterChargeEnabled, envPassthroughFor: piEnvPassthroughFor, modelOverridesFor: piModelOverridesFor });
+  const piAdapter = new PiRuntimeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m) }, stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath, usageFactsEnabled: piUsageFactsEnabled, openRouterChargeEnabled: piOpenRouterChargeEnabled, envPassthroughFor: piEnvPassthroughFor, modelOverridesFor: piModelOverridesFor, operatorLoginDirFor: piOperatorLoginDir, linkOperatorModelsFor: piLinkOperatorModelsFor });
   const ompAdapter = new OmpRuntimeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; } }, stateRoot: ompStateRoot, runnerEntryPath: piRunnerEntryPath });
   // OPR.0.5.1.1 — the stub runtime adapter (Pi-shaped node-script runner in a pane).
   // Same fsOps shape as Pi; the compiled runner entry lives in the daemon dist.

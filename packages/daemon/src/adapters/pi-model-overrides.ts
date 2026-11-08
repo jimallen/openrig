@@ -84,27 +84,34 @@ const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k)
 /** The reason the agent dir cannot be trusted as a place to write, or null. `stateRoot/<seat>/agent` is judged below the root:
  *  each of the seat dir and the agent dir must be a real directory (lstat), and the agent dir's realpath must be exactly
  *  the realpath of the state root plus the same two names. */
-function agentDirRefusal(io: PiModelOverridesFs, stateRoot: string, agentDir: string): string | null {
+export interface AgentDirRefusalWording { noun: string; verb: string; symlinkTail: string }
+const MODEL_OVERRIDES_WORDING: AgentDirRefusalWording = {
+  noun: "model_overrides",
+  verb: "write",
+  symlinkTail: "so the model_overrides this seat declares cannot be applied. Replace the link with a real directory, or remove model_overrides from the spec.",
+};
+
+export function agentDirRefusal(io: Pick<PiModelOverridesFs, "lstat" | "realpath">, stateRoot: string, agentDir: string, what: AgentDirRefusalWording = MODEL_OVERRIDES_WORDING): string | null {
   const rel = nodePath.relative(stateRoot, agentDir);
   const parts = rel.split(nodePath.sep);
   if (rel === "" || rel.startsWith("..") || nodePath.isAbsolute(rel) || parts.some((part) => part === "" || part === "..")) {
-    return `${agentDir} is not below the Pi state root ${stateRoot}; not writing model_overrides.`;
+    return `${agentDir} is not below the Pi state root ${stateRoot}; not writing ${what.noun}.`;
   }
   let walked = stateRoot;
   for (const part of parts) {
     walked = nodePath.join(walked, part);
     let st: fs.Stats;
-    try { st = io.lstat(walked); } catch (err) { return `cannot inspect ${walked}: ${(err as NodeJS.ErrnoException).code ?? "error"}; not writing model_overrides.`; }
-    if (st.isSymbolicLink()) return `${walked} is a symlink; the runner never writes through a symlinked seat or agent directory, so the model_overrides this seat declares cannot be applied. Replace the link with a real directory, or remove model_overrides from the spec.`;
-    if (!st.isDirectory()) return `${walked} is not a directory; not writing model_overrides.`;
+    try { st = io.lstat(walked); } catch (err) { return `cannot inspect ${walked}: ${(err as NodeJS.ErrnoException).code ?? "error"}; not writing ${what.noun}.`; }
+    if (st.isSymbolicLink()) return `${walked} is a symlink; the runner never writes through a symlinked seat or agent directory, ${what.symlinkTail}`;
+    if (!st.isDirectory()) return `${walked} is not a directory; not writing ${what.noun}.`;
   }
   let real: string;
   let expected: string;
   try {
     real = io.realpath(agentDir);
     expected = nodePath.join(io.realpath(stateRoot), ...parts);
-  } catch (err) { return `cannot resolve ${agentDir}: ${(err as NodeJS.ErrnoException).code ?? "error"}; not writing model_overrides.`; }
-  if (real !== expected) return `${agentDir} resolves to ${real}, not ${expected}; the runner will not write model_overrides through it.`;
+  } catch (err) { return `cannot resolve ${agentDir}: ${(err as NodeJS.ErrnoException).code ?? "error"}; not writing ${what.noun}.`; }
+  if (real !== expected) return `${agentDir} resolves to ${real}, not ${expected}; the runner will not ${what.verb} ${what.noun} through it.`;
   return null;
 }
 

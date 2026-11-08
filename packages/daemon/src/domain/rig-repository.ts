@@ -133,6 +133,8 @@ interface NodeOptions {
   envPassthrough?: string[];
   /** A Pi seat's model overrides (spec `model_overrides`): persisted as nodes.model_overrides (JSON text). */
   modelOverrides?: PiModelOverrides;
+  /** A Pi seat's `pi.link_operator_models` (OF-279): persisted as nodes.pi_link_operator_models (1; NULL = not declared). */
+  piLinkOperatorModels?: boolean;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
@@ -631,6 +633,12 @@ export class RigRepository {
       this.db.prepare("UPDATE nodes SET model_overrides = ? WHERE id = ?").run(JSON.stringify(normalized), id);
     }
 
+    if (opts?.piLinkOperatorModels === true) {
+      // No silent skip: a seat whose declaration was not stored would launch without the models link its spec asks for.
+      if (!this.hasNodeColumn("pi_link_operator_models")) throw new Error("nodes.pi_link_operator_models is missing (migration 127 has not run); pi.link_operator_models cannot be stored");
+      this.db.prepare("UPDATE nodes SET pi_link_operator_models = 1 WHERE id = ?").run(id);
+    }
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
@@ -856,6 +864,17 @@ export class RigRepository {
     const normalized = normalizePiModelOverrides(parsed);
     if (!normalized) throw new Error(`nodes.model_overrides for node ${nodeId} is not valid (${piModelOverridesErrors(parsed).join("; ")}); repair the row or re-declare model_overrides`);
     return normalized;
+  }
+
+  /** Whether a Pi seat's spec declares `pi.link_operator_models` (OF-279). A missing column or a NULL reads false (nothing is
+   *  linked); a stored value other than 1 is a damaged row and FAILS LOUD, so that launch refuses instead of starting a seat
+   *  without the link its spec asked for. */
+  getNodeLinkOperatorModels(nodeId: string): boolean {
+    if (!this.hasNodeColumn("pi_link_operator_models")) return false;
+    const row = this.db.prepare("SELECT pi_link_operator_models AS v FROM nodes WHERE id = ?").get(nodeId) as { v: number | null } | undefined;
+    if (row?.v === null || row?.v === undefined) return false;
+    if (row.v !== 1) throw new Error(`nodes.pi_link_operator_models for node ${nodeId} is not 1; repair the row or re-declare pi.link_operator_models`);
+    return true;
   }
 
   /** A Pi seat's extra environment names, as its launch passes them to the runner. Fails closed: a missing

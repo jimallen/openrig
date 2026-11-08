@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createRunnerHcTitleSink, hcTitleRecord, seatBannerLine } from "../src/adapters/runner-hc-title.js";
 import { PI_RUNNER_ERROR_MARKER, PI_RUNNER_READY_MARKER } from "../src/adapters/pi-runner-protocol.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 // Restated here on purpose (not imported from the module): the wire form hc was measured to take as the terminal's title.
 const OSC2 = (title: string) => `\u001b]2;${title}\u001b\\`;
@@ -86,6 +87,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
 const cmd=JSON.parse(line); if(cmd.type==='get_state') console.log(JSON.stringify({type:'response',id:cmd.id,success:true,
 data:{sessionFile:${JSON.stringify(sessionFile)},sessionId:'offline'}}));
 });\n`, { mode: 0o700 });
+    seedPiFixtureCredential(path.join(temp, "state"), sessionName, "openai-codex");
     const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../src/adapters/pi-runner.ts", import.meta.url)),
       "--session-name", sessionName, "--state-root", path.join(temp, "state"), "--cwd", temp,
       "--launch-id", "of213", "--no-approve", "--model", "openai-codex/gpt-6-luna:medium"], {

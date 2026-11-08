@@ -169,6 +169,8 @@ export class RigExpansionService {
             ...("envPassthrough" in member && member.envPassthrough !== undefined ? { env_passthrough: member.envPassthrough } : {}),
             // model_overrides (OF-270): PRESENCE-preserving RAW carry like env_passthrough; the canonical validator owns the checks.
             ...("modelOverrides" in member && member.modelOverrides !== undefined ? { model_overrides: member.modelOverrides } : {}),
+            // pi (OF-279): PRESENCE-preserving RAW carry like model_overrides; the canonical validator owns the checks.
+            ...("pi" in member && member.pi !== undefined ? { pi: member.pi } : {}),
             ...(member.cwd ? { cwd: member.cwd } : {}),
             ...(member.model ? { model: member.model } : {}),
             ...(member.effort ? { effort: member.effort } : {}),

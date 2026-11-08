@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HcScratch } from "./hc-scratch.js";
+import { seedPiFixtureCredential } from "./pi-fixture-credential.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("../..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../../src/adapters/", import.meta.url));
@@ -58,6 +59,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   const lines = async (terminal: string, n: number) => (await scratch.client().call<{ text: string }>("terminal.read", { terminal, lines: n })).text.split("\n");
   return {
     async start(terminal, session, options = {}) {
+      seedPiFixtureCredential(path.join(temp, "state"), session, "openai-codex");
       await scratch.client().call("terminal.run", {
         argv: [process.execPath, "--import", "tsx", path.join(RUNNERS, "pi-runner.ts"), "--session-name", session, "--state-root", path.join(temp, "state"),
           "--cwd", temp, "--launch-id", "of213", "--no-approve", "--model", "openai-codex/gpt-6-luna:medium"],

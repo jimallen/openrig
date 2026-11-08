@@ -2,6 +2,7 @@ import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTe
 import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment, type SeatLaunchRecords } from "./hc-seat.js";
 import { sessionEnvLabels } from "./hc-identity.js";
 import { refusedLaunch } from "./hc-launch-refusal.js";
+import { carriedPlacement } from "./hc-placement-carry.js";
 import type { SeatLaunchHints, SessionProbe, TmuxResult } from "./tmux.js";
 
 export { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment } from "./hc-seat.js";
@@ -32,13 +33,17 @@ export class HcHost {
       return { ok: false, code: "invalid_env", message: (err as Error).message };
     }
     const argv = ["env", ...seat.unset.flatMap((key) => ["-u", key]), daemon.SHELL || "/bin/sh", "-l"];
+    // OF-280: the seat's previous terminal (the core keeps a finished one readable under the seat's name) placed it in the app;
+    // its `herdr.space` and `herdr.tab` labels follow to the new one (a restart in place carries all the old labels). Read before the run: the name is free by then.
+    const previous = await carriedPlacement(this.client, name);
+    const warnings = [...seat.warnings, ...previous.warnings];
     try {
       await this.client.call("terminal.run", {
-        argv, env: seat.env, name: hcTerminalName(name), labels: { ...sessionEnvLabels(env ?? {}), [SEAT_LABEL]: name },
+        argv, env: seat.env, name: hcTerminalName(name), labels: { ...previous.labels, ...sessionEnvLabels(env ?? {}), [SEAT_LABEL]: name },
         ...(cwd != null ? { cwd } : {}), no_parent: true, no_notify: true, outlive_parent: true,
       });
       this.options.launches?.remember(name, { ...(cwd != null ? { cwd } : {}), env: env ?? {}, ...(hints ? { hints } : {}) });
-      return seat.warnings.length > 0 ? { ok: true, warnings: seat.warnings } : { ok: true };
+      return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
     } catch (err) {
       if (err instanceof HcError && err.kind === "name_taken") {
         return { ok: false, code: "duplicate_session", message: `duplicate session: ${name}` };

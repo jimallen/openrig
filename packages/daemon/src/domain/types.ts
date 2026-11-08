@@ -1194,6 +1194,9 @@ export interface RigSpecPodMember {
   /** A Pi seat's model overrides (`model_overrides`, OF-270): { <provider>: { <model>: { contextWindow } } }, merged by the
    *  runner into the seat's models.json at every launch. Pi only. */
   modelOverrides?: Record<string, Record<string, { contextWindow: number }>>;
+  /** A Pi seat's `pi: { link_operator_models: true }` (OF-279): the runner links the seat's models.json to the operator's at
+   *  every launch. Only `true` is ever held (false and absent are the same). Pi only; never beside `modelOverrides`. */
+  piLinkOperatorModels?: boolean;
   /**
    * OPR.0.4.6.FAC1: optional seat-side role declaration (writes the
    * existing `nodes.role` column via createMemberNode → addNode). The

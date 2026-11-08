@@ -261,6 +261,23 @@ export function modelOverrideDiscoveryWarnings(rigSpec: PodRigSpec): string[] {
   return warnings;
 }
 
+/**
+ * OF-279: say what a Pi seat's `pi.link_operator_models` will do, so a reader of `rig spec preflight` or the `rig up --plan`
+ * preflight sees it before launch. Informational only (readiness and state unchanged): the runner links the seat's models.json
+ * to the operator's at every launch, and refuses the launch if the host setting pi.operator_login_dir is unset or the
+ * operator's models.json is missing.
+ */
+export function operatorModelsLinkDiscoveryWarnings(rigSpec: PodRigSpec): string[] {
+  const warnings: string[] = [];
+  for (const pod of rigSpec.pods) {
+    for (const member of pod.members) {
+      if (!member.piLinkOperatorModels) continue;
+      warnings.push(`${pod.id}.${member.id}: pi.link_operator_models; the runner links the seat's models.json to the operator's (under pi.operator_login_dir) at every launch and refuses the launch if that setting is unset or the operator's models.json is missing`);
+    }
+  }
+  return warnings;
+}
+
 /** A seat's cwd must be an existing directory, except one the launch is about to create (see cwdsCreatedByLaunch). */
 function seatCwdPresenceError(resolvedCwd: string, ctx: PreflightSpecContext): string | null {
   const willBeCreated = (ctx.cwdsCreatedByLaunch ?? []).some((dir) => nodePath.resolve(dir) === nodePath.resolve(resolvedCwd));
@@ -487,6 +504,7 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
   // higher-priority is a FINDING, not an ordering input — the pin freezes presentation, never semantics.
   warnings.push(...permissionPolicyDiscoveryWarnings(rigSpec, preflightCtx));
   warnings.push(...modelOverrideDiscoveryWarnings(rigSpec));
+  warnings.push(...operatorModelsLinkDiscoveryWarnings(rigSpec));
   return { ready: errors.length === 0, errors, warnings };
 }
 

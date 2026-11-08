@@ -242,3 +242,40 @@ describe("OF-270 — a Pi seat's stored model_overrides reach BOTH launch adapte
     }
   });
 });
+
+describe("OF-279 — the host's operator login folder and a Pi seat's models-link declaration reach BOTH launch adapters through the composed createDaemon", () => {
+  const SESSION = "build-arch@of279wire";
+
+  it("each adapter reads pi.operator_login_dir at call time (env here) and looks up the seat's declaration by session name", () => {
+    const rigRepo = new RigRepository(db);
+    const registry = new SessionRegistry(db);
+    const rig = rigRepo.createRig("of279wire");
+    const node = rigRepo.addNode(rig.id, "build.arch", { runtime: "pi", piLinkOperatorModels: true });
+    registry.registerSession(node.id, SESSION);
+    const bare = rigRepo.addNode(rig.id, "verify.sec", { runtime: "pi" });
+    registry.registerSession(bare.id, "verify-sec@of279wire");
+
+    const launchOptions = deps.runtimeAdapters!["pi"];
+    const resumeOptions = priv(priv(deps.restoreOrchestrator, "piResume"), "options");
+    const dirs = [["launch adapter", priv<() => unknown>(launchOptions, "operatorLoginDirFor")], ["resume adapter", priv<() => unknown>(resumeOptions, "operatorLoginDirFor")]] as const;
+    const links = [["launch adapter", priv<(s: string) => unknown>(launchOptions, "linkOperatorModelsFor")], ["resume adapter", priv<(s: string) => unknown>(resumeOptions, "linkOperatorModelsFor")]] as const;
+    const saved = process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR;
+    try {
+      for (const [name, lookup] of dirs) {
+        expect(lookup, `${name} carries the setting lookup (startup hands it over)`).toBeTypeOf("function");
+        delete process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR;
+        expect(lookup(), `${name}: unset reads as no link`).toBeUndefined();
+        process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR = "/home/me/.pi/agent";
+        expect(lookup(), `${name}: the setting, read at call time`).toBe("/home/me/.pi/agent");
+        process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR = "relative/dir";
+        expect(lookup(), `${name}: an invalid stored value reads as no link`).toBeUndefined();
+      }
+    } finally { if (saved === undefined) delete process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR; else process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR = saved; }
+    for (const [name, lookup] of links) {
+      expect(lookup, `${name} carries the declaration lookup (startup hands it over)`).toBeTypeOf("function");
+      expect(lookup(SESSION), `${name}: the declaring seat`).toBe(true);
+      expect(lookup("verify-sec@of279wire"), `${name}: a seat without it`).toBe(false);
+      expect(lookup("nobody@of279wire"), `${name}: an unknown session`).toBe(false);
+    }
+  });
+});

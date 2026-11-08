@@ -76,7 +76,8 @@ describe("a launch refused as unavailable by a core with no holder", () => {
     const client = new FakeClient(new HcError("failed s3cret-marker", "spawn_failed", -32000), noHolder);
     const result = await new HcHost(client, { daemonEnv: {} }).createSession("qa@rig");
     expect(result).toEqual({ ok: false, code: "unknown", message: "hc refused qa@rig: spawn_failed" });
-    expect(client.calls).toEqual(["terminal.run"]);            // and it did not even ask the core for its status
+    // The launch reads the seat's previous terminal first (OF-280: its placement), then runs; it did not even ask the core for its status.
+    expect(client.calls).toEqual(["terminal.get", "terminal.run"]);
   });
 
   it("is told to the client only when the core has no holder, for rig health", async () => {

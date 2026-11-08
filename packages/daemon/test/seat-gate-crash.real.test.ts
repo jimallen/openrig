@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { piSeatGate } from "../src/adapters/seat-gate-readers.js";
+import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
@@ -106,6 +107,7 @@ describe.skipIf(!findHc())("seat gates: real runners, private hc core", () => {
   async function launchPi(seat: { dir: string; bin: string }, crash = ""): Promise<{ name: string; done: string }> {
     const name = `p${++launches}`;
     const done = path.join(seat.dir, `crashed-${launches}`);
+    seedPiFixtureCredential(path.join(seat.dir, "state"), "seat", "openrouter");
     await run(name, [
       path.join(RUNNERS, "pi-runner.ts"), "--session-name", "seat", "--state-root", path.join(seat.dir, "state"), "--cwd", seat.dir,
       "--launch-id", `l${launches}`, "--no-approve", "--model", "openrouter/fixture",
