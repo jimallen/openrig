@@ -1,19 +1,20 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
-import { deriveRelayEvents } from "../src/domain/claude-activity-hooks.js";
+import { deriveRelayEvents, relayEventNames } from "../src/domain/claude-activity-hooks.js";
 
 describe("restore-check Claude activity-hook contract", () => {
   it("derives the required event set from the daemon-shipped Claude plugin manifest", () => {
     const manifestPath = path.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json");
-    const events = deriveRelayEvents({
+    const events = relayEventNames({
       exists: existsSync,
       readFile: (file) => readFileSync(file, "utf-8"),
-    }, manifestPath).map(({ event }) => event);
+    }, manifestPath);
 
     // Native comms step 2 adds PostToolUse and PostToolUseFailure: a seat projected before it shows yellow (missing relay
     // entries) until relaunched, which is true of that seat.
-    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "Notification"]);
+    // OF-278 adds PermissionRequest (scoped to AskUserQuestion), once: the question-wait hook beside the relay is not a second relay entry.
+    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Notification"]);
   });
 
   it("does not claim hook readiness when the canonical manifest is unavailable", () => {

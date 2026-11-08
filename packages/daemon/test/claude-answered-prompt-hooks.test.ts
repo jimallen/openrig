@@ -17,7 +17,8 @@ const realFs = { exists: (p: string) => existsSync(p), readFile: (p: string) => 
 describe("the shipped Claude hooks manifest relays the events that follow an answered prompt", () => {
   it("derives PostToolUse and PostToolUseFailure as relay events, beside the existing ones", () => {
     const events = deriveRelayEvents(realFs, MANIFEST).map((e) => e.event);
-    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "Notification"]);
+    // OF-278 adds PermissionRequest (scoped to AskUserQuestion): the relay's entry and the question-wait hook's, in the one group.
+    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionRequest", "Notification"]);
   });
 
   it("only the two new events run in the background (async), so a tool call never waits on the relay", () => {

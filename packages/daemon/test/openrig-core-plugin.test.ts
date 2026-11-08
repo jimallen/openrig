@@ -354,7 +354,7 @@ describe("openrig-core plugin — hooks (HG-2.6 + HG-2.7)", () => {
       // on PreCompact), instead of depending on the drift-prone host skill copy.
       // Native comms step 2: PostToolUse / PostToolUseFailure relay an answered permission prompt (async).
       // OF-249: PreToolUse (matcher Bash) runs rig-body-guard.cjs, which refuses a rig send with a command substitution before the shell runs it.
-      "Notification", "PostCompact", "PostToolUse", "PostToolUseFailure", "PreCompact", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit",
+      "Notification", "PermissionRequest", "PostCompact", "PostToolUse", "PostToolUseFailure", "PreCompact", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit",
     ]);
   });
 

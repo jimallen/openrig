@@ -14,7 +14,7 @@ import { savedRowDamage } from "../domain/node-row-damage.js";
 import { classifyRunningSessions } from "../domain/restore-running-sessions.js";
 import { SessionRegistry } from "../domain/session-registry.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
-import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
+import { relayEventNames } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
 import { resolveLegacyTopologyRigsRoot } from "../domain/user-settings/settings-store.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -217,10 +217,10 @@ export function createRestoreCheckService(
         };
       }
     },
-    getClaudeActivityHookEvents: () => deriveRelayEvents(
+    getClaudeActivityHookEvents: () => relayEventNames(
       { exists: existsSync, readFile: (path) => readFileSync(path, "utf-8") },
       resolve(import.meta.dirname, "../../assets/plugins/openrig-core/hooks/claude.json"),
-    ).map(({ event }) => event),
+    ),
     rigRefs: rigRepo, // OF-152: ids across every rig (archived included), names among unarchived ones
     listRigs: () => {
       const rigs = rigRepo.listRigs();

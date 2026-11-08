@@ -111,6 +111,12 @@ export function deriveRelayEvents(fs: ActivityHookFsRead, manifestPath: string |
   return out;
 }
 
+/** The event names whose relay entry a seat's settings must carry: the relay's own entries, once each (a companion script of the same event is not
+ *  a second relay). The restore check asks for exactly these. */
+export function relayEventNames(fs: ActivityHookFsRead, manifestPath: string | null | undefined): string[] {
+  return [...new Set(deriveRelayEvents(fs, manifestPath).filter((e) => (e.script ?? "activity-relay.cjs") === "activity-relay.cjs").map((e) => e.event))];
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
