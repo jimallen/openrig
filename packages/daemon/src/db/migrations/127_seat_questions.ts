@@ -26,6 +26,7 @@ export const seatQuestionsSchema: Migration = {
       asked_at TEXT NOT NULL,
       due_at TEXT,
       settled_at TEXT,
+      logged_at TEXT,
       answers TEXT,
       note TEXT
     );

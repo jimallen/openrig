@@ -11,7 +11,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import {
-  SeatQuestionService, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller,
+  SeatQuestionService, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller, type SeatQuestionServiceDeps,
   DEFAULT_AUTO_ANSWER_MINUTES, type SeatQuestionReply,
 } from "../src/domain/seat-question-policy.js";
 
@@ -65,12 +65,12 @@ describe("SeatQuestionService", () => {
   let activity: AgentActivityStore; let store: SeatQuestionStore;
 
   const asked = (over: Record<string, unknown> = {}) => ({ requestId: "req-aaaaaaaa", sessionName, nodeId, generation: "gen-1", toolInput: single(), askedAtMs: T0, ...over });
-  const build = (chunkMs = 5 * MIN) => new SeatQuestionService({
+  const build = (chunkMs = 5 * MIN, over: Partial<SeatQuestionServiceDeps> = {}) => new SeatQuestionService({
     store, now: () => new Date(clock), sleep: async (ms) => { clock += ms; },
     resolveSeat: (i) => activity.resolveSession(i), ...activityBackedPorts(activity),
     emit: (e) => { events.push(e); },
     tell: async (n) => { told.push(n); },
-    howToOverride: (seat) => `rig send ${seat} "<answer>"`, chunkMs,
+    howToOverride: (seat) => `rig send ${seat} "<answer>"`, chunkMs, ...over,
   });
   /** What the seat's own hooks do: the relay records PermissionRequest at the moment the dialog opens. */
   const dialogOpens = (at = clock) => activity.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "PermissionRequest", subtype: "AskUserQuestion", occurredAt: new Date(at).toISOString(), generation: "gen-1" });
@@ -202,6 +202,23 @@ describe("SeatQuestionService", () => {
     expect(events).toHaveLength(1);
     expect(told).toHaveLength(1);
     expect(db.prepare("SELECT count(*) AS n FROM seat_questions WHERE state = 'answered_auto'").get()).toEqual({ n: 1 });
+  });
+
+  it("a daemon that stops after taking the answer and before writing it down writes it when the hook asks again, once", async () => {
+    dialogOpens();
+    let stopped = true;
+    const dying = build(5 * MIN, { emit: (e) => { if (stopped) throw new Error("daemon stopped"); events.push(e); } });
+    await expect(askUntilSettled(dying)).rejects.toThrow("daemon stopped");
+    expect(events).toEqual([]); expect(told).toEqual([]);
+    expect(db.prepare("SELECT state, logged_at FROM seat_questions").get()).toEqual({ state: "answered_auto", logged_at: null });
+    stopped = false;
+    const reply = await build().wait(asked());                       // the hook asks again; the restarted daemon finds the answer taken and unwritten
+    expect(reply).toMatchObject({ action: "answer", updatedInput: { answers: { "Which target?": "Staging (Recommended)" } } });
+    expect(events).toHaveLength(1); expect(told).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "seat.question_auto_answered", takenAt: new Date(T0 + 15 * MIN).toISOString(), waitedMs: 15 * MIN });
+    await build().wait(asked()); await build().wait(asked());
+    expect(events).toHaveLength(1); expect(told).toHaveLength(1);    // written, so not written again
+    expect(db.prepare("SELECT logged_at IS NOT NULL AS logged FROM seat_questions").get()).toEqual({ logged: 1 });
   });
 
   it("two polls racing at the due time answer once", async () => {

@@ -65,6 +65,8 @@ export interface SeatQuestionRow {
   askedAt: string;
   dueAt: string | null;
   settledAt: string | null;
+  /** When the auto-answer's event and note were written; null until then, so a reconnect after a crash writes them. */
+  loggedAt: string | null;
   answers: Record<string, string> | null;
   note: string | null;
 }
@@ -84,6 +86,8 @@ export interface SeatQuestionRepository {
   settleFromActivity(nodeId: string, rawEvent: string | null, rawSubtype: string | null, atIso: string): number;
   /** Open questions with no answer from anyone: held ones, and waiting ones. */
   openUnanswered(): SeatQuestionRow[];
+  /** Records that an auto-answer's event and note are written. */
+  markLogged(id: string, atIso: string): boolean;
   /** Questions the daemon answered since `sinceIso` (sent, or sent and seen to land). */
   autoAnsweredSince(sinceIso: string): Array<{ id: string; sessionName: string; state: SeatQuestionState }>;
   /** The rig's stored wait in minutes: null is the default, 0 is off. */
@@ -164,7 +168,9 @@ export class SeatQuestionService {
       const row = store.get(first.id);
       if (!row) return { action: "none", why: "the question is gone" };
       if (row.state === "answered_auto") {
-        // A reconnect after the answer was sent (the reply was lost, or the daemon restarted): the same answer again, nothing logged again.
+        // A reconnect after the answer was sent (the reply was lost, or the daemon restarted): the same answer again. If the daemon stopped between
+        // taking the answer and writing it down, the record is written now; one that is written is not written again.
+        if (row.loggedAt === null) await this.record(row);
         return { action: "answer", updatedInput: { ...(row.toolInput as Record<string, unknown>), answers: row.answers ?? {} } };
       }
       if (row.state !== "waiting") return { action: "none", why: `the question is ${row.state}` };
@@ -191,18 +197,40 @@ export class SeatQuestionService {
       return { action: "none", why: plan.reason };
     }
     if (!store.claimAutoAnswer(row.id, atIso, plan.answers)) return { action: "none", why: "another reply already took it" };
-    const waitedMs = Math.max(0, Date.parse(atIso) - Date.parse(row.askedAt));
+    const claimed = store.get(row.id);
+    if (claimed) await this.record(claimed);
+    return { action: "answer", updatedInput: { ...(row.toolInput as Record<string, unknown>), answers: plan.answers } };
+  }
+
+  /** Writes down an answer that was taken: the event (the durable record), then the note to the human. A note that fails does not withhold the
+   *  answer and does not unwrite the event; an event that cannot be written stops here, so the hook asks again and the answer is not sent unrecorded.
+   *  `logged_at` is set last, so a daemon that stopped before it is set writes both on the hook's next ask (the queue item is one item by its id). */
+  private async record(row: SeatQuestionRow): Promise<void> {
+    // Two polls of one question in this process share one write: the second waits for the first, then finds it written.
+    const running = this.recording.get(row.id);
+    if (running) return await running;
+    const writing = this.write(row);
+    this.recording.set(row.id, writing);
+    try { await writing; } finally { this.recording.delete(row.id); }
+  }
+
+  private readonly recording = new Map<string, Promise<void>>();
+
+  private async write(row: SeatQuestionRow): Promise<void> {
+    const chosen = Object.entries(row.answers ?? {}).map(([question, picked]) => ({ question, chosen: picked }));
+    const takenAt = row.settledAt ?? this.deps.now().toISOString();
+    const waitedMs = Math.max(0, Date.parse(takenAt) - Date.parse(row.askedAt));
     const waitConfiguredMs = row.dueAt ? Date.parse(row.dueAt) - Date.parse(row.askedAt) : waitedMs;
-    this.deps.emit({ type: "seat.question_auto_answered", rigId: row.rigId, nodeId: row.nodeId, sessionName: row.sessionName, questionId: row.id, askedAt: row.askedAt, takenAt: atIso, waitedMs, waitConfiguredMs, questions: plan.chosen });
+    this.deps.emit({ type: "seat.question_auto_answered", rigId: row.rigId, nodeId: row.nodeId, sessionName: row.sessionName, questionId: row.id, askedAt: row.askedAt, takenAt, waitedMs, waitConfiguredMs, questions: chosen });
     try {
-      const lines = plan.chosen.map((c) => `  - ${c.question} -> ${c.chosen}`).join("\n");
+      const lines = chosen.map((c) => `  - ${c.question} -> ${c.chosen}`).join("\n");
       await this.deps.tell({
         qitemId: row.id, seat: row.sessionName,
         summary: `${row.sessionName}: unanswered question took its recommended answer`,
-        body: `${row.sessionName} asked a question and nobody answered it within ${Math.round(waitConfiguredMs / 60_000)} min, so OpenRig sent the (Recommended) answer at ${atIso}:\n${lines}\n\nHow to override: ${this.deps.howToOverride(row.sessionName)}`,
+        body: `${row.sessionName} asked a question and nobody answered it within ${Math.round(waitConfiguredMs / 60_000)} min, so OpenRig sent the (Recommended) answer at ${takenAt}:\n${lines}\n\nHow to override: ${this.deps.howToOverride(row.sessionName)}`,
       });
     } catch { /* the event above is the record; a failed note must not withhold the answer */ }
-    return { action: "answer", updatedInput: { ...(row.toolInput as Record<string, unknown>), answers: plan.answers } };
+    this.deps.store.markLogged(row.id, this.deps.now().toISOString());
   }
 }
 
