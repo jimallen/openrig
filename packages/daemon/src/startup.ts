@@ -1408,7 +1408,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // rendered live). No tmux exec — a better-sqlite3 read on the hot path.
   // OF-278: the questions seats put to the human. The store settles them from the seat's own activity (an AskUserQuestion
   // PostToolUse is an answer; the end of the turn abandons what waited).
-  const { SeatQuestionService, activityBackedPorts } = await import("./domain/seat-question-policy.js");
+  const { SeatQuestionService, activityBackedPorts, queueTeller } = await import("./domain/seat-question-policy.js");
   const agentActivityStore = new AgentActivityStore({
     db,
     eventBus,
@@ -1425,12 +1425,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     resolveSeat: (input) => agentActivityStore.resolveSession(input),
     ...activityBackedPorts(agentActivityStore),
     emit: (event) => { eventBus.emit(event); },
-    tell: async (note) => {
-      await queueRepoInstance.create({
-        qitemId: note.qitemId, sourceSession: "daemon@kernel", destinationSession: "human@kernel", nudge: false,
-        tags: ["seat-question:auto-answered"], summary: note.summary, body: note.body,
-      });
-    },
+    tell: queueTeller(queueRepoInstance),
     howToOverride: (seat) => `the model has the answer as the user's; correct it with rig send ${seat} "<what you actually want>".`,
   });
   // #763 — Codex usage-limit banner detector. The reactive tap only accepts a

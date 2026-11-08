@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { QueueRepository } from "./queue-repository.js";
 import { QUESTION_DIALOG_TOOL, type AgentActivityStore } from "./agent-activity-store.js";
 
 // OF-278 — a question a seat put to the human (Claude's AskUserQuestion dialog) takes its "(Recommended)" answer when the human
@@ -271,5 +272,18 @@ export function activityBackedPorts(store: AgentActivityStore): Pick<SeatQuestio
     recordAsking: (seat, generation, atIso) => {
       store.recordHookEvent({ runtime: seat.runtime, sessionName: seat.sessionName, nodeId: seat.nodeId, hookEvent: "PermissionRequest", subtype: QUESTION_DIALOG_TOOL, occurredAt: atIso, generation });
     },
+  };
+}
+
+/** The note to the human, as a queue item: from the daemon to the local human inbox. A human-routed item needs a summary and an evidence ref
+ *  (the repository refuses it otherwise), and the item id is the question's row id, so filing it twice is one item. `nudge: false`: the human
+ *  inbox is read, not woken. */
+export function queueTeller(queue: Pick<QueueRepository, "create">): SeatQuestionServiceDeps["tell"] {
+  return async (note) => {
+    await queue.create({
+      qitemId: note.qitemId, sourceSession: "daemon@kernel", destinationSession: "human@kernel", nudge: false,
+      tags: ["seat-question:auto-answered"], summary: note.summary,
+      evidenceRef: `event seat.question_auto_answered, question ${note.qitemId}, seat ${note.seat}`, body: note.body,
+    });
   };
 }

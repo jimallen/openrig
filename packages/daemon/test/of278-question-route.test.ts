@@ -51,8 +51,14 @@ describe("POST /api/activity/question-wait", () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ ok: false, code: "question_policy_unconfigured" });
   });
-  it("refuses a body past the dialog ceiling", async () => {
-    const res = await post(app({ wait: async () => ({ action: "wait" }) }), { ...GOOD, toolInput: { pad: "x".repeat(70 * 1024) } });
-    expect(res.status).toBeGreaterThanOrEqual(400);
+  it("refuses a body past the dialog ceiling, with the ceiling's own code, and takes one just under it", async () => {
+    let called = 0;
+    const a = app({ wait: async () => { called += 1; return { action: "wait" }; } });
+    const over = await post(a, { ...GOOD, toolInput: { pad: "x".repeat(70 * 1024) } });
+    expect(over.status).toBe(413);
+    expect(await over.json()).toMatchObject({ ok: false, code: "hook_body_too_large" });
+    expect(called).toBe(0);
+    expect((await post(a, { ...GOOD, toolInput: { pad: "x".repeat(60 * 1024) } })).status).toBe(200);
+    expect(called).toBe(1);
   });
 });

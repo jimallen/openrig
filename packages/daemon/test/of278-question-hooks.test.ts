@@ -71,8 +71,10 @@ describe("question-wait.cjs", () => {
 
   it("gives up, printing nothing, when the daemon never comes back within the hook's own timeout", async () => {
     const { fetchImpl } = fakeFetch([new Error("ECONNREFUSED")]);
-    let t = 0;
-    const decision = await hook.run(PAYLOAD, ENV, { fetch: fetchImpl, sleep: async (ms: number) => { t += ms; }, now: () => t });
+    let t = 0; let reads = 0;
+    // a hook that stopped pausing between failures would spin without the clock moving: the guard turns that into a failure, not a hang
+    const now = () => { if (++reads > 5000) throw new Error("runaway: the clock is not moving"); return t; };
+    const decision = await hook.run(PAYLOAD, ENV, { fetch: fetchImpl, sleep: async (ms: number) => { t += ms; }, now });
     expect(decision).toBeNull();
     expect(t).toBeGreaterThanOrEqual(hook.HOOK_TIMEOUT_SECONDS * 1000);
   });

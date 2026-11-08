@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { createDb } from "../src/db/connection.js";
+import { migrate } from "../src/db/migrate.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
+import { QueueRepository } from "../src/domain/queue-repository.js";
 import {
-  SeatQuestionService, SeatQuestionStore, activityBackedPorts, autoAnswerWaitMs, planAnswer,
+  SeatQuestionService, SeatQuestionStore, activityBackedPorts, autoAnswerWaitMs, planAnswer, queueTeller,
   DEFAULT_AUTO_ANSWER_MINUTES, type SeatQuestionReply,
 } from "../src/domain/seat-question-policy.js";
 
@@ -304,5 +308,29 @@ describe("SeatQuestionStore.settleFromActivity", () => {
     expect(store.claimAutoAnswer("q1", "2031-03-04T10:02:01.000Z", { Q: "B" })).toBe(false);
     store.settleFromActivity("n1", "PostToolUse", "AskUserQuestion", "2031-03-04T10:03:00.000Z");
     expect(store.get("q1")).toMatchObject({ state: "confirmed_auto", answers: { Q: "A" } });
+  });
+});
+
+describe("the note to the human, over the real queue", () => {
+  // The queue refuses a human-routed item with no summary or no evidence ref; a fake `tell` cannot see that. This is the daemon's own wiring.
+  let db: Database.Database; let queue: QueueRepository;
+  beforeEach(() => {
+    db = createDb(":memory:"); migrate(db, ALL_MIGRATIONS);   // every migration: the summary column is one the test helper's subset lacks
+    db.prepare("INSERT INTO rigs(id,name) VALUES ('fixture-rig','r')").run();
+    db.prepare("INSERT INTO nodes(id,rig_id,logical_id,runtime,profile) VALUES ('fixture-node','fixture-rig','worker','codex','none')").run();
+    queue = new QueueRepository(db, new EventBus(db), { validateRig: () => true, loadHumanRegistry: () => ({ ok: true, entities: [] }) });
+  });
+  afterEach(() => db.close());
+  const note = { qitemId: "qa-0123456789abcdef", seat: "dev-impl@qrig", summary: "dev-impl@qrig: unanswered question took its recommended answer", body: "dev-impl@qrig asked a question ..." };
+
+  it("files one item from daemon@kernel to human@kernel, with the body as told", async () => {
+    await queueTeller(queue)(note);
+    expect(queue.getById(note.qitemId)).toMatchObject({ sourceSession: "daemon@kernel", destinationSession: "human@kernel", body: note.body, summary: note.summary, state: "pending" });
+    expect(queue.getById(note.qitemId)!.tags).toContain("seat-question:auto-answered");
+    expect(queue.getById(note.qitemId)!.evidenceRef).toContain(note.qitemId);
+  });
+  it("filing the same note again is the same item, not a second", async () => {
+    await queueTeller(queue)(note); await queueTeller(queue)(note);
+    expect(db.prepare("SELECT count(*) AS n FROM queue_items WHERE qitem_id = ?").get(note.qitemId)).toEqual({ n: 1 });
   });
 });

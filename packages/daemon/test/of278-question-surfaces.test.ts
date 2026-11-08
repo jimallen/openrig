@@ -13,6 +13,7 @@ import { describeHeld, formatHeldAge, HELD_NOTICE_AFTER_MS } from "../src/domain
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { SeatQuestionHealthSource } from "../src/domain/seat-question-health.js";
 import { SeatQuestionStore } from "../src/domain/seat-question-policy.js";
+import { attachAgentActivity } from "../src/domain/node-inventory.js";
 
 // OF-278. A question to the human is named for what it is (question_dialog, not permission_prompt) wherever the seat's state is read,
 // and the messages waiting behind it are counted. All clocks are far from the wall clock.
@@ -156,5 +157,39 @@ describe("SeatQuestionHealthSource", () => {
     const rows = source(T0).coverage();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.reason).toBe("2 unanswered question(s) took their (Recommended) answer in the last 24 h (t@r, s@r); 1 not yet seen to land. Each is on a queue item to human@kernel.");
+  });
+});
+
+describe("the rig ps rows carry the held count beside the activity", () => {
+  // Production path: the node-inventory route calls attachAgentActivity with the daemon's AgentActivityStore, which startup.ts builds with
+  // `heldMessages` reading the MessageStore. Here the same wiring is over a real database.
+  function build(withHeld: boolean) {
+    const db = createDb(":memory:"); migrate(db, ALL_MIGRATIONS);
+    const rigRepo = new RigRepository(db); const sessions = new SessionRegistry(db);
+    const rig = rigRepo.createRig("eztrack"); const node = rigRepo.addNode(rig.id, "cos", { role: "worker", runtime: "claude-code" });
+    sessions.updateStatus(sessions.registerSession(node.id, "exec-cos@eztrack").id, "running");
+    const messages = new MessageStore(db);
+    const store = new AgentActivityStore({ db, eventBus: new EventBus(db), ...(withHeld ? { heldMessages: (seat: string, now: Date) => describeHeld(messages.openFor(seat), now.getTime()) } : {}) });
+    store.recordHookEvent({ sessionName: "exec-cos@eztrack", runtime: "claude-code", hookEvent: "PermissionRequest", subtype: "AskUserQuestion", occurredAt: iso(T0) });
+    const put = (id: string, ts: string) => db.prepare("INSERT INTO outbox_entries (outbox_id, sender_session, destination_session, body, delivery_state, ts_dispatched, message_state) VALUES (?, 'b@eztrack', 'exec-cos@eztrack', 'x', 'pending', ?, 'attempting')").run(id, ts);
+    return { db, store, put };
+  }
+  const entry = [{ canonicalSessionName: "exec-cos@eztrack", runtime: "claude-code", attachmentType: "tmux", logicalId: "exec.cos", sessionStatus: "running" }] as never;
+
+  it("names the waiting messages and their oldest on the seat that waits on a question", async () => {
+    const { db, store, put } = build(true);
+    put("m1", iso(T0 + 60_000)); put("m2", iso(T0 + 120_000)); put("m3", iso(T0 + 200_000));
+    const rows = await attachAgentActivity(entry, { tmuxAdapter: {} as never, activityStore: store, now: new Date(T0 + 381 * 60_000) });
+    expect(rows[0]!.heldMessages).toEqual({ count: 3, oldestAt: iso(T0 + 60_000), line: "3 held, oldest 6h20m" });
+    expect(rows[0]!.seatPosture).toMatchObject({ kind: "needs_input" });
+    expect(rows[0]!.seatPosture!.line).toMatch(/^waiting on a question to the human since /);
+    db.close();
+  });
+  it("leaves the field off a seat with nothing waiting, and off a daemon built without the reader", async () => {
+    const quiet = build(true);
+    expect((await attachAgentActivity(entry, { tmuxAdapter: {} as never, activityStore: quiet.store, now: new Date(T0 + 3_600_000) }))[0]).not.toHaveProperty("heldMessages");
+    const none = build(false); none.put("m1", iso(T0));
+    expect((await attachAgentActivity(entry, { tmuxAdapter: {} as never, activityStore: none.store, now: new Date(T0 + 3_600_000) }))[0]).not.toHaveProperty("heldMessages");
+    quiet.db.close(); none.db.close();
   });
 });
