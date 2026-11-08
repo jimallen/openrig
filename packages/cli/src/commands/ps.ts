@@ -1277,8 +1277,9 @@ async function handleNodes(
     console.log(padCompactNodeRow("RIG", "SESSION", "LIFECYCLE", "ACTIVITY", "WORK", "REASON"));
     for (const n of humanList as NodeEntry[]) {
       const attn = needsAttention(n);
+      // OF-278: a seat that needs input is the seat messages wait behind, so its held count joins the reason instead of being hidden by it.
       const reason = missingSessionGuidance(n, adviceRigs) ?? (attn || hasCurrentUsageLimit(n)
-        ? (n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—")
+        ? [n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—", heldNote(n)].filter((x): x is string => x !== null).join("; ")
         : quietNote(n) ?? "—");
       console.log(padCompactNodeRow(
         n.rigName,

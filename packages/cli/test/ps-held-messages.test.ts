@@ -48,7 +48,7 @@ function node(logicalId: string, extra: Record<string, unknown> = {}) {
     ...extra,
   };
 }
-const NODES = [node("lab.asked", { heldMessages: HELD }), node("lab.busyheld", { heldMessages: HELD, seatPosture: BUSY }), node("lab.plain")];
+const NODES = [node("lab.asked", { heldMessages: HELD }), node("lab.busyheld", { heldMessages: HELD, seatPosture: BUSY, agentActivity: { state: "running", reason: "stale_runtime_hook", evidenceSource: "runtime_hook", sampledAt: "2031-03-04T17:10:00.000Z", evidence: "bash" } }), node("lab.plain")];
 
 describe("OF-278: rig ps shows how many messages wait for a seat", () => {
   let server: http.Server; let port: number; let savedSessionName: string | undefined;
@@ -77,7 +77,7 @@ describe("OF-278: rig ps shows how many messages wait for a seat", () => {
 
   it("compact text: a seat with waiting messages carries the held line, even when it is not busy; a seat with none does not", async () => {
     const lines = await capture(async () => { await cmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]); });
-    expect(line(lines, "lab-asked@q-rig"), lines.join("\n")).toContain(HELD.line);
+    expect(line(lines, "lab-asked@q-rig"), lines.join("\n")).toContain(`question_dialog; ${HELD.line}`);   // a seat that needs input: the held count joins its reason
     expect(line(lines, "lab-plain@q-rig")).toBeDefined();
     expect(line(lines, "lab-plain@q-rig")).not.toContain("held");
   });

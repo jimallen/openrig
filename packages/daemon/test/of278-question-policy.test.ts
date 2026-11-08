@@ -175,6 +175,15 @@ describe("SeatQuestionService", () => {
     expect(events).toHaveLength(1);
   });
 
+  it("counts the wait from when the dialog opened, even when the daemon first hears of it late (it was down when the hook first ran)", async () => {
+    clock = T0 + 12 * MIN;                       // the daemon comes back 12 min into the wait; the hook's own clock says the dialog opened at T0
+    dialogOpens(T0);
+    const reply = await askUntilSettled(build());
+    expect(reply.action).toBe("answer");
+    expect(clock - T0).toBe(15 * MIN);           // 3 more minutes, not 15
+    expect(events[0]).toMatchObject({ askedAt: new Date(T0).toISOString(), waitedMs: 15 * MIN });
+  });
+
   it("does not double-answer after a restart: the hook that reconnects after the answer was sent gets the same answer, logged and told once", async () => {
     dialogOpens();
     const first = build();
