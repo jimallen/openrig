@@ -303,6 +303,9 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       writeFileSync(specPath, "version: [unterminated");
       expect(await apply(s.ref)).toMatchObject({ ok: false, code: "apply_spec_source_unavailable" });
       writeSpec(envLines(NEW_ENV).replace(NEW_ENV[0]!, "not a name!"));
+      const invalidDry = await apply(s.ref); // a dry run refuses it too: the diff is never shown for a spec the load would refuse
+      expect(invalidDry).toMatchObject({ ok: false });
+      expect(!invalidDry.ok && invalidDry.message).toContain("not a name!");
       const invalid = await apply(s.ref, { yes: true, actor: "jim@host" });
       expect(invalid).toMatchObject({ ok: false });
       expect(!invalid.ok && invalid.message).toContain("not a name!");
