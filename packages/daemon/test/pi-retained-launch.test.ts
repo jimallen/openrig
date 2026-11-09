@@ -32,6 +32,7 @@ describe("a spec change reaches an existing Pi seat's launch only through apply-
   let specPath: string;
   let service: SeatLifecycleService;
   let nodeId: string;
+  const applyTmuxCalls: string[] = [];
 
   const writeSpec = (extra: string) => writeFileSync(specPath,
     `version: "0.2"\nname: jims-team\npods:\n  - id: verify\n    label: Verify\n    members:\n      - id: ops\n        runtime: pi\n        agent_ref: local:agents/ops\n        profile: default\n        cwd: .\n${extra}`);
@@ -67,7 +68,7 @@ describe("a spec change reaches an existing Pi seat's launch only through apply-
     await adapter.resume(SESSION, "pi_session_file", SESSION_FILE, "/work");
     return typed[0]!;
   }
-  const apply = () => service.applySpec({ seatRef: SESSION, yes: true, actor: "jim@host", reason: "test" });
+  const apply = async () => { const r = await service.applySpec({ seatRef: SESSION, yes: true, actor: "jim@host", reason: "test" }); expect(applyTmuxCalls).toEqual([]); return r; };
 
   beforeEach(() => {
     db = createFullTestDb();
@@ -86,7 +87,7 @@ describe("a spec change reaches an existing Pi seat's launch only through apply-
     nodeId = rigRepo.addNode(rig.id, "verify.ops", { runtime: "pi", cwd, agentRef: "local:agents/ops", profile: "default" }).id;
     new SessionRegistry(db).registerSession(nodeId, SESSION);
     service = new SeatLifecycleService({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db),
-      tmuxAdapter: new Proxy({}, { get: () => () => { throw new Error("apply-spec touched tmux"); } }) as unknown as TmuxAdapter,
+      tmuxAdapter: new TmuxAdapter(async (cmd) => { applyTmuxCalls.push(cmd); throw new Error(`apply-spec touched tmux: ${cmd}`); }),
       mcpTrust: { io: trust.io, specRoots: () => [join(root, "spec")] } });
   });
   afterEach(() => { db.close(); rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); });

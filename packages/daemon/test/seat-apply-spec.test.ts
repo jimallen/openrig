@@ -13,7 +13,7 @@ import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import { mcpTrustFixture } from "./helpers/mcp-trust-fixture.js";
 import type { PathJudgeIo } from "../src/domain/codex-mcp-servers.js";
@@ -30,8 +30,9 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
   let TRUST: PathJudgeIo;
   let specPath: string;
   const tmuxCalls: string[] = [];
-  // Any tmux call fails the test: the apply touches no terminal, session or process.
-  const strictTmux = () => new Proxy({}, { get: (_t, name) => () => { tmuxCalls.push(String(name)); throw new Error(`apply-spec touched tmux: ${String(name)}`); } }) as unknown as TmuxAdapter;
+  // A real TmuxAdapter whose exec records and refuses every command: the apply touches no terminal, session or process, so
+  // `tmuxCalls` must stay empty.
+  const strictTmux = () => new TmuxAdapter(async (cmd) => { tmuxCalls.push(cmd); throw new Error(`apply-spec touched tmux: ${cmd}`); });
 
   /** The verify.ops member of the spec, with the given extra member lines (already indented 8 spaces). */
   function writeSpec(extra: string, runtime = "pi", file = specPath): void {
