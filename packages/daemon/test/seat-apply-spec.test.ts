@@ -312,6 +312,15 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       expect(retainedOf(s.node.id).env).toEqual([]);
     });
 
+    it("refuses a spec that does not validate ANYWHERE, even when the seat's own member is fine (the whole spec is validated, as at spec load)", async () => {
+      const s = seat("eztrack");
+      writeSpec(envLines(NEW_ENV) + "      - id: qa\n        runtime: codex\n        agent_ref: local:agents/qa\n        profile: default\n        cwd: .\n        env_passthrough: [OPENAI_API_KEY]\n");
+      const result = await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(result).toMatchObject({ ok: false, code: "apply_spec_source_unavailable" });
+      expect(!result.ok && result.message).toContain("no longer validates");
+      expect(retainedOf(s.node.id).env).toEqual([]);
+    });
+
     it("a refused name refuses the WHOLE apply: the valid fields in the same spec are not written either", async () => {
       writeSpec(envLines(["OPENAI_API_KEY", "PATH"]) + "");
       const s = seat("eztrack", { env: ["OLD_NAME"] });
