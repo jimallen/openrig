@@ -168,6 +168,8 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
     it("changes nothing else: every other column of the node, its sessions, and its sibling seats are as they were; no tmux call", async () => {
       const s = seat("eztrack", { env: ["OLD_NAME"] });
       const other = seat("openrig", { env: ["OLD_NAME"] });
+      // columns a wrong UPDATE could clobber alongside the three: give them values first
+      db.prepare("UPDATE nodes SET effort = 'high', model = 'provider/model', role = 'ops', label = 'Ops seat' WHERE id IN (?, ?)").run(s.node.id, other.node.id);
       const strip = (r: Record<string, unknown>) => { const { env_passthrough, model_overrides, pi_link_operator_models, ...rest } = r; return rest; };
       const nodeBefore = strip(row(s.node.id));
       const otherBefore = row(other.node.id);
