@@ -894,6 +894,7 @@ onto a discovered successor, so the command has input; it no longer pairs with `
 | `rig seat set-permissions <seat>` | — | `--mode <mode>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat set-effort <seat>` | — | `--effort <level>`<br>`--clear`<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat set-mcp <seat> <server> <state>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--spec <file>`<br>`--json` |
+| `rig seat apply-spec <seat>` | — | `--spec <file>`<br>`--yes`<br>`--reason <text>`<br>`--operator <address>`<br>`--json` |
 | `rig seat effort <seat>` | — | `--json` |
 | `rig seat set-model <seat>` | — | `--model <id>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat launch <seat>` | — | `--fresh` **required**<br>`--reason <text>` **required**<br>`--plan`<br>`--stop`<br>`--startup-from <source>`<br>`--operator <address>`<br>`--json` |

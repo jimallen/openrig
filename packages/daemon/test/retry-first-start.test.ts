@@ -3,6 +3,9 @@ import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { mcpTrustFixture } from "./helpers/mcp-trust-fixture.js";
 
 const root = existingRigRoot("first-start");
 const skillIds = ["development-team", "systematic-debugging", "test-driven-development", "verification-before-completion"];
@@ -192,6 +195,47 @@ describe("explicit first-start retry after projection failure", () => {
       expect(f.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
       expect(f.adapter.launchHarness).not.toHaveBeenCalled();
       expect(f.adapter.project).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // OF-283: `rig seat apply-spec` rewrites the retained fields, and the retry's comparison reads the same node, so after an
+  // apply the retry agrees with THAT spec (and with no other).
+  describe("after rig seat apply-spec (OF-283)", () => {
+    const wins = (w: number) => ({ "openai-codex": { "gpt-6-luna": { contextWindow: w } } });
+    const dirs: string[] = [];
+    afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+
+    async function applied() {
+      const f = await failedAdd({ env_passthrough: ["OLD_NAME"], model_overrides: wins(820000) });
+      const trust = mcpTrustFixture("retry-apply");
+      dirs.push(trust.dir);
+      mkdirSync(join(trust.dir, "spec"));
+      chmodSync(join(trust.dir, "spec"), 0o755);
+      const specPath = join(trust.dir, "spec", "rig.yaml");
+      writeFileSync(specPath, `version: "0.2"\nname: first-start\npods:\n  - id: dev\n    label: Dev\n    members:\n      - id: pi\n        runtime: pi\n        agent_ref: local:agent\n        profile: default\n        model: provider/model\n        cwd: ${root}\n        env_passthrough: [OPENAI_API_KEY]\n        pi:\n          link_operator_models: true\n`);
+      f.rigRepo.setRigSpecSource(f.rig.id, specPath);
+      const lifecycle = new SeatLifecycleService({ ...f, db: f.db, tmuxAdapter: f.tmux, mcpTrust: { io: trust.io, specRoots: () => [join(trust.dir, "spec")] } });
+      const result = await lifecycle.applySpec({ seatRef: "dev-pi@first-start", yes: true, actor: "jim@host" });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, written: true });
+      return f;
+    }
+    const specMember = { ...member, env_passthrough: ["OPENAI_API_KEY"], pi: { link_operator_models: true } };
+
+    it("a retry that carries the applied spec's fields relaunches", async () => {
+      const f = await applied();
+      const res = await f.request(specMember);
+      const body = await res.json();
+      expect({ status: res.status, body }, JSON.stringify(body)).toMatchObject({ status: 201, body: { ok: true, status: "launched" } });
+      expect(f.rigRepo.getNodeEnvPassthrough(f.node.id)).toEqual(["OPENAI_API_KEY"]);
+      expect(f.rigRepo.getNodeModelOverrides(f.node.id)).toBeUndefined();
+      expect(f.rigRepo.getNodeLinkOperatorModels(f.node.id)).toBe(true);
+    });
+
+    it("a retry that still carries the old fields is now refused", async () => {
+      const f = await applied();
+      const res = await f.request({ ...member, env_passthrough: ["OLD_NAME"], model_overrides: wins(820000) });
+      expect({ status: res.status, body: await res.json() }).toMatchObject({ status: 409, body: { message: expect.stringContaining("disagrees wi") } });
+      expect(f.adapter.launchHarness).not.toHaveBeenCalled();
     });
   });
 

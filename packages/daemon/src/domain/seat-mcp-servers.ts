@@ -4,6 +4,7 @@ import nodePath from "node:path";
 import type Database from "better-sqlite3";
 import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
+import type { RigSpec, RigSpecPod, RigSpecPodMember } from "./types.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { PROJECT_RIG_WORKSPACES, projectRigSlug } from "./project-rig.js";
 import { judgeSpecSource, specSourceTrustOf } from "./recorded-spec-source-judge.js";
@@ -110,6 +111,100 @@ export type DeclaredServerRead =
   | { ok: false; code: "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
       | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "mcp_spec_file_untrusted" | "mcp_spec_source_untrusted"; message: string };
 
+/** Why a spec could not be read for a seat; each caller maps a kind to its own refusal code. */
+export type TrustedSeatSpecFailureKind = "unrecorded" | "unavailable" | "file_unavailable" | "untrusted" | "file_untrusted" | "rig_mismatch";
+export type TrustedSeatSpecRead =
+  | { ok: true; specPath: string; specSha256: string; operator: boolean; raw: Record<string, unknown>; spec: RigSpec; pod?: RigSpecPod; member?: RigSpecPodMember }
+  | { ok: false; kind: TrustedSeatSpecFailureKind; message: string };
+
+/**
+ * The one trusted read of a rig spec file on behalf of a seat (OF-283 shares it between `set-mcp` and `apply-spec`): the
+ * rig's recorded spec source, or an operator-named file, judged by the same rules at every read (OF-49 / OF-103), read,
+ * parsed, validated whole, and (for an operator-named file) matched to the seat's rig. It returns the seat's member when the
+ * spec declares it; what the caller then checks about the member is the caller's. Reads only.
+ */
+export function readTrustedSeatSpec(input: {
+  specSource: string | null;
+  operatorSpecFile?: string;
+  rigName: string;
+  node: { logicalId: string; cwd: string | null };
+  /** What the caller reads the spec for, named in the refusal messages ("MCP servers"). */
+  purpose: string;
+  trustedSpecRoots?: string[];
+  io?: PathJudgeIo;
+  recordedExactDepthRoot?: () => string;
+}): TrustedSeatSpecRead {
+  const operator = input.operatorSpecFile !== undefined;
+  const specSource = operator ? input.operatorSpecFile! : input.specSource;
+  if (!specSource) {
+    return { ok: false, kind: "unrecorded", message: "This rig has no recorded spec source (it was launched before OpenRig recorded one, or from text). Name the reviewed spec file with --spec <file>, or relaunch the rig from its spec file." };
+  }
+  const unavailable = (detail: string): TrustedSeatSpecRead => operator
+    ? { ok: false, kind: "file_unavailable", message: `The spec file ${specSource} cannot be used for ${input.purpose}: ${detail}` }
+    : { ok: false, kind: "unavailable", message: `This rig's spec source ${specSource} cannot be read for ${input.purpose}: ${detail}` };
+  if (!nodePath.isAbsolute(specSource)) return unavailable("it is not an absolute path.");
+  // The operator-named file decides what runs, and a seat chooses the path it sends, so it must lie under a
+  // trusted spec root (Jim, 2026-10-20, "Allow-list": re-check F1, R1, R2), compared by identity, with one link,
+  // and pass the deny and ownership rules too.
+  // OF-103 / OF-49: the RECORDED source is judged by the same rules `rig spec-source set` applies, at every read, because
+  // it decides what runs just as an operator-named file does (a value recorded by `rig up`, or a file or link changed
+  // after `set`, is not trusted for having been recorded). An operator-named file is read with the recorded directory as a
+  // root only when the recorded source itself passes.
+  const trust = specSourceTrustOf({ specRoots: () => input.trustedSpecRoots ?? [], ...(input.io ? { io: input.io } : {}) }, input.recordedExactDepthRoot);
+  let recordedPasses = false;
+  if (input.specSource && nodePath.isAbsolute(input.specSource)) {
+    const judged = judgeSpecSource({ specSource: input.specSource, use: "read", rigName: input.rigName, seatFolders: input.node.cwd ? [input.node.cwd] : [], trust });
+    recordedPasses = judged.ok;
+    if (!operator && !judged.ok && judged.code !== "spec_unreadable") {
+      return { ok: false, kind: "untrusted", message: `This rig's spec source ${input.specSource} is not trusted for ${input.purpose}: ${judged.message}` };
+    }
+  }
+  if (operator) {
+    let problem = specFileTrustProblem(specSource, input.trustedSpecRoots ?? [], input.node.cwd, input.io);
+    if (problem && input.specSource && recordedPasses) {
+      // The recorded spec's own folder is a root for a SIBLING file only (a spec file directly beside it), never for what lies
+      // deeper: when the recorded source sits in the shared-docs rigs folder (<rig>/rig.yaml), the folders below it
+      // (<rig>/state/<pod>) are Codex state folders a sandboxed seat can write.
+      try {
+        const recordedDir = nodePath.dirname(fs.realpathSync(reanchorShippedSpecPath(input.specSource)));
+        const operatorDir = nodePath.dirname(fs.realpathSync(specSource));
+        if (operatorDir === recordedDir) problem = specFileTrustProblem(specSource, [recordedDir], input.node.cwd, input.io);
+      } catch { /* unreadable: not a root */ }
+    }
+    if (problem) {
+      return { ok: false, kind: "file_untrusted", message: `The spec file ${specSource} cannot be trusted for ${input.purpose}: ${problem}. Name the reviewed release copy (~/.agents-release/...), a spec in the spec library, or the rig's own spec file.` };
+    }
+  }
+  let specPath: string;
+  let bytes: Buffer;
+  try {
+    specPath = fs.realpathSync(operator ? specSource : reanchorShippedSpecPath(specSource));
+    bytes = fs.readFileSync(specPath);
+  } catch (err) {
+    return unavailable(`it could not be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message}).`);
+  }
+  const yaml = bytes.toString("utf-8");
+  const specSha256 = createHash("sha256").update(bytes).digest("hex");
+  let raw: unknown;
+  try { raw = RigSpecCodec.parse(yaml); } catch (err) { return unavailable(`it no longer parses (${(err as Error).message}).`); }
+  const validation = RigSpecSchema.validate(raw);
+  if (!validation.valid) return unavailable(`it no longer validates (${validation.errors.join("; ")}).`);
+  const spec = RigSpecSchema.normalize(raw as Record<string, unknown>);
+  const node = input.node;
+  if (operator && !declaresRig(raw as Record<string, unknown>, input.rigName, node.cwd)) {
+    return { ok: false, kind: "rig_mismatch", message: `The spec file ${specPath} declares rig "${spec.name}", not this seat's rig "${input.rigName}"${(raw as Record<string, unknown>)["project_rig"] === true ? " (as a project rig it would name the rig after its project folder, which is not this seat's)" : ""}.` };
+  }
+  const pod = spec.pods.find((p) => p.members.some((m) => `${p.id}.${m.id}` === node.logicalId));
+  const member = pod?.members.find((m) => `${pod.id}.${m.id}` === node.logicalId);
+  return { ok: true, specPath, specSha256, operator, raw: raw as Record<string, unknown>, spec, ...(pod ? { pod } : {}), ...(member ? { member } : {}) };
+}
+
+
+const MCP_REFUSAL_CODE = {
+  unrecorded: "mcp_spec_source_unrecorded", unavailable: "mcp_spec_source_unavailable", file_unavailable: "mcp_spec_file_unavailable",
+  untrusted: "mcp_spec_source_untrusted", file_untrusted: "mcp_spec_file_untrusted", rig_mismatch: "mcp_spec_rig_mismatch",
+} as const;
+
 /**
  * Read one declared server for one seat from its rig's recorded spec source, as that file is now, and
  * check it as a launch will: the spec still validates, still declares this seat with the same runtime,
@@ -134,68 +229,16 @@ export function readDeclaredMcpServer(input: {
   /** The shared-docs rigs folder the recorded source may sit in (exactly <name>/rig.yaml). Default: the daemon's own. */
   recordedExactDepthRoot?: () => string;
 }): DeclaredServerRead {
-  const operator = input.operatorSpecFile !== undefined;
-  const specSource = operator ? input.operatorSpecFile! : input.specSource;
-  if (!specSource) {
-    return { ok: false, code: "mcp_spec_source_unrecorded", message: "This rig has no recorded spec source (it was launched before OpenRig recorded one, or from text). Name the reviewed spec file with --spec <file>, or relaunch the rig from its spec file." };
-  }
-  const unavailable = (detail: string): DeclaredServerRead => operator
-    ? { ok: false, code: "mcp_spec_file_unavailable", message: `The spec file ${specSource} cannot be used for MCP servers: ${detail}` }
-    : { ok: false, code: "mcp_spec_source_unavailable", message: `This rig's spec source ${specSource} cannot be read for MCP servers: ${detail}` };
-  if (!nodePath.isAbsolute(specSource)) return unavailable("it is not an absolute path.");
-  // The operator-named file decides what runs, and a seat chooses the path it sends, so it must lie under a
-  // trusted spec root (Jim, 2026-10-20, "Allow-list": re-check F1, R1, R2), compared by identity, with one link,
-  // and pass the deny and ownership rules too.
-  // OF-103 / OF-49: the RECORDED source is judged by the same rules `rig spec-source set` applies, at every read, because
-  // it decides what runs just as an operator-named file does (a value recorded by `rig up`, or a file or link changed
-  // after `set`, is not trusted for having been recorded). An operator-named file is read with the recorded directory as a
-  // root only when the recorded source itself passes.
-  const trust = specSourceTrustOf({ specRoots: () => input.trustedSpecRoots ?? [], ...(input.io ? { io: input.io } : {}) }, input.recordedExactDepthRoot);
-  let recordedPasses = false;
-  if (input.specSource && nodePath.isAbsolute(input.specSource)) {
-    const judged = judgeSpecSource({ specSource: input.specSource, use: "read", rigName: input.rigName, seatFolders: input.node.cwd ? [input.node.cwd] : [], trust });
-    recordedPasses = judged.ok;
-    if (!operator && !judged.ok && judged.code !== "spec_unreadable") {
-      return { ok: false, code: "mcp_spec_source_untrusted", message: `This rig's spec source ${input.specSource} is not trusted for MCP servers: ${judged.message}` };
-    }
-  }
-  if (operator) {
-    let problem = specFileTrustProblem(specSource, input.trustedSpecRoots ?? [], input.node.cwd, input.io);
-    if (problem && input.specSource && recordedPasses) {
-      // The recorded spec's own folder is a root for a SIBLING file only (a spec file directly beside it), never for what lies
-      // deeper: when the recorded source sits in the shared-docs rigs folder (<rig>/rig.yaml), the folders below it
-      // (<rig>/state/<pod>) are Codex state folders a sandboxed seat can write.
-      try {
-        const recordedDir = nodePath.dirname(fs.realpathSync(reanchorShippedSpecPath(input.specSource)));
-        const operatorDir = nodePath.dirname(fs.realpathSync(specSource));
-        if (operatorDir === recordedDir) problem = specFileTrustProblem(specSource, [recordedDir], input.node.cwd, input.io);
-      } catch { /* unreadable: not a root */ }
-    }
-    if (problem) {
-      return { ok: false, code: "mcp_spec_file_untrusted", message: `The spec file ${specSource} cannot be trusted for MCP servers: ${problem}. Name the reviewed release copy (~/.agents-release/...), a spec in the spec library, or the rig's own spec file.` };
-    }
-  }
-  let specPath: string;
-  let bytes: Buffer;
-  try {
-    specPath = fs.realpathSync(operator ? specSource : reanchorShippedSpecPath(specSource));
-    bytes = fs.readFileSync(specPath);
-  } catch (err) {
-    return unavailable(`it could not be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message}).`);
-  }
-  const yaml = bytes.toString("utf-8");
-  const specSha256 = createHash("sha256").update(bytes).digest("hex");
-  let raw: unknown;
-  try { raw = RigSpecCodec.parse(yaml); } catch (err) { return unavailable(`it no longer parses (${(err as Error).message}).`); }
-  const validation = RigSpecSchema.validate(raw);
-  if (!validation.valid) return unavailable(`it no longer validates (${validation.errors.join("; ")}).`);
-  const spec = RigSpecSchema.normalize(raw as Record<string, unknown>);
+  const read = readTrustedSeatSpec({
+    specSource: input.specSource, rigName: input.rigName, node: input.node, purpose: "MCP servers",
+    ...(input.operatorSpecFile !== undefined ? { operatorSpecFile: input.operatorSpecFile } : {}),
+    ...(input.trustedSpecRoots ? { trustedSpecRoots: input.trustedSpecRoots } : {}),
+    ...(input.io ? { io: input.io } : {}),
+    ...(input.recordedExactDepthRoot ? { recordedExactDepthRoot: input.recordedExactDepthRoot } : {}),
+  });
+  if (!read.ok) return { ok: false, code: MCP_REFUSAL_CODE[read.kind], message: read.message };
+  const { specPath, specSha256, operator, pod, member } = read;
   const node = input.node;
-  if (operator && !declaresRig(raw as Record<string, unknown>, input.rigName, node.cwd)) {
-    return { ok: false, code: "mcp_spec_rig_mismatch", message: `The spec file ${specPath} declares rig "${spec.name}", not this seat's rig "${input.rigName}"${(raw as Record<string, unknown>)["project_rig"] === true ? " (as a project rig it would name the rig after its project folder, which is not this seat's)" : ""}.` };
-  }
-  const pod = spec.pods.find((p) => p.members.some((m) => `${p.id}.${m.id}` === node.logicalId));
-  const member = pod?.members.find((m) => `${pod.id}.${m.id}` === node.logicalId);
   if (!pod || !member) return { ok: false, code: "mcp_server_undeclared", message: `The spec ${specPath} does not declare seat ${node.logicalId}, so it declares no MCP server for it.` };
   const same = (a: unknown, b: unknown) => (a ?? null) === (b ?? null);
   const drift = [

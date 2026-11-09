@@ -553,7 +553,7 @@ identity remains unverified; a version number alone cannot clear it.
   // Thin CLI over the daemon's SeatLifecycleService; refusals print message +
   // guidance + match list exactly as the daemon named them.
   const runLifecycleVerb = async (
-    path: "set-model" | "set-effort" | "set-mcp" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
+    path: "set-model" | "set-effort" | "set-mcp" | "apply-spec" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
     seat: string,
     body: Record<string, unknown>,
     opts: { json?: boolean },
@@ -719,6 +719,40 @@ Examples:
         console.log(`Switched on for this seat: ${on.length ? on.join(", ") : "none"}.`);
         console.log(String(data["effect"]));
         if (data["warning"]) console.log(`Warning: ${String(data["warning"])}`);
+      });
+    });
+
+  cmd
+    .command("apply-spec")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .option("--spec <file>", "Read the member from this spec file (it must declare this rig); overrides the rig's recorded spec source")
+    .option("--yes", "Write the three fields (the default is a dry run that writes nothing)")
+    .option("--reason <text>", "Reason recorded on the node.spec_fields_applied event")
+    .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
+    .option("--json", "JSON output for agents")
+    .description("Make a Pi seat retain the env_passthrough, model_overrides and pi.link_operator_models its spec now states (dry run unless --yes); no relaunch")
+    .addHelpText("after", `
+A Pi seat keeps these three fields on its node from the moment it was created, and every launch reads them there;
+a later spec change reaches it only through this command. It reads the seat's member from the rig's recorded
+spec source (judged by the same trust rule as set-mcp) or from --spec, checks the three fields as the spec
+load does, and shows 'retained -> spec' for each (names and override keys only, never a value). Without --yes it
+writes nothing. With --yes it writes all three in one transaction and records one audit event. A field the spec no
+longer states is cleared. Nothing is relaunched and no process is touched: the new values apply at the seat's
+next launch (stop and launch, restore, rig up --existing, a handover successor).
+Examples:
+  rig seat apply-spec verify-ops@eztrack
+  rig seat apply-spec verify-ops@eztrack --yes --reason "release c84c5ba3 adds OPENAI_API_KEY"
+  rig seat apply-spec verify-ops@eztrack --spec ~/.agents-release/current/rigs/jims-team/rig.yaml --json`)
+    .action(async (seat: string, opts: { spec?: string; yes?: boolean; reason?: string; operator?: string; json?: boolean }) => {
+      const body = { yes: opts.yes === true, reason: opts.reason, operator: opts.operator, ...(opts.spec !== undefined ? { specFile: nodePath.resolve(opts.spec) } : {}) };
+      await runLifecycleVerb("apply-spec", seat, body, opts, (data) => {
+        const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
+        console.log(`${data["dryRun"] === true ? "Dry run for" : data["written"] === true ? "Applied to" : "Checked"} ${s?.logicalId}@${s?.rigName} (spec ${String(data["declaredIn"])}, ${String(data["specSource"])}):`);
+        for (const f of (data["fields"] as Array<{ field: string; retained: string[]; spec: string[]; changed: boolean }> | undefined) ?? []) {
+          const show = (v: string[]) => (f.field === "pi.link_operator_models" ? (v.length ? "true" : "false") : `[${v.join(", ")}]`);
+          console.log(f.changed ? `  ${f.field}: ${show(f.retained)} -> ${show(f.spec)}` : `  ${f.field}: no change (${show(f.retained)})`);
+        }
+        console.log(String(data["effect"]));
       });
     });
 

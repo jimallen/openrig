@@ -891,6 +891,28 @@ export class RigRepository {
       .slice(0, PI_ENV_PASSTHROUGH_MAX);
   }
 
+  /**
+   * OF-283: rewrite a Pi seat's three retained spec fields in one UPDATE (`rig seat apply-spec`). A value that is absent clears
+   * the retained one (NULL), the same as a node created without it. No silent skip: a missing column throws, so the caller's
+   * transaction rolls back rather than store two of three. The values are re-validated here with the validators addNode uses.
+   */
+  setNodePiRetainedFields(nodeId: string, fields: { envPassthrough: string[]; modelOverrides: PiModelOverrides | undefined; piLinkOperatorModels: boolean }): boolean {
+    for (const column of ["env_passthrough", "model_overrides", "pi_link_operator_models"]) {
+      if (!this.hasNodeColumn(column)) throw new Error(`nodes.${column} is missing; the retained spec fields cannot be stored`);
+    }
+    for (const name of fields.envPassthrough) {
+      const refusal = piEnvPassthroughRefusal(name);
+      if (refusal) throw new Error(`env_passthrough ${name} ${refusal}`);
+    }
+    if (fields.envPassthrough.length > PI_ENV_PASSTHROUGH_MAX) throw new Error(`env_passthrough: at most ${PI_ENV_PASSTHROUGH_MAX} names`);
+    const overrides = fields.modelOverrides === undefined ? null : normalizePiModelOverrides(fields.modelOverrides);
+    if (fields.modelOverrides !== undefined && !overrides) throw new Error(`model_overrides is not valid: ${piModelOverridesErrors(fields.modelOverrides).join("; ")}`);
+    const result = this.db.prepare("UPDATE nodes SET env_passthrough = ?, model_overrides = ?, pi_link_operator_models = ? WHERE id = ?")
+      .run(fields.envPassthrough.length > 0 ? JSON.stringify(fields.envPassthrough) : null, overrides ? JSON.stringify(overrides) : null,
+        fields.piLinkOperatorModels ? 1 : null, nodeId);
+    return result.changes > 0;
+  }
+
   setNodeEffort(nodeId: string, effort: string): boolean {
     if (!this.hasNodeColumn("effort")) return false;
     const result = this.db

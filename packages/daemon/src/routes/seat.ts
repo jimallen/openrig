@@ -260,11 +260,11 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
 function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
   if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required"
     || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from"
-    || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file") return 400;
+    || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file" || code === "apply_spec_invalid_spec_file") return 400;
   if (code === "seat_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed"
-    || code === "effort_unavailable" || code === "mcp_unavailable") return 500;
+    || code === "effort_unavailable" || code === "mcp_unavailable" || code === "apply_spec_not_saved") return 500;
   // seat_ambiguous / session_live / session_not_live / no_session / claimed_session /
   // nothing_to_clean — state conflicts, not client syntax errors.
   return 409;
@@ -321,6 +321,22 @@ seatRoutes.post("/set-mcp/:seatRef", async (c) => {
     state: body["state"] === "on" || body["state"] === "off" ? body["state"] : ("" as "on"),
     reason: typeof body["reason"] === "string" ? body["reason"] : "",
     actor,
+    ...(typeof body["specFile"] === "string" ? { specFile: body["specFile"] } : {}),
+  });
+  if (result.ok) return c.json(result);
+  return c.json(result, seatLifecycleStatus(result.code));
+});
+
+// OF-283 — apply a Pi seat's retained spec fields (env_passthrough, model_overrides, pi.link_operator_models) from the spec.
+// A dry run unless `yes` is exactly true; only a write needs an audit actor. Never relaunches anything.
+seatRoutes.post("/apply-spec/:seatRef", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const actor = transportSenderSession(c) ?? (typeof body?.operator === "string" && body.operator.trim() ? body.operator.trim() : null);
+  const result = await seatLifecycleService(c).applySpec({
+    seatRef: c.req.param("seatRef")!,
+    yes: body["yes"] === true,
+    actor,
+    ...(typeof body["reason"] === "string" ? { reason: body["reason"] } : {}),
     ...(typeof body["specFile"] === "string" ? { specFile: body["specFile"] } : {}),
   });
   if (result.ok) return c.json(result);

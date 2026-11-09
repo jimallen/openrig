@@ -609,3 +609,52 @@ describe("OPR.0.7.0.5 rig seat restart --keep-conversation", () => {
     }
   });
 });
+
+// OF-283: `rig seat apply-spec` is a dry run unless --yes, and prints names and override keys, never a value.
+describe("rig seat apply-spec", () => {
+  const seat = { logicalId: "verify.ops", rigName: "eztrack" };
+  const fields = [
+    { field: "env_passthrough", retained: [], spec: ["OPENAI_API_KEY"], changed: true },
+    { field: "model_overrides", retained: ["openai-codex/gpt-6-luna contextWindow=820000"], spec: ["openai-codex/gpt-6-luna contextWindow=820000"], changed: false },
+    { field: "pi.link_operator_models", retained: [], spec: [], changed: false },
+  ];
+  const dry = { ok: true, seat, dryRun: true, written: false, changed: true, declaredIn: "/rel/rig.yaml", specSource: "recorded", fields, envAdded: ["OPENAI_API_KEY"], envRemoved: [], effect: "Dry run: nothing was written. Pass --yes to write these three fields." };
+
+  it("sends yes:false by default (a dry run) to /api/seat/apply-spec/<seat> and prints retained -> spec per field", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: dry }, calls)).parseAsync(["node", "rig", "seat", "apply-spec", "verify-ops@eztrack"]);
+    });
+    expect(calls).toEqual([{ path: "/api/seat/apply-spec/verify-ops%40eztrack", body: { yes: false } }]);
+    expect(exitCode).toBeUndefined();
+    const out = logs.join("\n");
+    expect(out).toContain("Dry run for verify.ops@eztrack");
+    expect(out).toContain("env_passthrough: [] -> [OPENAI_API_KEY]");
+    expect(out).toContain("model_overrides: no change ([openai-codex/gpt-6-luna contextWindow=820000])");
+    expect(out).toContain("pi.link_operator_models: no change (false)");
+  });
+
+  it("--yes, --reason, --operator and --spec go in the body; --spec as an absolute path", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const wrote = { ...dry, dryRun: false, written: true, effect: "Saved. These take effect at this seat's next launch." };
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: wrote }, calls))
+        .parseAsync(["node", "rig", "seat", "apply-spec", "verify-ops@eztrack", "--yes", "--reason", "release c84c5ba3", "--operator", "jim@host", "--spec", "rigs/rig.yaml"]);
+    });
+    expect(calls[0]!.body).toEqual({ yes: true, reason: "release c84c5ba3", operator: "jim@host", specFile: `${process.cwd()}/rigs/rig.yaml` });
+    expect(logs.join("\n")).toContain("Applied to verify.ops@eztrack");
+    expect(logs.join("\n")).toContain("next launch");
+  });
+
+  it("--json prints the daemon's answer as is; a refusal exits 1 with its code", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: dry }, calls)).parseAsync(["node", "rig", "seat", "apply-spec", "verify-ops@eztrack", "--json"]);
+    });
+    expect(JSON.parse(logs.join("\n"))).toEqual(dry);
+    const { exitCode } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 409, data: { ok: false, code: "apply_spec_source_untrusted", message: "not trusted" } }, calls)).parseAsync(["node", "rig", "seat", "apply-spec", "verify-ops@eztrack"]);
+    });
+    expect(exitCode).toBe(1);
+  });
+});

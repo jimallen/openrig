@@ -468,6 +468,69 @@ function validatePod(pod: Record<string, unknown>, index: number, podIds: Set<st
   return errors;
 }
 
+/**
+ * The three Pi-only retained member fields (`env_passthrough`, `model_overrides`, `pi.link_operator_models`), validated on the
+ * raw member exactly as the spec load does. `rig seat apply-spec` (OF-283) calls this same function before it writes them to a
+ * node, so a value the spec load would refuse is never stored by the apply.
+ */
+export function validatePiRetainedMemberFields(member: Record<string, unknown>, prefix: string): string[] {
+  const errors: string[] = [];
+  // Extra environment names a Pi seat's child keeps (its runner takes the values from the seat pane, as a Codex seat
+  // inherits them). Names only, never values; a malformed list is refused, never partly applied. Pi only: the OMP
+  // adapters are not wired to pass them, and a declaration that does nothing is refused like remote_control's.
+  if (member["env_passthrough"] !== undefined) {
+    const names = member["env_passthrough"];
+    if (member["runtime"] !== "pi") {
+      errors.push(`${prefix}.env_passthrough: only valid when runtime is "pi" (Claude and Codex seats inherit the pane environment)`);
+    } else if (!Array.isArray(names) || names.length === 0) {
+      errors.push(`${prefix}.env_passthrough: must be a non-empty list of environment variable names`);
+    } else if (names.length > PI_ENV_PASSTHROUGH_MAX) {
+      errors.push(`${prefix}.env_passthrough: at most ${PI_ENV_PASSTHROUGH_MAX} names`);
+    } else {
+      const seen = new Set<string>();
+      for (const name of names) {
+        if (typeof name !== "string") { errors.push(`${prefix}.env_passthrough: every entry must be a name (a string)`); continue; }
+        const refusal = piEnvPassthroughRefusal(name);
+        if (refusal) errors.push(`${prefix}.env_passthrough: ${name} ${refusal}`);
+        else if (seen.has(name)) errors.push(`${prefix}.env_passthrough: ${name} is listed twice`);
+        seen.add(name);
+      }
+    }
+  }
+  // OF-270: a Pi seat's model overrides, merged by its runner into the seat's own models.json at every launch. Pi only (the
+  // OMP runner has no such file semantics here, and a declaration that does nothing is refused like env_passthrough's);
+  // a positive integer contextWindow per provider and model, no other key; a malformed block is refused, never partly applied.
+  if (member["model_overrides"] !== undefined) {
+    if (member["runtime"] !== "pi") {
+      errors.push(`${prefix}.model_overrides: only valid when runtime is "pi"`);
+    } else {
+      for (const problem of piModelOverridesErrors(member["model_overrides"])) errors.push(`${prefix}.model_overrides: ${problem}`);
+    }
+  }
+  // OF-279: `pi: { link_operator_models: true }` makes the Pi runner link the seat's models.json to the operator's at every launch
+  // (the host setting pi.operator_login_dir names where). Pi only; one known key, a boolean; and never beside model_overrides,
+  // which writes into the seat's own models.json (a link would make that a write into the operator's file, and the override
+  // path must never quietly turn off), so a member that declares both is refused here.
+  if (member["pi"] !== undefined) {
+    const pi = member["pi"];
+    if (member["runtime"] !== "pi") {
+      errors.push(`${prefix}.pi: only valid when runtime is "pi"`);
+    } else if (typeof pi !== "object" || pi === null || Array.isArray(pi)) {
+      errors.push(`${prefix}.pi: must be a mapping (for example { link_operator_models: true })`);
+    } else {
+      for (const key of Object.keys(pi as Record<string, unknown>)) {
+        if (key !== "link_operator_models") errors.push(`${prefix}.pi: unknown key ${JSON.stringify(key)} (only link_operator_models is accepted)`);
+      }
+      const link = (pi as Record<string, unknown>)["link_operator_models"];
+      if (link !== undefined && typeof link !== "boolean") errors.push(`${prefix}.pi.link_operator_models: must be true or false`);
+      else if (link === true && member["model_overrides"] !== undefined) {
+        errors.push(`${prefix}: pi.link_operator_models and model_overrides conflict: a linked models.json is the operator's file and model_overrides are written into the seat's own, so the override would never apply or would edit the operator's file. Use one or the other.`);
+      }
+    }
+  }
+  return errors;
+}
+
 function validateMember(member: Record<string, unknown>, index: number, podPrefix: string, memberIds: Set<string>, advisories: string[]): string[] {
   const errors: string[] = [];
   const prefix = `${podPrefix}.members[${index}]`;
@@ -531,59 +594,7 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       advisories.push(`${prefix}.effort: non-string value "${member["effort"]}" ignored; effort must be a text value`);
     }
   }
-  // Extra environment names a Pi seat's child keeps (its runner takes the values from the seat pane, as a Codex seat
-  // inherits them). Names only, never values; a malformed list is refused, never partly applied. Pi only: the OMP
-  // adapters are not wired to pass them, and a declaration that does nothing is refused like remote_control's.
-  if (member["env_passthrough"] !== undefined) {
-    const names = member["env_passthrough"];
-    if (member["runtime"] !== "pi") {
-      errors.push(`${prefix}.env_passthrough: only valid when runtime is "pi" (Claude and Codex seats inherit the pane environment)`);
-    } else if (!Array.isArray(names) || names.length === 0) {
-      errors.push(`${prefix}.env_passthrough: must be a non-empty list of environment variable names`);
-    } else if (names.length > PI_ENV_PASSTHROUGH_MAX) {
-      errors.push(`${prefix}.env_passthrough: at most ${PI_ENV_PASSTHROUGH_MAX} names`);
-    } else {
-      const seen = new Set<string>();
-      for (const name of names) {
-        if (typeof name !== "string") { errors.push(`${prefix}.env_passthrough: every entry must be a name (a string)`); continue; }
-        const refusal = piEnvPassthroughRefusal(name);
-        if (refusal) errors.push(`${prefix}.env_passthrough: ${name} ${refusal}`);
-        else if (seen.has(name)) errors.push(`${prefix}.env_passthrough: ${name} is listed twice`);
-        seen.add(name);
-      }
-    }
-  }
-  // OF-270: a Pi seat's model overrides, merged by its runner into the seat's own models.json at every launch. Pi only (the
-  // OMP runner has no such file semantics here, and a declaration that does nothing is refused like env_passthrough's);
-  // a positive integer contextWindow per provider and model, no other key; a malformed block is refused, never partly applied.
-  if (member["model_overrides"] !== undefined) {
-    if (member["runtime"] !== "pi") {
-      errors.push(`${prefix}.model_overrides: only valid when runtime is "pi"`);
-    } else {
-      for (const problem of piModelOverridesErrors(member["model_overrides"])) errors.push(`${prefix}.model_overrides: ${problem}`);
-    }
-  }
-  // OF-279: `pi: { link_operator_models: true }` makes the Pi runner link the seat's models.json to the operator's at every launch
-  // (the host setting pi.operator_login_dir names where). Pi only; one known key, a boolean; and never beside model_overrides,
-  // which writes into the seat's own models.json (a link would make that a write into the operator's file, and the override
-  // path must never quietly turn off), so a member that declares both is refused here.
-  if (member["pi"] !== undefined) {
-    const pi = member["pi"];
-    if (member["runtime"] !== "pi") {
-      errors.push(`${prefix}.pi: only valid when runtime is "pi"`);
-    } else if (typeof pi !== "object" || pi === null || Array.isArray(pi)) {
-      errors.push(`${prefix}.pi: must be a mapping (for example { link_operator_models: true })`);
-    } else {
-      for (const key of Object.keys(pi as Record<string, unknown>)) {
-        if (key !== "link_operator_models") errors.push(`${prefix}.pi: unknown key ${JSON.stringify(key)} (only link_operator_models is accepted)`);
-      }
-      const link = (pi as Record<string, unknown>)["link_operator_models"];
-      if (link !== undefined && typeof link !== "boolean") errors.push(`${prefix}.pi.link_operator_models: must be true or false`);
-      else if (link === true && member["model_overrides"] !== undefined) {
-        errors.push(`${prefix}: pi.link_operator_models and model_overrides conflict: a linked models.json is the operator's file and model_overrides are written into the seat's own, so the override would never apply or would edit the operator's file. Use one or the other.`);
-      }
-    }
-  }
+  errors.push(...validatePiRetainedMemberFields(member, prefix));
   // Claude Code Remote Control: `remote_control: true` makes every claude launch of this seat carry
   // `--remote-control <session name>`. A non-boolean is an error (never silently dropped: the operator
   // asked for a remote seat). `true` on any other runtime is an error too -- only claude has the flag, and

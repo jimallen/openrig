@@ -208,6 +208,7 @@ import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, 
 import { guardedAgentRefFsOps } from "./domain/agent-ref-guard.js";
 import { readSeatMcpServers } from "./domain/seat-mcp-servers.js";
 import { codexConfigLayerFiles, codexConfigServerNames, mcpSpecRoots } from "./domain/codex-mcp-servers.js";
+import { piRetainedFieldLookups } from "./adapters/pi-retained-field-lookups.js";
 import { specSourceTrustOf } from "./domain/recorded-spec-source-judge.js";
 import { codexSeatHomePath } from "./domain/codex-seat-home.js";
 import {
@@ -751,16 +752,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // OPR.0.7.0.2: Pi seats report cost facts from persisted entries only while usage.pi_cost_facts is on;
   // read at each launch and resume, so the switch takes effect at the next one.
   // A Pi or OMP seat's extra environment names (spec env_passthrough), by session name, for every launch and resume.
-  const piEnvPassthroughFor = (sessionName: string): string[] => {
-    const row = db.prepare("SELECT node_id AS nodeId FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(sessionName) as { nodeId: string } | undefined;
-    return row ? rigRepo.getNodeEnvPassthrough(row.nodeId) : [];
-  };
+  // The three retained spec fields (env_passthrough, model_overrides, pi.link_operator_models) are read from the node, by session name,
+  // at every launch and resume (OF-283: see adapters/pi-retained-field-lookups.ts); no launch path reads the spec for them.
+  const piRetained = piRetainedFieldLookups(db, rigRepo);
+  const piEnvPassthroughFor = piRetained.envPassthroughFor;
   // A Pi seat's model overrides (spec model_overrides, OF-270), by session name, for every launch and resume. A stored value
   // that is no longer valid throws, so that launch refuses instead of starting with a window the spec did not state.
-  const piModelOverridesFor = (sessionName: string) => {
-    const row = db.prepare("SELECT node_id AS nodeId FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(sessionName) as { nodeId: string } | undefined;
-    return row ? rigRepo.getNodeModelOverrides(row.nodeId) : undefined;
-  };
+  const piModelOverridesFor = piRetained.modelOverridesFor;
   // OF-279: the host's operator Pi login folder (pi.operator_login_dir; "" = unset = no link), read at each launch and resume.
   // An invalid stored value (the setting validates on write, so this is a hand-edited file) reads as unset: nothing is linked.
   const piOperatorLoginDir = (): string | undefined => {
@@ -770,10 +768,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     } catch { return undefined; }
   };
   // OF-279: the member's pi.link_operator_models, by session name, for every launch and resume (like the model overrides).
-  const piLinkOperatorModelsFor = (sessionName: string): boolean => {
-    const row = db.prepare("SELECT node_id AS nodeId FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(sessionName) as { nodeId: string } | undefined;
-    return row ? rigRepo.getNodeLinkOperatorModels(row.nodeId) : false;
-  };
+  const piLinkOperatorModelsFor = piRetained.linkOperatorModelsFor;
   const piUsageFactsEnabled = (): boolean => {
     try { return new ContextPackSettingsStore().resolveOne("usage.pi_cost_facts").value === true; } catch { return false; }
   };

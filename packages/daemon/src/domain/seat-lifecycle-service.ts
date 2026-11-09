@@ -1,4 +1,6 @@
-import { readDeclaredMcpServer, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
+import { readDeclaredMcpServer, readTrustedSeatSpec, type TrustedSeatSpecFailureKind, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
+import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
+import { diffRetainedPiFields, envNameChanges, specRetainedFields, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
@@ -89,6 +91,22 @@ export interface SeatLifecycleDeps {
   transcripts?: { readSidecar(sessionName: string): { ok: true; data: { transcript_path?: string | null; session_id?: string | null } } | { ok: false }; readCodexTranscriptPath(threadId: string): string | null };
 }
 
+class ApplySpecNotSaved extends Error {}
+
+/** The kinds of refusal `readTrustedSeatSpec` gives, as apply-spec's codes. */
+const APPLY_SPEC_REFUSAL_CODE: Record<TrustedSeatSpecFailureKind, SeatRefusal["code"]> = {
+  unrecorded: "apply_spec_source_unrecorded", unavailable: "apply_spec_source_unavailable", file_unavailable: "apply_spec_file_unavailable",
+  untrusted: "apply_spec_source_untrusted", file_untrusted: "apply_spec_file_untrusted", rig_mismatch: "apply_spec_rig_mismatch",
+};
+
+/** The raw (snake_case) member of a parsed spec, for the validator that checks the spec's own spelling. */
+function rawMemberOf(raw: Record<string, unknown>, podId: string, memberId: string): Record<string, unknown> | undefined {
+  const pods = Array.isArray(raw["pods"]) ? (raw["pods"] as Array<Record<string, unknown>>) : [];
+  const pod = pods.find((p) => p["id"] === podId);
+  const members = pod && Array.isArray(pod["members"]) ? (pod["members"] as Array<Record<string, unknown>>) : [];
+  return members.find((m) => m["id"] === memberId);
+}
+
 interface ResolvedSeat {
   entry: NodeInventoryEntry;
   nodeId: string;
@@ -104,6 +122,10 @@ export interface SeatRefusal {
     | "missing_actor" | "invalid_mcp_server" | "invalid_mcp_state" | "mcp_unsupported_runtime" | "mcp_unavailable"
     | "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
     | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "invalid_mcp_spec_file" | "mcp_spec_file_untrusted" | "mcp_spec_source_untrusted"
+    // rig seat apply-spec (OF-283)
+    | "apply_spec_unsupported_runtime" | "apply_spec_runtime_mismatch" | "apply_spec_seat_undeclared" | "apply_spec_invalid_spec_file"
+    | "apply_spec_source_unrecorded" | "apply_spec_source_unavailable" | "apply_spec_source_untrusted"
+    | "apply_spec_file_unavailable" | "apply_spec_file_untrusted" | "apply_spec_rig_mismatch" | "apply_spec_fields_refused" | "apply_spec_not_saved"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -483,6 +505,87 @@ export class SeatLifecycleService {
       effect: `Saved for this seat's next managed launch, resume, restore or restart; the running process is unchanged and nothing was restarted. An in-place restart reports the change as drift (config mcp_servers.${input.server}).`,
       ...(warning ? { warning } : {}),
     };
+  }
+
+  /**
+   * OF-283: `rig seat apply-spec`. A Pi seat's retained spec fields (env_passthrough, model_overrides, pi.link_operator_models)
+   * are stored on its node when the node is created and read from the database at every launch; nothing re-reads the spec.
+   * This is the one explicit step that does: it reads the seat's member from the rig's recorded spec source (or `specFile`),
+   * judged by the same trust rule as set-mcp, validates the three fields with the canonical validators, and reports
+   * `retained -> spec` per field. Without `yes` that is all it does. With `yes` it writes all three in ONE transaction with one
+   * audit event (names only, never a value). No terminal, session or process is touched and nothing is relaunched: the new
+   * values take effect at the seat's next launch. A field the spec does not carry clears the retained value.
+   */
+  async applySpec(input: { seatRef: string; yes: boolean; actor: string | null; reason?: string; specFile?: string }): Promise<
+    | { ok: true; seat: SeatDescriptor; dryRun: boolean; written: boolean; changed: boolean; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string;
+        fields: RetainedFieldDiff[]; envAdded: string[]; envRemoved: string[]; effect: string }
+    | SeatRefusal
+  > {
+    if (input.specFile !== undefined && !nodePath.isAbsolute(input.specFile)) {
+      return { ok: false, code: "apply_spec_invalid_spec_file", message: "--spec takes an absolute path." };
+    }
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+    const seat = this.describe(resolved);
+    const node = this.db.prepare("SELECT runtime, cwd FROM nodes WHERE id = ?").get(seat.nodeId) as { runtime: string | null; cwd: string | null } | undefined;
+    if (!node) return { ok: false, code: "seat_not_found", message: `Seat "${input.seatRef}" has no node row.` };
+    if (node.runtime !== "pi") return { ok: false, code: "apply_spec_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; env_passthrough, model_overrides and pi.link_operator_models apply to pi seats only.` };
+
+    const read = readTrustedSeatSpec({
+      specSource: this.rigRepo.getRigSpecSource(seat.rigId), rigName: seat.rigName, node: { logicalId: seat.logicalId, cwd: node.cwd }, purpose: "applying seat fields",
+      ...(input.specFile !== undefined ? { operatorSpecFile: input.specFile } : {}),
+      trustedSpecRoots: this.mcpTrust?.specRoots?.() ?? [],
+      ...(this.mcpTrust?.io ? { io: this.mcpTrust.io } : {}),
+      ...(this.mcpTrust?.exactDepthRoot ? { recordedExactDepthRoot: this.mcpTrust.exactDepthRoot } : {}),
+    });
+    if (!read.ok) return { ok: false, code: APPLY_SPEC_REFUSAL_CODE[read.kind], message: read.message };
+    const { member, pod, specPath, specSha256 } = read;
+    if (!member || !pod) return { ok: false, code: "apply_spec_seat_undeclared", message: `The spec ${specPath} does not declare seat ${seat.logicalId}, so it says nothing about its retained fields.` };
+    if (member.runtime !== "pi" || member.runtime !== node.runtime) {
+      return { ok: false, code: "apply_spec_runtime_mismatch", message: `The spec ${specPath} declares ${seat.logicalId} with runtime ${member.runtime}; this seat's node runs ${node.runtime}. Nothing was changed.` };
+    }
+    const rawMember = rawMemberOf(read.raw, pod.id, member.id);
+    const problems = validatePiRetainedMemberFields(rawMember ?? {}, `${pod.id}.${member.id}`);
+    if (problems.length > 0) return { ok: false, code: "apply_spec_fields_refused", message: `The spec ${specPath} states these fields in a way the spec load refuses, so nothing was changed: ${problems.join("; ")}` };
+
+    // What the node retains, as a launch reads it. A stored value a launch would refuse (a damaged row) is reported as
+    // "unreadable" and counts as a change: applying the spec is the repair.
+    const unreadable = new Set<RetainedFieldName>();
+    const retained: RetainedPiFields = {
+      envPassthrough: this.rigRepo.getNodeEnvPassthrough(seat.nodeId),
+      modelOverrides: (() => { try { return this.rigRepo.getNodeModelOverrides(seat.nodeId); } catch { unreadable.add("model_overrides"); return undefined; } })(),
+      piLinkOperatorModels: (() => { try { return this.rigRepo.getNodeLinkOperatorModels(seat.nodeId); } catch { unreadable.add("pi.link_operator_models"); return false; } })(),
+    };
+    const spec = specRetainedFields(member);
+    const fields = diffRetainedPiFields(retained, spec).map((f) => unreadable.has(f.field) ? { ...f, retained: ["unreadable (damaged stored value)"], changed: true } : f);
+    const changed = fields.some((f) => f.changed);
+    const { added: envAdded, removed: envRemoved } = envNameChanges(retained.envPassthrough, spec.envPassthrough);
+    const base = { seat, changed, declaredIn: specPath, specSource: read.operator ? "operator" as const : "recorded" as const, specSha256, fields, envAdded, envRemoved };
+
+    if (!input.yes) {
+      return { ok: true, ...base, dryRun: true, written: false, effect: changed
+        ? "Dry run: nothing was written. Pass --yes to write these three fields; they then take effect at the seat's next launch."
+        : "Dry run: the seat already retains what the spec says. Nothing to write." };
+    }
+    if (!input.actor?.trim()) return { ok: false, code: "missing_actor", message: "Sender identity is required for the audit; pass --operator <address> when running outside a managed seat." };
+    if (!changed) return { ok: true, ...base, dryRun: false, written: false, effect: "No change: the seat already retains what the spec says. Nothing was written and no event was recorded." };
+
+    let persisted: PersistedEvent | null = null;
+    try {
+      this.db.transaction(() => {
+        if (!this.rigRepo.setNodePiRetainedFields(seat.nodeId, spec)) throw new ApplySpecNotSaved();
+        persisted = this.eventBus.persistWithinTransaction({
+          type: "node.spec_fields_applied", rigId: seat.rigId, nodeId: seat.nodeId, logicalId: seat.logicalId,
+          fields: fields.filter((f) => f.changed).map((f) => f.field), envAdded, envRemoved,
+          actor: input.actor!.trim(), reason: input.reason?.trim() || null, declaredIn: specPath, specSource: base.specSource, specSha256,
+        });
+      })();
+    } catch (err) {
+      return { ok: false, code: err instanceof ApplySpecNotSaved ? "apply_spec_not_saved" : "apply_spec_fields_refused",
+        message: err instanceof ApplySpecNotSaved ? `The retained fields for seat "${input.seatRef}" were not saved (no node row matched); nothing changed.` : `The retained fields for seat "${input.seatRef}" were not saved; nothing changed: ${(err as Error).message}` };
+    }
+    if (persisted) this.eventBus.notifySubscribers(persisted);
+    return { ok: true, ...base, dryRun: false, written: true, effect: "Saved. These take effect at this seat's next launch (stop and launch, restore, rig up --existing, a handover successor); the running process is unchanged and nothing was relaunched." };
   }
 
   /** OPR.0.7.0.7 — requested, saved, emitted at launch and observed in the native session, each from
