@@ -257,6 +257,14 @@ describe("the hops", () => {
         await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
         expect(terminalsRead).toEqual([`terminal.get:${hcTerminalName(SEAT)}`]);
       });
+      it("a live Claude seat at rest reads hc `done`: with a stale running hook it is repeated (review of 5af06aa9, F1)", async () => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await firstWriteThenRepeatTime();
+        status = "done";
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(writes).toHaveLength(2);
+      });
       it("reads the seat's own terminal, and only to second a hold", async () => {
         await firstWriteThenRepeatTime();
         expect(terminalsRead).toEqual([]);
