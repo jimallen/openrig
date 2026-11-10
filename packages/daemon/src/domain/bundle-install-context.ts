@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { RigRepository } from "./rig-repository.js";
-import { makeRunningSessionCounter } from "./running-name-guard.js";
+import { makeRunningSessionCounter, type LifecycleHeld } from "./running-name-guard.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -15,9 +15,9 @@ export interface BundleInstallContext {
 
 /** Read the same session predicate as the import guard. A stored rig is not necessarily running. */
 export function bundleInstallContext(
-  db: Database.Database, rigName: string, offered: BundleInstallContext["offered"],
+  db: Database.Database, rigName: string, offered: BundleInstallContext["offered"], lifecycleHeld?: LifecycleHeld,
 ): BundleInstallContext {
-  const running = makeRunningSessionCounter(db);
+  const running = makeRunningSessionCounter(db, lifecycleHeld);
   const rigs = new RigRepository(db);
   const unarchived = new Set(rigs.findUnarchivedRigsByName(rigName).map(rig => rig.id));
   const existing = rigs.findRigsByName(rigName)
@@ -69,9 +69,9 @@ export function isExistingBundleTarget(context: BundleInstallContext, target: st
   }
 }
 
-export function bundleInstallContextLines(context: BundleInstallContext, includeChoices = true): string[] {
+export function bundleInstallContextLines(context: BundleInstallContext, includeChoices = true, goneRigIds: ReadonlySet<string> = new Set()): string[] {
   return [
-    ...context.existing.map(rig => `Installed team "${rig.name}" (${rig.rigId}): ${rig.state}; source: ${rig.source ?? "not recorded"}; version: not recorded.`),
+    ...context.existing.map(rig => `Installed team "${rig.name}" (${rig.rigId}): ${goneRigIds.has(rig.rigId) ? "all seats lost their terminals" : rig.state}; source: ${rig.source ?? "not recorded"}; version: not recorded.`),
     `Offered bundle "${context.offered.name}": version ${context.offered.version ?? "not recorded"}; source: ${context.offered.source}.`,
     ...(includeChoices ? context.resolutions : []),
   ];

@@ -6,6 +6,8 @@ import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test
 import { pack } from "../src/domain/bundle-archive.js";
 import { computeIntegrity } from "../src/domain/bundle-integrity.js";
 import { stringify } from "yaml";
+import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
+import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { materializePodBundle } from "../src/domain/bundle-source-resolver.js";
 import type { BootstrapResult, BootstrapStageResult } from "../src/domain/bootstrap-orchestrator.js";
 
@@ -275,6 +277,178 @@ describe("bundle reinstall through both public routes", () => {
     expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("original edits");
     expect(fs.existsSync(path.join(root, "home", "bundle-backups"))).toBe(false);
     expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(rig => rig.id)).toEqual([previous.id]);
+  });
+
+  /** A crashed team: rows still `running`, and the daemon holds an applicable confirmed `session_missing` verdict for the seat. */
+  function seedCrashed(name: string) {
+    const rig = seed(name, true);
+    const node = db.prepare("SELECT id FROM nodes WHERE rig_id = ?").get(rig.id) as { id: string };
+    new SeatIdentityStore(db).upsert({
+      nodeId: node.id, sessionName: `crew-old@${name}`, verdict: "pane_missing", evidenceSource: "tmux_session", reason: "session_missing",
+      evidence: { registeredPane: null, observedPid: null, observedCommand: null, matchedLayer: null },
+      observedAt: new Date(Date.now() + 5000).toISOString(),
+    });
+    return { rig, nodeId: node.id };
+  }
+
+  /** The daemon's real delivery guard over this test db, reporting a lease held on the given seat only. */
+  const leaseOn = (heldNodeId: string) => {
+    const guard = new SeatDeliveryGuard(db, (name) => resolveGuardTarget(db, name));
+    vi.spyOn(guard, "lifecycleHeld").mockImplementation((id: string) => id === heldNodeId);
+    return guard;
+  };
+  const target0 = () => path.join(root, "target");
+  const goneRefusal = (rigId: string, dir = target0()) => `A rig named "workshop" already exists (${rigId}), and all of its seats have lost their terminals. `
+    + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with 'rig up workshop --existing', `
+    + `or archive it first with 'rig archive ${rigId}' and install into a new or empty --target, `
+    + `or replace it in its own folder with 'rig up <bundle> --target ${dir} --on-existing fresh'.`;
+
+  const goneResolutions = (rigId: string, dir = target0()) => [
+    "Resume it on its own conversations: rig up workshop --existing.",
+    `Archive it first (rig archive ${rigId}), then install into a new or empty --target.`,
+    `Replace it in its own folder with rig up <bundle> --target ${dir} --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.`,
+  ];
+
+  // OF-287 B1: the refusal says nothing was created, so it must come BEFORE the crashed team's install folder is replaced.
+  it.each(["/api/up", "/api/bundles/install"])("%s: reinstalling into the crashed team's own folder refuses first; its files, manifest and backups are untouched", async route => {
+    const { rig } = seedCrashed("workshop");
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    fs.writeFileSync(path.join(target, "README.md"), "my local edits\n");
+    const manifestBefore = fs.readFileSync(path.join(target, "bundle.yaml"), "utf8");
+    const result = await install(route, await bundle("workshop", "2.0.0"), target);
+    expect(result.status).toBe(409);
+    expect(result.body.code).toBe("generation_unconfirmed");
+    expect(result.body.errors).toEqual([goneRefusal(rig.id)]);
+    // N2: only the refusal's own ways forward; "retry this install to replace the stopped team" would refuse again.
+    expect(result.body.bundleInstall.resolutions).toEqual(goneResolutions(rig.id));
+    expect(result.body.warnings).toContain(goneResolutions(rig.id)[0]);
+    expect(result.body.warnings.join("\n")).not.toContain("Retry this install");
+    expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("my local edits\n");
+    expect(fs.readFileSync(path.join(target, "bundle.yaml"), "utf8")).toBe(manifestBefore);
+    expect(fs.readdirSync(target).sort()).toEqual(["README.md", "bundle.yaml"]);
+    expect(fs.existsSync(path.join(root, "home", "bundle-backups"))).toBe(false);
+    expect(setup.tmuxAdapter.createSession).not.toHaveBeenCalled();
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(r => r.id)).toEqual([rig.id]);
+  });
+
+  // N1: plan says what apply will do.
+  it.each(["/api/up", "/api/bundles/install"])("%s plan over a crashed team warns that apply would refuse, offers only the refusal's ways forward, and writes nothing", async route => {
+    const { rig } = seedCrashed("workshop");
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    fs.writeFileSync(path.join(target, "README.md"), "my local edits\n");
+    const result = await install(route, await bundle("workshop", "2.0.0"), target, true);
+    expect(result.status).toBe(200);
+    expect(result.body.status).toBe("planned");
+    // plan on /api/bundles/install carries no targetRoot, so the replace command keeps the <dir> placeholder there
+    const dir = route === "/api/up" ? target : "<dir>";
+    expect(result.body.warnings).toContain(`Apply would refuse this install: ${goneRefusal(rig.id, dir)}`);
+    expect(result.body.bundleInstall.resolutions).toEqual(goneResolutions(rig.id, dir));
+    expect(JSON.stringify(result.body)).not.toContain("Retry this install");
+    expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("my local edits\n");
+    expect(fs.existsSync(path.join(root, "home", "bundle-backups"))).toBe(false);
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(r => r.id)).toEqual([rig.id]);
+  });
+
+  it("a plan over a STOPPED team still offers the replace-the-stopped-team retry (no refusal warning)", async () => {
+    seed("workshop", false);
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    const result = await install("/api/up", await bundle("workshop", "2.0.0"), target, true);
+    expect(result.status).toBe(200);
+    expect(result.body.warnings.join("\n")).not.toContain("Apply would refuse");
+    expect(result.body.warnings.join("\n")).toMatch(/Installed team "workshop" \(\w+\): stopped;/);
+    expect(result.body.warnings.join("\n")).not.toContain("all seats lost their terminals");
+    expect(result.body.bundleInstall.resolutions.join("\n")).toContain("Retry this install to replace the stopped team");
+  });
+
+  // Each instruction in the refusal, followed literally, on the bundle path.
+  const archive = (rigId: string) => setup.app.request(`/api/rigs/${rigId}/archive`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+
+  it("instruction 1, 'rig up workshop --existing': resumes the SAME rig (restore runs); nothing is created or archived", async () => {
+    const { rig } = seedCrashed("workshop");
+    const response = await setup.app.request("/api/up", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceRef: "workshop" }) });
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body).toMatchObject({ status: "restored", rigId: rig.id, rigName: "workshop" });
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(r => r.id)).toEqual([rig.id]);
+  });
+
+  it.each(["/api/up", "/api/bundles/install"])("instruction 2, %s: 'rig archive <id>' then install into a NEW target succeeds; into the SAME folder it still conflicts (which is why the text says new)", async route => {
+    const { rig } = seedCrashed("workshop");
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    fs.writeFileSync(path.join(target, "README.md"), "my local edits\n");
+    const archived = await archive(rig.id);
+    expect(archived.status, await archived.clone().text()).toBe(200);
+    const same = await install(route, await bundle("workshop", "2.0.0"), target);
+    expect(same.status).toBe(400);
+    expect(same.body.code).toBe("target_conflict");
+    expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("my local edits\n");
+    const fresh = path.join(root, "new-target");
+    const result = await install(route, await bundle("workshop", "2.0.0"), fresh);
+    expect(result.status, JSON.stringify(result.body)).toBe(201);
+    expect(fs.readFileSync(path.join(fresh, "README.md"), "utf8")).toBe("offered team documentation\n");
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(r => r.id)).not.toContain(rig.id);
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop")).toHaveLength(1);
+  });
+
+  it("instruction 3, 'rig up <bundle> --target <dir> --on-existing fresh' (what the CLI sends: targetRoot + onExisting fresh on /api/up): replaces the crashed team in its own folder", async () => {
+    const { rig } = seedCrashed("workshop");
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    fs.writeFileSync(path.join(target, "README.md"), "my local edits\n");
+    const archivePath = await bundle("workshop", "2.0.0");
+    const refused = await install("/api/up", archivePath, target);
+    expect(refused.status).toBe(409);
+    const response = await setup.app.request("/api/up", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath: archivePath, sourceRef: archivePath, targetRoot: target, onExisting: "fresh" }) });
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(201);
+    expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("offered team documentation\n");
+    const backups = fs.readdirSync(path.join(root, "home", "bundle-backups"));
+    expect(fs.readFileSync(path.join(root, "home", "bundle-backups", backups[0]!, "files", "README.md"), "utf8")).toBe("my local edits\n");
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(r => r.id)).not.toContain(rig.id);
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop")).toHaveLength(1);
+  });
+
+  it("the plan names the crashed team as having lost its terminals, never as 'stopped'", async () => {
+    const { rig } = seedCrashed("workshop");
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    const result = await install("/api/up", await bundle("workshop", "2.0.0"), target, true);
+    const text = result.body.warnings.join("\n");
+    expect(text).toContain(`Installed team "workshop" (${rig.id}): all seats lost their terminals;`);
+    expect(text).not.toContain(`(${rig.id}): stopped`);
+  });
+
+  it("the explicit fresh choice still replaces the crashed team's folder and archives it", async () => {
+    const { rig } = seedCrashed("workshop");
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    fs.writeFileSync(path.join(target, "README.md"), "my local edits\n");
+    const response = await setup.app.request("/api/up", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundlePath: await bundle("workshop", "2.0.0"), sourceRef: await bundle("workshop", "2.0.0"), targetRoot: target, onExisting: "fresh" }) });
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(201);
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(r => r.id)).not.toContain(rig.id);
+    expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("offered team documentation\n");
+  });
+
+  // The lease reader at the bundle path's three counting sites. Each sits in front of a later gate, so the observable
+  // difference is which refusal answers.
+  it("a lease held on the crashed team's seat: the bundles route's own conflict check answers (route lease reader)", async () => {
+    const { nodeId } = seedCrashed("workshop");
+    setup.tmuxAdapter.deliveryGuard = leaseOn(nodeId);
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    const result = await install("/api/bundles/install", await bundle("workshop", "2.0.0"), target);
+    expect(result.status).toBe(400);
+    expect(result.body.error).toBe("Bundle install conflict check failed");
+  });
+
+  it("a lease held on the crashed team's seat: the orchestrator's bundle context answers rig_name_running (orchestrator lease reader)", async () => {
+    const { nodeId } = seedCrashed("workshop");
+    setup.tmuxAdapter.deliveryGuard = leaseOn(nodeId);
+    const target = path.join(root, "target"); installedTarget("workshop", target);
+    fs.writeFileSync(path.join(target, "README.md"), "my local edits\n");
+    const result = await install("/api/up", await bundle("workshop", "2.0.0"), target);
+    expect(result.status).toBe(409);
+    expect(result.body.code).toBe("rig_name_running");
+    expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("my local edits\n");
   });
 
   it.each(["validation", "late-session"])("round 2: %s refusal after materialization names the backup", async failure => {

@@ -8,6 +8,7 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { BootstrapOrchestrator } from "../src/domain/bootstrap-orchestrator.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
+import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { BootstrapRepository } from "../src/domain/bootstrap-repository.js";
 import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
 import { HC_TESTED_VERSION } from "../src/adapters/hc-version.js";
@@ -338,6 +339,90 @@ describe("BootstrapOrchestrator", () => {
       const orch = buildOrchestrator({ podInstantiator: { db, instantiate: vi.fn() } });
       const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
       expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig_exists", rigName: "mine" });
+    });
+
+    // OF-287 — rig-here's door (`rig up <spec> --cwd <project>`): a project rig whose every terminal is confirmed gone still has
+    // sessions rows reading 'running'. It must meet the stopped-rig question (resume with --existing), not the instantiator's
+    // rig_name_running refusal; and a rig with a seat the daemon cannot confirm gone must still reach that refusal.
+    it.each([
+      ["every terminal confirmed gone", "session_missing", "project_rig_exists"],
+      ["its terminals could not be observed", "tmux_unavailable", undefined],
+    ] as const)("a project rig with running rows and %s", async (_label, reason, expectedCode) => {
+      const slug = `of287-${reason.replace("_", "-")}`;
+      const project = path.join(tmpDir, slug);
+      fs.mkdirSync(project);
+      const repo = new RigRepository(db);
+      const rig = repo.createRig(slug);
+      const node = repo.addNode(rig.id, "dev.shell", { cwd: path.join(project, ".workspaces", "dev-shell") });
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES (?, ?, ?, 'running', '2026-11-10 12:00:00')")
+        .run(`s-${reason}`, node.id, "dev-shell@x");
+      db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session, terminal_address) VALUES (?, ?, 'hc', 'dev-shell@x', 't1')")
+        .run(`b-${reason}`, node.id);
+      new SeatIdentityStore(db).upsert({
+        nodeId: node.id, sessionName: "dev-shell@x", observedAt: "2026-11-10T14:23:00.000Z",
+        verdict: reason === "session_missing" ? "pane_missing" : "tmux_unavailable",
+        evidenceSource: reason === "session_missing" ? "tmux_session" : null, reason,
+        evidence: { registeredPane: "t1", observedPid: null, observedCommand: null, matchedLayer: null },
+      });
+      const instantiate = vi.fn(async () => ({ ok: false as const, code: "rig_name_running" as const, message: "running", runningRig: { id: rig.id, name: slug, runningSessionCount: 1 } }));
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      if (expectedCode) {
+        expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: expectedCode });
+        expect(result.errors).toEqual([`This project already has a stopped rig named "${slug}". Resume it with: rig up ${slug} --existing. Or start fresh (archives it): add --on-existing fresh.`]);
+        expect(instantiate).not.toHaveBeenCalled();
+      } else {
+        expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).not.toMatchObject({ code: "project_rig_exists" });
+        expect(instantiate).toHaveBeenCalled();
+      }
+    });
+
+    it("--on-existing fresh over a project rig whose terminals are all gone tells the instantiator the replacement is chosen", async () => {
+      const project = path.join(tmpDir, "of287-fresh");
+      fs.mkdirSync(project);
+      const repo = new RigRepository(db);
+      const rig = repo.createRig("of287-fresh");
+      const node = repo.addNode(rig.id, "dev.shell", { cwd: path.join(project, ".workspaces", "dev-shell") });
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES ('s-f', ?, 'dev-shell@x', 'running', '2026-11-10 12:00:00')").run(node.id);
+      db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session, terminal_address) VALUES ('b-f', ?, 'hc', 'dev-shell@x', 't1')").run(node.id);
+      new SeatIdentityStore(db).upsert({
+        nodeId: node.id, sessionName: "dev-shell@x", observedAt: "2026-11-10T14:23:00.000Z", verdict: "pane_missing", evidenceSource: "tmux_session",
+        reason: "session_missing", evidence: { registeredPane: "t1", observedPid: null, observedCommand: null, matchedLayer: null },
+      });
+      const instantiate = vi.fn(async () => ({ ok: true as const, result: { rigId: "f-rig", specName: "of287-fresh", specVersion: "0.2", nodes: [] } }));
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project, onExisting: "fresh" });
+      expect(instantiate).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ replaceGoneGeneration: true }));
+    });
+
+    it("a lease held on a gone project rig's seat keeps it RUNNING on the project path: no resume question, the instantiator's guard answers", async () => {
+      const project = path.join(tmpDir, "of287-leased");
+      fs.mkdirSync(project);
+      const repo = new RigRepository(db);
+      const rig = repo.createRig("of287-leased");
+      const node = repo.addNode(rig.id, "dev.shell", { cwd: path.join(project, ".workspaces", "dev-shell") });
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES ('s-l', ?, 'dev-shell@x', 'running', '2026-11-10 12:00:00')").run(node.id);
+      db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session, terminal_address) VALUES ('b-l', ?, 'hc', 'dev-shell@x', 't1')").run(node.id);
+      new SeatIdentityStore(db).upsert({
+        nodeId: node.id, sessionName: "dev-shell@x", observedAt: "2026-11-10T14:23:00.000Z", verdict: "pane_missing", evidenceSource: "tmux_session",
+        reason: "session_missing", evidence: { registeredPane: "t1", observedPid: null, observedCommand: null, matchedLayer: null },
+      });
+      const instantiate = vi.fn(async () => ({ ok: false as const, code: "rig_name_running" as const, message: "running", runningRig: { id: rig.id, name: "of287-leased", runningSessionCount: 1 } }));
+      const deps = { tmuxAdapter: { deliveryGuard: { lifecycleHeld: (id: string) => id === node.id } } };
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate, deps } as never });
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).not.toMatchObject({ code: "project_rig_exists" });
+      expect(instantiate).toHaveBeenCalled();
+    });
+
+    it("without --on-existing fresh the instantiator is not told a replacement was chosen", async () => {
+      const project = path.join(tmpDir, "of287-plain");
+      fs.mkdirSync(project);
+      const instantiate = vi.fn(async (_yaml: string, _root: string, _launch?: Record<string, unknown>) => ({ ok: true as const, result: { rigId: "p2", specName: "of287-plain", specVersion: "0.2", nodes: [] } }));
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      expect(instantiate).toHaveBeenCalled();
+      expect(instantiate.mock.calls[0]![2]).not.toHaveProperty("replaceGoneGeneration");
     });
 
     it("plan mode warns that the launch will ask, and does not fail on it", async () => {

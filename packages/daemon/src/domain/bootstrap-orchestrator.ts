@@ -1,5 +1,5 @@
 import { RigRepository } from "./rig-repository.js";
-import { makeRunningSessionCounter } from "./running-name-guard.js";
+import { makeRunningSessionCounter, lifecycleHeldOf, goneGenerationRefusal } from "./running-name-guard.js";
 import { applyProjectRig, prepareProjectRigWorkspaces, PROJECT_RIG_WORKSPACES, flatSpecProjectRigError } from "./project-rig.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -194,7 +194,10 @@ export class BootstrapOrchestrator {
             const parsedSpec = parsePodBundleManifest(rawYaml) as Record<string, unknown>;
             const context = bundleInstallContext(this.deps.db, typeof parsedSpec?.name === "string" ? parsedSpec.name : "", {
               name: podSource.manifest.name, version: podSource.manifest.version, source: sourceRef,
-            });
+            }, lifecycleHeldOf(this.deps.podInstantiator?.["deps"]?.tmuxAdapter));
+            // The refusal's own ways forward replace the context's "retry to replace the stopped team" for a crashed team (plan and apply).
+            let goneResolutions: string[] | null = null;
+            let goneRigIds: ReadonlySet<string> = new Set();
             if (context.existing.length > 0) {
               const lines = bundleInstallContextLines(context);
               if (mode === "apply" && context.existing.some(rig => rig.state === "running")) {
@@ -203,7 +206,27 @@ export class BootstrapOrchestrator {
                 this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
                 return { runId: run.id, status: "failed", stages, errors: [message], warnings, bundleInstall: context };
               }
-              warnings.push(...bundleInstallContextLines(context, mode === "plan"));
+              // OF-287: a crashed team (rows still `running`, every terminal gone) is resumed or archived by the operator, never
+              // replaced by a plain import. Apply refuses here, before any install file is touched, with the instantiator's own
+              // text and only its own ways forward (the context's "retry to replace the stopped team" would refuse again);
+              // plan says the same thing as a warning, so it does not promise a replacement apply will refuse.
+              if (opts.onExisting !== "fresh") {
+                const repo = new RigRepository(this.deps.db);
+                const refusal = goneGenerationRefusal(this.deps.db, repo, typeof parsedSpec?.name === "string" ? parsedSpec.name : "",
+                  repo.findUnarchivedRigsByName(typeof parsedSpec?.name === "string" ? parsedSpec.name : "").map((rig) => rig.id),
+                  { targetRoot: opts.targetRoot ? nodePath.resolve(opts.targetRoot) : undefined });
+                if (refusal && mode === "plan") {
+                  goneRigIds = new Set([refusal.rigId]);
+                  warnings.push(`Apply would refuse this install: ${refusal.message}`);
+                  goneResolutions = refusal.resolutions;
+                } else if (refusal) {
+                  stages.push({ stage: "import_rig", status: "failed", detail: { code: "generation_unconfirmed", message: refusal.message } });
+                  this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
+                  return { runId: run.id, status: "failed", stages, errors: [refusal.message], warnings: [...warnings, ...refusal.resolutions], bundleInstall: { ...context, resolutions: refusal.resolutions } };
+                }
+              }
+              warnings.push(...bundleInstallContextLines(context, mode === "plan" && !goneResolutions, goneRigIds));
+              if (goneResolutions) warnings.push(...goneResolutions);
             }
             // Reject service-backed bundles — services require a stable source directory
             try {
@@ -227,7 +250,7 @@ export class BootstrapOrchestrator {
               if (replacingOwnTarget && tmux?.probeSession) {
                 // The instantiator repeats this under its name lock. This early
                 // read keeps a known-live or uncertain old session's files intact.
-                const stopped = await confirmStoppedGenerations(this.deps.db, context.existing.map(rig => rig.rigId), tmux.probeSession.bind(tmux));
+                const stopped = await confirmStoppedGenerations(this.deps.db, context.existing.map(rig => rig.rigId), tmux.probeSession.bind(tmux), lifecycleHeldOf(tmux));
                 if (!stopped.ok) {
                   const message = `Could not confirm the existing team is stopped: ${stopped.reason}. No target files were written and no team was created.`;
                   stages.push({ stage: "import_rig", status: "failed", detail: { code: "generation_unconfirmed", message } });
@@ -252,8 +275,9 @@ export class BootstrapOrchestrator {
             }
 
             const result = await this.handlePodAwareSpec(opts, run, rawYaml, specDir, stages, errors, warnings, installRoot);
-            if (mode === "apply" && result.status === "failed") result.warnings.push(...context.resolutions);
-            return { ...result, bundleInstall: { ...context, resolutions: mode === "apply" && result.status === "completed" ? [] : context.resolutions } };
+            const resolutions = goneResolutions ?? context.resolutions;
+            if (mode === "apply" && result.status === "failed") result.warnings.push(...resolutions);
+            return { ...result, bundleInstall: { ...context, resolutions: mode === "apply" && result.status === "completed" ? [] : resolutions } };
           } finally {
             if (podBundleTempDir) this.deps.podBundleSourceResolver.cleanup(podBundleTempDir);
           }
@@ -714,7 +738,7 @@ export class BootstrapOrchestrator {
       opts = { ...opts, cwdOverride: undefined };
       // Only stopped rigs: a running one meets the instantiator's running-name refusal.
       const repo = new RigRepository(this.deps.db);
-      const countRunning = makeRunningSessionCounter(this.deps.db);
+      const countRunning = makeRunningSessionCounter(this.deps.db, lifecycleHeldOf(podInstantiator["deps"]?.tmuxAdapter));
       const existing = repo.findUnarchivedRigsByName(projectRig.rigName);
       if (existing.length > 0 && existing.every((rig) => countRunning(rig.id) === 0)) {
         // A same-named rig whose seats work elsewhere belongs to another project: neither
@@ -852,7 +876,8 @@ export class BootstrapOrchestrator {
       if (typeof raw?.["non_interruptive"] === "boolean") declaredNonInterruptive = raw["non_interruptive"];
     } catch { /* The instantiator returns the existing structured validation failure. */ }
     const nonInterruptive = opts.nonInterruptive ?? declaredNonInterruptive ?? (new SettingsStore().resolveOne("launch.non_interruptive").value === true);
-    const outcome = await podInstantiator.instantiate(rigSpecYaml, rigRoot, { nonInterruptive, cwdOverride: opts.cwdOverride, prelaunchHook, installRoot, specSourcePath });
+    // `--on-existing fresh` is the operator's explicit choice to replace a rig whose seats are all gone.
+    const outcome = await podInstantiator.instantiate(rigSpecYaml, rigRoot, { nonInterruptive, cwdOverride: opts.cwdOverride, prelaunchHook, installRoot, specSourcePath, ...(opts.onExisting === "fresh" ? { replaceGoneGeneration: true } : {}) });
     if ((outcome.ok || "rigId" in outcome) && (nonInterruptive || opts.nonInterruptive === false)) warnings.push(nonInterruptiveSummary(nonInterruptive));
     const withRouting = (r: BootstrapResult): BootstrapResult => (bundleRouting ? { ...r, bundleRouting } : r);
 

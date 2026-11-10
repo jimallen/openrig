@@ -23,6 +23,7 @@ import { parseLegacyBundleManifest as parseBundleManifest, normalizeLegacyBundle
 import type { PodBundleManifest, BundleProvenance, BundleCompatibility, BundlePluginReference } from "../domain/bundle-types.js";
 import { detectBundleConflicts, type BundleConflict } from "../domain/bundle-conflict-detector.js";
 import { bundleInstallContext, bundleInstallContextLines } from "../domain/bundle-install-context.js";
+import { lifecycleHeldOf } from "../domain/running-name-guard.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import { BundleAuditReader, BundleAuditWriter, type BundleAuditFsOps, type BundleAuditRecord } from "../domain/bundle-audit.js";
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
@@ -228,6 +229,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     bootstrapOrchestrator: c.get("bootstrapOrchestrator" as never) as BootstrapOrchestrator,
     bootstrapRepo: c.get("bootstrapRepo" as never) as BootstrapRepository,
     rigRepo: c.get("rigRepo" as never) as RigRepository | undefined,
+    tmuxAdapter: c.get("tmuxAdapter" as never) as { deliveryGuard?: { lifecycleHeld(nodeId: string): boolean } } | undefined,
   };
 }
 
@@ -1141,7 +1143,7 @@ bundleRoutes.get("/history", async (c) => {
 
 // POST /api/bundles/install — reuses full bootstrap lifecycle
 bundleRoutes.post("/install", async (c) => {
-  const { bootstrapOrchestrator, bootstrapRepo, eventBus, rigRepo } = getDeps(c);
+  const { bootstrapOrchestrator, bootstrapRepo, eventBus, rigRepo, tmuxAdapter } = getDeps(c);
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const bundlePath = typeof body["bundlePath"] === "string" ? body["bundlePath"] : "";
   const plan = body["plan"] === true;
@@ -1213,7 +1215,7 @@ bundleRoutes.post("/install", async (c) => {
       name: String(installMeta.bundleManifest.name ?? installMeta.rigName ?? ""),
       version: typeof installMeta.bundleManifest.version === "string" ? installMeta.bundleManifest.version : null,
       source: bundlePath,
-    });
+    }, lifecycleHeldOf(tmuxAdapter));
     const runningRigs = context.existing.filter(rig => rig.state === "running");
     const report = detectBundleConflicts({
       bundleRigName: installMeta.rigName ?? "",

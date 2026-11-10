@@ -1,4 +1,7 @@
 import type Database from "better-sqlite3";
+import { getNodeInventory } from "./node-inventory.js";
+import { identityVerdictConfirmsSessionMissing } from "./types.js";
+import { rigAdviceHandle, type RigRefLookup } from "./rig-ref.js";
 
 /**
  * S5b (OPR.0.5.4.11) — the running-name guard, the FLOOR against duplicate rig
@@ -10,7 +13,13 @@ import type Database from "better-sqlite3";
  * RUNNING is derived exactly as the daemon already derives it — the rigs table
  * has no status column; a rig is running iff it has at least one sessions row
  * with status='running' (the classifier-lease liveness derivation,
- * startup.ts; the ps summary running-count uses the same predicate).
+ * startup.ts; the ps summary running-count uses the same predicate), EXCEPT a
+ * row whose terminal the daemon has CONFIRMED gone (OF-287): the same applicable
+ * `session_missing` verdict that makes `rig ps --nodes` read the seat `detached`
+ * and `rig ps` read the rig stopped. A terminal that died leaves its row
+ * status='running' (nothing writes `exited` for it), so counting the row alone
+ * made a rig with no live terminal block `rig up` and rig-here's resume until
+ * `rig down`. Anything short of confirmed absence still counts as running.
  *
  * Deliberately NOT here: global name uniqueness, stopped-generation reuse
  * semantics (plural-aware findRigsByName is load-bearing — a same-name rig
@@ -35,14 +44,96 @@ export interface RunningNameGuardDeps {
   countRunningSessions(rigId: string): number;
 }
 
+/** A lifecycle-lease reader (the delivery guard's `lifecycleHeld`): true while a relaunch, handover, restore, restart or
+ *  `rig down` holds the seat. Optional everywhere; absent, no seat is treated as held. */
+export type LifecycleHeld = (nodeId: string) => boolean;
+
+/** The lease reader of an adapter that carries a delivery guard, or undefined. */
+export function lifecycleHeldOf(tmux: { deliveryGuard?: { lifecycleHeld(nodeId: string): boolean } } | undefined): LifecycleHeld | undefined {
+  const guard = tmux?.deliveryGuard;
+  return guard ? (nodeId) => guard.lifecycleHeld(nodeId) : undefined;
+}
+
+/** Every `running` sessions row of the rig, raw: the read this module used before OF-287. */
+export function countStoredRunningSessions(db: Database.Database, rigId: string): number {
+  return (db.prepare(
+    "SELECT COUNT(*) AS c FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ? AND s.status = 'running'",
+  ).get(rigId) as { c: number }).c;
+}
+
+/** OF-287: the refusal for a plain import over a rig whose seats all lost their terminals while their rows still read `running`.
+ *  Call it AFTER the running-name guard has passed (so every stored `running` row left is a confirmed-gone, un-leased one) and
+ *  BEFORE anything is written: the instantiator calls it before creating or archiving, the bundle orchestrator before it
+ *  replaces the install folder. One predicate and one text for both, so the refusal's "nothing was created" holds on every route. */
+export function goneGenerationRefusal(
+  db: Database.Database, rigs: RigRefLookup, rigName: string, rigIds: readonly string[],
+  /** A bundle install names its install folder: archiving the team does NOT let the same folder be reinstalled (the archived
+   *  team no longer owns its files, so they block it with target_conflict), so a bundle's ways forward differ from a spec's. */
+  bundle?: { targetRoot?: string },
+): { rigId: string; message: string; resolutions: string[] } | null {
+  const gone = rigIds.find((id) => countStoredRunningSessions(db, id) > 0);
+  if (!gone) return null;
+  const handle = rigAdviceHandle(rigs, gone, rigName);
+  const head = `A rig named "${rigName}" already exists (${gone}), and all of its seats have lost their terminals. `;
+  const resume = `rig up ${handle} --existing`;
+  if (bundle) {
+    const dir = bundle.targetRoot ?? "<dir>";
+    const replace = `rig up <bundle> --target ${dir} --on-existing fresh`;
+    return {
+      rigId: gone,
+      resolutions: [
+        `Resume it on its own conversations: ${resume}.`,
+        `Archive it first (rig archive ${gone}), then install into a new or empty --target.`,
+        `Replace it in its own folder with ${replace}; /api/bundles/install and rig bundle install take no --on-existing.`,
+      ],
+      message: head + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with '${resume}', `
+        + `or archive it first with 'rig archive ${gone}' and install into a new or empty --target, `
+        + `or replace it in its own folder with '${replace}'.`,
+    };
+  }
+  return {
+    rigId: gone,
+    resolutions: [], // a plain spec import lists no resolutions; its message carries the two ways forward
+    message: head + `Nothing was created and it was not archived. Resume it on its own conversations with '${resume}', `
+      + `or archive it first with 'rig archive ${gone}' to start fresh.`,
+  };
+}
+
 /** The one liveness read, shared by every caller: sessions joined through the
- *  rig's nodes, status='running' — the daemon's existing running-derivation. */
-export function makeRunningSessionCounter(db: Database.Database): (rigId: string) => number {
+ *  rig's nodes, status='running' — the daemon's existing running-derivation —
+ *  minus ONE row per node: the node's NEWEST session row, when it is running and
+ *  carries an APPLICABLE confirmed `session_missing` verdict (node-inventory
+ *  gates a stored verdict to the current session, binding and time) and no
+ *  lifecycle lease holds the node. Older `running` rows of the node, which the
+ *  verdict does not describe, still count (restore classifies every running row).
+ *
+ *  How a `session_missing` verdict gets written, and so how much it proves:
+ *   - SeatIdentityReconciler: after two consecutive polls in which the host (hc
+ *     core or tmux) answered and did not list the session; never while a lease
+ *     holds the seat, until the lease ceiling.
+ *   - SessionTransport.recordSessionMissingVerdict (session-transport.ts), on ONE
+ *     positive absence from a send or capture, with no lease check.
+ *   - rebindAndVerifyPaneIdentity (seat-attention-reconciler.ts), on ONE empty
+ *     pane listing (restore, seat lifecycle, restart-in-place, attention clear);
+ *     on hc any non-live state counts, and hc's `machine_unknown` counts as absent.
+ *  Every writer needs an answer from the host (an unreachable core writes
+ *  `tmux_unavailable` or nothing), but the last two are single observations and
+ *  can read a seat between its old terminal's end and its successor's row. That
+ *  window is exactly a lifecycle lease, so a held node keeps counting here.
+ *  No verdict, `tmux_unavailable`, a verdict about another pane or an earlier
+ *  occupant, or any other reason: the row still counts. Never writes. */
+export function makeRunningSessionCounter(db: Database.Database, lifecycleHeld?: LifecycleHeld): (rigId: string) => number {
   return (rigId: string): number => {
-    const row = db.prepare(
-      "SELECT COUNT(*) AS c FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ? AND s.status = 'running'",
-    ).get(rigId) as { c: number };
-    return row.c;
+    const rows = db.prepare(
+      `SELECT s.id AS id, s.node_id AS nodeId,
+              (SELECT s2.id FROM sessions s2 WHERE s2.node_id = s.node_id ORDER BY s2.id DESC LIMIT 1) AS newestId
+         FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ? AND s.status = 'running'`,
+    ).all(rigId) as Array<{ id: string; nodeId: string; newestId: string }>;
+    if (rows.length === 0) return 0;
+    const gone = new Set(getNodeInventory(db, rigId)
+      .filter((entry) => identityVerdictConfirmsSessionMissing(entry.identityVerdict) && !lifecycleHeld?.(entry.nodeId))
+      .map((entry) => entry.nodeId));
+    return rows.filter((row) => !(gone.has(row.nodeId) && row.id === row.newestId)).length;
   };
 }
 
@@ -89,8 +180,9 @@ export async function confirmStoppedGenerations(
   db: Database.Database,
   unarchivedRigIds: string[],
   probe: (sessionName: string) => Promise<{ state: string; cause?: string }>,
+  lifecycleHeld?: LifecycleHeld,
 ): Promise<StoppedGenerationsVerdict> {
-  const running = makeRunningSessionCounter(db);
+  const running = makeRunningSessionCounter(db, lifecycleHeld);
   for (const rigId of unarchivedRigIds) {
     if (running(rigId) > 0) return { ok: false, rigId, reason: "it has a running session" };
     const names = (db.prepare(`

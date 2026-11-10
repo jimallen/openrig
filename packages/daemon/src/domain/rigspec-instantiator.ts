@@ -10,7 +10,7 @@ import {
 } from "./permission-policy/policy-ref.js";
 import { describePdaHolder, type RigRepository } from "./rig-repository.js";
 import type { PdaBinding } from "../adapters/pda-runner-protocol.js";
-import { checkRunningNameGuard, confirmStoppedGenerations, makeRunningSessionCounter } from "./running-name-guard.js";
+import { checkRunningNameGuard, confirmStoppedGenerations, goneGenerationRefusal, lifecycleHeldOf, makeRunningSessionCounter } from "./running-name-guard.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
 import type { NodeLauncher } from "./node-launcher.js";
@@ -83,7 +83,7 @@ export class RigInstantiator {
     // name-exists check downstream still owns the all-stopped case on this path).
     const nameGuard = checkRunningNameGuard({
       findRigsByName: (n) => this.rigRepo.findRigsByName(n),
-      countRunningSessions: makeRunningSessionCounter(this.db),
+      countRunningSessions: makeRunningSessionCounter(this.db, lifecycleHeldOf(this.tmuxAdapter)),
     }, spec.name);
     if (!nameGuard.ok) return nameGuard;
 
@@ -679,7 +679,7 @@ export class PodRigInstantiator {
     if (!opts?.targetRigId) {
       const nameGuard = checkRunningNameGuard({
         findRigsByName: (n) => this.deps.rigRepo.findRigsByName(n),
-        countRunningSessions: makeRunningSessionCounter(this.db),
+        countRunningSessions: makeRunningSessionCounter(this.db, lifecycleHeldOf(this.deps.tmuxAdapter)),
       }, rigSpec.name);
       if (!nameGuard.ok) return nameGuard;
     }
@@ -1318,7 +1318,7 @@ export class PodRigInstantiator {
     return { ok: true, rigId, nodeId, logicalId: node.logicalId, status: "launched", sessionName: result.sessionName, warnings: result.warnings };
   }
 
-  async instantiate(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; specSourcePath?: string; force?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
+  async instantiate(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; specSourcePath?: string; force?: boolean; replaceGoneGeneration?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
     // #141: while an import may archive a stopped same-name generation, allow one import per rig name at
     // a time on this daemon. Otherwise two imports could each replace it, or one could archive the other's
     // in-progress replacement. Unrelated names are unaffected; an adapter that cannot probe keeps today's
@@ -1344,7 +1344,7 @@ export class PodRigInstantiator {
     }
   }
 
-  private async instantiateOnce(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; specSourcePath?: string; force?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
+  private async instantiateOnce(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; specSourcePath?: string; force?: boolean; replaceGoneGeneration?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
     // 1. Parse + validate
     let rigSpec: PodRigSpec;
     try {
@@ -1366,7 +1366,7 @@ export class PodRigInstantiator {
     // all-stopped generations pass through (name reuse unchanged).
     const nameGuard = checkRunningNameGuard({
       findRigsByName: (n) => this.deps.rigRepo.findRigsByName(n),
-      countRunningSessions: makeRunningSessionCounter(this.db),
+      countRunningSessions: makeRunningSessionCounter(this.db, lifecycleHeldOf(this.deps.tmuxAdapter)),
     }, rigSpec.name);
     if (!nameGuard.ok) return nameGuard;
 
@@ -1408,8 +1408,15 @@ export class PodRigInstantiator {
     let archivedGenerations: string[] = [];
     const tmuxProbe = this.deps.tmuxAdapter?.probeSession?.bind(this.deps.tmuxAdapter);
     const priorGenerations = tmuxProbe ? this.deps.rigRepo.findUnarchivedRigsByName(rigSpec.name).map((rig) => rig.id) : [];
+    if (priorGenerations.length > 0 && !opts?.replaceGoneGeneration) {
+      // OF-287: the running-name guard above passed a rig whose seats all lost their terminals while their rows still read
+      // `running` (a crash, nobody chose to stop it). Replacing it would archive it and start new conversations: refuse,
+      // and name the two ways forward. A rig that was stopped (no `running` row) is replaced as before (#196).
+      const refusal = goneGenerationRefusal(this.db, this.deps.rigRepo, rigSpec.name, priorGenerations);
+      if (refusal) return { ok: false, code: "generation_unconfirmed", message: refusal.message };
+    }
     if (priorGenerations.length > 0) {
-      const stopped = await confirmStoppedGenerations(this.db, priorGenerations, tmuxProbe!);
+      const stopped = await confirmStoppedGenerations(this.db, priorGenerations, tmuxProbe!, lifecycleHeldOf(this.deps.tmuxAdapter));
       if (!stopped.ok) {
         return {
           ok: false,
@@ -1447,7 +1454,7 @@ export class PodRigInstantiator {
           const current = this.deps.rigRepo.findUnarchivedRigsByName(rigSpec.name).map((rig) => rig.id).sort();
           if (current.join(",") !== [...priorGenerations].sort().join(",")) throw new GenerationChanged(rigSpec.name);
           for (const id of archivedGenerations) {
-            if (makeRunningSessionCounter(this.db)(id) > 0 || !this.deps.rigRepo.archiveRig(id)) throw new GenerationChanged(rigSpec.name);
+            if (makeRunningSessionCounter(this.db, lifecycleHeldOf(this.deps.tmuxAdapter))(id) > 0 || !this.deps.rigRepo.archiveRig(id)) throw new GenerationChanged(rigSpec.name);
           }
         }
         const created = this.deps.rigRepo.createRig(rigSpec.name, opts?.installRoot);
