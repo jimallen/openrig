@@ -11,6 +11,7 @@ import { spooledNote, type SeatMarker } from "./seat-gate-marker.js";
 import { CodexPasteHop, type CodexPasteInput } from "./codex-paste-hop.js";
 import type { PiRunnerState } from "./pi-runner-protocol.js";
 import { nativeMarker, type NativeEndpointRow, type NativeEligibility } from "../domain/claude-native-inbox.js";
+import type { InputPoint } from "../domain/seat-messaging/input-point.js";
 import { decideClaudeRetry } from "../domain/seat-messaging/claude-last-hop.js";
 import { partId, pastesWhole, splitLongMessage } from "../domain/seat-messaging/long-message.js";
 import { PREVIOUS_OCCUPANT_LABEL } from "../domain/seat-messaging/message-label.js";
@@ -223,6 +224,8 @@ export interface ClaudeHopDeps {
   now?: () => number;
   /** Tests of the on state. Everything else takes `CLAUDE_SPOOL_ROUTE`. */
   spoolRoute?: boolean;
+  /** OF-285: has the seat passed a point where Claude takes queued socket lines since `sinceMs`? Absent: every repeat goes, as before. */
+  inputPoint?(nodeId: string, sinceMs: number): InputPoint;
 }
 
 /** What a long message's last paste looked like, so a blocked repeat of it can be recognised. Writes nothing. */
@@ -256,9 +259,14 @@ export class ClaudeSeatHop implements LastHop {
     const id = message.ids[0];
     const eligible = await this.deps.eligibility(message.seat);
     if (eligible.ok) {
-      const step = decideClaudeRetry({ text, socketEligible: true, nowMs: this.now(), lastSocketAttemptMs: this.deps.rows.lastSocketWriteMs(id), gateSeen: false, atRest: true, composer: null });
+      const lastSocketWriteMs = this.deps.rows.lastSocketWriteMs(id);
+      const step = decideClaudeRetry({ text, socketEligible: true, nowMs: this.now(), lastSocketAttemptMs: lastSocketWriteMs, gateSeen: false, atRest: true, composer: null });
       // An identical line inside the window would vanish with no trace (M1): this attempt was not made, so it costs no backoff.
       if (step.kind === "wait") return { kind: "paused", reason: "busy" };
+      // OF-285: Claude queues a socket line while a dialog is open or a tool call runs, and takes it at the next input point. Until the seat
+      // has passed one since this message's last write, that write is most likely still queued, and a repeat would queue a copy for the gate to
+      // block. The first write always goes. The wait spends no attempt and no write.
+      if (lastSocketWriteMs !== null && (await this.writeStillQueued(message.seat, eligible.nodeId, lastSocketWriteMs))) return { kind: "paused", reason: "busy" };
       this.deps.rows.recordSocketWrite(id, this.now());
       const written = await this.deps.writeToSeat(eligible.endpoint, this.deps.rows.senderOf(id) ?? "unknown", text);
       if (written !== "none") return { kind: "sent" };
@@ -266,6 +274,22 @@ export class ClaudeSeatHop implements LastHop {
     const pasted = this.pasteable(message);
     if (pasted === null) return { kind: "paused", reason: "long_no_socket" };
     return carrying(await this.paste(pasted, markedText(pasted, this.deps.rows)!), pasted, message);
+  }
+
+  /** True only when the daemon's hook record shows the seat has not passed an input point since `sinceMs` AND its terminal does not read at rest.
+   *  Fails open: no record, a record that cannot be read, or a terminal that cannot be read all send the repeat, since a held repeat is only ever
+   *  a delay, and a lost line held for good is a lost message. The terminal read is the second opinion for a seat whose last hook is stale
+   *  (an interrupted turn fires no Stop): it happens only when the hook record would hold, so a seat that is not held costs no hc call. */
+  private async writeStillQueued(seat: string, nodeId: string, sinceMs: number): Promise<boolean> {
+    if (this.deps.inputPoint?.(nodeId, sinceMs) !== "pending") return false;
+    try {
+      const found = await this.deps.client.call<HcTerminal>("terminal.get", { terminal: hcTerminalName(seat) });
+      if (found.state !== "live") return false;
+      const state = found.status?.state;
+      return state !== undefined && state !== null && !AT_REST.has(state);
+    } catch {
+      return false;
+    }
   }
 
   private paste(message: SeatMessage, whole: string): Promise<LastHopResult> {

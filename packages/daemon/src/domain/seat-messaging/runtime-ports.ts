@@ -10,6 +10,7 @@ import { gateLogInFlight, seatGateLogPath } from "../../adapters/seat-gate-store
 import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, type ForegroundGroupOf, type HcHopInput, type HopGuard, type HopRows } from "../../adapters/seat-hops.js";
 import type { HcClient } from "../../adapters/hc-client.js";
 import type { ClaudeNativeInbox } from "../claude-native-inbox.js";
+import { seatInputPoint } from "./input-point.js";
 import type { LastHop, MessageId, SeatGate } from "./ports.js";
 import type { SeatMessagingPorts } from "./pump-ports.js";
 
@@ -28,6 +29,8 @@ export interface RuntimeSeatPortsDeps {
   foregroundGroup?: ForegroundGroupOf;
   /** Tests of the grace a Codex rollout may lag a long message's record (OF-229). Everything else takes the gate's own default. */
   bodyGraceMs?: number;
+  /** Tests of the Claude hop's clock (its 40 s repeat window and the time a repeat is held against). Production takes the wall clock. */
+  now?: () => number;
 }
 
 /** Which gate a seat declared at launch. Only these runtimes have one: pda, terminal and stub seats are not the pump's, and a seat of a
@@ -41,7 +44,8 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
     const { rows, guard, client, input } = deps;
     this.claudeHop = new ClaudeSeatHop({
       rows, guard, client, input, spool: deps.hookStore,
-      foregroundGroup: deps.foregroundGroup,
+      foregroundGroup: deps.foregroundGroup, now: deps.now,
+      inputPoint: (nodeId, sinceMs) => seatInputPoint(deps.db, nodeId, sinceMs),
       eligibility: (seat) => deps.inbox().eligibility(seat),
       writeToSeat: (endpoint, sender, text) => deps.inbox().writeToSeat(endpoint, sender, text),
     });

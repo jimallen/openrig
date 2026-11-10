@@ -19,6 +19,8 @@ import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { parseForegroundGroup } from "../src/adapters/native-inbox-os.js";
 import type { PiRunnerState } from "../src/adapters/pi-runner-protocol.js";
 import { parseNativeMarkers } from "../src/domain/claude-native-inbox.js";
+import { hcTerminalName } from "../src/adapters/hc-host.js";
+import { seatInputPoint } from "../src/domain/seat-messaging/input-point.js";
 import { splitMarkedBlock } from "../src/adapters/seat-gate-marker.js";
 
 const SEAT = "dev@r";
@@ -94,7 +96,15 @@ describe("the hops", () => {
   const endpoint = { socket_path: "/s" } as NativeEndpointRow;
   const guard: HopGuard = { operation: (_n, fn, onHeld) => (held ? onHeld!({ nodeId: "n", session: SEAT, occupant: null, pane: null }) : fn()) };
   let foreground: { pid: number; name: string; argv: string[]; cwd: string } | null;
-  const client = { call: async <T,>(method: string): Promise<T> => (method === "terminal.get" ? { state: terminalState, status: { state: status }, foreground } : { text: screen }) as T };
+  // The fake answers only for the seat's own terminal, and says which it was asked for: a hop that reads another name finds out here (OF-285 review F3).
+  let terminalsRead: string[];
+  const client = {
+    call: async <T,>(method: string, params?: { terminal?: string }): Promise<T> => {
+      terminalsRead.push(`${method}:${params?.terminal}`);
+      if (params?.terminal !== hcTerminalName(SEAT)) throw new Error(`no such terminal: ${params?.terminal}`);
+      return (method === "terminal.get" ? { state: terminalState, status: { state: status }, foreground } : { text: screen }) as T;
+    },
+  };
   const input = {
     submitText: async (_s: string, text: string) => { calls.push(`paste:${text}`); return { ok: true as const }; },
     sendKeys: async (_s: string, keys: string[]) => { calls.push(`keys:${keys.join("+")}`); return { ok: true as const }; },
@@ -104,12 +114,24 @@ describe("the hops", () => {
     eligibility: async (): Promise<NativeEligibility> => (eligible ? { ok: true, nodeId: "n", endpoint } : { ok: false, reason: "no" }),
     writeToSeat: async (_e, sender, text) => { writes.push({ sender, text }); return written; },
   });
+  // The same hop with the real input-point read over the same database, as the daemon wires it (RuntimeSeatPorts).
+  const claudeWithEvidence = () => new ClaudeSeatHop({
+    rows: store, guard, client, input, now: () => now, inputPoint: (nodeId, sinceMs) => seatInputPoint(db, nodeId, sinceMs),
+    eligibility: async (): Promise<NativeEligibility> => (eligible ? { ok: true, nodeId: "n", endpoint } : { ok: false, reason: "no" }),
+    writeToSeat: async (_e, sender, text) => { writes.push({ sender, text }); return written; },
+  });
+  /** One hook event as the store records it for node "n": the raw event, its subtype, the state it means, and its own time. */
+  const hook = (rawEvent: string, state: string, atMs: number, rawSubtype: string | null = null) => {
+    db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES ('r', 'n', 'agent.activity', ?)").run(JSON.stringify({
+      sessionName: SEAT, activity: { rawEvent, rawSubtype, state, eventAt: new Date(atMs).toISOString(), evidenceSource: "runtime_hook" },
+    }));
+  };
   const message: SeatMessage = { ids: [ID], seat: SEAT, body: "Do the thing", messageClass: "content", lane: 2 };
   const text = () => `Do the thing\n[openrig-msg m-1:${store.nonceOf(ID)}]`;
 
   beforeEach(() => {
     db = createDb(); migrate(db, ALL_MIGRATIONS); store = new MessageStore(db);
-    calls = []; writes = []; status = "idle"; screen = "❯ \n──────────────\n"; terminalState = "live"; eligible = true; written = "all"; now = T0; held = false;
+    calls = []; writes = []; terminalsRead = []; status = "idle"; screen = "❯ \n──────────────\n"; terminalState = "live"; eligible = true; written = "all"; now = T0; held = false;
     foreground = { pid: 1, name: "claude", argv: ["claude"], cwd: "/w" };
     store.accept({ id: ID, seat: SEAT, sender: "lead@r", body: "Do the thing" });
     store.claimAttempt(store.headOf(SEAT)!, 0);
@@ -154,6 +176,138 @@ describe("the hops", () => {
       now += 1;
       await expect(claude().attempt(message)).resolves.toEqual({ kind: "sent" });
       expect(writes).toHaveLength(2);
+    });
+    describe("OF-285: a repeat socket write waits until the seat has passed an input point since this message's last write", () => {
+      // eztrack 2026-11-09/10: Claude queues a socket line while a dialog is open or a tool call runs, and takes it at the next input point. Each
+      // repeat the pump made at its 2 and 5 min backoffs queued one more copy, and the gate blocked the copies when Claude took them
+      // ("duplicate suppressed"): 21 copies of 13 messages. The first write must still go, and a line that was really lost must still be repeated.
+      const REPEAT_AFTER_MS = 2 * 60_000;
+      const firstWriteThenRepeatTime = async () => { await claudeWithEvidence().attempt(message); now += REPEAT_AFTER_MS; };
+
+      it("the first write goes even while a tool call runs or a dialog is open: Claude queues it", async () => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(writes).toHaveLength(1);
+      });
+      it("a repeat during one long tool call waits, writes nothing and does not move the write time; it goes when the tool call ends", async () => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await firstWriteThenRepeatTime();
+        for (let i = 0; i < 3; i += 1) {
+          await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
+          now += 15_000;
+        }
+        expect(writes).toHaveLength(1);
+        expect(store.lastSocketWriteMs(ID)).toBe(T0);
+        expect(calls).toEqual([]);
+        hook("PostToolUse", "running", now - 1_000, "Bash");
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(writes).toHaveLength(2);
+      });
+      it("a repeat while a question is open waits; it goes once the question is answered (PostToolUse of AskUserQuestion)", async () => {
+        hook("PermissionRequest", "needs_input", T0 - 5_000, "AskUserQuestion");
+        status = "blocked";
+        await firstWriteThenRepeatTime();
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
+        expect(writes).toHaveLength(1);
+        hook("PostToolUse", "running", now - 1_000, "AskUserQuestion");
+        status = "working";
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(writes).toHaveLength(2);
+      });
+      it.each(["PostToolUse", "PostToolUseFailure", "Stop", "UserPromptSubmit", "SessionStart"])("%s after the write is an input point: the repeat goes", async (event) => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await firstWriteThenRepeatTime();
+        hook(event, event === "Stop" ? "idle" : "running", T0 + 1_000);
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(writes).toHaveLength(2);
+      });
+      it("a hook that is not an input point does not release the repeat (PreToolUse, a permission prompt)", async () => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await firstWriteThenRepeatTime();
+        hook("PreToolUse", "running", T0 + 1_000, "Bash");
+        hook("Notification", "needs_input", T0 + 2_000, "permission_prompt");
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
+        expect(writes).toHaveLength(1);
+      });
+      it("an input point before the write, or at the very moment of it, does not count: only one after it does", async () => {
+        hook("PostToolUse", "running", T0 - 1, "Bash");
+        hook("PostToolUse", "running", T0, "Bash");
+        hook("PreToolUse", "running", T0 + 500, "Bash");
+        status = "working";
+        await firstWriteThenRepeatTime();
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
+        hook("PostToolUse", "running", T0 + 1, "Bash");
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+      });
+      it("a seat at its prompt that never took the line is repeated: the first write may really have been lost", async () => {
+        hook("Stop", "idle", T0 - 5_000);
+        await firstWriteThenRepeatTime();
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(writes).toHaveLength(2);
+      });
+      it("a seat whose last hook says running but whose terminal reads at rest is repeated (an interrupted turn fires no Stop)", async () => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await firstWriteThenRepeatTime();
+        status = "idle";
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(terminalsRead).toEqual([`terminal.get:${hcTerminalName(SEAT)}`]);
+      });
+      it("reads the seat's own terminal, and only to second a hold", async () => {
+        await firstWriteThenRepeatTime();
+        expect(terminalsRead).toEqual([]);
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
+        expect(terminalsRead).toEqual([`terminal.get:${hcTerminalName(SEAT)}`]);
+      });
+      it("no hook record, an unreadable one, or an unreadable terminal holds nothing: the repeat goes", async () => {
+        status = "working";                                                // so the terminal alone would not release it
+        await firstWriteThenRepeatTime();                                  // nothing recorded for the node
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES ('r', 'n', 'agent.activity', 'not json')").run();
+        now += REPEAT_AFTER_MS;
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        db.prepare("DELETE FROM events").run();
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        terminalState = "exited";
+        now += REPEAT_AFTER_MS;
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+        terminalState = "live";
+        now += REPEAT_AFTER_MS;
+        const unreadable = new ClaudeSeatHop({
+          rows: store, guard, input, now: () => now, inputPoint: (nodeId, sinceMs) => seatInputPoint(db, nodeId, sinceMs),
+          eligibility: async () => ({ ok: true, nodeId: "n", endpoint }), client: { call: async () => { throw new Error("hc down"); } },
+          writeToSeat: async (_e, sender, t) => { writes.push({ sender, text: t }); return "all"; },
+        });
+        await expect(unreadable.attempt(message)).resolves.toEqual({ kind: "sent" });
+        expect(writes).toHaveLength(5);
+      });
+      it("a hook that says running, with a terminal that gives no status, does not hold the repeat", async () => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = null;
+        await firstWriteThenRepeatTime();
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "sent" });
+      });
+      it("a hop with no input-point read repeats as before", async () => {
+        hook("PreToolUse", "running", T0 - 5_000, "Bash");
+        status = "working";
+        await claude().attempt(message);
+        now += REPEAT_AFTER_MS;
+        await expect(claude().attempt(message)).resolves.toEqual({ kind: "sent" });
+      });
+      it("M1 is unchanged: a repeat inside the 40 s window waits however far the seat has moved", async () => {
+        await claudeWithEvidence().attempt(message);
+        hook("Stop", "idle", T0 + 1_000);
+        now += CLAUDE_SOCKET_REPEAT_WINDOW_MS - 1;
+        await expect(claudeWithEvidence().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
+        expect(writes).toHaveLength(1);
+      });
     });
     it("records the write before making it, so a crash in the write still waits", async () => {
       let during: number | null = null;
