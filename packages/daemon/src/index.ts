@@ -367,6 +367,8 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
         // Persists the per-seat pane PID/command verdict so node-inventory
         // gates the running/active projection on verified process identity.
         deps.seatIdentityReconciler?.start();
+        // OF-286 — tell the rig's Chief of Staff when a Pi or OMP seat starts and stops looping on model errors.
+        deps.seatModelErrorLoopNotifier?.start();
         startPeriodicSnapshotScheduler(deps);
         // OPR.0.4.6.FS-1 W2 — boot sweep + daily retention tick (bounded,
         // yields between batches; a sweep failure is logged, never fatal).
@@ -414,6 +416,7 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
       ["seat-activity", () => deps.seatActivityService?.stop()],
       ["seat-structural-activity", () => deps.seatStructuralActivityService?.stop()],
       ["seat-identity", () => deps.seatIdentityReconciler?.stop()],
+      ["seat-model-error-loop-notice", () => deps.seatModelErrorLoopNotifier?.stop()],
       ["periodic-snapshot", () => deps.periodicSnapshotScheduler?.stop()],
       ["gateway", () => deps.gatewaySubsystem?.stop()],
       ["wake-ladder", () => wakeLadderScheduler?.stop()],

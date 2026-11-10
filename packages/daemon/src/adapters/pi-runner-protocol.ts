@@ -16,6 +16,7 @@
 //   `get_state`, and prints the READY marker to the pane; the daemon reads
 //   ONLY runner-authored surfaces — never Pi TUI heuristics (BR-1).
 
+import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS } from "../domain/model-error-loop-rule.js";
 import nodePath from "node:path";
 import { shellQuote } from "./shell-quote.js";
 export type RunnerRuntime = "pi" | "omp";
@@ -87,9 +88,23 @@ export interface PiRunnerState {
    *  closed without the line being cleared, so a `rig send` would be appended to the stale text. Written only when true,
    *  trusted only alongside a live `aliveAt`, absent from an older runner (today's behaviour). */
   pasteLeftover?: boolean;
+  /** OF-286: present while the seat is flagged as looping on model errors: PI_MODEL_ERROR_LOOP_THRESHOLD failed model requests
+   *  within PI_MODEL_ERROR_LOOP_WINDOW_MS, whatever succeeded in between. Kept when Pi gives up (`gaveUpAt`), dropped only when a
+   *  turn completes with no model error in it. `rig ps` and `rig health` read it (PiRuntimeAdapter.modelErrorLoop) only alongside a
+   *  live `aliveAt`. Absent from an older runner (no flag) and from a sidecar rewritten by a relaunch. Never read for send gating. */
+  modelErrorLoop?: PiModelErrorLoop;
   /** S2: the seat gate this runner carries (SEAT_GATE_VERSION). Absent from a runner with none. */
   seatGate?: number;
 }
+
+/** OF-286: a flagged seat. `count` is the failed requests inside the window at `lastAt`; `total` the failed requests since the flag
+ *  was raised (`since` = the first failure of that window); `lastError` the latest error text (one line, bounded); `gaveUpAt` is when
+ *  the runtime ended a turn on a model error after the flag (its retries ran out), dropped by the next failure. */
+export interface PiModelErrorLoop { count: number; total: number; since: string; lastAt: string; lastError: string; gaveUpAt?: string }
+
+/** OF-286: N failed model requests within the window flag a seat (the numbers and their measurement: domain/model-error-loop-rule.ts). */
+export const PI_MODEL_ERROR_LOOP_THRESHOLD = MODEL_ERROR_LOOP_THRESHOLD;
+export const PI_MODEL_ERROR_LOOP_WINDOW_MS = MODEL_ERROR_LOOP_WINDOW_MS;
 
 /** OF-119: how often a ready runner rewrites its sidecar, and how old `aliveAt` may be before the sidecar is no answer. */
 export const PI_SIDECAR_TICK_MS = 60_000;

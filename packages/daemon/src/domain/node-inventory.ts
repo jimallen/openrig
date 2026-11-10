@@ -1602,6 +1602,7 @@ export async function attachAgentActivity(
     const runtime = entry.runtime ?? null;
     const seatPosture = await refineSeatPosture(deriveSeatPosture(hook, runtime, sampledAt), runtime, entry.canonicalSessionName ?? "", deps.seatTerminalStatus, sampledAt);
     const heldMessages = deps.activityStore?.heldMessagesFor?.(entry.canonicalSessionName ?? "", sampledAt) ?? undefined;
-    return { ...attached, seatPosture, ...(heldMessages ? { heldMessages } : {}) };
+    const modelErrorLoop = deps.activityStore?.modelErrorLoopFor?.(entry.canonicalSessionName ?? "", runtime, sampledAt) ?? undefined;
+    return { ...attached, seatPosture, ...(heldMessages ? { heldMessages } : {}), ...(modelErrorLoop ? { modelErrorLoop } : {}) };
   }));
 }

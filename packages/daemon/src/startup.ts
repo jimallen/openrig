@@ -1375,7 +1375,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     inventory: () => inventoryOfLiveRigs(db),
     waiting: (seat) => { const open = seatMessages.openBySeat().find((row) => row.seat === seat); return open ? { open: open.open, oldestId: open.oldestId } : null; },
   });
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, seatLostHealth, ...seatMessagingHealth, ...gateUnconfirmedHealth, new (await import("./domain/seat-question-health.js")).SeatQuestionHealthSource(seatQuestionStore, (sessionName, now) => describeHeld(seatMessages.openFor(sessionName), now.getTime()))], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // OF-286: a Pi or OMP seat looping on model errors (3 failed requests in 15 min), read from the runner's sidecar; read-only.
+  const { SeatModelErrorLoopHealthSource } = await import("./domain/seat-model-error-loop-health.js");
+  const seatModelErrorLoopHealth = new SeatModelErrorLoopHealthSource({
+    inventory: () => inventoryOfLiveRigs(db),
+    modelErrorLoop: (runtime, session) => (runtime === "omp" ? ompAdapter : piAdapter).modelErrorLoop(session),
+  });
+  // OF-286: the rig's Chief of Staff is told once when such a seat starts looping and once when it stops (OF-221's queue notice path; started post-bind by index.ts).
+  const { SeatModelErrorLoopNotifier } = await import("./domain/seat-model-error-loop-notice.js");
+  const seatModelErrorLoopNotifier = new SeatModelErrorLoopNotifier({
+    db, queue: queueRepoInstance, inventory: () => inventoryOfLiveRigs(db),
+    read: (runtime, session) => (runtime === "omp" ? ompAdapter : piAdapter).readModelErrorLoop(session),
+  });
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth, seatLostHealth, seatModelErrorLoopHealth, ...seatMessagingHealth, ...gateUnconfirmedHealth, new (await import("./domain/seat-question-health.js")).SeatQuestionHealthSource(seatQuestionStore, (sessionName, now) => describeHeld(seatMessages.openFor(sessionName), now.getTime()))], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
@@ -1426,6 +1438,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     isRegisteredOccupantGeneration: (nodeId, generation) =>
       sessionRegistry.isOccupantGenerationRegistered(nodeId, generation),
     heldMessages: (sessionName, now) => describeHeld(seatMessages.openFor(sessionName), now.getTime()),
+    // OF-286: the model-error flag a Pi or OMP seat's runner publishes (its sidecar), for the `rig ps` marker. Each runtime reads its own state root.
+    modelErrorLoop: (sessionName, runtime) => (runtime === "omp" ? ompAdapter : piAdapter).modelErrorLoop(sessionName),
     onActivityRecorded: (activity, session) => { seatQuestionStore.settleFromActivity(session.nodeId, activity.rawEvent ?? null, activity.rawSubtype ?? null, activity.eventAt ?? new Date().toISOString()); },
   });
   const seatQuestions = new SeatQuestionService({
@@ -1579,6 +1593,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     seatStructuralActivityService,
     seatTerminalStatus,
     seatIdentityReconciler,
+    // OF-286: told when a Pi or OMP seat starts and stops looping on model errors; index.ts starts and stops it.
+    seatModelErrorLoopNotifier,
     // OPR.0.4.4.21 — agentActivity feeds the rig-rollup attention
     // predicate's needs_input signal (synchronous events lookup only).
     psProjectionService: new PsProjectionService({ db, seatActivity: seatActivityService, agentActivity: agentActivityStore }),

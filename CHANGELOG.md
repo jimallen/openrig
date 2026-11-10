@@ -10,6 +10,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A Pi or OMP seat whose model requests keep failing is marked in `rig ps`, named in `rig health`, and reported to the Chief of Staff (OF-286)
+
+- Symptom: on openai-codex a Pi seat's model requests were cut off after 78-125 s with no output ("terminated", "WebSocket error", "fetch failed"). Pi retried on its own, steps often succeeded in between, and the seat read busy for up to an hour, so a coordinating seat only found out by reading panes and relaunched seats (losing their context). On 11-10 verify-qa and verify-sec@eztrack had 80 failed requests, 76 of them in 10 turns of 3-16 failures each with answers between most of them; Pi stops after 3 consecutive failed retries and any answer resets its own count, so no "N in a row" rule sees this. The cut is between the runtime and the provider, not in OpenRig; this change only makes the loop visible.
+- A Pi or OMP seat with 3 failed model requests within 15 minutes, whether or not something succeeded in between, is flagged. The flag is kept when the runtime gives up (the turn ends on the error) and is cleared only by a turn that completes with no model error in it. Seats started before this change publish no flag until relaunched.
+- `rig ps`: the seat counts in ATTN and its reason says `looping on model errors: 11 failed requests since 04:29Z (52m), last "terminated" 3m ago` (plus when the runtime gave up). `--json` carries `modelErrorLoop` on that seat. The seat's ACTIVITY, readiness and send gating are unchanged: it is still working through its retries.
+- The rig's Chief of Staff gets one queue item (from `daemon@kernel`, waking it) every time a seat's flag is raised, and one (no wake) when the same runner's flag clears after a clean turn. A relaunch is not a recovery: it sends nothing, and a loop that starts after it is announced again. There is no rate limit; the item ids derive from the seat and the loop's first failure, so a daemon restart inside a loop does not re-wake the Chief of Staff. No item when the rig has no Chief of Staff or the looping seat is the Chief of Staff. A start item that could not be filed is tried again on the next pass.
+- `rig health` lists a `seat.model-error-loop` finding (warning, scoped to the seat; can be disabled with `disabledDetectors`). Nothing is stopped or relaunched.
+
 ### A Pi seat gets the operator's login by a declared link, and a launch with no credential is refused (OF-279)
 
 - Symptom: a new rig's Pi seats each got a 2-byte `{}` `auth.json` (written by Pi itself), so verify seats failed on their first message with "No API key found for openai-codex", and a seat that needs the operator's custom provider (`ollama`) also had no `models.json` and exited at launch.

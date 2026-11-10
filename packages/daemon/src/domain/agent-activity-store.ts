@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity, PersistedEvent } from "./types.js";
+import { describeModelErrorLoop } from "./seat-model-error-loop.js";
 import { PDA_RUNTIME, isPdaHeldCode } from "../adapters/pda-runner-protocol.js";
 
 export const AGENT_ACTIVITY_FRESHNESS_MS = 5 * 60 * 1000;
@@ -41,6 +42,8 @@ interface AgentActivityStoreDeps {
   isRegisteredOccupantGeneration?: (nodeId: string, generation: string) => boolean;
   /** OF-278: the messages waiting for a seat, for the inventory (best effort: a failure reads as none). */
   heldMessages?: (sessionName: string, now: Date) => import("./seat-messaging/held-messages.js").HeldMessages | null;
+  /** OF-286: the model-error flag a Pi or OMP seat's runner publishes (its sidecar), or null. Best effort: a failure reads as no flag. */
+  modelErrorLoop?: (sessionName: string, runtime: string | null) => import("./seat-model-error-loop.js").PublishedModelErrorLoop | null;
   /** OF-278: told of every activity this store records, after it is emitted (the seat's open questions settle from it). Never throws into ingest. */
   onActivityRecorded?: (activity: AgentActivity, session: { rigId: string; nodeId: string; sessionName: string }) => void;
 }
@@ -67,6 +70,7 @@ export class AgentActivityStore {
   private readonly resolveOccupantGeneration?: (nodeId: string) => string | null;
   private readonly isRegisteredOccupantGeneration?: (nodeId: string, generation: string) => boolean;
   private readonly heldMessages?: (sessionName: string, now: Date) => import("./seat-messaging/held-messages.js").HeldMessages | null;
+  private readonly modelErrorLoop?: (sessionName: string, runtime: string | null) => import("./seat-model-error-loop.js").PublishedModelErrorLoop | null;
   private readonly onActivityRecorded?: (activity: AgentActivity, session: { rigId: string; nodeId: string; sessionName: string }) => void;
 
   constructor(deps: AgentActivityStoreDeps) {
@@ -78,6 +82,7 @@ export class AgentActivityStore {
     this.isRegisteredOccupantGeneration = deps.isRegisteredOccupantGeneration;
     this.onActivityRecorded = deps.onActivityRecorded;
     this.heldMessages = deps.heldMessages;
+    this.modelErrorLoop = deps.modelErrorLoop;
   }
 
   recordHookEvent(input: HookActivityInput): RecordHookActivityResult {
@@ -143,6 +148,15 @@ export class AgentActivityStore {
     try { this.onActivityRecorded?.(activity, { rigId: session.rig_id, nodeId: session.node_id, sessionName: session.session_name }); } catch { /* ingest never fails on a listener */ }
 
     return { ok: true, activity, event };
+  }
+
+  /** OF-286: the seat's model-error flag as served to `rig ps` (with its human line), or null. Never throws. */
+  modelErrorLoopFor(sessionName: string, runtime: string | null, now: Date): import("./seat-model-error-loop.js").SeatModelErrorLoop | null {
+    if (runtime !== "pi" && runtime !== "omp") return null;
+    try {
+      const loop = this.modelErrorLoop?.(sessionName, runtime) ?? null;
+      return loop ? describeModelErrorLoop(loop, now.getTime()) : null;
+    } catch { return null; }
   }
 
   /** OF-278: what waits for a seat's messages, or null. Never throws. */

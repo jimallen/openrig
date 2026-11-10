@@ -107,6 +107,9 @@ interface NodeEntry {
   seatPosture?: SeatPostureView;
   /** OF-278 — messages waiting for the seat, when that is a wait worth saying: `line` is "3 held, oldest 381m". */
   heldMessages?: { count: number; oldestAt: string; line: string };
+  /** OF-286 — a Pi or OMP seat looping on model errors (3 failed requests within 15 min, kept until a turn completes cleanly). Counts in ATTN and
+   *  leads the reason; the seat is still working, so its ACTIVITY and sendability are not changed. */
+  modelErrorLoop?: { count: number; total: number; since: string; lastAt: string; lastError: string; gaveUpAt?: string; line: string };
   // PL-012: context-usage block surfaced from the daemon's
   // /api/rigs/:id/nodes route (already populated). Optional because
   // older daemons may not emit it.
@@ -232,6 +235,7 @@ const ALLOWED_NODE_FIELDS = new Set([
   "agentActivity",
   "seatPosture",
   "heldMessages",
+  "modelErrorLoop",
   "contextUsage",
   "heldReason",
 ]);
@@ -631,6 +635,12 @@ function selectFanOutFields(entries: Array<Record<string, unknown>>, fields: str
 }
 
 function needsAttention(node: NodeEntry): boolean {
+  return needsOtherAttention(node) || node.modelErrorLoop != null;
+}
+
+/** The attention that existed before OF-286: lifecycle, startup, needs-input. A seat looping on model errors counts in ATTN too, but its
+ *  reason is the loop line, not a lifecycle or startup reason. */
+function needsOtherAttention(node: NodeEntry): boolean {
   return node.lifecycleState === "attention_required"
     || node.startupStatus === "attention_required"
     || node.startupStatus === "failed"
@@ -723,6 +733,8 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
     // a token budget (ps-compact.test.ts) and idle / unknown postures are what agentActivity already says. --full and --fields carry it whole.
     if (postureNote(n)) compact.seatPosture = n.seatPosture;
     if (heldNote(n)) compact.heldMessages = n.heldMessages;
+    // OF-286 — a seat looping on model errors keeps its ACTIVITY (it is still working); the loop is its own field.
+    if (n.modelErrorLoop) compact.modelErrorLoop = n.modelErrorLoop;
     // held/attention reason (short) when present.
     if (n.heldReason) compact.heldReason = n.heldReason;
     if (attention && n.latestError) {
@@ -1276,11 +1288,12 @@ async function handleNodes(
   if (useCompact) {
     console.log(padCompactNodeRow("RIG", "SESSION", "LIFECYCLE", "ACTIVITY", "WORK", "REASON"));
     for (const n of humanList as NodeEntry[]) {
-      const attn = needsAttention(n);
       // OF-278: a seat that needs input is the seat messages wait behind, so its held count joins the reason instead of being hidden by it.
-      const reason = missingSessionGuidance(n, adviceRigs) ?? (attn || hasCurrentUsageLimit(n)
+      const other = missingSessionGuidance(n, adviceRigs) ?? (needsOtherAttention(n) || hasCurrentUsageLimit(n)
         ? [n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—", heldNote(n)].filter((x): x is string => x !== null).join("; ")
         : quietNote(n) ?? "—");
+      // OF-286: a seat looping on model errors leads with that line (count, last error, since); what else it carries follows.
+      const reason = n.modelErrorLoop && !missingSessionGuidance(n, adviceRigs) ? [n.modelErrorLoop.line, other === "—" ? null : other].filter((x): x is string => x !== null).join("; ") : other;
       console.log(padCompactNodeRow(
         n.rigName,
         n.canonicalSessionName ?? "—",
@@ -1314,7 +1327,7 @@ async function handleNodes(
         formatActivity(n),
         formatContextUsage(n.contextUsage),
         n.restoreOutcome,
-        missingSessionGuidance(n, adviceRigs) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : quietNote(n) ?? "—"),
+        missingSessionGuidance(n, adviceRigs) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : n.modelErrorLoop ? `model errors x${n.modelErrorLoop.total}` : quietNote(n) ?? "—"),
       ));
     }
   }

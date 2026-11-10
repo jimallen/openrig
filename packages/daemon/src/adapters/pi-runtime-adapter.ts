@@ -30,7 +30,7 @@ import { runnerTerminalEnded } from "./runner-terminal-ended.js";
 import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
   PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER, piSidecarAlive, PI_SIDECAR_ALIVE_WINDOW_MS,
-  type PiRunnerState, type RunnerRuntime,
+  type PiRunnerState, type PiModelErrorLoop, type RunnerRuntime,
   type PiModelOverrides,
 } from "./pi-runner-protocol.js";
 
@@ -431,6 +431,27 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     if (state.pasteLeftover === true) return { ...base, state: "needs_input", reason: RUNNER_PASTE_LEFTOVER_REASON };
     if (state.busy) return { ...base, state: "running", reason: "run_active" };
     return { ...base, state: "idle", reason: "runner_idle" };
+  }
+
+  /** OF-286: what the runner publishes of this seat's model errors. `observed` is false when the sidecar is no answer (missing, not ready,
+   *  exited, or not live): the seat is then neither looping nor recovered as far as anyone can tell. A published flag this reader does not
+   *  understand reads as no flag. Reads the sidecar only: nothing here gates a send or changes the seat's activity. */
+  readModelErrorLoop(sessionName: string): { observed: boolean; loop: PiModelErrorLoop | null; launchId?: string } {
+    let state: PiRunnerState | null;
+    try { state = this.readRunnerState(sessionName); } catch { return { observed: false, loop: null }; }
+    if (!state || !state.ready || state.exited || !piSidecarAlive(state, this.now().getTime())) return { observed: false, loop: null };
+    const launchId = typeof state.launchId === "string" ? { launchId: state.launchId } : {};
+    const l = state.modelErrorLoop as Partial<PiModelErrorLoop> | undefined;
+    const isTime = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v));
+    const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1;
+    if (!l || !isCount(l.count) || !isCount(l.total) || !isTime(l.since) || !isTime(l.lastAt) || typeof l.lastError !== "string"
+      || (l.gaveUpAt !== undefined && !isTime(l.gaveUpAt))) return { observed: true, loop: null, ...launchId };
+    return { observed: true, loop: { count: l.count, total: l.total, since: l.since, lastAt: l.lastAt, lastError: l.lastError, ...(l.gaveUpAt !== undefined ? { gaveUpAt: l.gaveUpAt } : {}) }, ...launchId };
+  }
+
+  /** OF-286: the flag, or null. */
+  modelErrorLoop(sessionName: string): PiModelErrorLoop | null {
+    return this.readModelErrorLoop(sessionName).loop;
   }
 
   // ── internals ──────────────────────────────────────────────────────────────

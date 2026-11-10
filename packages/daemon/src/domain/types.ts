@@ -769,6 +769,9 @@ export interface NodeInventoryEntry {
   seatPosture?: import("./seat-posture.js").SeatPosture;
   /** OF-278: messages waiting for this seat, when there is a wait worth saying (domain/seat-messaging/held-messages.ts). */
   heldMessages?: import("./seat-messaging/held-messages.js").HeldMessages;
+  /** OF-286: present while a Pi or OMP seat is flagged as looping on model errors (3 failed requests in 15 min). It marks the seat in `rig ps`
+   *  (ATTN and the reason); the seat's activity, readiness and send gating are unchanged. */
+  modelErrorLoop?: import("./seat-model-error-loop.js").SeatModelErrorLoop;
   contextUsage?: ContextUsage;
   /** Health of the daemon-owned transcript capture for this seat. */
   transcriptIngest?: import("./transcript-store.js").TranscriptIngestHealth & {

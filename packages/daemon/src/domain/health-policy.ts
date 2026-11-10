@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { RSI_DETECTORS } from "./rsi/detector-ids.js";
 
-export const HEALTH_DETECTORS = ["process.ceremony-amplification", "process.review-carousel", "process.redundant-wake-storm", "governance.stale-directive", "governance.scope-admission-drift", "context.pressure", "seat.lost"] as const;
+export const HEALTH_DETECTORS = ["process.ceremony-amplification", "process.review-carousel", "process.redundant-wake-storm", "governance.stale-directive", "governance.scope-admission-drift", "context.pressure", "seat.lost", "seat.model-error-loop"] as const;
 /** Ids a policy may list in `disabledDetectors`: the health detectors plus the RSI telemetry detectors. */
 export const DISABLEABLE_DETECTORS: readonly string[] = [...HEALTH_DETECTORS, ...RSI_DETECTORS];
 export interface HealthPolicy {

@@ -42,6 +42,7 @@ import {
   type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
 import { applyPiModelOverrides } from "./pi-model-overrides.js";
+import { ModelErrorLoopTracker, isFinalAgentEnd } from "./pi-model-error-loop.js";
 
 // ── Submitted input boundaries ─────────────────────────────────────────────
 // pda L0: the editor and the activity endpoint lookup live in runner-pane-io.ts, shared with other
@@ -121,9 +122,9 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
     case "agent_end":
       // OMP marks a non-final agent_end with isTerminal:false; Pi (agent-session.d.ts) with willRetry:true, and the
       // retry's own agent_start/agent_end follow. Neither is the end of the run, so neither is a Stop.
-      return (runtime === "omp" && event.isTerminal === false) || (runtime === "pi" && event.willRetry === true)
-        ? { mirrorLines: [], streaming: true }
-        : { mirrorLines: [""], activity: { hookEvent: "Stop", subtype: "agent_end" }, streaming: false };
+      return isFinalAgentEnd(event, runtime)
+        ? { mirrorLines: [""], activity: { hookEvent: "Stop", subtype: "agent_end" }, streaming: false }
+        : { mirrorLines: [], streaming: true };
     case "turn_end":
       // OMP repeats an assistant failure on turn_end (sometimes only there).
       // Pi keeps main's mapping: turn_end carries no notice.
@@ -383,6 +384,8 @@ export class RunnerCore {
   /** S2: the RPC id of each marked command Pi has not answered yet. */
   private readonly gateSends = new Map<string, GateIntent>();
   private gateSendCount = 0;
+  /** OF-286: failed model requests per window; its flag is carried in the sidecar (modelErrorLoop). Never touches activity or attention. */
+  private readonly modelErrorLoop: ModelErrorLoopTracker;
 
   constructor(
     private io: RunnerIo,
@@ -397,6 +400,7 @@ export class RunnerCore {
     // instance's own sidecar writes never regress it to undefined before a
     // newer entry supersedes it.
     this.lastEntryId = opts.catchUpSince;
+    this.modelErrorLoop = new ModelErrorLoopTracker(opts.runtime ?? "pi", () => this.io.now());
   }
   /** Runner readiness is the sidecar's acknowledged get_state, not RPC transport ready. */
   isReady(): boolean { return this.ready; }
@@ -764,6 +768,8 @@ export class RunnerCore {
       return;
     }
     const message = event.message as Record<string, unknown> | undefined;
+    // OF-286: the flag is rewritten the moment it changes, so a seat that stops after giving up still carries it.
+    if (this.modelErrorLoop.observe(event) && this.ready) this.writeSidecar({});
     if (event.type === "message_start" && message?.role === "user") {
       const shown = userMessageText(message);
       if (shown !== null) {
@@ -910,6 +916,7 @@ export class RunnerCore {
       aliveAt: this.io.now(),
       ...(this.pasteOpen ? { pasteOpen: true } : {}),
       ...(this.pasteLeftover ? { pasteLeftover: true } : {}),
+      ...(this.modelErrorLoop.current ? { modelErrorLoop: this.modelErrorLoop.current } : {}),
       ...(this.opts.gate ? { seatGate: SEAT_GATE_VERSION } : {}),
       ...patch,
     });

@@ -22,6 +22,7 @@ import { queryUsageSeries } from "./usage-series.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { RSI_FINDING_CATEGORY, RSI_FINDING_SEVERITY } from "./rsi/detector-ids.js";
 import { freshSeatLaunchCommand, shellWord } from "./active-occupant.js";
+import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS } from "./model-error-loop-rule.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -94,6 +95,19 @@ export type HealthDetectorObservation =
       logicalId: string;
       sessionName: string;
       waiting: { open: number; oldestId: string | null } | null;
+    })
+  /** A Pi or OMP seat looping on model errors (OF-286): `failedRequests` failed model requests since the flag was raised, the latest error
+   *  text, and when the runtime gave up (its retries ran out), if it did. `episodeStartedAt` is the first failure of the flagging window. */
+  | (ObservationBase & {
+      kind: "seat-model-error-loop";
+      rigId: string;
+      rigName: string;
+      logicalId: string;
+      sessionName: string;
+      runtime: "pi" | "omp";
+      failedRequests: number;
+      lastError: string;
+      gaveUpAt: string | null;
     })
   /** One counted telemetry finding. Counts and class live in the `telemetry-span` evidence;
    * `fingerprint` is the finding's stable identity (rsi/fingerprint.ts). */
@@ -408,6 +422,7 @@ function evaluateObservation(observation: HealthDetectorObservation, policy: Hea
     case "context-pressure": return evaluateContext(observation);
     case "telemetry-finding": return evaluateTelemetryFinding(observation);
     case "seat-lost": return evaluateSeatLost(observation);
+    case "seat-model-error-loop": return evaluateSeatModelErrorLoop(observation);
   }
 }
 
@@ -430,6 +445,25 @@ function evaluateSeatLost(observation: Extract<HealthDetectorObservation, { kind
     suggestedInspection: `Bring it back on its own conversation (run this):\n  rig launch ${shellWord(observation.rigId)} ${shellWord(observation.logicalId)}\n`
       + `That resumes from the rig's latest snapshot (taken periodically and at rig down): if it answers that there is no usable snapshot, a rig that only just started has none yet.\n`
       + `Or start only this seat fresh, on a new conversation (run this):\n  ${freshSeatLaunchCommand(observation.logicalId, observation.rigName)}`,
+  })];
+}
+
+/** The prompt for a seat looping on model errors. The seat reads busy while its runtime retries, so the finding says what is failing, since
+ *  when, and what not to do first. */
+function evaluateSeatModelErrorLoop(observation: Extract<HealthDetectorObservation, { kind: "seat-model-error-loop" }>): HealthRecord[] {
+  const seat = `${observation.logicalId}@${observation.rigName}`;
+  const gaveUp = observation.gaveUpAt ? ` The runtime gave up at ${observation.gaveUpAt}: the turn ended on the error and the seat is idle with its task undone.` : "";
+  return [record(observation, {
+    detector: "seat.model-error-loop",
+    category: "process",
+    severity: "warning",
+    summary: `Seat ${seat} (${observation.runtime}) is looping on model errors: ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt}; last error: ${observation.lastError}.${observation.gaveUpAt ? ` The runtime gave up at ${observation.gaveUpAt}.` : ""}`,
+    threshold: `${MODEL_ERROR_LOOP_THRESHOLD} failed model requests within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes, whatever succeeded in between; kept when the runtime gives up; cleared when a turn completes with no model error`,
+    explanation: `${seat} (session ${observation.sessionName}) has had ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt} (latest ${observation.lastObservedAt}), at least ${MODEL_ERROR_LOOP_THRESHOLD} of them within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes. `
+      + `The latest error was: ${observation.lastError}. It still reads busy while its runtime retries, and steps may succeed between the failures. The cut is between the runtime and the model provider, not in OpenRig.${gaveUp} `
+      + `A fresh relaunch loses the seat's context and starts the same request again, so it is not the first remedy.`,
+    suggestedInspection: `Look at the seat's pane and its latest errors (run this):\n  rig capture ${shellWord(observation.sessionName)}\n`
+      + `If it keeps failing, end the turn and re-send a smaller step instead of relaunching (a person decides; nothing here stops it).`,
   })];
 }
 

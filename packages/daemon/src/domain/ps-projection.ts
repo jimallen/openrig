@@ -86,18 +86,22 @@ export interface PsEntry {
  *     about the same seat.
  *   - a held seat (`heldReason` present)
  *   - a recorded startup error (`latestError` present)
+ *   - OF-286: a Pi or OMP seat flagged as looping on model errors (`modelErrorLoop`). It only marks the seat: the seat is still working through
+ *     its retries, and neither its activity, its readiness nor send gating reads this count.
  */
 export function seatNeedsAttention(
   entry: NodeInventoryEntry,
   activity: AgentActivity | null,
   arbitratedNeedsInput: boolean | null = null,
+  modelErrorLoop: unknown | null = null,
 ): boolean {
   return entry.lifecycleState === "attention_required"
     || entry.startupStatus === "attention_required"
     || entry.startupStatus === "failed"
     || (arbitratedNeedsInput ?? activity?.state === "needs_input")
     || entry.heldReason != null
-    || entry.latestError != null;
+    || entry.latestError != null
+    || modelErrorLoop != null;
 }
 
 /**
@@ -332,7 +336,8 @@ export class PsProjectionService {
         const activity = this.agentActivity && session
           ? this.agentActivity.getLatestForNode({ sessionName: session, now: nowDate })
           : null;
-        if (seatNeedsAttention(node, activity, arbitratedNeedsInputSignal(arbitrated))) attentionCount++;
+        const modelErrorLoop = session && node.sessionStatus === "running" ? this.agentActivity?.modelErrorLoopFor?.(session, node.runtime, nowDate) ?? null : null;
+        if (seatNeedsAttention(node, activity, arbitratedNeedsInputSignal(arbitrated), modelErrorLoop)) attentionCount++;
       }
 
       return {
