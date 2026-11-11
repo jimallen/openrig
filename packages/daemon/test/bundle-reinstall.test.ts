@@ -9,6 +9,7 @@ import { stringify } from "yaml";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { materializePodBundle } from "../src/domain/bundle-source-resolver.js";
+import { shellArgv, commandIn } from "./helpers/shell-argv.js";
 import type { BootstrapResult, BootstrapStageResult } from "../src/domain/bootstrap-orchestrator.js";
 
 describe("bundle reinstall through both public routes", () => {
@@ -513,6 +514,59 @@ describe("bundle reinstall through both public routes", () => {
     const ra = fs.realpathSync(a);
     expect(plan.body.warnings).toContain(`Apply would refuse this install: ${goneRefusal(rigId, ra)}`);
     expect(plan.body.warnings.join("\n")).not.toContain("<dir>");
+  });
+
+  // OF-287 review F4: the printed commands are pasted into a shell. A folder with a space or a quote must come back as ONE word.
+  const FRESH_END = " --on-existing fresh";
+  const targetOf = (command: string): string => {
+    const words = shellArgv(command.replace("rig up <bundle> ", ""));
+    expect(words.slice(0, 1)).toEqual(["--target"]);
+    expect(words.slice(2)).toEqual(["--on-existing", "fresh"]);
+    return words[1]!;
+  };
+
+  it("F4: crashed in 'folder a' (a space), reinstall aimed there: the printed command, pasted into a shell, targets that one folder and replaces it", async () => {
+    const a = path.join(root, "folder a");
+    await installAndCrash(a);
+    const archivePath = await bundle("workshop", "2.0.0");
+    const plan = await install("/api/up", archivePath, a, true);
+    expect(plan.status).toBe(200);
+    const line = (plan.body.bundleInstall.resolutions as string[]).find((r) => r.includes("rig up <bundle> --target"))!;
+    const command = commandIn(line, "rig up <bundle>", FRESH_END);
+    const target = targetOf(command);
+    expect(target).toBe(fs.realpathSync(a));
+    const refused = await install("/api/up", archivePath, a);
+    expect(refused.status).toBe(409);
+    expect(refused.body.errors[0]).toContain(command.includes("'") ? `\`${command}\`` : `'${command}'`);
+    const result = await fresh(archivePath, target);
+    expect(result.status, JSON.stringify(result.body)).toBe(201);
+    expect(fs.readFileSync(path.join(a, "README.md"), "utf8")).toBe("offered team documentation\n");
+    expect(setup.rigRepo.getRigInstallRoot(result.body.rigId)).toBe(fs.realpathSync(a));
+  });
+
+  it("F4: crashed in 'folder a', install aimed at \"it's b\" (space and apostrophe): both printed commands, pasted, target exactly A and exactly B", async () => {
+    const a = path.join(root, "folder a"), b = path.join(root, "it's b");
+    await installAndCrash(a);
+    const archivePath = await bundle("workshop", "2.0.0");
+    const plan = await install("/api/up", archivePath, b, true);
+    const commands = (plan.body.bundleInstall.resolutions as string[]).filter((r) => r.includes("rig up <bundle> --target")).map((r) => commandIn(r, "rig up <bundle>", FRESH_END));
+    expect(commands.map(targetOf)).toEqual([fs.realpathSync(a), b]);
+    // the refusal text carries the same commands, set off so that a quote inside one cannot end it early
+    const refused = await install("/api/up", archivePath, b);
+    for (const command of commands) expect(refused.body.errors[0]).toContain(command.includes("'") ? `\`${command}\`` : `'${command}'`);
+    const result = await fresh(archivePath, targetOf(commands[1]!));
+    expect(result.status, JSON.stringify(result.body)).toBe(201);
+    expect(fs.readFileSync(path.join(b, "README.md"), "utf8")).toBe("offered team documentation\n");
+    expect(fs.readFileSync(path.join(a, "README.md"), "utf8")).toBe("my local edits\n");
+  });
+
+  it("F4: no recorded folder, install aimed at 'folder b': the one command, pasted, targets that one folder", async () => {
+    const a = path.join(root, "folder-a"), b = path.join(root, "folder b");
+    const rigId = await installAndCrash(a);
+    db.prepare("UPDATE rigs SET install_root = NULL WHERE id = ?").run(rigId);
+    const plan = await install("/api/up", await bundle("workshop", "2.0.0"), b, true);
+    const lines = (plan.body.bundleInstall.resolutions as string[]).filter((r) => r.includes("rig up <bundle> --target"));
+    expect(lines.map((r) => targetOf(commandIn(r, "rig up <bundle>", FRESH_END)))).toEqual([b]);
   });
 
   it.each(["/api/up", "/api/bundles/install"])("X-N1 F1, %s: no recorded install folder, install aimed at B: the text does not claim 'its own folder'; following it installs in B, as it says, and archives the team", async route => {

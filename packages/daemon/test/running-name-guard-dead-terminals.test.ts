@@ -13,12 +13,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
-import { checkRunningNameGuard, makeRunningSessionCounter, lifecycleHeldOf } from "../src/domain/running-name-guard.js";
+import { checkRunningNameGuard, makeRunningSessionCounter, lifecycleHeldOf, goneGenerationRefusal } from "../src/domain/running-name-guard.js";
 import { bundleInstallContext } from "../src/domain/bundle-install-context.js";
 import { PsProjectionService } from "../src/domain/ps-projection.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
+import { shellArgv, commandIn } from "./helpers/shell-argv.js";
 import type { SeatIdentityVerdict } from "../src/domain/types.js";
 
 const SEATS = ["exec.cos", "build.arch", "build.impl", "build.ux", "verify.ops", "verify.qa", "verify.screen", "verify.sec"];
@@ -248,5 +249,63 @@ describe("OF-287 running-name guard honours confirmed-gone terminals", () => {
     rigId = seed(["missing", "missing", "missing", "missing", "unavailable", "missing", "missing", "missing"]);
     expect(makeRunningSessionCounter(db)(rigId)).toBe(1);
     expect(guard().ok).toBe(false);
+  });
+  // OF-287 review F4/F5: the refusal's commands are pasted into a shell, and the recorded install folder comes from the caller.
+  describe("goneGenerationRefusal, called directly", () => {
+    const seedNamed = (name: string) => { const id = seed(Array(8).fill("missing"), name); return { id, repo: new RigRepository(db) }; };
+
+    it("F4: a rig whose name has a space: 'rig up <name> --existing' pasted into a shell is four words, the name one of them (spec and bundle routes)", () => {
+      const { id, repo } = seedNamed("my rig");
+      for (const bundle of [undefined, { targetRoot: "/t/x", canonicalTargetRoot: "/t/x", installRootOf: () => null }]) {
+        const refusal = goneGenerationRefusal(db, repo, "my rig", [id], bundle)!;
+        const command = commandIn(refusal.message, "rig up", " --existing");
+        expect(shellArgv(command.slice("rig ".length))).toEqual(["up", "my rig", "--existing"]);
+        expect(refusal.message).toContain(`\`${command}\``); // the command holds a quote, so it is set off in backticks
+      }
+    });
+
+    it("F4: a plain rig name and a plain path stay bare: the wording of every existing refusal is unchanged", () => {
+      const { id, repo } = seedNamed("workshop");
+      db.prepare("UPDATE rigs SET install_root = ? WHERE id = ?").run("/t/a-b_c.d/x", id); // so base reads it from the table too: this row is green at base
+      const refusal = goneGenerationRefusal(db, repo, "workshop", [id], { targetRoot: "/t/a-b_c.d/x", canonicalTargetRoot: "/t/a-b_c.d/x", installRootOf: () => "/t/a-b_c.d/x" })!;
+      expect(refusal.resolutions).toEqual([
+        "Resume it on its own conversations: rig up workshop --existing.",
+        `Archive it first (rig archive ${id}), then install into a new or empty --target.`,
+        "Replace it in its own folder with rig up <bundle> --target /t/a-b_c.d/x --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.",
+      ]);
+    });
+
+    it("F4: a target that starts with '=' or holds $, backtick, ; or a newline is one inert word when pasted", () => {
+      const { id, repo } = seedNamed("workshop");
+      for (const dir of ["=rig/x", "/t/$HOME/`id`;x", "/t/a\nb", "/t/a&b|c(d)"]) {
+        const refusal = goneGenerationRefusal(db, repo, "workshop", [id], { targetRoot: dir, canonicalTargetRoot: dir, installRootOf: () => dir })!;
+        const line = refusal.resolutions.find((r) => r.includes("rig up <bundle> --target"))!;
+        expect(shellArgv(commandIn(line, "rig up <bundle> ", " --on-existing fresh").replace("rig up <bundle> ", ""))).toEqual(["--target", dir, "--on-existing", "fresh"]);
+        if (dir.startsWith("=")) expect(line).toContain("--target '=rig/x' "); // zsh rewrites a bare =word to a path
+      }
+    });
+
+    it("F4: a rig id with a space (a hand-made row) is one word in 'rig archive <id>' on both routes", () => {
+      db.prepare("INSERT INTO rigs (id, name) VALUES ('rig 1', 'idrig')").run();
+      db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime, cwd) VALUES ('n-id', 'rig 1', 'crew.a', 'terminal', '/tmp')").run();
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, created_at) VALUES ('s-id', 'n-id', 'crew-a@idrig', 'running', '2026-11-10 12:00:00')").run();
+      for (const bundle of [undefined, { targetRoot: "/t/x", canonicalTargetRoot: "/t/x", installRootOf: () => null }]) {
+        const refusal = goneGenerationRefusal(db, new RigRepository(db), "idrig", ["rig 1"], bundle)!;
+        const command = commandIn(refusal.message, "rig archive", "'rig 1'");
+        expect(shellArgv(command.slice("rig ".length))).toEqual(["archive", "rig 1"]);
+      }
+    });
+
+    it("F5: the recorded install folder is the one the caller supplies, not a second read of the rigs table", () => {
+      const { id, repo } = seedNamed("workshop");
+      expect(repo.getRigInstallRoot(id)).toBeNull(); // the table records nothing; only the supplied reader knows the folder
+      const asked: string[] = [];
+      const refusal = goneGenerationRefusal(db, repo, "workshop", [id], {
+        targetRoot: "/t/b", canonicalTargetRoot: "/t/b", installRootOf: (rigId) => { asked.push(rigId); return "/t/recorded"; },
+      })!;
+      expect(asked).toEqual([id]);
+      expect(refusal.resolutions).toContain("Replace it in its own folder (/t/recorded) with rig up <bundle> --target /t/recorded --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.");
+      expect(refusal.resolutions).toContain("Or replace it from /t/b instead (the team is archived and the bundle is installed in /t/b; /t/recorded is left as it is) with rig up <bundle> --target /t/b --on-existing fresh.");
+    });
   });
 });

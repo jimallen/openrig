@@ -214,7 +214,8 @@ export class BootstrapOrchestrator {
                 const repo = new RigRepository(this.deps.db);
                 const refusal = goneGenerationRefusal(this.deps.db, repo, typeof parsedSpec?.name === "string" ? parsedSpec.name : "",
                   repo.findUnarchivedRigsByName(typeof parsedSpec?.name === "string" ? parsedSpec.name : "").map((rig) => rig.id),
-                  { targetRoot: opts.targetRoot ? nodePath.resolve(opts.targetRoot) : undefined, canonicalTargetRoot: opts.targetRoot ? realOfNearestExisting(opts.targetRoot) : undefined });
+                  { targetRoot: opts.targetRoot ? nodePath.resolve(opts.targetRoot) : undefined, canonicalTargetRoot: opts.targetRoot ? realOfNearestExisting(opts.targetRoot) : undefined,
+                    installRootOf: (rigId) => repo.getRigInstallRoot(rigId) });
                 if (refusal && mode === "plan") {
                   goneRigIds = new Set([refusal.rigId]);
                   warnings.push(`Apply would refuse this install: ${refusal.message}`);

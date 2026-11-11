@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { getNodeInventory } from "./node-inventory.js";
 import { identityVerdictConfirmsSessionMissing } from "./types.js";
 import { rigAdviceHandle, type RigRefLookup } from "./rig-ref.js";
+import { shellWord } from "./active-occupant.js";
 
 /**
  * S5b (OPR.0.5.4.11) — the running-name guard, the FLOOR against duplicate rig
@@ -61,11 +62,19 @@ export function countStoredRunningSessions(db: Database.Database, rigId: string)
   ).get(rigId) as { c: number }).c;
 }
 
-/** The install folder recorded for a bundle-installed rig (rigs.install_root; null for a rig that was not bundle-installed or
- *  predates the binding). Read here, not through RigRepository, so this module keeps its one db dependency. */
-function recordedInstallRoot(db: Database.Database, rigId: string): string | null {
-  const row = db.prepare("SELECT install_root FROM rigs WHERE id = ?").get(rigId) as { install_root?: string | null } | undefined;
-  return row?.install_root ?? null;
+/** A folder as one word of a command line an operator will paste: bare while it is only path characters, else single-quoted, so a
+ *  space, quote, `$`, backtick, `;` or newline in a folder name cannot split or run the command (OF-287 review F4). Not the
+ *  adapters' `shellWord`, which has the same bare set: the domain may not import an adapter (hexagonal ratchet), and the domain's
+ *  own `shellWord` (active-occupant) quotes every `/`, which would rewrite every path in the existing wording. A leading `=` is
+ *  quoted: zsh rewrites a bare `=word` to the path of a command. */
+function shellPath(value: string): string {
+  return /^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** A command set off inside a sentence: in single quotes, as the refusal always did, unless the command itself holds a single quote
+ *  (a quoted folder name does), when the quotes would end it early; then in backticks, which a quoted word never ends. */
+function setOff(command: string): string {
+  return command.includes("'") ? `\`${command}\`` : `'${command}'`;
 }
 
 /** OF-287: the refusal for a plain import over a rig whose seats all lost their terminals while their rows still read `running`.
@@ -76,25 +85,33 @@ export function goneGenerationRefusal(
   db: Database.Database, rigs: RigRefLookup, rigName: string, rigIds: readonly string[],
   /** A bundle install names its install folder: archiving the team does NOT let the same folder be reinstalled (the archived
    *  team no longer owns its files, so they block it with target_conflict), so a bundle's ways forward differ from a spec's. */
-  bundle?: { targetRoot?: string; /** the attempted target as the filesystem names it (realpath), for comparison with the recorded root */ canonicalTargetRoot?: string },
+  bundle?: {
+    targetRoot?: string; /** the attempted target as the filesystem names it (realpath), for comparison with the recorded root */ canonicalTargetRoot?: string;
+    /** The install folder recorded for a bundle-installed rig (rigs.install_root; null for a rig that was not bundle-installed or predates the
+     *  binding): RigRepository.getRigInstallRoot, passed in so this module keeps its one db dependency and does not read the table a second way. */
+    installRootOf(rigId: string): string | null;
+  },
 ): { rigId: string; message: string; resolutions: string[] } | null {
   const gone = rigIds.find((id) => countStoredRunningSessions(db, id) > 0);
   if (!gone) return null;
   const handle = rigAdviceHandle(rigs, gone, rigName);
   const head = `A rig named "${rigName}" already exists (${gone}), and all of its seats have lost their terminals. `;
-  const resume = `rig up ${handle} --existing`;
+  const resume = `rig up ${shellWord(handle)} --existing`;
+  const archive = `rig archive ${shellWord(gone)}`;
   if (bundle) {
     // OF-287 X-N1: "its own folder" is where the crashed team's install is RECORDED (rigs.install_root, a canonical path), not
     // the folder of the install being attempted. When the two differ both are named, so each command's effect is told truthfully.
     const attempted = bundle.targetRoot;
-    const recorded = recordedInstallRoot(db, gone);
+    const recorded = bundle.installRootOf(gone);
     const elsewhere = recorded !== null && attempted !== undefined && recorded !== (bundle.canonicalTargetRoot ?? attempted);
     // With no recorded root (a spec-created team, an install before the binding, a v1 bundle) nothing is known about "its own
     // folder", so the text says only what the command does.
     const unrecorded = recorded === null;
     const ownDir = recorded !== null && (attempted === undefined || elsewhere) ? recorded : (attempted ?? "<dir>");
-    const replaceOwn = `rig up <bundle> --target ${ownDir} --on-existing fresh`;
-    const replaceHere = `rig up <bundle> --target ${attempted} --on-existing fresh`;
+    // The folders in the two commands are quoted for a shell; the folders named in the sentences around them are prose, left as they are.
+    const ownDirWord = recorded !== null && (attempted === undefined || elsewhere) ? shellPath(recorded) : attempted !== undefined ? shellPath(attempted) : "<dir>";
+    const replaceOwn = `rig up <bundle> --target ${ownDirWord} --on-existing fresh`;
+    const replaceHere = `rig up <bundle> --target ${shellPath(attempted ?? "")} --on-existing fresh`;
     const ownFolder = elsewhere ? `its own folder (${ownDir})` : "its own folder";
     const replaceWhere = unrecorded ? `it with the bundle installed in ${ownDir} (the team is archived)` : `it in ${ownFolder}`;
     const hereNote = `the team is archived and the bundle is installed in ${attempted}; ${ownDir} is left as it is`;
@@ -102,21 +119,21 @@ export function goneGenerationRefusal(
       rigId: gone,
       resolutions: [
         `Resume it on its own conversations: ${resume}.`,
-        `Archive it first (rig archive ${gone}), then install into a new or empty --target.`,
+        `Archive it first (${archive}), then install into a new or empty --target.`,
         `Replace ${replaceWhere} with ${replaceOwn}; /api/bundles/install and rig bundle install take no --on-existing.`,
         ...(elsewhere ? [`Or replace it from ${attempted} instead (${hereNote}) with ${replaceHere}.`] : []),
       ],
-      message: head + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with '${resume}', `
-        + `or archive it first with 'rig archive ${gone}' and install into a new or empty --target, `
-        + `or replace ${replaceWhere} with '${replaceOwn}'`
-        + (elsewhere ? `, or replace it from ${attempted} instead (${hereNote}) with '${replaceHere}'.` : "."),
+      message: head + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with ${setOff(resume)}, `
+        + `or archive it first with ${setOff(archive)} and install into a new or empty --target, `
+        + `or replace ${replaceWhere} with ${setOff(replaceOwn)}`
+        + (elsewhere ? `, or replace it from ${attempted} instead (${hereNote}) with ${setOff(replaceHere)}.` : "."),
     };
   }
   return {
     rigId: gone,
     resolutions: [], // a plain spec import lists no resolutions; its message carries the two ways forward
-    message: head + `Nothing was created and it was not archived. Resume it on its own conversations with '${resume}', `
-      + `or archive it first with 'rig archive ${gone}' to start fresh.`,
+    message: head + `Nothing was created and it was not archived. Resume it on its own conversations with ${setOff(resume)}, `
+      + `or archive it first with ${setOff(archive)} to start fresh.`,
   };
 }
 
