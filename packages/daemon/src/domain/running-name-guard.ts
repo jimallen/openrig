@@ -89,22 +89,26 @@ export function goneGenerationRefusal(
     const attempted = bundle.targetRoot;
     const recorded = recordedInstallRoot(db, gone);
     const elsewhere = recorded !== null && attempted !== undefined && recorded !== (bundle.canonicalTargetRoot ?? attempted);
+    // With no recorded root (a spec-created team, an install before the binding, a v1 bundle) nothing is known about "its own
+    // folder", so the text says only what the command does.
+    const unrecorded = recorded === null;
     const ownDir = recorded !== null && (attempted === undefined || elsewhere) ? recorded : (attempted ?? "<dir>");
     const replaceOwn = `rig up <bundle> --target ${ownDir} --on-existing fresh`;
     const replaceHere = `rig up <bundle> --target ${attempted} --on-existing fresh`;
     const ownFolder = elsewhere ? `its own folder (${ownDir})` : "its own folder";
+    const replaceWhere = unrecorded ? `it with the bundle installed in ${ownDir} (the team is archived)` : `it in ${ownFolder}`;
     const hereNote = `the team is archived and the bundle is installed in ${attempted}; ${ownDir} is left as it is`;
     return {
       rigId: gone,
       resolutions: [
         `Resume it on its own conversations: ${resume}.`,
         `Archive it first (rig archive ${gone}), then install into a new or empty --target.`,
-        `Replace it in ${ownFolder} with ${replaceOwn}; /api/bundles/install and rig bundle install take no --on-existing.`,
+        `Replace ${replaceWhere} with ${replaceOwn}; /api/bundles/install and rig bundle install take no --on-existing.`,
         ...(elsewhere ? [`Or replace it from ${attempted} instead (${hereNote}) with ${replaceHere}.`] : []),
       ],
       message: head + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with '${resume}', `
         + `or archive it first with 'rig archive ${gone}' and install into a new or empty --target, `
-        + `or replace it in ${ownFolder} with '${replaceOwn}'`
+        + `or replace ${replaceWhere} with '${replaceOwn}'`
         + (elsewhere ? `, or replace it from ${attempted} instead (${hereNote}) with '${replaceHere}'.` : "."),
     };
   }

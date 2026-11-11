@@ -246,7 +246,7 @@ describe("rig up --on-existing help", () => {
     expect(text).toContain("--on-existing <choice>");
     expect(text).toMatch(/project rig whose project already has a stopped rig/);
     expect(text).toMatch(/spec or bundle whose existing team has lost every seat terminal/);
-    expect(text).toContain("a bundle is replaced in the --target folder");
+    expect(text).toContain("a bundle is installed in the --target folder; a team installed in another folder leaves that folder as it is");
     expect(text).toMatch(/refuses a spec or bundle over a team that has lost its terminals/);
     expect(text).toContain("rig up <name> --existing");
   });

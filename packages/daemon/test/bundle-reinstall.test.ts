@@ -298,15 +298,21 @@ describe("bundle reinstall through both public routes", () => {
     return guard;
   };
   const target0 = () => path.join(root, "target");
+  /** A crashed team whose install folder IS recorded and is the one being aimed at: "its own folder" is true. */
   const goneRefusal = (rigId: string, dir = target0()) => `A rig named "workshop" already exists (${rigId}), and all of its seats have lost their terminals. `
     + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with 'rig up workshop --existing', `
     + `or archive it first with 'rig archive ${rigId}' and install into a new or empty --target, `
     + `or replace it in its own folder with 'rig up <bundle> --target ${dir} --on-existing fresh'.`;
+  /** OF-287 X-N1 F1: no recorded install folder (spec-created, older install, v1 bundle): nothing is known about "its own folder". */
+  const goneRefusalUnrecorded = (rigId: string, dir = target0()) => `A rig named "workshop" already exists (${rigId}), and all of its seats have lost their terminals. `
+    + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with 'rig up workshop --existing', `
+    + `or archive it first with 'rig archive ${rigId}' and install into a new or empty --target, `
+    + `or replace it with the bundle installed in ${dir} (the team is archived) with 'rig up <bundle> --target ${dir} --on-existing fresh'.`;
 
-  const goneResolutions = (rigId: string, dir = target0()) => [
+  const goneResolutionsUnrecorded = (rigId: string, dir = target0()) => [
     "Resume it on its own conversations: rig up workshop --existing.",
     `Archive it first (rig archive ${rigId}), then install into a new or empty --target.`,
-    `Replace it in its own folder with rig up <bundle> --target ${dir} --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.`,
+    `Replace it with the bundle installed in ${dir} (the team is archived) with rig up <bundle> --target ${dir} --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.`,
   ];
 
   // OF-287 B1: the refusal says nothing was created, so it must come BEFORE the crashed team's install folder is replaced.
@@ -318,10 +324,10 @@ describe("bundle reinstall through both public routes", () => {
     const result = await install(route, await bundle("workshop", "2.0.0"), target);
     expect(result.status).toBe(409);
     expect(result.body.code).toBe("generation_unconfirmed");
-    expect(result.body.errors).toEqual([goneRefusal(rig.id)]);
+    expect(result.body.errors).toEqual([goneRefusalUnrecorded(rig.id)]);
     // N2: only the refusal's own ways forward; "retry this install to replace the stopped team" would refuse again.
-    expect(result.body.bundleInstall.resolutions).toEqual(goneResolutions(rig.id));
-    expect(result.body.warnings).toContain(goneResolutions(rig.id)[0]);
+    expect(result.body.bundleInstall.resolutions).toEqual(goneResolutionsUnrecorded(rig.id));
+    expect(result.body.warnings).toContain(goneResolutionsUnrecorded(rig.id)[0]);
     expect(result.body.warnings.join("\n")).not.toContain("Retry this install");
     expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("my local edits\n");
     expect(fs.readFileSync(path.join(target, "bundle.yaml"), "utf8")).toBe(manifestBefore);
@@ -341,8 +347,8 @@ describe("bundle reinstall through both public routes", () => {
     expect(result.body.status).toBe("planned");
     // plan on /api/bundles/install carries no targetRoot, so the replace command keeps the <dir> placeholder there
     const dir = route === "/api/up" ? target : "<dir>";
-    expect(result.body.warnings).toContain(`Apply would refuse this install: ${goneRefusal(rig.id, dir)}`);
-    expect(result.body.bundleInstall.resolutions).toEqual(goneResolutions(rig.id, dir));
+    expect(result.body.warnings).toContain(`Apply would refuse this install: ${goneRefusalUnrecorded(rig.id, dir)}`);
+    expect(result.body.bundleInstall.resolutions).toEqual(goneResolutionsUnrecorded(rig.id, dir));
     expect(JSON.stringify(result.body)).not.toContain("Retry this install");
     expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("my local edits\n");
     expect(fs.existsSync(path.join(root, "home", "bundle-backups"))).toBe(false);
@@ -507,6 +513,35 @@ describe("bundle reinstall through both public routes", () => {
     const ra = fs.realpathSync(a);
     expect(plan.body.warnings).toContain(`Apply would refuse this install: ${goneRefusal(rigId, ra)}`);
     expect(plan.body.warnings.join("\n")).not.toContain("<dir>");
+  });
+
+  it.each(["/api/up", "/api/bundles/install"])("X-N1 F1, %s: no recorded install folder, install aimed at B: the text does not claim 'its own folder'; following it installs in B, as it says, and archives the team", async route => {
+    const a = path.join(root, "folder-a"), b = path.join(root, "folder-b");
+    const rigId = await installAndCrash(a);
+    db.prepare("UPDATE rigs SET install_root = NULL WHERE id = ?").run(rigId);
+    const archivePath = await bundle("workshop", "2.0.0");
+    const refused = await install(route, archivePath, b);
+    expect(refused.status).toBe(409);
+    expect(refused.body.errors).toEqual([goneRefusalUnrecorded(rigId, b)]);
+    expect(refused.body.errors[0]).not.toContain("its own folder");
+    expect(refused.body.bundleInstall.resolutions).toEqual(goneResolutionsUnrecorded(rigId, b));
+    expect(fs.existsSync(b)).toBe(false);
+    const result = await fresh(archivePath, b);
+    expect(result.status, JSON.stringify(result.body)).toBe(201);
+    expect(fs.readFileSync(path.join(b, "README.md"), "utf8")).toBe("offered team documentation\n");
+    expect(fs.readFileSync(path.join(a, "README.md"), "utf8")).toBe("my local edits\n");
+    expect(setup.rigRepo.findUnarchivedRigsByName("workshop").map(r => r.id)).toEqual([result.body.rigId]);
+  });
+
+  it("X-N1 F2: the recorded folder was deleted and is reached through a symlinked parent: it is the same folder, not two", async () => {
+    const parent = path.join(root, "parent"), link = path.join(root, "link");
+    fs.mkdirSync(parent); fs.symlinkSync(parent, link);
+    const rigId = await installAndCrash(path.join(parent, "folder-a"));
+    fs.rmSync(path.join(parent, "folder-a"), { recursive: true });
+    const refused = await install("/api/up", await bundle("workshop", "2.0.0"), path.join(link, "folder-a"));
+    expect(refused.status).toBe(409);
+    expect(refused.body.errors).toEqual([goneRefusal(rigId, path.join(link, "folder-a"))]);
+    expect(refused.body.errors[0]).not.toContain("is left as it is");
   });
 
   it("the plan names the crashed team as having lost its terminals, never as 'stopped'", async () => {

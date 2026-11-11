@@ -214,7 +214,7 @@ export class BootstrapOrchestrator {
                 const repo = new RigRepository(this.deps.db);
                 const refusal = goneGenerationRefusal(this.deps.db, repo, typeof parsedSpec?.name === "string" ? parsedSpec.name : "",
                   repo.findUnarchivedRigsByName(typeof parsedSpec?.name === "string" ? parsedSpec.name : "").map((rig) => rig.id),
-                  { targetRoot: opts.targetRoot ? nodePath.resolve(opts.targetRoot) : undefined, canonicalTargetRoot: opts.targetRoot ? canonicalOrResolved(opts.targetRoot) : undefined });
+                  { targetRoot: opts.targetRoot ? nodePath.resolve(opts.targetRoot) : undefined, canonicalTargetRoot: opts.targetRoot ? realOfNearestExisting(opts.targetRoot) : undefined });
                 if (refusal && mode === "plan") {
                   goneRigIds = new Set([refusal.rigId]);
                   warnings.push(`Apply would refuse this install: ${refusal.message}`);
@@ -745,13 +745,7 @@ export class BootstrapOrchestrator {
         // resume nor fresh may touch it from here.
         // Real path of the nearest existing ancestor, so a missing seat folder still compares
         // in the same spelling as its project (macOS /var vs /private/var).
-        const real = (p: string): string => {
-          const abs = nodePath.resolve(p);
-          try { return fs.realpathSync.native(abs); } catch {
-            const parent = nodePath.dirname(abs);
-            return parent === abs ? abs : nodePath.join(real(parent), nodePath.basename(abs));
-          }
-        };
+        const real = realOfNearestExisting;
         const ownRoot = nodePath.join(real(projectRig.projectRoot), PROJECT_RIG_WORKSPACES) + nodePath.sep;
         // A rig counts as this project's only when it has seats and every seat records a
         // folder in this project's .workspaces; no seats, or a seat with no folder, is unknown.
@@ -1089,7 +1083,12 @@ export class BootstrapOrchestrator {
   }
 }
 
-/** A folder as the filesystem names it (the form rigs.install_root records); the resolved path where it cannot be read yet. */
-function canonicalOrResolved(dir: string): string {
-  try { return fs.realpathSync.native(dir); } catch { return nodePath.resolve(dir); }
+/** The real path of `p`, or of its nearest existing ancestor with the missing tail re-attached, so a folder that does not exist
+ *  (yet, or any more) is spelled the way the filesystem spells it (macOS /var vs /private/var, a symlinked parent). */
+function realOfNearestExisting(p: string): string {
+  const abs = nodePath.resolve(p);
+  try { return fs.realpathSync.native(abs); } catch {
+    const parent = nodePath.dirname(abs);
+    return parent === abs ? abs : nodePath.join(realOfNearestExisting(parent), nodePath.basename(abs));
+  }
 }
