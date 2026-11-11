@@ -61,6 +61,13 @@ export function countStoredRunningSessions(db: Database.Database, rigId: string)
   ).get(rigId) as { c: number }).c;
 }
 
+/** The install folder recorded for a bundle-installed rig (rigs.install_root; null for a rig that was not bundle-installed or
+ *  predates the binding). Read here, not through RigRepository, so this module keeps its one db dependency. */
+function recordedInstallRoot(db: Database.Database, rigId: string): string | null {
+  const row = db.prepare("SELECT install_root FROM rigs WHERE id = ?").get(rigId) as { install_root?: string | null } | undefined;
+  return row?.install_root ?? null;
+}
+
 /** OF-287: the refusal for a plain import over a rig whose seats all lost their terminals while their rows still read `running`.
  *  Call it AFTER the running-name guard has passed (so every stored `running` row left is a confirmed-gone, un-leased one) and
  *  BEFORE anything is written: the instantiator calls it before creating or archiving, the bundle orchestrator before it
@@ -69,7 +76,7 @@ export function goneGenerationRefusal(
   db: Database.Database, rigs: RigRefLookup, rigName: string, rigIds: readonly string[],
   /** A bundle install names its install folder: archiving the team does NOT let the same folder be reinstalled (the archived
    *  team no longer owns its files, so they block it with target_conflict), so a bundle's ways forward differ from a spec's. */
-  bundle?: { targetRoot?: string },
+  bundle?: { targetRoot?: string; /** the attempted target as the filesystem names it (realpath), for comparison with the recorded root */ canonicalTargetRoot?: string },
 ): { rigId: string; message: string; resolutions: string[] } | null {
   const gone = rigIds.find((id) => countStoredRunningSessions(db, id) > 0);
   if (!gone) return null;
@@ -77,18 +84,28 @@ export function goneGenerationRefusal(
   const head = `A rig named "${rigName}" already exists (${gone}), and all of its seats have lost their terminals. `;
   const resume = `rig up ${handle} --existing`;
   if (bundle) {
-    const dir = bundle.targetRoot ?? "<dir>";
-    const replace = `rig up <bundle> --target ${dir} --on-existing fresh`;
+    // OF-287 X-N1: "its own folder" is where the crashed team's install is RECORDED (rigs.install_root, a canonical path), not
+    // the folder of the install being attempted. When the two differ both are named, so each command's effect is told truthfully.
+    const attempted = bundle.targetRoot;
+    const recorded = recordedInstallRoot(db, gone);
+    const elsewhere = recorded !== null && attempted !== undefined && recorded !== (bundle.canonicalTargetRoot ?? attempted);
+    const ownDir = recorded !== null && (attempted === undefined || elsewhere) ? recorded : (attempted ?? "<dir>");
+    const replaceOwn = `rig up <bundle> --target ${ownDir} --on-existing fresh`;
+    const replaceHere = `rig up <bundle> --target ${attempted} --on-existing fresh`;
+    const ownFolder = elsewhere ? `its own folder (${ownDir})` : "its own folder";
+    const hereNote = `the team is archived and the bundle is installed in ${attempted}; ${ownDir} is left as it is`;
     return {
       rigId: gone,
       resolutions: [
         `Resume it on its own conversations: ${resume}.`,
         `Archive it first (rig archive ${gone}), then install into a new or empty --target.`,
-        `Replace it in its own folder with ${replace}; /api/bundles/install and rig bundle install take no --on-existing.`,
+        `Replace it in ${ownFolder} with ${replaceOwn}; /api/bundles/install and rig bundle install take no --on-existing.`,
+        ...(elsewhere ? [`Or replace it from ${attempted} instead (${hereNote}) with ${replaceHere}.`] : []),
       ],
       message: head + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with '${resume}', `
         + `or archive it first with 'rig archive ${gone}' and install into a new or empty --target, `
-        + `or replace it in its own folder with '${replace}'.`,
+        + `or replace it in ${ownFolder} with '${replaceOwn}'`
+        + (elsewhere ? `, or replace it from ${attempted} instead (${hereNote}) with '${replaceHere}'.` : "."),
     };
   }
   return {

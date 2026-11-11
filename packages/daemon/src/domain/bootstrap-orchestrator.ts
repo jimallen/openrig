@@ -214,7 +214,7 @@ export class BootstrapOrchestrator {
                 const repo = new RigRepository(this.deps.db);
                 const refusal = goneGenerationRefusal(this.deps.db, repo, typeof parsedSpec?.name === "string" ? parsedSpec.name : "",
                   repo.findUnarchivedRigsByName(typeof parsedSpec?.name === "string" ? parsedSpec.name : "").map((rig) => rig.id),
-                  { targetRoot: opts.targetRoot ? nodePath.resolve(opts.targetRoot) : undefined });
+                  { targetRoot: opts.targetRoot ? nodePath.resolve(opts.targetRoot) : undefined, canonicalTargetRoot: opts.targetRoot ? canonicalOrResolved(opts.targetRoot) : undefined });
                 if (refusal && mode === "plan") {
                   goneRigIds = new Set([refusal.rigId]);
                   warnings.push(`Apply would refuse this install: ${refusal.message}`);
@@ -1087,4 +1087,9 @@ export class BootstrapOrchestrator {
       })),
     };
   }
+}
+
+/** A folder as the filesystem names it (the form rigs.install_root records); the resolved path where it cannot be read yet. */
+function canonicalOrResolved(dir: string): string {
+  try { return fs.realpathSync.native(dir); } catch { return nodePath.resolve(dir); }
 }
