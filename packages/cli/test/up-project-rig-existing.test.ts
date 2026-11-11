@@ -236,3 +236,21 @@ describe("rig up — project rig with an existing stopped rig", () => {
     expect(exitCode).toBe(1);
   });
 });
+
+// OF-287 follow-up: --on-existing is no longer only about project rigs. Since OF-287, `fresh` is also the operator's explicit
+// choice to replace a team whose seats all lost their terminals (spec or bundle), and without it rig up refuses that team.
+describe("rig up --on-existing help", () => {
+  const help = () => upCommand({ lifecycleDeps: mockLifecycleDeps(), clientFactory: () => new DaemonClient("http://127.0.0.1:1") } as never).helpInformation().replace(/\s+/g, " ");
+  it("says it covers a project rig's stopped rig AND a team whose seats lost their terminals, and what happens without it", () => {
+    const text = help();
+    expect(text).toContain("--on-existing <choice>");
+    expect(text).toMatch(/project rig whose project already has a stopped rig/);
+    expect(text).toMatch(/spec or bundle whose existing team has lost every seat terminal/);
+    expect(text).toContain("a bundle is replaced in the --target folder");
+    expect(text).toMatch(/refuses a spec or bundle over a team that has lost its terminals/);
+    expect(text).toContain("rig up <name> --existing");
+  });
+  it("is the text of the option itself, not a project-rig-only sentence", () => {
+    expect(help()).not.toMatch(/--on-existing <choice>\s+For a project rig/);
+  });
+});
