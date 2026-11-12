@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { RigRepository } from "./rig-repository.js";
-import { makeRunningSessionCounter, type LifecycleHeld } from "./running-name-guard.js";
-import { shellQuote } from "../adapters/shell-quote.js";
+import { makeRunningSessionCounter, setOff, type LifecycleHeld } from "./running-name-guard.js";
+import { shellWord } from "./active-occupant.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parsePodBundleManifest } from "./bundle-types.js";
@@ -32,13 +32,15 @@ export function bundleInstallContext(
   // OF-135: `rig up`/`rig down` name the one existing team so they reach it alone (its id when the name is shared).
   // `rig ps --rig` matches names only, and with a shared name it lists every rig carrying it, so it keeps the name
   // (review-x2 F2).
-  const name = shellQuote(existing.length === 1 ? rigAdviceHandle(rigs, existing[0]!.rigId, rigName) : rigName);
-  const psName = shellQuote(rigName);
+  const name = shellWord(existing.length === 1 ? rigAdviceHandle(rigs, existing[0]!.rigId, rigName) : rigName);
+  const psName = shellWord(rigName);
+  // OF-287 nits: each resolution is printed alone and an operator may paste from a command onward, so every command is set off
+  // (setOff) and nothing but a comma or a full stop follows its closing mark; names and ids go through shellWord.
   return {
     offered, existing,
     resolutions: existing.length === 0 ? [] : [
-      `Use the existing team: rig ps --rig ${psName} --nodes${existing.every(rig => rig.state === "stopped") ? `; resume it with rig up --existing ${name}` : "; send work to its existing seats"}.`,
-      `${existing.some(rig => rig.state === "running") ? `Stop it with rig down ${name}, then retry` : "Retry"} this install to replace the stopped team. The earlier generation is archived; the result gives its rig unarchive command.`,
+      `Use the existing team: look at it with ${setOff(`rig ps --rig ${psName} --nodes`)}, then ${existing.every(rig => rig.state === "stopped") ? `resume it with ${setOff(`rig up --existing ${name}`)}` : "send work to its existing seats"}.`,
+      `${existing.some(rig => rig.state === "running") ? `Stop it with ${setOff(`rig down ${name}`)}, then retry` : "Retry"} this install to replace the stopped team. The earlier generation is archived; the result gives its rig unarchive command.`,
       "Cancel this install and keep the existing team. --target selects a directory; it does not rename a team.",
     ],
   };

@@ -73,7 +73,7 @@ function shellPath(value: string): string {
 
 /** A command set off inside a sentence: in single quotes, as the refusal always did, unless the command itself holds a single quote
  *  (a quoted folder name does), when the quotes would end it early; then in backticks, which a quoted word never ends. */
-function setOff(command: string): string {
+export function setOff(command: string): string {
   return command.includes("'") ? `\`${command}\`` : `'${command}'`;
 }
 

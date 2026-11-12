@@ -65,8 +65,8 @@ describe("rig refs and the rig advice names (OF-135)", () => {
     const other = rigRepo.createRig("someone-else");
     const team = rigRepo.createRig(other.id); // the team's name is another rig's id, so `rig up` must use the team's id
     const [useIt] = bundleInstallContext(db, other.id, { name: other.id, version: null, source: "/b.rigbundle" }).resolutions;
-    expect(useIt).toContain(`rig ps --rig '${other.id}' --nodes`);
-    expect(useIt).toContain(`rig up --existing '${team.id}'`);
+    expect(useIt).toContain(`rig ps --rig ${other.id} --nodes`);
+    expect(useIt).toContain(`rig up --existing ${team.id}`);
   });
 
   it("the seat gates' advice names a rig that shares its name by id (restore and restore-check both use these inputs)", () => {
