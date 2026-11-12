@@ -311,9 +311,9 @@ describe("bundle reinstall through both public routes", () => {
     + `or replace it with the bundle installed in ${dir} (the team is archived) with 'rig up <bundle> --target ${dir} --on-existing fresh'.`;
 
   const goneResolutionsUnrecorded = (rigId: string, dir = target0()) => [
-    "Resume it on its own conversations: rig up workshop --existing.",
-    `Archive it first (rig archive ${rigId}), then install into a new or empty --target.`,
-    `Replace it with the bundle installed in ${dir} (the team is archived) with rig up <bundle> --target ${dir} --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.`,
+    "Resume it on its own conversations: 'rig up workshop --existing'.",
+    `Archive it first with 'rig archive ${rigId}', then install into a new or empty --target.`,
+    `Replace it with the bundle installed in ${dir} (the team is archived) with 'rig up <bundle> --target ${dir} --on-existing fresh'. The /api/bundles/install route and 'rig bundle install' take no --on-existing.`,
   ];
 
   // OF-287 B1: the refusal says nothing was created, so it must come BEFORE the crashed team's install folder is replaced.
@@ -501,8 +501,8 @@ describe("bundle reinstall through both public routes", () => {
     expect(plan.status).toBe(200);
     const ra = fs.realpathSync(a);
     expect(plan.body.warnings).toContain(`Apply would refuse this install: ${elsewhereText(rigId, ra, b)}`);
-    expect(plan.body.bundleInstall.resolutions).toContain(`Replace it in its own folder (${ra}) with rig up <bundle> --target ${ra} --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.`);
-    expect(plan.body.bundleInstall.resolutions).toContain(`Or replace it from ${b} instead (the team is archived and the bundle is installed in ${b}; ${ra} is left as it is) with rig up <bundle> --target ${b} --on-existing fresh.`);
+    expect(plan.body.bundleInstall.resolutions).toContain(`Replace it in its own folder (${ra}) with 'rig up <bundle> --target ${ra} --on-existing fresh'. The /api/bundles/install route and 'rig bundle install' take no --on-existing.`);
+    expect(plan.body.bundleInstall.resolutions).toContain(`Or replace it from ${b} instead (the team is archived and the bundle is installed in ${b}; ${ra} is left as it is) with 'rig up <bundle> --target ${b} --on-existing fresh'.`);
     expect(fs.existsSync(b)).toBe(false);
   });
 

@@ -115,13 +115,15 @@ export function goneGenerationRefusal(
     const ownFolder = elsewhere ? `its own folder (${ownDir})` : "its own folder";
     const replaceWhere = unrecorded ? `it with the bundle installed in ${ownDir} (the team is archived)` : `it in ${ownFolder}`;
     const hereNote = `the team is archived and the bundle is installed in ${attempted}; ${ownDir} is left as it is`;
+    // OF-287 nits: each resolution is printed alone, one per line, and an operator may paste from the command onward, so every command
+    // is set off (setOff) and the note about what the other routes take is a sentence of its own, never trailing a command.
     return {
       rigId: gone,
       resolutions: [
-        `Resume it on its own conversations: ${resume}.`,
-        `Archive it first (${archive}), then install into a new or empty --target.`,
-        `Replace ${replaceWhere} with ${replaceOwn}; /api/bundles/install and rig bundle install take no --on-existing.`,
-        ...(elsewhere ? [`Or replace it from ${attempted} instead (${hereNote}) with ${replaceHere}.`] : []),
+        `Resume it on its own conversations: ${setOff(resume)}.`,
+        `Archive it first with ${setOff(archive)}, then install into a new or empty --target.`,
+        `Replace ${replaceWhere} with ${setOff(replaceOwn)}. The /api/bundles/install route and ${setOff("rig bundle install")} take no --on-existing.`,
+        ...(elsewhere ? [`Or replace it from ${attempted} instead (${hereNote}) with ${setOff(replaceHere)}.`] : []),
       ],
       message: head + `Nothing was created, no file was written and it was not archived. Resume it on its own conversations with ${setOff(resume)}, `
         + `or archive it first with ${setOff(archive)} and install into a new or empty --target, `

@@ -269,9 +269,9 @@ describe("OF-287 running-name guard honours confirmed-gone terminals", () => {
       db.prepare("UPDATE rigs SET install_root = ? WHERE id = ?").run("/t/a-b_c.d/x", id); // so base reads it from the table too: this row is green at base
       const refusal = goneGenerationRefusal(db, repo, "workshop", [id], { targetRoot: "/t/a-b_c.d/x", canonicalTargetRoot: "/t/a-b_c.d/x", installRootOf: () => "/t/a-b_c.d/x" })!;
       expect(refusal.resolutions).toEqual([
-        "Resume it on its own conversations: rig up workshop --existing.",
-        `Archive it first (rig archive ${id}), then install into a new or empty --target.`,
-        "Replace it in its own folder with rig up <bundle> --target /t/a-b_c.d/x --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.",
+        "Resume it on its own conversations: 'rig up workshop --existing'.",
+        `Archive it first with 'rig archive ${id}', then install into a new or empty --target.`,
+        "Replace it in its own folder with 'rig up <bundle> --target /t/a-b_c.d/x --on-existing fresh'. The /api/bundles/install route and 'rig bundle install' take no --on-existing.",
       ]);
     });
 
@@ -296,6 +296,60 @@ describe("OF-287 running-name guard honours confirmed-gone terminals", () => {
       }
     });
 
+    // OF-287 nits: resolution line delimiting. Each resolution line is printed alone (the CLI prints one per line) and an operator may
+    // copy from the command onward, so a command must sit inside quote or backtick marks and nothing of the line may run with it.
+    /** The command as the line delimits it: the first '...' or `...` span that begins with "rig ". Throws when the line sets none off. */
+    const delimited = (line: string, startsWith: string): string => {
+      const m = [...line.matchAll(/'([^']*)'|`([^`]*)`/g)].map((x) => x[1] ?? x[2]!).find((c) => c.startsWith(startsWith));
+      if (m === undefined) throw new Error(`no delimited "${startsWith}..." command in: ${line}`);
+      return m;
+    };
+    const wordsOf = (command: string, lead: string) => shellArgv(command.slice(lead.length)); // "<bundle>" is a redirect in a shell, so the lead is dropped
+    const gone = (dir: string, recorded: string | null = dir) => {
+      const { id, repo } = seedNamed("workshop");
+      return { id, refusal: goneGenerationRefusal(db, repo, "workshop", [id], { targetRoot: dir, canonicalTargetRoot: dir, installRootOf: () => recorded })! };
+    };
+
+    it("nits: every command in a resolution line is delimited, and pasted alone is exactly its own words with no second command", () => {
+      const { id, refusal } = gone("/t/b", "/t/a"); // recorded in /t/a, aimed at /t/b: all four commands are printed
+      const [resume, archive, replaceOwn, replaceHere] = refusal.resolutions;
+      expect(wordsOf(delimited(resume!, "rig up"), "rig ")).toEqual(["up", "workshop", "--existing"]);
+      expect(wordsOf(delimited(archive!, "rig archive"), "rig ")).toEqual(["archive", id]);
+      expect(wordsOf(delimited(replaceOwn!, "rig up <bundle>"), "rig up <bundle> ")).toEqual(["--target", "/t/a", "--on-existing", "fresh"]);
+      expect(wordsOf(delimited(replaceHere!, "rig up <bundle>"), "rig up <bundle> ")).toEqual(["--target", "/t/b", "--on-existing", "fresh"]);
+      expect(refusal.resolutions).toHaveLength(4);
+    });
+
+    it("nits: nothing but the closing mark and the sentence end follows the command, so a copy from the command onward cannot carry text into a shell", () => {
+      const { refusal } = gone("/t/b", "/t/a");
+      for (const line of refusal.resolutions.filter((r) => r.includes("rig "))) {
+        const command = delimited(line, "rig ");
+        const after = line.slice(line.indexOf(command) + command.length);
+        expect(after.startsWith("'") || after.startsWith("`")).toBe(true); // closed at once
+        expect(after).toMatch(/^['`](\.|,)(\s|$)/); // then only a sentence end or a comma
+        expect(line.slice(0, line.indexOf(command)).at(-1)).toMatch(/['`]/); // and opened by a mark just before it
+      }
+    });
+
+    it("nits: the 'take no --on-existing' note is its own sentence, and names the two commands it speaks of set off", () => {
+      const { refusal } = gone("/t/a");
+      const line = refusal.resolutions.find((r) => r.startsWith("Replace "))!;
+      const command = delimited(line, "rig up <bundle>");
+      const rest = line.slice(line.indexOf(command) + command.length + 1); // past the closing mark
+      expect(rest.startsWith(". ")).toBe(true); // the replace sentence ends at its command
+      const note = rest.slice(2);
+      expect(note).toBe("The /api/bundles/install route and 'rig bundle install' take no --on-existing.");
+      expect(command).not.toContain("take no");
+    });
+
+    it("nits: a folder with an apostrophe is a command set off in backticks in the resolution line, and pasted is still one word", () => {
+      const dir = "/t/it's b";
+      const { refusal } = gone(dir);
+      const line = refusal.resolutions.find((r) => r.startsWith("Replace "))!;
+      expect(line).toContain("with `rig up <bundle> --target '/t/it'\"'\"'s b' --on-existing fresh`.");
+      expect(wordsOf(delimited(line, "rig up <bundle>"), "rig up <bundle> ")).toEqual(["--target", dir, "--on-existing", "fresh"]);
+    });
+
     it("F5: the recorded install folder is the one the caller supplies, not a second read of the rigs table", () => {
       const { id, repo } = seedNamed("workshop");
       expect(repo.getRigInstallRoot(id)).toBeNull(); // the table records nothing; only the supplied reader knows the folder
@@ -304,8 +358,8 @@ describe("OF-287 running-name guard honours confirmed-gone terminals", () => {
         targetRoot: "/t/b", canonicalTargetRoot: "/t/b", installRootOf: (rigId) => { asked.push(rigId); return "/t/recorded"; },
       })!;
       expect(asked).toEqual([id]);
-      expect(refusal.resolutions).toContain("Replace it in its own folder (/t/recorded) with rig up <bundle> --target /t/recorded --on-existing fresh; /api/bundles/install and rig bundle install take no --on-existing.");
-      expect(refusal.resolutions).toContain("Or replace it from /t/b instead (the team is archived and the bundle is installed in /t/b; /t/recorded is left as it is) with rig up <bundle> --target /t/b --on-existing fresh.");
+      expect(refusal.resolutions).toContain("Replace it in its own folder (/t/recorded) with 'rig up <bundle> --target /t/recorded --on-existing fresh'. The /api/bundles/install route and 'rig bundle install' take no --on-existing.");
+      expect(refusal.resolutions).toContain("Or replace it from /t/b instead (the team is archived and the bundle is installed in /t/b; /t/recorded is left as it is) with 'rig up <bundle> --target /t/b --on-existing fresh'.");
     });
   });
 });
