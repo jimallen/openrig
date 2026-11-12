@@ -70,6 +70,17 @@ export function hcScratchBase(env: EnvLike = process.env, fallback = "/tmp"): st
 }
 
 /**
+ * Where a scratch core goes when the run names no root: `tmp` (the host's temp folder) when it is short enough, else `/tmp`. hc refuses a
+ * session whose sockets would pass the platform limit, and it measures more than the core's own socket: hc 0.1.19 on macOS counted
+ * `<root>` + 36 + the session's length (111 bytes for a 69-byte root and a 7-byte session; exit 2, "the socket path ... is too long"),
+ * 17 more than `<root>/r/herdr-core/<session>.sock`. macOS's tmpdir() is 56 bytes resolved, so a core made under it by the real-core
+ * suites cannot start. 40 leaves room for the root's own name (`/hcp-xxxxxx`), a pid session and that allowance.
+ */
+export function hcScratchFallback(tmp: string): string {
+  return Buffer.byteLength(tmp) <= 40 ? tmp : "/tmp";
+}
+
+/**
  * The env the run's scratch root is read from. The root belongs to the RUN, not to the env a caller hands the core: a caller (the
  * hermetic scaffold's `startHcCore`, with the narrow `baseEnv` its test built) that does not carry `OPENRIG_TEST_SCRATCH_ROOT` would
  * otherwise send its core to `/tmp`, outside the run root (macOS run at 99a9f7d6: /tmp/hcs-UQxEVs, /tmp/hcs-6iSiOM). A caller that

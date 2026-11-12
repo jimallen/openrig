@@ -397,7 +397,9 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       expect(s.read("m1")).toMatchObject({ message_state: "attempting", attempts: 0, message_pause_reason: "agent_absent" });
       expect(await screen(s)).not.toContain("openrig-msg");
 
-      await core.client.call("terminal.send", { terminal: s.address, text: `cd ${resolve(here, "..")} && exec node --import tsx ${RUNNER} --session-name ${s.name} --state-root ${root} --cwd ${s.dir} --launch-id l2 --no-approve --model openrouter/fixture`, force: true });
+      await core.client.call("terminal.send", { terminal: s.address, // `env PATH=<fake pi>:$PATH`: a login shell rebuilds PATH from /etc/profile (macOS's path_helper puts the system dirs, and the
+      // directory node lives in, ahead of the PATH the terminal was started with), so the runner would find a real `pi` before the fake.
+      text: `cd ${resolve(here, "..")} && exec env PATH=${pi.bin}:$PATH node --import tsx ${RUNNER} --session-name ${s.name} --state-root ${root} --cwd ${s.dir} --launch-id l2 --no-approve --model openrouter/fixture`, force: true });
       await until(() => screen(s), (t) => t.includes("[pi-runner] READY"), "the runner back", 30_000);
       await state(s, "m1", "received", 40_000);
       expect(readFileSync(pi.effects, "utf8").split("\n").filter(Boolean)).toHaveLength(1);

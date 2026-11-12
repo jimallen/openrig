@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type Database from "better-sqlite3";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { OPENRIG_HOME } from "../src/openrig-compat.js";
+import { realPathOf } from "./helpers/real-path-of.js";
 import { knownFixesPath } from "../src/domain/rsi/registry.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -939,7 +940,8 @@ describe("RSI B1 boot registration (rsi.steward_session)", () => {
         const policy = daemon.deps.watchdogPolicyEngine!.resolvePolicy(HEALTH_FINDING_WAKE_POLICY)!;
         // Three real sources read blind when their known-fixes anchor file is not a regular file (a directory here), in the
         // hermetic fixture home only: never a real home.
-        expect(OPENRIG_HOME.startsWith(tmpdir()), `OPENRIG_HOME ${OPENRIG_HOME} is not a fixture home`).toBe(true);
+        // Both sides resolved: the setup makes the fixture home under /var/folders/... on macOS and TMPDIR names /private/var/folders/... .
+        expect(realPathOf(OPENRIG_HOME).startsWith(`${realPathOf(tmpdir())}/`), `OPENRIG_HOME ${OPENRIG_HOME} is not a fixture home`).toBe(true);
         const anchors = knownFixesPath(OPENRIG_HOME);
         mkdirSync(anchors, { recursive: true });
         cleanup.push(anchors);

@@ -11,6 +11,7 @@ import { HC_SCRATCH_ROOT_ENV, HC_SOCKET_PATH_LIMIT, HcSocketTooLongError, hcScra
 import { PrivateCore as RootPrivateCore } from "./hc-private-core.js";
 import { PrivateCore as HelperPrivateCore } from "./helpers/hc-private-core.js";
 import { TRUSTED_BASE_ENV, TRUSTED_RUN_ROOT_PREFIX, TrustedBaseRefusedError, removeTrustedRunRoots, sweepAbandonedRunRoots, trustedBaseFolder } from "./helpers/trusted-scaffold.js";
+import { realPathOf } from "./helpers/real-path-of.js";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 
@@ -44,7 +45,9 @@ describe("where the other private cores are made, and their socket limit", () =>
     process.env[HC_SCRATCH_ROOT_ENV] = base;
     try { return run(); } finally { if (saved === undefined) delete process.env[HC_SCRATCH_ROOT_ENV]; else process.env[HC_SCRATCH_ROOT_ENV] = saved; }
   };
-  const shortBase = () => mkdtempSync(join(tmpdir(), "iso-"));
+  // Short on every host: this base carries a private core's root, sockets and holders, and macOS's own tmpdir() (/var/folders/xx/<32 chars>/T,
+  // 56 bytes once resolved) leaves a core's socket 108 bytes. The row below that needs a TOO-deep root builds it on top of this base.
+  const shortBase = () => mkdtempSync(join(Buffer.byteLength(tmpdir()) <= 40 ? tmpdir() : "/tmp", "iso-"));
 
   it("both PrivateCore classes make their root under the run's scratch root", () => {
     const base = shortBase();
@@ -245,9 +248,9 @@ describe("census: no test reaches the account's real home or a hard-coded scratc
   it("every private-core maker takes its base from hcScratchBase, at the line that makes the folder", () => {
     const makers: Array<[string, RegExp]> = [
       ["packages/daemon/test/helpers/hc-scratch.ts", /mkdtempSync\(join\(options\.baseDir \?\? hcScratchBase\(scratchRootEnv\(baseEnv\)\), "hcs-"\)\)/],
-      ["packages/daemon/test/helpers/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), "hcp-"\)\)/],
-      ["packages/daemon/test/hc-placement.real.test.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), "hcp-"\)\)/],
-      ["packages/daemon/test/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), `hc-\$\{tag\}-`\)\)/],
+      ["packages/daemon/test/helpers/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, hcScratchFallback\(tmpdir\(\)\)\), "hcp-"\)\)/],
+      ["packages/daemon/test/hc-placement.real.test.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, hcScratchFallback\(tmpdir\(\)\)\), "hcp-"\)\)/],
+      ["packages/daemon/test/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, hcScratchFallback\(tmpdir\(\)\)\), `hc-\$\{tag\}-`\)\)/],
     ];
     for (const [f, line] of makers) expect(text(join(repoRoot, f)), f).toMatch(line);
   });
@@ -301,7 +304,8 @@ describe("the default core's socket path in a test worker fits the platform limi
     // makes every preflight that probes the default core report hc unhealthy (context add, setup, start, up auto-start).
     const socket = resolveHcSocket();
     expect(Buffer.byteLength(socket), socket).toBeLessThanOrEqual(HC_SOCKET_PATH_LIMIT);
-    expect(socket.startsWith(`${realpathSync(tmpdir())}/`), "inside the worker's temp folder, never the account's state dir").toBe(true);
+    // Both sides resolved: the setup makes the socket's parent under one spelling of the temp folder (/var/folders/...) and TMPDIR names the other (/private/var/folders/...).
+    expect(realPathOf(socket).startsWith(`${realPathOf(tmpdir())}/`), "inside the worker's temp folder, never the account's state dir").toBe(true);
     expect(existsSync(socket), "no core is running at it").toBe(false);
   });
 });

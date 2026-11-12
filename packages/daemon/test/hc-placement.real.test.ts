@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { hcScratchBase } from "./helpers/hc-scratch.js";
+import { hcScratchBase, hcScratchFallback } from "./helpers/hc-scratch.js";
 import { join } from "node:path";
 import { HcClient, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { HcHost, hcTerminalName } from "../src/adapters/hc-host.js";
@@ -27,7 +27,7 @@ class LabelStrippingApp implements AppPort {
 
 /** A private core only: own HOME, HC_SESSION and XDG paths. No app, so no window and no adoption. */
 describe.skipIf(!HC)("HcPlacement against a private hc core", () => {
-  const root = mkdtempSync(join(hcScratchBase(process.env, tmpdir()), "hcp-"));
+  const root = mkdtempSync(join(hcScratchBase(process.env, hcScratchFallback(tmpdir())), "hcp-"));
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `p${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),
