@@ -10,6 +10,7 @@ import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { checkRunningNameGuard } from "../src/domain/running-name-guard.js";
 import type { PodRigSpec } from "../src/domain/types.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 function rigCount(db: Database.Database, name: string): number {
   return (db.prepare("SELECT COUNT(*) AS c FROM rigs WHERE name = ?").get(name) as { c: number }).c;
@@ -88,6 +89,9 @@ describe("running-name guard (S5b floor)", () => {
     expect(message).toMatch(/nothing was created or launched/i);
     expect(message).toMatch(/rig down/);
     expect(message).toMatch(/different name/);
+    // OF-287 nits: the three commands are set off, each pasted alone is its own words
+    expect(setOffCommands(message).map(rigWords)).toEqual([["ps", "--nodes"], ["send"], ["down", "dupe-rig"]]);
+    for (const c of setOffCommands(message)) expect(closesCleanly(message, c)).toBe(true);
 
     // Nothing created, nothing launched, no resource spent.
     expect(rigCount(db, "dupe-rig")).toBe(1);

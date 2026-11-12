@@ -25,6 +25,7 @@ import type { ExecFn } from "../src/adapters/tmux.js";
 import { ProbeTimeoutError, RUNTIME_PROBE_TIMEOUT_MS } from "../src/adapters/bounded-probe-exec.js";
 import type { FsOps } from "../src/domain/package-resolver.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 
 /** The seat host bootstrap verifies is hc: `hc --version` on the PATH and a core that answers `hello` (injected, so no
@@ -283,7 +284,10 @@ describe("BootstrapOrchestrator", () => {
       const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
       const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
       expect(result.status).toBe("failed");
-      expect(result.errors).toEqual(['This project already has a stopped rig named "asked". Resume it with: rig up asked --existing. Or start fresh (archives it): add --on-existing fresh.']);
+      expect(result.errors).toEqual([`This project already has a stopped rig named "asked". Resume it with 'rig up asked --existing'. Or start fresh (archives it): add --on-existing fresh.`]);
+      // OF-287 nits: the command is set off, so a paste from it onward is exactly the command
+      expect(setOffCommands(result.errors[0]!).map(rigWords)).toEqual([["up", "asked", "--existing"]]);
+      expect(closesCleanly(result.errors[0]!, "rig up asked --existing")).toBe(true);
       expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig_exists", rigName: "asked" });
       expect(instantiate).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
@@ -302,6 +306,9 @@ describe("BootstrapOrchestrator", () => {
         expect(result.status).toBe("failed");
         expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig_foreign", rigIds: [other.id] });
         expect(result.errors[0]).toContain(`rig archive ${other.id}`);
+        // OF-287 nits: the command is set off and the sentence's full stop is not part of the id
+        expect(setOffCommands(result.errors[0]!).map(rigWords)).toEqual([["archive", other.id]]);
+        expect(closesCleanly(result.errors[0]!, `rig archive ${other.id}`)).toBe(true);
       }
       expect(instantiate).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
@@ -369,7 +376,7 @@ describe("BootstrapOrchestrator", () => {
       const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
       if (expectedCode) {
         expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: expectedCode });
-        expect(result.errors).toEqual([`This project already has a stopped rig named "${slug}". Resume it with: rig up ${slug} --existing. Or start fresh (archives it): add --on-existing fresh.`]);
+        expect(result.errors).toEqual([`This project already has a stopped rig named "${slug}". Resume it with 'rig up ${slug} --existing'. Or start fresh (archives it): add --on-existing fresh.`]);
         expect(instantiate).not.toHaveBeenCalled();
       } else {
         expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).not.toMatchObject({ code: "project_rig_exists" });

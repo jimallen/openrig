@@ -18,6 +18,9 @@
  */
 
 /** A rig-name collision: bundle declares a rig name that a currently-running rig already uses. */
+import { setOff } from "./running-name-guard.js";
+import { shellWord } from "./active-occupant.js";
+
 export interface RigNameCollision {
   kind: "rig_name_collision";
   /** Name declared by the bundle's rig spec. */
@@ -67,8 +70,8 @@ export function detectBundleConflicts(input: DetectConflictsInput): ConflictRepo
           collisionWith: { rigId: rig.rigId, rigName: rig.name },
           description: `bundle declares rig name '${input.bundleRigName}' but a running rig with this name already exists (rigId: ${rig.rigId})`,
           resolutions: [
-            `use the existing team (rig ps --rig '${rig.name}' --nodes)`,
-            `stop the running rig first (rig down '${rig.name}') and retry this install to replace the stopped team; the earlier generation is archived`,
+            `use the existing team with ${setOff(`rig ps --rig ${shellWord(rig.name)} --nodes`)}`,
+            `stop the running rig first with ${setOff(`rig down ${shellWord(rig.name)}`)}, then retry this install to replace the stopped team; the earlier generation is archived`,
             "cancel the install and keep the existing team; --target chooses a directory, not a new rig name",
           ],
         });

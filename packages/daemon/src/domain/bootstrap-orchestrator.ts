@@ -1,5 +1,6 @@
 import { RigRepository } from "./rig-repository.js";
-import { makeRunningSessionCounter, lifecycleHeldOf, goneGenerationRefusal } from "./running-name-guard.js";
+import { makeRunningSessionCounter, lifecycleHeldOf, goneGenerationRefusal, setOff } from "./running-name-guard.js";
+import { shellWord } from "./active-occupant.js";
 import { applyProjectRig, prepareProjectRigWorkspaces, PROJECT_RIG_WORKSPACES, flatSpecProjectRigError } from "./project-rig.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -759,7 +760,7 @@ export class BootstrapOrchestrator {
         });
         if (foreign.length > 0) {
           const msg = `A stopped rig named "${projectRig.rigName}" belongs to another folder (${foreign[0]!.cwd}), not to ${projectRig.projectRoot}; this launch will not resume or replace it. `
-            + `Rename this project folder, or archive that rig first: rig archive ${foreign[0]!.rigId}.`;
+            + `Rename this project folder, or archive that rig first with ${setOff(`rig archive ${shellWord(foreign[0]!.rigId)}`)}.`;
           stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_foreign", rigName: projectRig.rigName, rigIds: [...new Set(foreign.map((f) => f.rigId))], error: msg } });
           this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
           return { runId: run.id, status: "failed", stages, errors: [msg], warnings };
@@ -768,7 +769,7 @@ export class BootstrapOrchestrator {
           warnings.push(`A stopped rig named "${projectRig.rigName}" exists for this project; the launch will ask whether to resume it or start fresh.`);
         } else if (opts.onExisting !== "fresh") {
           const msg = `This project already has a stopped rig named "${projectRig.rigName}". `
-            + `Resume it with: rig up ${existing.length === 1 ? rigAdviceHandle(repo, existing[0]!.id, projectRig.rigName) : projectRig.rigName} --existing. `
+            + `Resume it with ${setOff(`rig up ${shellWord(existing.length === 1 ? rigAdviceHandle(repo, existing[0]!.id, projectRig.rigName) : projectRig.rigName)} --existing`)}. `
             + `Or start fresh (archives it): add --on-existing fresh.`;
           stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_exists", rigName: projectRig.rigName, rigIds: existing.map((rig) => rig.id), error: msg } });
           this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");

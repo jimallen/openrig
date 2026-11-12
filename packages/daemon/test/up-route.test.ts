@@ -9,6 +9,7 @@ import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { buildAttentionResponse } from "../src/routes/up.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const VALID_SPEC = `
 schema_version: 1
@@ -113,7 +114,10 @@ describe("Up API route", () => {
     expect(res.status).toBe(409);
     const body = await res.json() as { code: string; error: string; archivedRigIds: string[] };
     expect(body).toMatchObject({ code: "rig_archived", archivedRigIds: [rig.id] });
-    expect(body.error).toContain(`rig unarchive ${rig.id}, then run rig up ${rig.id} --existing`);
+    expect(body.error).toContain(`'rig unarchive ${rig.id}', then run 'rig up ${rig.id} --existing'.`);
+    // OF-287 nits: each command is set off, so pasted alone it is its own words, with the comma and full stop outside it
+    expect(setOffCommands(body.error).map(rigWords)).toEqual([["unarchive", rig.id], ["up", rig.id, "--existing"]]);
+    for (const c of setOffCommands(body.error)) expect(closesCleanly(body.error, c)).toBe(true);
     expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id)).toEqual({ status: "exited" });
     expect(rigRepo.findRigById(rig.id)?.archived).toBe(true);
   });
@@ -136,6 +140,8 @@ describe("Up API route", () => {
     expect([...body.archivedRigIds].sort()).toEqual([a.id, b.id].sort());
     expect(body.error).toContain(`${a.id}`);
     expect(body.error).toContain(`${b.id}`);
+    // placeholders are not pasteable as they are, but are still set off whole, with the full stop outside
+    expect(body.error).toContain("by id with 'rig unarchive <rig-id>', then run 'rig up <rig-id> --existing'. Archived rigs named");
   });
 
   it("keeps two active rigs with the same name ambiguous", async () => {
@@ -149,7 +155,9 @@ describe("Up API route", () => {
     });
 
     expect(res.status).toBe(409);
-    expect((await res.json()).code).toBe("ambiguous_name");
+    const ambiguous = await res.json();
+    expect(ambiguous.code).toBe("ambiguous_name");
+    expect(ambiguous.error).toContain("by its id: 'rig up <rig-id> --existing'.");
   });
 
   // T6: Startup wiring
@@ -233,7 +241,8 @@ describe("Up API route", () => {
       expect(res.status).toBe(409);
       const body = await res.json();
       expect(body.code).toBe("rig_archived");
-      expect(body.error).toContain(`rig unarchive ${rig.id}`);
+      expect(body.error).toContain(`'rig unarchive ${rig.id}', then run 'rig up ${rig.id} --existing'.`);
+      expect(setOffCommands(body.error).map(rigWords)).toEqual([["unarchive", rig.id], ["up", rig.id, "--existing"]]);
       expect(restoreSpy).not.toHaveBeenCalled();
     });
 

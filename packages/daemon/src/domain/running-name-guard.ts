@@ -195,7 +195,7 @@ export function checkRunningNameGuard(deps: RunningNameGuardDeps, name: string):
           `A rig named "${name}" is already RUNNING: ${rig.id} with ${runningSessionCount} running session(s) ` +
           `(checked: existing rigs with this name for sessions in status 'running'). ` +
           `Nothing was created or launched. Alternatives: work with the running rig ` +
-          `(rig ps --nodes / rig send), stop it first with 'rig down ${name}', ` +
+          `(${setOff("rig ps --nodes")} or ${setOff("rig send")}), stop it first with ${setOff(`rig down ${shellWord(name)}`)}, ` +
           `or launch this spec under a different name.`,
         runningRig: { id: rig.id, name, runningSessionCount },
       };

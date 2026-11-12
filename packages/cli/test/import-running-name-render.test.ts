@@ -16,7 +16,7 @@ const TEACHING =
   'A rig named "dupe-cli" is already RUNNING: 01RIGID with 1 running session(s) ' +
   "(checked: existing rigs with this name for sessions in status 'running'). " +
   "Nothing was created or launched. Alternatives: work with the running rig " +
-  "(rig ps --nodes / rig send), stop it first with 'rig down dupe-cli', " +
+  "('rig ps --nodes' or 'rig send'), stop it first with 'rig down dupe-cli', " +
   "or launch this spec under a different name.";
 
 function mockLifecycleDeps(port: number): LifecycleDeps {

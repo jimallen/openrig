@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const POD_YAML = (name: string) => [
   'version: "0.2"',
@@ -95,5 +96,9 @@ describe("#141 generation_unconfirmed crosses both import routes as a 409", () =
     expect(body["code"]).toBe("generation_unconfirmed");
     expect(String(body["error"])).toContain(rig.id);
     expect(rigCount("gen-up")).toBe(1);
+    // OF-287 nits: both commands are set off, each pasted alone is its own words, and the comma and full stop are not part of them
+    const error = String(body["error"]);
+    expect(setOffCommands(error).map(rigWords)).toEqual([["up", "gen-up"], ["archive", rig.id]]);
+    for (const c of setOffCommands(error)) expect(closesCleanly(error, c)).toBe(true);
   });
 });

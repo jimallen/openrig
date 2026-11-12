@@ -23,6 +23,8 @@ import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import type { HttpHostEntry } from "../domain/hosts/hosts-registry-reader.js";
 import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
 import { rigAdviceHandle, rigAdviceHandleIn } from "../domain/rig-ref.js";
+import { setOff } from "../domain/running-name-guard.js";
+import { shellWord } from "../domain/active-occupant.js";
 
 export const upRoutes = new Hono();
 
@@ -271,7 +273,7 @@ upRoutes.post("/", async (c) => {
       // `rig add` resolve (cli/src/rig-handle.ts). An archived rig's id is refused: a restore never wakes an archived rig.
       const byId = rigRepo.findRigById(sourceRef);
       if (byId?.archived) {
-        return c.json({ error: `Rig ${sourceRef} ("${byId.rig.name}") is archived. Bring it back first: rig unarchive ${sourceRef}, then run rig up ${sourceRef} --existing.`, code: "rig_archived" }, 409);
+        return c.json({ error: `Rig ${sourceRef} ("${byId.rig.name}") is archived. Bring it back first with ${setOff(`rig unarchive ${shellWord(sourceRef)}`)}, then run ${setOff(`rig up ${shellWord(sourceRef)} --existing`)}.`, code: "rig_archived" }, 409);
       }
       if (byId) {
         return restoreByRigId(byId.rig.id, byId.rig.name, getDeps(c), c, freshLogicalIdsOf(), plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
@@ -284,15 +286,15 @@ upRoutes.post("/", async (c) => {
         if (archived.length > 0) {
           const ids = archived.map((r) => r.id);
           const how = ids.length === 1
-            ? `Bring it back first: rig unarchive ${ids[0]}, then run rig up ${ids[0]} --existing.`
-            : `Unarchive the one you want by id (rig unarchive <rig-id>), then run rig up <rig-id> --existing. Archived rigs named "${sourceRef}": ${ids.join(", ")}.`;
+            ? `Bring it back first with ${setOff(`rig unarchive ${shellWord(ids[0]!)}`)}, then run ${setOff(`rig up ${shellWord(ids[0]!)} --existing`)}.`
+            : `Unarchive the one you want by id with ${setOff("rig unarchive <rig-id>")}, then run ${setOff("rig up <rig-id> --existing")}. Archived rigs named "${sourceRef}": ${ids.join(", ")}.`;
           return c.json({ error: `Rig "${sourceRef}" is archived, so rig up does not restore it by name. ${how}`, code: "rig_archived", archivedRigIds: ids }, 409);
         }
         return c.json({ error: `No rig found named "${sourceRef}". Provide a .yaml spec path to create a new rig.`, code: "rig_not_found" }, 404);
       }
       if (rigs.length > 1) {
         const ids = rigs.map((r) => r.id).join(", ");
-        return c.json({ error: `Multiple rigs named "${sourceRef}" found (IDs: ${ids}). Name the one you mean by its id: rig up <rig-id> --existing.`, code: "ambiguous_name" }, 409);
+        return c.json({ error: `Multiple rigs named "${sourceRef}" found (IDs: ${ids}). Name the one you mean by its id: ${setOff("rig up <rig-id> --existing")}.`, code: "ambiguous_name" }, 409);
       }
       return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIdsOf(), plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
     }

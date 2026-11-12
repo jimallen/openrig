@@ -10,7 +10,8 @@ import {
 } from "./permission-policy/policy-ref.js";
 import { describePdaHolder, type RigRepository } from "./rig-repository.js";
 import type { PdaBinding } from "../adapters/pda-runner-protocol.js";
-import { checkRunningNameGuard, confirmStoppedGenerations, goneGenerationRefusal, lifecycleHeldOf, makeRunningSessionCounter } from "./running-name-guard.js";
+import { checkRunningNameGuard, confirmStoppedGenerations, goneGenerationRefusal, lifecycleHeldOf, makeRunningSessionCounter, setOff } from "./running-name-guard.js";
+import { shellWord } from "./active-occupant.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
 import type { NodeLauncher } from "./node-launcher.js";
@@ -1423,8 +1424,8 @@ export class PodRigInstantiator {
           code: "generation_unconfirmed",
           message:
             `A rig named "${rigSpec.name}" already exists (${stopped.rigId}), and OpenRig could not confirm it is stopped: ` +
-            `${stopped.reason}. Nothing was created. Restore it with 'rig up ${rigSpec.name}', ` +
-            `or archive it first with 'rig archive ${stopped.rigId}'.`,
+            `${stopped.reason}. Nothing was created. Restore it with ${setOff(`rig up ${shellWord(rigSpec.name)}`)}, ` +
+            `or archive it first with ${setOff(`rig archive ${shellWord(stopped.rigId)}`)}.`,
         };
       }
       archivedGenerations = stopped.rigIds;

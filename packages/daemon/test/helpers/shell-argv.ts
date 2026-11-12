@@ -15,3 +15,21 @@ export function commandIn(line: string, start: string, end: string): string {
   if (to < 0) throw new Error(`no "${end}" after "${start}" in: ${line}`);
   return line.slice(from, to + end.length);
 }
+
+/** Every command a refusal text sets off, as the text delimits it: each '...' or `...` span that begins with "rig ". A text that sets none
+ *  off yields none, so a test that expects a command fails on an undelimited one. Each is followed by its closing mark and then only a
+ *  comma, a full stop or the end (checked by `followedOnlyByPunctuation`), so nothing of the sentence is pasted with it. */
+export function setOffCommands(text: string): string[] {
+  return [...text.matchAll(/'([^']*)'|`([^`]*)`/g)].map((m) => m[1] ?? m[2]!).filter((c) => c.startsWith("rig "));
+}
+
+/** True when, after the closing mark of `command` in `text`, only a comma, a full stop, a closing bracket or the end follows at once (never ";" or other text). */
+export function closesCleanly(text: string, command: string): boolean {
+  const at = text.indexOf(command);
+  return at > 0 && /['`]/.test(text[at - 1]!) && /^['`](?:[.,)]|\s|$)/.test(text.slice(at + command.length));
+}
+
+/** The words a shell hands to `rig` for a set-off command: "rig up x --existing" is ["up", "x", "--existing"]. */
+export function rigWords(command: string): string[] {
+  return shellArgv(command.slice("rig ".length));
+}
