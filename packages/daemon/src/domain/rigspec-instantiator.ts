@@ -2756,7 +2756,7 @@ export class PodRigInstantiator {
     if (!rig) return null;
     const judged = this.judgeRecordedSpec(specSource, rig);
     if (judged.ok || judged.code === "spec_unreadable") return null;
-    return `This rig was started from ${specSource}, which is not a trusted spec source, so a later fresh launch of its seats from the spec (rig seat launch --fresh, or a restore of a seat listed with --fresh) will be refused with startup_source_untrusted (${judged.message}) Your seats are running as launched. Fix: rig spec-source set ${rigId} <path-to-a-reviewed-rig.yaml-in-a-trusted-spec-root> --operator <address>; or start such a seat from its saved files with --startup-from stored.`;
+    return `This rig was started from ${specSource}, which is not a trusted spec source, so a later fresh launch of its seats from the spec (rig seat launch --fresh, or a restore of a seat listed with --fresh) will be refused with startup_source_untrusted (${judged.message}) Your seats are running as launched. Fix: run ${setOff(`rig spec-source set ${shellWord(rigId)} <path-to-a-reviewed-rig.yaml-in-a-trusted-spec-root> --operator <address>`)}, filling in the two placeholders. Or start such a seat from its saved files with ${setOff("--startup-from stored")}.`;
   }
 
   /** OF-103: the one judgement of a rig's recorded spec source, by the rules `rig spec-source set` applies (a read). */

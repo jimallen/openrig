@@ -17,9 +17,10 @@
  * "extends, does NOT replace".
  */
 
-/** A rig-name collision: bundle declares a rig name that a currently-running rig already uses. */
 import { setOff } from "./running-name-guard.js";
 import { shellWord } from "./active-occupant.js";
+
+/** A rig-name collision: bundle declares a rig name that a currently-running rig already uses. */
 
 export interface RigNameCollision {
   kind: "rig_name_collision";

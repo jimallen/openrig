@@ -367,7 +367,7 @@ upRoutes.post("/", async (c) => {
         if (entryKind === "rig_name") {
           return {
             ok: false,
-            error: `entry '${entryRef}' resolves as an existing-rig name; v0 topology entries are spec paths only — restore existing rigs directly with 'rig up ${entryRef}'`,
+            error: `entry '${entryRef}' resolves as an existing-rig name; v0 topology entries are spec paths only — restore existing rigs directly with ${setOff(`rig up ${shellWord(entryRef)}`)}`,
           };
         }
         // The EXISTING single-rig leaf: the same public bootstrap() entry

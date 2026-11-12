@@ -284,7 +284,7 @@ describe("BootstrapOrchestrator", () => {
       const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
       const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
       expect(result.status).toBe("failed");
-      expect(result.errors).toEqual([`This project already has a stopped rig named "asked". Resume it with 'rig up asked --existing'. Or start fresh (archives it): add --on-existing fresh.`]);
+      expect(result.errors).toEqual([`This project already has a stopped rig named "asked". Resume it with 'rig up asked --existing'. Or start fresh (archives it): add '--on-existing fresh'.`]);
       // OF-287 nits: the command is set off, so a paste from it onward is exactly the command
       expect(setOffCommands(result.errors[0]!).map(rigWords)).toEqual([["up", "asked", "--existing"]]);
       expect(closesCleanly(result.errors[0]!, "rig up asked --existing")).toBe(true);
@@ -376,7 +376,7 @@ describe("BootstrapOrchestrator", () => {
       const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
       if (expectedCode) {
         expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: expectedCode });
-        expect(result.errors).toEqual([`This project already has a stopped rig named "${slug}". Resume it with 'rig up ${slug} --existing'. Or start fresh (archives it): add --on-existing fresh.`]);
+        expect(result.errors).toEqual([`This project already has a stopped rig named "${slug}". Resume it with 'rig up ${slug} --existing'. Or start fresh (archives it): add '--on-existing fresh'.`]);
         expect(instantiate).not.toHaveBeenCalled();
       } else {
         expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).not.toMatchObject({ code: "project_rig_exists" });

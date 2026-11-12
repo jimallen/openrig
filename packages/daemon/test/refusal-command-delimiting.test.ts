@@ -14,7 +14,7 @@ describe("bundle conflict resolutions: commands are delimited (OF-287 nits)", ()
     ]);
   });
 
-  it.each(["my rig", "a;b", "$(id)", "it's", "=x", "a b;rm -rf x"])("a running rig named %j: each printed command, pasted, is its own words and no second command", (name) => {
+  it.each(["my rig", "a;b", "$(id)", "it's", "=x", "a b;rm -rf x", "a`b", "a`b'c", "x``y'z"])("a running rig named %j: each printed command, pasted, is its own words and no second command", (name) => {
     const [use, stop] = conflictFor(name).resolutions;
     expect(setOffCommands(use!).map(rigWords)).toEqual([["ps", "--rig", name, "--nodes"]]);
     expect(setOffCommands(stop!).map(rigWords)).toEqual([["down", name]]);

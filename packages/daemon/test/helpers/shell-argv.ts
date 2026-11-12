@@ -16,17 +16,23 @@ export function commandIn(line: string, start: string, end: string): string {
   return line.slice(from, to + end.length);
 }
 
-/** Every command a refusal text sets off, as the text delimits it: each '...' or `...` span that begins with "rig ". A text that sets none
- *  off yields none, so a test that expects a command fails on an undelimited one. Each is followed by its closing mark and then only a
- *  comma, a full stop or the end (checked by `followedOnlyByPunctuation`), so nothing of the sentence is pasted with it. */
+/** Every command a refusal text sets off, as the text delimits it: each '...' or `...` span, or a Markdown fence (a run of two or more
+ *  backticks, a space, the command, a space, the same run) that `setOff` uses for a command holding a backtick, that begins with "rig ".
+ *  A text that sets none off yields none, so a test that expects a command fails on an undelimited one. Whether only punctuation follows
+ *  the closing mark is `closesCleanly`'s check. */
 export function setOffCommands(text: string): string[] {
-  return [...text.matchAll(/'([^']*)'|`([^`]*)`/g)].map((m) => m[1] ?? m[2]!).filter((c) => c.startsWith("rig "));
+  return [...text.matchAll(/(``+) (.+?) \1(?!`)|'([^']*)'|`([^`]*)`/g)].map((m) => m[2] ?? m[3] ?? m[4]!).filter((c) => c.startsWith("rig "));
 }
 
-/** True when, after the closing mark of `command` in `text`, only a comma, a full stop, a closing bracket or the end follows at once (never ";" or other text). */
+/** True when `command` sits right inside its marks (a quote, a backtick or a fence's space) and, after its closing mark, a comma, a full
+ *  stop, a closing bracket, whitespace or the end follows at once. Whitespace may be followed by more of the sentence (so "'rig ps' or
+ *  'rig send'" passes); what this rules out is the mark running straight into ";" or other text. */
 export function closesCleanly(text: string, command: string): boolean {
   const at = text.indexOf(command);
-  return at > 0 && /['`]/.test(text[at - 1]!) && /^['`](?:[.,)]|\s|$)/.test(text.slice(at + command.length));
+  if (at <= 0) return false;
+  const before = text.slice(0, at), after = text.slice(at + command.length);
+  const opened = /['`]$/.test(before) || /``+ $/.test(before);
+  return opened && /^(?: ``+|['`])(?:[.,)]|\s|$)/.test(after);
 }
 
 /** The words a shell hands to `rig` for a set-off command: "rig up x --existing" is ["up", "x", "--existing"]. */

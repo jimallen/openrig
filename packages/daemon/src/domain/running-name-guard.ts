@@ -72,9 +72,15 @@ function shellPath(value: string): string {
 }
 
 /** A command set off inside a sentence: in single quotes, as the refusal always did, unless the command itself holds a single quote
- *  (a quoted folder name does), when the quotes would end it early; then in backticks, which a quoted word never ends. */
+ *  (a quoted folder name does), when the quotes would end it early; then in backticks. A command that also holds a backtick (a rig
+ *  named a`b) is fenced as Markdown does: a run of backticks one longer than any inside it, with a space each side, so no backtick in
+ *  the command ends the span (OF-287 wording review F2). */
 export function setOff(command: string): string {
-  return command.includes("'") ? `\`${command}\`` : `'${command}'`;
+  if (!command.includes("'")) return `'${command}'`;
+  const longest = Math.max(0, ...(command.match(/`+/g) ?? []).map((run) => run.length));
+  if (longest === 0) return `\`${command}\``;
+  const fence = "`".repeat(longest + 1);
+  return `${fence} ${command} ${fence}`;
 }
 
 /** OF-287: the refusal for a plain import over a rig whose seats all lost their terminals while their rows still read `running`.

@@ -34,7 +34,6 @@ src/domain/bundle-content-routing.ts node:fs value upstream
 src/domain/bundle-content-routing.ts node:os value upstream
 src/domain/bundle-install-context.ts better-sqlite3 type upstream
 src/domain/bundle-install-context.ts node:fs value upstream
-src/domain/bundle-install-context.ts src/adapters/shell-quote.js value upstream
 src/domain/bundle-source-resolver.ts node:fs value upstream
 src/domain/bundle-source-resolver.ts node:os value upstream
 src/domain/chat-repository.ts better-sqlite3 type upstream

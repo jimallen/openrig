@@ -43,7 +43,7 @@ async function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; e
 }
 
 const FOREIGN_MESSAGE = 'A stopped rig named "eztrack" belongs to another folder (/q/eztrack/.workspaces/exec-cos), not to /p/foreign; this launch will not resume or replace it. Rename this project folder, or archive that rig first with \'rig archive old\'.';
-const EXISTS_MESSAGE = 'This project already has a stopped rig named "eztrack". Resume it with \'rig up eztrack --existing\'. Or start fresh (archives it): add --on-existing fresh.';
+const EXISTS_MESSAGE = 'This project already has a stopped rig named "eztrack". Resume it with \'rig up eztrack --existing\'. Or start fresh (archives it): add \'--on-existing fresh\'.';
 
 describe("rig up — project rig with an existing stopped rig", () => {
   let server: http.Server;
