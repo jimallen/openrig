@@ -11,7 +11,7 @@
 // (unverified: how the real binary behaves there; this fake exits 1 as the provider's own comment says the real one does with no
 // window), Linux.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { delimiter } from "node:path";
@@ -26,6 +26,21 @@ const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
 const topology = resolve(here, "../../test-system/scenarios/dev-pair-stub.yaml");
 const rigName = "dev-pair-stub";
 
+/**
+ * The PATH of a host with no Herdr app: the caller's PATH minus every folder that holds a `herdr-app`, plus a folder of the scaffold's own
+ * that holds only `hc` (the core's binary). A machine with the app installed (a Mac that runs it; `herdr-app` and `hc` both live in
+ * ~/.local/bin) would otherwise hand the daemon a real app, which answers `ls` with no window and turns "not installed" into "not running".
+ */
+function pathWithoutHerdrApp(scaffoldRoot: string, basePath: string | undefined): string {
+  const kept = (basePath ?? "").split(delimiter).filter((dir) => dir !== "" && !existsSync(join(dir, "herdr-app")));
+  const hc = findHc();
+  if (hc === null) return kept.join(delimiter);
+  const only = join(scaffoldRoot, "hc-only-bin");
+  mkdirSync(only, { recursive: true });
+  symlinkSync(hc, join(only, "hc"));
+  return [only, ...kept].join(delimiter);
+}
+
 function useHost(fakeApp: boolean) {
   const ctx: { core?: HcScratch; scaffold?: HermeticScaffold; daemon?: ScenarioDaemon; appDir?: string } = {};
   const rig = (args: string[]): Promise<RigResult> => runRig(args, ctx.daemon!.readEnv, rigBin, 120_000);
@@ -38,6 +53,8 @@ function useHost(fakeApp: boolean) {
   beforeAll(async () => {
     ctx.core = startHcScratch();
     ctx.scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
+    ctx.scaffold.env.PATH = pathWithoutHerdrApp(ctx.scaffold.root, ctx.scaffold.env.PATH);
+    expect(ctx.scaffold.env.PATH.split(delimiter).filter((dir) => existsSync(join(dir, "herdr-app"))), "positive control: no herdr-app on the daemon's PATH").toEqual([]);
     Object.assign(ctx.scaffold.env, { HC_SESSION: ctx.core.session, XDG_RUNTIME_DIR: ctx.core.env.XDG_RUNTIME_DIR, HC_SOCKET: ctx.core.socketPath });
     if (fakeApp) {
       ctx.appDir = join(ctx.scaffold.root, "fake-app");

@@ -13,6 +13,7 @@ import { PdaRuntimeAdapter } from "../src/adapters/pda-runtime-adapter.js";
 import { PdaResumeAdapter } from "../src/adapters/pda-resume.js";
 import { adapterFreshStart, RUNTIMES_WITHOUT_FRESH_START, type RunnerSendReadinessSource, type RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { pdaSeatPaths } from "../src/adapters/pda-runner-protocol.js";
+import { realPathOf } from "./helpers/real-path-of.js";
 import type { ExecFn } from "../src/domain/tmux-adapter.js";
 
 let db: Database.Database;
@@ -66,7 +67,8 @@ describe("pda L2a startup wiring", () => {
     const stateRoot = priv<{ stateRoot: string }>(pdaAdapter, "deps").stateRoot;
     // <OPENRIG_HOME>/state/pda (the suite's setup pins OPENRIG_HOME to a fixture home at module load).
     expect(stateRoot.endsWith(`${path.sep}state${path.sep}pda`)).toBe(true);
-    expect(stateRoot.startsWith(os.tmpdir())).toBe(true);
+    // Both sides resolved: the setup makes the fixture home under /var/folders/... on macOS and TMPDIR names /private/var/folders/... .
+    expect(realPathOf(stateRoot).startsWith(`${realPathOf(os.tmpdir())}${path.sep}`)).toBe(true);
     const paths = pdaSeatPaths(stateRoot, "seat@rig");
     fs.mkdirSync(paths.seatRoot, { recursive: true });
     const at = new Date().toISOString();

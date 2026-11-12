@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
-import { hcScratchBase, HC_SOCKET_PATH_LIMIT } from "./helpers/hc-scratch.js";
+import { hcScratchBase, hcScratchFallback, HC_SOCKET_PATH_LIMIT } from "./helpers/hc-scratch.js";
 
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -16,7 +16,7 @@ export class PrivateCore {
   readonly client: HcClient;
 
   constructor(tag: string, extraEnv: NodeJS.ProcessEnv = {}) {
-    this.root = mkdtempSync(join(hcScratchBase(process.env, tmpdir()), `hc-${tag}-`));
+    this.root = mkdtempSync(join(hcScratchBase(process.env, hcScratchFallback(tmpdir())), `hc-${tag}-`));
     this.env = {
       PATH: process.env.PATH, HOME: join(this.root, "h"), HC_SESSION: `${tag}${process.pid}`,
       XDG_CONFIG_HOME: join(this.root, "c"), XDG_DATA_HOME: join(this.root, "d"), XDG_STATE_HOME: join(this.root, "s"), XDG_RUNTIME_DIR: join(this.root, "r"),

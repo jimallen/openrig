@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../../src/adapters/hc-host.js";
-import { hcScratchBase, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
+import { hcScratchBase, hcScratchFallback, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
 
 /** The `hc` on PATH, or "" when there is none (the real-core suites skip). */
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
 /** A core of its own: private HOME, XDG paths and HC_SESSION under a temp root, never the default core or the app. */
 export class PrivateCore {
-  readonly root = realpathSync(mkdtempSync(join(hcScratchBase(process.env, tmpdir()), "hcp-")));
+  readonly root = realpathSync(mkdtempSync(join(hcScratchBase(process.env, hcScratchFallback(tmpdir())), "hcp-")));
   readonly env: NodeJS.ProcessEnv;
   client!: HcClient;
 
