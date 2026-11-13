@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertNoForeignHcCore, assertPrivateHcEnv, detectForeignHcCore, findHc, HcForeignCoreError, HcNotPrivateError,
-  HcSocketTooLongError, HC_SOCKET_PATH_LIMIT, longestSocketPath, startHcScratch, type HcScratch,
+  HcSocketTooLongError, HC_SOCKET_PATH_LIMIT, HC_SOCKET_PATH_RESERVE, hcCountedSocketBytes, hcScratchFallback, hcSocketFits, startHcScratch,
+  type HcScratch,
 } from "./helpers/hc-scratch.js";
+import { resolveHcSocket } from "../src/adapters/hc-client.js";
 import { canSweepEnviron, hasProcFs, identityOf, pidsWithEnv, sameProcess, waitGone } from "./helpers/orphan-reaper.js";
 
 const HC = findHc();
@@ -23,7 +25,19 @@ const childrenOf = (parent: number): number[] => spawnSync("ps", ["-axo", "pid=,
   .map((l) => l.trim().split(/\s+/).map(Number)).filter(([, ppid]) => ppid === parent).map(([pid]) => pid!);
 /** A terminal program that ignores hangups (and so outlives its holder's death, as a nohup-style program does): `sleep`, with SIGHUP ignored. */
 const HUP_IGNORING_PROGRAM = ["sh", "-c", "trap '' HUP; exec sleep 300"];
-const tmpBase = (): string => { const d = mkdtempSync(join(tmpdir(), "hcsb-")); dirs.push(d); return d; };
+// Short on every host: a root under macOS's own tmpdir() (/var/folders/xx/<32 chars>/T/, 48 bytes; 56 once resolved to /private/var/...) leaves a socket hc refuses.
+const tmpBase = (): string => { const d = mkdtempSync(join(hcScratchFallback(tmpdir()), "hcsb-")); dirs.push(d); return d; };
+/** A program that exists and exits 1 on both platforms (macOS has no /bin/false). */
+const FALSE = ["/usr/bin/false", "/bin/false"].find((p) => existsSync(p)) ?? "/usr/bin/false";
+/** A folder whose path is exactly `bytes` long: `<short temp>/hcsb-xxxxxx/<padding>` (the short temp is /tmp where tmpdir() is long, as on macOS). */
+const baseOfLength = (bytes: number): string => {
+  const top = mkdtempSync(join(hcScratchFallback(tmpdir()), "hcsb-"));
+  dirs.push(top);
+  const base = join(top, "p".repeat(bytes - Buffer.byteLength(top) - 1));
+  mkdirSync(base);
+  expect(Buffer.byteLength(base)).toBe(bytes);
+  return base;
+};
 
 // A private env that is valid under a root, for the refusal rows. Each row breaks exactly one thing.
 const ROOT = "/run/hcs-fixture";
@@ -83,10 +97,35 @@ describe("hc scratch refuses to reach a core it did not start (no hc needed)", (
     expect(readdirSync(deep)).toEqual([]);
   });
 
-  it("the default layout is well inside the limit on both platform layouts, with room to spare", () => {
-    const longest = longestSocketPath("/run/hcs-abc123", "sabc123");
-    expect(Buffer.byteLength(longest)).toBeLessThan(HC_SOCKET_PATH_LIMIT - 30);
-    expect(longest).toBe("/run/hcs-abc123/s/herdr-core/sabc123/sabc123.sock");
+  it("the default layout is well inside the limit as hc counts it, with room to spare", () => {
+    const socket = resolveHcSocket({ ...valid(), HOME: "/run/hcs-abc123/h", HC_SESSION: "sabc123", XDG_RUNTIME_DIR: "/run/hcs-abc123/r" });
+    expect(socket).toBe("/run/hcs-abc123/r/herdr-core/sabc123.sock");
+    expect(hcCountedSocketBytes(socket)).toBe(Buffer.byteLength(socket) + HC_SOCKET_PATH_RESERVE);
+    expect(hcCountedSocketBytes(socket)).toBeLessThan(HC_SOCKET_PATH_LIMIT - 30);
+  });
+
+  // hc 0.1.19 (stu, 2026-11-13) refuses a session when its socket path plus 16 bytes is over 103 (helpers/hc-scratch.ts HC_SOCKET_PATH_RESERVE).
+  // A scratch root is `<base>/hcs-xxxxxx` and its session 7 bytes, so its socket is `<base>`+37 and hc counts `<base>`+53: a 50-byte base is the
+  // deepest hc starts, and a 51-byte one is hc's exit 2. The old guard measured the bare socket (and a state-dir layout hc does not use when the
+  // runtime dir is set): it let a base through up to 58 bytes, and hc then refused the core itself.
+  it("the guard refuses the first base hc would refuse (51 bytes), before anything is made, and passes the deepest one hc takes (50)", () => {
+    const at51 = baseOfLength(51);
+    try {
+      startHcScratch({ baseDir: at51, hcBin: FALSE, baseEnv: { PATH } });
+      expect.unreachable("a base whose socket hc refuses must be refused by the guard");
+    } catch (error) {
+      expect(error).toBeInstanceOf(HcSocketTooLongError);
+      expect((error as HcSocketTooLongError).bytes).toBe(HC_SOCKET_PATH_LIMIT + 1);
+      expect(Buffer.byteLength((error as HcSocketTooLongError).path), "the bare socket is under the limit: only hc's count is over it").toBe(88);
+    }
+    expect(readdirSync(at51)).toEqual([]);
+    // At 50 the guard lets it through, and the stand-in for hc is what fails.
+    expect(() => startHcScratch({ baseDir: baseOfLength(50), hcBin: FALSE, baseEnv: { PATH } })).toThrow(/`hc server start` exited 1/);
+  });
+
+  it("hcSocketFits is hc's rule at the edge: 87 bytes of socket fit, 88 do not", () => {
+    expect(hcSocketFits(`/${"a".repeat(86)}`)).toBe(true);
+    expect(hcSocketFits(`/${"a".repeat(87)}`)).toBe(false);
   });
 });
 
@@ -121,6 +160,24 @@ describe("hc scratch asks the core to stop, against a recording stand-in for hc 
 });
 
 describe.skipIf(!HC)("hc scratch against a real private core", () => {
+  it("the guard is never looser than hc: at the deepest base the guard passes, the real hc starts the core; on macOS hc refuses the next byte", () => {
+    const s = startHcScratch({ baseDir: baseOfLength(50), baseEnv: { PATH } });
+    scratches.push(s);
+    expect(hcCountedSocketBytes(s.socketPath)).toBe(HC_SOCKET_PATH_LIMIT);
+    expect(existsSync(s.socketPath)).toBe(true);
+    s.cleanup();
+    if (process.platform !== "darwin") return;  // Linux allows 107 (hc 0.1.15): there the guard is stricter than hc, which is the safe side
+    // The env the guard refuses at 51, given to the real hc by hand: hc's own refusal, so the guard matches hc and is not merely stricter.
+    const root = join(baseOfLength(51), "hcs-abcdef");
+    const env = { PATH, HOME: `${root}/h`, HC_SESSION: "sabcdef", XDG_CONFIG_HOME: `${root}/c`, XDG_DATA_HOME: `${root}/d`, XDG_STATE_HOME: `${root}/s`, XDG_RUNTIME_DIR: `${root}/r` };
+    for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
+    expect(assertPrivateHcEnv(env, root)).toBeUndefined();
+    const out = spawnSync(HC!, ["server", "start"], { env, encoding: "utf8", timeout: 30_000 });
+    if (out.status === 0) spawnSync(HC!, ["server", "stop"], { env, encoding: "utf8", timeout: 30_000 });
+    expect(out.status, out.stdout + out.stderr).toBe(2);
+    expect(out.stdout + out.stderr).toContain(`is too long here (${HC_SOCKET_PATH_LIMIT + 1} bytes; this system allows ${HC_SOCKET_PATH_LIMIT})`);
+  });
+
   it("starts a core whose socket and env are inside the root, with nothing of the caller's copied", () => {
     const s = startHcScratch({ baseEnv: { PATH, DOCKER_HOST: "tcp://leak", HC_TERMINAL_ID: "t9", HC_SESSION: "default", TYPESAFE_API_KEY: "k" } });
     scratches.push(s);

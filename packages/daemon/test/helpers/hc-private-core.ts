@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../../src/adapters/hc-host.js";
-import { hcScratchBase, hcScratchFallback, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
+import { hcCountedSocketBytes, hcScratchBase, hcScratchFallback, hcSocketFits, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
 
 /** The `hc` on PATH, or "" when there is none (the real-core suites skip). */
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
@@ -26,7 +26,8 @@ export class PrivateCore {
   start(): void {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(this.root, d), { recursive: true, mode: 0o700 });
     const socket = resolveHcSocket(this.env, this.env.HOME);
-    if (Buffer.byteLength(socket) > HC_SOCKET_PATH_LIMIT) throw new Error(`hc private core: the socket path would be ${Buffer.byteLength(socket)} bytes (limit ${HC_SOCKET_PATH_LIMIT}): ${socket}`);
+    // Measured as hc measures it (the socket plus HC_SOCKET_PATH_RESERVE), so a root hc would refuse is refused here first.
+    if (!hcSocketFits(socket)) throw new Error(`hc private core: the socket path would be ${hcCountedSocketBytes(socket)} bytes as hc counts it (limit ${HC_SOCKET_PATH_LIMIT}): ${socket}`);
     execFileSync(HC, ["server", "start"], { env: this.env, stdio: "ignore" });
     this.client = new HcClient(socket);
   }

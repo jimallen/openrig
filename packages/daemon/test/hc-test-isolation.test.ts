@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveHcSocket } from "../src/adapters/hc-client.js";
-import { HC_SCRATCH_ROOT_ENV, HC_SOCKET_PATH_LIMIT, HcSocketTooLongError, hcScratchBase, startHcScratch } from "./helpers/hc-scratch.js";
+import { HC_SCRATCH_ROOT_ENV, HC_SOCKET_PATH_LIMIT, HcSocketTooLongError, hcScratchBase, hcScratchFallback, startHcScratch } from "./helpers/hc-scratch.js";
+import { HC_SCRATCH_REGISTRY_ENV, registerHcScratchRoot } from "../../../test/hc-scratch-tripwire.js";
 import { PrivateCore as RootPrivateCore } from "./hc-private-core.js";
 import { PrivateCore as HelperPrivateCore } from "./helpers/hc-private-core.js";
 import { TRUSTED_BASE_ENV, TRUSTED_RUN_ROOT_PREFIX, TrustedBaseRefusedError, removeTrustedRunRoots, sweepAbandonedRunRoots, trustedBaseFolder } from "./helpers/trusted-scaffold.js";
@@ -47,11 +48,26 @@ describe("where the other private cores are made, and their socket limit", () =>
   };
   // Short on every host: this base carries a private core's root, sockets and holders, and macOS's own tmpdir() (/var/folders/xx/<32 chars>/T,
   // 56 bytes once resolved) leaves a core's socket 108 bytes. The row below that needs a TOO-deep root builds it on top of this base.
-  const shortBase = () => mkdtempSync(join(Buffer.byteLength(tmpdir()) <= 40 ? tmpdir() : "/tmp", "iso-"));
+  // The base is put on the run's hc scratch list (test/hc-scratch-tripwire.ts) as soon as it exists: the PrivateCore roots made in it are not on
+  // that list (only startHcScratch registers), and in /tmp nothing else would ever remove them, so a row that dies before its `finally` leaves a
+  // base the end-of-run tripwire names, instead of a quiet folder in /tmp.
+  const shortBase = () => {
+    const base = mkdtempSync(join(hcScratchFallback(tmpdir()), "iso-"));
+    registerHcScratchRoot(base, import.meta.filename);
+    return base;
+  };
+  /** The run's registry entry for `base`, or null when this run has no registry (a vitest without the suite's global setup). */
+  const registered = (base: string): string | null => {
+    const registry = process.env[HC_SCRATCH_REGISTRY_ENV];
+    if (!registry) return null;
+    const entry = join(registry, basename(base));
+    return existsSync(entry) ? (JSON.parse(readFileSync(entry, "utf8")) as { root: string }).root : "missing";
+  };
 
   it("both PrivateCore classes make their root under the run's scratch root", () => {
     const base = shortBase();
     try {
+      expect(registered(base), "the base holding the PrivateCore roots is on the run's tripwire list").toBe(process.env[HC_SCRATCH_REGISTRY_ENV] ? base : null);
       const a = withScratchRoot(base, () => new RootPrivateCore("iso"));
       const b = withScratchRoot(base, () => new HelperPrivateCore());
       expect(a.root.startsWith(`${base}/`)).toBe(true);
@@ -63,6 +79,7 @@ describe("where the other private cores are made, and their socket limit", () =>
     const base = join(shortBase(), "d".repeat(HC_SOCKET_PATH_LIMIT));
     mkdirSync(base, { recursive: true });
     try {
+      expect(registered(dirname(base))).toBe(process.env[HC_SCRATCH_REGISTRY_ENV] ? dirname(base) : null);
       expect(() => withScratchRoot(base, () => new RootPrivateCore("iso"))).toThrow(/socket path would be \d+ bytes/);
       const b = withScratchRoot(base, () => new HelperPrivateCore());
       expect(() => b.start()).toThrow(/socket path would be \d+ bytes/);

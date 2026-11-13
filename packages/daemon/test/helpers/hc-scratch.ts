@@ -17,9 +17,10 @@
  *  - Every `hc` this module spawns goes through `assertPrivateHcEnv`, which refuses an env whose resolved socket is not
  *    inside the scratch root, whose session is empty or `default`, or whose HOME/XDG paths leave the root
  *    (`HcNotPrivateError`). The check is on the env actually handed to the child, not on the options that built it.
- *  - The socket path is measured before `hc` is asked: it refuses a path over the limit itself ("the socket path for
- *    session is too long here", usage error, exit 2, measured at 0.1.15 on Linux: 107 allowed), and the root is short
- *    (`/tmp/hcs-xxxxxx`) so a deep CI workdir cannot trip it. A too-long `baseDir` is `HcSocketTooLongError`.
+ *  - The socket path is measured before `hc` is asked, by hc's own rule: hc refuses a session whose socket path plus 16 bytes
+ *    is over the platform limit ("the socket path for session ... is too long here", usage error, exit 2; see
+ *    `HC_SOCKET_PATH_RESERVE`), and the root is short (`/tmp/hcs-xxxxxx`) so a deep CI workdir cannot trip it. A too-long
+ *    `baseDir` is `HcSocketTooLongError`.
  *
  * The root is registered for the end-of-run tripwire (hermetic-env.global.ts) the moment it is created: a root still on disk
  * when the run ends is a failure naming the test file that asked for it.
@@ -31,9 +32,9 @@
  * (`reapWhenOwnerDies`, helpers/orphan-reaper.ts) is armed before the core starts and disarmed only after the verified
  * stop, so a worker that is killed or times out does not leave a core running after its temp home is deleted.
  *
- * Unmeasured here: macOS. Its socket lives in the state dir (hc-client.ts `resolveHcSocket`), its sun_path limit is 104
- * (documented by the platform, not measured against hc), and with no /proc the guard covers recorded identities only: the
- * core at start, and holders and terminals after `refreshOrphanGuard()`.
+ * macOS. With `XDG_RUNTIME_DIR` set (it always is here) hc 0.1.19 puts the socket in the runtime dir there too, as
+ * `resolveHcSocket` says (measured on stu, 2026-11-13). With no /proc the guard covers recorded identities only: the core at
+ * start, and holders and terminals after `refreshOrphanGuard()`.
  */
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -51,10 +52,32 @@ type EnvLike = Record<string, string | undefined>;
 export const FOREIGN_HC_CORE_ENV_VARS = ["HC_SOCKET"] as const;
 /**
  * The lower of the two platform limits on a unix socket path, in bytes: Linux allows 107 (measured through hc 0.1.15's own
- * refusal), macOS 103 (sun_path is 104 with its NUL; documented, not measured). One number for both so a layout that passes
- * here passes there.
+ * refusal), macOS 103 (hc 0.1.19 says "this system allows 103"; sun_path is 104 with its NUL). One number for both so a
+ * layout that passes here passes there.
  */
 export const HC_SOCKET_PATH_LIMIT = 103;
+
+/**
+ * What hc counts beyond the socket it makes. hc 0.1.19 on macOS (stu, 2026-11-13, private cores, sessions of 1, 8 and 15
+ * bytes, roots of 30 to 85 bytes) refuses a session when the socket path plus 16 bytes is over the limit, in both layouts:
+ *  - XDG layout (`<root>/r/herdr-core/<session>.sock`, `<root>`+19+session): refused at `<root>`+35+session > 103. Root 60
+ *    with session `s1234567` starts (socket 87 bytes); root 61 is "too long here (104 bytes; this system allows 103)".
+ *  - HOME only, default session (`<home>/.local/state/herdr-core/default/default.sock`, `<home>`+45): refused at `<home>`+61
+ *    > 103. Home 42 starts (socket 87 bytes); home 43 is refused at "104 bytes".
+ * So the socket itself may be 87 bytes at most. Linux: unmeasured with 0.1.19; the same 16 under Linux's own 107 would allow
+ * a socket of 91, so this rule, with the lower limit, refuses there first.
+ */
+export const HC_SOCKET_PATH_RESERVE = 16;
+
+/** The bytes hc counts against `HC_SOCKET_PATH_LIMIT` for a core whose socket is `socketPath`. */
+export function hcCountedSocketBytes(socketPath: string): number {
+  return Buffer.byteLength(socketPath) + HC_SOCKET_PATH_RESERVE;
+}
+
+/** Would hc start a core whose socket is `socketPath`? False exactly where hc 0.1.19 refuses it as too long. */
+export function hcSocketFits(socketPath: string): boolean {
+  return hcCountedSocketBytes(socketPath) <= HC_SOCKET_PATH_LIMIT;
+}
 
 /** The env var a run sets to say where scratch cores are made (a run root, for a run that must contain everything it starts). */
 export const HC_SCRATCH_ROOT_ENV = "OPENRIG_TEST_SCRATCH_ROOT";
@@ -71,10 +94,11 @@ export function hcScratchBase(env: EnvLike = process.env, fallback = "/tmp"): st
 
 /**
  * Where a scratch core goes when the run names no root: `tmp` (the host's temp folder) when it is short enough, else `/tmp`. hc refuses a
- * session whose sockets would pass the platform limit, and it measures more than the core's own socket: hc 0.1.19 on macOS counted
- * `<root>` + 36 + the session's length (111 bytes for a 69-byte root and a 7-byte session; exit 2, "the socket path ... is too long"),
- * 17 more than `<root>/r/herdr-core/<session>.sock`. macOS's tmpdir() is 56 bytes resolved, so a core made under it by the real-core
- * suites cannot start. 40 leaves room for the root's own name (`/hcp-xxxxxx`), a pid session and that allowance.
+ * session whose sockets would pass the platform limit, and it measures more than the core's own socket: hc 0.1.19 on macOS counts
+ * `<root>` + 35 + the session's length (111 bytes for a 69-byte root and a 7-byte session; exit 2, "the socket path ... is too long"),
+ * 16 more than `<root>/r/herdr-core/<session>.sock` (`HC_SOCKET_PATH_RESERVE`). macOS's tmpdir() is 56 bytes resolved, so a core made
+ * under it by the real-core suites cannot start. 40 leaves room for the longest root name (`/hc-hclg-xxxxxx`, 15), a pid session
+ * (`hclg` + up to 7 digits) and that allowance: 40 + 15 + 35 + 11 = 101.
  */
 export function hcScratchFallback(tmp: string): string {
   return Buffer.byteLength(tmp) <= 40 ? tmp : "/tmp";
@@ -108,8 +132,9 @@ export class HcNotPrivateError extends Error {
 }
 
 export class HcSocketTooLongError extends Error {
+  /** `bytes` is what hc counts: the socket path's own length plus `HC_SOCKET_PATH_RESERVE`. */
   constructor(readonly path: string, readonly bytes: number) {
-    super(`hc scratch refused: the core socket would be ${bytes} bytes (${path}); the limit is ${HC_SOCKET_PATH_LIMIT}. Use a shorter baseDir.`);
+    super(`hc scratch refused: the core socket ${path} counts ${bytes} bytes as hc measures it (its ${bytes - HC_SOCKET_PATH_RESERVE} plus ${HC_SOCKET_PATH_RESERVE}); hc allows ${HC_SOCKET_PATH_LIMIT}. Use a shorter baseDir.`);
     this.name = "HcSocketTooLongError";
   }
 }
@@ -163,13 +188,6 @@ export function assertPrivateHcEnv(env: EnvLike, root: string): void {
   // The socket hc will actually use, resolved by the production resolver the daemon's client uses.
   const socket = resolveHcSocket(env, env.HOME);
   if (!inside(root, socket)) throw new HcNotPrivateError(`the resolved socket ${socket} is outside the scratch root`);
-}
-
-/** The longest socket path either platform layout would produce under `root` for `session`. */
-export function longestSocketPath(root: string, session: string): string {
-  const linux = join(root, "r", "herdr-core", `${session}.sock`);
-  const mac = join(root, "s", "herdr-core", session, `${session}.sock`);
-  return Buffer.byteLength(mac) > Buffer.byteLength(linux) ? mac : linux;
 }
 
 export interface HcScratch {
@@ -261,13 +279,7 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
   const session = `s${basename(root).slice(-6).toLowerCase().replace(/[^a-z0-9]/g, "0")}`;
   const fail = (error: unknown): never => { rmSync(root, { recursive: true, force: true }); throw error; };
 
-  const longest = longestSocketPath(root, session);
-  if (Buffer.byteLength(longest) > HC_SOCKET_PATH_LIMIT) fail(new HcSocketTooLongError(longest, Buffer.byteLength(longest)));
-
   const dirs = { home: join(root, "h"), config: join(root, "c"), data: join(root, "d"), state: join(root, "s"), runtime: join(root, "r") };
-  try {
-    for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  } catch (error) { fail(error); }
 
   // BUILT, not copied: PATH and nothing else. A seat's HC_* names, DOCKER_HOST, credentials: none of it reaches the core.
   const env: NodeJS.ProcessEnv = {
@@ -280,7 +292,12 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
     XDG_RUNTIME_DIR: dirs.runtime,
   };
 
+  // The socket hc will use for this env (the runtime dir's, on Linux and macOS alike), measured as hc measures it, before a folder is made.
   const socketPath = resolveHcSocket(env, dirs.home);
+  if (!hcSocketFits(socketPath)) fail(new HcSocketTooLongError(socketPath, hcCountedSocketBytes(socketPath)));
+  try {
+    for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch (error) { fail(error); }
   try {
     assertPrivateHcEnv(env, root);
   } catch (error) { fail(error); }
