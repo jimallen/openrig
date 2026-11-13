@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from "vitest";
 import { Command } from "commander";
 import { setOff, shellPath, shellWord } from "../src/command-text.js";
 import { shellWord as daemonShellWord } from "../../daemon/src/domain/active-occupant.js";
-import { setOff as daemonSetOff } from "../../daemon/src/domain/running-name-guard.js";
+import { setOff as daemonSetOff, shellPath as daemonShellPath } from "../../daemon/src/domain/running-name-guard.js";
 import { archiveCommand } from "../src/commands/archive.js";
 import { downCommand } from "../src/commands/down.js";
 import { upCommand } from "../src/commands/up.js";
@@ -91,6 +91,16 @@ describe("command-text: the CLI's copies give the daemon's words", () => {
 
   it.each(["/my specs/rig.yaml", "/a;b/rig.yaml", "=x", "/it's/rig.yaml", "/a`b'c/rig.yaml"])("shellPath(%j) is the path, one word", (p) => {
     expect(shellArgv(shellPath(p))).toEqual([p]);
+  });
+
+  it.each(["/home/me/specs/rig.yaml", "/my specs/rig.yaml", "=x", "a=b", "/it's/rig.yaml", "/a`b'c/rig.yaml", "-x", ""])("shellPath(%j) quotes exactly when the daemon's does, and pastes as the same word", (p) => {
+    // The two copies escape a quote differently ('\\'' here, '"'"' in the daemon); sh reads both as the same word.
+    expect(shellPath(p) === p).toBe(daemonShellPath(p) === p);
+    if (p !== "") expect(shellArgv(shellPath(p))).toEqual(shellArgv(daemonShellPath(p)));
+  });
+
+  it("a leading = is quoted (zsh rewrites a bare =word; sh does not, so this is checked as text)", () => {
+    expect(shellPath("=x")).toBe("'=x'");
   });
 });
 
@@ -249,6 +259,13 @@ describe("walkSizedWarning: the rig walk command (OF-288)", () => {
     // The ref is also named in the prose before the command, where a quote in it is not the command's; read from "Consider" on.
     const text = warning.slice(warning.indexOf("Consider"));
     expect(setOffCommands(text).map(rigWords)).toEqual([["walk", "dev-impl@my-rig", "--through", ref]]);
+    expect(closesCleanly(text, setOffCommands(text)[0]!)).toBe(true);
+  });
+
+  it.each(["my seat@rig", "it's@rig", "a`b@rig"])("a seat %j: the walk command pastes with the seat as one word", (seat) => {
+    const warning = walkSizedWarning({ ref: "pack", text: "", bytes: 10 ** 9 }, seat)!;
+    const text = warning.slice(warning.indexOf("Consider"));
+    expect(setOffCommands(text).map(rigWords)).toEqual([["walk", seat, "--through", "pack"]]);
     expect(closesCleanly(text, setOffCommands(text)[0]!)).toBe(true);
   });
 

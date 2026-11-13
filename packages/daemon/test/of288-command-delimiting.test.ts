@@ -3,6 +3,7 @@
 // are pure functions of a rig name, so the hostile-name table can run through them directly.
 import { describe, it, expect } from "vitest";
 import { noFreshStartRemedy } from "../src/domain/restore-seat-gates.js";
+import { manualReasonMessage } from "../src/routes/compaction.js";
 import { shellArgv, setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const HOSTILE = ["workshop", "my rig", "a;b", "$(id)", "it's", "=x", "a b;rm -rf x", "a`b", "a`b'c", "x``y'z"];
@@ -28,5 +29,21 @@ describe("noFreshStartRemedy: the resume-token pipeline and the rig up command a
     const [producer, consumer] = pipeline.split(" | rig ");
     expect(shellArgv(producer!.slice("printf ".length))).toEqual(["%s", "http://127.0.0.1:<port>/agents/<agent>"]);
     expect(shellArgv(consumer!)).toEqual(["seat", "set-resume-token", `dev.impl@${name}`, "--token-stdin", "--reason", "<why>"]);
+  });
+});
+
+describe("compaction refusals: every command is set off and names its seat as one word (OF-288 review F2)", () => {
+  const seats = ["dev@rig", "my seat@rig", "it's@rig", "$(id)@rig", "a`b'c@rig"];
+  it.each(seats)("preparation_incomplete for %j: rig compact --state pastes as its own words", (seat) => {
+    const text = manualReasonMessage(seat, "preparation_incomplete");
+    const from = text.slice(text.indexOf("Inspect"));
+    expect(setOffCommands(from).map(rigWords)).toEqual([["compact", seat, "--state"]]);
+    expect(closesCleanly(from, setOffCommands(from)[0]!)).toBe(true);
+  });
+  it.each(seats)("occupant_generation_unavailable for %j: reconcile-session and compact paste as their own words", (seat) => {
+    const text = manualReasonMessage(seat, "occupant_generation_unavailable");
+    const from = text.slice(text.indexOf("For the confirmed"));
+    expect(setOffCommands(from).map(rigWords)).toEqual([["reconcile-session", seat, "--no-launch"], ["compact", seat]]);
+    for (const c of setOffCommands(from)) expect(closesCleanly(from, c)).toBe(true);
   });
 });

@@ -155,7 +155,8 @@ function manualOutcomeMessage(sessionName: string, outcome: Extract<ManualCompac
   return `${effect} for '${sessionName}' (attempt ${prep.attemptId}). ${detail} Its map remains at ${prep.mapPath} if written. Inspect ${setOff(`rig compact ${shellQuote(sessionName)} --state`)} before an explicit retry.`;
 }
 
-function manualReasonMessage(sessionName: string, reason: string): string {
+/** Exported for the OF-288 delimiting table (test/of288-command-delimiting.test.ts). */
+export function manualReasonMessage(sessionName: string, reason: string): string {
   switch (reason) {
     case "occupant_generation_unavailable":
       return `The occupant generation could not be resolved for '${sessionName}'; no preparation or compact was sent. For the confirmed live seat, run ${setOff(`rig reconcile-session ${shellQuote(sessionName)} --no-launch`)}, then explicitly retry ${setOff(`rig compact ${shellQuote(sessionName)}`)}. Reconciliation does not restart this attempt.`;

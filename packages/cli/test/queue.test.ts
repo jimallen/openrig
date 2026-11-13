@@ -608,6 +608,13 @@ describe("rig queue CLI", () => {
       expect(result.detail).not.toMatch(/ladder retries/);
     });
 
+    it.each(["it's@rig", "my seat@rig", "a`b@rig"])("a retained wake to %j: the held-messages command pastes with the seat as one word (OF-288 review)", async (seat) => {
+      const { result } = await verify([{ lastNudgeResult: "retained:typing_guard" }], { destinationSession: seat });
+      expect(setOffCommands(result.detail!).map(rigWords)).toEqual([["seat", "held-messages", seat]]);
+      expect(closesCleanly(result.detail!, setOffCommands(result.detail!)[0]!)).toBe(true);
+      expect(rigWords(result.nextAction!)).toEqual(["seat", "held-messages", seat]);
+    });
+
     it("only a missing wake result waits, up to the bound, then stays still-pending", async () => {
       const { result, reads } = await verify([{}]);
       expect(reads).toBeGreaterThan(1);

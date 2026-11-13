@@ -163,7 +163,7 @@ function terminalDeliveryResult(
     "verified": "Terminal receipt confirmed: the wake rendered in the destination pane.",
     "delivered-ack-pending": "Terminal receipt unconfirmed (delivered-ack-pending): the wake was sent, but its render could not be confirmed.",
     "claimed": "Terminal receipt unconfirmed, but the seat has claimed the item (claimed).",
-    "retained": `The wake is held (${wakeResult}): nothing was typed into the pane. A held create wake is not retried automatically; inspect it with ${setOff(`rig seat held-messages ${destination === undefined ? seat : shellWord(seat)}`)}.`,
+    "retained": `The wake is held (${wakeResult}): nothing was typed into the pane. A held create wake is not retried automatically; inspect it with ${setOff(`rig seat held-messages ${destination === null ? seat : shellWord(seat)}`)}.`,
     "held-local-inbox": "It is held in the operator's local inbox: the queue row is the delivery, the operator reads it in the inbox panel, and no wake was typed into any pane.",
     "failed": `The wake failed (${wakeResult}).`,
     "indeterminate": `Terminal receipt unconfirmed (${wakeResult}).`,
@@ -192,7 +192,7 @@ function terminalDeliveryResult(
     claim,
     ...(gateway ? { gateway } : {}),
     detail: `The qitem is saved. ${receipt[outcome]}${slackText} ${claimText}${notFailed}`,
-    nextAction: settled ? null : outcome === "retained" ? `rig seat held-messages ${seat}` : `rig queue show ${qitemId} --json`,
+    nextAction: settled ? null : outcome === "retained" ? `rig seat held-messages ${destination === null ? seat : shellWord(seat)}` : `rig queue show ${qitemId} --json`,
   };
 }
 

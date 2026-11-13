@@ -581,13 +581,13 @@ identity remains unverified; a version number alone cannot clear it.
         code: "restart_outcome_unknown",
         status: "unknown",
         message: "The CLI timed out waiting for the daemon; the in-place restart may still be in progress.",
-        guidance: `Check the outcome before running it again: rig seat restart ${seat} --keep-conversation --plan refuses with restart_in_progress while it is still running, then shows its result as lastRestart.`,
+        guidance: `Check the outcome before running it again: ${setOff(`rig seat restart ${shellWord(seat)} --keep-conversation --plan`)} refuses with restart_in_progress while it is still running, then shows its result as lastRestart.`,
       } : {
         ok: false as const,
         code: path === "launch-plan" ? "launch_plan_timeout" : `${path}_outcome_unknown`,
         status: "unknown",
         message: path === "launch-plan" ? "The read-only launch preview timed out; no launch was requested." : `The CLI timed out waiting for the daemon; the ${path === "continue" ? "continuation" : "launch"} may still be in progress.`,
-        guidance: path === "launch-plan" ? "Retry the preview when the daemon responds." : `Check the outcome before retrying: rig seat status ${seat}`,
+        guidance: path === "launch-plan" ? "Retry the preview when the daemon responds." : `Check the outcome before retrying with ${setOff(`rig seat status ${shellWord(seat)}`)}.`,
       };
       if (opts.json) console.log(JSON.stringify(error, null, 2));
       else printSeatError(error, error.message);

@@ -70,7 +70,7 @@ export function countStoredRunningSessions(db: Database.Database, rigId: string)
  *  adapters' `shellWord`, which has the same bare set: the domain may not import an adapter (hexagonal ratchet), and the domain's
  *  own `shellWord` (active-occupant) quotes every `/`, which would rewrite every path in the existing wording. A leading `=` is
  *  quoted: zsh rewrites a bare `=word` to the path of a command. */
-function shellPath(value: string): string {
+export function shellPath(value: string): string {
   return /^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 

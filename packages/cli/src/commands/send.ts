@@ -635,7 +635,7 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
           if (outcome === "delivered") {
             console.log("Delivery: delivered (message landed; render confirmed)");
           } else if (outcome === "rendered-unconfirmed") {
-            console.log(`Delivery: rendered-unconfirmed (landed; pane re-render not confirmed - confirm with: rig capture ${session})`);
+            console.log(`Delivery: rendered-unconfirmed (landed; pane re-render not confirmed; confirm with ${setOff(`rig capture ${shellWord(session)}`)})`);
           }
           for (const line of effectHumanLines(effect, session)) console.log(line);
         }
@@ -726,9 +726,9 @@ function effectHumanLines(effect: EffectCheck, session: string): string[] {
   if (effect.remedy === "submitted-cleared") {
     out.push("Remedy: one guarded Enter submitted — the staged text left the prompt.");
   } else if (effect.remedy === "submitted-still-staged") {
-    out.push(`Remedy: one guarded Enter submitted, but the text is STILL at the prompt — not consumed; stopping here (one submit is the contract). Inspect with: rig capture ${session}`);
+    out.push(`Remedy: one guarded Enter submitted, but the text is STILL at the prompt — not consumed; stopping here (one submit is the contract). Inspect with ${setOff(`rig capture ${shellWord(session)}`)}.`);
   } else {
-    out.push(`Remedy: the single guarded Enter (submit path) was refused (${effect.detail}); stopping here — one submit is the contract. Inspect with: rig capture ${session}`);
+    out.push(`Remedy: the single guarded Enter (submit path) was refused (${effect.detail}); stopping here — one submit is the contract. Inspect with ${setOff(`rig capture ${shellWord(session)}`)}.`);
   }
   return out;
 }
@@ -1055,7 +1055,7 @@ async function runHttpHostSend(
     if (outcome === "delivered") {
       console.log("Delivery: delivered (message landed; render confirmed)");
     } else if (outcome === "rendered-unconfirmed") {
-      console.log(`Delivery: rendered-unconfirmed (landed; pane re-render not confirmed - confirm with: rig capture ${session})`);
+      console.log(`Delivery: rendered-unconfirmed (landed; pane re-render not confirmed; confirm with ${setOff(`rig capture ${shellWord(session)}`)})`);
     }
     // S3 wave-1 fix (r2 F2): honest cross-host limit — the verdict above is
     // the REMOTE transport's; the pane-effect check does not run cross-host.

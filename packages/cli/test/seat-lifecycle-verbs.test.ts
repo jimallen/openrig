@@ -590,6 +590,18 @@ describe("OPR.0.7.0.5 rig seat restart --keep-conversation", () => {
       guidance: expect.stringContaining("refuses with restart_in_progress while it is still running, then shows its result as lastRestart") });
   });
 
+  it.each(["dev@r", "it's@r", "my dev@r"])("a timed-out restart of %j: the --plan command is set off and pastes as its own words (OF-288 review)", async (seat) => {
+    const { DaemonTimeoutError } = await import("../src/client.js");
+    const { setOffCommands, rigWords, closesCleanly } = await import("../../daemon/test/helpers/shell-argv.js");
+    const deps = makeDeps({ status: 200, data: {} }, []);
+    deps.clientFactory = () => ({ post: vi.fn(async () => { throw new DaemonTimeoutError("slow"); }) }) as never;
+    const output = await captureLogs(() => makeCommand(deps).parseAsync([
+      "node", "rig", "seat", "restart", seat, "--keep-conversation", "--reason", "x", "--json"]).then(() => undefined));
+    const guidance = JSON.parse(output.logs.join("\n")).guidance as string;
+    expect(setOffCommands(guidance).map(rigWords)).toEqual([["seat", "restart", seat, "--keep-conversation", "--plan"]]);
+    expect(closesCleanly(guidance, setOffCommands(guidance)[0]!)).toBe(true);
+  });
+
   it("verify posts the expected account and prints the outcome", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const data = { ok: true, outcome: "moved", message: "Moved.", toolTurn: { state: "observed", completed: 1, errors: 0 }, accountEvidence: { detail: "Matched." } };
