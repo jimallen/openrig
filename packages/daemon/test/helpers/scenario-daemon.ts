@@ -142,8 +142,10 @@ export async function spawnScenarioDaemon(
   // against a foreign target.
   assertNoForeignDaemon(scaffold.env);
   // Nor against the host's Herdr app: the daemon finds `herdr-app` on its PATH (`rig terminal open`, the names a relaunch puts back), and on a
-  // host that runs the app that is the person's own window. Hidden here, once, for every scenario daemon, the CLI calls and the private core
-  // started below; every other program stays found. A fake app a test put inside its scaffold stays on PATH.
+  // host that runs the app that is the person's own window. Hidden here, once, for every scenario daemon and the CLI calls made with this env;
+  // every other program stays found. A fake app a test put inside its scaffold stays on PATH. Not hidden from the private hc core or the
+  // tmux wrapper: both are started with the PATH the scaffold was made with (hermetic-env.ts, startHcCore and the wrapper). Whether
+  // anything they start can reach herdr-app is not checked here.
   scaffold.env.PATH = pathWithoutHerdrApp(scaffold.env.PATH, scaffold.root, scaffold.root);
 
   // The seat host is hc, so the daemon needs a core: a private one of the scaffold's, started before the daemon and given to

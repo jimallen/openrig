@@ -25,7 +25,7 @@ const childrenOf = (parent: number): number[] => spawnSync("ps", ["-axo", "pid=,
   .map((l) => l.trim().split(/\s+/).map(Number)).filter(([, ppid]) => ppid === parent).map(([pid]) => pid!);
 /** A terminal program that ignores hangups (and so outlives its holder's death, as a nohup-style program does): `sleep`, with SIGHUP ignored. */
 const HUP_IGNORING_PROGRAM = ["sh", "-c", "trap '' HUP; exec sleep 300"];
-// Short on every host: a root under macOS's own tmpdir() (/private/var/folders/xx/<32 chars>/T, 49 bytes) leaves a socket hc refuses.
+// Short on every host: a root under macOS's own tmpdir() (/var/folders/xx/<32 chars>/T/, 48 bytes; 56 once resolved to /private/var/...) leaves a socket hc refuses.
 const tmpBase = (): string => { const d = mkdtempSync(join(hcScratchFallback(tmpdir()), "hcsb-")); dirs.push(d); return d; };
 /** A program that exists and exits 1 on both platforms (macOS has no /bin/false). */
 const FALSE = ["/usr/bin/false", "/bin/false"].find((p) => existsSync(p)) ?? "/usr/bin/false";
