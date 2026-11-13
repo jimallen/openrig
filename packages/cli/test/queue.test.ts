@@ -602,8 +602,8 @@ describe("rig queue CLI", () => {
       expect(result).toMatchObject({ outcome: "retained", nextAction: "rig seat held-messages bob@rig" });
       expect(result.detail).toContain("nothing was typed into the pane");
       // OF-288: in the sentence the command is set off, so the full stop after it is not pasted with it.
-      expect(setOffCommands(result.detail).map(rigWords)).toEqual([["seat", "held-messages", "bob@rig"]]);
-      expect(closesCleanly(result.detail, setOffCommands(result.detail)[0]!)).toBe(true);
+      expect(setOffCommands(result.detail!).map(rigWords)).toEqual([["seat", "held-messages", "bob@rig"]]);
+      expect(closesCleanly(result.detail!, setOffCommands(result.detail!)[0]!)).toBe(true);
       expect(result.detail).toContain("not retried automatically");
       expect(result.detail).not.toMatch(/ladder retries/);
     });
