@@ -17,6 +17,7 @@ import { runnerSendReadinessFromAdapters, type RuntimeAdapter } from "../src/dom
 import { PdaRuntimeAdapter } from "../src/adapters/pda-runtime-adapter.js";
 import { pdaSeatPaths, type PdaRunnerState } from "../src/adapters/pda-runner-protocol.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const SEAT = "dev-research@my-rig";
 // The review's frame F1: a reply ending in a question, which the pane classifier reads as a permission prompt.
@@ -98,6 +99,9 @@ describe("rig send to a pda seat, answered by its runner's sidecar", () => {
     const r = await transport.send(SEAT, "next");
     expect(r.ok).toBe(false);
     expect(r.activity).toMatchObject({ state: "needs_input", reason: "pda_message_held", evidenceSource: "runner_sidecar" });
+    // OF-288: the release command in the refusal is set off and closes before ")".
+    expect(setOffCommands(r.error!).map(rigWords)).toEqual([["seat", "pda-release", SEAT, "--reason", "<why>"]]);
+    expect(closesCleanly(r.error!, setOffCommands(r.error!)[0]!)).toBe(true);
     const forced = await transport.send(SEAT, "next", { dangerouslyInteract: true, reason: "drive it" });
     expect(forced.ok).toBe(false);
     expect(sendText).not.toHaveBeenCalled();

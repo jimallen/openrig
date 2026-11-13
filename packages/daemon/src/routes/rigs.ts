@@ -1,6 +1,7 @@
 import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import { inventoryCaptureOptions, type ShadowCapture } from "../domain/shadow-capture.js";
 import { DeliveryGuardError } from "../domain/seat-delivery-guard.js";
+import { setOff } from "../domain/active-occupant.js";
 import { existsSync } from "node:fs";
 import { Hono } from "hono";
 import { observeInventoryHandler, observeInventoryQuery } from "../domain/request-phase-observer.js";
@@ -697,7 +698,7 @@ rigsRoutes.post("/:id/up", async (c) => {
     const eligibility = assessCurrentStateRehydrateEligibility(repo.db, rig);
     if (!eligibility.ok) {
       return c.json({
-        error: `Rig "${rig.rig.name}" exists but ${staleSnapshot ? "its restore snapshots name an older occupant" : "has no restore-usable snapshot"} and current DB state is insufficient for rehydrate. Start fresh with: rig up <spec-path>`,
+        error: `Rig "${rig.rig.name}" exists but ${staleSnapshot ? "its restore snapshots name an older occupant" : "has no restore-usable snapshot"} and current DB state is insufficient for rehydrate. Start fresh with ${setOff("rig up <spec-path>")}.`,
         code: "no_snapshot",
         blockers: eligibility.blockers,
       }, 404);

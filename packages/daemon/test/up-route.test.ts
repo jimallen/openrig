@@ -89,7 +89,11 @@ describe("Up API route", () => {
     });
 
     expect(res.status).toBe(404);
-    expect((await res.json()).code).toBe("no_snapshot");
+    const body = await res.json();
+    expect(body.code).toBe("no_snapshot");
+    // OF-288: the start-fresh command is set off.
+    expect(setOffCommands(body.error)).toEqual(["rig up <spec-path>"]);
+    expect(closesCleanly(body.error, setOffCommands(body.error)[0]!)).toBe(true);
   });
 
   // OF-150: this row once pinned the opposite (#513 kept the old fallback to an archived rig). The CLI has refused an
@@ -315,6 +319,9 @@ describe("Up API route", () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json).toMatchObject({ code: "invalid_startup_from", error: expect.stringContaining(text) });
+    // OF-288: a command the refusal names is set off.
+    for (const command of setOffCommands(json.error)) expect(closesCleanly(json.error, command)).toBe(true);
+    if (body.startupFrom === "stored") expect(setOffCommands(json.error)).toEqual(["rig up <rig-name> --existing"]);
     expect(restoreSpy).not.toHaveBeenCalled();
     expect(boot).not.toHaveBeenCalled();
   });

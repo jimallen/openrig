@@ -13,6 +13,7 @@ import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 // The open ship-authorizing AskUserQuestion from the 2026-06-20 incident (highlighted default first).
 const SHIP_PROMPT = [
@@ -132,6 +133,9 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe("target_needs_input");
     expect(r.activity?.state).toBe("needs_input");
+    // OF-288: the override command is set off (in backticks: it holds '), so the "." after it is not pasted with it.
+    expect(setOffCommands(r.error!).map(rigWords)).toEqual([["send", "dev-impl@my-rig", "<text>", "--dangerously-interact", "--reason", "<why>"]]);
+    expect(closesCleanly(r.error!, setOffCommands(r.error!)[0]!)).toBe(true);
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
   });

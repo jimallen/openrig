@@ -15,6 +15,7 @@ import { DaemonClient, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , statusGuardMessage} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { setOff, shellWord } from "../command-text.js";
 
 interface RefPiecesWire {
   ref: string;
@@ -236,7 +237,7 @@ initial record is explicitly reported as unverified delivery.`)
               deliveryId: randomUUID(),
             }, { headers: terminalAuthHeaders(), timeoutMs: transportSendBudgetMs() });
             if (res.data?.["outcome"] === "retained") {
-              failPiece(i, piece.label, `retained, not delivered (${JSON.stringify(res.data["outboxIds"])}); no further pieces sent. Inspect with rig seat held-messages ${seat}.`);
+              failPiece(i, piece.label, `retained, not delivered (${JSON.stringify(res.data["outboxIds"])}); no further pieces sent. Inspect with ${setOff(`rig seat held-messages ${shellWord(seat)}`)}.`);
               return;
             }
             if (res.status >= 400) {

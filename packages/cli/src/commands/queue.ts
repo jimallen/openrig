@@ -15,6 +15,7 @@ import { omittedReadField, readView } from "../read-view.js";
 import { buildWriteReceipt, compactOutputEnabled, type ReceiptContext } from "../queue-receipt.js";
 import { TRANSITIONS_SHOWN, compactShow, compactTransitions, showEmptyNotice, transitionsNotice } from "../queue-read-compact.js";
 import { damagedRowsIn, warnDamagedRows, warnSavedRowRefusal, type DamagedKind } from "../lib/damaged-rows.js";
+import { setOff, shellWord } from "../command-text.js";
 
 /**
  * `rig queue` — coordination primitive L3/inbox/outbox commands (PL-004 Phase A).
@@ -162,7 +163,7 @@ function terminalDeliveryResult(
     "verified": "Terminal receipt confirmed: the wake rendered in the destination pane.",
     "delivered-ack-pending": "Terminal receipt unconfirmed (delivered-ack-pending): the wake was sent, but its render could not be confirmed.",
     "claimed": "Terminal receipt unconfirmed, but the seat has claimed the item (claimed).",
-    "retained": `The wake is held (${wakeResult}): nothing was typed into the pane. A held create wake is not retried automatically; inspect it with rig seat held-messages ${seat}.`,
+    "retained": `The wake is held (${wakeResult}): nothing was typed into the pane. A held create wake is not retried automatically; inspect it with ${setOff(`rig seat held-messages ${destination === undefined ? seat : shellWord(seat)}`)}.`,
     "held-local-inbox": "It is held in the operator's local inbox: the queue row is the delivery, the operator reads it in the inbox panel, and no wake was typed into any pane.",
     "failed": `The wake failed (${wakeResult}).`,
     "indeterminate": `Terminal receipt unconfirmed (${wakeResult}).`,

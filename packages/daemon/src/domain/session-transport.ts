@@ -51,6 +51,7 @@ import { observeClaudeDelivery, verifyCodexPaneProcess, type ClaudeDeliveryObser
 import type { SlowOperationInstrumentation } from "./slow-op-recorder.js";
 import { hashSentText, type CaptureObserverSink, type CaptureSlot, type ObservationInput, type ObservedBinding } from "./capture-observer.js";
 import { registeredPaneSql } from "./binding-pane.js";
+import { setOff, shellWord } from "./active-occupant.js";
 
 // OPR.0.4.1.10 — send-readiness freshness. The runtime-hook store keeps a 5min freshness for activity
 // DISPLAY, but "safe to send NOW" needs a tight window: a stale "idle" read must not authorize a send
@@ -1269,9 +1270,9 @@ function needsInputRefusal(sessionName: string, readiness: AgentActivity): strin
     return pasteLeftoverRefusal(sessionName, readiness.runtime);
   }
   if (readiness.evidenceSource === "runner_sidecar") {
-    return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: rig seat pda-release ${sessionName} --reason "<why>"). No text was sent.`;
+    return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: ${setOff(`rig seat pda-release ${shellWord(sessionName)} --reason "<why>"`)}). No text was sent.`;
   }
-  return `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} '<text>' --dangerously-interact --reason '<why>'. No text was sent.`;
+  return `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: ${setOff(`rig send ${shellWord(sessionName)} '<text>' --dangerously-interact --reason '<why>'`)}. No text was sent.`;
 }
 
 /** The result for an hc delivery that did not land, or null when it did. A send the core may still deliver is not a
@@ -1790,7 +1791,7 @@ export class SessionTransport {
     const outbox = new OutboxHandler(this.db);
     const ids = opts?.committedOutboxIds ?? [opts?.deliveryId ?? mintMessageId()];
     const retainedResult = (): SendResult => ({ ok: true, sessionName, outcome: "retained", sent: false, verified: false,
-      outboxIds: ids, reason: "typing_guard_enabled", warning: `Retained, not delivered. Inspect with rig seat held-messages ${sessionName}; disabling does not replay held messages.` });
+      outboxIds: ids, reason: "typing_guard_enabled", warning: `Retained, not delivered. Inspect with ${setOff(`rig seat held-messages ${shellWord(sessionName)}`)}. Disabling does not replay held messages.` });
     try {
       if (opts?.committedOutboxIds) {
         const target = guard.target(sessionName);

@@ -11,6 +11,7 @@ import { Command } from "commander";
 import { walkCommand, parsePaceMs, type WalkDeps } from "../src/commands/walk.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import { mkTemp } from "./helpers/temp-roots.js";
+import { setOffCommands, rigWords, closesCleanly } from "../../daemon/test/helpers/shell-argv.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -124,6 +125,25 @@ describe("rig walk — paced push-delivery (Atom 6)", () => {
     });
     // 3 pieces → 2 inter-piece pauses; never a trailing pause after the last.
     expect(sleeps).toEqual([500, 500]);
+  });
+
+  it("OF-288: a retained piece names the held-messages command set off, so the full stop after it is not pasted with it", async () => {
+    const a = tmpFile("a.md", "AAA");
+    const deps: WalkDeps = {
+      lifecycleDeps: mockLifecycleDeps(),
+      clientFactory: () => ({
+        get: async () => ({ status: 404, data: {} }),
+        post: async () => ({ status: 200, data: { outcome: "retained", outboxIds: ["held-1"] } }),
+      }) as never,
+      sleep: async () => {},
+    };
+    const { errLogs, exitCode } = await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "walk", "dev@rig", "--through", a, "--pace", "0s"]);
+    });
+    expect(exitCode).toBe(1);
+    const line = errLogs.find((l) => l.includes("retained, not delivered"))!;
+    expect(setOffCommands(line).map(rigWords)).toEqual([["seat", "held-messages", "dev@rig"]]);
+    expect(closesCleanly(line, setOffCommands(line)[0]!)).toBe(true);
   });
 
   it("aborts the walk when a piece fails to send (does not keep pacing into a broken pane)", async () => {

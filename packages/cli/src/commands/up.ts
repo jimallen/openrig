@@ -16,6 +16,7 @@ import { freshSeatLaunchCommand, parseStartupFromArg, STARTUP_FROM_HELP, type St
 import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
 import { describeRestoreStartupSource, type RestoreStartupSourceReport } from "../restore-startup-source.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
+import { setOff, shellPath, shellWord } from "../command-text.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 
@@ -323,18 +324,19 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
                   error: "rig_archived",
                   rig: name,
                   archivedRigIds: ids,
+                  // OF-288: a lone command is the whole value; with a sentence after it, it is set off.
                   action: ids.length === 1
-                    ? `rig unarchive ${ids[0]}`
-                    : `rig unarchive <rigId> (archived rigs named '${name}': ${ids.join(", ")})`,
+                    ? `rig unarchive ${shellWord(ids[0]!)}`
+                    : `${setOff("rig unarchive <rigId>")} (archived rigs named '${name}': ${ids.join(", ")})`,
                 }));
               } else if (ids.length === 1) {
                 console.error(`Rig "${name}" is archived, so it is hidden from 'rig up' name resolution.`);
-                console.error(`  Bring it back first: rig unarchive ${ids[0]}`);
-                console.error(`  Then power it on:    rig up ${name}`);
+                console.error(`  Bring it back first: ${setOff(`rig unarchive ${shellWord(ids[0]!)}`)}`);
+                console.error(`  Then power it on:    ${setOff(`rig up ${shellWord(name)}`)}`);
               } else {
                 console.error(`${ids.length} archived rigs are named "${name}"; they are hidden from 'rig up' name resolution.`);
                 console.error(`  Unarchive the one you want by id (then 'rig up'):`);
-                for (const id of ids) console.error(`    rig unarchive ${id}`);
+                for (const id of ids) console.error(`    rig unarchive ${shellWord(id)}`);
               }
               process.exitCode = 1;
               return true;
@@ -361,12 +363,12 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           const rigMatches = rigSummaries.filter((r) => r.name === source || r.name === resolvedName);
           if (rigMatches.length > 0) {
             console.error(`'${source}' is ambiguous — it matches both an existing rig restore target and a library spec.`);
-            console.error(`  To launch the library spec: rig up ${entry.sourcePath}`);
+            console.error(`  To launch the library spec: ${setOff(`rig up ${shellPath(entry.sourcePath)}`)}`);
             console.error(`  The rig-name match refers to a stopped rig / snapshot-backed restore path.`);
             // OF-135: rigs that share the name are reached by id.
             const recover = rigMatches.length === 1
-              ? `rig up ${rigMatches[0]!.name} --existing`
-              : `rig up <rig-id> --existing, with one of: ${rigMatches.map((r) => r.id).join(", ")}`;
+              ? setOff(`rig up ${shellWord(rigMatches[0]!.name)} --existing`)
+              : `${setOff("rig up <rig-id> --existing")}, with one of: ${rigMatches.map((r) => r.id).join(", ")}`;
             console.error(`  To recover the existing rig instead of importing a starter: ${recover}`);
             process.exitCode = 1;
             return;

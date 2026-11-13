@@ -4,6 +4,7 @@ import { DaemonClient } from "../src/client.js";
 import { seatCommand, handoverCommand } from "../src/commands/seat.js";
 import { STATE_FILE, type DaemonState, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { setOffCommands, rigWords, closesCleanly } from "../../daemon/test/helpers/shell-argv.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -899,6 +900,10 @@ describe("seat request deadlines (#260)", () => {
         expect(output.logs).toEqual([]);
         expect(text).toContain("handover outcome is unknown");
         expect(text).toContain("rig seat status dev-impl@seat-rig");
+        // OF-288: the status command is set off, so the full stop after it is not pasted with it.
+        const guidance = output.errors.find((l) => l.includes("rig seat status"))!;
+        expect(setOffCommands(guidance).map(rigWords)).toEqual([["seat", "status", "dev-impl@seat-rig"]]);
+        expect(closesCleanly(guidance, setOffCommands(guidance)[0]!)).toBe(true);
       }
       expect(text).toContain("may still be working");
       expect(text).not.toMatch(/cancel|handover failed|safe to retry/i);

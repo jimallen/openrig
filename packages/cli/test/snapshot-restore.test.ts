@@ -331,7 +331,7 @@ describe("rig snapshot + restore", () => {
     const badLine = logs.find((l) => l.includes("snap-bad"))!;
     expect(goodLine).not.toContain("DAMAGED");
     expect(badLine).toContain("DAMAGED: its saved data is not JSON (cannot be restored)");
-    expect(logs.join("\n")).toContain("Take a fresh one with: rig snapshot rig-1");
+    expect(logs.join("\n")).toContain("Take a fresh one with 'rig snapshot rig-1'.");
   });
 
   it("snapshot list: with no damaged snapshot the output has no DAMAGED word and no advice line", async () => {

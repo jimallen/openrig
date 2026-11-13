@@ -43,6 +43,7 @@ import {
 import { makeWorkflowKeepalivePolicy } from "../src/domain/policies/workflow-keepalive.js";
 import { WORKFLOW_STEP_STUCK_THRESHOLD_SECONDS } from "../src/domain/workflow-deadline.js";
 import type { PolicyJob } from "../src/domain/policies/types.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const SPEC = `workflow:
   id: fr3-arming
@@ -350,6 +351,11 @@ describe("FR-3/FR-2: the deadline-gated keepalive policy behavior", () => {
     expect(evaluation.message).toContain(inst.entryQitemId);
     expect(evaluation.message).toContain("--full");
     expect(evaluation.message).toContain("Packet age does not establish idle");
+    // OF-288: both inspect commands are set off; the full stops after them are the sentence's.
+    expect(setOffCommands(evaluation.message).map(rigWords)).toEqual([
+      ["workflow", "show", inst.instance.instanceId], ["queue", "show", inst.entryQitemId, "--full"],
+    ]);
+    for (const command of setOffCommands(evaluation.message)) expect(closesCleanly(evaluation.message, command)).toBe(true);
     const deadlineNotes = (evaluation.notes as Record<string, unknown>)
       .deadline as Record<string, unknown>;
     expect(deadlineNotes.state).toBe("overdue-unclaimed");

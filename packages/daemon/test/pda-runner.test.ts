@@ -28,6 +28,7 @@ import {
   entryAppended, makeRig, messageEnd, messageStart, nestedToolEnd, runEnd, runStart, snapshotEvent, streamEnd, submissionEvent,
   taskFailed, thinkingDeltaEvent, toolEnd, toolResultEntry, toolResultMessage, toolStart, userEntry, userMessage, waitFor, type Rig,
 } from "./helpers/pda-runner-rig.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const ESC = "\u001b";
 const REASSERT = `${ESC}[?2004h`;
@@ -1020,6 +1021,10 @@ describe("pda-runner: the outbox glue", () => {
     expect(rig.sidecar().held).toMatchObject({ code: "pda_message_held" });
     expect(rig.pane()).toContain("pda_message_held");
     expect(rig.pane()).toContain("rig seat pda-release");
+    // OF-288: the release command is set off; a paste of it is the command's own words and nothing after it.
+    const heldLine = rig.pane().split("\n").find((line) => line.includes("rig seat pda-release"))!;
+    expect(setOffCommands(heldLine).map(rigWords)).toEqual([["seat", "pda-release", rig.args.sessionName, "--reason", "<why>"]]);
+    expect(closesCleanly(heldLine, setOffCommands(heldLine)[0]!)).toBe(true);
     await new Promise((r) => setTimeout(r, 100));
     expect(rig.fake.entries("research")).toEqual([]); // FIFO: nothing behind the held head was posted
     expect(rig.sidecar().outboxPending).toBe(2);

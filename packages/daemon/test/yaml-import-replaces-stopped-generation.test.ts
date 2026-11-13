@@ -18,6 +18,7 @@ import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const RIG_ROOT = existingRigRoot("my-rig");
 const AGENT_FILE = resolve(RIG_ROOT, "agents/impl/agent.yaml");
@@ -104,6 +105,10 @@ describe("#141 explicit YAML import over a stopped same-name generation", () => 
     expect(f.rigRepo.getRig(oldId)!.nodes).toHaveLength(1); // old records kept, addressable by ID
     expect(resolveGuardTarget(f.db, SEAT)).toMatchObject({ nodeId: f.rigRepo.getRig(newId)!.nodes[0]!.id });
     expect(result.ok && result.result.warnings?.join("\n")).toContain(`rig unarchive ${oldId}`);
+    // OF-288: the archive notice sets its unarchive command off.
+    const notice = (result.ok ? result.result.warnings ?? [] : []).find((w) => w.includes("rig unarchive"))!;
+    expect(setOffCommands(notice).map(rigWords)).toEqual([["unarchive", oldId]]);
+    expect(closesCleanly(notice, setOffCommands(notice)[0]!)).toBe(true);
     f.db.close();
   });
 

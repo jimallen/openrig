@@ -9,7 +9,7 @@ import type { DaemonClient } from "../src/client.js";
 import { buildAttentionResponse } from "../../daemon/src/routes/up.js";
 
 const OLD = "01OLDGENERATION00000000000";
-const NOTICE = `Archived the stopped earlier "first-project" rig ${OLD}; its records are kept. Restore it with: rig unarchive ${OLD}`;
+const NOTICE = `Archived the stopped earlier "first-project" rig ${OLD}; its records are kept. Restore it with 'rig unarchive ${OLD}'.`;
 
 async function render(data: Record<string, unknown>, status: number, json = false) {
   const oldExit = process.exitCode;

@@ -8,6 +8,7 @@ import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 function insertStartupContextRow(db: Database.Database, nodeId: string) {
   db.prepare(
@@ -624,6 +625,9 @@ describe("Rig CRUD routes", () => {
     expect(body.code).toBe("no_snapshot");
     expect(body.error).toContain("restore-usable");
     expect(body.error).not.toContain("auto-pre-down snapshot");
+    // OF-288: the start-fresh command is set off.
+    expect(setOffCommands(body.error)).toEqual(["rig up <spec-path>"]);
+    expect(closesCleanly(body.error, setOffCommands(body.error)[0]!)).toBe(true);
   });
 
   // OPR.0.3.4.9 — Option Y: auto-periodic co-equal with auto-pre-down via Explorer /:id/up.

@@ -16,6 +16,7 @@ import { resolveOperatorLabel, resolveSenderSession, SENDER_FALLBACK } from "../
 import { COMPOSER_PROMPT_CLASS } from "@openrig/daemon/composer-prompts";
 import { transportFanoutBudgetMs, transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
+import { setOff, shellWord } from "../command-text.js";
 
 /** The shared composer glyph set (Claude `❯`, Codex `›`, Codex 0.153 `»`) from the daemon's
  * composer-prompts surface, so the CLI staged check can never disagree with the daemon guard. */
@@ -1006,7 +1007,7 @@ async function runHttpHostSend(
   const shown = unconfirmed ? { ...result, failedStep: "remote-outcome-unknown" as const } : result;
   const unconfirmedGuidance = {
     consequence: "Delivery UNCONFIRMED — the remote daemon may have received and delivered the message.",
-    action: `Check the target before any resend: rig capture ${session} --host ${host.id}. A resend without checking risks a duplicate.`,
+    action: `Check the target before any resend: ${setOff(`rig capture ${shellWord(session)} --host ${shellWord(host.id)}`)}. A resend without checking risks a duplicate.`,
   };
 
   if (opts.json) {

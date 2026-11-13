@@ -7,6 +7,7 @@
 // now also returns `text`/`bytes` via the sealed assemblePlainFiles).
 
 import type { DaemonClient } from "./client.js";
+import { setOff, shellPath, shellWord } from "./command-text.js";
 
 interface RefPiecesWire {
   ref: string;
@@ -58,5 +59,5 @@ export async function resolveContextRef(client: DaemonClient, ref: string): Prom
 export function walkSizedWarning(resolved: ResolvedContext, seat?: string): string | null {
   if (resolved.bytes <= WALK_SIZED_THRESHOLD_BYTES) return null;
   const target = seat ?? "<seat>";
-  return `context '${resolved.ref}' is ${resolved.bytes} bytes — this is walk-sized. Consider 'rig walk ${target} --through ${resolved.ref}' to pace it instead of one paste.`;
+  return `context '${resolved.ref}' is ${resolved.bytes} bytes — this is walk-sized. Consider ${setOff(`rig walk ${seat === undefined ? target : shellWord(seat)} --through ${shellPath(resolved.ref)}`)} to pace it instead of one paste.`;
 }

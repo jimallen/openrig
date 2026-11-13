@@ -3,6 +3,7 @@ import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, type LifecycleDeps , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { setOff, shellWord } from "../command-text.js";
 
 export function snapshotCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("snapshot").description("Manage rig snapshots");
@@ -36,8 +37,8 @@ export function snapshotCommand(depsOverride?: StatusDeps): Command {
         process.exitCode = 1;
       } else {
         console.log(`Snapshot created: ${res.data.id}`);
-        console.log(`If any seat is live, restore is refused; stop the rig first with: rig down ${rigId}`);
-        console.log(`To restore: rig restore ${res.data.id} --rig ${rigId}`);
+        console.log(`If any seat is live, restore is refused; stop the rig first with ${setOff(`rig down ${shellWord(rigId)}`)}.`);
+        console.log(`To restore: ${setOff(`rig restore ${shellWord(res.data.id)} --rig ${shellWord(rigId)}`)}`);
       }
     });
 
@@ -70,7 +71,7 @@ export function snapshotCommand(depsOverride?: StatusDeps): Command {
         console.log(`${snap.id.padEnd(27)} ${snap.kind.padEnd(8)} ${snap.status.padEnd(10)} ${snap.createdAt}${damaged}`);
       }
       if (snapshots.some((snap) => snap.unreadable)) {
-        console.log(`A DAMAGED snapshot is kept but never used to restore. Take a fresh one with: rig snapshot ${rigId}`);
+        console.log(`A DAMAGED snapshot is kept but never used to restore. Take a fresh one with ${setOff(`rig snapshot ${shellWord(rigId)}`)}.`);
       }
     });
 

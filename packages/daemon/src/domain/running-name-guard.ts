@@ -2,7 +2,10 @@ import type Database from "better-sqlite3";
 import { getNodeInventory } from "./node-inventory.js";
 import { identityVerdictConfirmsSessionMissing } from "./types.js";
 import { rigAdviceHandle, type RigRefLookup } from "./rig-ref.js";
-import { shellWord } from "./active-occupant.js";
+import { setOff, shellWord } from "./active-occupant.js";
+
+/** `setOff` lives beside `shellWord` (OF-288) so the pda-runner can use it without loading this module's imports; importers here keep it. */
+export { setOff };
 
 /**
  * S5b (OPR.0.5.4.11) — the running-name guard, the FLOOR against duplicate rig
@@ -71,17 +74,6 @@ function shellPath(value: string): string {
   return /^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-/** A command set off inside a sentence: in single quotes, as the refusal always did, unless the command itself holds a single quote
- *  (a quoted folder name does), when the quotes would end it early; then in backticks. A command that also holds a backtick (a rig
- *  named a`b) is fenced as Markdown does: a run of backticks one longer than any inside it, with a space each side, so no backtick in
- *  the command ends the span (OF-287 wording review F2). */
-export function setOff(command: string): string {
-  if (!command.includes("'")) return `'${command}'`;
-  const longest = Math.max(0, ...(command.match(/`+/g) ?? []).map((run) => run.length));
-  if (longest === 0) return `\`${command}\``;
-  const fence = "`".repeat(longest + 1);
-  return `${fence} ${command} ${fence}`;
-}
 
 /** OF-287: the refusal for a plain import over a rig whose seats all lost their terminals while their rows still read `running`.
  *  Call it AFTER the running-name guard has passed (so every stored `running` row left is a confirmed-gone, un-leased one) and

@@ -8,6 +8,7 @@ import { getDaemonStatus, getDaemonUrl, daemonStatusGuard } from "../daemon-life
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { resolveRigHandle } from "../rig-handle.js";
+import { setOff, shellWord } from "../command-text.js";
 
 export function specSourceCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("spec-source")
@@ -21,7 +22,7 @@ export function specSourceCommand(depsOverride?: StatusDeps): Command {
     if (resolution.kind === "passthrough") return resolution.handle;
     const message = resolution.kind === "ambiguous"
       ? `'${resolution.name}' matches ${resolution.ids.length} rigs; re-run with one id: ${resolution.ids.join(", ")}`
-      : `No rig found matching '${resolution.handle}'. List rigs with: rig ps`;
+      : `No rig found matching '${resolution.handle}'. List rigs with ${setOff("rig ps")}.`;
     if (json) console.log(JSON.stringify({ ok: false, error: message })); else console.error(`Error: ${message}`);
     process.exitCode = 2;
     return null;
@@ -51,7 +52,7 @@ export function specSourceCommand(depsOverride?: StatusDeps): Command {
       }
       const source = res.data["specSource"] as string | null;
       if (!source) {
-        console.log(`Rig ${res.data["rigName"]} records no spec source. Record one with: rig spec-source set ${res.data["rigName"]} <path-to-rig.yaml> --operator <address>`);
+        console.log(`Rig ${res.data["rigName"]} records no spec source. Record one with ${setOff(`rig spec-source set ${shellWord(String(res.data["rigName"]))} <path-to-rig.yaml> --operator <address>`)}.`);
         return;
       }
       console.log(`Spec source: ${source}`);

@@ -43,6 +43,7 @@ import {
   createPdaClient, pdaTokenSourceFromFile,
   type PdaCallFailure, type PdaClient, type PdaTokenReadResult,
 } from "./pda-client.js";
+import { setOff, shellWord } from "../domain/active-occupant.js";
 import { PdaOutbox, PdaOutboxPoisonedError, PdaOutboxSeqCorruptError, type PdaAttemptOutcome } from "./pda-outbox.js";
 import { PdaSseOverflowError, PdaSseParser, parsePdaEventData, type PdaStreamEvent } from "./pda-sse.js";
 import {
@@ -961,7 +962,7 @@ export class PdaRunner {
         }
         break;
       case "held":
-        this.pane.line(`${PDA_RUNNER_ERROR_MARKER} ${outcome.code}: ${HELD_TEXT[outcome.code]}; later messages wait behind it. Resolve with: rig seat pda-release ${this.deps.args.sessionName} --reason "<why>"`);
+        this.pane.line(`${PDA_RUNNER_ERROR_MARKER} ${outcome.code}: ${HELD_TEXT[outcome.code]}; later messages wait behind it. Resolve with ${setOff(`rig seat pda-release ${shellWord(this.deps.args.sessionName)} --reason "<why>"`)}.`);
         break;
       case "rejected": {
         const detail = outcome.detail ? ` ${outcome.detail}` : "";

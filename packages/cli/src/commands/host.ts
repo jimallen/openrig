@@ -23,6 +23,7 @@ import { runCrossHostCommand, type CrossHostResult } from "../cross-host-executo
 import { recordHostObservation, loadHostBindings, describeBindingConflict, defaultHostBindingsPath, type HostObservationOutcome } from "../host-bindings.js";
 import { DaemonClient } from "../client.js";
 import { readOwnHostName, readSelectedHost } from "../host-selection.js";
+import { setOff, shellWord } from "../command-text.js";
 
 // ---------------------------------------------------------------------------
 // rig host pair — the approval wait is BOUNDED.
@@ -542,7 +543,7 @@ export function hostCommand(doctorDepsOverride?: DoctorDeps): Command {
         const ids = loaded.registry.hosts.map((h) => h.id);
         if (!ids.includes(id)) {
           console.error(
-            `cannot select '${id}': not a registered host id. Registered: ${ids.length > 0 ? ids.join(", ") : "(none)"}. Add it first: rig host add --id ${id} --transport <ssh|http> ... (or select 'local').`,
+            `cannot select '${id}': not a registered host id. Registered: ${ids.length > 0 ? ids.join(", ") : "(none)"}. Add it first: ${setOff(`rig host add --id ${shellWord(id)} --transport <ssh|http> ...`)} (or select 'local').`,
           );
           process.exitCode = 1;
           return;

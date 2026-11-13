@@ -17,6 +17,7 @@ import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
 import { seatDeliveryGuardSchema } from "../src/db/migrations/087_seat_delivery_guard.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const END = "\u001b[201~"; // literal: nothing imported from the module under test
 const TEXT = `before${END}after`;
@@ -45,6 +46,9 @@ describe("y4 N2: a retained --dangerously-interact message that carries a paste-
     await f.guard.set("a", true, "person", "draft");
     const first = await f.transport.send("a", TEXT, { dangerouslyInteract: true, reason: "drive it", deliveryId: "held-1", actorSession: "orch@r" });
     expect(first).toMatchObject({ ok: true, outcome: "retained", sent: false, outboxIds: ["held-1"] });
+    // OF-288: the inspect command is set off; the full stop after it is the sentence's.
+    expect(setOffCommands(first.warning!).map(rigWords)).toEqual([["seat", "held-messages", "a"]]);
+    expect(closesCleanly(first.warning!, setOffCommands(first.warning!)[0]!)).toBe(true);
     expect(f.outbox.getById("held-1")).toMatchObject({ deliveryState: "retained", body: TEXT, deliveredAt: null });
     await f.guard.set("a", false, "person", "new sends only");
     f.outbox.retire("held-1", "person", "read");

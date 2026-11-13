@@ -3,6 +3,7 @@ import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, type LifecycleDeps , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { setOff, shellWord } from "../command-text.js";
 
 const LONG_RUNNING_TIMEOUT_MS = 45_000;
 
@@ -68,7 +69,7 @@ export function restoreCommand(depsOverride?: StatusDeps): Command {
       );
 
       if (res.status === 404) {
-        console.error(`Snapshot "${snapshotId}" or rig "${rigId}" not found. List snapshots with: rig snapshot list --rig ${rigId}`);
+        console.error(`Snapshot "${snapshotId}" or rig "${rigId}" not found. List snapshots with ${setOff(`rig snapshot list --rig ${shellWord(rigId)}`)}.`);
         process.exitCode = 1;
       } else if (res.status === 409) {
         if ((res.data as { code?: string }).code === "pre_restore_validation_failed") {
@@ -82,7 +83,7 @@ export function restoreCommand(depsOverride?: StatusDeps): Command {
           // OF-117: stopping the rig does not help; the saved seat row has to be repaired.
           console.error(`Restore refused: ${(res.data as { error?: string }).error ?? "a seat's saved row is damaged"}`);
         } else {
-          console.error(`Restore conflict: ${(res.data as { error?: string }).error ?? "rig may still be running"}. Stop the rig first with: rig down ${rigId}`);
+          console.error(`Restore conflict: ${(res.data as { error?: string }).error ?? "rig may still be running"}. Stop the rig first with ${setOff(`rig down ${shellWord(rigId)}`)}.`);
         }
         process.exitCode = 1;
       } else if (res.status >= 400) {
@@ -93,7 +94,7 @@ export function restoreCommand(depsOverride?: StatusDeps): Command {
         console.log(`Restore attempt id: ${res.data.attemptId}`);
         console.log(`Status: ${res.data.status ?? "started"}`);
         console.log("Daemon is restoring per-node in the background; follow progress with 'rig ps --nodes' or 'rig restore-check'.");
-        console.log(`Read the completed attempt and its startup warnings with: rig restore status ${res.data.attemptId} --rig ${rigId}`);
+        console.log(`Read the completed attempt and its startup warnings with ${setOff(`rig restore status ${shellWord(res.data.attemptId)} --rig ${shellWord(rigId)}`)}.`);
       } else {
         // Defensive: server responded ok=true but didn't include attemptId.
         // Fall back to the legacy summary if it's present (back-compat with

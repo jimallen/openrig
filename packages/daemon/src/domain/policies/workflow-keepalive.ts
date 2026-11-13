@@ -31,6 +31,7 @@ import {
   type WorkflowDeadlineVerdict,
 } from "../workflow-deadline.js";
 import { readStoredJson } from "../stored-json.js";
+import { setOff, shellWord } from "../active-occupant.js";
 
 interface WorkflowKeepaliveContext {
   /** ULID of the workflow_instances row to keep alive. Required. */
@@ -312,7 +313,7 @@ function buildStuckNudgeMessage(input: {
   const e = input.evidence;
   return [
     `Workflow deadline: ${e.instanceId}, packet ${e.packetId}, owner ${e.ownerSession}; ${Math.floor(e.overdueBySeconds / 60)}m overdue (${e.anchor} at ${e.anchorAt}).`,
-    `Packet age does not establish idle. Inspect: rig workflow show ${e.instanceId}. Full packet: rig queue show ${e.packetId} --full.`,
+    `Packet age does not establish idle. Inspect: ${setOff(`rig workflow show ${shellWord(e.instanceId)}`)}. Full packet: ${setOff(`rig queue show ${shellWord(e.packetId)} --full`)}.`,
   ].join("\n");
 }
 

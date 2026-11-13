@@ -7,6 +7,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { shellQuote } from "../cross-host-executor.js";
 import { damagedRowsIn, unreadableHeldIn, warnDamagedRows, warnSavedRowRefusal } from "../lib/damaged-rows.js";
+import { setOff, shellWord } from "../command-text.js";
 
 export type SeatDeps = StatusDeps;
 
@@ -1196,7 +1197,7 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
       code: "handover_outcome_unknown",
       status: "unknown",
       message: "The CLI stopped waiting for the daemon after 120 seconds, so the handover outcome is unknown. The daemon may still be working on it.",
-      guidance: `Inspect the seat before considering another handover: rig seat status ${seat}. A handover result shown there may belong to an earlier attempt.`,
+      guidance: `Inspect the seat before considering another handover: ${setOff(`rig seat status ${shellWord(seat)}`)}. A handover result shown there may belong to an earlier attempt.`,
     };
     if (opts.json) console.log(JSON.stringify(error, null, 2));
     else printSeatError(error, error.message);

@@ -6,6 +6,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { resolveRigHandle } from "../rig-handle.js";
 import { inferRigFromFolder } from "../rig-folder.js";
+import { setOff, shellWord } from "../command-text.js";
 
 interface TeardownResult {
   rigId: string;
@@ -100,7 +101,7 @@ refuses and lists them; name the rig instead.`);
       };
       if (rigArg === undefined && opts.host) {
         // The current folder is on this machine; the rigs are on another. Never infer across a machine boundary.
-        refuse(`rig down --host ${opts.host} needs the rig named.`, "Nothing was torn down.", `Re-run with: rig down <rig> --host ${opts.host}`);
+        refuse(`${setOff(`rig down --host ${shellWord(opts.host)}`)} needs the rig named.`, "Nothing was torn down.", `Re-run with ${setOff(`rig down <rig> --host ${shellWord(opts.host)}`)}.`);
         return;
       }
       let rigHandle = rigArg ?? "";
@@ -146,20 +147,20 @@ refuses and lists them; name the rig instead.`);
       if (rigArg === undefined) {
         const inferred = await inferRigFromFolder(client, currentFolder());
         if (inferred.kind === "unavailable") {
-          refuse(`Could not tell which rig this folder belongs to: ${inferred.error}.`, "Nothing was torn down.", "Name the rig: rig down <rig> (list rigs with: rig ps)");
+          refuse(`Could not tell which rig this folder belongs to: ${inferred.error}.`, "Nothing was torn down.", `Name the rig: ${setOff("rig down <rig>")} (list rigs with ${setOff("rig ps")})`);
           return;
         }
         const listed = (rigs: Array<{ id: string; name: string; folder: string }>) =>
           rigs.length === 0 ? "no rig records a project folder" : rigs.map((r) => `${r.name} (${r.id}) in ${r.folder}`).join("; ");
         if (inferred.kind === "none") {
           refuse(`No rig's project folder holds ${inferred.folder}.`, `Nothing was torn down. Rigs with a project folder: ${listed(inferred.known)}.`,
-            "Run rig down from inside a rig's project folder, or name the rig: rig down <rig>", inferred.known);
+            `Run ${setOff("rig down")} from inside the project folder of a rig, or name the rig: ${setOff("rig down <rig>")}`, inferred.known);
           return;
         }
         if (inferred.kind === "several") {
           refuse(`${inferred.folder} is inside ${inferred.candidates.length} rigs' project folders: ${listed(inferred.candidates)}.`,
             "Refusing to tear down: the folder does not say which rig.",
-            `Name the rig, e.g. ${inferred.candidates.map((r) => `rig down ${r.id}`).join("  |  ")}`, inferred.candidates);
+            `Name the rig, e.g. ${inferred.candidates.map((r) => setOff(`rig down ${shellWord(r.id)}`)).join("  |  ")}`, inferred.candidates);
           return;
         }
         console.error(`rig down: ${currentFolder()} is in ${inferred.rig.folder}, the project folder of rig ${inferred.rig.name} (${inferred.rig.id}); stopping that rig.`);
@@ -174,7 +175,7 @@ refuses and lists them; name the rig instead.`);
       if (resolution.kind === "ambiguous") {
         const fact = `'${resolution.name}' matches ${resolution.ids.length} rigs.`;
         const consequence = "Refusing to tear down: an ambiguous name could destroy the wrong rig.";
-        const action = `Re-run with the specific id, e.g. ${resolution.ids.map((id) => `rig down ${id}`).join("  |  ")}`;
+        const action = `Re-run with the specific id, e.g. ${resolution.ids.map((id) => setOff(`rig down ${shellWord(id)}`)).join("  |  ")}`;
         if (opts.json) {
           console.log(JSON.stringify({ error: { fact, consequence, action, candidates: resolution.ids } }));
         } else {
@@ -189,7 +190,7 @@ refuses and lists them; name the rig instead.`);
       if (resolution.kind === "not_found") {
         const fact = `No rig found matching '${resolution.handle}'.`;
         const consequence = "Nothing was torn down.";
-        const action = "List rigs with: rig ps";
+        const action = `List rigs with ${setOff("rig ps")}.`;
         if (opts.json) {
           console.log(JSON.stringify({ error: { fact, consequence, action } }));
         } else {
@@ -235,7 +236,7 @@ refuses and lists them; name the rig instead.`);
       // HTTP error
       if (res.status >= 400) {
         const errMsg = (res.data as { error: string }).error ?? "unknown error";
-        console.error(`Down failed: ${errMsg} (HTTP ${res.status}). Check rig ID with: rig ps`);
+        console.error(`Down failed: ${errMsg} (HTTP ${res.status}). Check rig ID with ${setOff("rig ps")}.`);
         process.exitCode = 2;
         return;
       }
@@ -273,9 +274,9 @@ refuses and lists them; name the rig instead.`);
         const rigName = (res.data as Record<string, unknown>)["rigName"] as string | undefined;
         const isUniqueName = (res.data as Record<string, unknown>)["isUniqueName"] as boolean | undefined;
         if (rigName && isUniqueName !== false) {
-          console.log(`To restore: rig up ${rigName}`);
+          console.log(`To restore: ${setOff(`rig up ${shellWord(rigName)}`)}`);
         } else {
-          console.log(`To restore: rig restore ${result.snapshotId} --rig ${rigId}`);
+          console.log(`To restore: ${setOff(`rig restore ${shellWord(result.snapshotId)} --rig ${shellWord(rigId)}`)}`);
         }
       }
     });

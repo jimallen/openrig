@@ -7,6 +7,7 @@ import type { QueueDeps } from "../src/commands/queue.js";
 import { resolveQueueBody, previewBody, waitForDeliveryOutcome } from "../src/commands/queue.js";
 import { createProgram } from "../src/index.js";
 import { must } from "./helpers/must.js";
+import { setOffCommands, rigWords, closesCleanly } from "../../daemon/test/helpers/shell-argv.js";
 
 /**
  * `rig queue` CLI tests — PL-004 Phase A revision (R1).
@@ -600,6 +601,9 @@ describe("rig queue CLI", () => {
       expect(reads).toBe(1);
       expect(result).toMatchObject({ outcome: "retained", nextAction: "rig seat held-messages bob@rig" });
       expect(result.detail).toContain("nothing was typed into the pane");
+      // OF-288: in the sentence the command is set off, so the full stop after it is not pasted with it.
+      expect(setOffCommands(result.detail).map(rigWords)).toEqual([["seat", "held-messages", "bob@rig"]]);
+      expect(closesCleanly(result.detail, setOffCommands(result.detail)[0]!)).toBe(true);
       expect(result.detail).toContain("not retried automatically");
       expect(result.detail).not.toMatch(/ladder retries/);
     });

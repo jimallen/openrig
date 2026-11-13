@@ -24,6 +24,7 @@ import { resolveCrossHostTarget } from "../src/cross-host-target.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError, SENDER_IDENTITY_HEADER } from "../src/client.js";
 import type { CrossHostResult } from "../src/cross-host-executor.js";
 import type { HostRegistryLoadResult } from "../src/host-registry.js";
+import { setOffCommands, rigWords, closesCleanly } from "../../daemon/test/helpers/shell-argv.js";
 
 interface CapturedOutput {
   stdoutLines: string[];
@@ -419,7 +420,11 @@ describe("send --host (http branch)", () => {
     const err = captured.stderrLines.join("\n");
     expect(err).toContain("cross-host (host=vps-b, http://vps-b:7433): http remote-outcome-unknown:");
     expect(err).toContain("Delivery UNCONFIRMED — the remote daemon may have received and delivered the message.");
-    expect(err).toContain("Check the target before any resend: rig capture dev-impl@my-rig --host vps-b. A resend without checking risks a duplicate.");
+    expect(err).toContain("Check the target before any resend: 'rig capture dev-impl@my-rig --host vps-b'. A resend without checking risks a duplicate.");
+    // OF-288: the check command is set off, so the full stop after it is not pasted with it.
+    const checkLine = captured.stderrLines.find((l) => l.includes("Check the target before any resend"))!;
+    expect(setOffCommands(checkLine).map(rigWords)).toEqual([["capture", "dev-impl@my-rig", "--host", "vps-b"]]);
+    expect(closesCleanly(checkLine, setOffCommands(checkLine)[0]!)).toBe(true);
     expect(err).not.toContain("remote-daemon-unreachable");
     expect(captured.stdoutLines).not.toContain("Sent to dev-impl@my-rig");
     expect(process.exitCode).toBe(1);

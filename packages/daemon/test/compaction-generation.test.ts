@@ -16,6 +16,7 @@ import { ClaudeCompactionEnforcer } from "../src/domain/claude-compaction-enforc
 import { compactionRoutes } from "../src/routes/compaction.js";
 import { sessionAdminRoutes } from "../src/routes/sessions.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const seat = "writer@test-rig", node = "test-node";
 const input = { sessionName: seat, runtime: "claude-code", usedPercentage: 90 };
@@ -123,7 +124,10 @@ it("missing generation fails at the public route before preparation and names ex
   expect(result.status).toBe(409);
   expect(result.body.reason).toBe("occupant_generation_unavailable");
   expect(result.body.error).toContain(`rig reconcile-session ${shellQuote(seat)} --no-launch`);
-  expect(result.body.error).toContain(`explicitly retry rig compact ${shellQuote(seat)}`);
+  expect(result.body.error).toContain(`explicitly retry \`rig compact ${shellQuote(seat)}\``);
+  // OF-288: both commands are set off, so the "," and "." after them are not pasted with them.
+  expect(setOffCommands(result.body.error).map(rigWords)).toEqual([["reconcile-session", seat, "--no-launch"], ["compact", seat]]);
+  for (const command of setOffCommands(result.body.error)) expect(closesCleanly(result.body.error, command)).toBe(true);
   const current = await f.req(state);
   expect(current.body.preparation).toMatchObject({ status: "stopped", occupantGeneration: null,
     reason: "occupant_generation_unavailable" });

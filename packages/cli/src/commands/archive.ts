@@ -3,6 +3,7 @@ import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { setOff, shellWord } from "../command-text.js";
 
 interface ArchiveResult {
   ok: boolean;
@@ -49,7 +50,7 @@ export function archiveCommand(depsOverride?: StatusDeps): Command {
       }
 
       if (res.status === 404) {
-        console.error(`Rig not found: ${rigId}. Check the id with: rig ps`);
+        console.error(`Rig not found: ${rigId}. Check the id with ${setOff("rig ps")}.`);
         process.exitCode = 1;
         return;
       }
@@ -73,8 +74,8 @@ export function archiveCommand(depsOverride?: StatusDeps): Command {
       const r = res.data as ArchiveResult;
       if (r.archived) {
         console.log(`Rig ${rigId} archived (reversible). It is hidden from the default view.`);
-        console.log(`  See it with:   rig ps --include-archived`);
-        console.log(`  Bring it back: rig unarchive ${rigId}`);
+        console.log(`  See it with:   ${setOff("rig ps --include-archived")}`);
+        console.log(`  Bring it back: ${setOff(`rig unarchive ${shellWord(rigId)}`)}`);
       } else {
         console.log(`Rig ${rigId} was already archived.`);
       }

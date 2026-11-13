@@ -1506,7 +1506,7 @@ export class PodRigInstantiator {
     const launchedSessionNames: string[] = []; // Track for orphan cleanup on total failure
     const podInstantiateWarnings = preflight.warnings;
     for (const id of archivedGenerations) {
-      podInstantiateWarnings.push(`Archived the stopped earlier "${rigSpec.name}" rig ${id}; its records are kept. Restore it with: rig unarchive ${id}`);
+      podInstantiateWarnings.push(`Archived the stopped earlier "${rigSpec.name}" rig ${id}; its records are kept. Restore it with ${setOff(`rig unarchive ${shellWord(id)}`)}.`);
     }
 
     // OPR.0.5.3.6 (r2-B1) — instantiate() is the REAL rig-up door (/api/up →

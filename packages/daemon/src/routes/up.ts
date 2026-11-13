@@ -130,7 +130,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     const eligibility = assessCurrentStateRehydrateEligibility(snapshotRepo.db, rig);
     if (!eligibility.ok) {
       return c.json({
-        error: `Rig exists but ${staleSnapshot ? "its restore snapshots name an older occupant" : "has no restore-usable snapshot"} and current DB state is insufficient for rehydrate. Start fresh with: rig up <spec-path>`,
+        error: `Rig exists but ${staleSnapshot ? "its restore snapshots name an older occupant" : "has no restore-usable snapshot"} and current DB state is insufficient for rehydrate. Start fresh with ${setOff("rig up <spec-path>")}.`,
         code: "no_snapshot",
         blockers: eligibility.blockers,
       }, 404);
@@ -299,7 +299,7 @@ upRoutes.post("/", async (c) => {
       return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIdsOf(), plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
     }
     if (startupFrom !== undefined) {
-      return c.json({ ok: false, code: "invalid_startup_from", error: "startupFrom applies only when rig up restores an existing rig (rig up <rig-name> --existing); a new rig has no saved startup files." }, 400);
+      return c.json({ ok: false, code: "invalid_startup_from", error: `startupFrom applies only when rig up restores an existing rig (${setOff("rig up <rig-name> --existing")}); a new rig has no saved startup files.` }, 400);
     }
 
     // File-based: resolve path now

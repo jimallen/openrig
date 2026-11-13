@@ -186,7 +186,7 @@ describe("end to end: the real runner retries its held message after the route's
     await waitFor(() => r.pane().includes("READY"), "attach");
     r.runner.submit("poison or not");
     await waitFor(() => r.sidecar().held !== undefined, "the head to be held", 10_000);
-    expect(r.pane()).toContain("Resolve with: rig seat pda-release");
+    expect(r.pane()).toContain("Resolve with 'rig seat pda-release");
     seat(r.args.sessionName);
     const res = await app(r.args.stateRoot).post(r.args.sessionName, { reason: "pda is healthy again" });
     expect(res.status).toBe(200);

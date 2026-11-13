@@ -13,6 +13,7 @@ import * as os from "node:os";
 import { Command } from "commander";
 import { hostCommand } from "../src/commands/host.js";
 import { addHostEntry } from "../src/host-registry.js";
+import { setOffCommands, rigWords, closesCleanly } from "../../daemon/test/helpers/shell-argv.js";
 
 describe("rig host select (OPR.0.4.6.MH1 FR-1 command path)", () => {
   let dir: string;
@@ -97,6 +98,9 @@ describe("rig host select (OPR.0.4.6.MH1 FR-1 command path)", () => {
     const errStr = err.join("\n");
     expect(errStr).toContain("cannot select 'nope'");
     expect(errStr).toContain("vps-a");
+    // OF-288: the add command is set off; "(or select 'local')" after it is not pasted with it.
+    expect(setOffCommands(errStr)).toEqual(["rig host add --id nope --transport <ssh|http> ..."]);
+    expect(closesCleanly(errStr, setOffCommands(errStr)[0]!)).toBe(true);
     expect(writes).toHaveLength(0);
   });
 

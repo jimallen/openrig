@@ -8,7 +8,7 @@
 // Restore (restoreNodeUnisolated) acts on this decision; restore-check asks the same function what restore WOULD do,
 // so a check cannot be greener than the restore it predicts: they run one code path over the same inputs
 // (the same pattern as fresh-seat-restore-decision.ts, which owns the gate after these).
-import { absentSeatResumeHistory, absentSeatResumeHistoryError, activeOccupantAmbiguityError, freshSeatLaunchCommand, resolveActiveSnapshotSession, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
+import { absentSeatResumeHistory, absentSeatResumeHistoryError, activeOccupantAmbiguityError, freshSeatLaunchCommand, resolveActiveSnapshotSession, setOff, shellWord, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
 import type Database from "better-sqlite3";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
@@ -23,8 +23,8 @@ import { rigAdviceHandleIn } from "./rig-ref.js";
 export function noFreshStartRemedy(runtime: string, logicalId: string, rigName: string): string {
   const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
   return `A ${runtime} seat has no fresh start (${runtime} owns the conversation). To resume it, record the agent its spec binds as its resume token, `
-    + `printf '%s' 'http://127.0.0.1:<port>/agents/<agent>' | rig seat set-resume-token ${seat} --token-stdin --reason "<why>", `
-    + `then run: rig up '${rigName.replace(/'/g, `'"'"'`)}' --existing. To drive another agent, re-instantiate the seat.`;
+    + `${setOff(`printf '%s' 'http://127.0.0.1:<port>/agents/<agent>' | rig seat set-resume-token ${seat} --token-stdin --reason "<why>"`)}, `
+    + `then run ${setOff(`rig up ${shellWord(rigName)} --existing`)}. To drive another agent, re-instantiate the seat.`;
 }
 
 export type SeatGate = "node_removed" | "occupant_ambiguous" | "runtime_mismatch" | "absent_history" | "no_token";
