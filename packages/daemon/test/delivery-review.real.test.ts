@@ -394,7 +394,14 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       await hopSaw(s, "paused:agent_absent m1");
       await wait(600);
       expect(existsSync(canary)).toBe(false);
-      expect(s.read("m1")).toMatchObject({ message_state: "attempting", attempts: 0, message_pause_reason: "agent_absent" });
+      // Every attempt so far came back paused for the absent agent: none typed anything.
+      expect(new Set(s.hop().filter((l) => l.endsWith(" m1") && !l.startsWith("claimed ")))).toEqual(new Set(["paused:agent_absent m1"]));
+      // Read BETWEEN two attempts. The pump re-checks a paused seat every 80 ms here (delivery-daemon.ts), and each re-check claims the attempt
+      // first (attempts 1, no reason: message-store.ts claimAttempt, the write-ahead) and gives it back when the hop pauses (recordHopPause). One
+      // read at a fixed time lands inside that window now and then (stu, 2026-11-13: 2 to 4 of about 180 reads in 600 ms, in 4 runs of 5), which
+      // is the attempts: 1 with no reason this row once failed on.
+      const row = await until(() => s.read("m1"), (r) => r.message_pause_reason === "agent_absent" && r.attempts === 0, "the row between two attempts", 5_000);
+      expect(row).toMatchObject({ message_state: "attempting", attempts: 0, message_pause_reason: "agent_absent" });
       expect(await screen(s)).not.toContain("openrig-msg");
 
       await core.client.call("terminal.send", { terminal: s.address, // `env PATH=<fake pi>:$PATH`: a login shell rebuilds PATH from /etc/profile (macOS's path_helper puts the system dirs, and the
