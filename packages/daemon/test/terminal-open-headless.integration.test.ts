@@ -11,7 +11,8 @@
 // (unverified: how the real binary behaves there; this fake exits 1 as the provider's own comment says the real one does with no
 // window), Linux.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { delimiter } from "node:path";
@@ -20,26 +21,16 @@ import { type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type RigResult, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { herdrAppDirsOn, pathWithoutHerdrApp } from "./helpers/path-without-herdr-app.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
 const topology = resolve(here, "../../test-system/scenarios/dev-pair-stub.yaml");
 const rigName = "dev-pair-stub";
 
-/**
- * The PATH of a host with no Herdr app: the caller's PATH minus every folder that holds a `herdr-app`, plus a folder of the scaffold's own
- * that holds only `hc` (the core's binary). A machine with the app installed (a Mac that runs it; `herdr-app` and `hc` both live in
- * ~/.local/bin) would otherwise hand the daemon a real app, which answers `ls` with no window and turns "not installed" into "not running".
- */
-function pathWithoutHerdrApp(scaffoldRoot: string, basePath: string | undefined): string {
-  const kept = (basePath ?? "").split(delimiter).filter((dir) => dir !== "" && !existsSync(join(dir, "herdr-app")));
-  const hc = findHc();
-  if (hc === null) return kept.join(delimiter);
-  const only = join(scaffoldRoot, "hc-only-bin");
-  mkdirSync(only, { recursive: true });
-  symlinkSync(hc, join(only, "hc"));
-  return [only, ...kept].join(delimiter);
-}
+/** Where `name` resolves on `pathEnv`, as a shell finds it, or "" when it does not. */
+const which = (name: string, pathEnv: string): string =>
+  spawnSync("/bin/sh", ["-c", `command -v ${name}`], { encoding: "utf8", env: { PATH: pathEnv } }).stdout.trim();
 
 function useHost(fakeApp: boolean) {
   const ctx: { core?: HcScratch; scaffold?: HermeticScaffold; daemon?: ScenarioDaemon; appDir?: string } = {};
@@ -53,8 +44,14 @@ function useHost(fakeApp: boolean) {
   beforeAll(async () => {
     ctx.core = startHcScratch();
     ctx.scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
-    ctx.scaffold.env.PATH = pathWithoutHerdrApp(ctx.scaffold.root, ctx.scaffold.env.PATH);
-    expect(ctx.scaffold.env.PATH.split(delimiter).filter((dir) => existsSync(join(dir, "herdr-app"))), "positive control: no herdr-app on the daemon's PATH").toEqual([]);
+    // The PATH of a host with no Herdr app: on a Mac that runs it (`herdr-app` beside `hc` in ~/.local/bin) the daemon would otherwise get the real
+    // app, which answers `ls` with no window here and turns "not installed" into "not running". Only herdr-app is hidden (spawnScenarioDaemon does
+    // the same for every scenario daemon; done here too so the controls below read the PATH this test starts from).
+    ctx.scaffold.env.PATH = pathWithoutHerdrApp(ctx.scaffold.env.PATH, ctx.scaffold.root);
+    expect(herdrAppDirsOn(ctx.scaffold.env.PATH), "positive control: no herdr-app on the daemon's PATH").toEqual([]);
+    // What hiding the app must not take with it: the programs beside it. Same files as the host's own PATH finds.
+    expect(realpathSync(which("node", ctx.scaffold.env.PATH)), "node still resolves").toBe(realpathSync(which("node", process.env.PATH ?? "")));
+    expect(realpathSync(which("hc", ctx.scaffold.env.PATH)), "hc still resolves").toBe(realpathSync(findHc()!));
     Object.assign(ctx.scaffold.env, { HC_SESSION: ctx.core.session, XDG_RUNTIME_DIR: ctx.core.env.XDG_RUNTIME_DIR, HC_SOCKET: ctx.core.socketPath });
     if (fakeApp) {
       ctx.appDir = join(ctx.scaffold.root, "fake-app");

@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { assertNoForeignDaemon, type HermeticScaffold } from "./hermetic-env.js";
+import { pathWithoutHerdrApp } from "./path-without-herdr-app.js";
 import {
   hasEnvEntry, hasProcFs, identityOf, listenerPids, pidsWithEnv, reapWhenOwnerDies, startedWithin, stopOwnedTmuxServer, terminateIdentified,
   waitNotSame, type ProcessIdentity,
@@ -140,6 +141,10 @@ export async function spawnScenarioDaemon(
   // Defense in depth: the scaffold env is already scrubbed, but never spawn
   // against a foreign target.
   assertNoForeignDaemon(scaffold.env);
+  // Nor against the host's Herdr app: the daemon finds `herdr-app` on its PATH (`rig terminal open`, the names a relaunch puts back), and on a
+  // host that runs the app that is the person's own window. Hidden here, once, for every scenario daemon, the CLI calls and the private core
+  // started below; every other program stays found. A fake app a test put inside its scaffold stays on PATH.
+  scaffold.env.PATH = pathWithoutHerdrApp(scaffold.env.PATH, scaffold.root, scaffold.root);
 
   // The seat host is hc, so the daemon needs a core: a private one of the scaffold's, started before the daemon and given to
   // it through the scaffold env (`HC_SESSION` plus the XDG paths that locate the socket). Never the host's default core.
