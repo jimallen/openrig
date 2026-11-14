@@ -473,7 +473,7 @@ describe("settlement: the queue write-back and the sender notice (review F3, R3)
     expect(x.recorded).toEqual([["qitem-1", "indeterminate:native_unconfirmed:no_boundary_by_hard_deadline"]]);
     expect(x.notices).toHaveLength(1);
     expect(x.notices[0]![0]).toBe(SENDER);
-    expect(x.notices[0]![1]).toMatch(/UNCONFIRMED \(no_boundary_by_hard_deadline\).*not re-sent.*It may still arrive\. Before resending, check the seat \(rig capture dev-impl@rig1\), so it is not sent twice\./);
+    expect(x.notices[0]![1]).toMatch(/UNCONFIRMED \(no_boundary_by_hard_deadline\).*not re-sent.*It may still arrive\. Before resending, check the seat \('rig capture dev-impl@rig1'\), so it is not sent twice\./);
     expect(x.notices[0]![1]).not.toMatch(/send it again/);
   });
 
@@ -497,7 +497,7 @@ describe("settlement: the queue write-back and the sender notice (review F3, R3)
     expect(failed.state).toBe("failed");
     expect(x.recorded).toEqual([["qitem-2", "failed:target_needs_input"]]);
     expect(x.notices[0]![1]).toMatch(/was not confirmed delivered.*target_needs_input/);
-    expect(x.notices[0]![1]).toMatch(/It may still arrive\. Before resending, check the seat \(rig capture dev-impl@rig1\)/);
+    expect(x.notices[0]![1]).toMatch(/It may still arrive\. Before resending, check the seat \('rig capture dev-impl@rig1'\)/);
     const held = nativeFallbackOutcome({ ok: true, outcome: "retained", outboxIds: ["guard-send-x"] }, { path: "tmux", evidence: "retained" });
     expect([held.state, held.label.detail, held.nudgeResult, held.undelivered]).toEqual(["failed", "fallback held by the typing guard as guard-send-x", "retained:typing_guard", false]);
   });

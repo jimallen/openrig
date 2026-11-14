@@ -1,3 +1,4 @@
+import { setOff } from "./active-occupant.js";
 import type { IdentityProvenance } from "../routes/require-sender-identity.js";
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
@@ -391,7 +392,7 @@ function validateClassifyInput(input: ProjectClassifyInput): void {
   if (typeof input.leaseId !== "string" || input.leaseId.trim() === "") {
     throw new ProjectClassifierError(
       "lease_id_required",
-      "leaseId is required: bind the result to the lease it was computed under (rig project lease-acquire returns it)",
+      `leaseId is required: bind the result to the lease it was computed under (${setOff("rig project lease-acquire")} returns it)`,
     );
   }
   for (const field of OPTIONAL_STRING_FIELDS) {

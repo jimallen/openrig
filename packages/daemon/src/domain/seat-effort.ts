@@ -1,3 +1,4 @@
+import { setOff } from "./active-occupant.js";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { lstartToMinTs } from "./codex-thread-id.js";
@@ -103,7 +104,7 @@ export const LATEST_WINS_EFFORT_PRECEDENCE: EffortPrecedenceRule = {
     if (held === live.choice) return { effort: live.choice };
     return {
       effort: live.choice,
-      warning: `Effort: this restore launched the seat's saved choice ${live.choice}, not ${held ?? "the snapshot's runtime default (no effort flag)"} from the snapshot; the latest explicit choice stays until it is cleared (rig seat set-effort --clear).`,
+      warning: `Effort: this restore launched the seat's saved choice ${live.choice}, not ${held ?? "the snapshot's runtime default (no effort flag)"} from the snapshot; the latest explicit choice stays until it is cleared (${setOff("rig seat set-effort --clear")}).`,
     };
   },
   specRefreshChoice: () => "keep",

@@ -1,3 +1,4 @@
+import { setOff, shellWord } from "./active-occupant.js";
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import os from "node:os";
@@ -536,7 +537,7 @@ export function prepareSeatMcpLaunchArgs(
     if (definedIn) {
       return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: a server named "${server.name}" is already defined in ${definedIn}, and Codex would merge that definition (its env, cwd or transport) into this one; remove or rename it there, or ${remedy}` };
     }
-    const again = `switch it on again to accept the new binary (rig seat set-mcp <seat> ${server.name} on --reason ...), or ${remedy}`;
+    const again = `switch it on again to accept the new binary (${setOff(`rig seat set-mcp <seat> ${shellWord(server.name)} on --reason ...`)}), or ${remedy}`;
     const place = mcpServerPlacementProblem(server.declaration, { seatCwd, specDir: server.specDir }, { requireExecutable: true }, io);
     if (place) {
       return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: ${place}; ${/does not exist$/.test(place) ? again : remedy}` };
@@ -551,7 +552,7 @@ export function prepareSeatMcpLaunchArgs(
     // the set of files must all be as switched on.
     const fileProblem = mcpArgFileProblem(server.declaration.args, server.argFiles, { seatCwd, io });
     if (fileProblem) {
-      return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: ${fileProblem}; if the change is intended, check the config file and switch it on again (rig seat set-mcp <seat> ${server.name} on --reason ...), or ${remedy}` };
+      return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: ${fileProblem}; if the change is intended, check the config file and switch it on again (${setOff(`rig seat set-mcp <seat> ${shellWord(server.name)} on --reason ...`)}), or ${remedy}` };
     }
     arg += ` -c ${quote(renderCodexMcpOverride(server))}`;
     // Measured (design report M9, review N1): Codex does not sandbox MCP server processes. Jim's rule:

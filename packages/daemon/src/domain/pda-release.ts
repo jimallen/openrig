@@ -13,6 +13,7 @@
 //   - a reason is required, and one audit event is written with ids and codes only, never message content.
 // A release re-sends a message pda may already hold (an ambiguous earlier attempt), so the reply says it may arrive twice.
 
+import { setOff } from "./active-occupant.js";
 import fs from "node:fs";
 import nodePath from "node:path";
 import type Database from "better-sqlite3";
@@ -90,7 +91,7 @@ export function requestPdaRelease(deps: PdaReleaseDeps, input: { sessionName: st
     ok: true, sessionName: name, heldRequestId: held.requestId, heldCode: held.code, runnerAlive,
     message: `Release requested for ${name} (held: ${held.code}). ${runnerAlive
       ? "The runner retries the held message once more on its next tick (within 60 s)."
-      : "Its runner is not running now. The release stays on disk and applies at its next start to whatever message is held then, which may not be this one (rig up <rig> --existing)."} `
+      : `Its runner is not running now. The release stays on disk and applies at its next start to whatever message is held then, which may not be this one (${setOff("rig up <rig> --existing")}).`} `
       + "If pda already took that message on an earlier attempt that never answered, it may be delivered twice.",
   };
 }

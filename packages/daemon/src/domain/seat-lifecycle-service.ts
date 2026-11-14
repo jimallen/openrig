@@ -16,7 +16,7 @@ import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js"
 import { deriveSessionName, parseSessionName } from "./session-name.js";
 import type { NodeLauncher } from "./node-launcher.js";
 import { writeStartupContext, type StartupOrchestrator } from "./startup-orchestrator.js";
-import { freshSeatLaunchCommand } from "./active-occupant.js";
+import { freshSeatLaunchCommand, setOff } from "./active-occupant.js";
 import { projectRereadSkills, readStoredStartupContext, resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
@@ -971,7 +971,7 @@ export class SeatLifecycleService {
           message: `Session "${name}" is alive in tmux (checked: tmux has-session, against EVERY session row clean would mutate) — clean only operates on dead seats.`,
           guidance: stoppable
             ? "Stop a live seat first with: rig seat stop"
-            : `Check that session (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`,
+            : `Check that session (${setOff(`rig capture -- ${shellQuote(name)}`)}) and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`,
         };
       }
     }
@@ -1192,7 +1192,7 @@ export class SeatLifecycleService {
         message: `Historical session "${name}" is still live; fresh launch refuses to change this seat.`,
         guidance: this.stopEndsSession(nodeId, name)
           ? "End it with: rig seat stop (it ends this seat's current occupant and its older live sessions, this one included), then retry the fresh launch."
-          : `Check that session (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`,
+          : `Check that session (${setOff(`rig capture -- ${shellQuote(name)}`)}) and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`,
       };
     }
     return null;

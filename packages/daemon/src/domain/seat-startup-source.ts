@@ -8,6 +8,7 @@
 // Every fresh launch decides its source through `resolveFreshSeatStartup`: `rig seat launch --fresh` and (stage 3)
 // every restore launch that is not an exact resume (`rig up --existing`, with or without `--fresh <seat>`). Neither
 // verb has its own copy of this decision.
+import { setOff, shellWord } from "./active-occupant.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ProjectionEntry, ProjectionPlan } from "./projection-planner.js";
@@ -105,7 +106,7 @@ export function specSourceUntrusted(reader: SeatStartupSpecReader | null | undef
 
 /** OF-107: how to get past a refused (untrusted) recorded spec source: record a reviewed copy from a trusted spec root. */
 export function untrustedSpecSourceRemedy(rigId: string): string {
-  return `Fixing or restoring the file at the recorded path does not help; record a reviewed copy from a trusted spec root instead: rig spec-source set ${rigId} <path-to-rig.yaml> --operator <address> (rig spec-source show ${rigId} says whether a launch would refuse the recorded one).`;
+  return `Fixing or restoring the file at the recorded path does not help; record a reviewed copy from a trusted spec root instead: ${setOff(`rig spec-source set ${shellWord(rigId)} <path-to-rig.yaml> --operator <address>`)} (${setOff(`rig spec-source show ${shellWord(rigId)}`)} says whether a launch would refuse the recorded one).`;
 }
 
 /** OF-32: where a fresh launch took its startup policy from, as reported to the operator and the audit event. */

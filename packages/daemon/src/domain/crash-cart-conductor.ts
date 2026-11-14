@@ -9,6 +9,8 @@
 // in-flight rig runs to its own outcome; rigs not yet started become
 // `not_attempted` (Atom A/C wire discovery + the fleet rollup; Atom D the TUI ⏎).
 
+import { setOff, shellWord } from "./active-occupant.js";
+
 /** The shipped closed per-rig union (never widened at the fleet layer). `not_attempted`
  *  is first-class — a rig the conductor did not reach (no usable snapshot, or cancelled). */
 export type PerRigOutcome = "fully_restored" | "partially_restored" | "failed" | "not_attempted";
@@ -245,7 +247,7 @@ export function createDefaultRestoreRig(
       return {
         outcome: "not_attempted",
         reason: "no restore-usable snapshot for this rig",
-        remediation: `take a snapshot (rig snapshot ${rigId}) or mark an existing one restore-usable`,
+        remediation: `take a snapshot (${setOff(`rig snapshot ${shellWord(rigId)}`)}) or mark an existing one restore-usable`,
       };
     let receiptRef: number | undefined;
     const outcome = await _deps.restore(snapshot.id, {

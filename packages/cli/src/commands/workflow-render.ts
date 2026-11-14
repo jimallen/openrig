@@ -15,6 +15,7 @@
  * WF-2).
  */
 
+import { setOff, shellWord } from "../command-text.js";
 import { shellQuote } from "../cross-host-executor.js";
 import { damagedColumnsOf } from "../lib/damaged-rows.js";
 
@@ -339,7 +340,7 @@ export function composeAttentionRollup(instances: RenderInstance[]): AttentionRo
       ? `inspect: rig workflow trace ${inst.instanceId}`
       : classes.includes("stuck")
         ? `re-route: rig workflow route ${inst.instanceId} --to <seat>`
-        : `resolve the blocker, then the owner projects (rig workflow trace ${inst.instanceId})`;
+        : `resolve the blocker, then the owner projects (${setOff(`rig workflow trace ${shellWord(inst.instanceId)}`)})`;
     attention.push({
       instanceId: inst.instanceId,
       workflowName: inst.workflowName ?? "",

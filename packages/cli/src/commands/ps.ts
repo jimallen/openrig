@@ -1089,7 +1089,7 @@ Exit codes:
         } else if (archivedCount > 0 && !opts.includeArchived) {
           // Proven-empty with the history pointer, never a bare "No rigs"
           // while archived history exists.
-          console.log(`No active rigs · ${archivedCount} archived (rig ps --include-archived)`);
+          console.log(`No active rigs · ${archivedCount} archived (${setOff("rig ps --include-archived")})`);
         } else {
           console.log("No rigs");
         }
@@ -1148,8 +1148,8 @@ Exit codes:
       // FR-1 display element 2: history as ONE count line, never rows.
       if (hiddenHistory) {
         const parts: string[] = [];
-        if (stoppedCount > 0) parts.push(`${stoppedCount} stopped (rig ps --filter status=stopped)`);
-        if (!opts.includeArchived && archivedCount > 0) parts.push(`${archivedCount} archived (rig ps --include-archived)`);
+        if (stoppedCount > 0) parts.push(`${stoppedCount} stopped (${setOff("rig ps --filter status=stopped")})`);
+        if (!opts.includeArchived && archivedCount > 0) parts.push(`${archivedCount} archived (${setOff("rig ps --include-archived")})`);
         console.log(`not shown: ${parts.join(" · ")}`);
       }
       // FR-1 display element 3: the affordance footer — the drill ladder.

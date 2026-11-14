@@ -1,3 +1,4 @@
+import { setOff } from "./active-occupant.js";
 import { readWorkflowGuidance, type GuidanceInput } from "./workflow-guidance.js";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 // PL-004 Phase D: workflow projector — transactional-scribe contract.
@@ -1446,7 +1447,7 @@ function resolveRoleOnBoundRig(
     "next_owner_unresolved",
     `cannot resolve a live capable seat for role "${roleName}" for step "${stepId}" on rig "${roleCtx.boundRig}". Candidates: ${declaring
       .map((c) => `${c.coordinate ?? c.logicalId} → ${c.disqualifier}`)
-      .join(", ")}. Start/repair a role seat (see rig ps), add a member with role ${roleName} via rig add, or add preferred_targets to the role.`,
+      .join(", ")}. Start/repair a role seat (see ${setOff("rig ps")}), add a member with role ${roleName} via ${setOff("rig add")}, or add preferred_targets to the role.`,
     {
       stepId,
       role: roleName,

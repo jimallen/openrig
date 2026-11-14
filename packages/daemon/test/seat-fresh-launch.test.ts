@@ -548,7 +548,7 @@ describe("SeatLifecycleService.launchFresh", () => {
 
     expect(result).toMatchObject({ ok: false, code: "session_live" });
     if (result.ok) throw new Error("expected refusal");
-    expect(result.guidance).toBe(`Check that session (rig capture -- '${historical.sessionName}') and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`);
+    expect(result.guidance).toBe(`Check that session (\`rig capture -- '${historical.sessionName}'\`) and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`);
     expect(killed).toEqual([]);
   });
 

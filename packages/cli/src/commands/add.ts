@@ -1,3 +1,4 @@
+import { setOff } from "../command-text.js";
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -165,7 +166,7 @@ Examples:
           ?? `Add member failed (HTTP ${res.status})`;
         console.error(msg);
         if (resolution.kind === "passthrough" && data.code === "rig_not_found") {
-          console.error("Could not list rigs to resolve a name. If this is a rig name, pass the rig id instead (rig ps --json).");
+          console.error(`Could not list rigs to resolve a name. If this is a rig name, pass the rig id instead (${setOff("rig ps --json")}).`);
         }
         process.exitCode = 1;
         return;

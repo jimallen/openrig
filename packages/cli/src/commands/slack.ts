@@ -11,6 +11,7 @@
 //
 // Secrets posture unchanged: 0600 env file / SLACK_* env at call time, never in config,
 // never in the repo.
+import { setOff } from "../command-text.js";
 import { Command } from "commander";
 import { DaemonClient } from "../client.js";
 import { resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
@@ -439,7 +440,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
       if (refuseUnsupported(surface, cur)) return;
       const { map, removed } = surface.removeChannelMapEntry(cur.channelMap, match);
       if (!removed) {
-        log(`✗ no channel map entry for '${match}' (rig slack channel-map list shows the entries)`);
+        log(`✗ no channel map entry for '${match}' (${setOff("rig slack channel-map list")} shows the entries)`);
         process.exitCode = 1;
         return;
       }

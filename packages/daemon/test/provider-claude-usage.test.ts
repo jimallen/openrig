@@ -99,7 +99,7 @@ describe("Claude identity: claude auth status on refresh, joined and labelled, n
     expect(reads).toBe(0);
     expect(row).toMatchObject({
       identity: { orgId: null, email: null, limitId: "all models", source: "unresolved" },
-      identityNote: "identity not read yet (rig provider status --refresh); windows: status-line readings from a@rig at their own times",
+      identityNote: "identity not read yet ('rig provider status --refresh'); windows: status-line readings from a@rig at their own times",
       unresolved: { note: "identity not read yet: not matched to, merged with or replacing any other row" },
       currentAvailability: "unknown",
     });

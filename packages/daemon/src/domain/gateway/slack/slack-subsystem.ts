@@ -12,6 +12,7 @@
 // the relay's history IS the subsystem's history — enabling the subsystem replays nothing the
 // relay already delivered (the enable-time backlog rule survives the cutover by construction).
 
+import { setOff } from "../../active-occupant.js";
 import { ChannelRecovery } from "./channel-recovery.js";
 import { channelStateDigest } from "../channel-operations.js";
 import path from "node:path";
@@ -217,7 +218,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const inboundReady = cfg.enabled && app !== null;
 
   if (!outboundReady && !inboundReady) {
-    const missing = !cfg.enabled ? "connector disabled (rig slack enable)" : !bot ? "SLACK_BOT_TOKEN unresolved" : "channel unconfigured";
+    const missing = !cfg.enabled ? `connector disabled (${setOff("rig slack enable")})` : !bot ? "SLACK_BOT_TOKEN unresolved" : "channel unconfigured";
     log(`slack delivery not configured (${missing}) — wire is inert; dispatches would be refused honestly`);
     const inert = buildInProcessWire({
       home: opts.home,

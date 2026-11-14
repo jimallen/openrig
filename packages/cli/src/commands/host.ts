@@ -276,7 +276,7 @@ export async function doctorLegs(host: HostEntry, deps: DoctorDeps): Promise<Che
       }
     }
   } catch (err) {
-    rows.push({ step: "transport-reachability", status: "fail", detail: `daemon unreachable at ${(host as HttpHostEntry).url}: ${(err as Error).message}`, fix: "check tailnet connectivity and that the remote daemon is running (rig daemon start on the host)" });
+    rows.push({ step: "transport-reachability", status: "fail", detail: `daemon unreachable at ${(host as HttpHostEntry).url}: ${(err as Error).message}`, fix: `check tailnet connectivity and that the remote daemon is running (${setOff("rig daemon start")} on the host)` });
     return rows;
   }
   rows.push({

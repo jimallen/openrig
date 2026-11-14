@@ -1,3 +1,4 @@
+import { setOff } from "./active-occupant.js";
 import type { RigRepository } from "./rig-repository.js";
 import type { TmuxAdapter, TmuxWindow, TmuxClient } from "../adapters/tmux.js";
 import { SeatStatusService } from "./seat-status-service.js";
@@ -17,7 +18,7 @@ import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
  */
 
 const RECONCILE_GUIDANCE =
-  "Repair routing first (rig reconcile-session <session>, or rig seat handover <seat> ...), then re-run switch-client. switch-client only retargets a client's view; it never repairs routing.";
+  `Repair routing first (${setOff("rig reconcile-session <session>")}, or ${setOff("rig seat handover <seat> ...")}), then re-run switch-client. switch-client only retargets a client's view; it never repairs routing.`;
 
 function attachGuidance(session: string): string {
   return `Attach a client first: ${tmuxAttachCommand(session)}, then re-run switch-client. switch-client never opens a new terminal.`;

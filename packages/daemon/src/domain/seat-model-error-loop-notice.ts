@@ -15,7 +15,7 @@
 // (no second row, no second wake), and two episodes of one seat never share an id. The recovery's id differs from its start's. State is in memory: a
 // recovery that happens while the daemon is down is not sent.
 import { createHash } from "node:crypto";
-import { shellWord } from "./active-occupant.js";
+import { shellWord, setOff } from "./active-occupant.js";
 import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS } from "./model-error-loop-rule.js";
 import { rigChiefOfStaff, type TopologyDb } from "./rig-chief-of-staff.js";
 import type { QueueCreateInput } from "./queue-repository.js";
@@ -49,7 +49,7 @@ export function modelLoopStartBody(seat: string, sessionName: string, loop: Publ
     `${seat} is looping on model errors: ${loop.total} failed model requests since ${loop.since} (at least ${MODEL_ERROR_LOOP_THRESHOLD} within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes), the latest at ${loop.lastAt}: "${loop.lastError}".`,
     loop.gaveUpAt ? `Its runtime gave up at ${loop.gaveUpAt}: the turn ended on the error and the seat is idle with its task undone.` : "It reads busy while its runtime retries, and steps may succeed between the failures.",
     "The cut is between the runtime and the model provider, not in OpenRig. A relaunch loses the seat's context and starts the same request again, so try the cheaper things first.",
-    `Look: rig capture ${shellWord(sessionName)}   (rig ps --nodes shows the seat in ATTN with this reason; rig health names it too).`,
+    `Look: ${setOff(`rig capture ${shellWord(sessionName)}`)}   (${setOff("rig ps --nodes")} shows the seat in ATTN with this reason; ${setOff("rig health")} names it too).`,
     "If it keeps failing, end the turn and re-send a smaller step rather than relaunching. OpenRig sends one more item when the seat's flag clears after a clean turn; a relaunch sends none, and a loop that starts after one is announced again.",
   ].join("\n");
 }

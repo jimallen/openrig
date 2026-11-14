@@ -1,3 +1,4 @@
+import { setOff } from "./active-occupant.js";
 import { readWakeLadderBackstop } from "./queue-wake-ladder.js";
 import { findComposedSeatNodes, findLatestSessionNameMatch, isNodeInArchivedRig } from "./latest-session-name-match.js";
 import type Database from "better-sqlite3";
@@ -2829,7 +2830,7 @@ export class QueueRepository {
         const flags = invalidFields.map((f) => (f === "summary" ? "--summary" : "--evidence-ref")).join(" / ");
         throw new QueueRepositoryError(
           "summary_evidence_not_persistable",
-          `${invalidFields.join(" + ")} persist only on a human-seat park (state=blocked on a human seat); the '${input.state}' transition cannot store them. Remove ${flags}, or park the item (rig queue block --on <human-seat> --summary … --evidence-ref …).`,
+          `${invalidFields.join(" + ")} persist only on a human-seat park (state=blocked on a human seat); the '${input.state}' transition cannot store them. Remove ${flags}, or park the item (${setOff("rig queue block --on <human-seat> --summary … --evidence-ref …")}).`,
           { invalidFields },
         );
       }
@@ -2869,7 +2870,7 @@ export class QueueRepository {
     if (input.blockedOn != null && input.state !== "blocked") {
       throw new QueueRepositoryError(
         "blocked_on_not_admitted",
-        `blocked_on persists only on state=blocked; the '${input.state}' transition cannot store it. Park the item (rig queue block --on …) or drop --blocked-on.`,
+        `blocked_on persists only on state=blocked; the '${input.state}' transition cannot store it. Park the item (${setOff("rig queue block --on …")}) or drop --blocked-on.`,
         {},
       );
     }

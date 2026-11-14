@@ -177,7 +177,7 @@ describe("a selection that is unreadable, malformed or misplaced refuses the lau
       const cases: Array<[SeatMcpSelection, string]> = [
         [{ ok: false, error: "stored value is not JSON" }, "Codex MCP servers for this seat cannot be read: stored value is not JSON"],
         [{ ok: true, servers: [pilot({ args: ["has space"] })] }, 'Codex MCP server "lsp" for this seat is not valid'],
-        [{ ok: true, servers: [pilot({ command: join(scratch, "missing") })] }, `Codex MCP server "lsp" for this seat cannot start: its command ${join(scratch, "missing")} does not exist; switch it on again to accept the new binary (rig seat set-mcp <seat> lsp on --reason ...), or turn it off with: rig seat set-mcp <seat> lsp off`],
+        [{ ok: true, servers: [pilot({ command: join(scratch, "missing") })] }, `Codex MCP server "lsp" for this seat cannot start: its command ${join(scratch, "missing")} does not exist; switch it on again to accept the new binary ('rig seat set-mcp <seat> lsp on --reason ...'), or turn it off with: rig seat set-mcp <seat> lsp off`],
         [{ ok: true, servers: [{ ...pilot(), specDir: join(scratch, "opt") }] }, "lies inside the rig spec's directory"],
       ];
       for (const [selection, message] of cases) {

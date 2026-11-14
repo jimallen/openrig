@@ -498,7 +498,7 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
 
   describe("the binary is pinned at switch-on (Jim, 2026-10-20)", () => {
     const sha = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
-    const AGAIN = 'switch it on again to accept the new binary (rig seat set-mcp <seat> lsp on --reason ...)';
+    const AGAIN = "switch it on again to accept the new binary ('rig seat set-mcp <seat> lsp on --reason ...')";
 
     it("stores the resolved binary and its sha256, and records the sha256 in the audit event", async () => {
       const s = seat("eztrack");
@@ -553,7 +553,7 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
 
   describe("the config files the args name are pinned at switch-on (OF-50)", () => {
     const sha = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
-    const AGAIN = "if the change is intended, check the config file and switch it on again (rig seat set-mcp <seat> lsp on --reason ...)";
+    const AGAIN = "if the change is intended, check the config file and switch it on again ('rig seat set-mcp <seat> lsp on --reason ...')";
     let cfg: string;
     const withArgs = (args: string[]) => writeSpec(lspBlock().replace('["--workspace-trust", "untrusted"]', JSON.stringify(args)));
     const on = (s: ReturnType<typeof seat>) => service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
@@ -767,7 +767,7 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
       await on(s);
       writeFileSync(cfg, "changed = true\n");
       const r = await launchFresh(s);
-      expect(r.error).toContain("if the change is intended, check the config file and switch it on again (rig seat set-mcp <seat> lsp on --reason ...)");
+      expect(r.error).toContain("if the change is intended, check the config file and switch it on again ('rig seat set-mcp <seat> lsp on --reason ...')");
       expect(r.error).not.toContain("binary");
     });
   });

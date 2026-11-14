@@ -25,6 +25,7 @@
 //   check, the same function, as the model_overrides writer);
 // - declaring the models link without the host setting refuses: the member asked for something the host cannot give.
 // Values printed are paths. No credential value is read or printed.
+import { setOff } from "../domain/active-occupant.js";
 import fs from "node:fs";
 import nodePath from "node:path";
 import { agentDirRefusal, type AgentDirRefusalWording } from "./pi-model-overrides.js";
@@ -85,7 +86,7 @@ export function linkPiOperatorLogin(opts: {
   const operatorDir = opts.operatorDir?.trim() ? opts.operatorDir : undefined;
   if (operatorDir === undefined) {
     return opts.linkModels
-      ? { ok: false, error: "this member declares pi.link_operator_models but the host setting pi.operator_login_dir is not set, so there is no operator models.json to link. Set it (rig config set pi.operator_login_dir <the operator's Pi agent folder>) or remove link_operator_models from the spec." }
+      ? { ok: false, error: `this member declares pi.link_operator_models but the host setting pi.operator_login_dir is not set, so there is no operator models.json to link. Set it (${setOff("rig config set pi.operator_login_dir <the operator's Pi agent folder>")}) or remove link_operator_models from the spec.` }
       : { ok: true, lines: [] };
   }
   const io = opts.fsOps ?? realPiOperatorLoginFs;

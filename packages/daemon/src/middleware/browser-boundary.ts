@@ -1,3 +1,4 @@
+import { setOff } from "../domain/active-occupant.js";
 import { promises as dnsPromises } from "node:dns";
 import { isIP } from "node:net";
 import { hostname as osHostname } from "node:os";
@@ -316,7 +317,7 @@ export function browserBoundary(options: BrowserBoundaryOptions): MiddlewareHand
       if (!ownUi && !explicitlyAllowedOrigin(originHeader, origin)) {
         const value = shown(originHeader);
         return refuse(c, "browser_origin_refused", value,
-          `This OpenRig daemon refuses browser requests from origin "${value}". Open the OpenRig UI from the daemon's own address with the web UI enabled (rig config set ui.enabled true, then have the operator restart the daemon), or add this exact origin to OPENRIG_ALLOWED_ORIGINS in the daemon's environment and restart. Web pages on other origins cannot read this response.`);
+          `This OpenRig daemon refuses browser requests from origin "${value}". Open the OpenRig UI from the daemon's own address with the web UI enabled (${setOff("rig config set ui.enabled true")}, then have the operator restart the daemon), or add this exact origin to OPENRIG_ALLOWED_ORIGINS in the daemon's environment and restart. Web pages on other origins cannot read this response.`);
       }
     }
 

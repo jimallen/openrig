@@ -17,6 +17,7 @@
 // concerns warrant different schemas (workspace-readiness vs install-
 // health); the divergence is orch-marshal-accepted per cont.43-followup.
 
+import { setOff } from "../active-occupant.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { decodeAllowlist } from "../files/path-safety.js";
@@ -536,7 +537,7 @@ export function checkSdlcConventionSections(opts: CheckSliceDocsInput): DoctorCh
     status: "warn",
     message: `${offenders.length} slice work-node file${offenders.length === 1 ? " is" : "s are"} missing SDLC convention sections (Intent / Mini-requirements / Proof contract)`,
     fixHint:
-      "add the missing sections per docs/reference/sdlc-conventions.md (installed: $OPENRIG_HOME/reference/sdlc-conventions.md) (rig scope slice create scaffolds them); run rig scope audit <mission> for per-slice findings — advisory only, nothing is blocked",
+      `add the missing sections per docs/reference/sdlc-conventions.md (installed: $OPENRIG_HOME/reference/sdlc-conventions.md) (${setOff("rig scope slice create")} scaffolds them); run ${setOff("rig scope audit <mission>")} for per-slice findings — advisory only, nothing is blocked`,
     evidence: { missionsRoot, slicesChecked, offenders },
   };
 }

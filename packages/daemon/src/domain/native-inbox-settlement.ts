@@ -2,6 +2,7 @@
 // deadline sweeper's tmux fallback returns. The queue records the outcome on the row's qitem in the wake ladder's own
 // vocabulary (so an unconfirmed outcome is retried and escalated like a tmux one); an agent sender is told in its pane
 // when its message ended unconfirmed or undelivered. Kept apart from startup so it is tested without a daemon.
+import { setOff, shellWord } from "./active-occupant.js";
 import type { OutboxEntry, OutboxOutcomeLabel } from "./outbox-handler.js";
 import type { NativeFallback, NativeSettlement } from "./claude-native-inbox.js";
 import { inertStartupText } from "./packet-text.js";
@@ -20,7 +21,7 @@ export interface NativeSettlementDeps {
 export function nativeNoticeText(row: Pick<OutboxEntry, "outboxId" | "destinationSession"> & { nativeWrittenAt?: string | null }, what: string): string {
   // ncomms-3b: the message may still arrive (a late native take is the delivery), so a resend is invited only after a check.
   return inertStartupText(`OpenRig delivery notice: your message to ${row.destinationSession} (outbox ${row.outboxId}, written ${row.nativeWrittenAt ?? "earlier"}) ${what} `
-    + `It may still arrive. Before resending, check the seat (rig capture ${row.destinationSession}), so it is not sent twice.`);
+    + `It may still arrive. Before resending, check the seat (${setOff(`rig capture ${shellWord(row.destinationSession)}`)}), so it is not sent twice.`);
 }
 
 /** The inbox's onSettled: called once per settlement. */

@@ -10,6 +10,7 @@
 // surface reconciliation): valid operator edits to spec files win
 // at next read; the cache is never the source of truth.
 
+import { setOff } from "./active-occupant.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
@@ -1022,7 +1023,7 @@ function warnLegacyRehydrationOnce(name: string, version: string): void {
   if (warnedLegacyRehydrations.has(key)) return;
   warnedLegacyRehydrations.add(key);
   console.warn(
-    `workflow spec ${key} rehydrated WITHOUT full fidelity (pre-050 cache row: loop_guards/invariants/closure/entry unavailable at projection). Re-validate the spec file (rig workflow validate <path>) to heal the cache row.`,
+    `workflow spec ${key} rehydrated WITHOUT full fidelity (pre-050 cache row: loop_guards/invariants/closure/entry unavailable at projection). Re-validate the spec file (${setOff("rig workflow validate <path>")}) to heal the cache row.`,
   );
 }
 

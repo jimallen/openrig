@@ -1,3 +1,4 @@
+import { setOff, shellWord } from "./active-occupant.js";
 import type { HealthDetectorObservation, HealthObservationSource, HealthSourceCoverage } from "./health-detectors.js";
 import type { OutboxEntry, OutboxHandler } from "./outbox-handler.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
@@ -46,7 +47,7 @@ export class HcUnsettledHealthSource implements HealthObservationSource {
       status: "notice",
       partial: false,
       reason: `${overdue.length} message(s) to hc seats are still not confirmed delivered or lost after more than ${Math.floor(HC_UNSETTLED_ESCALATE_AFTER_MS / 60_000)} min `
-        + `(oldest ${oldest.outboxId} to ${oldest.destination}, ${minutes} min). They are not resent: the text may already be there. Check the seat (rig capture ${oldest.destination}) and send again only if it is not, then close the row: rig seat retire-unsettled-send ${oldest.destination} ${oldest.outboxId} --reason "<what you found>".`
+        + `(oldest ${oldest.outboxId} to ${oldest.destination}, ${minutes} min). They are not resent: the text may already be there. Check the seat (${setOff(`rig capture ${shellWord(oldest.destination)}`)}) and send again only if it is not, then close the row: ${setOff(`rig seat retire-unsettled-send ${shellWord(oldest.destination)} ${shellWord(oldest.outboxId)} --reason "<what you found>"`)}.`
         + (lost.length > 0 ? ` ${lost.length} of them (${lost.slice(0, 3).map((r) => `${r.outboxId} to ${r.destination}`).join(", ")}${lost.length > 3 ? ", ..." : ""}) were proved lost with a core restart: nothing resends them, so send those again by hand.` : ""),
     }];
   }

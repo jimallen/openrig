@@ -6,7 +6,7 @@ import { getCompatibleOpenRigPath } from "../openrig-compat.js";
 import { shellQuote as quoteShellArgument } from "../adapters/shell-quote.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import { validatePreRestore } from "./restore-preconditions.js";
-import { freshSeatLaunchCommand } from "./active-occupant.js";
+import { freshSeatLaunchCommand, setOff } from "./active-occupant.js";
 import { rigAdviceHandle, type RigRefLookup } from "./rig-ref.js";
 import type { SeatStop } from "./restore-seat-gates.js";
 import { restoreRefusesRig, type RunningSessionClassification } from "./restore-running-sessions.js";
@@ -1137,7 +1137,7 @@ export class RestoreCheckService {
         return {
           check: `rig.${rig.name}.snapshot`, status: "yellow",
           evidence: `No readable snapshot: ${damaged} saved snapshot${damaged === 1 ? " is" : "s are"} damaged (the saved data is not JSON), so none can be restored`,
-          remediation: "Create a new snapshot with: rig snapshot <rigId> (see the damaged ones with: rig snapshot list <rigId>)",
+          remediation: `Create a new snapshot with ${setOff("rig snapshot <rigId>")} (see the damaged ones with ${setOff("rig snapshot list <rigId>")})`,
           remediationSafe: false,
         };
       }
@@ -1855,7 +1855,7 @@ export class RestoreCheckService {
         // are not unique) teardown may kill nothing: each row's owner lookup finds the other seat, so the shared session can survive.
         // The advice promises only what the rows end. An owner whose rig is unknown is read as possibly this rig.
         const held = heldName.map((name) => (ownerRigIds[name] === undefined || ownerRigIds[name] === input.rigId)
-          ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${downHandle} ends this rig's running rows for it, which is what lets restore run; it may leave the tmux session itself running (a name another seat still claims is not killed), so check it afterwards (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer wanted`
+          ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${downHandle} ends this rig's running rows for it, which is what lets restore run; it may leave the tmux session itself running (a name another seat still claims is not killed), so check it afterwards (${setOff(`rig capture -- ${shellQuote(name)}`)}) and end it yourself if it is no longer wanted`
           : `${name} is held by ${owners[name]}, another rig's seat: do not kill it from here, it would end that seat; rig down ${downHandle} ends only this rig's older running row for it, without touching that session, which is what lets restore run`).join("; ");
         const downEnds = ownName.length > 0
           ? `rig down ${downHandle} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. `
@@ -1864,7 +1864,7 @@ export class RestoreCheckService {
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. ${downEnds}${held ? `${held}. ` : ""}${ownName.length > 0 ? `Check it first if you are unsure it is not needed (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}). ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(this.rigHandle(input.rigId, input.rigName))} --existing. A seat that has two running rows (a newer one that is dead as well as the live older one) is restored by rig up --existing from its newer row alone after rig down, which ends the older row before it takes its snapshot; if that newer row has no resume token restore stops the seat for a decision, and rig seat launch <seat> --fresh brings it back. Ending the older row any other way (a hand-run tmux kill) leaves both rows running in the DB, and restore then fails the seat with "Active-occupant ambiguity".`,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. ${downEnds}${held ? `${held}. ` : ""}${ownName.length > 0 ? `Check it first if you are unsure it is not needed (${setOff(`rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}`)}). ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(this.rigHandle(input.rigId, input.rigName))} --existing. A seat that has two running rows (a newer one that is dead as well as the live older one) is restored by rig up --existing from its newer row alone after rig down, which ends the older row before it takes its snapshot; if that newer row has no resume token restore stops the seat for a decision, and rig seat launch <seat> --fresh brings it back. Ending the older row any other way (a hand-run tmux kill) leaves both rows running in the DB, and restore then fails the seat with "Active-occupant ambiguity".`,
         });
         continue;
       }

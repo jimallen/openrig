@@ -1,3 +1,4 @@
+import { setOff } from "./active-occupant.js";
 import type Database from "better-sqlite3";
 import { archiveWhereClause } from "./rig-repository.js";
 
@@ -65,9 +66,9 @@ export function describeAmbiguousSessionName(db: Database.Database, sessionName:
   // Live rigs answer before archived ones, so the candidates are all live or all archived.
   const advice = archivedCount === candidates.length
     ? "Rig names may be identical, so tell them apart by rig id. Every candidate is already archived; "
-      + "unarchive the one that should answer with: rig unarchive <rigId> (a live rig answers before archived ones)."
+      + `unarchive the one that should answer with ${setOff("rig unarchive <rigId>")} (a live rig answers before archived ones).`
     // `rig archive` refuses a running or degraded rig (409) unless --force (routes/rigs.ts).
-    : "Rig names may be identical, so tell them apart by rig id. To resolve it, stop the rig that should not answer with: "
-      + "rig down <rigId>, then archive it with: rig archive <rigId> (or archive a running rig directly with: rig archive <rigId> --force).";
+    : "Rig names may be identical, so tell them apart by rig id. To resolve it, stop the rig that should not answer with "
+      + `${setOff("rig down <rigId>")}, then archive it with ${setOff("rig archive <rigId>")} (or archive a running rig directly with ${setOff("rig archive <rigId> --force")}).`;
   return `Session '${sessionName}' is ambiguous — found in rigs: ${candidates.join("; ")}. ${advice}`;
 }

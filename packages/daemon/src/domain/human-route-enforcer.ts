@@ -1,3 +1,5 @@
+import { setOff } from "./active-occupant.js";
+
 /**
  * Human-route enforcement (OPR.0.4.4.19 FR-4 + FR-5; conventions C6 + C3).
  *
@@ -96,7 +98,7 @@ export function validateHumanPark(req: HumanParkRequest): HumanRouteValidation {
     req.summary,
     req.evidenceRef,
     "parking a qitem on a human seat",
-    "Provide them at park time (rig queue block --summary --evidence-ref) or on the item beforehand; blocking on another qitem requires nothing new.",
+    `Provide them at park time (${setOff("rig queue block --summary --evidence-ref")}) or on the item beforehand; blocking on another qitem requires nothing new.`,
   );
 }
 

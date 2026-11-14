@@ -2326,7 +2326,7 @@ describe("SessionTransport", () => {
         expect(result.error).toContain("rig down <rigId>");
         // The stop-then-archive sequence, and the --force alternative, each on their own: a bare
         // "rig archive <rigId>" is also a prefix of the --force text and would pin nothing.
-        expect(result.error).toContain("rig down <rigId>, then archive it with: rig archive <rigId> (");
+        expect(result.error).toContain("'rig down <rigId>', then archive it with 'rig archive <rigId>' (");
         expect(result.error).toContain("rig archive <rigId> --force");
         expect(result.error).not.toContain("unarchive");
         expect(result.error.split(", archived)").length - 1).toBe(0);

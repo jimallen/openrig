@@ -1,3 +1,4 @@
+import { setOff } from "../domain/active-occupant.js";
 import path from "node:path";
 import { PI_PROVIDER_ENV_VARS, providerFromModel } from "./pi-runner-protocol.js";
 
@@ -249,7 +250,7 @@ export function piCredentialLaunchGate(source: PiCredentialSource, extensions: P
   }
   const viaEnv = piEnv.length > 0 ? `, or pass ${piEnv.join(" or ")} through the member's env_passthrough${PI_CREDENTIAL_ENV_NOTE[source.provider] ?? ""}` : "";
   const own = source.envVar ? `set ${source.envVar} in the daemon environment and add its name to recovery.provider_auth_env_allowlist` : `sign in for this seat (run Pi once with PI_CODING_AGENT_DIR=${agentDir} and /login ${source.provider})`;
-  return { action: "refuse", message: `No Pi credential for provider ${source.provider} in this managed seat; the launch is refused before Pi starts. Fix: set pi.operator_login_dir to the operator's Pi agent folder (rig config set pi.operator_login_dir <folder>) and relaunch the seat${viaEnv}, or ${own}.` };
+  return { action: "refuse", message: `No Pi credential for provider ${source.provider} in this managed seat; the launch is refused before Pi starts. Fix: set pi.operator_login_dir to the operator's Pi agent folder (${setOff("rig config set pi.operator_login_dir <folder>")}) and relaunch the seat${viaEnv}, or ${own}.` };
 }
 
 /** OPR.0.7.0.2 K4: what metadata shows about Pi's OpenRouter credential at one moment. Pi records no

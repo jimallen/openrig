@@ -13,6 +13,7 @@
 // - A refresh that reports another login freezes the earlier row as it was at its own last refresh; that row reads
 //   stale (a later read exists). Nothing is merged or relabelled. A daemon restart starts with no identity.
 
+import { setOff } from "../active-occupant.js";
 import type Database from "better-sqlite3";
 import type { ClaudeAuthAnswer, ClaudeAuthReader } from "./claude-auth-status-reader.js";
 import type { ClaudeUsageIdentity, ProviderUsageAllowance, UsageRefreshOutcome, UsageWindowRow } from "./provider-types.js";
@@ -275,7 +276,7 @@ export class ClaudeUsageWindows {
         currentAvailability: resolved && windows.every((w) => w.freshness === "fresh" && w.level !== "unknown") ? "known" : "unknown",
         identityNote: current
           ? `identity: the daemon's Claude login (claude auth status) as of the refresh at ${current.at}; windows: status-line readings from ${seatsOf(live)} at their own times; not proven to be the same login`
-          : `identity not read yet (rig provider status --refresh); windows: status-line readings from ${seatsOf(live)} at their own times`,
+          : `identity not read yet (${setOff("rig provider status --refresh")}); windows: status-line readings from ${seatsOf(live)} at their own times`,
         ...(!resolved ? {
           unresolved: {
             note: current ? UNRESOLVED_NOTE : "identity not read yet: not matched to, merged with or replacing any other row",

@@ -136,7 +136,7 @@ function printTransportFailure(err: DaemonConnectionError, opts?: { json?: boole
     ? "Delivery UNCONFIRMED — the daemon may have received and delivered the message."
     : "The message was not sent.";
   const action = timedOut
-    ? "Reconcile by EFFECT before any resend: check the pane/target for the message (rig capture <session>). " +
+    ? `Reconcile by EFFECT before any resend: check the pane/target for the message (${setOff("rig capture <session>")}). ` +
       "A resend without checking risks a duplicate. Then 'rig daemon status' for the probe picture."
     : "Inspect the configured target with 'rig status'; a failed health probe does not prove the daemon is stopped. " +
       "If the target is wrong, check OPENRIG_URL / RIGGED_URL or daemon.host + daemon.port. " +

@@ -119,7 +119,7 @@ describe("Ps CLI", () => {
     // OPR.0.4.4.21 FR-1: on the bare default, stopped rigs are HISTORY —
     // one count line, not rows (field of view stays O(active rigs)).
     expect(output).not.toContain("dev-rig");
-    expect(output).toContain("not shown: 1 stopped (rig ps --filter status=stopped)");
+    expect(output).toContain("not shown: 1 stopped ('rig ps --filter status=stopped')");
     // FR-1 display elements: host rollup line + affordance footer.
     expect(output).toContain("1 rig · 3 seats · 0 need attention");
     expect(output).toContain("drill: rig ps --rig <name>");
@@ -252,7 +252,7 @@ describe("Ps CLI", () => {
     const output = humanLogs.join("\n");
     expect(output).toContain("live-rig");
     expect(output).not.toContain("halted-rig");
-    expect(output).toContain("not shown: 1 stopped (rig ps --filter status=stopped)");
+    expect(output).toContain("not shown: 1 stopped ('rig ps --filter status=stopped')");
   });
 
   // OPR.0.4.4.21 fixback (qa1 F4): attentionCount is selectable via --fields

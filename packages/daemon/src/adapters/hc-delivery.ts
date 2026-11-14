@@ -1,3 +1,4 @@
+import { setOff } from "../domain/active-occupant.js";
 import { createHash } from "node:crypto";
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { hcTerminalName } from "./hc-seat.js";
@@ -327,10 +328,10 @@ export function classifyEvidence(e: HcEvidence): HcVerdict {
 
 function waitingMessage(cause: HcWaitingCause, seat: string): string {
   switch (cause) {
-    case "screen_unreadable": return `the screen of ${seat} could not be read to look for this message, so whether the text is there is not known. Do not resend: look at the seat (rig capture) when it can be read, and close this row once it is dealt with.`;
+    case "screen_unreadable": return `the screen of ${seat} could not be read to look for this message, so whether the text is there is not known. Do not resend: look at the seat (${setOff("rig capture")}) when it can be read, and close this row once it is dealt with.`;
     case "text_present_no_turn": return textPresentMessage(seat, false);
-    case "turn_without_token": return `a turn started on ${seat} after this send, but this message's token is not on its screen (or it carries none), so the turn cannot be tied to it: a person may have pressed Enter on their own text, or the message was delivered and has scrolled away. Not told apart. Do not resend: look at the seat (rig capture), send again only if the text is not there, and close this row once it is dealt with.`;
-    case "restart_unsettled": return `the hc core restarted after the send to ${seat} was issued, and the text was either delivered before the restart, typed and unsubmitted, or lost with it; nothing the seat shows tells which. Do not resend: check the seat (rig capture) and send again only if the text is not there.`;
+    case "turn_without_token": return `a turn started on ${seat} after this send, but this message's token is not on its screen (or it carries none), so the turn cannot be tied to it: a person may have pressed Enter on their own text, or the message was delivered and has scrolled away. Not told apart. Do not resend: look at the seat (${setOff("rig capture")}), send again only if the text is not there, and close this row once it is dealt with.`;
+    case "restart_unsettled": return `the hc core restarted after the send to ${seat} was issued, and the text was either delivered before the restart, typed and unsubmitted, or lost with it; nothing the seat shows tells which. Do not resend: check the seat (${setOff("rig capture")}) and send again only if the text is not there.`;
     case "queued_in_core": return `the text for ${seat} is queued in the hc core and not delivered yet (a person may be typing there). It will arrive; do not resend.`;
   }
 }
@@ -346,7 +347,7 @@ function turnAdvanced(pending: HcPendingSend, now: HcTerminal): boolean {
 }
 
 function textPresentMessage(seat: string, resend: boolean): string {
-  return `${resend ? "this message is already on the screen of " : "the text for "}${seat}${resend ? " from an earlier attempt, and" : " is on its screen, but"} no turn that this send started is shown: it may be typed and never submitted (the Enter lost), the seat may have been busy or reports no status, or it may have been a command run without a turn. Not told apart. Do not resend: look at the seat (rig capture), press Enter there if the text is waiting in the input, and close this row once it is dealt with.`;
+  return `${resend ? "this message is already on the screen of " : "the text for "}${seat}${resend ? " from an earlier attempt, and" : " is on its screen, but"} no turn that this send started is shown: it may be typed and never submitted (the Enter lost), the seat may have been busy or reports no status, or it may have been a command run without a turn. Not told apart. Do not resend: look at the seat (${setOff("rig capture")}), press Enter there if the text is waiting in the input, and close this row once it is dealt with.`;
 }
 
 /** A program that reports status was at rest before the send, is at rest now, and its turn counter is where it was. */

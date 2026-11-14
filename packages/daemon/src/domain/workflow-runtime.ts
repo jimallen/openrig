@@ -1,3 +1,4 @@
+import { setOff } from "./active-occupant.js";
 import { readWorkflowGuidance, type GuidanceInput } from "./workflow-guidance.js";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import { exceptionConfigurationSource, inspectExceptionReadiness, type ExceptionReadiness } from "./workflow-exception-readiness.js";
@@ -603,7 +604,7 @@ export class WorkflowRuntime {
           if (!rigDeclaresRole(this.db, boundRig, roleName)) {
             throw new WorkflowProjectorError(
               "bound_rig_role_uncovered",
-              `cannot instantiate: step "${step.id}" needs role "${roleName}" but NO seat on rig "${boundRig}" declares that role (at any lifecycle state). Add a member with role ${roleName} to rig ${boundRig} (rig add), declare role: ${roleName} on an existing member, or add preferred_targets to the role in the spec. (A declared-but-not-yet-running seat is fine — liveness is checked when the step projects.)`,
+              `cannot instantiate: step "${step.id}" needs role "${roleName}" but NO seat on rig "${boundRig}" declares that role (at any lifecycle state). Add a member with role ${roleName} to rig ${boundRig} (${setOff("rig add")}), declare role: ${roleName} on an existing member, or add preferred_targets to the role in the spec. (A declared-but-not-yet-running seat is fine — liveness is checked when the step projects.)`,
               { specPath: input.specPath, stepId: step.id, role: roleName, boundRig },
             );
           }
