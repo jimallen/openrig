@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "../src/adapters/hc-client.js";
 import { hcTerminalName } from "../src/adapters/hc-host.js";
 import {
-  HcPlacement, pickLead, placementLabels, planKernelTabs, planLabels, planRigTabs, rigOfSeat, rigSpaceId, rigTabId,
+  HcPlacement, pickLead, placementLabels, planKernelTabs, planLabels, planRigTabs, rigOfSeat, rigSpaceId, rigTabId, seatPod,
   type AppLs, type AppPort,
 } from "../src/adapters/hc-placement.js";
 
@@ -120,14 +120,28 @@ describe("ids", () => {
 
 describe("planning tabs", () => {
   const seats = ["dev-impl@r", "exec-cos@r", "verify-qa@r"];
-  it("puts the lead alone in cos and the rest in team, in order", () => {
+  it("puts the lead alone in cos and every other seat in its pod's tab, in order", () => {
     expect(planRigTabs("r", seats)).toEqual([
       { name: "cos", id: "rig:r/cos", seats: ["exec-cos@r"] },
-      { name: "team", id: "rig:r/team", seats: ["dev-impl@r", "verify-qa@r"] },
+      { name: "dev", id: "rig:r/dev", seats: ["dev-impl@r"] },
+      { name: "verify", id: "rig:r/verify", seats: ["verify-qa@r"] },
     ]);
   });
-  it("plans no team tab for a rig of one seat", () => {
+  it("keeps the lead alone in cos when the rig has a build pod", () => {
+    expect(planRigTabs("r", ["verify-qa@r", "build-impl@r", "exec-cos@r", "build-ux@r"])).toEqual([
+      { name: "cos", id: "rig:r/cos", seats: ["exec-cos@r"] },
+      { name: "verify", id: "rig:r/verify", seats: ["verify-qa@r"] },
+      { name: "build", id: "rig:r/build", seats: ["build-impl@r", "build-ux@r"] },
+    ]);
+  });
+  it("plans one tab for a rig of one seat", () => {
     expect(planRigTabs("r", ["exec-cos@r"]).map((t) => t.name)).toEqual(["cos"]);
+  });
+  it("takes a seat's pod from its name only, up to the first '-'", () => {
+    expect(seatPod("verify-screen2@eztrack")).toBe("verify");
+    expect(seatPod("alpha@r")).toBe("alpha");
+    // rig-here would read pod `dev-team` from a row's podNamespace; a bare name can't say so.
+    expect(seatPod("dev-team-impl@r")).toBe("dev");
   });
   it("picks the lead as rig-here does", () => {
     expect(pickLead(["a@r", "x-lead.1@r", "exec-cos@r"])).toBe("exec-cos@r");
@@ -146,7 +160,7 @@ describe("planning tabs", () => {
   it("labels each seat with its own tab", () => {
     const labels = planLabels("r", planRigTabs("r", seats));
     expect(labels.get("exec-cos@r")?.["herdr.tab"]).toBe("rig:r/cos");
-    expect(labels.get("verify-qa@r")?.["herdr.tab"]).toBe("rig:r/team");
+    expect(labels.get("verify-qa@r")?.["herdr.tab"]).toBe("rig:r/verify");
     expect(labels.size).toBe(3);
   });
 });
@@ -352,7 +366,7 @@ describe("showing a plan again (the premise of a repeat `rig terminal open`: reo
     await placement.showTabs(plan);
 
     // Restated, not read back from a first show: a show that labels the tab alone would agree with itself.
-    expect(parked.labels).toEqual({ "openrig.seat": "dev-a@r", "herdr.space": "rig:r", "herdr.tab": "rig:r/team" });
+    expect(parked.labels).toEqual({ "openrig.seat": "dev-a@r", "herdr.space": "rig:r", "herdr.tab": "rig:r/dev" });
     expect(snapshot(core)).toBe(before);
   });
 });

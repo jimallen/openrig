@@ -57,8 +57,8 @@ describe.skipIf(!HC)("HcPlacement against a private hc core", () => {
     for (const seat of seats) await expect(host.createSession(seat, root)).resolves.toEqual({ ok: true });
     const results = await placement.showTabs(planRigTabs("pr", seats));
     expect(results.map((r) => r.outcome)).toEqual(["shown", "shown", "shown"]);
-    const team = await client.call<{ terminals: HcTerminal[] }>("terminal.list", { labels: { "herdr.tab": "rig:pr/team" } });
-    expect(team.terminals.map((t) => t.labels["openrig.seat"]).sort()).toEqual(["dev-impl@pr", "verify-qa@pr"]);
+    const dev = await client.call<{ terminals: HcTerminal[] }>("terminal.list", { labels: { "herdr.tab": "rig:pr/dev" } });
+    expect(dev.terminals.map((t) => t.labels["openrig.seat"])).toEqual(["dev-impl@pr"]);
     const cos = await client.call<HcTerminal>("terminal.get", { terminal: hcTerminalName("exec-cos@pr") });
     expect(cos.labels).toMatchObject({ "openrig.seat": "exec-cos@pr", "herdr.space": "rig:pr", "herdr.tab": "rig:pr/cos" });
   });

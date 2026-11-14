@@ -9,8 +9,9 @@ import { SEAT_LABEL, hcTerminalName } from "./hc-seat.js";
  * "schema" is the hc API schema. Nothing in this file was measured against a window by its author: every app behaviour
  * below carries its source, and the real-core test covers labels and `keep` only, on a private core with no app.
  *
- * STATUS (hc-w23, read at add4c5e2): the pure planning half (ids, `planRigTabs`, labels) has one runtime caller, the CLI's
- * note in terminal-labels.ts. The driver class `HcPlacement` has NO runtime caller: the daemon has no `herdr-app`
+ * STATUS (re-read at 3181b4d0): the pure planning half (ids, `planRigTabs`, labels) has NO runtime caller. Its one
+ * caller, the CLI's note in terminal-labels.ts, was removed by da2c9292b; only hc-surface.ts re-exports it, and tests
+ * use it. The driver class `HcPlacement` has NO runtime caller either: the daemon has no `herdr-app`
  * channel (`AppPort` had no implementation outside tests until hc-w37: `createHerdrAppCli` in
  * domain/terminal/herdr-app-provider.ts now implements it, for `rig terminal open` only), `rig terminal open` opens `hc attach` viewer
  * panes through that provider (a fresh space per open; it never parks or labels a seat), and the placer that labels and parks seats is rig-here (~/.agents, Python,
@@ -84,7 +85,30 @@ export interface PlannedTab {
   seats: string[];
 }
 
-/** rig-here `rig_tabs`: the lead alone in `cos`, every other seat in `team`. An empty tab is not planned. */
+/** rig-here `LEAD_TAB`: the lead's own tab, always the first tab. */
+export const LEAD_TAB = "cos";
+
+/**
+ * rig-here `seat_pod` for a bare session name: the part of `<pod>-<member>@<rig>` before the first `@`, up to its first
+ * `-`, or that whole part when it has no `-`.
+ *
+ * rig-here also takes a `rig ps --nodes` row and then prefers the row's `podNamespace` when the name starts with it plus
+ * `-`, so a pod name holding a `-` (pod `dev-team`, seat `dev-team-impl@r`) is one pod there. This takes names only, so it
+ * has no namespace and splits at the first `-`: that seat is pod `dev` here and `dev-team` in rig-here. The two agree
+ * whenever no pod namespace holds a `-`; they are not pinned equal for one that does.
+ */
+export function seatPod(seat: string): string {
+  const local = seat.split("@", 1)[0] ?? "";
+  const dash = local.indexOf("-");
+  return dash < 0 ? local : local.slice(0, dash);
+}
+
+/**
+ * rig-here `rig_tabs`: the lead (`pickLead`) alone in the `cos` tab, first; then one tab per pod for every other seat,
+ * named exactly the pod, its seats in input order, the pods in the order they first appear. A pod itself named `cos`
+ * shares the lead's tab, the lead first. An empty tab is not planned.
+ * Pods come from names only (see `seatPod`), not from a row's pod namespace.
+ */
 export function planRigTabs(rig: string, seats: readonly string[]): PlannedTab[] {
   rigSpaceId(rig);
   for (const seat of seats) {
@@ -92,9 +116,17 @@ export function planRigTabs(rig: string, seats: readonly string[]): PlannedTab[]
   }
   if (new Set(seats).size !== seats.length) throw new Error("a seat appears twice");
   const lead = pickLead(seats);
-  const tabs: PlannedTab[] = [{ name: "cos", id: rigTabId(rig, "cos"), seats: [lead] }];
-  const rest = seats.filter((s) => s !== lead);
-  if (rest.length > 0) tabs.push({ name: "team", id: rigTabId(rig, "team"), seats: rest });
+  const pods = new Map<string, string[]>();
+  for (const seat of seats) {
+    if (seat === lead) continue;
+    const pod = seatPod(seat);
+    const members = pods.get(pod);
+    if (members) members.push(seat);
+    else pods.set(pod, [seat]);
+  }
+  const tabs: PlannedTab[] = [{ name: LEAD_TAB, id: rigTabId(rig, LEAD_TAB), seats: [lead, ...(pods.get(LEAD_TAB) ?? [])] }];
+  pods.delete(LEAD_TAB);
+  for (const [pod, members] of pods) tabs.push({ name: pod, id: rigTabId(rig, pod), seats: members });
   return tabs;
 }
 

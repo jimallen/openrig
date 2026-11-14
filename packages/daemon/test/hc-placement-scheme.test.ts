@@ -37,6 +37,8 @@ elif q["op"] == "plan":
     for tab, seats in m["rig_tabs"](alive):
         for s in seats:
             out[s] = m["placement_labels"](rig, tab)
+elif q["op"] == "tabs":
+    out = [[tab, seats] for tab, seats in m["rig_tabs"]([{"canonicalSessionName": s} for s in q["seats"]])]
 elif q["op"] == "labels":
     try:
         out = {"labels": m["placement_labels"](q["rig"], q["tab"])}
@@ -67,11 +69,33 @@ describe.skipIf(!python)("hc-placement.ts and rig-here place seats by the same s
     ["eztrack", ["dev-impl@eztrack", "verify-lead.qa@eztrack", "exec-cos@eztrack"]],
     ["jims-team", ["solo@jims-team"]],
     ["my.rig", ["a@my.rig", "b-cos-c@my.rig", "cos.d@my.rig"]],
+    // eztrack's real seats, 2026-11-14: the lead alone in `cos`, then the build pod and the verify pod.
+    ["eztrack", ["exec-cos@eztrack", "build-impl@eztrack", "build-ux@eztrack", "build-ux2@eztrack", "build-impl2@eztrack",
+      "build-arch@eztrack", "verify-ops@eztrack", "verify-qa@eztrack", "verify-screen@eztrack", "verify-sec@eztrack",
+      "verify-screen2@eztrack"]],
+    // No build pod: pods in first-appearance order, interleaved input kept in order.
+    ["eztrack", ["dev-impl@eztrack", "exec-cos@eztrack", "verify-qa@eztrack", "dev-qa@eztrack"]],
+    // Names with no `-`: each is its own pod, named the whole name.
+    ["r", ["alpha@r", "exec-cos@r", "beta@r", "alpha2@r"]],
+    // A pod named `cos`: its seats join the lead's tab, the lead first.
+    ["r", ["cos-ops@r", "exec-cos@r", "dev-impl@r", "cos-desk@r"]],
+    // A build pod with no Chief of Staff: the heuristic lead is still alone in `cos`.
+    ["r", ["verify-qa@r", "build-impl@r", "orch-x@r"]],
+    // A lead from pod build is in `cos`, not `build`.
+    ["r", ["build-lead.1@r", "verify-qa@r"]],
   ];
   it.each(rigs)("gives every seat of %s the same space and tab ids: %j", (rig, seats) => {
     const theirs = fromRigHere({ op: "plan", rig, seats });
     expect(Object.keys(theirs).sort()).toEqual([...seats].sort());
     expect(tsPlacement(rig, seats)).toEqual(theirs);
+  });
+
+  it.each(rigs)("plans the same tabs as rig-here, tabs and seats in the same order, for %s: %j", (rig, seats) => {
+    expect(planRigTabs(rig, seats).map((t) => [t.name, t.seats])).toEqual(fromRigHere({ op: "tabs", seats }));
+  });
+
+  it("puts eztrack's lead alone in `cos`, then the build pod and the verify pod", () => {
+    expect(planRigTabs("eztrack", rigs[6]![1]).map((t) => [t.name, t.seats.length])).toEqual([["cos", 1], ["build", 5], ["verify", 5]]);
   });
 
   it("shows the kernel's human seat in the same tab", () => {
