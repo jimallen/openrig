@@ -2,6 +2,8 @@
 // arrived in daemon 0.5.9, and an older daemon ignores the field and launches. So a plan request first asks the
 // daemon its version, and a plan answer must say `planOnly: true`.
 
+import { setOff, shellWord } from "./command-text.js";
+
 /** The first daemon version whose launch-subset route honours `plan: true`. */
 export const PLAN_MIN_DAEMON_VERSION = "0.5.9";
 
@@ -71,6 +73,7 @@ export function answerShowsAction(succeeded: boolean, data: unknown): boolean {
 /** The warning for an answer that isn't a plan but shows the daemon acted. `-A` because `rig ps --nodes` refuses
  *  an implicit scope outside a managed session and over `--host`, and `--rig` takes a name where launch takes an id. */
 export function notAPlanMessage(host?: string): string {
-  const check = host ? `rig ps --host ${host} --nodes -A` : "rig ps --nodes -A";
-  return `The daemon did not return a plan, so it may have acted on this request. Check \`${check}\` before retrying.`;
+  // OF-289: the host is quoted (shellWord) and the command set off, so a paste of it is exactly its words.
+  const check = host ? `rig ps --host ${shellWord(host)} --nodes -A` : "rig ps --nodes -A";
+  return `The daemon did not return a plan, so it may have acted on this request. Check ${setOff(check)} before retrying.`;
 }

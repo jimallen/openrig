@@ -13,6 +13,7 @@ import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-help
 import { readOpenRigEnv } from "../openrig-compat.js";
 import type { AggregatedPayload, PerHostStatus } from "../lib/hosts/fanout-contract.js";
 import { rigAdviceHandle, fetchAdviceRigs, type AdviceRig } from "../rig-handle.js";
+import { setOff, shellWord } from "../command-text.js";
 
 interface PsEntry {
   rigId: string;
@@ -598,10 +599,12 @@ export function validatePsLadder(opts: PsCliOptions, callerRig: string | undefin
       return fanOutNodesError();
     }
     if (isSingleRemote) {
+      // OF-289: the host is quoted (shellWord) and each command set off, so a paste of one is exactly its words.
+      const remoteNodes = `rig ps --host ${shellWord(opts.host!)} --nodes`;
       return [
-        `rig ps --host ${opts.host} --nodes: no target — the local session's rig is not a remote scope`,
+        `${setOff(remoteNodes)} has no target: the local session's rig is not a remote scope`,
         "(implicit scope defaults don't cross host boundaries; a same-named remote rig would silently misresolve).",
-        `Name one: rig ps --host ${opts.host} --nodes --rig <name>, or that host's fleet explicitly: rig ps --host ${opts.host} --nodes -A.`,
+        `Name one: ${setOff(`${remoteNodes} --rig <name>`)}, or the fleet of that host explicitly: ${setOff(`${remoteNodes} -A`)}.`,
       ].join("\n");
     }
     if (!callerRig) {
