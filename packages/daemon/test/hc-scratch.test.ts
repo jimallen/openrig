@@ -37,7 +37,7 @@ const HCSB_TOP = "/hcsb-XXXXXX".length;
  *  helper. */
 const baseOfLength = (bytes: number, tmp: string = tmpdir()): string => {
   const parent = [hcScratchFallback(tmp), "/tmp"].find((p) => Buffer.byteLength(p) + HCSB_TOP + 2 <= bytes);
-  if (parent === undefined) throw new Error(`baseOfLength(${bytes}): no folder of exactly ${bytes} bytes fits under /tmp/hcsb-xxxxxx/`);
+  if (parent === undefined) throw new Error(`baseOfLength(${bytes}): no folder of exactly ${bytes} bytes fits under the temp folder or /tmp, with hcsb-xxxxxx/ and one byte of padding`);
   const top = mkdtempSync(join(parent, "hcsb-"));
   dirs.push(top);
   const base = join(top, "p".repeat(bytes - Buffer.byteLength(top) - 1));
@@ -132,7 +132,7 @@ describe("hc scratch refuses to reach a core it did not start (no hc needed)", (
 
   // OF-289 N2: a temp folder hcScratchFallback keeps (up to 40 bytes) but that leaves no room for the padding under 50 or 51.
   it.each([30, 36, 37, 38, 39, 40, 41, 56])("baseOfLength makes a folder of exactly 50 and 51 bytes when the temp folder is %i bytes", (tmpBytes) => {
-    const holder = mkdtempSync("/tmp/hcsl-");
+    const holder = mkdtempSync("/tmp/tlen-");
     dirs.push(holder);
     const tmp = join(holder, "t".repeat(tmpBytes - Buffer.byteLength(holder) - 1));
     mkdirSync(tmp);
