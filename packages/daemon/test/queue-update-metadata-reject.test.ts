@@ -19,6 +19,7 @@ import { queueItemEvidenceRefSchema } from "../src/db/migrations/048_queue_item_
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { queueRoutes } from "../src/routes/queue.js";
+import type { PersistedEvent } from "../src/domain/types.js";
 
 function buildApp(bus: EventBus, queueRepo: QueueRepository): Hono {
   const app = new Hono();
@@ -66,8 +67,8 @@ describe("51-06 D2 narrowed — queue update metadata on a state change", () => 
     const id = await mkItem();
     const blocker = await mkItem();
     repo.update({ qitemId: id, actorSession: "dev-x@rig", state: "in-progress" });
-    const events: Array<Record<string, unknown>> = [];
-    bus.subscribe((e) => events.push(e as unknown as Record<string, unknown>));
+    const events: PersistedEvent[] = [];
+    bus.subscribe((e) => { events.push(e); });
     const res = repo.update({ qitemId: id, actorSession: "dev-x@rig", state: "blocked", blockedOn: blocker, summary: "Relayed; waiting on the reply", evidenceRef: "/proof/relay.md" });
     expect(res).toMatchObject({ state: "blocked", blockedOn: blocker, summary: "Relayed; waiting on the reply", evidenceRef: "/proof/relay.md" });
     expect(events.find((e) => e.type === "queue.updated")).toMatchObject({ toState: "blocked", summary: "Relayed; waiting on the reply" });
@@ -198,9 +199,9 @@ describe("51-06 D2 narrowed — queue update metadata on a state change", () => 
     const created = await post("/api/queue/create", { sourceSession: "orch@rig", destinationSession: "dev-x@rig", body: "r", summary: "Original subject" }, "orch@rig");
     const id = ((await created.json()) as { qitemId: string }).qitemId;
     // A column probe that read false at construction (its PRAGMA read failed), while the columns exist.
-    Object.assign(repo as unknown as Record<string, boolean>, { hasSummaryColumn: false, hasEvidenceRefColumn: false });
-    const events: Array<Record<string, unknown>> = [];
-    bus.subscribe((e) => events.push(e as unknown as Record<string, unknown>));
+    Object.assign(repo, { hasSummaryColumn: false, hasEvidenceRefColumn: false });
+    const events: PersistedEvent[] = [];
+    bus.subscribe((e) => { events.push(e); });
     const res = await post(`/api/queue/${id}/update`, { actorSession: "dev-x@rig", state: "in-progress", summary: "New subject", evidenceRef: "/proof/new.md" }, "dev-x@rig");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { state: string; summary: string | null; evidenceRef: string | null; advisories?: Array<Record<string, unknown>> };
