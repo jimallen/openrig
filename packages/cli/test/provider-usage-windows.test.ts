@@ -372,7 +372,7 @@ describe("rig provider status — usage windows", () => {
     ] };
     const { out } = await run(["status"], port);
     expect(out).toContain("  build-impl@ez  claude-code  configured: own Claude home (/h/.claude-cel) · allowance not linked\n    this seat's own Claude config dir\n    login at t1: logged in as cel@example.test (max)");
-    expect(out).toContain("  build-ux@ez  claude-code  configured: own Claude home (/h/.claude-cel) · allowance not linked\n    this seat's own Claude config dir\n    login: not read yet (rig provider status --refresh --provider claude)");
+    expect(out).toContain("  build-ux@ez  claude-code  configured: own Claude home (/h/.claude-cel) · allowance not linked\n    this seat's own Claude config dir\n    login: not read yet; read it with 'rig provider status --refresh --provider claude'");
     expect(out).toContain("    login at t2: unknown, not_logged_in (exit 1)");
   });
 

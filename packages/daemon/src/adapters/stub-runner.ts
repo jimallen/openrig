@@ -298,7 +298,8 @@ export async function runStubRunner(args: StubRunnerArgs): Promise<void> {
     // The stub stands in for a Claude seat in scenarios: it says which Claude config home its launch handed it
     // (a seat's own `claude_config_dir`, else whatever the daemon's terminal gives), so a scenario can read it on the pane.
     // eslint-disable-next-line no-console
-    console.log(`[stub-runner] claude-config-dir=${process.env.CLAUDE_CONFIG_DIR ?? "unset"}`);
+    // `|` ends the value, so a scenario can tell /tmp from /tmp/ or /tmpX.
+    console.log(`[stub-runner] claude-config-dir=${process.env.CLAUDE_CONFIG_DIR ?? "unset"}|`);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(`${STUB_RUNNER_ERROR_MARKER} ${(err as Error).message}`);

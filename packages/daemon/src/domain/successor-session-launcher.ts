@@ -285,7 +285,10 @@ export class SuccessorSessionLauncher {
     // <old-token>`), which is exactly how the 2026-08-22 wave's "fresh" successors booted 14-day-old
     // contexts. An explicit shell also resets the pane's respawn default, self-healing the pane.
     const blankShell = (await this.tmuxAdapter.getDefaultShell()) ?? "/bin/sh";
-    const respawned = await this.tmuxAdapter.respawnPane(pane.id, blankShell, { cwd, env, ...(input.node.remoteControl ? { remoteControl: true } : {}) });
+    // A seat with no home of its own must not inherit one from the session environment an earlier occupant was made with
+    // (tmux keeps it across a respawn): after `rig seat set-claude-home --clear` the successor is on the daemon's own home.
+    const respawned = await this.tmuxAdapter.respawnPane(pane.id, blankShell, { cwd, env, ...(input.node.remoteControl ? { remoteControl: true } : {}),
+      ...(input.node.claudeConfigDir ? {} : { unsetEnv: ["CLAUDE_CONFIG_DIR"] }) });
     if (!respawned.ok) {
       return {
         ok: false,

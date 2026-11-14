@@ -224,8 +224,8 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
   if (result.code === "seat_ref_required") {
     return c.json(result, 400);
   }
-  if (result.code === "seat_cwd_unusable") {
-    return c.json(result, 409); // the person can fix it: create the folder (OF-124)
+  if (result.code === "seat_cwd_unusable" || result.code === "claude_config_dir_missing") {
+    return c.json(result, 409); // the person can fix it: create the folder (OF-124), or the seat's Claude home
   }
   if (result.code === "handover_commit_failed" ||
     result.code === "successor_create_failed" ||

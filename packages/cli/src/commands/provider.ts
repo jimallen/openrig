@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { setOff } from "@openrig/daemon/command-text";
 import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
@@ -146,7 +147,7 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
       if ((c["source"] === "default_login" || c["source"] === "seat_home") && c["homeNote"]) console.log(`    ${c["homeNote"]}`);
       if (c["source"] === "seat_home") {
         const login = c["login"] as Record<string, unknown> | null | undefined;
-        if (!login) console.log("    login: not read yet (rig provider status --refresh --provider claude)");
+        if (!login) console.log(`    login: not read yet; read it with ${setOff("rig provider status --refresh --provider claude")}`);
         else if (login["outcome"] === "ok") console.log(`    login at ${login["at"]}: ${login["loggedIn"] === true ? `logged in${login["email"] ? ` as ${login["email"]}` : ""}${login["subscriptionType"] ? ` (${login["subscriptionType"]})` : ""}` : "not logged in"}`);
         else console.log(`    login at ${login["at"]}: unknown, ${failureText(login)}`);
       }

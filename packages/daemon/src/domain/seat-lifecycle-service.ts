@@ -1,5 +1,5 @@
 import { readDeclaredMcpServer, readTrustedSeatSpec, type TrustedSeatSpecFailureKind, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
-import { claudeConfigDirFindings, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
+import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedPiFields, envNameChanges, specRetainedFields, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
@@ -164,7 +164,7 @@ export interface SeatRefusal {
     | "invalid_effort"
     | "effort_unsupported_runtime"
     | "effort_unavailable"
-    | "invalid_claude_config_dir" | "claude_home_unsupported_runtime" | "claude_home_unavailable";
+    | "invalid_claude_config_dir" | "claude_home_unsupported_runtime" | "claude_home_unavailable" | "claude_config_dir_missing";
   message: string;
   guidance?: string;
   matches?: Array<{ rig_name: string; logical_id: string; current_occupant: string | null }>;
@@ -403,7 +403,8 @@ export class SeatLifecycleService {
     if ("code" in resolved) return resolved;
     const seat = this.describe(resolved);
     const runtime = resolved.entry.runtime ?? "unknown";
-    if (runtime !== "claude-code") {
+    // The stub runtime stands in for a Claude seat in scenarios, as the spec field allows it there too.
+    if (runtime !== "claude-code" && runtime !== "stub") {
       return { ok: false, code: "claude_home_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${runtime}; a Claude config home applies to claude-code seats only.` };
     }
     const columnPresent = this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() !== undefined;
@@ -1152,6 +1153,18 @@ export class SeatLifecycleService {
     };
   }
 
+  /** The refusal for a seat whose own Claude home is gone; judged, like the folder, before anything is stopped. */
+  private claudeHomeRefusal(logicalId: string, dir: string | null | undefined) {
+    const refusal = claudeConfigDirLaunchRefusal(dir);
+    if (!refusal) return null;
+    return {
+      ok: false as const,
+      code: "claude_config_dir_missing" as const,
+      message: `${logicalId} was not started: ${refusal.replace(/^claude_config_dir_missing: /, "")}`,
+      guidance: "Create the home and log in to it, or clear the seat's choice with rig seat set-claude-home <seat> --clear; nothing was stopped or changed.",
+    };
+  }
+
   private async resolveFreshLaunch(resolved: ResolvedSeat, seatRef: string, startupFrom: StartupFrom = "spec", storedEscape: StoredEscape = "flag") {
     const seat = this.describe(resolved);
     const rig = this.rigRepo.getRig(seat.rigId);
@@ -1314,6 +1327,8 @@ export class SeatLifecycleService {
     };
     const cwdRefusal = this.seatCwdRefusal(seat.logicalId, node.cwd);
     if (cwdRefusal) blockers.push({ code: cwdRefusal.code, message: cwdRefusal.message, guidance: cwdRefusal.guidance });
+    const homeRefusal = this.claudeHomeRefusal(seat.logicalId, node.claudeConfigDir);
+    if (homeRefusal) blockers.push({ code: homeRefusal.code, message: homeRefusal.message, guidance: homeRefusal.guidance });
     const history = await this.validateFreshHistory(node.id, canonicalSessionName, input.seatRef);
     if (history) record(history);
     const probe = await this.probeLiveness(canonicalSessionName, "preview does not repair tmux");
@@ -1386,6 +1401,9 @@ export class SeatLifecycleService {
     // then the live occupant would already be gone, and the refusal would be for a launch that could never have happened.
     const cwdRefusal = this.seatCwdRefusal(seat.logicalId, node.cwd);
     if (cwdRefusal) return cwdRefusal;
+    // Likewise the seat's own Claude home: the launcher would refuse a gone one only after the live occupant was stopped.
+    const homeRefusal = this.claudeHomeRefusal(seat.logicalId, node.claudeConfigDir);
+    if (homeRefusal) return homeRefusal;
     const withSourceWarnings = (warnings?: string[]) => {
       const all = [...startup.sourceWarnings, ...(warnings ?? [])];
       return all.length > 0 ? all : warnings;

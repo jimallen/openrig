@@ -1013,12 +1013,12 @@ export class TmuxAdapter {
   async respawnPane(
     paneTarget: string,
     command?: string,
-    opts?: { cwd?: string; env?: Record<string, string> } & SeatLaunchHints,
+    opts?: { cwd?: string; env?: Record<string, string>; unsetEnv?: readonly string[] } & SeatLaunchHints,
   ): Promise<TmuxResult> {
     return this.guardedInput(paneTarget, pane => this.respawnPaneUnchecked(pane, command, opts));
   }
 
-  private async respawnPaneUnchecked(paneTarget: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<TmuxResult> {
+  private async respawnPaneUnchecked(paneTarget: string, command?: string, opts?: { cwd?: string; env?: Record<string, string>; unsetEnv?: readonly string[] }): Promise<TmuxResult> {
     const exact = exactTarget(paneTarget, "pane");
     const argv = ["tmux", "respawn-pane", "-t", exact];
     if (opts?.cwd != null) argv.push("-c", opts.cwd);
@@ -1054,6 +1054,18 @@ export class TmuxAdapter {
       await this.excludeParentSessionEnv(exact, Object.keys(opts?.env ?? {}));
     } catch (err) {
       warnings = [parentSessionEnvWarning(exact, err)];
+    }
+    // Names the successor must NOT inherit from the session environment, which outlives a respawn: a value an earlier
+    // occupant was launched with (a seat's own CLAUDE_CONFIG_DIR, since cleared) would otherwise reach the new process.
+    // Unset in the session (-u), so the server's global value, the daemon's own selection, applies again.
+    for (const key of opts?.unsetEnv ?? []) {
+      if (opts?.env && Object.hasOwn(opts.env, key)) continue;
+      try {
+        const unset = ["tmux", "set-environment", "-t", exact, "-u", key];
+        await this.run(unset, posixJoinArgv(unset));
+      } catch (err) {
+        warnings = [...(warnings ?? []), `${key} could not be removed from ${exact}'s session environment before the respawn (${(err as Error).message}); the successor may start with the value an earlier occupant had`];
+      }
     }
     try {
       await this.run(argv, legacyRespawn.join(" "));

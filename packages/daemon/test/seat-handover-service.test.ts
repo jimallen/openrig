@@ -1141,6 +1141,17 @@ describe("SeatHandoverService", () => {
       expect((dry as { guidance: string }).guidance).toBe((real as { guidance: string }).guidance);
     });
 
+    it("a seat whose own Claude home is gone: the dry run refuses as the real handover does, and nothing is touched", async () => {
+      const { node } = seedSeat();
+      rigRepo.setNodeClaudeConfigDir(node.id, "/nonexistent/claude-home");
+      const before = durableRows();
+      const dry = await plan(newService(), "fresh");
+      expect(dry).toMatchObject({ ok: false, code: "claude_config_dir_missing" });
+      expect(durableRows()).toBe(before);
+      const real = await newService().handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+      expect(real).toMatchObject({ ok: false, code: "claude_config_dir_missing" });
+    });
+
     it("a seat whose folder is usable still gets its plan (control), and a discovered successor is not judged by the seat's folder", async () => {
       seedSeat();
       const discovered = seedDiscovery();
@@ -1601,6 +1612,8 @@ describe("SeatHandoverService", () => {
     const env = (respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env;
     if (ownHome) expect(env.CLAUDE_CONFIG_DIR).toBe(home);
     else expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+    // Cleared (or never set): the respawn removes any value the session still holds from an earlier occupant.
+    expect((respawnPane.mock.calls[0]![2] as { unsetEnv?: string[] }).unsetEnv).toEqual(ownHome ? undefined : ["CLAUDE_CONFIG_DIR"]);
   });
 
   it("OPR.0.7.0.7: a seat's saved effort choice wins over its authored effort at handover (the shared resolver)", async () => {

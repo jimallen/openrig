@@ -1,5 +1,5 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
-import { hcExactTerminalRef, sessionEnvFromLabels } from "./hc-identity.js";
+import { hcExactTerminalRef, sessionEnvFromLabels, sessionEnvLabels, SESSION_ENV_LABEL_PREFIX, SESSION_ENV_PRESENT_PREFIX } from "./hc-identity.js";
 import { refusedLaunch } from "./hc-launch-refusal.js";
 import { SPACE_LABEL, TAB_LABEL } from "./hc-placement.js";
 import { placementNamesOf, withoutAppOwnedLabels } from "./hc-placement-carry.js";
@@ -162,7 +162,8 @@ export class HcLifecycle {
    *  creation command to re-run (tmux's KI-14 hazard cannot happen). The predecessor's scrollback stays readable at
    *  its old address, as a finished terminal, until someone removes it; it is no longer above the new program's output.
    *  Unlike `respawn-pane` without `-k`, a live program is ended here, not refused. */
-  async respawnPane(target: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> } & SeatLaunchHints): Promise<TmuxResult> {
+  /** `unsetEnv` is tmux's (its session environment outlives a respawn); an hc respawn starts from the env it is given and the daemon's, so it needs none. */
+  async respawnPane(target: string, command?: string, opts?: { cwd?: string; env?: Record<string, string>; unsetEnv?: readonly string[] } & SeatLaunchHints): Promise<TmuxResult> {
     return this.guarded(target, (check) => this.respawnUnchecked(target, command, opts, check));
   }
 
@@ -218,7 +219,9 @@ export class HcLifecycle {
         argv, env: launch.env, name: hcTerminalName(seat), cwd,
         // What placed the old terminal (the app's space and tab labels) follows to the new one, and so do OpenRig's own labels (the launch env's
         // identity, which the next respawn reads back). The app's other labels (`herdr.seen`, `herdr.pinned`, `where`...) are the app's: not carried (OF-281).
-        labels: { ...withoutAppOwnedLabels(before.labels), [SEAT_LABEL]: seat },
+        // The launch-env labels are written again from this launch's env (as createSession writes them), never carried: a value the
+        // previous program was launched with (a seat's own CLAUDE_CONFIG_DIR, since cleared) must not outlive it.
+        labels: { ...withoutAppOwnedLabels(withoutLaunchEnvLabels(before.labels)), ...sessionEnvLabels(seatEnv), [SEAT_LABEL]: seat },
         no_parent: true, no_notify: true, outlive_parent: true,
       });
     } catch (err) {
@@ -387,4 +390,10 @@ export class HcLifecycle {
       throw err;
     }
   }
+}
+
+/** Labels without the launch-env labels (values and presence marks) a launch writes from its env (hc-identity.ts): a respawn writes
+ *  them again from its own env, so none outlives the env it described. */
+function withoutLaunchEnvLabels(labels: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(labels).filter(([key]) => !key.startsWith(SESSION_ENV_LABEL_PREFIX) && !key.startsWith(SESSION_ENV_PRESENT_PREFIX)));
 }

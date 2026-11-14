@@ -45,6 +45,20 @@ describe("D-1: a pda_binding of '' is read one way by every reader: damaged", ()
   });
 });
 
+describe("claude_config_dir round-trips export -> spec", () => {
+  it("a seat's own Claude home is exported on its member; a seat without one exports none", () => {
+    const rig = repo.createRig("r");
+    const pod = new PodRepository(db).createPod(rig.id, "dev", "Dev", {});
+    repo.addNode(rig.id, "dev.cel", { runtime: "claude-code", podId: pod.id, agentRef: "local:agents/a", profile: "default", cwd: "/w", claudeConfigDir: "/h/.claude-cel" });
+    repo.addNode(rig.id, "dev.plain", { runtime: "claude-code", podId: pod.id, agentRef: "local:agents/a", profile: "default", cwd: "/w" });
+    const spec = new RigSpecExporter({ rigRepo: repo, sessionRegistry: new SessionRegistry(db), podRepo: new PodRepository(db) }).exportRig(rig.id);
+    if (!("pods" in spec)) throw new Error("expected a pod-shaped spec");
+    const members = spec.pods[0]!.members;
+    expect(members.find((m) => m.id === "cel")!.claudeConfigDir).toBe("/h/.claude-cel");
+    expect(members.find((m) => m.id === "plain")).not.toHaveProperty("claudeConfigDir");
+  });
+});
+
 describe("N-1: the exporter refuses a damaged binding, naming the seat, instead of dropping the block", () => {
   it("throws UnreadableNodeRowError naming the seat and the reason; a healthy binding still exports", () => {
     const rig = repo.createRig("r");

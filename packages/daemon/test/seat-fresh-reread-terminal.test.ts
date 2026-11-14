@@ -196,4 +196,21 @@ describe("OF-71 a builtin:terminal seat starts fresh from its re-read spec", () 
     expect(vi.mocked(tmux.createSession).mock.calls.length).toBe(created);
     expect(sessionRows()).toEqual(rowsBefore);
   });
+
+  it("a seat whose own Claude home is gone is refused BEFORE the live occupant is stopped, and the plan says so", async () => {
+    const seat = await launchKernel();
+    rigRepo.setNodeClaudeConfigDir(seat.nodeId, `${workdir}-gone-claude-home`);
+    const killed = vi.mocked(tmux.killSession).mock.calls.length;
+    const created = vi.mocked(tmux.createSession).mock.calls.length;
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "kernel restore" });
+    expect(result).toMatchObject({ ok: false, code: "claude_config_dir_missing" });
+    expect(!result.ok && result.message).toContain("does not exist");
+    expect(alive.has(seat.sessionName)).toBe(true);
+    expect(vi.mocked(tmux.killSession).mock.calls.length).toBe(killed);
+    expect(vi.mocked(tmux.createSession).mock.calls.length).toBe(created);
+    const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true });
+    expect(plan).toMatchObject({ ok: true, launchable: false });
+    expect(plan.ok && plan.blockers.map((b) => b.code)).toContain("claude_config_dir_missing");
+  });
 });
+

@@ -65,6 +65,7 @@ import { codexVersionProbe } from "./adapters/hc-runtime-requirements.js";
 import { codexNetworkDefaultReader } from "./domain/codex-network-default.js";
 import { codexUsageReader } from "./domain/provider/codex-usage-reader.js";
 import { CodexUsageWindows } from "./domain/provider/codex-usage-windows.js";
+import { seatClaudeHomeReaders } from "./adapters/seat-claude-home-readers.js";
 import { claudeAuthStatusReader } from "./domain/provider/claude-auth-status-reader.js";
 import { ClaudeUsageWindows, latestClaudeWindowSamples } from "./domain/provider/claude-usage-windows.js";
 import { prepareCodexTeamWorkspace } from "./domain/codex-team-workspace.js";
@@ -355,16 +356,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const dbPath = opts?.dbPath ?? ":memory:";
   const db = createDb(dbPath);
   migrate(db, ALL_MIGRATIONS);
-  // A seat's own Claude config home (nodes.claude_config_dir, migration 129), by node or by session row; null = the
-  // daemon's own selection. The readers of a seat's sessions/ and projects/ use these instead of the daemon's home.
-  const seatClaudeHomeByNodeStmt = db.prepare("SELECT claude_config_dir AS dir FROM nodes WHERE id = ?");
-  const seatClaudeHomeBySessionStmt = db.prepare("SELECT n.claude_config_dir AS dir FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.id = ?");
-  const seatClaudeHomeByNode = (nodeId: string | null | undefined): string | null =>
-    nodeId ? ((seatClaudeHomeByNodeStmt.get(nodeId) as { dir: string | null } | undefined)?.dir ?? null) : null;
-  const seatClaudeHomeBySession = (sessionId: string): string | null =>
-    (seatClaudeHomeBySessionStmt.get(sessionId) as { dir: string | null } | undefined)?.dir ?? null;
-  const seatClaudeHomesStmt = db.prepare("SELECT DISTINCT claude_config_dir AS dir FROM nodes WHERE claude_config_dir IS NOT NULL ORDER BY claude_config_dir");
-  const seatClaudeHomes = (): string[] => (seatClaudeHomesStmt.all() as Array<{ dir: string }>).map((r) => r.dir);
+  // Where a running Claude conversation's own files are: the home its session was launched with (sessions.claude_config_dir),
+  // else the daemon's own selection. Keyed on the launch, not the seat's current choice (set-claude-home restarts nothing).
+  const seatClaudeHomes = seatClaudeHomeReaders(db, process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude"));
 
   // 51-09 increment 1 — establish the daemon's durable self-host identity at
   // boot (mint on first boot, reconcile thereafter). host.name is a display-only
@@ -588,7 +582,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // S19 — the Claude self-report rung (pid.json), consulted per sweep for seats whose
     // declared inventory staffs it; unreadable = null = the ladder falls, never errors.
     selfReportReader: (sessionName, seatNodeId) => {
-      const sessionsDir = nodePath.join(seatClaudeHomeByNode(seatNodeId) ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude"), "sessions");
+      const sessionsDir = nodePath.join(seatClaudeHomes.homeOfRunningNode(seatNodeId), "sessions");
       return readClaudeSelfReportEvidence({ sessionsDir, sessionName, seatNodeId });
     },
   });
@@ -1188,7 +1182,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const token = row?.resume_token;
       if (!token) return null;
       // A seat on its own Claude config home writes its transcript there.
-      const claudeRoot = seatClaudeHomeBySession(sessionId) ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude");
+      const claudeRoot = seatClaudeHomes.homeOfSession(sessionId);
       return findClaudeTranscriptByToken(nodePath.join(claudeRoot, "projects"), token);
     },
   );
@@ -1410,7 +1404,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // process's, so capture and null-fill skip it.
   const claudeProcessStartedAt = (sessionName: string) => observeClaudePaneStartedAt({ target: sessionName, tmux: tmuxAdapter });
   const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome,
-    seatClaudeConfigDir: (session) => seatClaudeHomeBySession(session.sessionId) });
+    seatClaudeConfigDir: (session) => seatClaudeHomes.launchedHomeOfSession(session.sessionId) });
   const sessionReconciler = new SessionReconciler({
     db, rigRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
     // OPR.0.4.3.20 FR-3 — adoption-boundary resume-token capture deps
@@ -1699,7 +1693,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           : getCompatibleOpenRigPath("transcripts"),
         exec: execDep,
         // Seats on their own Claude config home keep their conversations under <home>/projects.
-        seatClaudeProjectsRoots: () => seatClaudeHomes().map((home) => nodePath.join(home, "projects")),
+        seatClaudeProjectsRoots: () => seatClaudeHomes.seatProjectsRoots(),
         chatSearchFn: (rigId: string, pattern: string) =>
           chatRepoForAsk.searchChat(rigId, pattern).map((m) => ({
             sender: m.sender,

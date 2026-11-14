@@ -430,7 +430,8 @@ describe("census of the code that makes a seat's terminal (OF-280)", () => {
     const lifecycle = readFileSync(join(src, "adapters/hc-lifecycle.ts"), "utf8");
     expect(lifecycle.match(/call(?:<[^>]*>)?\(\s*["']terminal\.run["']/g)).toHaveLength(2); // respawn (carries before.labels) and createProbeSession (a probe, never a seat)
     // OF-281: it carries the old terminal's labels except the app's own (herdr.seen, herdr.pinned, where...), which are the app's to write.
-    expect(lifecycle).toContain("...withoutAppOwnedLabels(before.labels)");
+    // The launch-env labels (openrig.env.*, openrig.envset.*) are written again from the respawn's own env, never carried.
+    expect(lifecycle).toContain("...withoutAppOwnedLabels(withoutLaunchEnvLabels(before.labels)), ...sessionEnvLabels(seatEnv)");
     expect(lifecycle).not.toContain("...before.labels");
   });
 

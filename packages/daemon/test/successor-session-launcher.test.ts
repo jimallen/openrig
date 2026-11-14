@@ -105,6 +105,7 @@ describe("SuccessorSessionLauncher", () => {
     });
     expect(ok.ok).toBe(true);
     expect((respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env.CLAUDE_CONFIG_DIR).toBe(seatHomes);
+    expect(respawnPane.mock.calls[0]![2]).not.toHaveProperty("unsetEnv");
 
     respawnPane.mockClear();
     await launcher(undefined, "/daemon-codex", { runtimeAdapters: claude }).createSuccessor({
@@ -112,6 +113,8 @@ describe("SuccessorSessionLauncher", () => {
       departingSessionName: "dev-impl@rig",
     });
     expect((respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+    // A seat with no home of its own (e.g. after set-claude-home --clear) removes the session's earlier value (tmux keeps it).
+    expect((respawnPane.mock.calls[0]![2] as { unsetEnv?: string[] }).unsetEnv).toEqual(["CLAUDE_CONFIG_DIR"]);
 
     respawnPane.mockClear(); signalPaneProcess.mockClear();
     const refused = await launcher(undefined, "/daemon-codex", { runtimeAdapters: claude }).createSuccessor({

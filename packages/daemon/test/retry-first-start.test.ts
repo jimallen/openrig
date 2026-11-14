@@ -1,9 +1,10 @@
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mcpTrustFixture } from "./helpers/mcp-trust-fixture.js";
 
@@ -169,6 +170,30 @@ describe("explicit first-start retry after projection failure", () => {
       expect(f.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
       expect(f.adapter.launchHarness).not.toHaveBeenCalled();
       expect(f.adapter.project).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // claude_config_dir: a retry relaunches from the member, so one naming another home (or none) would move the seat to another
+  // login; refused like remote_control. The same home, in any spelling that normalises to it, relaunches.
+  describe("claude_config_dir", () => {
+    const home = realpathSync(tmpdir());
+    it("a retry that states the same home (spelled with a trailing slash) relaunches", async () => {
+      const f = await failedAdd({ runtime: "claude-code", claude_config_dir: home });
+      const res = await f.request({ ...member, runtime: "claude-code", claude_config_dir: `${home}/` });
+      const body = await res.json();
+      expect({ status: res.status, body }, JSON.stringify(body)).toMatchObject({ status: 201, body: { ok: true, status: "launched" } });
+    });
+    it.each([
+      ["drops it", { ...member, runtime: "claude-code" }, { runtime: "claude-code", claude_config_dir: home }],
+      ["adds it", { ...member, runtime: "claude-code", claude_config_dir: home }, { runtime: "claude-code" }],
+      ["changes it", { ...member, runtime: "claude-code", claude_config_dir: `${home}/other` }, { runtime: "claude-code", claude_config_dir: home }],
+    ])("refuses a retry member that %s, without projection or launch", async (_label, retryMember, seatOverrides) => {
+      const f = await failedAdd(seatOverrides);
+      const changes = f.db.prepare("SELECT total_changes() AS n").get();
+      const res = await f.request(retryMember);
+      expect({ status: res.status, body: await res.json() }).toMatchObject({ status: 409, body: { message: expect.stringContaining("disagrees wi") } });
+      expect(f.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
+      expect(f.adapter.launchHarness).not.toHaveBeenCalled();
     });
   });
 

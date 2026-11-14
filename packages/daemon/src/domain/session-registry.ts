@@ -152,6 +152,18 @@ export class SessionRegistry {
   }
 
   private freshStartColumn?: boolean;
+  private claudeHomeColumns?: boolean;
+
+  /** Record on the new session row the Claude config home its seat launches with now (nodes.claude_config_dir; NULL = the daemon's
+   *  own). Readers of a running conversation's files key on this, not on the seat's later choice (set-claude-home restarts nothing). */
+  private recordLaunchedClaudeHome(sessionId: string, nodeId: string): void {
+    if (this.claudeHomeColumns === undefined) {
+      const has = (table: string) => (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === "claude_config_dir");
+      this.claudeHomeColumns = has("sessions") && has("nodes");
+    }
+    if (!this.claudeHomeColumns) return;
+    this.db.prepare("UPDATE sessions SET claude_config_dir = (SELECT claude_config_dir FROM nodes WHERE id = ?) WHERE id = ?").run(nodeId, sessionId);
+  }
   /** Every migrated database carries `sessions.fresh_start`; reduced-schema fixtures stop short of it. */
   private sessionsHaveFreshStartColumn(): boolean {
     if (this.freshStartColumn === undefined) {
@@ -202,6 +214,7 @@ export class SessionRegistry {
     if ((kind === "fresh" || freshStart) && this.sessionsHaveFreshStartColumn()) {
       this.db.prepare("UPDATE sessions SET fresh_start = 1 WHERE id = ?").run(id);
     }
+    this.recordLaunchedClaudeHome(id, nodeId);
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration, continuesConversation); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
     return this.rowToSession(
@@ -241,6 +254,9 @@ export class SessionRegistry {
         )
         .run(id, nodeId, sessionName, origin);
     }
+    // A successor OpenRig launched (a handover) ran with the seat's home; a session the person started and OpenRig claimed did not
+    // necessarily, so it records none (the daemon's own selection is what its readers assume).
+    if (origin === "launched") this.recordLaunchedClaudeHome(id, nodeId);
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
 

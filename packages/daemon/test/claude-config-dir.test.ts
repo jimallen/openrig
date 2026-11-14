@@ -307,6 +307,13 @@ describe("SeatLifecycleService.setClaudeHome", () => {
     expect(events()).toHaveLength(0);
   });
 
+  it("accepts a stub seat (the scenario stand-in), as the spec field does", async () => {
+    const userHome = scratch("ccd-user-");
+    process.env.HOME = userHome;
+    const stub = seat("dev.stub", "stub");
+    expect(await service.setClaudeHome({ seatRef: stub.sessionName, dir: "/x", reason: "scenario" })).toMatchObject({ ok: true, to: "/x" });
+  });
+
   it("reports, names only, what the home lacks for a full-bypass seat", async () => {
     const userHome = scratch("ccd-user-");
     const cel = path.join(userHome, ".claude-cel");

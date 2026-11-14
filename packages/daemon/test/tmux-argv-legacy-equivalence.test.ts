@@ -121,6 +121,8 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.killSession(SESSION);
   await a.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w x", env: { USER: "b c", LOGNAME: "it's" } });
   await a.respawnPane("%1");
+  // A name an earlier occupant had that the successor must not inherit (a seat's cleared CLAUDE_CONFIG_DIR).
+  await a.respawnPane("%1", "sh", { unsetEnv: ["CLAUDE_CONFIG_DIR"] });
   await a.getPaneLocalOption("%1", "remain-on-exit");
   await a.restorePaneOption("%1", "remain-on-exit", "on");
   await a.restorePaneOption("%1", "remain-on-exit", null);

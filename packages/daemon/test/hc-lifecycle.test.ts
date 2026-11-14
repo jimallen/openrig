@@ -75,6 +75,18 @@ describe("HcLifecycle.respawnPane", () => {
     expect(run.env).toMatchObject({ API_KEY: "k-needle" });
     expect(run.env).not.toHaveProperty("CLAUDECODE");
   });
+  it("writes the launch-env labels again from the respawn's own env: a home the old program had (since cleared) is not carried", async () => {
+    const client = fresh(term({ labels: { [SEAT_LABEL]: "qa@rig", "herdr.space": "rig:eztrack", "openrig.env.CLAUDE_CONFIG_DIR": "/h/cel", "openrig.envset.CLAUDE_CONFIG_DIR": "1", "openrig.env.OPENRIG_NODE_ID": "n0" } }));
+    await new HcLifecycle(client, { daemonEnv }).respawnPane("qa@rig", "claude", { env: { OPENRIG_NODE_ID: "n1", OPENRIG_SESSION_NAME: "qa@rig" } });
+    expect(client.calls[2]![1]!.labels).toEqual({
+      [SEAT_LABEL]: "qa@rig", "herdr.space": "rig:eztrack",
+      "openrig.env.OPENRIG_NODE_ID": "n1", "openrig.envset.OPENRIG_NODE_ID": "1",
+      "openrig.env.OPENRIG_SESSION_NAME": "qa@rig", "openrig.envset.OPENRIG_SESSION_NAME": "1",
+    });
+    const kept = fresh(term());
+    await new HcLifecycle(kept, { daemonEnv }).respawnPane("qa@rig", "claude", { env: { CLAUDE_CONFIG_DIR: "/h/cel2" } });
+    expect(kept.calls[2]![1]!.labels).toMatchObject({ "openrig.env.CLAUDE_CONFIG_DIR": "/h/cel2" });
+  });
   it("starts a blank login shell when given no command, never a creation command", async () => {
     const client = fresh(term());
     await new HcLifecycle(client, { daemonEnv }).respawnPane("qa@rig");

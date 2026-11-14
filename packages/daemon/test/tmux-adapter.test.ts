@@ -1248,6 +1248,18 @@ describe("TmuxAdapter", () => {
       expect(exec).toHaveBeenCalledTimes(2);
     });
 
+    it("respawnPane removes each unsetEnv name from the session before the respawn, unless the respawn sets it", async () => {
+      const exec = execWithGlobal("PATH=/usr/bin\n");
+      await new TmuxAdapter(exec).respawnPane("%3", "sh", { env: { OPENRIG_NODE_ID: "n" }, unsetEnv: ["CLAUDE_CONFIG_DIR"] });
+      expect(exec.mock.calls.map((c) => c[0]).slice(1)).toEqual([
+        "tmux set-environment -t %3 -u CLAUDE_CONFIG_DIR",
+        "tmux respawn-pane -t '%3' -e 'OPENRIG_NODE_ID=n' 'sh'",
+      ]);
+      const kept = execWithGlobal("PATH=/usr/bin\n");
+      await new TmuxAdapter(kept).respawnPane("%3", "sh", { env: { CLAUDE_CONFIG_DIR: "/h/cel" }, unsetEnv: ["CLAUDE_CONFIG_DIR"] });
+      expect(kept.mock.calls.some(([cmd]) => cmd.includes("-u CLAUDE_CONFIG_DIR"))).toBe(false);
+    });
+
     it("respawnPane still respawns, with a warning, when the global environment is unreadable", async () => {
       const exec = vi.fn<ExecFn>(async (cmd: string) => {
         if (cmd === "tmux show-environment -g") throw new Error("unsupported");
