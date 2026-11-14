@@ -51,6 +51,8 @@ interface HistoryQueryOpts {
   chatSearchFn?: (rigId: string, pattern: string) => ChatSearchResult[];
   /** root of per-session provider JSONL (Claude): ~/.claude/projects. Injectable for tests. */
   claudeProjectsRoot?: string;
+  /** The projects roots of seats that run on their own Claude config home (<home>/projects), read at each search. */
+  seatClaudeProjectsRoots?: () => string[];
 }
 
 export interface SessionSearchResult {
@@ -137,29 +139,39 @@ export class HistoryQuery {
   private readonly exec: ExecDep;
   private readonly chatSearchFn?: (rigId: string, pattern: string) => ChatSearchResult[];
   private readonly claudeProjectsRoot: string;
+  private readonly seatClaudeProjectsRoots: () => string[];
 
   constructor(opts: HistoryQueryOpts) {
     this.transcriptsRoot = opts.transcriptsRoot;
     this.exec = opts.exec;
     this.chatSearchFn = opts.chatSearchFn;
     this.claudeProjectsRoot = opts.claudeProjectsRoot ?? join(homedir(), ".claude", "projects");
+    this.seatClaudeProjectsRoots = opts.seatClaudeProjectsRoots ?? (() => []);
+  }
+
+  /** The daemon's own projects root first, then each seat's own home's, once each. */
+  private projectsRoots(): string[] {
+    let extra: string[] = [];
+    try { extra = this.seatClaudeProjectsRoots(); } catch { /* a failed lookup searches the daemon's root only */ }
+    return [...new Set([this.claudeProjectsRoot, ...extra])];
   }
 
   /** Locate a session's JSONL by token: `<projectsRoot>/<any-encoded-cwd>/<token>.jsonl`.
    *  Token alone is enough (we scan the encoded-cwd dirs) — the founder's "I have
    *  the token, go find something". Returns null when nothing matches. */
   private locateSessionFile(token: string): string | null {
-    const root = this.claudeProjectsRoot;
-    if (!existsSync(root)) return null;
-    let dirs: string[];
-    try {
-      dirs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-    } catch {
-      return null;
-    }
-    for (const d of dirs) {
-      const candidate = join(root, d, `${token}.jsonl`);
-      if (existsSync(candidate)) return candidate;
+    for (const root of this.projectsRoots()) {
+      if (!existsSync(root)) continue;
+      let dirs: string[];
+      try {
+        dirs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+      } catch {
+        continue;
+      }
+      for (const d of dirs) {
+        const candidate = join(root, d, `${token}.jsonl`);
+        if (existsSync(candidate)) return candidate;
+      }
     }
     return null;
   }
@@ -182,7 +194,7 @@ export class HistoryQuery {
         insufficient: true,
         degraded: {
           reason: "session_not_found",
-          message: `No session JSONL found for token '${sessionToken}' under ${this.claudeProjectsRoot}. Check the token — or the session may have run under a different host/home.`,
+          message: `No session JSONL found for token '${sessionToken}' under ${this.projectsRoots().join(", ")}. Check the token — or the session may have run under a different host/home.`,
         },
       };
     }

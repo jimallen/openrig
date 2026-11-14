@@ -363,6 +363,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     nodeId ? ((seatClaudeHomeByNodeStmt.get(nodeId) as { dir: string | null } | undefined)?.dir ?? null) : null;
   const seatClaudeHomeBySession = (sessionId: string): string | null =>
     (seatClaudeHomeBySessionStmt.get(sessionId) as { dir: string | null } | undefined)?.dir ?? null;
+  const seatClaudeHomesStmt = db.prepare("SELECT DISTINCT claude_config_dir AS dir FROM nodes WHERE claude_config_dir IS NOT NULL ORDER BY claude_config_dir");
+  const seatClaudeHomes = (): string[] => (seatClaudeHomesStmt.all() as Array<{ dir: string }>).map((r) => r.dir);
 
   // 51-09 increment 1 — establish the daemon's durable self-host identity at
   // boot (mint on first boot, reconcile thereafter). host.name is a display-only
@@ -1185,7 +1187,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         | undefined;
       const token = row?.resume_token;
       if (!token) return null;
-      const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude");
+      // A seat on its own Claude config home writes its transcript there.
+      const claudeRoot = seatClaudeHomeBySession(sessionId) ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude");
       return findClaudeTranscriptByToken(nodePath.join(claudeRoot, "projects"), token);
     },
   );
@@ -1577,6 +1580,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           listSamples: () => latestClaudeWindowSamples(db),
         }),
       },
+      // A seat on its own Claude config home has its own login: the same bounded read, with that home selected.
+      readClaudeHomeIdentity: (home: string) => claudeAuthStatusReader({ launchPath: process.env.PATH, home: daemonHome, claudeConfigDir: home })(),
     }),
     restoreOrchestrator,
     resumeMetadataRefresher, // OPR.0.4.3.20 FR-4 — manual snapshot refresh-before-serialize
@@ -1693,6 +1698,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           ? (transcriptsPath ?? getCompatibleOpenRigPath("transcripts"))
           : getCompatibleOpenRigPath("transcripts"),
         exec: execDep,
+        // Seats on their own Claude config home keep their conversations under <home>/projects.
+        seatClaudeProjectsRoots: () => seatClaudeHomes().map((home) => nodePath.join(home, "projects")),
         chatSearchFn: (rigId: string, pattern: string) =>
           chatRepoForAsk.searchChat(rigId, pattern).map((m) => ({
             sender: m.sender,

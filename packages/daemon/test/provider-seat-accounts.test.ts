@@ -94,6 +94,15 @@ describe("configuredSeatAccounts — each state", () => {
       .toEqual({ source: "default_login", home: null, homeNote: "CLAUDE_CONFIG_DIR is set but empty: it resolves to each seat's working directory" });
   });
 
+  it("a Claude seat on its own Claude home names that home and the last refresh's login for it, never the daemon's", () => {
+    const own = { ...seat("build-impl@r", "claude-code"), claudeConfigDir: "/h/.claude-cel" };
+    const login = { at: ASOF, outcome: "ok" as const, loggedIn: true, email: "cel@example.test", subscriptionType: "max" };
+    const [withLogin, plain] = configuredSeatAccounts(input({ seats: [own, seat("dev-build@r", "claude-code")], claudeHomeLogins: new Map([["/h/.claude-cel", login]]) }));
+    expect(withLogin!.configured).toEqual({ source: "seat_home", home: "/h/.claude-cel", homeNote: expect.stringContaining("own Claude config dir"), login });
+    expect(plain!.configured).toMatchObject({ source: "default_login", home: "/h/.claude" });
+    expect(configuredSeatAccounts(input({ seats: [own] }))[0]!.configured).toMatchObject({ source: "seat_home", login: null });
+  });
+
   it("unknown: any other runtime says so, with nothing invented", () => {
     const [row] = configuredSeatAccounts(input({ seats: [seat("t@r", "terminal")] }));
     expect(row).toEqual({

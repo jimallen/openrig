@@ -893,6 +893,7 @@ onto a discovered successor, so the command has input; it no longer pairs with `
 | `rig seat clear-attention <session>` | — | `--reason <text>`<br>`--json` |
 | `rig seat set-permissions <seat>` | — | `--mode <mode>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat set-effort <seat>` | — | `--effort <level>`<br>`--clear`<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
+| `rig seat set-claude-home <seat>` | — | `--dir <path>`<br>`--clear`<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat set-mcp <seat> <server> <state>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--spec <file>`<br>`--json` |
 | `rig seat apply-spec <seat>` | — | `--spec <file>`<br>`--yes`<br>`--reason <text>`<br>`--operator <address>`<br>`--json` |
 | `rig seat effort <seat>` | — | `--json` |

@@ -103,3 +103,17 @@ export function claudeConfigDirFindings(dir: string, opts: { fullBypass: boolean
   }
   return findings;
 }
+
+/**
+ * A native fork (`claude --resume <parent> --fork-session`) reads the parent conversation from the launching seat's own
+ * Claude home. When that home lacks the parent but another known home holds it, the fork could only fail (or, worse,
+ * find a same-id file elsewhere), so it is refused up front, naming where the parent is. When no known home holds it,
+ * nothing is decided here and Claude answers as before.
+ */
+export function claudeForkHomeRefusal(parentId: string, targetHome: string, knownHomes: readonly string[],
+  hasConversation: (home: string, id: string) => boolean): string | null {
+  if (hasConversation(targetHome, parentId)) return null;
+  const elsewhere = [...new Set(knownHomes)].filter((home) => home !== targetHome && hasConversation(home, parentId));
+  if (elsewhere.length === 0) return null;
+  return `fork_across_claude_homes: conversation ${parentId} is in the Claude home ${elsewhere.join(", ")}, not in this seat's Claude home ${targetHome}; a native fork reads its parent from the seat's own home. Fork from a seat on the same home, or start this seat fresh.`;
+}

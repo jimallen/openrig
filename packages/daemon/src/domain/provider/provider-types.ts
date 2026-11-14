@@ -156,7 +156,15 @@ export interface FourBlockReadModel {
 export type SeatAccountConfiguration =
   | { source: "registry"; profileRef: string; recordedAt: string; profileSaved: boolean | null }
   | { source: "default_login"; home: string | null; homeNote: string }
+  /** A Claude seat on its own Claude config home (`claude_config_dir`, `rig seat set-claude-home`). `login` is the
+   *  last explicit refresh's `claude auth status` for that home (labels only), or null before one. */
+  | { source: "seat_home"; home: string; homeNote: string; login: ClaudeHomeLogin | null }
   | { source: "unknown"; reason: string };
+
+/** What `claude auth status` said for one Claude config home at the last refresh: labels, never a key or a credential. */
+export type ClaudeHomeLogin =
+  | { at: string; outcome: "ok"; loggedIn: boolean; email: string | null; subscriptionType: string | null }
+  | { at: string; outcome: "failed"; reason: string; detail: string };
 
 export interface SeatConfiguredAccount {
   seatSession: string;

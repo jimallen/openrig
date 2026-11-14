@@ -361,6 +361,21 @@ describe("rig provider status — usage windows", () => {
     expect((await run(["status", "--json"], port)).out).toBe(JSON.stringify(model));
   });
 
+  it("a seat on its own Claude home renders the home, its note and the last refresh's login (or that none was read)", async () => {
+    const seatHome = (login: unknown) => ({ seatSession: "build-impl@ez", rigName: "ez", runtime: "claude-code",
+      configured: { source: "seat_home", home: "/h/.claude-cel", homeNote: "this seat's own Claude config dir", login },
+      allowance: { linked: false, reason: "r" } });
+    model = { ...MODEL, usage: [READING], seatAccounts: [
+      seatHome({ at: "t1", outcome: "ok", loggedIn: true, email: "cel@example.test", subscriptionType: "max" }),
+      { ...seatHome(null), seatSession: "build-ux@ez" },
+      { ...seatHome({ at: "t2", outcome: "failed", reason: "not_logged_in", detail: "exit 1" }), seatSession: "build-ux2@ez" },
+    ] };
+    const { out } = await run(["status"], port);
+    expect(out).toContain("  build-impl@ez  claude-code  configured: own Claude home (/h/.claude-cel) · allowance not linked\n    this seat's own Claude config dir\n    login at t1: logged in as cel@example.test (max)");
+    expect(out).toContain("  build-ux@ez  claude-code  configured: own Claude home (/h/.claude-cel) · allowance not linked\n    this seat's own Claude config dir\n    login: not read yet (rig provider status --refresh --provider claude)");
+    expect(out).toContain("    login at t2: unknown, not_logged_in (exit 1)");
+  });
+
   it("a withheld observation renders its note", async () => {
     const note = "observation withheld: 2 seats share session name a@r; status-line samples are keyed by session name and cannot be attributed to one seat";
     model = { ...MODEL, seatAccounts: [

@@ -59,4 +59,23 @@ describe("HistoryQuery.searchSession — per-session JSONL by token (L2)", () =>
     expect(res.degraded?.message).toMatch(/token/i);
     expect(res.insufficient).toBe(true);
   });
+
+  it("finds a session that ran on a seat's own Claude config home, after the daemon's root", async () => {
+    const seatProjects = mkdtempSync(join(tmpdir(), "rigask-seat-proj-"));
+    try {
+      const token = "cel-session-1";
+      mkdirSync(join(seatProjects, "-Users-me-proj"), { recursive: true });
+      writeFileSync(join(seatProjects, "-Users-me-proj", `${token}.jsonl`), '{"text":"CEL_MARKER"}\n', "utf-8");
+      const execSpy = vi.fn(async () => ({ stdout: '{"text":"CEL_MARKER"}\n', exitCode: 0 }));
+      const hq = new HistoryQuery({ transcriptsRoot: "/unused", exec: execSpy, claudeProjectsRoot: projectsRoot, seatClaudeProjectsRoots: () => [seatProjects] });
+      const res = await hq.searchSession(token, "CEL_MARKER");
+      expect(res.found).toBe(true);
+      expect(res.path).toBe(join(seatProjects, "-Users-me-proj", `${token}.jsonl`));
+      const missing = await new HistoryQuery({ transcriptsRoot: "/unused", exec: throwExec, claudeProjectsRoot: projectsRoot, seatClaudeProjectsRoots: () => [seatProjects] })
+        .searchSession("nope", "x");
+      expect(missing.degraded?.message).toContain(seatProjects);
+    } finally {
+      rmSync(seatProjects, { recursive: true, force: true });
+    }
+  });
 });

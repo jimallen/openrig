@@ -20,6 +20,8 @@ export interface ProviderSeat {
   rigName: string;
   runtime: string;
   lifecycleState: NodeLifecycleState;
+  /** A Claude seat's own Claude config home (nodes.claude_config_dir); absent = the daemon's own. */
+  claudeConfigDir?: string;
 }
 
 export interface ProviderCollectDeps {

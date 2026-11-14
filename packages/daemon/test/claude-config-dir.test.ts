@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import type Database from "better-sqlite3";
-import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeConfigDirShapeError, normalizeClaudeConfigDir, seatClaudeConfigDirEnv } from "../src/domain/claude-config-dir.js";
+import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeForkHomeRefusal, claudeConfigDirShapeError, normalizeClaudeConfigDir, seatClaudeConfigDirEnv } from "../src/domain/claude-config-dir.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -320,5 +320,42 @@ describe("SeatLifecycleService.setClaudeHome", () => {
     fs.writeFileSync(path.join(cel, ".claude.json"), "{}");
     fs.writeFileSync(path.join(cel, "settings.json"), JSON.stringify({ skipDangerousModePermissionPrompt: true }));
     expect(claudeConfigDirFindings(cel, { fullBypass: true, nonInterruptive: false }, read)).toEqual([]);
+  });
+});
+
+describe("a native fork across Claude homes is refused up front", () => {
+  const has = (map: Record<string, string[]>) => (home: string, id: string) => (map[home] ?? []).includes(id);
+
+  it("refuses only when the parent is in another known home and not in the seat's own", () => {
+    expect(claudeForkHomeRefusal("p1", "/h/cel", ["/h/.claude", "/h/cel"], has({ "/h/cel": ["p1"] }))).toBeNull();
+    expect(claudeForkHomeRefusal("p1", "/h/cel", ["/h/.claude", "/h/cel"], has({}))).toBeNull();
+    expect(claudeForkHomeRefusal("p1", "/h/cel", ["/h/.claude", "/h/cel"], has({ "/h/.claude": ["p1"] })))
+      .toMatch(/^fork_across_claude_homes: conversation p1 is in the Claude home \/h\/\.claude, not in this seat's Claude home \/h\/cel/);
+  });
+
+  it("the Claude adapter refuses the fork launch before typing anything", async () => {
+    const root = scratch("ccd-fork-");
+    const home = path.join(root, "home");
+    const cel = path.join(root, "cel");
+    fs.mkdirSync(path.join(home, ".claude", "projects", "-w"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".claude", "projects", "-w", "parent-1.jsonl"), "{}\n");
+    fs.mkdirSync(cel);
+    const db = createFullTestDb(); cleanup.push(() => db.close());
+    const rigRepo = new RigRepository(db);
+    const node = rigRepo.addNode(rigRepo.createRig("r").id, "dev.cel", { runtime: "claude-code", cwd: root, claudeConfigDir: cel });
+    const typed: string[] = [];
+    const tmux = partial<TmuxAdapter>({ sendShellCommand: async (_s: string, cmd: string) => { typed.push(cmd); return { ok: true as const }; } });
+    const fsOps: ClaudeAdapterFsOps = { homedir: home, exists: fs.existsSync, mkdirp: () => {}, readFile: p => fs.readFileSync(p, "utf8"), writeFile: () => {}, copyFile: () => {}, readdir: p => fs.readdirSync(p) };
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      const adapter = new ClaudeCodeAdapter({ tmux, fsOps, claudeManagedLaunch: new ClaudeManagedLaunch(db, { HOME: home, PATH: "/usr/bin" }, {}) });
+      const binding = { id: "b", nodeId: node.id, cwd: root, tmuxSession: "dev-cel@r", tmuxPane: "%1" } as NodeBinding;
+      const result = await adapter.launchHarness(binding, { name: "dev-cel@r", forkSource: { kind: "native_id", value: "parent-1" } });
+      expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/^fork_across_claude_homes:/) });
+      expect(typed).toHaveLength(0);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved;
+    }
   });
 });

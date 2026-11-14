@@ -7,6 +7,8 @@ import * as nodePath from "node:path";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { ProviderServiceImpl } from "../src/domain/provider/provider-service-impl.js";
 import { mkTemp } from "./helpers/temp-roots.js";
+import { CodexUsageWindows } from "../src/domain/provider/codex-usage-windows.js";
+import { ClaudeUsageWindows } from "../src/domain/provider/claude-usage-windows.js";
 
 const ASOF = "2026-08-04T00:00:00.000Z";
 
@@ -56,4 +58,34 @@ describe("ProviderServiceImpl — production getReadModel/precheck/switch wiring
     const model = await svc.getReadModel();
     expect(model.signals).toEqual([sig]);
   });
+
+  it("a Claude refresh also reads each seat-owned Claude home's login, once per distinct home, and the read model names it per seat", async () => {
+    const { RigRepository } = await import("../src/domain/rig-repository.js");
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const rig = rigRepo.createRig("ez");
+    const { SessionRegistry } = await import("../src/domain/session-registry.js");
+    const registry = new SessionRegistry(db);
+    for (const [id, home] of [["build.impl", "/h/.claude-cel"], ["build.ux", "/h/.claude-cel"], ["exec.cos", undefined]] as const) {
+      const node = rigRepo.addNode(rig.id, id, { runtime: "claude-code", cwd: "/w", ...(home ? { claudeConfigDir: home } : {}) });
+      registry.updateStatus(registry.registerSession(node.id, `${id.replace(".", "-")}@ez`).id, "running");
+    }
+    const reads: string[] = [];
+    const svc = new ProviderServiceImpl({
+      db, listRigs: () => [{ id: rig.id }], env: { ...emptyCodexHomeEnv(), HOME: "/h" }, now: () => ASOF,
+      usageWindows: { enabled: () => true,
+        windows: new CodexUsageWindows({ read: async () => ({ ok: false, at: ASOF, reason: "spawn_failed", detail: "not part of this test" }) }),
+        claude: new ClaudeUsageWindows({ readIdentity: async () => ({ ok: false, at: ASOF, reason: "auth_status_failed", detail: "the daemon's own home is not this test" }), listSamples: () => [] }) },
+      readClaudeHomeIdentity: async (home) => { reads.push(home); return { ok: true, observedAt: ASOF, auth: { loggedIn: true, authMethod: "claude.ai", email: "cel@example.test", orgId: "o", orgName: null, subscriptionType: "max" } }; },
+    });
+    const before = await svc.getReadModel();
+    expect(before.seatAccounts?.find((a) => a.seatSession === "build-impl@ez")?.configured).toMatchObject({ source: "seat_home", home: "/h/.claude-cel", login: null });
+    await svc.refreshUsage("claude");
+    expect(reads).toEqual(["/h/.claude-cel"]);
+    const after = await svc.getReadModel();
+    expect(after.seatAccounts?.find((a) => a.seatSession === "build-ux@ez")?.configured).toMatchObject({ source: "seat_home", login: { outcome: "ok", loggedIn: true, email: "cel@example.test" } });
+    expect(after.seatAccounts?.find((a) => a.seatSession === "exec-cos@ez")?.configured).toMatchObject({ source: "default_login" });
+    db.close();
+  });
 });
+

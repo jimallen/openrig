@@ -12,7 +12,7 @@ import path from "node:path";
 import type { ClaudeWindowSample } from "./claude-usage-windows.js";
 import type { CodexAuthMetadata } from "./codex-auth-reader.js";
 import type { ProviderSeat } from "./provider-collect.js";
-import type { ProviderUsageAllowance, SeatConfiguredAccount } from "./provider-types.js";
+import type { ClaudeHomeLogin, ProviderUsageAllowance, SeatConfiguredAccount } from "./provider-types.js";
 
 export interface SeatAccountsInput {
   seats: ProviderSeat[];
@@ -25,7 +25,11 @@ export interface SeatAccountsInput {
   /** The daemon's CLAUDE_CONFIG_DIR as set (may be relative), and its HOME. */
   claudeConfigDir: string | undefined;
   home: string | undefined;
+  /** The last refresh's login per seat-owned Claude home (absent: never refreshed). */
+  claudeHomeLogins?: ReadonlyMap<string, ClaudeHomeLogin>;
 }
+
+const SEAT_HOME_NOTE = "this seat's own Claude config dir (claude_config_dir / rig seat set-claude-home): its own login, not the daemon's";
 
 const REGISTRY_NOT_LINKED =
   "a registry profile name and an observed account are different kinds of fact; nothing supported links them without reading the profile's contents";
@@ -100,7 +104,9 @@ export function configuredSeatAccounts(input: SeatAccountsInput): SeatConfigured
       const differs = claudeDiffers.get(seat.seatSession);
       return {
         ...base,
-        configured: { source: "default_login", home: claudeHome.home, homeNote: claudeHome.note },
+        configured: seat.claudeConfigDir
+          ? { source: "seat_home", home: seat.claudeConfigDir, homeNote: SEAT_HOME_NOTE, login: input.claudeHomeLogins?.get(seat.claudeConfigDir) ?? null }
+          : { source: "default_login", home: claudeHome.home, homeNote: claudeHome.note },
         ...(notes.length ? { registryNotes: notes } : {}),
         allowance: { linked: false, reason: DEFAULT_LOGIN_NOT_LINKED },
         observed: shared > 1

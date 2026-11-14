@@ -63,6 +63,12 @@ export class ClaudeManagedLaunch {
     return row?.dir ?? null;
   }
 
+  /** Every seat-owned Claude config home on this daemon (distinct; none when the column is absent). */
+  knownSeatHomes(): string[] {
+    if (this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() === undefined) return [];
+    return (this.db.prepare("SELECT DISTINCT claude_config_dir AS dir FROM nodes WHERE claude_config_dir IS NOT NULL ORDER BY claude_config_dir").all() as Array<{ dir: string }>).map((r) => r.dir);
+  }
+
   /** Bootstrap and the launched child must use the same native selection.
    * Unset config uses HOME/.claude.json; even an explicit default-looking
    * directory selects <configDir>/.claude.json instead (#154/#225).

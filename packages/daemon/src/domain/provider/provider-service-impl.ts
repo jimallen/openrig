@@ -19,14 +19,15 @@ import { precheckSwitch } from "./provider-policy.js";
 import { collectReactiveEventSignals } from "./reactive-tap.js";
 import type { CodexUsageWindows } from "./codex-usage-windows.js";
 import type { ClaudeUsageWindows } from "./claude-usage-windows.js";
-import type { UsageRefreshResult } from "./usage-windows.js";
+import type { UsageReadOutcome, UsageRefreshResult } from "./usage-windows.js";
+import type { ClaudeAuthAnswer } from "./claude-auth-status-reader.js";
 import type {
   ProviderService,
   ProviderPrecheckInput,
   ProviderSwitchInput,
   ProviderSwitchResult,
 } from "./provider-service.js";
-import type { FourBlockReadModel, PrecheckResult, ProviderSignal } from "./provider-types.js";
+import type { ClaudeHomeLogin, FourBlockReadModel, PrecheckResult, ProviderSignal } from "./provider-types.js";
 
 export interface ProviderServiceImplDeps {
   db: Database.Database;
@@ -42,9 +43,14 @@ export interface ProviderServiceImplDeps {
   now?: () => string;
   /** Slice 01: Codex usage windows, served only while `enabled()` (provider.usage_windows) is true. */
   usageWindows?: { enabled: () => boolean; windows: CodexUsageWindows; claude?: ClaudeUsageWindows };
+  /** One bounded `claude auth status` for a seat-owned Claude config home, run only on an explicit Claude refresh. */
+  readClaudeHomeIdentity?: (home: string) => Promise<UsageReadOutcome<ClaudeAuthAnswer>>;
 }
 
 export class ProviderServiceImpl implements ProviderService {
+  /** The last explicit refresh's login per seat-owned Claude home, in memory (a read never starts a native probe). */
+  private readonly claudeHomeLogins = new Map<string, ClaudeHomeLogin>();
+
   constructor(private readonly deps: ProviderServiceImplDeps) {}
 
   async getReadModel(): Promise<FourBlockReadModel> {
@@ -99,13 +105,19 @@ export class ProviderServiceImpl implements ProviderService {
       codexHome: env.CODEX_HOME || nodePath.join(env.HOME ?? os.homedir(), ".codex"),
       claudeConfigDir: env.CLAUDE_CONFIG_DIR,
       home: env.HOME ?? os.homedir(),
+      claudeHomeLogins: this.claudeHomeLogins,
     });
     return { ...model, usage: allUsage, seatAccounts };
   }
 
   async refreshUsage(provider: "codex" | "claude"): Promise<UsageRefreshResult | { disabled: true } | { unavailable: true }> {
     if (!this.usageWindowsEnabled()) return { disabled: true };
-    if (provider === "claude") return this.deps.usageWindows!.claude?.refresh() ?? { unavailable: true };
+    if (provider === "claude") {
+      // Each seat-owned Claude home's login too, one bounded read per distinct home, after the daemon's own.
+      const result = await (this.deps.usageWindows!.claude?.refresh() ?? Promise.resolve({ unavailable: true as const }));
+      await this.refreshClaudeHomeLogins();
+      return result;
+    }
     return this.deps.usageWindows!.windows.refresh();
   }
 
@@ -115,6 +127,30 @@ export class ProviderServiceImpl implements ProviderService {
       return this.deps.usageWindows.enabled();
     } catch {
       return false;
+    }
+  }
+
+  /** A node's own Claude config home (migration 129), or null; a database without the column has none. */
+  private seatClaudeHome(nodeId: string): string | null {
+    if (this.hasClaudeHomeColumn === undefined) {
+      this.hasClaudeHomeColumn = this.deps.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() !== undefined;
+    }
+    if (!this.hasClaudeHomeColumn) return null;
+    return (this.deps.db.prepare("SELECT claude_config_dir AS dir FROM nodes WHERE id = ?").get(nodeId) as { dir: string | null } | undefined)?.dir ?? null;
+  }
+  private hasClaudeHomeColumn: boolean | undefined;
+
+  private async refreshClaudeHomeLogins(): Promise<void> {
+    const read = this.deps.readClaudeHomeIdentity;
+    if (!read) return;
+    const homes = [...new Set(this.listSeats().map((s) => s.claudeConfigDir).filter((h): h is string => Boolean(h)))].sort();
+    for (const home of homes) {
+      let outcome: UsageReadOutcome<ClaudeAuthAnswer>;
+      try { outcome = await read(home); }
+      catch (error) { outcome = { ok: false, at: new Date().toISOString(), reason: "auth_status_failed", detail: error instanceof Error ? error.message : String(error) }; }
+      this.claudeHomeLogins.set(home, outcome.ok
+        ? { at: outcome.observedAt, outcome: "ok", loggedIn: outcome.auth.loggedIn, email: outcome.auth.email, subscriptionType: outcome.auth.subscriptionType }
+        : { at: outcome.at, outcome: "failed", reason: outcome.reason, detail: outcome.detail });
     }
   }
 
@@ -128,6 +164,7 @@ export class ProviderServiceImpl implements ProviderService {
           rigName: entry.rigName ?? "",
           runtime: entry.runtime ?? "unknown",
           lifecycleState: entry.lifecycleState,
+          ...(entry.runtime === "claude-code" && this.seatClaudeHome(entry.nodeId) ? { claudeConfigDir: this.seatClaudeHome(entry.nodeId)! } : {}),
         });
       }
     }

@@ -138,10 +138,18 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
         ? `configured: profile ${c["profileRef"]} (registry, recorded ${c["recordedAt"]}${c["profileSaved"] === false ? "; profile not saved on this host" : c["profileSaved"] === null ? "; whether the profile is saved: unknown" : ""})`
         : c["source"] === "default_login"
           ? `configured: default login${c["home"] ? ` (${c["home"]})` : ""}`
-          : `configured: unknown (${c["reason"]})`;
+          : c["source"] === "seat_home"
+            ? `configured: own Claude home (${c["home"]})`
+            : `configured: unknown (${c["reason"]})`;
       const allowance = (r["allowance"] ?? {}) as Record<string, unknown>;
       console.log(`  ${r["seatSession"]}  ${r["runtime"]}  ${configured} · allowance not linked`);
-      if (c["source"] === "default_login" && c["homeNote"]) console.log(`    ${c["homeNote"]}`);
+      if ((c["source"] === "default_login" || c["source"] === "seat_home") && c["homeNote"]) console.log(`    ${c["homeNote"]}`);
+      if (c["source"] === "seat_home") {
+        const login = c["login"] as Record<string, unknown> | null | undefined;
+        if (!login) console.log("    login: not read yet (rig provider status --refresh --provider claude)");
+        else if (login["outcome"] === "ok") console.log(`    login at ${login["at"]}: ${login["loggedIn"] === true ? `logged in${login["email"] ? ` as ${login["email"]}` : ""}${login["subscriptionType"] ? ` (${login["subscriptionType"]})` : ""}` : "not logged in"}`);
+        else console.log(`    login at ${login["at"]}: unknown, ${failureText(login)}`);
+      }
       for (const note of (r["registryNotes"] as string[] | undefined) ?? []) console.log(`    ${note}`);
       const observed = r["observed"] as Record<string, unknown> | undefined;
       const differs = (observed?.["differsFrom"] as string[] | undefined) ?? [];

@@ -1,4 +1,6 @@
 import { answerDialogKeys } from "./hc-dialog-input.js";
+import { claudeForkHomeRefusal } from "../domain/claude-config-dir.js";
+import { findClaudeTranscriptByToken } from "../domain/continuity-policy-materializer.js";
 import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import nodePath from "node:path";
@@ -321,6 +323,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       if (!parentId) {
         return { ok: false, error: "claude-code fork: forkSource.value is required (parent native_id)" };
       }
+      // The parent must be in the home this seat launches with; refused up front when it is only in another home.
+      const forkHomeRefusal = this.forkHomeRefusal(binding.nodeId, parentId);
+      if (forkHomeRefusal) return { ok: false, error: forkHomeRefusal };
       const forkSessionId = this.sessionIdFactory();
       const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, this.launchChoice(binding)), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
         "--resume", parentId, "--fork-session", "--session-id", forkSessionId, `--name=${opts.name}`])
@@ -388,6 +393,23 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     if (probe.status === "resumed") return { ready: true };
     return { ready: false, reason: probe.detail, code: probe.code };
+  }
+
+  /** fork_across_claude_homes, or null. Without the managed-launch database there is nothing to compare: null. */
+  private forkHomeRefusal(nodeId: string, parentId: string): string | null {
+    const managed = this.claudeManagedLaunch;
+    if (!managed) return null;
+    const home = this.fs?.homedir ?? process.env.HOME;
+    if (!home) return null;
+    const daemonHome = process.env.CLAUDE_CONFIG_DIR || nodePath.join(home, ".claude");
+    try {
+      const targetHome = managed.seatConfigDir(nodeId) ?? daemonHome;
+      return claudeForkHomeRefusal(parentId, targetHome, [daemonHome, ...managed.knownSeatHomes()],
+        (dir, id) => findClaudeTranscriptByToken(nodePath.join(dir, "projects"), id) !== null);
+    } catch {
+      // The check is a courtesy before a fork Claude would refuse anyway; a lookup that fails decides nothing.
+      return null;
+    }
   }
 
   /** Best-effort public seam for tmux-bound Claude sessions adopted outside the launch path. */
