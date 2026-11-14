@@ -307,7 +307,7 @@ export function composeAttentionRollup(instances: RenderInstance[]): AttentionRo
         workflowName: inst.workflowName ?? "",
         classes: ["damaged"],
         reasons: [`saved ${damagedColumnsOf(inst.unreadable).join(", ")} not readable JSON; frontier, packets and deadline are unknown`],
-        affordance: "do not route, resume or abort it: repair or remove the saved row, then run rig workflow show " + inst.instanceId,
+        affordance: `do not route, resume or abort it: repair or remove the saved row, then run rig workflow show ${shellWord(inst.instanceId)}`,
       });
       continue;
     }
@@ -337,9 +337,9 @@ export function composeAttentionRollup(instances: RenderInstance[]): AttentionRo
     // slice (commit 6) — the verbs land together at merge (BR-1 holds
     // at the shipped boundary).
     const affordance = classes.includes("failed") || classes.includes("failed-branch")
-      ? `inspect: rig workflow trace ${inst.instanceId}`
+      ? `inspect: rig workflow trace ${shellWord(inst.instanceId)}`
       : classes.includes("stuck")
-        ? `re-route: rig workflow route ${inst.instanceId} --to <seat>`
+        ? `re-route: rig workflow route ${shellWord(inst.instanceId)} --to <seat>`
         : `resolve the blocker, then the owner projects (${setOff(`rig workflow trace ${shellWord(inst.instanceId)}`)})`;
     attention.push({
       instanceId: inst.instanceId,

@@ -4,7 +4,8 @@
 import { describe, it, expect } from "vitest";
 import { validatePsLadder } from "../src/commands/ps.js";
 import { notAPlanMessage } from "../src/launch-plan-guard.js";
-import { setOffCommands, rigWords, closesCleanly } from "../../daemon/test/helpers/shell-argv.js";
+import { composeAttentionRollup, type RenderInstance } from "../src/commands/workflow-render.js";
+import { setOffCommands, rigWords, closesCleanly, shellArgv } from "../../daemon/test/helpers/shell-argv.js";
 
 const HOSTS = ["vm-1", "my host", "a;b", "$(id)", "it's", "=x", "a b;rm -rf x", "a`b", "a`b'c", "x``y'z"];
 
@@ -39,5 +40,31 @@ describe("rig launch --plan, an answer that is not a plan: the rig ps check name
 
   it("no host: the check is set off", () => {
     expect(commandsIn(notAPlanMessage())).toEqual([["ps", "--nodes", "-A"]]);
+  });
+});
+
+describe("rig workflow status: every attention affordance names the instance as one word (OF-289 review S2, N1)", () => {
+  const IDS = ["WF01ABC", "my wf", "a;b", "$(id)", "it's", "a`b'c"];
+  const affordance = (inst: RenderInstance) => composeAttentionRollup([inst]).attention[0]!.affordance;
+
+  it.each(IDS)("waiting %j: the set-off trace command pastes as its words", (instanceId) => {
+    expect(commandsIn(affordance({ instanceId, status: "waiting" }))).toEqual([["workflow", "trace", instanceId]]);
+  });
+
+  it.each(IDS)("failed %j: the inspect command is the trace of exactly that instance", (instanceId) => {
+    const text = affordance({ instanceId, status: "failed" });
+    expect(text.startsWith("inspect: rig ")).toBe(true);
+    expect(shellArgv(text.slice("inspect: rig ".length))).toEqual(["workflow", "trace", instanceId]);
+  });
+
+  it.each(IDS)("stuck %j: the re-route command routes exactly that instance", (instanceId) => {
+    const text = affordance({ instanceId, status: "active", deadline: { state: "overdue" } } as RenderInstance);
+    expect(text.startsWith("re-route: rig ")).toBe(true);
+    expect(shellArgv(text.slice("re-route: rig ".length).replace("<seat>", "SEAT"))).toEqual(["workflow", "route", instanceId, "--to", "SEAT"]);
+  });
+
+  it.each(IDS)("damaged %j: the show command shows exactly that instance", (instanceId) => {
+    const text = affordance({ instanceId, status: "active", unreadable: ["frontier"] });
+    expect(shellArgv(text.slice(text.indexOf("then run rig ") + "then run rig ".length))).toEqual(["workflow", "show", instanceId]);
   });
 });

@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 import { nativeNoticeText } from "../src/domain/native-inbox-settlement.js";
 import { modelLoopStartBody } from "../src/domain/seat-model-error-loop-notice.js";
 import { untrustedSpecSourceRemedy } from "../src/domain/seat-startup-source.js";
+import { HcUnsettledHealthSource } from "../src/domain/hc-unsettled-health.js";
+import { createDefaultRestoreRig } from "../src/domain/crash-cart-conductor.js";
+import { describeAmbiguousSessionName } from "../src/domain/session-name-matches.js";
+import Database from "better-sqlite3";
 import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
 
 const HOSTILE = ["dev@rig", "my seat@rig", "a;b", "$(id)", "it's", "=x", "a b;rm -rf x", "a`b", "a`b'c", "x``y'z"];
@@ -36,6 +40,44 @@ describe("parenthesised commands that name a seat or rig paste as their own word
     const text = untrustedSpecSourceRemedy(rig);
     const from = text.slice(text.indexOf("instead: "));
     expect(commandsIn(from)).toEqual([["spec-source", "set", rig, "<path-to-rig.yaml>", "--operator", "<address>"], ["spec-source", "show", rig]]);
+  });
+});
+
+describe("OF-289 review: the hc unsettled notice, the crash-cart remediation and the ambiguous-session advice", () => {
+  it.each(HOSTILE)("the hc unsettled notice for seat %j: capture and retire-unsettled-send name exactly that seat and row", (seat) => {
+    const id = "outbox-9";
+    const source = new HcUnsettledHealthSource(() => [{ outboxId: id, destination: seat, since: "2026-11-14 00:00:00" }], () => new Date("2026-11-14T01:00:00Z"));
+    const notice = source.coverage()[0];
+    if (notice?.status !== "notice") throw new Error("expected a notice row");
+    const reason = notice.reason;
+    const from = reason.slice(reason.indexOf("Check the seat"));
+    expect(commandsIn(from)).toEqual([["capture", seat], ["seat", "retire-unsettled-send", seat, id, "--reason", "<what you found>"]]);
+  });
+
+  it.each(HOSTILE)("crash-cart with no usable snapshot for rig %j: rig snapshot names exactly that rig", async (rig) => {
+    const r = await createDefaultRestoreRig({ findLatestRestoreUsable: () => null, restore: async () => { throw new Error("not called"); } })(rig);
+    expect(commandsIn(r.remediation!)).toEqual([["snapshot", rig]]);
+  });
+
+  /** The rigs table describeAmbiguousSessionName reads (each rig's name and archived_at), with both candidate rigs in it. */
+  const rigsDb = (archived: boolean): Database.Database => {
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE rigs (id TEXT PRIMARY KEY, name TEXT NOT NULL, archived_at TEXT)");
+    for (const id of ["r-1", "r-2"]) db.prepare("INSERT INTO rigs (id, name, archived_at) VALUES (?, 'w', ?)").run(id, archived ? "2026-11-01" : null);
+    return db;
+  };
+  const twoRigs = [{ id: "s1", node_id: "n1", session_name: "dev@w", rig_id: "r-1" }, { id: "s2", node_id: "n2", session_name: "dev@w", rig_id: "r-2" }];
+
+  it("an ambiguous session among live rigs: stop, archive and archive --force are each set off", () => {
+    const text = describeAmbiguousSessionName(rigsDb(false), "dev@w", twoRigs);
+    const from = text.slice(text.indexOf("To resolve it"));
+    expect(commandsIn(from)).toEqual([["down", "<rigId>"], ["archive", "<rigId>"], ["archive", "<rigId>", "--force"]]);
+  });
+
+  it("an ambiguous session among archived rigs: unarchive is set off", () => {
+    const text = describeAmbiguousSessionName(rigsDb(true), "dev@w", twoRigs);
+    const from = text.slice(text.indexOf("unarchive the one"));
+    expect(commandsIn(from)).toEqual([["unarchive", "<rigId>"]]);
   });
 });
 
@@ -81,7 +123,10 @@ function parenthesisedRigCommands(): Array<{ file: string; after: string; line: 
 describe("census: no command sits bare inside parentheses in operator text (OF-289)", () => {
   it("every (rig ... in daemon and CLI source is one of the sites deliberately left", () => {
     const unexpected = parenthesisedRigCommands().filter((f) => !LEFT.some((l) => l.file === f.file && f.after.startsWith(l.after)));
-    expect(unexpected.map((f) => `${f.file}:${f.line}: (rig ${f.after.slice(0, 60)}`)).toEqual([]);
+    expect(
+      unexpected.map((f) => `${f.file}:${f.line}: (rig ${f.after.slice(0, 60)}`),
+      "a command bare inside parentheses: wrap the command in setOff(...), or add a LEFT entry with a why",
+    ).toEqual([]);
   });
 
   it("every site left is still there (a stale entry is removed, not kept)", () => {

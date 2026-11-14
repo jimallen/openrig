@@ -238,6 +238,8 @@ describe("the models.json link (declared per member)", () => {
     const r = link({ operatorDir: undefined, linkModels: true });
     expect(r.ok).toBe(false);
     expect(err(r)).toMatch(/pi\.link_operator_models .*pi\.operator_login_dir is not set/);
+    // OF-289 N5: the same set-off command, with the same <folder> placeholder, that pi-readiness prints.
+    expect(err(r)).toContain("Set it ('rig config set pi.operator_login_dir <folder>') or remove");
   });
 });
 

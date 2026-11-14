@@ -54,7 +54,7 @@ const USAGE = [
         disagreeingSeats: [{ seatSession: "dev-r1@r", usedPercent: 10, resetsAt: "2026-10-13T21:00:00.000Z", observedAt: "2026-10-13T17:59:00.000Z" }] },
     ],
     limitEvidence: null, latestFromSource: true, lastRefresh: null, currentAvailability: "unknown",
-    identityNote: "identity not read yet (rig provider status --refresh); windows: status-line readings from dev-build@r at their own times",
+    identityNote: "identity not read yet ('rig provider status --refresh'); windows: status-line readings from dev-build@r at their own times",
     unresolved: { note: "identity not read yet: not matched to, merged with or replacing any other row", keptReads: 3, droppedReads: 1 },
   },
   {
