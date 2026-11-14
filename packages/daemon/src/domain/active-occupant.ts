@@ -171,6 +171,15 @@ export function shellWord(value: string): string {
   return /^[A-Za-z0-9._@:-]+$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+/** A folder as one word of a command line an operator will paste: bare while it is only path characters, else single-quoted, so a
+ *  space, quote, `$`, backtick, `;` or newline in a folder name cannot split or run the command (OF-287 review F4). Not the
+ *  adapters' `shellWord`, which has the same bare set: the domain may not import an adapter (hexagonal ratchet), and the domain's
+ *  own `shellWord` (above) quotes every `/`, which would rewrite every path in the existing wording. A leading `=` is
+ *  quoted: zsh rewrites a bare `=word` to the path of a command. */
+export function shellPath(value: string): string {
+  return /^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 /** A command set off inside a sentence: in single quotes, as the refusal always did, unless the command itself holds a single quote
  *  (a quoted folder name does), when the quotes would end it early; then in backticks. A command that also holds a backtick (a rig
  *  named a`b) is fenced as Markdown does: a run of backticks one longer than any inside it, with a space each side, so no backtick in

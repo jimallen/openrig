@@ -15,7 +15,7 @@ import { omittedReadField, readView } from "../read-view.js";
 import { buildWriteReceipt, compactOutputEnabled, type ReceiptContext } from "../queue-receipt.js";
 import { TRANSITIONS_SHOWN, compactShow, compactTransitions, showEmptyNotice, transitionsNotice } from "../queue-read-compact.js";
 import { damagedRowsIn, warnDamagedRows, warnSavedRowRefusal, type DamagedKind } from "../lib/damaged-rows.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 /**
  * `rig queue` — coordination primitive L3/inbox/outbox commands (PL-004 Phase A).

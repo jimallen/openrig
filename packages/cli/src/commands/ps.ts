@@ -13,7 +13,7 @@ import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-help
 import { readOpenRigEnv } from "../openrig-compat.js";
 import type { AggregatedPayload, PerHostStatus } from "../lib/hosts/fanout-contract.js";
 import { rigAdviceHandle, fetchAdviceRigs, type AdviceRig } from "../rig-handle.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 interface PsEntry {
   rigId: string;

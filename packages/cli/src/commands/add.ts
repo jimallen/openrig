@@ -1,4 +1,4 @@
-import { setOff } from "../command-text.js";
+import { setOff } from "@openrig/daemon/command-text";
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";

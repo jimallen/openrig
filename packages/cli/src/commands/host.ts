@@ -23,7 +23,7 @@ import { runCrossHostCommand, type CrossHostResult } from "../cross-host-executo
 import { recordHostObservation, loadHostBindings, describeBindingConflict, defaultHostBindingsPath, type HostObservationOutcome } from "../host-bindings.js";
 import { DaemonClient } from "../client.js";
 import { readOwnHostName, readSelectedHost } from "../host-selection.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 // ---------------------------------------------------------------------------
 // rig host pair — the approval wait is BOUNDED.

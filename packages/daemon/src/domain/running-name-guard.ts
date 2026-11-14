@@ -2,10 +2,11 @@ import type Database from "better-sqlite3";
 import { getNodeInventory } from "./node-inventory.js";
 import { identityVerdictConfirmsSessionMissing } from "./types.js";
 import { rigAdviceHandle, type RigRefLookup } from "./rig-ref.js";
-import { setOff, shellWord } from "./active-occupant.js";
+import { setOff, shellPath, shellWord } from "./active-occupant.js";
 
-/** `setOff` lives beside `shellWord` (OF-288) so the pda-runner can use it without loading this module's imports; importers here keep it. */
-export { setOff };
+/** `setOff` lives beside `shellWord` (OF-288) so the pda-runner can use it without loading this module's imports, and `shellPath` with them
+ *  (OF-289) so the CLI's command-text surface loads none of them either; importers here keep both. */
+export { setOff, shellPath };
 
 /**
  * S5b (OPR.0.5.4.11) — the running-name guard, the FLOOR against duplicate rig
@@ -63,15 +64,6 @@ export function countStoredRunningSessions(db: Database.Database, rigId: string)
   return (db.prepare(
     "SELECT COUNT(*) AS c FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ? AND s.status = 'running'",
   ).get(rigId) as { c: number }).c;
-}
-
-/** A folder as one word of a command line an operator will paste: bare while it is only path characters, else single-quoted, so a
- *  space, quote, `$`, backtick, `;` or newline in a folder name cannot split or run the command (OF-287 review F4). Not the
- *  adapters' `shellWord`, which has the same bare set: the domain may not import an adapter (hexagonal ratchet), and the domain's
- *  own `shellWord` (active-occupant) quotes every `/`, which would rewrite every path in the existing wording. A leading `=` is
- *  quoted: zsh rewrites a bare `=word` to the path of a command. */
-export function shellPath(value: string): string {
-  return /^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 

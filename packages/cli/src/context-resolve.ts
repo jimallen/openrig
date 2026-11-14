@@ -7,7 +7,7 @@
 // now also returns `text`/`bytes` via the sealed assemblePlainFiles).
 
 import type { DaemonClient } from "./client.js";
-import { setOff, shellPath, shellWord } from "./command-text.js";
+import { setOff, shellPath, shellWord } from "@openrig/daemon/command-text";
 
 interface RefPiecesWire {
   ref: string;

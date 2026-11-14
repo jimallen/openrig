@@ -16,7 +16,7 @@ import { freshSeatLaunchCommand, parseStartupFromArg, STARTUP_FROM_HELP, type St
 import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
 import { describeRestoreStartupSource, type RestoreStartupSourceReport } from "../restore-startup-source.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
-import { setOff, shellPath, shellWord } from "../command-text.js";
+import { setOff, shellPath, shellWord } from "@openrig/daemon/command-text";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 

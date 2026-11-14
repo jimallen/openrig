@@ -3,7 +3,7 @@ import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 interface ArchiveResult {
   ok: boolean;

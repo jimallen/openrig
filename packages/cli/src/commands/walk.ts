@@ -15,7 +15,7 @@ import { DaemonClient, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , statusGuardMessage} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 interface RefPiecesWire {
   ref: string;

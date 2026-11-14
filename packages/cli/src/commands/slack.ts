@@ -11,7 +11,7 @@
 //
 // Secrets posture unchanged: 0600 env file / SLACK_* env at call time, never in config,
 // never in the repo.
-import { setOff } from "../command-text.js";
+import { setOff } from "@openrig/daemon/command-text";
 import { Command } from "commander";
 import { DaemonClient } from "../client.js";
 import { resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";

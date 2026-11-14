@@ -15,7 +15,7 @@
  * WF-2).
  */
 
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 import { shellQuote } from "../cross-host-executor.js";
 import { damagedColumnsOf } from "../lib/damaged-rows.js";
 

@@ -85,6 +85,10 @@
     "./local-reading": {
       "types": "./dist/local-reading-surface.d.ts",
       "import": "./dist/local-reading-surface.js"
+    },
+    "./command-text": {
+      "types": "./dist/command-text-surface.d.ts",
+      "import": "./dist/command-text-surface.js"
     }
   },
   "scripts": {

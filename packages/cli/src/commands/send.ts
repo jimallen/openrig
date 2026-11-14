@@ -16,7 +16,7 @@ import { resolveOperatorLabel, resolveSenderSession, SENDER_FALLBACK } from "../
 import { COMPOSER_PROMPT_CLASS } from "@openrig/daemon/composer-prompts";
 import { transportFanoutBudgetMs, transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 /** The shared composer glyph set (Claude `❯`, Codex `›`, Codex 0.153 `»`) from the daemon's
  * composer-prompts surface, so the CLI staged check can never disagree with the daemon guard. */

@@ -8,7 +8,7 @@ import { getDaemonStatus, getDaemonUrl, daemonStatusGuard } from "../daemon-life
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { resolveRigHandle } from "../rig-handle.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 export function specSourceCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("spec-source")

@@ -3,9 +3,7 @@
 // goes through real `sh` (the daemon's test helper) so a paste of it is proved to give exactly the intended words and nothing else.
 import { describe, it, expect, vi } from "vitest";
 import { Command } from "commander";
-import { setOff, shellPath, shellWord } from "../src/command-text.js";
-import { shellWord as daemonShellWord } from "../../daemon/src/domain/active-occupant.js";
-import { setOff as daemonSetOff, shellPath as daemonShellPath } from "../../daemon/src/domain/running-name-guard.js";
+import { setOff, shellPath, shellWord } from "@openrig/daemon/command-text";
 import { archiveCommand } from "../src/commands/archive.js";
 import { downCommand } from "../src/commands/down.js";
 import { upCommand } from "../src/commands/up.js";
@@ -73,16 +71,15 @@ function commandsOn(lines: string[], marker: string): string[][] {
   return commands.map((c) => rigWords(c.replace(/<([A-Za-z.-]+)>/g, "PLACEHOLDER_$1")).map((w) => w.replace(/^PLACEHOLDER_(.+)$/, "<$1>")));
 }
 
-describe("command-text: the CLI's copies give the daemon's words", () => {
-  it.each(NAMES)("%j: shellWord and setOff paste as the daemon's do", (name) => {
+describe("command-text: the daemon surface the CLI prints commands with (OF-289: one copy, no CLI twin)", () => {
+  it.each(NAMES)("%j: shellWord is one word and setOff sets the command off", (name) => {
     expect(shellArgv(shellWord(name))).toEqual([name]);
-    expect(shellArgv(shellWord(name))).toEqual(shellArgv(daemonShellWord(name)));
-    const cli = setOff(`rig up ${shellWord(name)} --existing`), daemon = daemonSetOff(`rig up ${daemonShellWord(name)} --existing`);
-    expect(setOffCommands(cli).map(rigWords)).toEqual([["up", name, "--existing"]]);
-    expect(setOffCommands(cli).map(rigWords)).toEqual(setOffCommands(daemon).map(rigWords));
+    const command = setOff(`rig up ${shellWord(name)} --existing`);
+    expect(setOffCommands(command).map(rigWords)).toEqual([["up", name, "--existing"]]);
+    expect(closesCleanly(`${command}.`, setOffCommands(command)[0]!)).toBe(true);
   });
 
-  it("names and paths that need no quotes print bare, as the daemon prints them", () => {
+  it("names and paths that need no quotes print bare", () => {
     expect(shellWord("workshop")).toBe("workshop");
     expect(shellWord("01JX0ABC")).toBe("01JX0ABC");
     expect(shellPath("/home/me/specs/rig.yaml")).toBe("/home/me/specs/rig.yaml");
@@ -93,10 +90,10 @@ describe("command-text: the CLI's copies give the daemon's words", () => {
     expect(shellArgv(shellPath(p))).toEqual([p]);
   });
 
-  it.each(["/home/me/specs/rig.yaml", "/my specs/rig.yaml", "=x", "a=b", "/it's/rig.yaml", "/a`b'c/rig.yaml", "-x", ""])("shellPath(%j) quotes exactly when the daemon's does, and pastes as the same word", (p) => {
-    // The two copies escape a quote differently ('\\'' here, '"'"' in the daemon); sh reads both as the same word.
-    expect(shellPath(p) === p).toBe(daemonShellPath(p) === p);
-    if (p !== "") expect(shellArgv(shellPath(p))).toEqual(shellArgv(daemonShellPath(p)));
+  it("a quote is escaped as the daemon and the CLI's fresh-seat advice escape it ('\"'\"')", () => {
+    // Before OF-289 the CLI's copy spelled it '\'' (its cross-host shellQuote); sh reads both as the same word.
+    expect(shellWord("it's")).toBe(`'it'"'"'s'`);
+    expect(shellPath("/it's")).toBe(`'/it'"'"'s'`);
   });
 
   it("a leading = is quoted (zsh rewrites a bare =word; sh does not, so this is checked as text)", () => {

@@ -2,7 +2,7 @@
 // arrived in daemon 0.5.9, and an older daemon ignores the field and launches. So a plan request first asks the
 // daemon its version, and a plan answer must say `planOnly: true`.
 
-import { setOff, shellWord } from "./command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 /** The first daemon version whose launch-subset route honours `plan: true`. */
 export const PLAN_MIN_DAEMON_VERSION = "0.5.9";

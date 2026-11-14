@@ -7,7 +7,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { shellQuote } from "../cross-host-executor.js";
 import { damagedRowsIn, unreadableHeldIn, warnDamagedRows, warnSavedRowRefusal } from "../lib/damaged-rows.js";
-import { setOff, shellWord } from "../command-text.js";
+import { setOff, shellWord } from "@openrig/daemon/command-text";
 
 export type SeatDeps = StatusDeps;
 
