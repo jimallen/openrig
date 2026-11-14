@@ -41,6 +41,16 @@ describe("a session records the Claude home it was launched with", () => {
     f.db.close();
   });
 
+  it("a session launched on the daemon's own home reads as that home (no recorded home is the daemon's, never another seat's)", () => {
+    const f = fixture();
+    const plain = f.rigRepo.addNode(f.rig.id, "dev.plain", { runtime: "claude-code", cwd: "/w" });
+    const session = f.registry.registerSession(plain.id, "dev-plain@r");
+    expect(f.readers.launchedHomeOfSession(session.id)).toBeNull();
+    expect(f.readers.homeOfSession(session.id)).toBe(DAEMON);
+    expect(f.readers.homeOfSession("no-such-session")).toBe(DAEMON);
+    f.db.close();
+  });
+
   it("names the daemon's home for a seat with no session, and every launched or chosen home's projects/ once", () => {
     const f = fixture();
     const a = f.rigRepo.addNode(f.rig.id, "dev.a", { runtime: "claude-code", cwd: "/w", claudeConfigDir: "/h/a" });

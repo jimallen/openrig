@@ -67,6 +67,11 @@ describe("Wave-O B1 — production handover construction injects the one activit
     const folder = await post(app);
     expect(folder.status).toBe(409);
     expect(await folder.json()).toMatchObject({ code: "seat_cwd_unusable" });
+    // Likewise a seat whose own Claude home is gone: the person creates it or clears the seat's choice.
+    handover.mockResolvedValueOnce({ ok: false, code: "claude_config_dir_missing", message: "m", guidance: "g" } as never);
+    const home = await post(app);
+    expect(home.status).toBe(409);
+    expect(await home.json()).toMatchObject({ code: "claude_config_dir_missing" });
     handover.mockResolvedValueOnce({ ok: false, code: "successor_create_failed", message: "m", guidance: "g" } as never);
     expect((await post(app)).status).toBe(500);
   });

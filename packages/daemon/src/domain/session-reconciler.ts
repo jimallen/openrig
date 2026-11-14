@@ -386,13 +386,16 @@ export class SessionReconciler {
       let sessionId = "";
       let persistedEvent: ReturnType<EventBus["persistWithinTransaction"]> | undefined;
       const tx = this.db.transaction(() => {
+        // The live process being re-adopted is the one the seat's newest row of this name launched: it is still on that row's
+        // Claude home, so the new row carries it (readers of its files key on the launched home).
+        const launchedHome = this.sessionRegistry.launchedClaudeHomeOf(nodeRow!.id, sessionName);
         const stale = this.db
           .prepare("SELECT id FROM sessions WHERE node_id = ? AND status = 'running'")
           .all(nodeRow!.id) as Array<{ id: string }>;
         for (const row of stale) {
           this.sessionRegistry.markSuperseded(row.id);
         }
-        const session = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName);
+        const session = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName, undefined, undefined, undefined, launchedHome);
         this.persistPaneBinding(nodeRow!.id, sessionName, paneObservation, session.id);
         sessionId = session.id;
         persistedEvent = this.eventBus.persistWithinTransaction({

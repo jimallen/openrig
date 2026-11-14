@@ -17,7 +17,11 @@ describe.skipIf(!HAS_TMUX || process.platform === "win32")("a respawned pane and
   const tmux = (...args: string[]) => execFileSync("tmux", args, { env, encoding: "utf8" });
 
   beforeAll(() => {
-    base = realpathSync(mkdtempSync(join(tmpdir(), "ccd-tmux-")));
+    // tmux's socket is <TMUX_TMPDIR>/tmux-<uid>/default and a unix socket path is bounded (macOS: 103 bytes usable), so the
+    // socket dir is a short one under /tmp, not the platform temp dir (which can be ~50 bytes on macOS), and its length is checked.
+    base = realpathSync(mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "ccd-")));
+    const socket = join(base, `tmux-${process.getuid?.() ?? 0}`, "default");
+    expect(Buffer.byteLength(socket), socket).toBeLessThanOrEqual(103);
     env = { PATH: process.env.PATH, HOME: base, TMUX_TMPDIR: base, TERM: "xterm-256color", SHELL: "/bin/sh" };
     adapter = new TmuxAdapter((cmd) => new Promise((resolve, reject) => {
       execFile("/bin/sh", ["-c", cmd], { env, encoding: "utf8" }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout)));

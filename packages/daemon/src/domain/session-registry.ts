@@ -157,12 +157,25 @@ export class SessionRegistry {
   /** Record on the new session row the Claude config home its seat launches with now (nodes.claude_config_dir; NULL = the daemon's
    *  own). Readers of a running conversation's files key on this, not on the seat's later choice (set-claude-home restarts nothing). */
   private recordLaunchedClaudeHome(sessionId: string, nodeId: string): void {
+    if (!this.hasClaudeHomeColumns()) return;
+    this.db.prepare("UPDATE sessions SET claude_config_dir = (SELECT claude_config_dir FROM nodes WHERE id = ?) WHERE id = ?").run(nodeId, sessionId);
+  }
+
+  private hasClaudeHomeColumns(): boolean {
     if (this.claudeHomeColumns === undefined) {
       const has = (table: string) => (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === "claude_config_dir");
       this.claudeHomeColumns = has("sessions") && has("nodes");
     }
-    if (!this.claudeHomeColumns) return;
-    this.db.prepare("UPDATE sessions SET claude_config_dir = (SELECT claude_config_dir FROM nodes WHERE id = ?) WHERE id = ?").run(nodeId, sessionId);
+    return this.claudeHomeColumns;
+  }
+
+  /** The Claude home the seat's newest session of this name was launched with (null: none recorded, or the daemon's own). A
+   *  re-adoption of that same live process (reconcile, crash-cart, topology converge) carries it to the new row. */
+  launchedClaudeHomeOf(nodeId: string, sessionName: string): string | null {
+    if (!this.hasClaudeHomeColumns()) return null;
+    const row = this.db.prepare("SELECT claude_config_dir AS dir FROM sessions WHERE node_id = ? AND session_name = ? ORDER BY rowid DESC LIMIT 1")
+      .get(nodeId, sessionName) as { dir: string | null } | undefined;
+    return row?.dir ?? null;
   }
   /** Every migrated database carries `sessions.fresh_start`; reduced-schema fixtures stop short of it. */
   private sessionsHaveFreshStartColumn(): boolean {
@@ -232,6 +245,8 @@ export class SessionRegistry {
     kind: OccupantKind = "adopt",
     reservedGeneration?: string | null,
     origin: "claimed" | "launched" = "claimed",
+    /** The home the claimed process was launched with, when the caller knows it (a re-adopted process OpenRig launched). */
+    launchedClaudeHome?: string | null,
   ): Session {
     if (!validateClaimedSessionName(sessionName)) {
       throw new Error(
@@ -257,6 +272,9 @@ export class SessionRegistry {
     // A successor OpenRig launched (a handover) ran with the seat's home; a session the person started and OpenRig claimed did not
     // necessarily, so it records none (the daemon's own selection is what its readers assume).
     if (origin === "launched") this.recordLaunchedClaudeHome(id, nodeId);
+    else if (launchedClaudeHome && this.hasClaudeHomeColumns()) {
+      this.db.prepare("UPDATE sessions SET claude_config_dir = ? WHERE id = ?").run(launchedClaudeHome, id);
+    }
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
 

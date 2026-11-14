@@ -310,6 +310,7 @@ nodesRoutes.post("/:logicalId/launch", async (c) => {
       : result.code === "already_bound" ? 409
       : result.code === "invalid_session_name" ? 400
       : result.code === "seat_cwd_unusable" ? 409 // the person can fix it: create the folder (OF-69)
+      : result.code === "claude_config_dir_missing" ? 409 // likewise: create the seat's Claude home, or clear its choice
       : 500;
     return c.json(result, status);
   }

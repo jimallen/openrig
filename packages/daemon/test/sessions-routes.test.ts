@@ -160,6 +160,18 @@ describe("Session routes", () => {
     expect(sessionRegistry.getSessionsForRig(rig.id)).toHaveLength(0);
   });
 
+  it("POST .../launch on a seat whose own Claude home is gone -> 409 claude_config_dir_missing, nothing launched", async () => {
+    const { app, rigRepo, sessionRegistry } = createTestApp(db);
+    const rig = rigRepo.createRig("r01");
+    rigRepo.addNode(rig.id, "dev1-impl", { runtime: "claude-code", claudeConfigDir: "/nonexistent-claude-home/cel" });
+
+    const res = await app.request(`/api/rigs/${rig.id}/nodes/dev1-impl/launch`, { method: "POST" });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ ok: false, code: "claude_config_dir_missing" });
+    expect(sessionRegistry.getSessionsForRig(rig.id)).toHaveLength(0);
+  });
+
   it("POST .../launch nonexistent node -> 404", async () => {
     const { app, rigRepo } = createTestApp(db);
     const rig = rigRepo.createRig("r01");

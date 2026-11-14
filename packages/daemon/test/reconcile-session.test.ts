@@ -6,6 +6,7 @@
 // PID-unchanged proof cannot see. deliverClaimHint is implemented via
 // sendText+sendKeys, so zero calls to those subsumes it.
 
+import { seatClaudeHomeReaders } from "../src/adapters/seat-claude-home-readers.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
@@ -107,6 +108,27 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
     const nodes = setup.rigRepo.getRig(rig.id)!.nodes;
     expect(nodes).toHaveLength(1);
     expect(nodes[0]!.id).toBe(node.id);
+  });
+
+  it("a re-adopted process keeps the Claude home it was launched on: the new row carries it, so readers of its files look there", async () => {
+    const { node, sessionName } = await seedDetachedSeat();
+    // An earlier occupant ran on another home; the live process (the newest row of this name) was launched on the seat's own home,
+    // and the seat's choice was cleared since (set-claude-home restarts nothing).
+    db.prepare("UPDATE sessions SET claude_config_dir = '/h/old' WHERE node_id = ? AND session_name = ?").run(node.id, sessionName);
+    const newestLaunch = setup.sessionRegistry.registerSession(node.id, sessionName);
+    db.prepare("UPDATE sessions SET claude_config_dir = '/h/cel' WHERE id = ?").run(newestLaunch.id);
+    setup.sessionRegistry.markDetached(newestLaunch.id);
+    const result = await setup.sessionReconciler.reconcileSession({ sessionName });
+    expect(result.ok).toBe(true);
+    const newest = db.prepare("SELECT claude_config_dir AS dir, origin FROM sessions WHERE node_id = ? ORDER BY rowid DESC LIMIT 1").get(node.id);
+    expect(newest).toEqual({ dir: "/h/cel", origin: "claimed" });
+    expect(seatClaudeHomeReaders(db, "/h/.claude").homeOfRunningNode(node.id)).toBe("/h/cel");
+  });
+
+  it("a re-adopted process launched on the daemon's own home records none", async () => {
+    const { node, sessionName } = await seedDetachedSeat();
+    expect((await setup.sessionReconciler.reconcileSession({ sessionName })).ok).toBe(true);
+    expect(seatClaudeHomeReaders(db, "/h/.claude").homeOfRunningNode(node.id)).toBe("/h/.claude");
   });
 
   it("reconcileSession replaces a NULL binding pane with the live pane and the next identity pass verifies it", async () => {
