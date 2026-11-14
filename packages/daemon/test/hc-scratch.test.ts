@@ -29,9 +29,16 @@ const HUP_IGNORING_PROGRAM = ["sh", "-c", "trap '' HUP; exec sleep 300"];
 const tmpBase = (): string => { const d = mkdtempSync(join(hcScratchFallback(tmpdir()), "hcsb-")); dirs.push(d); return d; };
 /** A program that exists and exits 1 on both platforms (macOS has no /bin/false). */
 const FALSE = ["/usr/bin/false", "/bin/false"].find((p) => existsSync(p)) ?? "/usr/bin/false";
-/** A folder whose path is exactly `bytes` long: `<short temp>/hcsb-xxxxxx/<padding>` (the short temp is /tmp where tmpdir() is long, as on macOS). */
-const baseOfLength = (bytes: number): string => {
-  const top = mkdtempSync(join(hcScratchFallback(tmpdir()), "hcsb-"));
+/** `hcsb-` and mkdtemp's six characters, with the "/" before them: what `baseOfLength`'s own folder adds to its parent. */
+const HCSB_TOP = "/hcsb-XXXXXX".length;
+/** A folder whose path is exactly `bytes` long: `<short temp>/hcsb-xxxxxx/<padding>`, with at least one byte of padding. The short temp is
+ *  the host's temp folder when it leaves room for the padding, else /tmp: hcScratchFallback keeps a temp folder of up to 40 bytes, and
+ *  one of 37 to 40 bytes leaves no room under a 50- or 51-byte target (OF-289 N2). `tmp` is the host's temp folder, for the tests of this
+ *  helper. */
+const baseOfLength = (bytes: number, tmp: string = tmpdir()): string => {
+  const parent = [hcScratchFallback(tmp), "/tmp"].find((p) => Buffer.byteLength(p) + HCSB_TOP + 2 <= bytes);
+  if (parent === undefined) throw new Error(`baseOfLength(${bytes}): no folder of exactly ${bytes} bytes fits under /tmp/hcsb-xxxxxx/`);
+  const top = mkdtempSync(join(parent, "hcsb-"));
   dirs.push(top);
   const base = join(top, "p".repeat(bytes - Buffer.byteLength(top) - 1));
   mkdirSync(base);
@@ -121,6 +128,20 @@ describe("hc scratch refuses to reach a core it did not start (no hc needed)", (
     expect(readdirSync(at51)).toEqual([]);
     // At 50 the guard lets it through, and the stand-in for hc is what fails.
     expect(() => startHcScratch({ baseDir: baseOfLength(50), hcBin: FALSE, baseEnv: { PATH } })).toThrow(/`hc server start` exited 1/);
+  });
+
+  // OF-289 N2: a temp folder hcScratchFallback keeps (up to 40 bytes) but that leaves no room for the padding under 50 or 51.
+  it.each([30, 36, 37, 38, 39, 40, 41, 56])("baseOfLength makes a folder of exactly 50 and 51 bytes when the temp folder is %i bytes", (tmpBytes) => {
+    const holder = mkdtempSync("/tmp/hcsl-");
+    dirs.push(holder);
+    const tmp = join(holder, "t".repeat(tmpBytes - Buffer.byteLength(holder) - 1));
+    mkdirSync(tmp);
+    expect(Buffer.byteLength(tmp)).toBe(tmpBytes);
+    for (const bytes of [50, 51]) {
+      const base = baseOfLength(bytes, tmp);
+      expect(Buffer.byteLength(base)).toBe(bytes);
+      expect(readdirSync(base)).toEqual([]);
+    }
   });
 
   it("hcSocketFits is hc's rule at the edge: 87 bytes of socket fit, 88 do not", () => {

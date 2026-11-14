@@ -20,6 +20,7 @@ import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { fakePi } from "./helpers/fake-pi.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
+import { HC_SOCKET_PATH_LIMIT, hcCountedSocketBytes } from "./helpers/hc-scratch.js";
 import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -45,7 +46,8 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   beforeAll(() => {
     CODEX_SEAT = join(core.root, "codex-seat.py"); CLAUDE_SEAT = join(core.root, "claude-seat.py");
     copyFileSync(SEATPY, CODEX_SEAT); copyFileSync(SEATPY, CLAUDE_SEAT);
-    expect(Buffer.byteLength(core.socketPath)).toBeLessThan(103);
+    // The hc socket rule (helpers/hc-scratch.ts): hc counts the socket plus HC_SOCKET_PATH_RESERVE against HC_SOCKET_PATH_LIMIT (OF-289 N3).
+    expect(hcCountedSocketBytes(core.socketPath)).toBeLessThanOrEqual(HC_SOCKET_PATH_LIMIT);
     expect(core.socketPath.startsWith(`${core.root}/`)).toBe(true);
     expect(Object.keys(core.env).filter((k) => k.startsWith("HC_") && k !== "HC_SESSION")).toEqual([]);
     core.start();
