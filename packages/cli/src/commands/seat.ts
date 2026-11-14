@@ -554,7 +554,7 @@ identity remains unverified; a version number alone cannot clear it.
   // Thin CLI over the daemon's SeatLifecycleService; refusals print message +
   // guidance + match list exactly as the daemon named them.
   const runLifecycleVerb = async (
-    path: "set-model" | "set-effort" | "set-mcp" | "apply-spec" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
+    path: "set-model" | "set-effort" | "set-claude-home" | "set-mcp" | "apply-spec" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
     seat: string,
     body: Record<string, unknown>,
     opts: { json?: boolean },
@@ -675,6 +675,46 @@ Examples:
         const running = data["running"] === "yes" ? "running now" : data["running"] === "no" ? "not running now" : `running state unknown (${String(data["runningDetail"] ?? "probe failed")})`;
         console.log(`Seat ${running}. Emitted at launch: not yet. Native effort: not observed.`);
         if (data["warning"]) console.log(`Warning: ${String(data["warning"])}`);
+      });
+    });
+
+  cmd
+    .command("set-claude-home")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .option("--dir <path>", "The seat's own Claude config home: an absolute path or ~/<path> (expanded against the daemon's HOME)")
+    .option("--clear", "Go back to the daemon's own Claude home (nothing is exported)")
+    .requiredOption("--reason <text>", "Audit reason recorded on the node.claude_home_changed event")
+    .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
+    .option("--json", "JSON output for agents")
+    .description("Save one Claude seat's own Claude config home (CLAUDE_CONFIG_DIR) for its next launch (audited); no restart")
+    .addHelpText("after", `
+Only this seat changes. Its next launch, resume, restore and handover successor run with
+CLAUDE_CONFIG_DIR set to the home, stored in one canonical spelling (absolute, no trailing
+slash), because Claude names a home's login after the exact path. The home must already
+exist and be logged in (CLAUDE_CONFIG_DIR=<dir> claude); OpenRig never creates one or
+writes its settings, and lists here what it lacks (names only). The running process and
+its conversation stay where they are: a conversation lives in the home it started in, so
+move a running seat to the new home with rig seat handover <seat> --source fresh.
+Examples:
+  rig seat set-claude-home build-impl@eztrack --dir ~/.claude-cel --reason "cel account"
+  rig seat set-claude-home build.impl --clear --reason "back to the daemon's account" --json`)
+    .action(async (seat: string, opts: { dir?: string; clear?: boolean; reason: string; operator?: string; json?: boolean }) => {
+      if (Boolean(opts.clear) === (opts.dir !== undefined)) {
+        console.error("Pass exactly one of --dir <path> or --clear.");
+        process.exitCode = 1;
+        return;
+      }
+      const body = opts.clear ? { clear: true, reason: opts.reason, operator: opts.operator } : { dir: opts.dir, reason: opts.reason, operator: opts.operator };
+      await runLifecycleVerb("set-claude-home", seat, body, opts, (data) => {
+        const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
+        const to = data["to"] as string | null;
+        const name = `${s?.logicalId}@${s?.rigName}`;
+        const home = to === null ? "the daemon's own Claude home" : to;
+        console.log(data["changed"] === false ? `Claude home for ${name} is already ${home}. No change recorded.` : `Claude home for ${name}: ${home}.`);
+        console.log(String(data["effect"]));
+        const running = data["running"] === "yes" ? "running now" : data["running"] === "no" ? "not running now" : `running state unknown (${String(data["runningDetail"] ?? "probe failed")})`;
+        console.log(`Seat ${running}.`);
+        for (const finding of (data["findings"] as string[] | undefined) ?? []) console.log(`Home check: ${finding}`);
       });
     });
 

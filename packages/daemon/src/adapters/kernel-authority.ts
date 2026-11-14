@@ -36,7 +36,7 @@ export const TEAM_CLAUDE_ASK = [
   "handover", "release", "reconcile-session", "env down",
   "policy apply", "config set", "config reset",
   "daemon start", "daemon stop", "bundle install", "seat launch", "seat continue", "seat stop",
-  "seat clean", "seat handover", "seat switch-client", "seat set-permissions", "seat set-model", "seat set-effort", "seat set-mcp",
+  "seat clean", "seat handover", "seat switch-client", "seat set-permissions", "seat set-model", "seat set-effort", "seat set-claude-home", "seat set-mcp",
 ].map(command => `Bash(rig ${command}:*)`);
 
 type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode">

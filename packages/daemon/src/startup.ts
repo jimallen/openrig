@@ -355,6 +355,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const dbPath = opts?.dbPath ?? ":memory:";
   const db = createDb(dbPath);
   migrate(db, ALL_MIGRATIONS);
+  // A seat's own Claude config home (nodes.claude_config_dir, migration 129), by node or by session row; null = the
+  // daemon's own selection. The readers of a seat's sessions/ and projects/ use these instead of the daemon's home.
+  const seatClaudeHomeByNodeStmt = db.prepare("SELECT claude_config_dir AS dir FROM nodes WHERE id = ?");
+  const seatClaudeHomeBySessionStmt = db.prepare("SELECT n.claude_config_dir AS dir FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.id = ?");
+  const seatClaudeHomeByNode = (nodeId: string | null | undefined): string | null =>
+    nodeId ? ((seatClaudeHomeByNodeStmt.get(nodeId) as { dir: string | null } | undefined)?.dir ?? null) : null;
+  const seatClaudeHomeBySession = (sessionId: string): string | null =>
+    (seatClaudeHomeBySessionStmt.get(sessionId) as { dir: string | null } | undefined)?.dir ?? null;
 
   // 51-09 increment 1 — establish the daemon's durable self-host identity at
   // boot (mint on first boot, reconcile thereafter). host.name is a display-only
@@ -578,7 +586,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // S19 — the Claude self-report rung (pid.json), consulted per sweep for seats whose
     // declared inventory staffs it; unreadable = null = the ladder falls, never errors.
     selfReportReader: (sessionName, seatNodeId) => {
-      const sessionsDir = nodePath.join(process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude"), "sessions");
+      const sessionsDir = nodePath.join(seatClaudeHomeByNode(seatNodeId) ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude"), "sessions");
       return readClaudeSelfReportEvidence({ sessionsDir, sessionName, seatNodeId });
     },
   });
@@ -1398,7 +1406,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // #421 — the pane's current Claude process start time; a sidecar sampled earlier is not this
   // process's, so capture and null-fill skip it.
   const claudeProcessStartedAt = (sessionName: string) => observeClaudePaneStartedAt({ target: sessionName, tmux: tmuxAdapter });
-  const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome });
+  const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome,
+    seatClaudeConfigDir: (session) => seatClaudeHomeBySession(session.sessionId) });
   const sessionReconciler = new SessionReconciler({
     db, rigRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
     // OPR.0.4.3.20 FR-3 — adoption-boundary resume-token capture deps

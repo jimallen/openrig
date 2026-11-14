@@ -8,6 +8,7 @@ import { claudeClassicRendererEnvPrefix } from "../adapters/yolo-mode.js";
 import { parseClaudePermissionModes } from "./permission-drift.js";
 import { validateNativePermissionSelection } from "./native-permission-selection.js";
 import { registeredPaneSql } from "./binding-pane.js";
+import { claudeConfigDirLaunchRefusal } from "./claude-config-dir.js";
 
 export interface ClaudeLaunchTarget {
   nodeId: string;
@@ -21,6 +22,8 @@ export interface ClaudeLaunchTarget {
 interface TargetSnapshot {
   nodeId: string; runtime: string; cwd: string | null; bindingId: string | null;
   session: string | null; pane: string | null; generation: string | null;
+  /** The seat's own Claude config home (nodes.claude_config_dir); null = the daemon's own selection. */
+  claudeConfigDir: string | null;
 }
 
 /** Dynamic choices use the managed launch environment, not an interactive shell's
@@ -34,7 +37,10 @@ export class ClaudeManagedLaunch {
     private readonly rendererEnv: Readonly<NodeJS.ProcessEnv>) {}
 
   private target(nodeId: string): TargetSnapshot {
-    const row = this.db.prepare(`SELECT n.id AS nodeId, n.runtime, n.cwd,
+    // claude_config_dir arrived in migration 129; without it every seat reads as on the daemon's own home.
+    const home = this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() !== undefined
+      ? "n.claude_config_dir" : "NULL";
+    const row = this.db.prepare(`SELECT n.id AS nodeId, n.runtime, n.cwd, ${home} AS claudeConfigDir,
       b.id AS bindingId, b.tmux_session AS session, ${registeredPaneSql(this.db)} AS pane,
       (SELECT generation_uuid FROM occupant_tenures WHERE node_id=n.id
        ORDER BY generation_ordinal DESC LIMIT 1) AS generation
@@ -50,13 +56,22 @@ export class ClaudeManagedLaunch {
     return this.target(nodeId).cwd!;
   }
 
+  /** The seat's own Claude config home, or null when it runs on the daemon's own selection (or the node is unknown). */
+  seatConfigDir(nodeId: string): string | null {
+    if (this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() === undefined) return null;
+    const row = this.db.prepare("SELECT claude_config_dir AS dir FROM nodes WHERE id = ?").get(nodeId) as { dir: string | null } | undefined;
+    return row?.dir ?? null;
+  }
+
   /** Bootstrap and the launched child must use the same native selection.
    * Unset config uses HOME/.claude.json; even an explicit default-looking
    * directory selects <configDir>/.claude.json instead (#154/#225).
+   * A seat's own home (already canonical and absolute) wins over the daemon's selection.
    */
-  configPaths(cwd: string): { configDir: string; statePath: string } {
+  configPaths(cwd: string, seatHome?: string | null): { configDir: string; statePath: string } {
     const { HOME, CLAUDE_CONFIG_DIR } = this.sessionEnv;
     if (!HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: absolute HOME is required.");
+    if (seatHome) return { configDir: seatHome, statePath: path.join(seatHome, ".claude.json") };
     const configDir = path.resolve(cwd, CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude"));
     return { configDir, statePath: path.join(CLAUDE_CONFIG_DIR === undefined ? HOME : configDir, ".claude.json") };
   }
@@ -67,17 +82,18 @@ export class ClaudeManagedLaunch {
     return this.sessionEnv.CLAUDE_CONFIG_DIR ? this.configPaths(cwd).statePath : undefined;
   }
 
-  private context(cwd: string) {
+  private context(cwd: string, seatHome: string | null) {
     const { PATH, HOME, CLAUDE_CONFIG_DIR } = this.sessionEnv;
     if (!PATH || !HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: managed PATH and absolute HOME are required.");
     // Relative/empty PATH entries are interpreted at the intended seat cwd,
     // including for /usr/bin/env shebangs inside the selected executable.
     const search = PATH.split(path.delimiter).map(p => path.resolve(cwd, p));
-    const { configDir } = this.configPaths(cwd);
+    const { configDir } = this.configPaths(cwd, seatHome);
     const env: Record<string, string> = { PATH: search.join(path.delimiter), HOME };
     // Session storage needs a directory, but exporting the default changes
     // Claude's global config selection. Preserve an unset native selection.
-    if (CLAUDE_CONFIG_DIR !== undefined) env.CLAUDE_CONFIG_DIR = configDir;
+    // `env -i` drops the pane's environment, so a seat's own home is stated here.
+    if (seatHome || CLAUDE_CONFIG_DIR !== undefined) env.CLAUDE_CONFIG_DIR = configDir;
     if (claudeClassicRendererEnvPrefix(this.rendererEnv)) env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
     let executable: string | undefined;
     for (const dir of search) {
@@ -109,7 +125,10 @@ export class ClaudeManagedLaunch {
       || (target.pane != null && target.pane !== before.pane)) {
       throw new Error("Claude managed launch target disagrees with the current binding; no input or selection changed.");
     }
-    const context = this.context(cwd);
+    const seatHome = before.claudeConfigDir;
+    const homeRefusal = claudeConfigDirLaunchRefusal(seatHome);
+    if (homeRefusal) throw new Error(homeRefusal);
+    const context = this.context(cwd, seatHome);
     // This is the existing managed session channel, not arbitrary shell variables.
     // Filter out the explicit capability environment and overwrite launch identity.
     const inherited = Object.keys(this.sessionEnv).filter(key => this.sessionEnv[key] !== undefined
@@ -117,7 +136,7 @@ export class ClaudeManagedLaunch {
     if (inherited.some(key => !/^[A-Z_][A-Z0-9_]*$/.test(key))) throw new Error("Invalid managed environment key.");
     const assertCurrent = () => {
       if (JSON.stringify(this.target(target.nodeId)) !== JSON.stringify(before)
-        || JSON.stringify(this.context(cwd)) !== JSON.stringify(context)
+        || JSON.stringify(this.context(cwd, seatHome)) !== JSON.stringify(context)
         || JSON.stringify(Object.keys(this.sessionEnv).filter(key => this.sessionEnv[key] !== undefined
           && !["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"].includes(key))) !== JSON.stringify(inherited)) {
         throw new Error("Claude managed launch context changed during capability discovery/input; retry explicitly.");

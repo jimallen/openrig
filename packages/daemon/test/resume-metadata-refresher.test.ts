@@ -363,7 +363,7 @@ describe("ResumeMetadataRefresher", () => {
       },
     ]);
 
-    expect(probeClaudeResume).toHaveBeenCalledWith("dev-design@demo-rig", "abc-123", "/repo");
+    expect(probeClaudeResume).toHaveBeenCalledWith("dev-design@demo-rig", "abc-123", "/repo", null);
     expect(sessionRegistry.markResumeProbeResult).toHaveBeenCalledWith("sess-1", "not_resumable");
     expect(sessionRegistry.clearResumeToken).not.toHaveBeenCalled(); // token SURVIVES for FR-6 to surface
     expect(sessionRegistry.updateResumeToken).not.toHaveBeenCalled();

@@ -175,6 +175,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       const restorePolicy = readMemberSpelling(m, "restore_policy", "restorePolicy");
       const permissionPolicy = readMemberSpelling(m, "permission_policy", "permissionPolicy");
       const remoteControl = readMemberSpelling(m, "remote_control", "remoteControl");
+      const claudeConfigDir = readMemberSpelling(m, "claude_config_dir", "claudeConfigDir");
       const starterRef = readMemberSpelling(m, "starter_ref", "starterRef");
       const compactionStrategy = readMemberSpelling(m, "compaction_strategy", "compactionStrategy");
       const mechanic = readMemberSpelling(m, "mechanic", "mechanic");
@@ -205,6 +206,8 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         // remote_control: raw presence is preserved (like permissionPolicy above); the canonical
         // RigSpec validator owns the boolean / claude-code-only check.
         ...(remoteControl.present ? { remoteControl: remoteControl.value } : {}),
+        // claude_config_dir: raw presence preserved; the canonical validator owns the shape and runtime checks.
+        ...(claudeConfigDir.present ? { claudeConfigDir: claudeConfigDir.value } : {}),
         ...(restorePolicy.present ? { restorePolicy: restorePolicy.value } : {}),
         // env_passthrough: PRESENCE-preserving RAW carry like remote_control; the canonical validator owns the
         // pi-only, list and name checks, so a present-invalid value rejects exactly as it does for `rig up`.

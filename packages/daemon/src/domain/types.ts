@@ -36,6 +36,8 @@ export interface Node {
   effort?: string | null;
   /** The seat declared `remote_control: true`; persisted so restore and successor launches know it. */
   remoteControl?: boolean;
+  /** The seat's own Claude config home (nodes.claude_config_dir, canonical absolute path); absent = the daemon's own. */
+  claudeConfigDir?: string;
   /** The pda agent this seat drives (runtime pda only; nodes.pda_binding). Absent for every other seat. */
   pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
   /** Set (to the reason) ONLY when nodes.pda_binding is damaged: the value above then reads as absent, but a
@@ -161,6 +163,8 @@ export type RigEvent =
   // their mutation with actor + reason in the same transaction as the mutation itself.
   | { type: "node.model_changed"; rigId: string; nodeId: string; logicalId: string; from: string | null; to: string; reason: string; operator: string | null }
   | { type: "node.effort_changed"; rigId: string; nodeId: string; logicalId: string; from: string | null; to: string | null; reason: string; operator: string | null }
+  // A seat's own Claude config home set or cleared (rig seat set-claude-home); paths only (null = the daemon's own).
+  | { type: "node.claude_home_changed"; rigId: string; nodeId: string; logicalId: string; from: string | null; to: string | null; reason: string; operator: string | null }
   // Per-seat Codex MCP servers (rig seat set-mcp): one server switched on or off for one seat instance.
   | { type: "node.mcp_server_changed"; rigId: string; nodeId: string; logicalId: string; server: string; from: "on" | "off"; to: "on" | "off"; reason: string; actor: string; declaredIn: string | null; declarationSha256: string | null; commandSha256: string | null; warning: string | null; specSource: "recorded" | "operator" | null; specSha256: string | null }
   // OF-283 (rig seat apply-spec): a Pi seat's three retained spec fields rewritten from the spec, on an explicit apply. Names only:
@@ -1192,6 +1196,9 @@ export interface RigSpecPodMember {
    * Settings cannot do this: claude ignores `remoteControlAtStartup` from project/local scope.
    */
   remoteControl?: boolean;
+  /** `claude_config_dir`: this seat's own Claude Code config home (claude-code only), as written in the spec;
+   *  stored on the node in canonical form (claude-config-dir.ts). Absent = the daemon's own selection. */
+  claudeConfigDir?: string;
   /** The pda agent this seat drives (runtime pda only, required there). Parsed by L0's parsePdaSpecBlock. */
   pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
   /** A Pi seat's extra environment names (`env_passthrough`): its child keeps these, taken by name from the
@@ -1498,6 +1505,8 @@ export interface ExpansionPodFragment {
      *  permissionPolicy: the ingress preserves RAW presence so the canonical validator rejects a
      *  non-boolean or a non-claude `true`, rather than the ingress erasing it into absence. */
     remoteControl?: unknown;
+    /** `claude_config_dir`. Typed UNKNOWN: RAW presence preserved so the canonical validator rejects a bad value. */
+    claudeConfigDir?: unknown;
     /** `pda` block. Typed UNKNOWN: RAW presence is preserved so the canonical validator owns the shape. */
     pda?: unknown;
     restorePolicy?: unknown;

@@ -833,6 +833,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     ["restore_policy", "bogus", "restorePolicy", "checkpoint_only"],
     ["permission_policy", 7, "permissionPolicy", "builtin:yolo"],
     ["remote_control", "yes", "remoteControl", true],
+    ["claude_config_dir", "relative/home", "claudeConfigDir", "/tmp"],
     ["session_source", "str", "sessionSource", { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } }],
     ["starter_ref", "st", "starterRef", { name: "st-ok" }],
     ["env_passthrough", "DOCKER_HOST", "envPassthrough", ["DOCKER_HOST"]],
@@ -846,7 +847,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
   it("census: every MEMBER_KEYS entry is classified, and each dual-spelling field has a shadow row", () => {
     const dual = [...new Set(rows.map((r) => r[0]))].sort();
     expect([...SINGLE_SPELLING, ...dual].sort()).toEqual([...MEMBER_KEYS].sort());
-    expect(dual).toHaveLength(10);
+    expect(dual).toHaveLength(11);
   });
 
   // Snake_case-only non-string / empty values: rig up rejects each; the old string-only read erased
@@ -867,6 +868,9 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     // pi (OF-279): a present-invalid declaration reaches the canonical validator and rejects exactly as `rig up` does
     ["pi", true, "pi"],
     ["pi", { link_operator_models: "yes" }, "pi"],
+    // claude_config_dir: a present-invalid value rejects exactly as `rig up` does, never erased to the daemon's home
+    ["claude_config_dir", "relative/home", "claude-code"],
+    ["claude_config_dir", 5, "claude-code"],
   ];
   it.each(snakeOnly)("%s=%j alone: expand rejects with the same errors as rig up", async (snake, bad, runtime) => {
     const member = { id: "seat", ...base, runtime, [snake]: bad };
@@ -882,7 +886,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "dp", label: "DP", members: [
         { id: "cc", runtime: "claude-code", profile: "default", cwd: ".", agentRef: "local:agents/impl", permissionPolicy: "builtin:yolo",
-          remoteControl: true, restorePolicy: "checkpoint_only", compactionStrategy: "harness_native", starterRef: { name: "st-ok" } },
+          remoteControl: true, claudeConfigDir: "/tmp", restorePolicy: "checkpoint_only", compactionStrategy: "harness_native", starterRef: { name: "st-ok" } },
         // session_source and starter_ref cannot compose (fork + starter is rejected in v0), so separate seats
         { id: "ss", runtime: "claude-code", profile: "default", cwd: ".", agentRef: "local:agents/impl",
           sessionSource: { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } } },
@@ -900,6 +904,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
       agent_ref: "local:agents/impl",
       permission_policy: "builtin:yolo",
       remote_control: true,
+      claude_config_dir: "/tmp",
       restore_policy: "checkpoint_only",
       compaction_strategy: "harness_native",
       starter_ref: { name: "st-ok" },

@@ -14,7 +14,7 @@ import { SEAT_PUBLIC_ENV_KEYS } from "../domain/seat-launch-environment.js";
 /** Seat metadata and process-location variables that carry no credential. */
 export const ARGV_SAFE_LAUNCH_ENV_KEYS: ReadonlySet<string> = new Set<string>([
   ...SEAT_PUBLIC_ENV_KEYS,
-  "PATH", "HOME", "USER", "LOGNAME", "CODEX_HOME",
+  "PATH", "HOME", "USER", "LOGNAME", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
 ]);
 
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;

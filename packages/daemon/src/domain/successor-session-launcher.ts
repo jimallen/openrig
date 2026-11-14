@@ -1,4 +1,5 @@
 import { ulid } from "ulid";
+import { claudeConfigDirLaunchRefusal, seatClaudeConfigDirEnv } from "./claude-config-dir.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { RuntimeHint } from "./discovery-types.js";
@@ -64,6 +65,9 @@ export interface SuccessorNode {
   /** The seat's declared remote_control (nodes.remote_control): the successor launches with
    *  `--remote-control <its session name>` exactly as the departing occupant did. */
   remoteControl?: boolean;
+  /** The seat's own Claude config home (nodes.claude_config_dir): the successor runs on the same home, and so the same
+   *  login and conversation store, as the departing occupant. Absent: nothing exported (the daemon's own selection). */
+  claudeConfigDir?: string;
   /** 0.5.2-07 A4-profile: the seat's SPEC-pinned codex config profile (nodes.codex_config_profile).
    *  Same continuity rationale as model — populated by the caller from node provenance; absent → the
    *  adapter emits no -p flag (unchanged for legacy/unpinned seats). */
@@ -196,6 +200,7 @@ export class SuccessorSessionLauncher {
       ...this.sessionEnv,
       ...(input.node.runtime ? this.runtimeSessionEnv[input.node.runtime] : undefined),
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
+      ...seatClaudeConfigDirEnv(input.node),
     });
     // Same per-seat codex home as fresh launches (see codex-seat-home.ts):
     // without it the successor's codex re-inherits the shared app-server's
@@ -231,6 +236,11 @@ export class SuccessorSessionLauncher {
         replacementStarted: false,
         message: handoverCwdRefusalMessage(departingSession, cwd, cwdFault),
       };
+    }
+    // Likewise a seat's own Claude home that is gone: refused before the retiree is touched.
+    const claudeHomeRefusal = claudeConfigDirLaunchRefusal(input.node.claudeConfigDir);
+    if (claudeHomeRefusal) {
+      return { ok: false, code: "claude_config_dir_missing", step: "resolve_pane", replacementStarted: false, message: `${departingSession}: ${claudeHomeRefusal}` };
     }
 
     // 1. Resolve the DEPARTING session's active pane — the retiree's pane we take over. A probe throw or

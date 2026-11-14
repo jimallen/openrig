@@ -250,6 +250,55 @@ describe("rig seat set-effort", () => {
   });
 });
 
+describe("rig seat set-claude-home", () => {
+  const seat = { logicalId: "build.impl", rigName: "eztrack" };
+
+  it("posts dir/reason to /api/seat/set-claude-home/<seat>, prints the stored home and each home finding", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({
+      status: 200,
+      data: {
+        ok: true, seat, from: null, to: "/Users/jim/.claude-cel", changed: true, running: "yes",
+        findings: ["/Users/jim/.claude-cel/settings.json does not set skipDangerousModePermissionPrompt: …"],
+        effect: "Saved: the seat's next launch, resume, restore or handover successor runs with CLAUDE_CONFIG_DIR=/Users/jim/.claude-cel.",
+      },
+    }, calls);
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-claude-home", "build-impl@eztrack", "--dir", "~/.claude-cel", "--reason", "cel account"]);
+    });
+    expect(calls[0]!.path).toBe("/api/seat/set-claude-home/build-impl%40eztrack");
+    expect(calls[0]!.body).toEqual({ dir: "~/.claude-cel", reason: "cel account" });
+    expect(exitCode).toBeUndefined();
+    const out = logs.join("\n");
+    expect(out).toContain("Claude home for build.impl@eztrack: /Users/jim/.claude-cel.");
+    expect(out).toContain("CLAUDE_CONFIG_DIR=/Users/jim/.claude-cel");
+    expect(out).toContain("Home check: /Users/jim/.claude-cel/settings.json does not set skipDangerousModePermissionPrompt");
+  });
+
+  it("--clear posts clear and names the daemon's own home", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: { ok: true, seat, from: "/h/cel", to: null, changed: true, running: "no", runningDetail: "no session recorded", findings: [], effect: "Cleared." } }, calls);
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-claude-home", "build.impl", "--clear", "--reason", "back"]);
+    });
+    expect(calls[0]!.body).toEqual({ clear: true, reason: "back" });
+    expect(logs.join("\n")).toContain("Claude home for build.impl@eztrack: the daemon's own Claude home.");
+  });
+
+  it("requires exactly one of --dir or --clear, before any request", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: {} }, calls);
+    for (const extra of [[], ["--dir", "/x", "--clear"]]) {
+      const { errors, exitCode } = await captureLogs(async () => {
+        await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-claude-home", "build.impl", "--reason", "x", ...extra]);
+      });
+      expect(exitCode).toBe(1);
+      expect(errors.join("\n")).toContain("exactly one of --dir <path> or --clear");
+    }
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("rig seat set-mcp", () => {
   const seat = { logicalId: "verify.ops", rigName: "eztrack" };
 

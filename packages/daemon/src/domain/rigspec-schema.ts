@@ -1,4 +1,5 @@
 import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX, piModelOverridesErrors, normalizePiModelOverrides } from "../adapters/pi-runner-protocol.js";
+import { claudeConfigDirShapeError } from "./claude-config-dir.js";
 import type {
   LegacyRigSpec,
   LegacyRigSpecNode,
@@ -71,6 +72,7 @@ export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough", "model_overrides", "pi",
+  "claude_config_dir",
 ]);
 
 /** Member keys a pda seat cannot take: OpenRig delivers no startup content to a pda agent (D4), and the model,
@@ -604,6 +606,15 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.remote_control: must be a boolean (true or false)`);
     } else if (member["remote_control"] === true && member["runtime"] !== "claude-code") {
       errors.push(`${prefix}.remote_control: only valid when runtime is "claude-code"`);
+    }
+  }
+  // A seat's own Claude config home: claude-code only (and the stub runtime, the test double that reports it). The
+  // shape is checked here; `~/` is expanded and the default home refused where the daemon's HOME is known (instantiation).
+  if (member["claude_config_dir"] !== undefined) {
+    const shape = claudeConfigDirShapeError(member["claude_config_dir"]);
+    if (shape) errors.push(`${prefix}.claude_config_dir: ${shape}`);
+    else if (member["runtime"] !== "claude-code" && member["runtime"] !== "stub") {
+      errors.push(`${prefix}.claude_config_dir: only valid when runtime is "claude-code"`);
     }
   }
   errors.push(...validatePdaMember(member, prefix));
@@ -1319,6 +1330,8 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     effort: typeof m["effort"] === "string" && m["effort"].trim() ? m["effort"].trim() : undefined,
     // Only a validated `true` survives; false/absent normalize to undefined (the launch is unchanged).
     remoteControl: m["remote_control"] === true ? true : undefined,
+    // As written (shape validated); the instantiator stores its canonical form (claude-config-dir.ts).
+    claudeConfigDir: typeof m["claude_config_dir"] === "string" ? m["claude_config_dir"] : undefined,
     pda: normalizePdaBinding(m["pda"]),
     envPassthrough: Array.isArray(m["env_passthrough"]) ? (m["env_passthrough"] as string[]) : undefined,
     modelOverrides: normalizePiModelOverrides(m["model_overrides"]) ?? undefined,

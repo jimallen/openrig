@@ -96,6 +96,33 @@ describe("SuccessorSessionLauncher", () => {
     expect(binding.model).toBe("gpt-5.4-cheap");
   });
 
+  it("the successor runs on the seat's own Claude home; a seat without one exports none; a gone home refuses before the retiree is touched", async () => {
+    listPanes.mockResolvedValue([{ id: "%42", index: 0, cwd: "/w", width: 80, height: 24, active: true }]);
+    const claude = { "claude-code": fakeAdapter("claude-code") };
+    const ok = await launcher(undefined, "/daemon-codex", { runtimeAdapters: claude }).createSuccessor({
+      node: { id: "node-1", runtime: "claude-code", cwd: "/w", claudeConfigDir: seatHomes },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(ok.ok).toBe(true);
+    expect((respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env.CLAUDE_CONFIG_DIR).toBe(seatHomes);
+
+    respawnPane.mockClear();
+    await launcher(undefined, "/daemon-codex", { runtimeAdapters: claude }).createSuccessor({
+      node: { id: "node-1", runtime: "claude-code", cwd: "/w" },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect((respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+
+    respawnPane.mockClear(); signalPaneProcess.mockClear();
+    const refused = await launcher(undefined, "/daemon-codex", { runtimeAdapters: claude }).createSuccessor({
+      node: { id: "node-1", runtime: "claude-code", cwd: "/w", claudeConfigDir: path.join(seatHomes, "gone") },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(refused).toMatchObject({ ok: false, code: "claude_config_dir_missing", replacementStarted: false });
+    expect(signalPaneProcess).not.toHaveBeenCalled();
+    expect(respawnPane).not.toHaveBeenCalled();
+  });
+
   // OF-115: a profile withheld for carrying a seat identity, and a per-seat home that could not be made, are told in the
   // handover result, as a fresh launch tells them. (Before, the first was a console line and the second was silent.)
   it("tells the handover result which codex profile was withheld, by name and variable, never by value", async () => {

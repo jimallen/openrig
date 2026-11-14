@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { claudeConfigDirLaunchRefusal, seatClaudeConfigDirEnv } from "./claude-config-dir.js";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
@@ -169,6 +170,11 @@ export class NodeLauncher {
       };
     }
 
+    // A seat's own Claude config home must still be a directory: refused here, before any session exists, rather than
+    // letting Claude start on a blank home (a login screen) or on the daemon's account.
+    const claudeHomeRefusal = claudeConfigDirLaunchRefusal(node.claudeConfigDir);
+    if (claudeHomeRefusal) return { ok: false, code: "claude_config_dir_missing", message: `${logicalId}: ${claudeHomeRefusal}` };
+
     // 3. Reserve the source-bound occupant generation before the process starts. Reservation is
     // side-effect-free and fail-open: an unavailable ledger yields null and the launch remains valid.
     const occupantGeneration = this.sessionRegistry.reserveOccupantGeneration();
@@ -182,6 +188,9 @@ export class NodeLauncher {
       ...this.sessionEnv,
       ...(node.runtime ? this.runtimeSessionEnv[node.runtime] : undefined),
       OPENRIG_OCCUPANT_GENERATION: occupantGeneration ?? undefined,
+      // The seat's own Claude config home (nodes.claude_config_dir). Absent: nothing is exported and the seat keeps the
+      // daemon's own selection, byte-for-byte as before (an explicit default home is not the default: #154).
+      ...seatClaudeConfigDirEnv(node),
     });
     const codexSeatWarnings: string[] = [];
 

@@ -12,7 +12,7 @@ import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
-import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
+import { ResumeMetadataRefresher, claudeProbeCommand } from "../src/domain/resume-metadata-refresher.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
 const oldId = "11111111-1111-4111-8111-111111111111";
@@ -44,7 +44,7 @@ describe("Claude current conversation at shutdown", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  function fixture(provenance: "scrape" | "operator" | "hook" = "scrape", configDir = path.join(root, ".claude")) {
+  function fixture(provenance: "scrape" | "operator" | "hook" = "scrape", configDir = path.join(root, ".claude"), seatHome?: string) {
     const rig = rigRepo.createRig("clear-test");
     const node = rigRepo.addNode(rig.id, "worker", { runtime: "claude-code", cwd: root });
     const name = "worker@clear-test";
@@ -65,8 +65,9 @@ describe("Claude current conversation at shutdown", () => {
     const refresher = new ResumeMetadataRefresher({
       sessionRegistry: registry, tmuxAdapter: tmux, homeDir: root,
       claudeConfigDir: configDir, listClaudeProcesses, probeClaudeResume: probe,
+      ...(seatHome ? { seatClaudeConfigDir: (s: { sessionId: string }) => (s.sessionId === session.id ? seatHome : null) } : {}),
     });
-    const file = path.join(configDir, "sessions", "901.json");
+    const file = path.join(seatHome ?? configDir, "sessions", "901.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ name, sessionId: newId }));
     // Deterministic current-process timestamp, independent of the test machine's date.
@@ -91,6 +92,15 @@ describe("Claude current conversation at shutdown", () => {
 
   it("uses the selected provider config directory for the live PID", async () => {
     const f = fixture("scrape", path.join(root, "custom-config"));
+    await f.teardown.teardown(f.rig.id);
+    expect(registry.getSessionsForRig(f.rig.id)[0]?.resumeToken).toBe(newId);
+  });
+
+  it("reads a seat's own Claude home, not the daemon's selection, for the live PID", async () => {
+    const f = fixture("scrape", path.join(root, "daemon-config"), path.join(root, "seat-home"));
+    // The daemon's selection holds a stale record for the same pid: it must not be the one read.
+    fs.mkdirSync(path.join(root, "daemon-config", "sessions"), { recursive: true });
+    fs.writeFileSync(path.join(root, "daemon-config", "sessions", "901.json"), JSON.stringify({ name: f.name, sessionId: oldId }));
     await f.teardown.teardown(f.rig.id);
     expect(registry.getSessionsForRig(f.rig.id)[0]?.resumeToken).toBe(newId);
   });
@@ -150,7 +160,7 @@ describe("Claude current conversation at shutdown", () => {
     expect(result.errors).toEqual([]);
     expect(result.sessionsKilled).toBe(1);
     expect(registry.getSessionsForRig(f.rig.id)[0]?.resumeToken).toBe(oldId);
-    expect(f.probe).toHaveBeenCalledWith(f.name, oldId, root);
+    expect(f.probe).toHaveBeenCalledWith(f.name, oldId, root, null);
   });
 
   it.each(["operator", "hook"] as const)("does not replace a protected %s token", async (provenance) => {
@@ -167,5 +177,13 @@ describe("Claude current conversation at shutdown", () => {
     expect(f.listClaudeProcesses).not.toHaveBeenCalled();
     expect(f.probe).not.toHaveBeenCalled();
     expect(registry.getSessionsForRig(f.rig.id)[0]?.resumeToken).toBe(oldId);
+  });
+});
+
+describe("the resumability probe of a seat on its own Claude home", () => {
+  it("looks for the conversation in the seat's home, and never types a home outside the plain-path set", () => {
+    expect(claudeProbeCommand(oldId, "worker@r", "/Users/jim/.claude-cel")).toMatch(/^CLAUDE_CONFIG_DIR=\/Users\/jim\/\.claude-cel claude --resume /);
+    expect(claudeProbeCommand(oldId, "worker@r", null)).toMatch(/^claude --resume /);
+    expect(claudeProbeCommand(oldId, "worker@r", "/home/a b")).toBe("untyped_home");
   });
 });

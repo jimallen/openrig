@@ -86,8 +86,9 @@ export function optionLabelKey(key: string): string | null {
 export const SESSION_ENV_LABEL_PREFIX = "openrig.env.";
 /** Presence only, for names whose value must not be a label (a token): `hasSessionEnv` asks no more than this. */
 export const SESSION_ENV_PRESENT_PREFIX = "openrig.envset.";
-/** The launch values the daemon reads back today: seat-launch-environment.ts and seat-restart-in-place.ts. */
-export const SESSION_ENV_VALUE_KEYS = ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION", "CODEX_HOME"] as const;
+/** The launch values the daemon reads back today: seat-launch-environment.ts and seat-restart-in-place.ts, and the seat's own
+ *  CLAUDE_CONFIG_DIR (a path, never a credential), so a respawn after a daemon restart keeps the home its conversation lives in. */
+export const SESSION_ENV_VALUE_KEYS = ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] as const;
 /** The names whose presence the activity-hook check asks about (session-transport.ts), value never read. */
 export const SESSION_ENV_PRESENCE_KEYS = [
   "OPENRIG_URL", "RIGGED_URL", "OPENRIG_PORT", "RIGGED_PORT", "OPENRIG_ACTIVITY_HOOK_TOKEN", "RIGGED_ACTIVITY_HOOK_TOKEN", "RIGGED_RUNTIME",

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -1588,6 +1590,17 @@ describe("SeatHandoverService", () => {
     else expect("remoteControl" in successorBinding).toBe(false);
     // The respawn is what makes the successor's terminal, so the hint for the launch wrapper travels on it too.
     expect((respawnPane.mock.calls[0]![2] as Record<string, unknown>).remoteControl).toBe(remoteControl ? true : undefined);
+  });
+
+  it.each([[true], [false]])("a seat on its own Claude home hands over to a successor on the same home (%s): the REAL lookupNode, createSuccessor, respawn path", async (ownHome) => {
+    const { node } = seedSeat({ runtime: "codex" });
+    const home = realpathSync(tmpdir());
+    if (ownHome) rigRepo.setNodeClaudeConfigDir(node.id, home);
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });
+    expect(result.ok).toBe(true);
+    const env = (respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env;
+    if (ownHome) expect(env.CLAUDE_CONFIG_DIR).toBe(home);
+    else expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
   });
 
   it("OPR.0.7.0.7: a seat's saved effort choice wins over its authored effort at handover (the shared resolver)", async () => {

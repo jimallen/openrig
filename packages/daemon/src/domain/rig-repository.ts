@@ -127,6 +127,8 @@ interface NodeOptions {
   effort?: string;
   /** `remote_control: true` on the member: persisted so restore and successor launches know it. */
   remoteControl?: boolean;
+  /** The seat's own Claude config home, already canonical (claude-config-dir.ts): persisted as nodes.claude_config_dir. */
+  claudeConfigDir?: string;
   /** The pda agent the seat drives (runtime pda): persisted as nodes.pda_binding. */
   pda?: PdaBinding;
   /** A Pi seat's extra environment names (spec `env_passthrough`): persisted as nodes.env_passthrough. */
@@ -612,6 +614,12 @@ export class RigRepository {
       this.db.prepare("UPDATE nodes SET remote_control = 1 WHERE id = ?").run(id);
     }
 
+    if (opts?.claudeConfigDir) {
+      // No silent skip: a seat whose home was not stored would launch on the daemon's account.
+      if (!this.hasNodeColumn("claude_config_dir")) throw new Error("nodes.claude_config_dir is missing (migration 129 has not run); the seat's Claude config home cannot be stored");
+      this.db.prepare("UPDATE nodes SET claude_config_dir = ? WHERE id = ?").run(opts.claudeConfigDir, id);
+    }
+
     if (opts?.pda) {
       // No silent skip: a pda seat whose binding was not stored would restore and export as bound to nothing.
       if (!this.hasNodeColumn("pda_binding")) throw new Error("nodes.pda_binding is missing (migration 115 has not run); the pda binding cannot be stored");
@@ -931,6 +939,20 @@ export class RigRepository {
     return result.changes > 0;
   }
 
+  /** Write (canonical path) or clear (null) the seat's own Claude config home. Returns false when the column
+   *  isn't available or no row matched, so a caller never reports a change from it. */
+  setNodeClaudeConfigDir(nodeId: string, dir: string | null): boolean {
+    if (!this.hasNodeColumn("claude_config_dir")) return false;
+    return this.db.prepare("UPDATE nodes SET claude_config_dir = ? WHERE id = ?").run(dir, nodeId).changes > 0;
+  }
+
+  /** The seat's own Claude config home, or null (the daemon's own selection). */
+  getNodeClaudeConfigDir(nodeId: string): string | null {
+    if (!this.hasNodeColumn("claude_config_dir")) return null;
+    const row = this.db.prepare("SELECT claude_config_dir AS dir FROM nodes WHERE id = ?").get(nodeId) as { dir: string | null } | undefined;
+    return row?.dir ?? null;
+  }
+
   /** OPR.0.7.0.7: write or clear (null) a seat's explicit effort choice. Returns false when
    *  the column isn't available or no row matched, so a caller never reports a change from it. */
   setNodeEffortChoice(nodeId: string, choice: string | null): boolean {
@@ -1202,6 +1224,8 @@ export class RigRepository {
       effort: row.effort ?? null,
       // Present only when declared, so nodes (and the snapshots serialized from them) that never declared it are unchanged.
       ...(row.remote_control === 1 ? { remoteControl: true } : {}),
+      // Present only when set, so nodes (and their snapshots) on the daemon's own Claude home are unchanged.
+      ...(row.claude_config_dir ? { claudeConfigDir: row.claude_config_dir } : {}),
       // Present only for a pda seat, so every other node (and the snapshots serialized from them) is unchanged.
       ...(pdaBinding.value ? { pda: pdaBinding.value } : {}),
       ...(pdaBinding.unreadable ? { pdaBindingUnreadable: pdaBinding.unreadable } : {}),
@@ -1295,6 +1319,7 @@ interface NodeRow {
   model: string | null;
   effort?: string | null;
   remote_control?: number | null;
+  claude_config_dir?: string | null;
   pda_binding?: string | null;
   effort_choice?: string | null;
   codex_config_profile?: string | null;

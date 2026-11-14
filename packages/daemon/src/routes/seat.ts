@@ -13,7 +13,7 @@ import { SeatSwitchClientService } from "../domain/seat-switch-client-service.js
 import { SeatLifecycleService } from "../domain/seat-lifecycle-service.js";
 import { makePredecessorRecapResolver } from "../domain/predecessor-recap-resolver.js";
 import type { ContextUsageStore } from "../domain/context-usage-store.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAuthoredRecapPointer } from "../domain/context-packs/seat-recap-store.js";
 import { buildRebuildPrimingChain } from "../domain/rebuild-priming-chain.js";
@@ -254,17 +254,20 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
     // OF-32: the instantiator re-reads a fresh seat's startup policy from its rig's spec source.
     seatStartupSource: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? undefined,
     mcpTrust: (c.get("mcpTrust" as never) as import("../domain/seat-lifecycle-service.js").SeatLifecycleDeps["mcpTrust"] | undefined) ?? undefined,
+    // set-claude-home's read-only findings about a Claude home (names only; never a credential file).
+    claudeHomeRead: { exists: (p) => existsSync(p), isDirectory: (p) => statSync(p).isDirectory(), readFile: (p) => readFileSync(p, "utf8") },
   });
 }
 
 function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
   if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required"
     || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from"
-    || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file" || code === "apply_spec_invalid_spec_file") return 400;
+    || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file" || code === "apply_spec_invalid_spec_file"
+    || code === "invalid_claude_config_dir") return 400;
   if (code === "seat_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed"
-    || code === "effort_unavailable" || code === "mcp_unavailable" || code === "apply_spec_not_saved") return 500;
+    || code === "effort_unavailable" || code === "mcp_unavailable" || code === "apply_spec_not_saved" || code === "claude_home_unavailable") return 500;
   // seat_ambiguous / session_live / session_not_live / no_session / claimed_session /
   // nothing_to_clean — state conflicts, not client syntax errors.
   return 409;
@@ -305,6 +308,21 @@ seatRoutes.post("/set-effort/:seatRef", async (c) => {
     effort: clear ? null : typeof body["effort"] === "string" ? body["effort"] : "",
     reason: typeof body["reason"] === "string" ? body["reason"] : "",
     operator: typeof body["operator"] === "string" ? body["operator"] : null,
+  });
+  if (result.ok) return c.json(result);
+  return c.json(result, seatLifecycleStatus(result.code));
+});
+
+// A Claude seat's own Claude config home for its next launch (or, with clear: true, back to the daemon's own). Audited.
+seatRoutes.post("/set-claude-home/:seatRef", async (c) => {
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const clear = body["clear"] === true;
+  if (clear === (body["dir"] !== undefined)) return c.json({ ok: false, code: "invalid_claude_config_dir", message: "Pass exactly one of a directory or clear." }, 400);
+  const result = await seatLifecycleService(c).setClaudeHome({
+    seatRef: c.req.param("seatRef")!,
+    dir: clear ? null : typeof body["dir"] === "string" ? body["dir"] : "",
+    reason: typeof body["reason"] === "string" ? body["reason"] : "",
+    operator: transportSenderSession(c) ?? (typeof body["operator"] === "string" ? body["operator"] : null),
   });
   if (result.ok) return c.json(result);
   return c.json(result, seatLifecycleStatus(result.code));

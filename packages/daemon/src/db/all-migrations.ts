@@ -128,6 +128,7 @@ import { occupantConversationSchema } from "./migrations/125_occupant_conversati
 import { nodeModelOverridesSchema } from "./migrations/126_node_model_overrides.js";
 import { nodePiLinkOperatorModelsSchema } from "./migrations/127_node_pi_link_operator_models.js";
 import { seatQuestionsSchema } from "./migrations/128_seat_questions.js";
+import { nodeClaudeConfigDirSchema } from "./migrations/129_node_claude_config_dir.js";
 import { bindingTerminalAddressSchema } from "./migrations/121_binding_terminal_address.js";
 import { seatMessageSchema } from "./migrations/122_seat_message.js";
 
@@ -268,4 +269,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   nodeModelOverridesSchema,
   nodePiLinkOperatorModelsSchema,
   seatQuestionsSchema,
+  nodeClaudeConfigDirSchema,
 ];

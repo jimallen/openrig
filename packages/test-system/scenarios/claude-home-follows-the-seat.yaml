@@ -1,0 +1,28 @@
+# Family: lifecycle `up` (a seat's own Claude config home).
+# Defect class: a seat that declares `claude_config_dir` starts, or relaunches, without CLAUDE_CONFIG_DIR set to its
+#   own home, so its Claude would run on the daemon's account and conversation store instead of the seat's. Also the
+#   spelling: the spec says `//tmp//` and the seat must be handed exactly `/tmp` (Claude names a home's login after the
+#   exact string, so a trailing slash would select a different, logged-out login).
+# What this proves: STUB PLUMBING from spec to pane. `rig up` validates the member field, stores its canonical form on
+#   the node, and the seat's terminal is made from the stored node with CLAUDE_CONFIG_DIR set to it (the stub prints
+#   the value it was handed).
+# What this does NOT prove: that the sibling seat with no home gets none (the runner has no negative form; its pane
+#   shows whatever the scenario daemon's terminal gives, normally `unset`); a relaunch or restore of the stopped seat
+#   (`restart` -> `rig launch` refuses a stub seat with no resume token: "Original session unresumable"); the handover
+#   successor and hc respawn after a daemon restart (no bound verb); those go through the same node-launcher and
+#   successor env code and are covered by unit tests; the managed `env -i` launch (unit tests); or any
+#   Claude Code behaviour (login, keychain, conversation lookup).
+# Planted negative: a launch that stops adding the node's home to the seat's session env (drop
+#   `...seatClaudeConfigDirEnv(node)` in node-launcher.ts) makes the first pane assertion fail with
+#   `claude-config-dir=unset` on the observed pane; storing the value as written (no normalisation) fails it with `claude-config-dir=//tmp//`.
+# Deps: R-10 runner (`up`, `down`, `pane` surface). No emit, no seed_regression.
+scenario: claude-home-follows-the-seat
+topology: ./claude-home-stub.yaml
+steps:
+  - up: {}
+  - expect:
+      surface: pane
+      seat: dev-cel@claude-home-stub
+      within: 30s
+      contains: "claude-config-dir=/tmp"
+  - down: {}

@@ -1,0 +1,11 @@
+version: "0.2"
+name: claude-home-stub
+culture_file: culture.md
+pods:
+  - id: dev
+    label: Dev
+    members:
+      # /tmp exists on every scenario host and is not anyone's default Claude home; the seat only has to be handed it.
+      - {id: cel, agent_ref: "local:agents/worker", profile: default, runtime: stub, cwd: ., claude_config_dir: //tmp//}
+      - {id: plain, agent_ref: "local:agents/worker", profile: default, runtime: stub, cwd: .}
+    edges: []

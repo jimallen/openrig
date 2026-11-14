@@ -332,6 +332,7 @@ import type {
 } from "./continuity-policy-materializer.js";
 import { isKeptPluginSkill, type ReconcileSkillLoadoutResult, type SkillLoadout, type SkillRuntime } from "./skill-catalog.js";
 import type { SystemWorldResolution } from "./system-world.js";
+import { daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
 
 function defaultCultureStartupFile(): ResolvedStartupFile {
   const assetsRoot = nodePath.resolve(import.meta.dirname, "../../assets");
@@ -1264,7 +1265,7 @@ export class PodRigInstantiator {
     const initialRefusal = eligible();
     if (initialRefusal) return refuse(initialRefusal);
 
-    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides", "pi"]);
+    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "claude_config_dir", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides", "pi"]);
     if (Object.keys(memberFragment).some(key => !retainedFields.has(key))) return refuse("Retry accepts only retained member fields; topology and startup overrides require a separate change.");
     const rawSpec = { version: "0.2", name: rig.rig.name, pods: [{ id: podRow.namespace, label: podRow.label, members: [memberFragment], edges: [] }], edges: [] };
     const validation = PodRigSpecSchema.validate(rawSpec);
@@ -1289,6 +1290,8 @@ export class PodRigInstantiator {
       // A retry relaunches the seat from this member; one that dropped or added remote_control would
       // silently rewrite the persisted declaration, so it must agree with the retained seat.
       || (member.remoteControl === true) !== (node.remoteControl === true)
+      // The seat's Claude home must agree too: a retry that changed it would move the seat to another login.
+      || !retainedClaudeConfigDirAgrees(member.claudeConfigDir, node.claudeConfigDir)
       || !retainedPdaBindingAgrees(member.pda, node)
       || JSON.stringify(member.envPassthrough ?? []) !== JSON.stringify(this.deps.rigRepo.getNodeEnvPassthrough(node.id))
       || JSON.stringify(member.modelOverrides ?? null) !== JSON.stringify(this.deps.rigRepo.getNodeModelOverrides(node.id) ?? null)
@@ -1606,6 +1609,13 @@ export class PodRigInstantiator {
           continue;
         }
 
+        // The seat's own Claude config home, in its one canonical spelling (claude-config-dir.ts).
+        const claudeHome = memberClaudeConfigDir(member.claudeConfigDir);
+        if (!claudeHome.ok) {
+          nodeResults.push({ logicalId: qualifiedId, status: "failed", error: `${qualifiedId}: claude_config_dir ${claudeHome.reason}` });
+          continue;
+        }
+
         // Create node
         const createUnit = this.db.transaction(() => {
           // pda: the up-front check (step 1c) ran before awaits (preflight, stop confirmation, the prelaunch hook, other
@@ -1628,6 +1638,7 @@ export class PodRigInstantiator {
             model: member.model ?? configResult.config.model,
             effort: member.effort ?? configResult.config.effort,
             remoteControl: member.remoteControl,
+            ...(claudeHome.value ? { claudeConfigDir: claudeHome.value } : {}),
             pda: member.pda,
             envPassthrough: member.envPassthrough,
             modelOverrides: member.modelOverrides,
@@ -1996,12 +2007,15 @@ export class PodRigInstantiator {
     // one door, and a seat created earlier in the same transaction is already visible to the next member's check.
     const pdaConflict = this.pdaBindingConflict(input.member.pda);
     if (pdaConflict) throw { code: "materialize_conflict", message: `${input.qualifiedId}: ${pdaConflict}` };
+    const claudeHome = memberClaudeConfigDir(input.member.claudeConfigDir);
+    if (!claudeHome.ok) throw { code: "materialize_conflict", message: `${input.qualifiedId}: claude_config_dir ${claudeHome.reason}` };
     const node = this.deps.rigRepo.addNode(input.rigId, input.qualifiedId, {
       role: input.member.role,
       runtime: input.member.runtime,
       model: input.member.model,
       effort: input.member.effort,
       remoteControl: input.member.remoteControl,
+      ...(claudeHome.value ? { claudeConfigDir: claudeHome.value } : {}),
       pda: input.member.pda,
       envPassthrough: input.member.envPassthrough,
       modelOverrides: input.member.modelOverrides,
@@ -3130,4 +3144,17 @@ export class PodRigInstantiator {
       }
     });
   }
+}
+
+/** A member's `claude_config_dir` in canonical form (value undefined when the member declares none). */
+function memberClaudeConfigDir(raw: string | undefined): { ok: true; value: string | undefined } | { ok: false; reason: string } {
+  if (raw === undefined) return { ok: true, value: undefined };
+  const result = normalizeClaudeConfigDir(raw, daemonHomeForClaudeConfigDir());
+  return result.ok ? { ok: true, value: result.value } : result;
+}
+
+/** A retried member's `claude_config_dir` against the retained seat's, both canonical. */
+function retainedClaudeConfigDirAgrees(raw: string | undefined, retained: string | undefined): boolean {
+  const declared = memberClaudeConfigDir(raw);
+  return declared.ok && (declared.value ?? null) === (retained ?? null);
 }

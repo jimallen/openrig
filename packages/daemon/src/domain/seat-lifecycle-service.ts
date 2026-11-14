@@ -1,4 +1,5 @@
 import { readDeclaredMcpServer, readTrustedSeatSpec, type TrustedSeatSpecFailureKind, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
+import { claudeConfigDirFindings, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedPiFields, envNameChanges, specRetainedFields, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
@@ -62,7 +63,12 @@ const unclaimGuidance = (_sessionId: string) => "End the adopted session yoursel
  *  and the watchdog's TERMINAL_SESSION_STATUSES). */
 const TERMINAL_SESSION_STATUSES = new Set(["superseded", "detached", "exited"]);
 
+/** Read-only, names-only reads of a Claude config home for `set-claude-home`'s findings (wired by the route). */
+export interface ClaudeHomeRead { exists: (p: string) => boolean; isDirectory: (p: string) => boolean; readFile: (p: string) => string }
+
 export interface SeatLifecycleDeps {
+  /** What `set-claude-home` reads to say what a home lacks. Absent: no findings are reported. */
+  claudeHomeRead?: ClaudeHomeRead;
   /** Per-seat Codex MCP servers: the roots an operator-named spec (--spec) must lie under, and (tests only) the
    *  trust rule's file-system reads. Absent: no --spec file is accepted. */
   mcpTrust?: {
@@ -157,7 +163,8 @@ export interface SeatRefusal {
     | "missing_effort"
     | "invalid_effort"
     | "effort_unsupported_runtime"
-    | "effort_unavailable";
+    | "effort_unavailable"
+    | "invalid_claude_config_dir" | "claude_home_unsupported_runtime" | "claude_home_unavailable";
   message: string;
   guidance?: string;
   matches?: Array<{ rig_name: string; logical_id: string; current_occupant: string | null }>;
@@ -197,6 +204,22 @@ export interface EffortReport {
   precedence: { decided: boolean; detail: string };
   summary: string;
 }
+
+export type SetClaudeHomeResult =
+  | {
+      ok: true;
+      seat: SeatDescriptor;
+      /** The seat's own Claude home before and after (null: the daemon's own selection, nothing exported). */
+      from: string | null;
+      to: string | null;
+      changed: boolean;
+      running: "yes" | "no" | "unknown";
+      runningDetail?: string;
+      /** What the home lacks for an unattended seat, names only (read-only; OpenRig never writes it). */
+      findings: string[];
+      effect: string;
+    }
+  | SeatRefusal;
 
 export type SetEffortResult =
   | {
@@ -300,12 +323,14 @@ export class SeatLifecycleService {
   private readonly seatStartupSource: SeatStartupSpecReader | null;
 
   private readonly mcpTrust?: SeatLifecycleDeps["mcpTrust"];
+  private readonly claudeHomeRead: ClaudeHomeRead | undefined;
   constructor(deps: SeatLifecycleDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SeatLifecycleService: rigRepo must share the same db handle");
     if (deps.db !== deps.sessionRegistry.db) throw new Error("SeatLifecycleService: sessionRegistry must share the same db handle");
     if (deps.db !== deps.eventBus.db) throw new Error("SeatLifecycleService: eventBus must share the same db handle");
     this.db = deps.db;
     this.mcpTrust = deps.mcpTrust;
+    this.claudeHomeRead = deps.claudeHomeRead;
     this.rigRepo = deps.rigRepo;
     this.sessionRegistry = deps.sessionRegistry;
     this.eventBus = deps.eventBus;
@@ -358,6 +383,59 @@ export class SeatLifecycleService {
     if (persisted) this.eventBus.notifySubscribers(persisted);
 
     return { ok: true, seat, from, to: model, changed: true };
+  }
+
+  /**
+   * Save (or, with `dir: null`, clear) one Claude seat's own Claude config home for its next launch, resume, restore or
+   * handover successor. The value is stored in its one canonical spelling (claude-config-dir.ts); clearing means
+   * nothing is exported. Audited in the same transaction; never restarts the seat or touches its peers.
+   */
+  async setClaudeHome(input: { seatRef: string; dir: string | null; reason: string; operator?: string | null }): Promise<SetClaudeHomeResult> {
+    const required = this.requireReason(input.reason);
+    if (required) return required;
+    let to: string | null = null;
+    if (input.dir !== null) {
+      const normalized = normalizeClaudeConfigDir(input.dir, daemonHomeForClaudeConfigDir());
+      if (!normalized.ok) return { ok: false, code: "invalid_claude_config_dir", message: `--dir ${JSON.stringify(input.dir)} ${normalized.reason}.` };
+      to = normalized.value;
+    }
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+    const seat = this.describe(resolved);
+    const runtime = resolved.entry.runtime ?? "unknown";
+    if (runtime !== "claude-code") {
+      return { ok: false, code: "claude_home_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${runtime}; a Claude config home applies to claude-code seats only.` };
+    }
+    const columnPresent = this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() !== undefined;
+    if (!columnPresent) return { ok: false, code: "claude_home_unavailable", message: "This daemon's database has no per-seat Claude home (checked: nodes.claude_config_dir column); nothing was saved." };
+    const from = this.rigRepo.getNodeClaudeConfigDir(seat.nodeId);
+    let changed = false;
+    if (from !== to) {
+      let persisted: PersistedEvent | null = null;
+      this.db.transaction(() => {
+        if (!this.rigRepo.setNodeClaudeConfigDir(seat.nodeId, to)) return;
+        changed = true;
+        persisted = this.eventBus.persistWithinTransaction({
+          type: "node.claude_home_changed",
+          rigId: seat.rigId, nodeId: seat.nodeId, logicalId: seat.logicalId,
+          from, to, reason: input.reason.trim(), operator: input.operator ?? null,
+        });
+      })();
+      if (persisted) this.eventBus.notifySubscribers(persisted);
+      if (!changed) return { ok: false, code: "claude_home_unavailable", message: `The Claude home for seat "${input.seatRef}" was not saved (no node row was updated); nothing changed.` };
+    }
+    const posture = this.db.prepare("SELECT n.policy_launch_posture AS node, r.rig_policy_launch_posture AS rig FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?")
+      .get(seat.nodeId) as { node: string | null; rig: string | null } | undefined;
+    const findings = to && this.claudeHomeRead ? claudeConfigDirFindings(to, {
+      fullBypass: (posture?.node ?? posture?.rig) === "full_bypass",
+      nonInterruptive: this.rigRepo.getRigNonInterruptive(seat.rigId),
+    }, this.claudeHomeRead) : [];
+    const running = await this.runningState(seat.nodeId);
+    const effect = (to === null
+      ? "Cleared: the seat goes back to the daemon's own Claude home (nothing exported) at its next launch, resume, restore or handover successor."
+      : `Saved: the seat's next launch, resume, restore or handover successor runs with CLAUDE_CONFIG_DIR=${to}.`)
+      + " The running process is unchanged; nothing was restarted. Its conversation stays in the home it started in: a resume or restore in the new home cannot find it, so move a running seat with rig seat handover <seat> --source fresh (or rebuild).";
+    return { ok: true, seat, from, to, changed, running: running.state, ...(running.detail ? { runningDetail: running.detail } : {}), findings, effect };
   }
 
   /** OPR.0.7.0.7 — save one seat's effort for its next managed continuation. Like set-model it

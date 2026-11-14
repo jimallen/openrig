@@ -125,6 +125,8 @@ interface NodeRow {
   effort: string | null;
   // The seat's declared remote_control (nodes.remote_control, 1/NULL), threaded onto the successor binding.
   remote_control: number | null;
+  // The seat's own Claude config home (nodes.claude_config_dir; null = the daemon's own), carried to the successor's env.
+  claude_config_dir: string | null;
 }
 
 interface SessionRow {
@@ -458,7 +460,7 @@ export class SeatHandoverService {
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, ...(node.remote_control === 1 ? { remoteControl: true } : {}), codexConfigProfile: node.codex_config_profile ?? undefined },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, ...(node.remote_control === 1 ? { remoteControl: true } : {}), ...(node.claude_config_dir ? { claudeConfigDir: node.claude_config_dir } : {}), codexConfigProfile: node.codex_config_profile ?? undefined },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the
@@ -1057,9 +1059,15 @@ export class SeatHandoverService {
   }
 
   private lookupNode(status: SeatStatus): NodeRow {
-    return this.db.prepare(
+    const row = this.db.prepare(
       "SELECT id, runtime, cwd, model, codex_config_profile, effort, remote_control FROM nodes WHERE rig_id = ? AND logical_id = ?"
     ).get(status.rig_id, status.logical_id) as NodeRow;
+    if (!row) return row;
+    // The seat's own Claude home (migration 129); a database without the column reads as the daemon's own home.
+    const hasClaudeHome = this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() !== undefined;
+    row.claude_config_dir = hasClaudeHome
+      ? (this.db.prepare("SELECT claude_config_dir AS dir FROM nodes WHERE id = ?").get(row.id) as { dir: string | null }).dir : null;
+    return row;
   }
 
   /** The seat's latest session row, by id: the same definition node-inventory uses for the `current_occupant` this hands over

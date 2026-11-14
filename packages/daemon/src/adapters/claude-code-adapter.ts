@@ -691,8 +691,13 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       ? managed.boundCwd(binding.nodeId) : binding.cwd;
     const statePaths: string[] = [];
     const failures: string[] = [];
+    // A seat's own Claude config home (nodes.claude_config_dir): its launch exports exactly that home on every path,
+    // so its trust and onboarding state lives in <home>/.claude.json and nowhere else.
+    const seatHome = binding.nodeId ? this.claudeManagedLaunch?.seatConfigDir(binding.nodeId) ?? null : null;
     if (managed) {
-      if (cwd) statePaths.push(managed.configPaths(cwd).statePath);
+      if (cwd) statePaths.push(managed.configPaths(cwd, seatHome).statePath);
+    } else if (seatHome) {
+      statePaths.push(nodePath.join(seatHome, ".claude.json"));
     } else {
       if (home) statePaths.push(nodePath.join(home, ".claude.json"));
       // A classic seat types `claude` into its pane's shell, which inherits the tmux server's

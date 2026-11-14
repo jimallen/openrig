@@ -173,6 +173,8 @@ export class RigSpecExporter {
         if (node.effort) member.effort = node.effort;
         // The seat's remote_control declaration round-trips export -> import.
         if (node.remoteControl) member.remoteControl = true;
+        // The seat's own Claude config home round-trips export -> import (canonical absolute path).
+        if (node.claudeConfigDir) member.claudeConfigDir = node.claudeConfigDir;
         // The pda binding round-trips export -> import (D2: export reads the column).
         if (node.pda) member.pda = node.pda;
         // A Pi or OMP seat's extra environment names round-trip export -> import (names only).

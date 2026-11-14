@@ -162,6 +162,7 @@ export class RigSpecCodec {
         if (m.model) member["model"] = m.model;
         if (m.effort) member["effort"] = m.effort;
         if (m.remoteControl) member["remote_control"] = true;
+        if (m.claudeConfigDir) member["claude_config_dir"] = m.claudeConfigDir;
         // Parse carries pda (schema normalize), so serialize must too: a bundle or draft would otherwise drop the binding.
         if (m.pda) member["pda"] = { agent: m.pda.agent, base_url: m.pda.baseUrl };
         if (m.envPassthrough && m.envPassthrough.length > 0) member["env_passthrough"] = [...m.envPassthrough];
