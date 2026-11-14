@@ -291,6 +291,45 @@ describe("queue routes", () => {
     expect(job).toMatchObject({ target_session: "b@r", interval_seconds: 45, state: "active" });
   });
 
+  it("a re-park with --summary and --wake-after right after its timer fired arms a new timer (qitem-…d6b2e2d52b6b4fb0)", async () => {
+    // Specimen, 2026-11-14 on 460f8bde: a 2h park timer fired; the owner noted progress, then ran
+    // `rig queue block <id> --on gate:… --summary … --continuation … --wake-after 2h`. That build refused the
+    // whole park (400 summary_evidence_not_persistable, nothing written); the seat's `2>&1 | tail -2` hid the
+    // refusal, so the row was left with no timed backstop. The re-park must land and arm a fresh timer.
+    const post = (qitemId: string, body: Record<string, unknown>) => app.request(`/api/queue/${qitemId}/update`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "b@r" }, body: JSON.stringify(body),
+    });
+    const show = async (qitemId: string) => (await app.request(`/api/queue/${qitemId}`)).json() as Promise<Record<string, any>>;
+    const row = await queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "re-park after a fired timer", nudge: false });
+    queueRepo.claim({ qitemId: row.qitemId, destinationSession: "b@r" });
+    const id = row.qitemId;
+    expect((await post(id, { state: "blocked", blockedOn: "gate:build-seat-handback", wakeAfterSeconds: 7200,
+      transitionNote: "continuation: first park" })).status).toBe(200);
+    const first = (db.prepare("SELECT wake_ref FROM queue_transition_wakes WHERE qitem_id = ? AND phase = 'armed'")
+      .get(id) as { wake_ref: string }).wake_ref;
+    queueRepo.recordWatchdogWakeAttempt(first, "ok");
+    expect(db.prepare("SELECT state FROM watchdog_jobs WHERE job_id = ?").get(first)).toMatchObject({ state: "terminal" });
+    expect((await post(id, { transitionNote: "progress note between fire and re-park" })).status).toBe(200);
+    expect((await show(id)).waiting.nextBackstop).toMatchObject({ mechanism: "UNVERIFIED: no timed backstop" });
+
+    // The CLI's `rig queue block` body, verbatim in shape.
+    const repark = await post(id, {
+      state: "blocked",
+      blockedOn: "gate:build-seat-handback",
+      summary: "Tell the operator when each build seat is between units",
+      wakeAfterSeconds: 7200,
+      transitionNote: "continuation: check each build seat for a gap",
+    });
+    expect(repark.status).toBe(200);
+    const armed = db.prepare("SELECT wake_kind, wake_ref FROM queue_transition_wakes WHERE qitem_id = ? AND phase = 'armed' ORDER BY transition_id DESC")
+      .get(id) as { wake_kind: string; wake_ref: string };
+    expect(armed.wake_ref).not.toBe(first);
+    expect(armed.wake_kind).toBe("timer");
+    expect(db.prepare("SELECT target_session, interval_seconds, state FROM watchdog_jobs WHERE job_id = ?").get(armed.wake_ref))
+      .toMatchObject({ target_session: "b@r", interval_seconds: 7200, state: "active" });
+    expect((await show(id)).waiting.nextBackstop).toMatchObject({ mechanism: `watchdog:${armed.wake_ref}`, intervalSeconds: 7200 });
+  });
+
   // 0.5.1-54 DR-1 — the create-path failed-nudge surface (the NAMED, human/agent-visible read path).
   it("DR-1: GET /undelivered surfaces the failed-nudge pending strand, V1-only", async () => {
     const failed = await queueRepo.create({ sourceSession: "a@rig", destinationSession: "b@rig", body: "x" });
