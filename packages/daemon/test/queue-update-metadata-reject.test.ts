@@ -92,6 +92,22 @@ describe("51-06 D2 narrowed — queue update metadata on a state change", () => 
     expect(res).toMatchObject({ state: "in-progress", summary: "Original subject", evidenceRef: "/e" });
   });
 
+  it.each([
+    ["no --state", "the summary", { summary: "S" }],
+    ["no --state", "the evidence ref", { evidenceRef: "/proof/x.md" }],
+    ["the same terminal state", "the summary", { state: "done", summary: "S" }],
+    ["the same terminal state", "the evidence ref", { state: "done", evidenceRef: "/proof/x.md" }],
+  ] as const)("a note-only append with %s still refuses %s, and writes nothing", async (_how, _field, extra) => {
+    const id = await mkItem();
+    if ("state" in extra) repo.update({ qitemId: id, actorSession: "dev-x@rig", state: "done", closureReason: "no-follow-on" });
+    const before = repo["getByIdOrThrow"](id);
+    const beforeTxns = txnCount(id);
+    expect(() => repo.update({ qitemId: id, actorSession: "dev-x@rig", transitionNote: "just a note", ...extra }))
+      .toThrow(expect.objectContaining({ code: "note_append_fields_not_admitted" }));
+    expect(repo["getByIdOrThrow"](id)).toEqual(before);
+    expect(txnCount(id)).toBe(beforeTxns);
+  });
+
   it("metadata-free update is UNCHANGED (null = absent)", async () => {
     const id = await mkItem();
     const res = repo.update({ qitemId: id, actorSession: "dev-x@rig", state: "in-progress", summary: null, evidenceRef: null });
