@@ -112,6 +112,20 @@ function sessionKey(input) {
   return raw.replace(/[^a-zA-Z0-9_.@-]/g, "_");
 }
 
+// OPR.0.4.1.09: pointer to this seat's per-seat post-compaction extra
+// (compaction/post-compact-extra/<seat>.md), surfaced by the bridge reader
+// (compaction-restore-bridge.cjs, "Per-seat restore map"). Returned ONLY when it
+// EXISTS, so the marker never points at an unresolvable restoreMapPath; null otherwise.
+function perSeatRestoreMapPath(input) {
+  const p = path.join(getOpenRigHome(), "compaction", "post-compact-extra", `${sessionKey(input)}.md`);
+  try {
+    fs.accessSync(p);
+    return p;
+  } catch {
+    return null;
+  }
+}
+
 function pendingMarkerPath(input) {
   return path.join(getOpenRigHome(), "compaction", "restore-pending", `${sessionKey(input)}.json`);
 }
@@ -149,6 +163,8 @@ function writePendingRestoreMarker(input, parsed, restoreInstruction, customMess
     outputDir: parsed.outputDir,
     restoreInstruction,
     postCompactInstruction: customMessage || "",
+    // OPR.0.4.1.09: per-seat restore-map pointer (post-compact-extra/<seat>.md) or null.
+    restoreMapPath: perSeatRestoreMapPath(input),
     expectedAck: "restored from packet at <path>; resumed at step <X>",
     deliveredAt: null,
     deliveryCount: 0,
