@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { reconcileSkillLoadout, resolvePluginSkills, resolveSkillLoadout, type SkillLoadout } from "../src/domain/skill-catalog.js";
+import { listPluginSkillNames, reconcileSkillLoadout, resolvePluginSkills, resolveSkillLoadout, type SkillLoadout } from "../src/domain/skill-catalog.js";
 
 const roots: string[] = [];
 
@@ -772,6 +772,68 @@ describe("plugin skills in the managed loadout", () => {
     expect(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "codex", pluginType: "codex" }).entries.map((entry) => entry.id))
       .toEqual(["delegating-work", "queue-handoff"]);
     expect(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code", pluginType: "codex" }).entries).toEqual([]);
+  });
+
+  it("returns only the included skills, and every skill when nothing is included", () => {
+    const f = fixture([]);
+    const plugin = writePlugin(f.root, [".claude-plugin", ".codex-plugin"], ["queue-handoff", "delegating-work", "refocusing"]);
+    const all = resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code" });
+    expect(all.entries.map((entry) => entry.id)).toEqual(["delegating-work", "queue-handoff", "refocusing"]);
+
+    for (const runtime of ["claude-code", "codex"] as const) {
+      const some = resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime, include: ["refocusing", "queue-handoff"] });
+      expect(some.entries.map((entry) => entry.id)).toEqual(["queue-handoff", "refocusing"]);
+    }
+    // The kept entries are the same records the unfiltered read produces.
+    expect(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code", include: ["queue-handoff"] }).entries)
+      .toEqual(all.entries.filter((entry) => entry.id === "queue-handoff"));
+    expect(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code", include: [] }).entries).toEqual([]);
+    expect(listPluginSkillNames(plugin)).toEqual(["delegating-work", "queue-handoff", "refocusing"]);
+  });
+
+  it("removes only the deselected copies OpenRig owns when a seat's selection narrows, and adds them back when it widens", () => {
+    const f = fixture([]);
+    const plugin = writePlugin(f.root, [".claude-plugin"], ["queue-handoff", "delegating-work", "refocusing", "mission-slice-sop"]);
+    const skillsDir = join(f.project, ".claude", "skills");
+    const resolve = (include?: string[]) =>
+      loadoutOf(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code", ...(include ? { include } : {}) }).entries, f.root);
+    const reconcile = (loadout: SkillLoadout) =>
+      reconcileSkillLoadout({ loadout, runtime: "claude-code", cwd: f.project, topologyOwner: "build-impl@proj", apply: true });
+
+    // The user's own skill, which OpenRig never projected.
+    mkdirSync(join(skillsDir, "mine"), { recursive: true });
+    writeFileSync(join(skillsDir, "mine", "SKILL.md"), "---\nname: mine\ndescription: The user's own.\n---\n");
+    expect(reconcile(resolve())).toMatchObject({ ok: true, applied: true });
+    expect(readdirSync(skillsDir).filter((name) => name !== ".gitignore").sort()).toEqual(["delegating-work", "mine", "mission-slice-sop", "queue-handoff", "refocusing"]);
+    // An operator edit to a copy that is about to be deselected.
+    const edited = join(skillsDir, "mission-slice-sop", "SKILL.md");
+    writeFileSync(edited, "operator edit\n");
+
+    const narrowed = reconcile(resolve(["queue-handoff", "refocusing"]));
+    expect(narrowed).toMatchObject({ ok: true, applied: true, removed: ["delegating-work"], errors: [] });
+    expect(narrowed.receipts.find((receipt) => receipt.id === "mission-slice-sop"))
+      .toMatchObject({ status: "shadowed", detail: expect.stringMatching(/^kept: .*no longer selected/) });
+    expect(readdirSync(skillsDir).filter((name) => name !== ".gitignore").sort()).toEqual(["mine", "mission-slice-sop", "queue-handoff", "refocusing"]);
+    expect(readFileSync(edited, "utf8")).toBe("operator edit\n");
+    expect(readFileSync(join(skillsDir, "mine", "SKILL.md"), "utf8")).toContain("The user's own.");
+    const manifestPath = join(f.project, ".openrig", "skill-loadouts", "claude-code.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { skills: Array<{ id: string }>; topologySelections: Record<string, string[]> };
+    expect(manifest.skills.map((skill) => skill.id)).toEqual(["queue-handoff", "refocusing"]);
+    expect(manifest.topologySelections).toEqual({ "build-impl@proj": ["queue-handoff", "refocusing"] });
+    // The ignore block lists only the copies OpenRig still owns.
+    const ignore = readFileSync(join(skillsDir, ".gitignore"), "utf8");
+    expect(ignore).toMatch(/\/queue-handoff\//);
+    expect(ignore).toMatch(/\/refocusing\//);
+    expect(ignore).not.toMatch(/delegating-work|mission-slice-sop|mine/);
+
+    // Relaunching with the same narrow list changes nothing.
+    expect(reconcile(resolve(["queue-handoff", "refocusing"]))).toMatchObject({ ok: true, applied: false, removed: [] });
+
+    // Widening again projects delegating-work; the edited copy, no longer OpenRig's, is left as it is.
+    const widened = reconcile(resolve());
+    expect(widened).toMatchObject({ ok: true, errors: [] });
+    expect(existsSync(join(skillsDir, "delegating-work", "SKILL.md"))).toBe(true);
+    expect(readFileSync(edited, "utf8")).toBe("operator edit\n");
   });
 
   it("skips a plugin skill it cannot copy exactly and says why", () => {

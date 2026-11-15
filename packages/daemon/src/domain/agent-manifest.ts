@@ -316,12 +316,47 @@ export function validateAgentSpec(raw: unknown): ValidationResult {
               }
             }
           }
+
+          errors.push(...validatePluginSkillSelection(uses, `profiles.${profileName}.uses`));
         }
       }
     }
   }
 
   return { valid: errors.length === 0, errors, ...(advisories.length > 0 ? { advisories } : {}) };
+}
+
+/** `uses.plugin_skills`: a map from a plugin ref the profile selects in `uses.plugins` to the names of that plugin's
+ *  skills to project. Whether each name is one of the plugin's skills is checked when the profile is resolved
+ *  (preflight and launch), where the plugin's files can be read. */
+function validatePluginSkillSelection(uses: Record<string, unknown>, prefix: string): string[] {
+  const raw = uses["plugin_skills"];
+  if (raw === undefined) return [];
+  const field = `${prefix}.plugin_skills`;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return [`${field}: must be a map from a plugin in ${prefix}.plugins to a list of that plugin's skill names`];
+  }
+  const errors: string[] = [];
+  const selected = Array.isArray(uses["plugins"]) ? (uses["plugins"] as unknown[]).filter((ref) => typeof ref === "string") : [];
+  for (const [pluginRef, names] of Object.entries(raw as Record<string, unknown>)) {
+    if (!selected.includes(pluginRef)) {
+      errors.push(`${field}: "${pluginRef}" is not in ${prefix}.plugins; name a plugin this profile selects, written the same way`);
+    }
+    if (!Array.isArray(names)) {
+      errors.push(`${field}.${pluginRef}: must be a list of skill names (an empty list projects none of its skills)`);
+      continue;
+    }
+    const seen = new Set<string>();
+    for (const name of names as unknown[]) {
+      if (typeof name !== "string" || !name.trim()) {
+        errors.push(`${field}.${pluginRef}: skill names must be non-empty strings (got ${JSON.stringify(name)})`);
+        continue;
+      }
+      if (seen.has(name)) errors.push(`${field}.${pluginRef}: "${name}" is listed twice`);
+      seen.add(name);
+    }
+  }
+  return errors;
 }
 
 /**
@@ -496,8 +531,14 @@ function validatePluginResources(entries: Array<Record<string, unknown>>): strin
   return errors;
 }
 
+function isPluginSkillMap(value: unknown): value is Record<string, string[]> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.values(value as Record<string, unknown>).every((names) => Array.isArray(names));
+}
+
 function normalizeProfile(raw: Record<string, unknown>): ProfileSpec {
   const uses = raw["uses"] as Record<string, unknown> | undefined;
+  const pluginSkills = uses?.["plugin_skills"];
   return {
     summary: raw["summary"] as string | undefined,
     preferences: raw["preferences"]
@@ -517,6 +558,7 @@ function normalizeProfile(raw: Record<string, unknown>): ProfileSpec {
       subagents: Array.isArray(uses?.["subagents"]) ? uses["subagents"] as string[] : [],
       plugins: Array.isArray(uses?.["plugins"]) ? uses["plugins"] as string[] : [],
       runtimeResources: Array.isArray(uses?.["runtime_resources"]) ? uses["runtime_resources"] as string[] : [],
+      ...(isPluginSkillMap(pluginSkills) ? { pluginSkills: { ...pluginSkills } } : {}),
     },
     activity: normalizeActivityBlock(raw["activity"]),
   };

@@ -285,6 +285,37 @@ Each array contains resource IDs. These can be:
 The `uses` categories are: `skills`, `guidance`, `subagents`, `plugins`, `runtime_resources`. A `uses.hooks` key, even an
 empty list, is refused: hooks ship inside plugins.
 
+#### Choosing a plugin's skills (`plugin_skills`)
+
+By default a seat gets every skill of every plugin it selects. `uses.plugin_skills` narrows that per plugin, so a seat
+carries only the skills it uses (each projected skill's description sits in every prompt):
+
+```yaml
+uses:
+  plugins: [shared:openrig-core]
+  plugin_skills:
+    shared:openrig-core: [claude-compaction-restore, messaging-the-human, seat-continuity-and-handover]
+```
+
+- Each key is a plugin the profile selects, written exactly as in `uses.plugins`. The value lists that plugin's skill
+  names (each `SKILL.md`'s frontmatter `name`). An empty list projects none of its skills.
+- A plugin the map doesn't name keeps all its skills, so a profile without `plugin_skills` behaves as before.
+- Only the skills projected into the seat's skill folder (`.claude/skills` or `.agents/skills`) are filtered. The
+  plugin folder itself (`.claude/plugins/<id>`, `.codex/plugins/<id>`) is still projected whole, so the plugin's hooks
+  and every file they read keep working. For `openrig-core` that includes
+  `skills/claude-compaction-restore/scripts/precompact-hook.mjs` and `skills/refocusing/references/refocus.md`.
+  OpenRig's managed compaction prompts tell a seat to read the `claude-compaction-restore` skill, so keep that skill
+  in the list for a seat that compacts.
+- A name the plugin has no skill for is refused, with the plugin's real skill names, by `rig spec preflight`, `rig up`
+  and launch (`Profile "default" uses.plugin_skills: plugin "shared:openrig-core" has no skill named "…"; its skills
+  (at …) are: …`). `rig agent validate` checks only the shape: a map, keys in `uses.plugins`, lists of non-empty,
+  unrepeated names.
+- At each launch or relaunch the seat's skill folder is reconciled to the list. A skill no longer selected is removed
+  if OpenRig projected it and it is unchanged. A copy someone edited is left in place and is no longer managed
+  (`plugin_skill_kept`). Folders OpenRig didn't project are never touched. Seats that share one working directory
+  (the kernel seats share `~/.openrig/workspace`) get the union of their selections.
+- Pi and OMP don't project plugin skills; the names are still checked.
+
 **Skills resolve more widely than other resources.** For Claude Code and Codex seats, a skill ID that no declared
 resource provides is looked up at launch in the seat's runtime skill folder (`<cwd>/.claude/skills` or
 `<cwd>/.agents/skills`), then the `skills/` folder beside the RigSpec, then the home skill folder, then the managed
@@ -369,7 +400,7 @@ version.
 | `skills` | `id`, `path` | Skill directories containing a SKILL.md. Projected by the runtime adapter: Claude to `<cwd>/.claude/skills/<id>`, Codex to `<cwd>/.agents/skills/<id>`, Pi and OMP to the seat's own agent directory under OpenRig's state. |
 | `guidance` | `id`, `path`, `target`*, `merge`* | Guidance files, merged as a managed block (see "Guidance Resources"). |
 | `subagents` | `id`, `path` | Subagent definitions. Claude copies them to `<cwd>/.claude/agents/`, Codex to `<cwd>/.agents/`; Pi and OMP don't project them. |
-| `plugins` | `id`, `source`, `plugin_type`* | Local plugin directories; selected with `uses.plugins`. `source.kind` must be `local`. `plugin_type` is `claude`, `codex` or `auto` (default): Claude projects a plugin to `<cwd>/.claude/plugins/<id>` when it is `claude`, or `auto` with a `.claude-plugin/plugin.json`; Codex projects to `<cwd>/.codex/plugins/<id>` when it is `codex`, or `auto` with a `.codex-plugin/plugin.json`. Pi and OMP don't project plugins. Neither Claude Code nor Codex reads skills from that plugin folder, so when a seat is instantiated a selected plugin's skills are also projected into the seat's skill folder (`.claude/skills/<name>` or `.agents/skills/<name>`) under their plain names. A folder already there with the same name, ignoring letter case, that OpenRig doesn't own is left alone; unless it already holds the same bytes, launch warns `plugin_skill_kept`. A skill the seat already selects by that name (from its profile, the System World or the project) keeps that source, an edited OpenRig-owned copy is kept with `plugin_skill_kept`, a retained plugin copy whose remembered source can no longer be projected is also kept with `plugin_skill_kept` (a seat selecting that plugin refreshes it at its next launch), and if the plugin skills can't be projected the seat launches without them and warns `plugin_skills_not_projected`. Hooks ship inside plugins. |
+| `plugins` | `id`, `source`, `plugin_type`* | Local plugin directories; selected with `uses.plugins`. `source.kind` must be `local`. `plugin_type` is `claude`, `codex` or `auto` (default): Claude projects a plugin to `<cwd>/.claude/plugins/<id>` when it is `claude`, or `auto` with a `.claude-plugin/plugin.json`; Codex projects to `<cwd>/.codex/plugins/<id>` when it is `codex`, or `auto` with a `.codex-plugin/plugin.json`. Pi and OMP don't project plugins. Neither Claude Code nor Codex reads skills from that plugin folder, so when a seat is instantiated a selected plugin's skills are also projected into the seat's skill folder (`.claude/skills/<name>` or `.agents/skills/<name>`) under their plain names. A folder already there with the same name, ignoring letter case, that OpenRig doesn't own is left alone; unless it already holds the same bytes, launch warns `plugin_skill_kept`. A skill the seat already selects by that name (from its profile, the System World or the project) keeps that source, an edited OpenRig-owned copy is kept with `plugin_skill_kept`, a retained plugin copy whose remembered source can no longer be projected is also kept with `plugin_skill_kept` (a seat selecting that plugin refreshes it at its next launch), and if the plugin skills can't be projected the seat launches without them and warns `plugin_skills_not_projected`. `uses.plugin_skills` limits which of a plugin's skills are projected (see "Choosing a plugin's skills"). Hooks ship inside plugins. |
 | `runtime_resources` | `id`, `path`, `runtime`, `type` | Runtime-specific resources. `runtime` and `type` are required. An entry whose `runtime` isn't the seat's runtime is skipped. Pi and OMP project none. |
 
 *Fields marked with `*` are optional.
@@ -482,6 +513,9 @@ restore behavior, and the distinction between readiness and verified proof.
    a plugin instead.
 12b. A plugin needs a unique non-empty `id`, a `source` object with `kind: local` and a non-empty `path`, and a
    `plugin_type` of `claude`, `codex` or `auto` when given.
+12d. `profiles.<name>.uses.plugin_skills`, when given, must be a map whose keys appear in that profile's
+   `uses.plugins`, each to a list of non-empty, unrepeated skill names. Whether each name is one of the plugin's
+   skills is checked at preflight and launch (see "Choosing a plugin's skills").
 12c. Lifecycle `mechanic` must be a canonical `seat@rig` session address.
 12. Lifecycle `execution_mode` must be `interactive_resident`.
 13. Lifecycle `compaction_strategy` must be one of `default-compaction`, `managed-compaction`, `handover`, `apprentice-handover` — or a deprecated alias (`harness_native`, `pod_continuity`), which validates with a deprecation advisory and normalizes to its canonical value (OPR.0.5.6.20).

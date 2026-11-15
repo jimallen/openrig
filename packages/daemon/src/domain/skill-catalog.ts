@@ -456,23 +456,38 @@ export function resolveSkillLoadout(input: {
  *  nor Codex reads skills from the plugin folder OpenRig projects into a seat's working
  *  directory, so they travel in the managed loadout instead. A plugin applies to a
  *  runtime as the adapters decide: an explicit pluginType, otherwise the runtime's own
- *  manifest (.claude-plugin/ or .codex-plugin/). */
+ *  manifest (.claude-plugin/ or .codex-plugin/). With `include` (the profile's
+ *  `uses.plugin_skills` for this plugin), only the skills it names are returned; the
+ *  caller checks the names first with listPluginSkillNames. */
 export function resolvePluginSkills(input: {
   pluginId: string;
   pluginRoot: string;
   runtime: SkillRuntime;
   pluginType?: "claude" | "codex" | "auto";
+  include?: readonly string[];
 }): { entries: CatalogSkill[]; warnings: string[] } {
-  const entries: CatalogSkill[] = [];
-  const warnings: string[] = [];
   const pluginRoot = nodePath.resolve(input.pluginRoot);
   const manifestDir = input.runtime === "claude-code" ? ".claude-plugin" : ".codex-plugin";
   const pluginType = input.pluginType ?? "auto";
   const applies = pluginType === "auto"
     ? existsSync(nodePath.join(pluginRoot, manifestDir, "plugin.json"))
     : pluginType === (input.runtime === "claude-code" ? "claude" : "codex");
-  if (!applies) return { entries, warnings };
+  if (!applies) return { entries: [], warnings: [] };
+  const all = readPluginSkills(input.pluginId, pluginRoot, manifestDir);
+  if (!input.include) return all;
+  const include = new Set(input.include);
+  return { entries: all.entries.filter((entry) => include.has(entry.id)), warnings: all.warnings };
+}
 
+/** The names of a plugin's skills (each SKILL.md's frontmatter `name`), whatever runtime it applies to, for checking
+ *  a profile's `uses.plugin_skills` before launch. A skill folder the plugin can't supply is left out. */
+export function listPluginSkillNames(pluginRoot: string): string[] {
+  return readPluginSkills("", nodePath.resolve(pluginRoot), ".claude-plugin").entries.map((entry) => entry.id);
+}
+
+function readPluginSkills(pluginId: string, pluginRoot: string, manifestDir: string): { entries: CatalogSkill[]; warnings: string[] } {
+  const entries: CatalogSkill[] = [];
+  const warnings: string[] = [];
   let manifest: Record<string, unknown> = {};
   const manifestPath = [manifestDir, ".claude-plugin", ".codex-plugin"]
     .map((dir) => nodePath.join(pluginRoot, dir, "plugin.json"))
@@ -485,13 +500,13 @@ export function resolvePluginSkills(input: {
   }
   const skillsDir = nodePath.resolve(pluginRoot, typeof manifest["skills"] === "string" ? manifest["skills"] : "skills");
   if (!isWithin(pluginRoot, skillsDir) || !existsSync(skillsDir)) return { entries, warnings };
-  const revision = `plugin:${input.pluginId}${typeof manifest["version"] === "string" ? `@${manifest["version"]}` : ""}`;
+  const revision = `plugin:${pluginId}${typeof manifest["version"] === "string" ? `@${manifest["version"]}` : ""}`;
 
   let listing: Dirent[];
   try {
     listing = readdirSync(skillsDir, { withFileTypes: true });
   } catch (err) {
-    warnings.push(`plugin_skill_skipped: plugin ${input.pluginId} skills at ${skillsDir}: ${(err as Error).message}`);
+    warnings.push(`plugin_skill_skipped: plugin ${pluginId} skills at ${skillsDir}: ${(err as Error).message}`);
     return { entries, warnings };
   }
   for (const entry of listing.sort((a, b) => compareBytes(a.name, b.name))) {
@@ -514,10 +529,10 @@ export function resolvePluginSkills(input: {
         digest: tree.digest,
         files: tree.files,
         selectedBy: ["topology"],
-        pluginId: input.pluginId,
+        pluginId,
       });
     } catch (err) {
-      warnings.push(`plugin_skill_skipped: plugin ${input.pluginId} skill at ${sourceDir}: ${(err as Error).message}`);
+      warnings.push(`plugin_skill_skipped: plugin ${pluginId} skill at ${sourceDir}: ${(err as Error).message}`);
     }
   }
   entries.sort((a, b) => compareBytes(a.id, b.id));
