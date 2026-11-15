@@ -12,10 +12,12 @@
 // `last_assistant_message` (the text of the final response) and the common `transcript_path`. The docs say the transcript
 // may lag at Stop time, so `last_assistant_message` is read first; the transcript is the fallback for a Claude Code that
 // does not send it.
-// Output: `{"decision":"block","reason":...}` on stdout ("Stop decision control"), which keeps the turn going with the
-// reason as the model's next instruction. Anything else prints nothing and the turn ends.
+// Output: `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":...}}` on stdout ("Stop decision control"), the
+// non-error way to keep the turn going with the text as the model's next instruction (`decision: "block"` does the same but
+// shows the human a hook-error notice). Anything else prints nothing and the turn ends.
 //
-// FAIL OPEN: unreadable input, a parse error, a missing or unreadable transcript, or any internal error prints nothing.
+// FAIL OPEN: unreadable or oversized (over 8 MB) input, a parse error, a missing or unreadable transcript, or any internal
+// error prints nothing.
 // NO LOOPS: when `stop_hook_active` is true (the turn is already continuing because a Stop hook blocked it) it never
 // blocks, so a seat that still ends with a question after one correction is let through.
 
@@ -28,7 +30,18 @@ const MAX_QUOTE_CHARS = 160;
 
 // Phrasings that ask the human for something without ending in "?". Matched only at the start of a sentence (after list
 // markers and emphasis), so "impl will let me know when it lands" is not a question.
-const STOCK_ASK = /^(?:want me to|shall i|should i|let me know|tell me (?:if|whether|which)|say (?:when|if)|would you like|do you want)\b/i;
+// An address may come first: "Jim, want me to ...", "Jim, should I ...".
+const STOCK_ASK = /^(?:[a-z][\w'’-]*,\s+)?(?:want me to|shall i|should i|let me know|tell me (?:if|whether|which)|say (?:when|if)|would you like|do you want)\b/i;
+// Phrasings that hand the human a decision wherever they sit in a sentence ("... so it's your call.", "Still waiting on you:").
+// "your call" counts only as "it's / that's / is / be your call" or at the start of a sentence ("Your call:"), not "your call on
+// X is with build-ux" or "I've sent your call" (a decision already made). "waiting on you" counts only when the sentence does not
+// say that nothing is ("Nothing is waiting on you.", "Waiting on you: nothing.").
+const ANYWHERE_ASK = /\b(?:please confirm|i need your go)\b|(?:\b(?:it'?s|it’s|that'?s|that’s|is|be)\s+|^)your call\b(?!\s+on\b)/i;
+const WAITING_ASK = /\b(?:waiting on you|waiting for your)\b/i;
+const NOTHING_WAITING = /\b(?:nothing|no seat|no one|nobody|none)\b/i;
+// The opening words of a sentence that asks: a "?" right before a closing quote counts only in such a sentence
+// ('Should the target be "no worse than Odoscope?"'), not in one that names a quoted question ('the app asks "which is it?"').
+const QUESTION_OPENER = /^(?:[a-z][\w'’-]*,\s+)?(?:should|shall|do|does|did|is|are|was|were|can|could|would|will|want|which|what|who|whom|whose|how|why)\b/i;
 // "If you want, I'll ..." / "If you'd like X, say so": an offer waiting on a yes, the same ask as "Say if you want ...". Only
 // when the sentence goes on to an offer or a request for an answer, so "If you want it to stick, the rule text needs changing"
 // (a statement) is not counted.
@@ -69,8 +82,18 @@ function sentenceEndingAt(line, end) {
   return sentence.length > MAX_QUOTE_CHARS ? `…${sentence.slice(sentence.length - MAX_QUOTE_CHARS + 1)}` : sentence;
 }
 
-/** Sentences of `line` that ask a question: a "?" that ends a sentence (followed by whitespace or the end of the line,
- *  after closing emphasis or brackets), not inside quoted speech and not inside a word or URL ("a?b", "?x=1"). */
+/** True when position `k` of `line` ends a sentence: the end of the line, whitespace, a dash ("?— and"), or a full stop that
+ *  is itself followed by whitespace or the end ("?." but not "a?.b"). */
+function endsSentenceAt(line, k) {
+  const c = line[k];
+  if (c === undefined || /\s/.test(c) || c === "—" || c === "–") return true;
+  return c === "." && (line[k + 1] === undefined || /\s/.test(line[k + 1]));
+}
+
+/** Sentences of `line` that ask a question: a "?" that ends a sentence (followed by whitespace, a dash, a full stop or the end
+ *  of the line, after closing emphasis or brackets), not inside a word or URL ("a?b", "?x=1"). A "?" right before a closing
+ *  quote is quoted speech ('impl asked "is it flaky?" and ...') unless that quote ends the line or is followed by a full stop
+ *  or a dash ('Should the target be "no worse than Odoscope?"'). */
 function questionMarks(line) {
   const found = [];
   for (let i = 0; i < line.length; i++) {
@@ -78,23 +101,33 @@ function questionMarks(line) {
     let j = i + 1;
     while (j < line.length && line[j] === "?") j++;
     const lastMark = j - 1;
-    const next = line[j];
-    if (next !== undefined && QUOTE_CLOSERS.has(next)) { i = j; continue; }
+    if (j < line.length && QUOTE_CLOSERS.has(line[j])) {
+      let k = j;
+      while (k < line.length && (QUOTE_CLOSERS.has(line[k]) || CLOSERS.has(line[k]))) k++;
+      const c = line[k];
+      const quoteEnds = c === undefined || c === "—" || c === "–" || (c === "." && (line[k + 1] === undefined || /\s/.test(line[k + 1])));
+      const sentence = quoteEnds ? sentenceEndingAt(line, k - 1) : "";
+      if (quoteEnds && QUESTION_OPENER.test(sentence)) found.push(sentence);
+      i = k - 1;
+      continue;
+    }
     while (j < line.length && CLOSERS.has(line[j])) j++;
-    if (j < line.length && !/\s/.test(line[j])) { i = j - 1; continue; }
+    if (!endsSentenceAt(line, j)) { i = j - 1; continue; }
     found.push(sentenceEndingAt(line, lastMark));
     i = j - 1;
   }
   return found;
 }
 
-/** Sentences of `line` that open with a stock asking phrase ("Want me to ...", "Let me know ..."). */
+/** Sentences of `line` that open with a stock asking phrase ("Want me to ...", "Let me know ...") or hold a decision handed to
+ *  the human anywhere ("... so it's your call."). */
 function stockAsks(line) {
   const found = [];
   const body = line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
   for (const sentence of body.split(/(?<=[.!?:;])\s+/)) {
     const bare = sentence.replace(/^[\s*_~(\["“]+/, "");
-    if (STOCK_ASK.test(bare) || OFFER_ASK.test(bare)) found.push(bare.length > MAX_QUOTE_CHARS ? `${bare.slice(0, MAX_QUOTE_CHARS - 1)}…` : bare.trim());
+    const waiting = WAITING_ASK.test(bare) && !NOTHING_WAITING.test(bare);
+    if (STOCK_ASK.test(bare) || OFFER_ASK.test(bare) || ANYWHERE_ASK.test(bare) || waiting) found.push(bare.length > MAX_QUOTE_CHARS ? `${bare.slice(0, MAX_QUOTE_CHARS - 1)}…` : bare.trim());
   }
   return found;
 }
@@ -118,9 +151,11 @@ function contentBlocks(entry) {
   return Array.isArray(content) ? content.filter((b) => b && typeof b === "object") : [];
 }
 
-/** A transcript entry that starts a turn: a user prompt (not a tool result, not a meta entry). */
+/** A transcript entry that starts a turn: any user entry that is not a tool result. That includes `isMeta` entries: on a CoS
+ *  seat those are cross-session messages and heartbeats, each of which starts a turn (counted in the two CoS transcripts on stu,
+ *  2026-11-15: 2,459 of 2,474 follow an assistant entry). Treating one that lands mid-turn as a start only shortens the turn read, which can only let a turn end. */
 function isPrompt(entry) {
-  if (!entry || entry.type !== "user" || entry.isMeta === true) return false;
+  if (!entry || entry.type !== "user") return false;
   const content = entry.message && entry.message.content;
   if (typeof content === "string") return true;
   return Array.isArray(content) && !content.some((b) => b && b.type === "tool_result");
@@ -192,29 +227,51 @@ function decide(input, readTranscript = readTail) {
     }
     if (askedAfter) return null;
     const questions = findQuestions(text);
-    return questions.length > 0 ? { decision: "block", reason: blockReason(questions) } : null;
+    return questions.length > 0 ? continueWith(blockReason(questions)) : null;
   } catch {
     return null;
   }
 }
 
-async function readStdin() {
+/** Keep the turn going with `context` as the model's next instruction: the Stop hook's non-error continuation
+ *  (`hookSpecificOutput.additionalContext`), labelled "Stop hook feedback" in the transcript with no hook-error notice, under the
+ *  same loop protections as `decision: "block"` (docs, "Stop decision control"; measured on 2.1.325: the turn continued and the
+ *  next stop arrived with stop_hook_active true). */
+function continueWith(context) {
+  return { hookSpecificOutput: { hookEventName: "Stop", additionalContext: context } };
+}
+
+/** Hook input larger than this is not read: the hook fails open. A Stop input is a few KB plus the final reply. */
+const MAX_STDIN_BYTES = 8 * 1024 * 1024;
+
+/** The hook input, or null when it is over MAX_STDIN_BYTES or cannot be read. */
+async function readStdin(stream = process.stdin, maxBytes = MAX_STDIN_BYTES) {
   return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => { data += chunk; });
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(""));
+    const chunks = [];
+    let size = 0;
+    let done = false;
+    const finish = (value) => { if (!done) { done = true; resolve(value); } };
+    stream.on("data", (chunk) => {
+      if (done) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      size += buf.length;
+      if (size > maxBytes) { finish(null); stream.pause(); return; }
+      chunks.push(buf);
+    });
+    stream.on("end", () => finish(Buffer.concat(chunks).toString("utf8")));
+    stream.on("error", () => finish(null));
   });
 }
 
 async function main() {
   let input = null;
-  try { input = JSON.parse(await readStdin()); } catch { return; }
+  const raw = await readStdin();
+  if (raw === null) { process.exit(0); }
+  try { input = JSON.parse(raw); } catch { return; }
   const decision = decide(input);
   if (decision) process.stdout.write(`${JSON.stringify(decision)}\n`);
 }
 
 if (require.main === module) main().catch(() => {});
 
-module.exports = { decide, findQuestions, lastTurnFromTranscript, proseLines, blockReason, STOCK_ASK, OFFER_ASK };
+module.exports = { decide, findQuestions, lastTurnFromTranscript, proseLines, blockReason, readStdin, MAX_STDIN_BYTES, STOCK_ASK, OFFER_ASK };

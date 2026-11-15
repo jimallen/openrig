@@ -12,6 +12,7 @@ import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
+import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
 import { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import { ClaudeResumeAdapter, type ResumeResult } from "../src/adapters/claude-resume.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
@@ -301,5 +302,67 @@ describe("ask_in_modal: legacy (non-pod) restore passes the persisted declaratio
     const tail = calls[0]!.slice(8);
     const expected = askInModal ? [null, false, false, true, remoteControl, true] : [null, false, false, true];
     expect(tail).toEqual(expected);
+  });
+});
+
+describe("ask_in_modal: the pod-aware restore's FRESH relaunch (no resume token) binds the persisted declaration", () => {
+  const dbs: ReturnType<typeof createFullTestDb>[] = [];
+  afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
+
+  // The same down -> snapshot -> restore chain as remote-control-lifecycle.test.ts, with no resume token, so restore takes the
+  // fresh relaunch (the startNode binding in restore-orchestrator) instead of attemptResume.
+  it.each([[true], [false]])("declared=%s", async (askInModal) => {
+    const db = createFullTestDb(); dbs.push(db);
+    const rigRepo = new RigRepository(db);
+    const sessionRegistry = new SessionRegistry(db);
+    const eventBus = new EventBus(db);
+    const snapshotRepo = new SnapshotRepository(db);
+    const checkpointStore = new CheckpointStore(db);
+    const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
+    const rig = rigRepo.createRig("fresh-restore");
+    db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("restore-pod", rig.id, "Test");
+    const node = rigRepo.addNode(rig.id, "exec.cos", { runtime: "claude-code", podId: "restore-pod", cwd: WORKSPACE, ...(askInModal ? { askInModal: true } : {}) });
+    const name = "exec-cos@fresh-restore";
+    const old = sessionRegistry.registerSession(node.id, name);
+    sessionRegistry.updateStatus(old.id, "running");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: name, tmuxPane: "%old" });
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(node.id, "[]", "[]", "[]", "claude-code");
+    let live = true;
+    const partialTmux: Partial<TmuxAdapter> = {
+      hasSession: vi.fn(async () => live),
+      probeSession: vi.fn(async () => ({ state: live ? "present" as const : "absent" as const })),
+      killSession: vi.fn(async () => { live = false; return { ok: true as const }; }),
+      createSession: vi.fn(async () => { live = true; return { ok: true as const }; }),
+      listSessions: vi.fn(async () => []),
+      listWindows: vi.fn(async () => []),
+      listPanes: vi.fn(async () => [{ id: "%new", index: 0, cwd: "/", width: 80, height: 24, active: true }]),
+      getPaneCommand: vi.fn(async () => "claude"),
+      capturePaneContent: vi.fn(async () => ""),
+      sendText: vi.fn(async () => ({ ok: true as const })),
+      sendKeys: vi.fn(async () => ({ ok: true as const })),
+    };
+    const tmux = partialTmux as TmuxAdapter;
+    const down = await new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotCapture, tmuxAdapter: tmux }).teardown(rig.id);
+    expect(down.errors).toEqual([]);
+    const launchHarness = vi.fn<RuntimeAdapter["launchHarness"]>(async () => ({ ok: true as const }));
+    const adapter: RuntimeAdapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness,
+    };
+    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
+      checkpointStore, nodeLauncher, tmuxAdapter: tmux, claudeResume: new ClaudeResumeAdapter(tmux), codexResume: new CodexResumeAdapter(tmux) });
+    // `rig up --existing <rig> --fresh exec.cos`: the seat skips the resume attempt and is relaunched fresh (`fresh-primed`).
+    const up = await restore.restore(down.snapshotId!, { adapters: { "claude-code": adapter }, freshLogicalIds: ["exec.cos"] });
+    if (!up.ok) throw new Error(up.message);
+    expect(up.result.nodes[0], JSON.stringify(up.result)).toMatchObject({ status: "fresh-primed" });
+    expect(launchHarness).toHaveBeenCalledTimes(1);
+    const binding = launchHarness.mock.calls[0]![0];
+    if (askInModal) expect(binding.askInModal).toBe(true);
+    else expect("askInModal" in binding).toBe(false);
   });
 });

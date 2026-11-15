@@ -17,8 +17,13 @@ import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const SCRIPT = askInModalGuardScriptPath();
+/** The Stop hook's non-error continuation (hooks docs, "Stop decision control"). */
+type Continuation = { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+const contextOf = (out: Continuation | null): string | undefined => out?.hookSpecificOutput.additionalContext;
 const guard = createRequire(import.meta.url)(SCRIPT) as {
-  decide: (input: unknown, readTranscript?: (file: string) => string) => { decision: string; reason: string } | null;
+  decide: (input: unknown, readTranscript?: (file: string) => string) => Continuation | null;
+  readStdin: (stream: NodeJS.ReadableStream, maxBytes?: number) => Promise<string | null>;
+  MAX_STDIN_BYTES: number;
   findQuestions: (text: string) => string[];
   lastTurnFromTranscript: (jsonl: string) => { text: string; askedAfter: boolean };
 };
@@ -59,6 +64,19 @@ describe("findQuestions: what counts as a question for the human", () => {
     ["If you'd like ..., say so", "If you'd like me to push it myself, say so.", ["If you'd like me to push it myself, say so."]],
     ["a stock phrase after a list marker", "- Let me know which.", ["Let me know which."]],
     ["a stock phrase in bold", "**Want me to go ahead.**", ["Want me to go ahead.**"]],
+    ["an address before the ask", "Jim, want me to start it.", ["Jim, want me to start it."]],
+    ["an address before Should I", "Jim, should I file it now.", ["Jim, should I file it now."]],
+    ["it's your call", "It touches the signing key, so it's your call.", ["It touches the signing key, so it's your call."]],
+    ["that's your call", "If it changes the rule, that's your call, and I'll bring it to you.", ["If it changes the rule, that's your call, and I'll bring it to you."]],
+    ["Your call: at a sentence start (reported up to the colon, where the sentence split falls)", "Your call: keep the short wording or the long one.", ["Your call:"]],
+    ["Please confirm", "The deploy is staged. Please confirm the window.", ["Please confirm the window."]],
+    ["I need your go", "I need your go to push.", ["I need your go to push."]],
+    ["waiting on you", "The Kickbite check is waiting on you for the key.", ["The Kickbite check is waiting on you for the key."]],
+    ["waiting for your", "Five lesson records are waiting for your go to push.", ["Five lesson records are waiting for your go to push."]],
+    ["? followed by a full stop (also a stock Should I)", "Should I merge it?.", ["Should I merge it?", "Should I merge it?."]],
+    ["? followed by an em dash", "Merge it?\u2014I can wait.", ["Merge it?"]],
+    ["? inside a closing quote that ends the sentence", "Should the target be \"no worse than Odoscope?\"", ["Should the target be \"no worse than Odoscope?\""]],
+    ["? inside a closing quote, then a full stop", "Do we call it \"done?\".", ["Do we call it \"done?\""]],
   ])("asks: %s", (_label, text, expected) => {
     expect(guard.findQuestions(text)).toEqual(expected);
   });
@@ -80,6 +98,14 @@ describe("findQuestions: what counts as a question for the human", () => {
     ["\"wants me to\"", "Jim wants me to hold the push."],
     ["a conditional that is a statement", "If you want it to stick, the rule text needs changing."],
     ["an instruction", "Then tell me it's done."],
+    ["nothing is waiting on you", "All 5 pool simulators are booted, and nothing is waiting on you."],
+    ["Waiting on you: nothing", "**Waiting on you:** nothing right now."],
+    ["your call on X (a decision already made)", "Your call on lw7t.61 is with build-ux2."],
+    ["sent your call", "I've sent your call on t2m1 to both seats."],
+    ["stays your call", "Raising the VM's memory stays your call, and nobody is touching it."],
+    ["a quoted question named in a statement", "When the first guess matches nothing, the app asks \"which is it?\""],
+    ["a quoted question mid-sentence", "The units are blocked behind \"which is it?\" and the meal note."],
+    ["an optional chaining token", "The crash was in a?.b on the old build."],
     ["empty", ""],
   ])("does not ask: %s", (_label, text) => {
     expect(guard.findQuestions(text)).toEqual([]);
@@ -99,18 +125,20 @@ describe("findQuestions: what counts as a question for the human", () => {
 describe("decide: the Stop hook's decision", () => {
   it("blocks a turn whose final reply asks in prose, with a reason that quotes the question and names the modal rule", () => {
     const out = guard.decide({ hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: "Report done. Should I merge it?" });
-    expect(out?.decision).toBe("block");
-    expect(out?.reason).toContain("\"Should I merge it?\"");
-    expect(out?.reason).toContain("AskUserQuestion");
-    expect(out?.reason).toContain("(Recommended)");
-    expect(out?.reason).toMatch(/one question per decision/);
-    expect(out?.reason).toMatch(/Do not repeat the question in prose/);
-    expect(out?.reason).toMatch(/rephrase it as a statement/);
+    expect(out?.hookSpecificOutput.hookEventName).toBe("Stop");
+    expect(Object.keys(out ?? {})).toEqual(["hookSpecificOutput"]); // no `decision: "block"`: that would show the human a hook-error notice
+    const reason = contextOf(out);
+    expect(reason).toContain("\"Should I merge it?\"");
+    expect(reason).toContain("AskUserQuestion");
+    expect(reason).toContain("(Recommended)");
+    expect(reason).toMatch(/one question per decision/);
+    expect(reason).toMatch(/Do not repeat the question in prose/);
+    expect(reason).toMatch(/rephrase it as a statement/);
   });
 
   it("the reason quotes at most three questions and counts the rest", () => {
     const out = guard.decide({ last_assistant_message: "A? B? C? D? E?" });
-    expect(out?.reason).toContain("\"A?\"; \"B?\"; \"C?\" (and 2 more)");
+    expect(contextOf(out)).toContain("\"A?\"; \"B?\"; \"C?\" (and 2 more)");
   });
 
   it("lets a turn end when its final reply asks nothing", () => {
@@ -165,16 +193,32 @@ describe("lastTurnFromTranscript: the final text of the last turn", () => {
   it("an AskUserQuestion BEFORE the final text does not excuse a new prose question", () => {
     const jsonl = [prompt("go"), assistant(toolUse("AskUserQuestion")), toolResult(), assistant(text("Noted. Want me to push too?"))].join("\n");
     expect(guard.lastTurnFromTranscript(jsonl).askedAfter).toBe(false);
-    expect(guard.decide({ transcript_path: "/t" }, () => jsonl)?.decision).toBe("block");
+    expect(contextOf(guard.decide({ transcript_path: "/t" }, () => jsonl))).toContain("Want me to push too?");
   });
 
   it("a turn with no text lets the turn end", () => {
     expect(guard.decide({ transcript_path: "/t" }, () => [prompt("go"), assistant(toolUse("Bash"))].join("\n"))).toBeNull();
   });
 
-  it("a meta user entry does not start a new turn", () => {
-    const jsonl = [prompt("go"), assistant(text("Ship it?")), line({ type: "user", isMeta: true, message: { role: "user", content: "caveat" } })].join("\n");
-    expect(guard.lastTurnFromTranscript(jsonl).text).toBe("Ship it?");
+  it("an isMeta user entry (a cross-session message, a heartbeat) starts a new turn: the earlier turn's question is not read as this one's", () => {
+    const meta = (t: string) => line({ type: "user", isMeta: true, message: { role: "user", content: t } });
+    // Turn 1 asked; turn 2 was started by a cross-session message and answered with a statement.
+    const jsonl = [prompt("go"), assistant(text("Ship it?")), meta("Another Claude session sent a message: ..."), assistant(text("Noted; impl has it."))].join("\n");
+    expect(guard.lastTurnFromTranscript(jsonl).text).toBe("Noted; impl has it.");
+    expect(guard.decide({ transcript_path: "/t" }, () => jsonl)).toBeNull();
+    // Control: without the meta entry the two replies are one turn, and its final text is still the statement.
+    expect(guard.lastTurnFromTranscript([prompt("go"), assistant(text("Ship it?")), assistant(text("Noted."))].join("\n")).text).toBe("Ship it?\nNoted.");
+    // A heartbeat turn that ends in a prose question is read as its own turn and sent back.
+    const heartbeat = [prompt("go"), assistant(text("Done.")), meta("CoS heartbeat"), assistant(text("Shall I start the next unit?"))].join("\n");
+    expect(guard.lastTurnFromTranscript(heartbeat).text).toBe("Shall I start the next unit?");
+  });
+
+  it("only AskUserQuestion after the final text excuses it: another tool call after the text does not", () => {
+    for (const name of ["Bash", "Read", "SendMessage"]) {
+      const jsonl = [prompt("go"), assistant(text("Should I merge it?"), toolUse(name))].join("\n");
+      expect(guard.lastTurnFromTranscript(jsonl), name).toEqual({ text: "Should I merge it?", askedAfter: false });
+      expect(contextOf(guard.decide({ transcript_path: "/t" }, () => jsonl)), name).toContain("Should I merge it?");
+    }
   });
 });
 
@@ -184,12 +228,13 @@ describe("the hook process: JSON on stdin, a decision on stdout, exit 0", () => 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const run = (stdin: string) => spawnSync(process.execPath, [SCRIPT], { input: stdin, encoding: "utf8", timeout: 10_000 });
 
-  it("blocks: prints one {decision, reason} object", () => {
+  it("asks to continue: prints one hookSpecificOutput object with the Stop event and the context", () => {
     const r = run(JSON.stringify({ hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: "Should I merge it?" }));
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout);
-    expect(Object.keys(out).sort()).toEqual(["decision", "reason"]);
-    expect(out.decision).toBe("block");
+    expect(Object.keys(out)).toEqual(["hookSpecificOutput"]);
+    expect(out.hookSpecificOutput.hookEventName).toBe("Stop");
+    expect(out.hookSpecificOutput.additionalContext).toContain("Should I merge it?");
   });
 
   it("allows: prints nothing", () => {
@@ -208,7 +253,23 @@ describe("the hook process: JSON on stdin, a decision on stdout, exit 0", () => 
     const file = join(dir, "t.jsonl");
     writeFileSync(file, [prompt("go"), assistant(text("Want me to start it?"))].join("\n") + "\n");
     const r = run(JSON.stringify({ stop_hook_active: false, transcript_path: file }));
-    expect(JSON.parse(r.stdout).decision).toBe("block");
+    expect(JSON.parse(r.stdout).hookSpecificOutput.additionalContext).toContain("Want me to start it?");
+  });
+
+  it("input over the 8 MB cap fails open: prints nothing, exit 0, even when it holds a question", () => {
+    expect(guard.MAX_STDIN_BYTES).toBe(8 * 1024 * 1024);
+    const big = JSON.stringify({ stop_hook_active: false, last_assistant_message: `${"x".repeat(guard.MAX_STDIN_BYTES)} Should I merge it?` });
+    const r = run(big);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+    // Control: the same question under the cap is sent back.
+    expect(run(JSON.stringify({ stop_hook_active: false, last_assistant_message: `${"x".repeat(1000)} Should I merge it?` })).stdout).toContain("additionalContext");
+  });
+
+  it("readStdin returns null past the cap and the text under it", async () => {
+    const { Readable } = await import("node:stream");
+    await expect(guard.readStdin(Readable.from([Buffer.from("abcdef")]), 4)).resolves.toBeNull();
+    await expect(guard.readStdin(Readable.from([Buffer.from("ab"), Buffer.from("cd")]), 4)).resolves.toBe("abcd");
   });
 
   it("a missing transcript file fails open", () => {
