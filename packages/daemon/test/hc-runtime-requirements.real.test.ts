@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
+import { mkHcTestRoot } from "./helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const PANE_IO = resolve(__dirname, "../src/adapters/runner-pane-io.ts");
@@ -11,7 +11,7 @@ const DAEMON_DIR = resolve(__dirname, "..");
 
 /** A private core only: its own HOME, session and XDG paths, so the host's core is never contacted. */
 describe.skipIf(!HC)("the Pi and OMP runner's pane input under a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "hcrq-"));
+  const root = mkHcTestRoot("hcrq-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `q${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

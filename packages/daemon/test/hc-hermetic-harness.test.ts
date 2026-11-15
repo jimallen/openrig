@@ -11,7 +11,7 @@ import {
   registerHcScratchRoot,
 } from "../../../test/hc-scratch-tripwire.js";
 import { teardown as globalTeardown } from "../../../test/hermetic-env.global.js";
-import { startHcScratch } from "./helpers/hc-scratch.js";
+import { mkHcTestRoot, startHcScratch } from "./helpers/hc-scratch.js";
 
 /** A program that exits non-zero: `false` lives in /usr/bin on macOS (no /bin/false there) and in both on Linux. */
 const FALSE_BIN = ["/usr/bin/false", "/bin/false"].find((p) => existsSync(p)) ?? "/usr/bin/false";
@@ -107,7 +107,7 @@ describe("the real-Codex opt-in still scrubs the core's socket (security review 
 
 describe("hc scratch tripwire: the run's registry (unit)", () => {
   const dirs: string[] = [];
-  const fresh = (prefix: string): string => { const d = mkdtempSync(join(tmpdir(), prefix)); dirs.push(d); return d; };
+  const fresh = (prefix: string): string => { const d = mkHcTestRoot(prefix); dirs.push(d); return d; };
   const registryEnv = (): { env: Record<string, string | undefined>; registry: string } => {
     const env: Record<string, string | undefined> = {};
     const registry = createHcScratchRegistry(env, fresh("tripwire-tmp-"));

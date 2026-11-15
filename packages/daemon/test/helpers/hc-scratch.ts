@@ -39,6 +39,7 @@
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join, relative, isAbsolute } from "node:path";
 import { registerHcScratchRoot } from "../../../../test/hc-scratch-tripwire.js";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
@@ -102,6 +103,17 @@ export function hcScratchBase(env: EnvLike = process.env, fallback = "/tmp"): st
  */
 export function hcScratchFallback(tmp: string): string {
   return Buffer.byteLength(tmp) <= 40 ? tmp : "/tmp";
+}
+
+/**
+ * A fresh, empty directory for a test that starts or points hc at a core of its own (its HOME, XDG paths and socket inside it):
+ * made where a scratch core's root goes (`hcScratchBase(process.env, hcScratchFallback(tmpdir()))`), so the socket fits hc's limit
+ * whatever TMPDIR is. Under macOS's default TMPDIR (`/var/folders/.../T/`, 49 bytes) a root made with `mkdtempSync(join(tmpdir(), ...))`
+ * put the socket over the limit: hc refused to start, `beforeAll` failed and vitest listed the file's tests as skipped. The caller
+ * removes it, as it removed the tmpdir() root before.
+ */
+export function mkHcTestRoot(prefix: string): string {
+  return mkdtempSync(join(hcScratchBase(process.env, hcScratchFallback(tmpdir())), prefix));
 }
 
 /**

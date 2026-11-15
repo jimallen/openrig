@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import {
@@ -16,13 +15,14 @@ import {
   type HcCall,
 } from "../src/destroy-helpers.js";
 import { resolveHcSocket } from "@openrig/daemon/hc";
+import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const nameOf = (seat: string) => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
 
 /** A private core only (own HOME, HC_SESSION and XDG paths), as the daemon's hc-host.real.test.ts does. */
 describe.skipIf(!HC)("rig destroy --all against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "dhc-"));
+  const root = mkHcTestRoot("dhc-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `d${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

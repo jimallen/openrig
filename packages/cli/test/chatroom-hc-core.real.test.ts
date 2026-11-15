@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
@@ -10,6 +9,7 @@ import { chatroomCommand, realHcDeps, type ChatroomHcDeps } from "../src/command
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type DaemonState, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -41,7 +41,7 @@ function lifecycle(port: number): StatusDeps {
  * one that writes its own env to a file, so what the core hands a terminal is read, not assumed.
  */
 describe.skipIf(!HC)("rig chatroom watch --terminal never starts or feeds a core (private core)", () => {
-  const root = mkdtempSync(join(tmpdir(), "crhc-"));
+  const root = mkHcTestRoot("crhc-");
   const envFile = join(root, "terminal-env.txt");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `w31${process.pid}`,

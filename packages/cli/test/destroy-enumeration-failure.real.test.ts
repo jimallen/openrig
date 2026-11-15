@@ -4,18 +4,18 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { buildDestroyPlan, executeDestroy, hcCallOverSocket, killHcSeat, listManagedHcSeatsFromDb, listManagedTmuxSessionsFromDb, type DestroyDeps, type HcCall } from "../src/destroy-helpers.js";
 import { resolveHcSocket } from "@openrig/daemon/hc";
+import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const nameOf = (seat: string) => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
 
 describe.skipIf(!HC)("rig destroy --all with an unreadable database, against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "dnum-"));
+  const root = mkHcTestRoot("dnum-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `e${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

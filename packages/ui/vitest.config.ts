@@ -9,6 +9,8 @@ export default defineConfig({
   },
   test: {
     include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+    // Fails the run on a todo, an it.fails or an unlisted skip (test/never-skip-reporter.ts).
+    reporters: ["default", "../../test/never-skip-reporter.ts"],
     environment: "jsdom",
     setupFiles: ["test/setup.ts"],
     css: true,

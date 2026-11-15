@@ -1,15 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { HcClient, HcError, type HcHello, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
+import { mkHcTestRoot } from "./helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
 /** A private core only: its own HOME, session and XDG paths, so the host's core is never contacted. */
 describe.skipIf(!HC)("HcClient against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "hcr-"));
+  const root = mkHcTestRoot("hcr-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `t${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

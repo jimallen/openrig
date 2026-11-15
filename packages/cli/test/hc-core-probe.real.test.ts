@@ -1,19 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveHcSocket } from "@openrig/daemon/hc";
 import { hcCoreListening, hcCoreListeningSync } from "../src/hc-core-probe.js";
 import { defaultHcLabels } from "../src/commands/whoami.js";
 import { resolveSharedTerminal } from "../src/shared-tui.js";
+import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
 /** Security review F6, on a PRIVATE core only (own HOME, XDG paths and HC_SESSION under one temp root, as shared-tui.real.test.ts):
  *  a CLI read of the core must not start one. The control is the unguarded `hc ls`, which does. */
 describe.skipIf(!HC)("a CLI read never starts an hc core (private core)", () => {
-  const root = mkdtempSync(join(tmpdir(), "hcprobe-"));
+  const root = mkHcTestRoot("hcprobe-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `f6${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

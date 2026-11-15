@@ -2,12 +2,12 @@
 // paths, never the machine's core. Skipped where hc is absent.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HC_GENERATION, HC_TESTED_VERSIONS, classifyHcCore, parseHcVersion, probeHcInstall, readHcHello } from "../src/tmux-health.js";
 import { resolveHcSocket } from "@openrig/daemon/hc";
+import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -15,7 +15,7 @@ const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout
 const accepts = (version: string | null): boolean => version !== null && /^0\.1\.(1[5-9]|[2-9]\d|\d{3,})$/.test(version);
 
 describe.skipIf(!HC)("hc health against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "hcw1-"));
+  const root = mkHcTestRoot("hcw1-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `w${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

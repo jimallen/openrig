@@ -1,17 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HcClient, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { HcHost, hcTerminalName } from "../src/adapters/hc-host.js";
+import { mkHcTestRoot } from "./helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const SECRET = `sv-${process.pid}-needle`;
 
 /** A private core only, started with a parent session's identity in its env, as a core started from a seat would be. */
 describe.skipIf(!HC)("HcHost launch against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "hch-"));
+  const root = mkHcTestRoot("hch-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `h${process.pid}`, CLAUDECODE: "1", HERDR_PANE_ID: "p1",
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

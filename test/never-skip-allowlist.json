@@ -1,0 +1,1062 @@
+[
+ {
+  "file": "packages/cli/test/atomic-text-write.test.ts",
+  "task": "keeps staging names within native filename limits",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/cli/test/atomic-text-write.test.ts",
+  "task": "overwrites a native write-only export without requiring read access",
+  "when": "process.platform === \"win32\" || process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/cli/test/atomic-text-write.test.ts",
+  "task": "writes content to a native FIFO without replacing it or delivering an empty EOF",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/cli/test/chatroom-hc-core.real.test.ts",
+  "task": "rig chatroom watch --terminal never starts or feeds a core (private core)",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/cli/test/context-local-install-failure.test.ts",
+  "task": "installs into a writable library without requiring its parent to be writable",
+  "when": "process.platform === \"win32\" || process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/cli/test/destroy-enumeration-failure.real.test.ts",
+  "task": "rig destroy --all with an unreadable database, against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/cli/test/destroy-hc.real.test.ts",
+  "task": "rig destroy --all against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/cli/test/file-transfer.test.ts",
+  "task": "native local file copies disclose the transferred byte count",
+  "when": "!rsyncAvailable && process.platform !== \"darwin\""
+ },
+ {
+  "file": "packages/cli/test/front-door.test.ts",
+  "task": "PUBLIC bin ownership (guard finding 1 — the wrapper is the real front door) > bare PUBLIC bin under a REAL PTY reaches the crash-cart COCKPIT when the daemon is down (BLOCKER 1 ownership + reachability)",
+  "when": "!existsSync(binWrapper) || !hasHc"
+ },
+ {
+  "file": "packages/cli/test/front-door.test.ts",
+  "task": "PUBLIC bin ownership (guard finding 1 — the wrapper is the real front door) > piped PUBLIC bin keeps the commander usage baseline (no TUI, fast exit)",
+  "when": "!existsSync(binWrapper)"
+ },
+ {
+  "file": "packages/cli/test/front-door.test.ts",
+  "task": "PUBLIC bin ownership (guard finding 1 — the wrapper is the real front door) > PUBLIC bin subcommands are untouched (rig --version via wrapper)",
+  "when": "!existsSync(binWrapper)"
+ },
+ {
+  "file": "packages/cli/test/front-door.test.ts",
+  "task": "script-safety integration (the compiled front door) > `echo x | rig` returns usage fast — no hang (exit code preserves today's clean-help baseline)",
+  "when": "!existsSync(cliEntry)"
+ },
+ {
+  "file": "packages/cli/test/front-door.test.ts",
+  "task": "script-safety integration (the compiled front door) > `rig --help` still exits 0 with the full usage (front-door regression)",
+  "when": "!existsSync(cliEntry)"
+ },
+ {
+  "file": "packages/cli/test/hc-core-probe.real.test.ts",
+  "task": "a CLI read never starts an hc core (private core)",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/cli/test/hc-health.real.test.ts",
+  "task": "hc health against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/cli/test/mcp-daemon-endpoint-native.test.ts",
+  "task": "keeps the reached IPv6 daemon endpoint for MCP tool requests",
+  "when": "context.skip() in the test body"
+ },
+ {
+  "file": "packages/cli/test/project-jev-native-input.test.ts",
+  "task": "rejects an owned FIFO without waiting for its writer",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/cli/test/release-surface.test.ts",
+  "task": "release-surface parser - v0.3.1..v0.3.2 worked example (AC-2)",
+  "when": "skipTagTests"
+ },
+ {
+  "file": "packages/cli/test/release-surface.test.ts",
+  "task": "release-surface parser - determinism (AC-4)",
+  "when": "skipTagTests"
+ },
+ {
+  "file": "packages/cli/test/roster.test.ts",
+  "task": "skips a FIFO without blocking or losing regular rosters",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/cli/test/scope-commands.test.ts",
+  "task": "rig scope slice moves in a dash-prefixed workspace > rolls back the Git rename after a real read-only node write fails",
+  "when": "process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/cli/test/scope-slice-claims.test.ts",
+  "task": "public slice creation ordinal claims > an actual manifest EACCES preserves the complete slice for later repair",
+  "when": "process.platform === \"win32\" || process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/cli/test/scope-slice-claims.test.ts",
+  "task": "public slice creation ordinal claims > an actual EACCES claim failure leaves no scaffold or consumed number",
+  "when": "process.platform === \"win32\" || process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/cli/test/send-file-process.test.ts",
+  "task": "rig send --file - in a real child process (no readStdin seam) > SKIPPED (python3 not found): the real-TTY guard pin for `--file -` did NOT run",
+  "when": "!hasPython (inside `if (!hasPython)`): python3 not on PATH"
+ },
+ {
+  "file": "packages/cli/test/send-file-process.test.ts",
+  "task": "rig send --file - in a real child process (no readStdin seam) > with a real pseudo-terminal as stdin",
+  "when": "!hasPython"
+ },
+ {
+  "file": "packages/cli/test/shared-tui.real.test.ts",
+  "task": "shared kernel terminal against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/cli/test/whoami-hc-identity.real.test.ts",
+  "task": "rig whoami identity inside a real hc terminal (private core)",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/bootstrap-bundle.integration.test.ts",
+  "task": "bootstrap a portable archive",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/bundle-archive.test.ts",
+  "task": "Bundle archive > preserves executable file modes through pack and unpack",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/bundle-binary-bytes.test.ts",
+  "task": "pod bundle byte preservation (create -> archive -> install) > keeps executable and restrictive modes through create and install",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/census-tmux-exec-guard.test.ts",
+  "task": "tmux exec census over packages/*/src > positive control: the scan finds tmux execs while the tmux adapter file still exists",
+  "when": "!tmuxAdapterStillInSrc"
+ },
+ {
+  "file": "packages/daemon/test/claude-bootstrap-config-home.test.ts",
+  "task": "Claude managed bootstrap selects the launch config home",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/claude-bootstrap-config-home.test.ts",
+  "task": "classic bootstrap when the daemon selects CLAUDE_CONFIG_DIR",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/claude-bootstrap-config-home.test.ts",
+  "task": "an already-provisioned state file is not rewritten",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/claude-context-collector.test.ts",
+  "task": "re-seating the collector from a read-only asset > updates a writable collector in a readonly directory",
+  "when": "process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/claude-context-collector.test.ts",
+  "task": "re-seating the collector from a read-only asset > updates a writable activity relay in a readonly directory",
+  "when": "process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/claude-home-tmux-respawn.real.test.ts",
+  "task": "a respawned pane and the session's CLAUDE_CONFIG_DIR (real tmux)",
+  "when": "!HAS_TMUX || process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/claude-interactive-isolation.test.ts",
+  "task": "classic Claude pane-shell isolation (hc seat)",
+  "when": "!findHc() || !fs.existsSync('/bin/bash')"
+ },
+ {
+  "file": "packages/daemon/test/claude-interactive-launch.test.ts",
+  "task": "classic Claude interactive launch",
+  "when": "!findHc() || !fs.existsSync(\"/bin/bash\")"
+ },
+ {
+  "file": "packages/daemon/test/claude-interactive-launch.test.ts",
+  "task": "classic Claude interactive launch > sources the launch in the pane shell even when sent before hc reports a foreground process (DEFECT: race on terminal.foreground)",
+  "when": "ctx.skip() in the test body"
+ },
+ {
+  "file": "packages/daemon/test/claude-rig-body-guard-launch.test.ts",
+  "task": "OF-253: the hook command runs the guard through an inline sh wrapper that fails closed where the risk signal exists > an inherited errexit (SHELLOPTS) cannot end the wrapper on the guard's exit code before the degraded check",
+  "when": "!hasBash"
+ },
+ {
+  "file": "packages/daemon/test/codex-mcp-servers-launch.test.ts",
+  "task": "placement: temporary directories are refused for the binary > darwin: a not-yet-installed binary under /var/folders is refused (real reads)",
+  "when": "process.platform === \"darwin\""
+ },
+ {
+  "file": "packages/daemon/test/codex-mcp-servers-launch.test.ts",
+  "task": "placement: deny checks hold under any spelling of the path (re-check R2) > darwin: the seat's cwd in another letter case is still the seat's cwd",
+  "when": "process.platform === \"darwin\""
+ },
+ {
+  "file": "packages/daemon/test/codex-mcp-servers-launch.test.ts",
+  "task": "placement: deny checks hold under any spelling of the path (re-check R2) > darwin: the seat's cwd through the /System/Volumes/Data firmlink is still the seat's cwd",
+  "when": "process.platform === \"darwin\""
+ },
+ {
+  "file": "packages/daemon/test/codex-mcp-servers-launch.test.ts",
+  "task": "placement: deny checks hold under any spelling of the path (re-check R2) > darwin: $TMPDIR in another letter case (e.g. /VAR/FOLDERS/...) or through the firmlink is still a temp root (real reads)",
+  "when": "process.platform === \"darwin\""
+ },
+ {
+  "file": "packages/daemon/test/codex-paste-hop.real.test.ts",
+  "task": "the Codex hop on a real core, stub Codex",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/codex-resume-final-native.test.ts",
+  "task": "hc terminal final Codex resume observation",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/compaction-preparation.test.ts",
+  "task": "workspace setup: an unwritable descendant selects the home fallback",
+  "when": "process.getuid?.()===0"
+ },
+ {
+  "file": "packages/daemon/test/compaction-pump.real.test.ts",
+  "task": "the compaction sequence across a daemon crash, on a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/consumer-pump-crash.real.test.ts",
+  "task": "S4b and S4c through a real daemon, on a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/cross-host-messages.real.test.ts",
+  "task": "a message across two real daemons",
+  "when": "!HC || !gitHasOldBuild"
+ },
+ {
+  "file": "packages/daemon/test/delivery-review.real.test.ts",
+  "task": "the combined reviews' findings, on a real daemon",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/exact-session-probe.test.ts",
+  "task": "exact seat names on a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/files-routes.test.ts",
+  "task": "UI Enhancement Pack v0 — /api/files routes > POST /write > preserves executable permissions when replacing a workspace script",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/hc-capture.real.test.ts",
+  "task": "HcCapture against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-client.real.test.ts",
+  "task": "HcClient against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-connect-core.real.test.ts",
+  "task": "connectHcCore on a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-core-refusal-health.real.test.ts",
+  "task": "the refused-core notice against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-core-secrets.real.test.ts",
+  "task": "a core and its operator secrets, on a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-core-watch.real.test.ts",
+  "task": "HcCoreWatch against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-core-watch.real.test.ts",
+  "task": "HcCoreWatch against a private hc core > reads a SIGKILLed core as a stale socket that nothing restarts, then starts it and re-verifies it: programs live, screen inexact",
+  "when": "!linux"
+ },
+ {
+  "file": "packages/daemon/test/hc-core-watch.real.test.ts",
+  "task": "HcCoreWatch against a private hc core > starts a killed core itself, only when its socket is stale, and notes screen: inexact",
+  "when": "!linux"
+ },
+ {
+  "file": "packages/daemon/test/hc-core-watch.real.test.ts",
+  "task": "HcCoreWatch against a private hc core > reads holder loss as a lost seat with hc's reason, and the lifecycle agrees",
+  "when": "!linux"
+ },
+ {
+  "file": "packages/daemon/test/hc-core-watch.real.test.ts",
+  "task": "HcCoreWatch against a private hc core > reads a stopped core's silence as a dead stream, never starts a second core beside it, and recovers when it runs again",
+  "when": "!linux"
+ },
+ {
+  "file": "packages/daemon/test/hc-delivery.real.test.ts",
+  "task": "HcDelivery against a private hc core: exactly once",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-host.real.test.ts",
+  "task": "HcHost launch against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-identity.real.test.ts",
+  "task": "HcIdentity against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-input.real.test.ts",
+  "task": "HcAttach and HcInput against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-launch-refusal.real.test.ts",
+  "task": "a launch on a real core whose hc program file was replaced while it ran",
+  "when": "!have || process.platform !== \"linux\""
+ },
+ {
+  "file": "packages/daemon/test/hc-lifecycle-guard.real.test.ts",
+  "task": "HcAdapter's lifecycle through the delivery guard, on a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-lifecycle.real.test.ts",
+  "task": "HcLifecycle against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-placement-scheme.test.ts",
+  "task": "hc-placement.ts and rig-here place seats by the same scheme",
+  "when": "!python"
+ },
+ {
+  "file": "packages/daemon/test/hc-placement.real.test.ts",
+  "task": "HcPlacement against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-private-core-identity.real.test.ts",
+  "task": "PrivateCore.isMine",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-remote-control-env.real.test.ts",
+  "task": "the Remote Control names on a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-runtime-requirements.real.test.ts",
+  "task": "the Pi and OMP runner's pane input under a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-scratch.test.ts",
+  "task": "hc scratch against a real private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-scratch.test.ts",
+  "task": "hc scratch against a real private core > the core process itself carries only the stated env (read from /proc)",
+  "when": "!hasProcFs()"
+ },
+ {
+  "file": "packages/daemon/test/hc-scratch.test.ts",
+  "task": "hc scratch against a real private core > cleanup disarms the orphan guard it armed (positive control: it is visible while armed)",
+  "when": "!canSweepEnviron()"
+ },
+ {
+  "file": "packages/daemon/test/hc-scratch.test.ts",
+  "task": "pidsWithEnv finds a session's processes > by their environment and not their arguments; on macOS also the descendants of one (a protected program shows no environment)",
+  "when": "!canSweepEnviron()"
+ },
+ {
+  "file": "packages/daemon/test/hc-seat-lost-last-terminal.real.test.ts",
+  "task": "seat.lost when the lost seat is the only terminal of a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-unconfirmed-send.real.test.ts",
+  "task": "an unconfirmed send is a row, so a core restart that loses it shows in health",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hc-version-swap.real.test.ts",
+  "task": "a real core swapped for another release under a running watch",
+  "when": "!haveAll || !linux"
+ },
+ {
+  "file": "packages/daemon/test/hc-viewer.real.test.ts",
+  "task": "HcViewer and the stream broker against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/herdr-app-provider.real.test.ts",
+  "task": "rig terminal open through the app provider, on a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/hermetic-hc-core.test.ts",
+  "task": "hermetic scaffold: the daemon's hc core is the scaffold's own (no hc needed) > a daemon env that would resolve the socket anywhere but the private core's is refused by name, and nothing is left set",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hermetic-hc-core.test.ts",
+  "task": "hermetic scaffold: a real private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/hermetic-hc-core.test.ts",
+  "task": "spawnScenarioDaemon gives the daemon the scaffold's core",
+  "when": "!HC || !existsSync(rigBin)"
+ },
+ {
+  "file": "packages/daemon/test/hermetic-tmux.test.ts",
+  "task": "D5 p3 (integration) — an INHERITED hc core is replaced, proven while seats live",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/keep-capture-on-kill-failure.test.ts",
+  "task": "hc failed-kill transcript continuity",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/launch-exited-agent.integration.test.ts",
+  "task": "launch does not call an exited agent already running in its preserved shell",
+  "when": "process.platform === \"linux\" && !!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/lifecycle-ops.real.test.ts",
+  "task": "OF-241: lifecycle leases, end to end on a real daemon and a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/message-pump-census.real.test.ts",
+  "task": "the census crash table, on the wired pump",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/message-pump-crash.real.test.ts",
+  "task": "the pump across a daemon crash, on a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/native-process-executable.test.ts",
+  "task": "OS executable path witness > reads the actual Linux test process without a provider or native seat",
+  "when": "platform !== \"linux\""
+ },
+ {
+  "file": "packages/daemon/test/native-running-version.test.ts",
+  "task": "lsof is found without /usr/sbin on the daemon's PATH > macOS: a live process's executable resolves with PATH lacking /usr/sbin",
+  "when": "process.platform !== \"darwin\" || !existsSync(\"/usr/sbin/lsof\")"
+ },
+ {
+  "file": "packages/daemon/test/of119-pi-runner-main-wiring.test.ts",
+  "task": "OF-119: the real runner main() keeps its sidecar alive and replaces it atomically",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "recorded process identity > startedWithin: a window holds only what started inside it, to the tick, not to the second (Linux)",
+  "when": "!hasProcFs()"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "owned tmux sockets > ownedDefaultSocket follows tmux's own rule for a server started with TMUX_TMPDIR, and that server stops",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "reapWhenOwnerDies > stops the tmux server on the listed socket once the owner is killed",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "reapWhenOwnerDies > a starved tmux server does not stall the watchdog: the targets after it are still stopped and no tmux client is left",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "reapWhenOwnerDies > Linux: stops processes carrying the listed environment entry, and only those",
+  "when": "!hasProcFs()"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "stopOwnedTmuxServer",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "the hermetic scaffold reaps its own tmux server",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "a bare hermetic scaffold arms its own watchdog (OF-175)",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "scenario daemon stop > identifies and stops the daemon it started when ps reports process start times up to two seconds early (Linux boot-time truncation)",
+  "when": "!hasProcFs()"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "taskPattern": "scenario daemon stop > a `rig daemon start` that fails after detaching the daemon \\(.+\\) leaves no daemon behind and no watchdog",
+  "when": "c.skip === true"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "scenario daemon stop > Linux: a failed start never signals a process that only listens on the port and lacks the scaffold's home",
+  "when": "!hasProcFs()"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "scenario daemon stop > a failed start stops the tmux server the daemon brought up, verified, before it disarms",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "scenario daemon stop > stop() stops the daemon's tmux server, verified, before it disarms and removes the scaffold",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "scenario daemon stop > stop() throws and keeps the watchdog and the scaffold when the daemon's tmux server cannot be verified stopped",
+  "when": "!hasTmux"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "OF-274: the watchdog's bound",
+  "when": "!hasProcFs()"
+ },
+ {
+  "file": "packages/daemon/test/orphan-reaper.test.ts",
+  "task": "OF-274: the watchdog's bound > non-biting: pid 1 recorded by identity is still there after the watchdog ran (container only; the decision itself is pinned by the gate row)",
+  "when": "!fs.existsSync(\"/.dockerenv\")"
+ },
+ {
+  "file": "packages/daemon/test/pda-seat-e2e.test.ts",
+  "task": "pda seat end to end: real daemon, real hc (private core), real runner, fake pda",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/pi-operator-login.test.ts",
+  "task": "review N2: the state-root check is on the platform's canonical path > the seat's own agent dir spelled with different letter case (case-insensitive disk) is refused: no looping link, the stub is kept",
+  "when": "caseInsensitive"
+ },
+ {
+  "file": "packages/daemon/test/pi-runner-handshake-native.test.ts",
+  "task": "Pi startup RPC handshake",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/pi-runner-hostile-error.real.test.ts",
+  "task": "a hostile error line does not break the Pi runner's pane, through a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/pi-runner-path-native.test.ts",
+  "task": "Pi native PATH semantics",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/pi-shell-launch-native.test.ts",
+  "task": "Pi launch through an hc terminal's tty",
+  "when": "!findHc() || !fs.existsSync(\"/bin/bash\")"
+ },
+ {
+  "file": "packages/daemon/test/pod-bundle-readonly-staging.test.ts",
+  "task": "read-only bundle sources",
+  "when": "process.platform === \"win32\" || process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/preflight-exec.test.ts",
+  "task": "runtime version preflight cwd > passes both production probe paths and preserves non-version cwd",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/preflight-exec.test.ts",
+  "task": "runtime version preflight cwd > lets the pane resolve Pi when the daemon cannot find it",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/preflight-exec.test.ts",
+  "task": "runtime version preflight cwd > keeps the existing absent-OMP refusal",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/profile-source-read-errors.test.ts",
+  "task": "reports an unreadable regular source without claiming its target is missing",
+  "when": "process.platform === \"win32\" || process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/profile-source-read-errors.test.ts",
+  "task": "reports a looping symlink as unreadable rather than absent target",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/profile-source-read-errors.test.ts",
+  "task": "keeps the precise dangling-link diagnosis for an absent target",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/provider-seat-accounts.test.ts",
+  "task": "seatAccounts on the production path (samples, registry reads, config dir) > F3: an unreadable registry: each Codex seat without a parsed row is unknown, with the error code",
+  "when": "process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/provider-seat-accounts.test.ts",
+  "task": "seatAccounts on the production path (samples, registry reads, config dir) > an unreadable profile folder: whether the profile is saved can't be told (null), never 'not saved'",
+  "when": "process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/queue-wake-pump.real.test.ts",
+  "task": "a wake past the cap, on a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "taskPattern": "OF-36 rig seat launch's advice, .+, no spec, with a snapshot taken before the break: the named rig down \\+ rig up heals",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "taskPattern": "OF-36 rig seat launch's advice, .+, no spec, no snapshot before the break: the named rig up refuses only this seat",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "taskPattern": "OF-36 a plain rig up --existing, .+, no usable copy: refused before it starts anything; restore-check says the same; the named remedy",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "task": "OF-36 a listed seat, spec recorded, --startup-from stored, no usable copy: the named rig seat launch --fresh heals",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "task": "N-C2 N6: the recorded spec is gone and the saved row cannot be used: the refusal does not offer --startup-from stored",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "task": "OF-36 Q2 the advice's snapshot route: rig seat launch --fresh --stop --startup-from snapshot:<id> heals only this seat",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "task": "OF-36 Q2 rig up --existing --fresh <seat> --startup-from snapshot:<id>, and the refusals",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "task": "OF-36 F1 no spec, no usable copy: the check does not offer leaving the seat out; the routes it names hold",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "taskPattern": "OF-36 F1 spec gone, a usable older copy: the check's .+ route starts the seat",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/restore-own-row-cli.integration.test.ts",
+  "taskPattern": "OF-36 G1 --startup-from snapshot:<id>, dev\\.qa's copy in that snapshot is .+: the command printed for dev\\.qa holds",
+  "when": "HC"
+ },
+ {
+  "file": "packages/daemon/test/rig-add-culture.test.ts",
+  "task": "rig add: the culture file must be a readable regular file, checked before any seat exists > an unreadable file is refused as not readable",
+  "when": "typeof process.getuid === \"function\" && process.getuid() === 0"
+ },
+ {
+  "file": "packages/daemon/test/rig-spec-source-cli.integration.test.ts",
+  "task": "OF-102 rig spec-source set: a rig with no spec source re-reads the typed link on a fresh launch",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/rigspec-preflight-seat-cwd.test.ts",
+  "task": "rig up preflight: seat cwd must be an existing directory (OF-63) > refuses, as 'not accessible', a seat folder under a directory the daemon cannot search",
+  "when": "process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/rsi-slow-op-file-source.test.ts",
+  "task": "D13 no log yet is an honest zero, an unreadable log is unavailable > serves unavailable coverage when the log directory is not readable, and not the no-log zero",
+  "when": "process.getuid?.() === 0"
+ },
+ {
+  "file": "packages/daemon/test/runner-hc-status.real.test.ts",
+  "task": "runner status through a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-hc-title.test.ts",
+  "task": "the real runner writes the title and the banner first",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/runner-line-echo.real.test.ts",
+  "task": "a message cannot rewrite a runner's pane through the line editor, private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-pane-frame.real.test.ts",
+  "task": "a Pi seat's pane is a console, through a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-pane-guard.real.test.ts",
+  "task": "forged status text on a runner's pane, private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-pane-resize.real.test.ts",
+  "task": "a Pi seat's pane console across resizes, through a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-pane-resize.real.test.ts",
+  "taskPattern": ".+",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-pane-sigkill-keep.real.test.ts",
+  "task": "a kept shell after a SIGKILLed Pi runner, through a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-pane-width.real.test.ts",
+  "task": "charWidth against a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-pane-width.real.test.ts",
+  "task": "the input cursor on a line of emoji, through a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runner-title.real.test.ts",
+  "task": "a Pi seat's title through a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/runtime-verifier.hc.real.test.ts",
+  "task": "RuntimeVerifier.verifyHc against a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/scenario-daemon-herdr-app.integration.test.ts",
+  "task": "a scenario daemon never reaches a herdr-app outside its scaffold",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/scenario-daemon.integration.test.ts",
+  "task": "scenario-daemon forced-local spawn (integration)",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/scenario-surfaces.test.ts",
+  "task": "surface readers — live daemon (integration)",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-activity-retirement-hooks.test.ts",
+  "task": "retired hook evidence through the real HTTP route > a differently named successor's first permission hook survives before the next sweep",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-activity-retirement.test.ts",
+  "task": "seat oracle retirement",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-env-parent-session.integration.test.ts",
+  "task": "seat environment from a daemon started inside Claude Code and Herdr",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/seat-gate-crash.real.test.ts",
+  "task": "seat gates: real runners, private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-cutover-e2e.test.ts",
+  "task": "seat-handover cutover money-proof (private hc core, both retiree-exit paths) > the retiree dies, predecessor history stays readable, and the successor boots under the SAME seat name on graceful + forced paths",
+  "when": "HC !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-model-fidelity-e2e.test.ts",
+  "task": "seat-handover model-fidelity money-proof (real codex, private hc core) > the successor runs on the SPEC-pinned model, not the runtime default",
+  "when": "preflightOk()"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-pump.real.test.ts",
+  "task": "a handover's packet through the pump, on a real daemon and a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-sources-e2e.test.ts",
+  "task": "seat-handover source execution e2e (private hc core) > FORK end-to-end: the resolved native id reaches the real launch in the seat's new terminal; continuity records forked",
+  "when": "HC !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-sources-e2e.test.ts",
+  "task": "seat-handover source execution e2e (private hc core) > REBUILD end-to-end: a real on-disk chain primes the successor through real delivery; the executed set is recorded; continuity records rebuilt",
+  "when": "HC !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-sources-e2e.test.ts",
+  "task": "seat-handover source execution e2e (private hc core) > FORK, id capture missed: the ready successor commits with the id PENDING, supersedes the old row, binds the live terminal",
+  "when": "HC !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-sources-e2e.test.ts",
+  "task": "seat-handover source execution e2e (private hc core) > FORK, id capture missed: launch failure, readiness timeout and an attention gate stay failures, with nothing committed",
+  "when": "HC !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-handover-sources-e2e.test.ts",
+  "task": "seat-handover source execution e2e (private hc core) > FORK: a launch-time capture that answers the parent's or the retiree's id stays PENDING; only the fork's own id is captured",
+  "when": "HC !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-hc-status.real.test.ts",
+  "task": "a Pi seat's hc status through a long silent tool call (private core)",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/seat-identity-lifecycle-ops.real.test.ts",
+  "task": "OF-235: no seat.lost while a real lifecycle operation holds the seat, on a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/seat-launch-environment.test.ts",
+  "task": "seat launch environment after shell rc",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/seat-lifecycle-set-model-resume-e2e.test.ts",
+  "task": "S5 F4: set-model then a REAL managed successor runs the canonical model (real codex, private hc core) > the successor's EFFECTIVE model is the post-set-model canonical pin, and lineage survives",
+  "when": "preflightOk()"
+ },
+ {
+  "file": "packages/daemon/test/seat-malformed-context-cli.integration.test.ts",
+  "task": "N-C2 spec recorded: the named `rig seat launch --fresh --stop` heals every kind of unreadable row",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-mcp-switch.test.ts",
+  "task": "rig seat set-mcp: one seat instance, from the rig's recorded spec > set-mcp --spec: only a spec under a trusted spec root is accepted (re-checks F1, R1, R2) > darwin: a letter-case spelling of a trusted spec is accepted like the original",
+  "when": "process.platform === \"darwin\""
+ },
+ {
+  "file": "packages/daemon/test/seat-message-crash.real.test.ts",
+  "task": "a daemon killed mid-send",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/seat-posture-startup.real.test.ts",
+  "task": "the busy report's hc reader, through the real createDaemon and a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/seat-restart-in-place-native.test.ts",
+  "task": "in-place restart, native (private hc core, stub codex)",
+  "when": "runnable"
+ },
+ {
+  "file": "packages/daemon/test/seat-stop-cli.integration.test.ts",
+  "task": "intentional seat stop CLI journey",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/session-transport-broadcast.real.test.ts",
+  "task": "a broadcast to seats that start no run, on a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/session-transport-shell-verify.test.ts",
+  "task": "terminal send verification through bash on an hc seat",
+  "when": "!findHc() || !fs.existsSync(\"/bin/bash\")"
+ },
+ {
+  "file": "packages/daemon/test/shell-paste-race.real.test.ts",
+  "task": "a message in flight when the agent dies (OF-200), on a private hc core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/shrink-exited-session.test.ts",
+  "task": "shrink a pod holding an already-exited seat, on a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/staging-docker-invoker-fake.test.ts",
+  "task": "makeRealStagingDocker — cleanup paths (fake processes)",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/staging-docker-invoker.test.ts",
+  "task": "makeRealStagingDocker — real process groups and parent signals (POSIX only)",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/startup-pump.real.test.ts",
+  "task": "startup text through the pump, on a real daemon and a private core",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/stub-cli-journeys.integration.test.ts",
+  "task": "stub CLI journeys",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/tcp-readiness-native.test.ts",
+  "task": "TCP service readiness",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/terminal-open-headless.integration.test.ts",
+  "task": "rig terminal open --window where the Herdr app is not installed",
+  "when": "findHc() === null"
+ },
+ {
+  "file": "packages/daemon/test/terminal-open-headless.integration.test.ts",
+  "task": "rig terminal open --window on a host with no desktop session (herdr-app finds no window)",
+  "when": "findHc() === null"
+ },
+ {
+  "file": "packages/daemon/test/terminal-pipe-utf8.test.ts",
+  "task": "terminal view keeps UTF-8 intact across writes, on a private hc core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/terminal-ws-hc.test.ts",
+  "task": "the terminal WebSocket on herdr-core (private core)",
+  "when": "!HC"
+ },
+ {
+  "file": "packages/daemon/test/test-daemon-loopback-census.test.ts",
+  "task": "B. a test daemon binds loopback only, on a host that looks like it has a tailnet > the scenario-daemon route (rig daemon start under the hermetic scaffold)",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/tmux-argv-legacy-equivalence.test.ts",
+  "task": "tmux argv and legacy shell strings",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/tmux-capture-pane-text-error.test.ts",
+  "task": "batched capture error classification, hc",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/tmux-exec-max-buffer.test.ts",
+  "task": "tmux exec output bound",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/tmux-exec-resolve.test.ts",
+  "task": "tmux binary resolution",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/tmux-exec-spawn-error.test.ts",
+  "task": "tmux exec after a spawn error",
+  "when": "process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/tmux-exec-transport-native.test.ts",
+  "task": "hc adapter against a real core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/tmux-launch-line-widgets.test.ts",
+  "task": "launch line survives a keystroke-rewriting zsh widget, on an hc seat",
+  "when": "!findHc() || !zshPath"
+ },
+ {
+  "file": "packages/daemon/test/tmux-launch-secret-channel.test.ts",
+  "task": "OF-46 hc: the credential reaches the seat and never an argv or a label",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/tmux-pane-cwd-native.test.ts",
+  "task": "hc seat paths",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/tmux-parent-env-hook-native.test.ts",
+  "task": "seat launch beside another terminal (hc)",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/tmux-session-env-native.test.ts",
+  "task": "hc seat launch environment, read back by exact name",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/tmux-session-names-native.test.ts",
+  "task": "hc literal seat names",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/topology-defaults-door.e2e.test.ts",
+  "task": "topology defaults DOOR (real daemon, real rig up)",
+  "when": "findHc() !== null"
+ },
+ {
+  "file": "packages/daemon/test/transcript-batched-capture-native.test.ts",
+  "task": "hc batched transcript capture (#161)",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/transcript-boundary-dedup.test.ts",
+  "task": "hc transcript boundary replay",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/transcript-capture-native.test.ts",
+  "task": "hc transcript capture against a private core",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/transcript-seat-env-native.test.ts",
+  "task": "hc transcript seat environment",
+  "when": "!findHc()"
+ },
+ {
+  "file": "packages/daemon/test/typed-line-charset.test.ts",
+  "task": "shellWord is a shell word for zsh and sh (OF-114) > run for real under zsh: a name starting with = reaches the command as itself, not as a path",
+  "when": "!zsh"
+ }
+]

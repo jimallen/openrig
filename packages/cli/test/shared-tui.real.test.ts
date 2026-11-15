@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { attachSharedTui, resolveSharedTerminal } from "../src/shared-tui.js";
+import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -12,7 +12,7 @@ const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout
  * not run here: its argv is recorded by a stand-in `hc`, and its behaviour was measured by hand on a private core.
  */
 describe.skipIf(!HC)("shared kernel terminal against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "stui-"));
+  const root = mkHcTestRoot("stui-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `w6${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

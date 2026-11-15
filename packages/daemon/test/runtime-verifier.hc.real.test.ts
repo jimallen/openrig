@@ -2,8 +2,7 @@
 // Skipped where hc is absent.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type Database from "better-sqlite3";
@@ -13,12 +12,13 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
 import { HC_TESTED_VERSION, HC_TESTED_VERSIONS, judgeHcVersion } from "../src/adapters/hc-version.js";
+import { mkHcTestRoot } from "./helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const run = promisify(execFile);
 
 describe.skipIf(!HC)("RuntimeVerifier.verifyHc against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "rvhc-"));
+  const root = mkHcTestRoot("rvhc-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `v${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

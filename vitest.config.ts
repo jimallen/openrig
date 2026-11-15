@@ -12,5 +12,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     projects: ["packages/*/vitest.config.ts"],
+    // A root run reads reporters from here, not from the projects: the same never-skip guard.
+    reporters: ["default", "./test/never-skip-reporter.ts"],
   },
 });

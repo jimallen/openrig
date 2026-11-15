@@ -122,7 +122,9 @@ process.env["XDG_STATE_HOME"] = path.join(userHome, ".local/state");
 const HC_SOCKET_PATH_LIMIT = 103;
 const fixtureHcSocket = path.join(process.env["XDG_STATE_HOME"], "herdr-core", "default", "default.sock");
 if (Buffer.byteLength(fixtureHcSocket) > HC_SOCKET_PATH_LIMIT) {
-  const shortState = fs.mkdtempSync(path.join(os.tmpdir(), ".oh-"));
+  // Beside the fixture home, not in os.tmpdir(): a child vitest reuses its parent's home (OPENRIG_HOME, kept above) but inherits the
+  // realpath'd TMPDIR set below, so on macOS os.tmpdir() there is /private/var/... while the home is under /var/....
+  const shortState = fs.mkdtempSync(path.join(path.dirname(fixtureHome), ".oh-"));
   const registry = process.env["OPENRIG_TEST_FIXTURE_REGISTRY"];
   if (registry) {
     try { fs.writeFileSync(path.join(registry, path.basename(shortState)), shortState); } catch { /* best effort */ }

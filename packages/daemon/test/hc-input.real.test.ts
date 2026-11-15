@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
@@ -42,9 +42,10 @@ while True:
         break
     log.write(b.hex().encode() + b"\\n")
 `;
+import { mkHcTestRoot } from "./helpers/hc-scratch.js";
 
 describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
-  const root = mkdtempSync(join(tmpdir(), "hci-"));
+  const root = mkHcTestRoot("hci-");
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `i${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),

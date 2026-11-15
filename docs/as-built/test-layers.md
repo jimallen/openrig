@@ -50,6 +50,16 @@ to `main`. In the PR description, say which layers you ran and which you could n
 | Live-model evals | `npm run eval -w packages/daemon -- --provider rig …` | Whether a real Claude Code seat runs the expected `rig context get <entry>` for natural prompts | Determinism. Codex. Anything without a case. | Changes to shipped skills or context entries meant to steer agents. **Uses provider credits.** |
 | Testbed runbooks | `docker/testbed/runbooks/` (manual) | The testbed image itself works as a test environment | Product behaviour | Only when you change the testbed image or the container plumbing |
 
+**No test is skipped unless its condition is allowed.** `test/never-skip-reporter.ts` runs as a
+reporter in the root and every package vitest config. At the end of a run it fails the run on a
+todo test, on an `it.fails` test, and on a skipped test that no entry in
+`test/never-skip-allowlist.json` covers. An entry names one conditional skip the rule allows (a
+platform, a missing tool such as hc, tmux, rsync or python3, or an opt-in env) by file and title
+path, with the condition it waits for. A new `skipIf`/`runIf` needs its own entry, and an
+unconditional `it.skip` cannot have one. The guard is off for a run filtered with `-t` (vitest marks
+every unmatched test skipped there), and it only runs with the configured reporters, so a command
+line that passes its own `--reporter` drops it.
+
 **Opt-in runs are not tests of the suite.** Measurements, generators and child-run fixtures live in
 `test/**/*.opt-in.ts` (daemon and cli), which `vitest.config.ts` does not collect. Each package's
 `vitest.opt-in.config.ts` is the suite's own config with those files added; run one by naming it,

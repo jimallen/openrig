@@ -3,6 +3,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    // Fails the run on a todo, an it.fails or an unlisted skip (test/never-skip-reporter.ts).
+    reporters: ["default", "../../test/never-skip-reporter.ts"],
     // P11 base-health (createProgram-wired flap): a handful of tests build the FULL CLI
     // command tree via createProgram() and drive it through parseAsync — legitimately ~2s
     // of work under tsx (the "mounts both commands" wiring tests re-create the program per
