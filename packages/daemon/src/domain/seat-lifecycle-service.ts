@@ -588,15 +588,16 @@ export class SeatLifecycleService {
   }
 
   /**
-   * OF-283: `rig seat apply-spec`. A Pi seat's retained spec fields (env_passthrough, model_overrides, pi.link_operator_models)
-   * are stored on its node when the node is created and read from the database at every launch; nothing re-reads the spec.
-   * This is the one explicit step that does: it reads the seat's member from the rig's recorded spec source (or `specFile`),
-   * judged by the same trust rule as set-mcp, validates the three fields with the canonical validators, and reports
-   * `retained -> spec` per field. Without `yes` that is all it does. With `yes` it writes all three in ONE transaction with one
-   * audit event (names only, never a value). No terminal, session or process is touched and nothing is relaunched: the new
-   * values take effect at the seat's next launch. A field the spec does not carry clears the retained value.
-   * A Claude Code seat's remote_control and ask_in_modal (nodes.remote_control, nodes.ask_in_modal) take the same step: `rig up`
-   * writes them from the spec, but `rig seat launch` (stored startup), restore and handover read the node. A kernel seat is refused.
+   * OF-283: `rig seat apply-spec`. A seat's retained spec fields live on its node: a Pi seat's env_passthrough, model_overrides
+   * and pi.link_operator_models (written when the node is created), a Claude Code seat's remote_control and ask_in_modal
+   * (nodes.remote_control, nodes.ask_in_modal; written at creation and when `rig up` relaunches the member from the spec).
+   * `rig seat launch`, restore and handover read them from the node and never re-read the spec. This is the explicit step that
+   * does: it reads the seat's member from the rig's recorded spec source (or `specFile`), judged by the same trust rule as
+   * set-mcp, validates the fields as the spec load does (the Pi fields with their canonical validators; the Claude fields by the
+   * whole-spec validation), and reports `retained -> spec` per field. Without `yes` that is all it does. With `yes` it writes the
+   * runtime's fields (three for Pi, two for Claude Code) in ONE transaction with one audit event (names only, never a value). No
+   * terminal, session or process is touched and nothing is relaunched: the new values take effect at the seat's next launch. A
+   * field the spec does not carry clears the retained value. Other runtimes, and a kernel seat's Claude Code fields, are refused.
    */
   async applySpec(input: { seatRef: string; yes: boolean; actor: string | null; reason?: string; specFile?: string }): Promise<
     | { ok: true; seat: SeatDescriptor; dryRun: boolean; written: boolean; changed: boolean; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string;

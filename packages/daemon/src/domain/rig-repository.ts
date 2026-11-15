@@ -908,7 +908,8 @@ export class RigRepository {
   }
 
   /**
-   * OF-283: rewrite a Pi seat's three retained spec fields in one UPDATE (`rig seat apply-spec`). A value that is absent clears
+   * OF-283: rewrite a Pi seat's three retained spec fields in one UPDATE (`rig seat apply-spec` on a Pi seat; a Claude Code
+   * seat's remote_control and ask_in_modal go through setNodeClaudeRetainedFields below). A value that is absent clears
    * the retained one (NULL), the same as a node created without it. No silent skip: a missing column throws, so the caller's
    * transaction rolls back rather than store two of three. The values are re-validated here with the validators addNode uses.
    */

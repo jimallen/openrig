@@ -1,11 +1,11 @@
-// OF-283: `rig seat apply-spec`. A Pi seat's three retained spec fields (env_passthrough, model_overrides,
-// pi.link_operator_models) are written to its node when the node is created and read from the database at every launch, so a
-// later change to the spec reaches an existing seat only through this explicit step. This module is the pure part: what the
-// spec says, what the node retains, and the per-field difference between them. It reads no file and no database (the service
-// does), and it prints no environment VALUE: an env_passthrough entry is a variable NAME, and nothing here ever holds a value.
-// A Claude Code seat's two retained launch fields (remote_control, ask_in_modal: nodes.remote_control, nodes.ask_in_modal) are
-// the same kind of thing: written when the node is created or launched from the spec by `rig up`, read by every other launch
-// (seat launch, restore, handover), so this step carries them too.
+// OF-283: `rig seat apply-spec`. A seat retains some spec fields on its node, and launches read them from the database:
+// - a Pi seat's three (env_passthrough, model_overrides, pi.link_operator_models), written when the node is created;
+// - a Claude Code seat's two (remote_control, ask_in_modal: nodes.remote_control, nodes.ask_in_modal), written at creation and
+//   when `rig up` relaunches the member from the spec, and read by seat launch, restore and handover.
+// So a later change to the spec reaches an existing seat only through `rig up` or this explicit step. This module is the pure
+// part, for both runtimes: what the spec says, what the node retains, and the per-field difference between them. It reads no
+// file and no database (the service does), and it prints no environment VALUE: an env_passthrough entry is a variable NAME,
+// and nothing here ever holds a value.
 import type { RigSpecPodMember } from "./types.js";
 
 export type ModelOverrides = Record<string, Record<string, { contextWindow: number }>>;
