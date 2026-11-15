@@ -225,9 +225,10 @@ export interface LifecycleDeps {
   /** #275 — three-state liveness for status reads (production: realDeps). Optional so existing
    *  mocks keep the boolean rule; absent = derived from isProcessAlive. */
   processLiveness?: (pid: number) => ProcessLiveness;
-  // OPR.0.4.2.1 — optional injectable delay for the status-probe bounded settle/retry.
-  // Defaults to a real setTimeout in production; tests pass a no-op to stay fast. Optional so
-  // existing deps / mocks / callers are untouched.
+  // OPR.0.4.2.1 — optional injectable delay for the status-probe bounded settle/retry, and for
+  // the pause between startDaemon's /healthz polls. Defaults to a real setTimeout in production
+  // (realDeps supplies none); tests pass a no-op to stay fast. Optional so existing deps / mocks /
+  // callers are untouched.
   sleep?: (ms: number) => Promise<void>;
   // RULING 1ae863d2 — optional home-resolution honesty deps (optional so existing
   // mocks/callers are untouched): homeDir overrides the module-load OPENRIG_DIR for
@@ -810,7 +811,9 @@ async function startOwnedDaemon(opts: StartOptions, deps: LifecycleDeps, lock: D
         if (error instanceof StartupIdentityError) throw error;
         lastProbe = error instanceof Error ? error.message : String(error);
       }
-      await Promise.race([new Promise((resolve) => setTimeout(resolve, HEALTHZ_DELAY_MS)), failed]);
+      // The pause goes through deps.sleep (production: defaultSleep, the same 250 ms setTimeout), so a
+      // test can drive all HEALTHZ_RETRIES polls without waiting 20 s. A child that exits still ends it early.
+      await Promise.race([(deps.sleep ?? defaultSleep)(HEALTHZ_DELAY_MS), failed]);
     }
     if (!healthy) {
       throw new Error(`${summarizeDaemonStartFailure(healthzUrl, deps.readFile(resolveLifecycleFile(deps, "daemon.log")))}. Last probe: ${lastProbe}`);

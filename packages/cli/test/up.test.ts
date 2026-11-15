@@ -981,19 +981,24 @@ describe("Up CLI", () => {
     });
   });
 
-  // QUARANTINED (D12 base-health) — NOT a test bug and NOT test-shimmed: this
-  // asserts fast-fail on an UNSTARTABLE daemon (fatal better-sqlite3 spawn log),
-  // but startDaemon's healthz poll is a hard-coded 80 × 250ms setTimeout (~20s,
-  // non-injectable, with no early-bail when the spawn log already shows a fatal
-  // error), so `up` hangs past the 15s budget. Routed as a product-defect finding
-  // (D12-F1: slow-fail auto-start + non-injectable poll delay). Skipped — with the
-  // named cause — until that fix lands, so the family stops polluting fold gates.
-  it.skip("up surfaces the real daemon auto-start failure instead of a generic hint", async () => {
+  // The child stays up and never answers /healthz, so startDaemon spends all of its polls, then reports what the
+  // daemon log says. The poll's pause is the injected no-op sleep: before it went through deps.sleep this row waited
+  // the production 80 × 250 ms and was skipped for running past its budget (D12-F1).
+  it("up surfaces the real daemon auto-start failure instead of a generic hint", async () => {
     const savedPort = process.env["OPENRIG_PORT"];
     process.env["OPENRIG_PORT"] = "7463";
+    const child = Object.assign(new EventEmitter(), { pid: 4242, exitCode: null as number | null, signalCode: null as string | null, unref: vi.fn() });
+    const sleep = vi.fn(async () => {});
     const deps: StatusDeps = {
       lifecycleDeps: {
         ...mockLifecycleDeps(),
+        spawn: vi.fn(() => child as never),
+        kill: vi.fn((pid: number, signal: string) => {
+          if (pid !== child.pid) return false;
+          child.signalCode = signal;
+          child.emit("exit", null, signal);
+          return true;
+        }),
         exists: vi.fn(() => false),
         readFile: vi.fn((p: string) => {
           if (p === LOG_FILE) {
@@ -1008,6 +1013,7 @@ describe("Up CLI", () => {
           return null;
         }),
         fetch: vi.fn(async () => { throw new Error("refused"); }),
+        sleep,
       },
       clientFactory: (baseUrl) => new DaemonClient(baseUrl),
     };
@@ -1027,6 +1033,9 @@ describe("Up CLI", () => {
     expect(output).toContain("Node");
     expect(output).not.toContain("Failed to auto-start daemon. Start manually with: rig daemon start");
     expect(exitCode).toBe(2);
+    // Every poll's pause went through the injected sleep, at the production 250 ms, 80 times; then the child was stopped.
+    expect(sleep.mock.calls.filter(([ms]) => ms === 250)).toHaveLength(80);
+    expect(deps.lifecycleDeps.kill).toHaveBeenCalledWith(4242, "SIGTERM");
   }, 15000);
 
   it("up with library name matching existing rig shows ambiguity error", async () => {
