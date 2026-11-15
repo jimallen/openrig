@@ -293,7 +293,8 @@ describe("census: no test reaches the account's real home or a hard-coded scratc
     const makers = files.filter((f) => rel(f) !== self && MAKES_ROOT.test(text(f))).map(rel).sort();
     expect(makers).toEqual(["packages/daemon/test/hc-placement.real.test.ts", "packages/daemon/test/hc-private-core.ts", "packages/daemon/test/helpers/hc-private-core.ts", "packages/daemon/test/helpers/hc-scratch.ts"]);
     const helperCallers = files.filter((f) => !/\.test\.[cm]?ts$/.test(f) && rel(f) !== self && /startHcScratch\(/.test(text(f)) && !/export function startHcScratch/.test(text(f)));
-    expect(helperCallers.map(rel)).toEqual(["packages/daemon/test/helpers/hermetic-env.ts"]);
+    // The opt-in table generator (not collected by the suite) is held to the same rule: it starts its core with no base folder.
+    expect(helperCallers.map(rel).sort()).toEqual(["packages/daemon/test/helpers/hermetic-env.ts", "packages/daemon/test/runner-pane-width-table.opt-in.ts"]);
     for (const f of helperCallers) expect(text(f), rel(f)).not.toMatch(/startHcScratch\([^)]*baseDir/);
   });
 
