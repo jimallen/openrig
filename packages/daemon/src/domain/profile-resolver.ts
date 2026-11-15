@@ -11,7 +11,7 @@ import type { ResolvedAgentSpec, ResourceCollision } from "./agent-resolver.js";
 import { resolveAuthoredCwd } from "./cwd-resolution.js";
 import { resolveStartup } from "./startup-resolver.js";
 import { discoverSkillsForRuntime, parseSkillFrontmatter, type SkillRuntime } from "./skill-discovery.js";
-import { inspectSkillDirectory, resolvePluginSkills, resolveSkillLoadout, type SkillLoadout } from "./skill-catalog.js";
+import { inspectSkillDirectory, listPluginSkillNames, resolvePluginSkills, resolveSkillLoadout, type SkillLoadout } from "./skill-catalog.js";
 import { resolvePluginPath } from "./projection-planner.js";
 
 // -- Types --
@@ -305,18 +305,27 @@ export function resolveNodeConfig(ctx: ResolutionContext): ResolutionResult {
   }
   selectedResult!.skills.sort((a, b) => a.effectiveId < b.effectiveId ? -1 : a.effectiveId > b.effectiveId ? 1 : 0);
 
+  // `uses.plugin_skills` narrows which of a selected plugin's skills the seat gets. The names are checked here for
+  // every runtime, so a misspelt name fails preflight and launch with the plugin's real skill names, not silently.
+  const pluginSkillSelection = resolvePluginSkillSelection(profileName, profile, pool, selectedResult!.plugins, runtime);
+  if (!pluginSkillSelection.ok) return { ok: false, errors: pluginSkillSelection.errors };
+
   // A selected plugin's skills reach Claude Code and Codex seats through the managed
   // loadout, because neither runtime reads skills from the plugin folder projected into
   // the working directory. A skill the profile already selects keeps that source.
+  // A plugin_skills selection filters only this loadout; the plugin folder (its hooks and
+  // every file they read) is still projected whole by the projection plan.
   if (runtime === "claude-code" || runtime === "codex") {
     const selectedIds = new Set(selectedResult!.skills.map((skill) => skill.effectiveId));
     for (const plugin of selectedResult!.plugins) {
       const resource = plugin.resource as PluginResource;
+      const include = pluginSkillSelection.byPlugin.get(plugin.effectiveId);
       const pluginSkills = resolvePluginSkills({
         pluginId: resource.id,
         pluginRoot: resolvePluginPath(resource.source.path, plugin.sourcePath),
         runtime,
         pluginType: resource.pluginType,
+        ...(include ? { include } : {}),
       });
       skillWarnings.push(...pluginSkills.warnings);
       for (const skill of pluginSkills.entries) {
@@ -382,6 +391,39 @@ export function resolveNodeConfig(ctx: ResolutionContext): ResolutionResult {
       ...(skillWarnings.length ? { skillWarnings } : {}),
     },
   };
+}
+
+/** Check a profile's `uses.plugin_skills` against the plugins it selects and the skills each plugin has. Returns, per
+ *  selected plugin (by effective id), the skill names to keep; a plugin absent from the map keeps all its skills.
+ *  Each map key is a distinct ref and resolves to its own pool entry, so no plugin can be named twice. */
+function resolvePluginSkillSelection(
+  profileName: string,
+  profile: ProfileSpec,
+  pool: ResourcePool,
+  selectedPlugins: QualifiedResource[],
+  runtime: string,
+): { ok: true; byPlugin: Map<string, readonly string[]> } | { ok: false; errors: string[] } {
+  const byPlugin = new Map<string, readonly string[]>();
+  const errors: string[] = [];
+  const field = `Profile "${profileName}" uses.plugin_skills`;
+  for (const [ref, names] of Object.entries(profile.uses.pluginSkills ?? {})) {
+    const pooled = pool.plugins.get(ref);
+    const plugin = pooled?.length === 1 ? selectedPlugins.find((selected) => selected.effectiveId === pooled[0]!.effectiveId) : undefined;
+    if (!plugin) {
+      errors.push(`${field}: "${ref}" is not a plugin this profile selects in uses.plugins`);
+      continue;
+    }
+    const resource = plugin.resource as PluginResource;
+    const pluginRoot = resolvePluginPath(resource.source.path, plugin.sourcePath);
+    const available = listPluginSkillNames(pluginRoot, runtime === "codex" ? "codex" : "claude-code");
+    const unknown = names.filter((name) => !available.includes(name));
+    if (unknown.length > 0) {
+      errors.push(`${field}: plugin "${ref}" has no skill named ${unknown.map((name) => `"${name}"`).join(", ")}; its skills (at ${pluginRoot}) are: ${available.join(", ") || "none"}`);
+      continue;
+    }
+    byPlugin.set(plugin.effectiveId, [...names]);
+  }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, byPlugin };
 }
 
 function realDir(path: string): string {

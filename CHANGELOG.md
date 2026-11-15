@@ -10,6 +10,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A role can choose which of a plugin's skills its seats get (`uses.plugin_skills`)
+
+- Symptom: every seat that selects `shared:openrig-core` got all 19 of its skills in its skill folder (25 in the kernel workspace, with the kernel seats' own `uses.skills`), and each skill's description sits in every prompt. Builders and reviewers carried operator guides they never use (`forming-an-openrig-mental-model`, `mission-slice-sop`, `retiring-and-inheriting-a-seat`, …).
+- New optional agent-spec field `profiles.<name>.uses.plugin_skills`: a map from a plugin in `uses.plugins` (written the same way) to the names of the skills to project, for example `shared:openrig-core: [claude-compaction-restore, messaging-the-human]`. An empty list projects none. A plugin the map doesn't name keeps all its skills, so specs without the field behave exactly as before.
+- Only the seat's skill folder (`.claude/skills`, `.agents/skills`) is filtered. The plugin folder is still projected whole, so hooks and the files they read under the plugin's `skills/` folder (`claude-compaction-restore/scripts/precompact-hook.mjs`, `refocusing/references/refocus.md`, `refocusing/scripts/trace-to-root.py`) keep working.
+- A name the plugin has no skill for fails `rig spec preflight`, `rig up` and launch with the plugin's real skill names. `rig agent validate` checks the shape (a map, keys in `uses.plugins`, lists of non-empty unrepeated names).
+- On relaunch with a narrower list, skills OpenRig projected and nobody edited are removed and their ignore entries dropped; an edited copy is left in place, unmanaged (`plugin_skill_kept`); folders OpenRig didn't project are never touched. Seats sharing one working directory get the union of their lists. An older daemon ignores the field and projects every skill.
+
 ### A Claude seat can be held to asking the human in a modal (`ask_in_modal: true`)
 
 - Symptom: Chief of Staff seats ended turns with a question to the human written in prose (for example a long report ending in `Should the target be "beat Odoscope" ... or simply "no worse than Odoscope"?`), although their role says every question goes in an `AskUserQuestion` modal. The rule was in the instructions only, and seats ignored it.

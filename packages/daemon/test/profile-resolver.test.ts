@@ -920,16 +920,25 @@ describe("selected plugin skills", () => {
     return plugin;
   }
 
-  function resolveWithPlugin(root: string, plugin: string, skills: Array<{ id: string; path: string }>) {
+  function resolveWithPlugin(
+    root: string,
+    plugin: string,
+    skills: Array<{ id: string; path: string }>,
+    pluginSkills?: Record<string, string[]>,
+    runtime = "claude-code",
+  ) {
     const spec = makeSpec({
       resources: { skills, guidance: [], subagents: [], plugins: [{ id: "core", source: { kind: "local", path: plugin } }], runtimeResources: [] },
       profiles: {
-        default: { uses: { skills: skills.map((skill) => skill.id), guidance: [], subagents: [], plugins: ["core"], runtimeResources: [] } },
+        default: { uses: {
+          skills: skills.map((skill) => skill.id), guidance: [], subagents: [], plugins: ["core"], runtimeResources: [],
+          ...(pluginSkills ? { pluginSkills } : {}),
+        } },
       },
     });
     return resolveNodeConfig(makeCtx({
       baseSpec: makeResolved(spec, root),
-      member: makeMember({ cwd: join(root, "work") }),
+      member: makeMember({ cwd: join(root, "work"), runtime }),
       skillsRoot: join(root, "no-catalog"),
       homedir: join(root, "home"),
     }));
@@ -966,5 +975,83 @@ describe("selected plugin skills", () => {
         .toEqual([["queue-handoff", bundle]]);
       expect(result.config.skillLoadout?.entries.map((entry) => entry.id)).toEqual(["delegating-work"]);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  describe("uses.plugin_skills", () => {
+    it("projects only the named skills, and still selects the whole plugin folder for its hooks and files", () => {
+      const root = mkdtempSync(join(tmpdir(), "openrig-profile-plugin-subset-"));
+      try {
+        const plugin = writePlugin(root);
+        const full = resolveWithPlugin(root, plugin, []);
+        const lean = resolveWithPlugin(root, plugin, [], { core: ["queue-handoff"] });
+
+        expect(lean.ok, JSON.stringify(lean)).toBe(true);
+        expect(full.ok).toBe(true);
+        if (!lean.ok || !full.ok) return;
+        expect(lean.config.skillLoadout?.entries.map((entry) => [entry.id, entry.pluginId])).toEqual([["queue-handoff", "core"]]);
+        // The plugin itself is selected exactly as without a selection: the plan projects its whole folder.
+        expect(lean.config.selectedResources.plugins).toEqual(full.config.selectedResources.plugins);
+        expect(lean.config.selectedResources.plugins.map((p) => p.effectiveId)).toEqual(["core"]);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it("projects none of the plugin's skills for an empty list", () => {
+      const root = mkdtempSync(join(tmpdir(), "openrig-profile-plugin-none-"));
+      try {
+        const plugin = writePlugin(root);
+        const result = resolveWithPlugin(root, plugin, [], { core: [] });
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+        if (!result.ok) return;
+        expect(result.config.skillLoadout?.entries).toEqual([]);
+        expect(result.config.selectedResources.plugins.map((p) => p.effectiveId)).toEqual(["core"]);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it.each(["claude-code", "codex", "pi"])("refuses a name the plugin has no skill for, naming the plugin's skills (%s)", (runtime) => {
+      const root = mkdtempSync(join(tmpdir(), "openrig-profile-plugin-unknown-"));
+      try {
+        const plugin = writePlugin(root);
+        const result = resolveWithPlugin(root, plugin, [], { core: ["queue-handoff", "queue-handof"] }, runtime);
+        expect(result).toEqual({
+          ok: false,
+          errors: [`Profile "default" uses.plugin_skills: plugin "core" has no skill named "queue-handof"; its skills (at ${plugin}) are: delegating-work, queue-handoff`],
+        });
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it("checks names against the runtime's own manifest when Claude and Codex manifests name different skill folders", () => {
+      const root = mkdtempSync(join(tmpdir(), "openrig-profile-plugin-manifests-"));
+      try {
+        const plugin = join(root, "plugins", "core");
+        for (const [manifest, folder, id] of [[".claude-plugin", "claude-skills", "claude-only"], [".codex-plugin", "codex-skills", "codex-only"]] as const) {
+          mkdirSync(join(plugin, manifest), { recursive: true });
+          writeFileSync(join(plugin, manifest, "plugin.json"), JSON.stringify({ name: "core", version: "0.1.0", skills: `./${folder}` }));
+          mkdirSync(join(plugin, folder, id), { recursive: true });
+          writeFileSync(join(plugin, folder, id, "SKILL.md"), `---\nname: ${id}\ndescription: Use when testing ${id}.\n---\n\n# plugin ${id}\n`);
+        }
+        const codex = resolveWithPlugin(root, plugin, [], { core: ["codex-only"] }, "codex");
+        expect(codex.ok, JSON.stringify(codex)).toBe(true);
+        if (codex.ok) expect(codex.config.skillLoadout?.entries.map((entry) => entry.id)).toEqual(["codex-only"]);
+        expect(resolveWithPlugin(root, plugin, [], { core: ["claude-only"] }, "codex"))
+          .toMatchObject({ ok: false, errors: [expect.stringMatching(/has no skill named "claude-only".*are: codex-only$/)] });
+        const claude = resolveWithPlugin(root, plugin, [], { core: ["claude-only"] }, "claude-code");
+        expect(claude.ok, JSON.stringify(claude)).toBe(true);
+        if (claude.ok) expect(claude.config.skillLoadout?.entries.map((entry) => entry.id)).toEqual(["claude-only"]);
+        expect(resolveWithPlugin(root, plugin, [], { core: ["codex-only"] }, "claude-code"))
+          .toMatchObject({ ok: false, errors: [expect.stringMatching(/has no skill named "codex-only".*are: claude-only$/)] });
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it("refuses a selection for a plugin the profile does not select", () => {
+      const root = mkdtempSync(join(tmpdir(), "openrig-profile-plugin-unselected-"));
+      try {
+        const plugin = writePlugin(root);
+        const result = resolveWithPlugin(root, plugin, [], { other: ["queue-handoff"] });
+        expect(result).toEqual({
+          ok: false,
+          errors: [`Profile "default" uses.plugin_skills: "other" is not a plugin this profile selects in uses.plugins`],
+        });
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
   });
 });

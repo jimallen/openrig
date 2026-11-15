@@ -1037,6 +1037,10 @@ export interface ProfileSpec {
     subagents: string[];
     plugins: string[];
     runtimeResources: string[];
+    /** `uses.plugin_skills`: for a plugin named here (by the ref written in `plugins`), only these of its skills are
+     *  projected into the seat's skill folder. A plugin not named here projects all its skills, as before. The plugin
+     *  folder itself (hooks and the files they read) is projected whole either way. */
+    pluginSkills?: Record<string, string[]>;
   };
   /**
    * Per-seat activity-detection tuning. `silenceWindowSeconds` is the

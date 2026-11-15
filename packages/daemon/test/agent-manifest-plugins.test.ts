@@ -231,3 +231,56 @@ profiles:
     expect(spec.profiles["default"]!.uses.plugins).toEqual([]);
   });
 });
+
+describe("AgentSpec uses.plugin_skills — which of a plugin's skills a profile projects", () => {
+  const spec = (pluginSkills: string) => parseAgentSpec(`
+name: lean
+version: "1.0"
+imports:
+  - ref: local:../shared
+profiles:
+  default:
+    uses:
+      plugins: [shared:openrig-core]
+${pluginSkills}
+`);
+
+  it("accepts a list per selected plugin and normalizes it; a profile without the field normalizes as before", () => {
+    const raw = spec(`      plugin_skills:
+        shared:openrig-core: [messaging-the-human, claude-compaction-restore]`);
+    expect(validateAgentSpec(raw)).toEqual({ valid: true, errors: [] });
+    expect(normalizeAgentSpec(raw).profiles["default"]!.uses.pluginSkills)
+      .toEqual({ "shared:openrig-core": ["messaging-the-human", "claude-compaction-restore"] });
+
+    const plain = spec("");
+    expect(validateAgentSpec(plain)).toEqual({ valid: true, errors: [] });
+    expect(normalizeAgentSpec(plain).profiles["default"]!.uses).toEqual({
+      skills: [], guidance: [], subagents: [], plugins: ["shared:openrig-core"], runtimeResources: [],
+    });
+  });
+
+  it("accepts an empty list: the plugin's hooks and files without any of its skills", () => {
+    const raw = spec(`      plugin_skills:
+        shared:openrig-core: []`);
+    expect(validateAgentSpec(raw).valid).toBe(true);
+    expect(normalizeAgentSpec(raw).profiles["default"]!.uses.pluginSkills).toEqual({ "shared:openrig-core": [] });
+  });
+
+  it.each([
+    ["a list instead of a map", `      plugin_skills: [messaging-the-human]`, /uses\.plugin_skills: must be a map/],
+    ["a plugin the profile does not select", `      plugin_skills:
+        shared:other: [messaging-the-human]`, /"shared:other" is not in profiles\.default\.uses\.plugins/],
+    ["a plugin written differently from uses.plugins", `      plugin_skills:
+        openrig-core: [messaging-the-human]`, /"openrig-core" is not in profiles\.default\.uses\.plugins/],
+    ["a single name instead of a list", `      plugin_skills:
+        shared:openrig-core: messaging-the-human`, /shared:openrig-core: must be a list of skill names/],
+    ["an empty name", `      plugin_skills:
+        shared:openrig-core: [""]`, /skill names must be non-empty strings/],
+    ["a repeated name", `      plugin_skills:
+        shared:openrig-core: [refocusing, refocusing]`, /"refocusing" is listed twice/],
+  ])("refuses %s", (_label, block, error) => {
+    const result = validateAgentSpec(spec(block));
+    expect(result.valid).toBe(false);
+    expect(result.errors).toEqual([expect.stringMatching(error)]);
+  });
+});
