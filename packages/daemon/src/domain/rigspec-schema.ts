@@ -63,6 +63,25 @@ function validateQuestionPolicy(value: unknown): string[] {
   return errors;
 }
 
+/** The kernel rig's name (the literal native-permission-store's kernel launch default and hc-placement's KERNEL_RIG key on). */
+const KERNEL_RIG_NAME = "kernel";
+
+/** `ask_in_modal: true` on a member of the kernel rig: one error per member. Kernel seats never ask the human in a modal. */
+function kernelAskInModalErrors(pods: unknown): string[] {
+  if (!Array.isArray(pods)) return [];
+  const errors: string[] = [];
+  pods.forEach((pod, pi) => {
+    const members = pod && typeof pod === "object" ? (pod as Record<string, unknown>)["members"] : undefined;
+    if (!Array.isArray(members)) return;
+    members.forEach((member, mi) => {
+      if (member && typeof member === "object" && (member as Record<string, unknown>)["ask_in_modal"] === true) {
+        errors.push(`pods[${pi}].members[${mi}].ask_in_modal: not allowed in the kernel rig (kernel seats never ask the human in a modal)`);
+      }
+    });
+  });
+  return errors;
+}
+
 const RIG_KEYS = new Set([
   "version", "name", "summary", "culture_file", "permission_policy", "managed_blocks", "docs",
   "startup", "services", "workspace", "pods", "edges", "non_interruptive", "project_rig", "question_policy",
@@ -72,7 +91,7 @@ export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough", "model_overrides", "pi",
-  "claude_config_dir",
+  "claude_config_dir", "ask_in_modal",
 ]);
 
 /** Member keys a pda seat cannot take: OpenRig delivers no startup content to a pda agent (D4), and the model,
@@ -212,6 +231,7 @@ export class RigSpecSchema {
     }
     // OF-278: how long an unanswered AskUserQuestion waits before it takes its "(Recommended)" answer. Minutes; 0 turns it off.
     if (obj["question_policy"] !== undefined) errors.push(...validateQuestionPolicy(obj["question_policy"]));
+    if (obj["name"] === KERNEL_RIG_NAME) errors.push(...kernelAskInModalErrors(obj["pods"]));
 
     // #25: optional per-runtime managed-block destination. Only claude-code is
     // configurable in this release; Codex stays on AGENTS.md.
@@ -606,6 +626,17 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.remote_control: must be a boolean (true or false)`);
     } else if (member["remote_control"] === true && member["runtime"] !== "claude-code") {
       errors.push(`${prefix}.remote_control: only valid when runtime is "claude-code"`);
+    }
+  }
+  // `ask_in_modal: true` adds a Stop hook to every Claude launch of this seat that sends a turn back when it ends with a question
+  // to the human in prose (it belongs in an AskUserQuestion modal). The same shape rules as remote_control: a non-boolean is an
+  // error, `true` on another runtime is an error (a declaration that does nothing), `false` is legal anywhere. The kernel refusal is
+  // rig-level (kernelAskInModalErrors), where the rig's name is known.
+  if (member["ask_in_modal"] !== undefined) {
+    if (typeof member["ask_in_modal"] !== "boolean") {
+      errors.push(`${prefix}.ask_in_modal: must be a boolean (true or false)`);
+    } else if (member["ask_in_modal"] === true && member["runtime"] !== "claude-code") {
+      errors.push(`${prefix}.ask_in_modal: only valid when runtime is "claude-code"`);
     }
   }
   // A seat's own Claude config home: claude-code only (and the stub runtime, the test double that reports it). The
@@ -1330,6 +1361,8 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     effort: typeof m["effort"] === "string" && m["effort"].trim() ? m["effort"].trim() : undefined,
     // Only a validated `true` survives; false/absent normalize to undefined (the launch is unchanged).
     remoteControl: m["remote_control"] === true ? true : undefined,
+    // Only a validated `true` survives, like remote_control.
+    askInModal: m["ask_in_modal"] === true ? true : undefined,
     // As written (shape validated); the instantiator stores its canonical form (claude-config-dir.ts).
     claudeConfigDir: typeof m["claude_config_dir"] === "string" ? m["claude_config_dir"] : undefined,
     pda: normalizePdaBinding(m["pda"]),

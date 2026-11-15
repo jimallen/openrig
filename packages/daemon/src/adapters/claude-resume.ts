@@ -79,6 +79,9 @@ export class ClaudeResumeAdapter {
     // Remote Control again, named by the seat's tmux session name. TRAILING for the same reason as the
     // params above; absent/false → the command is byte-identical.
     remoteControl?: boolean,
+    // The seat's declared `ask_in_modal` (nodes.ask_in_modal): restore keeps the ask-in-modal Stop hook in the launch's
+    // --settings. TRAILING like remoteControl; absent/false → the command is byte-identical.
+    askInModal?: boolean,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Claude resume not available" };
@@ -103,7 +106,7 @@ export class ClaudeResumeAdapter {
         managed = await this.options.claudeManagedLaunch!.prepare({ nodeId: nodeId!, cwd, session: tmuxSessionName }, selectedPermissionMode);
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
-    const choice = { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode, nativeInbox: this.options.nativeInboxEnabled?.() ?? false, rigBodyGuardScript: this.options.rigBodyGuardScript };
+    const choice = { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode, ...(askInModal ? { askInModal: true } : {}), nativeInbox:this.options.nativeInboxEnabled?.() ?? false, rigBodyGuardScript: this.options.rigBodyGuardScript };
     const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
     const appliedLaunch = observeClaudePermission(posture);
     const permissionMode = posture + operationalLaunchArg("claude-code", choice);

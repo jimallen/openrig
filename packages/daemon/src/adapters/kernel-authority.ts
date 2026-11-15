@@ -4,6 +4,7 @@ import { shellQuote } from "./shell-quote.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { withRigBodyGuard } from "./claude-rig-body-guard.js";
+import { withAskInModalGuard } from "./claude-ask-in-modal-guard.js";
 
 // Command families used for rig lifecycle, substrate inspection, remote operations and upgrades.
 // These are tool allowances, not containment: node/npm/python/ssh can themselves run arbitrary code.
@@ -39,9 +40,10 @@ export const TEAM_CLAUDE_ASK = [
   "seat clean", "seat handover", "seat switch-client", "seat set-permissions", "seat set-model", "seat set-effort", "seat set-claude-home", "seat set-mcp",
 ].map(command => `Bash(rig ${command}:*)`);
 
-type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode">
+type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode" | "askInModal">
   & { /** Native comms step 3: the daemon's `transport.native_claude` at launch time. */ nativeInbox?: boolean;
-      /** OF-250: the hook script the rig-body guard points at (tests); default is the shipped asset. */ rigBodyGuardScript?: string };
+      /** OF-250: the hook script the rig-body guard points at (tests); default is the shipped asset. */ rigBodyGuardScript?: string;
+      /** The hook script the ask-in-modal guard points at (tests); default is the shipped asset. */ askInModalGuardScript?: string };
 
 /** The setting a Claude seat needs so its inbox delivers a daemon or agent message instead of holding it behind a picker
  *  (measured: a bypass seat holds it otherwise; only launch-flag scope is honoured, a local settings file is ignored). */
@@ -75,7 +77,10 @@ export function operationalLaunchArgs(runtime: string, choice: LaunchChoice): st
   if (runtime !== "claude-code") return args;
   // OF-250: the order is fixed, native inbox first, then the rig-body guard, into the ONE --settings JSON. Every Claude launch path (fresh, resume,
   // fork, successor, restore, remote-control) builds its flags here, so none can start without the guard.
-  return withRigBodyGuard(choice.nativeInbox ? withNativeInboxSettings(args) : args, choice.rigBodyGuardScript);
+  const guarded = withRigBodyGuard(choice.nativeInbox ? withNativeInboxSettings(args) : args, choice.rigBodyGuardScript);
+  // A seat that declared `ask_in_modal: true` also gets the ask-in-modal Stop hook, last, into the same --settings. Never on a
+  // kernel-authority launch: kernel seats never ask the human in a modal (the spec validator refuses the field in the kernel rig too).
+  return choice.askInModal === true && !choice.kernelAuthority ? withAskInModalGuard(guarded, choice.askInModalGuardScript) : guarded;
 }
 
 function baseOperationalLaunchArgs(runtime: string, choice: LaunchChoice): string[] {

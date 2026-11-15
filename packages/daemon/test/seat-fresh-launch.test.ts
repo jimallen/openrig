@@ -280,7 +280,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(deriveRehydrateSessionIdByNode(history, [seat.node.id], readFreshOccupantRelations(db, seat.rig.id))[seat.node.id]).toBeNull();
   });
 
-  function seedSeat(opts?: { clean?: boolean; adopted?: boolean; model?: string; withContext?: boolean; runtime?: "claude-code" | "codex"; remoteControl?: boolean; pda?: { agent: string; baseUrl: string } }) {
+  function seedSeat(opts?: { clean?: boolean; adopted?: boolean; model?: string; withContext?: boolean; runtime?: "claude-code" | "codex"; remoteControl?: boolean; askInModal?: boolean; pda?: { agent: string; baseUrl: string } }) {
     const runtime = opts?.runtime ?? "claude-code";
     const rig = rigRepo.createRig("fresh-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", {
@@ -288,6 +288,7 @@ describe("SeatLifecycleService.launchFresh", () => {
       cwd: SEAT_DIR,
       model: opts?.model ?? "claude-current",
       ...(opts?.remoteControl ? { remoteControl: true } : {}),
+      ...(opts?.askInModal ? { askInModal: true } : {}),
       ...(opts?.pda ? { pda: opts.pda } : {}),
     });
     const sessionName = "dev-impl@fresh-rig";
@@ -907,6 +908,14 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(result.ok, JSON.stringify(result)).toBe(true);
     if (remoteControl) expect(launchBinding).toMatchObject({ remoteControl: true });
     else expect(launchBinding).not.toHaveProperty("remoteControl");
+  });
+
+  it.each([[true], [false]])("a fresh launch binds the seat's persisted ask_in_modal declaration (%s) onto the launch binding", async (askInModal) => {
+    seedSeat({ clean: true, askInModal });
+    const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "blank restart of a coordinator seat" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (askInModal) expect(launchBinding).toMatchObject({ askInModal: true });
+    else expect(launchBinding).not.toHaveProperty("askInModal");
   });
 
   it("a fresh launch binds the seat's persisted pda binding onto the launch binding, and a seat without one carries no key", async () => {
