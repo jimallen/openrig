@@ -14,6 +14,8 @@ off, and never runs at fresh session start.
 **Guard:** `hooks/scripts/rig-body-guard.cjs` is a `PreToolUse` hook on Claude Code's `Bash` tool, active where this plugin is installed (the daemon delivers it to managed Claude seats separately, OF-250) (and, through `pi/rig-body-guard.cjs`, the Pi `tool_call`
 extension the OpenRig pi-runner loads for every Pi seat). It refuses, before the shell runs it, a `rig send` / `rig queue ...` command whose text holds a command
 substitution (backticks or `$(...)`) in double quotes, unquoted, or in an unquoted here-document, and tells the model to use `--file - <<'EOF'`.
+On Claude Code only, the same hook also refuses a Bash call that is not `run_in_background: true` and starts a shell background job (a top-level `&` with no later
+`wait`, or `nohup`, `disown` or `setsid` as a command word): nothing wakes the seat when such a job ends. The refusal points at `run_in_background: true` or Monitor.
 
 **Ask-in-modal guard:** `hooks/scripts/ask-in-modal-guard.cjs` is a Claude Code `Stop` hook that sends a turn back once when it ends with a question for the human in prose, so the seat asks it in an `AskUserQuestion` modal instead. It is not in `hooks/claude.json`: the daemon puts it in the launch `--settings` of a seat whose rig-spec member declares `ask_in_modal: true`, and no other seat runs it.
 

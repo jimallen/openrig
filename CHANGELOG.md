@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Claude seats can't start an untracked shell background job
+
+- Symptom: a Claude seat ran a long job as `( swift test …; echo rc=$? ) > log 2>&1 &` (or `nohup x &`) inside a normal Bash call. The call returned at once, nothing woke the seat when the job ended, and it sat idle (about 40 minutes on 2026-11-15).
+- The rig-body guard's Claude `PreToolUse` hook on `Bash` now also refuses, when the call is not `run_in_background: true`, a command with a top-level `&` that backgrounds a job and no later `wait`, or with `nohup`, `disown` or `setsid` as a command word. The refusal tells the seat to use the Bash tool's `run_in_background: true` (the harness re-invokes it when the command exits) or Monitor.
+- Allowed: `&&`, `&>`, `>&`, `<&`, `|&`, `2>&1`, `&` in quotes, here-document bodies and comments, `a & b & wait`, and any command the guard cannot parse (`((` arithmetic, an unterminated quote). Same node process as the rig-body check: no extra start per Bash call. Pi seats are unchanged.
+
 ### A role can choose which of a plugin's skills its seats get (`uses.plugin_skills`)
 
 - Symptom: every seat that selects `shared:openrig-core` got all 19 of its skills in its skill folder (25 in the kernel workspace, with the kernel seats' own `uses.skills`), and each skill's description sits in every prompt. Builders and reviewers carried operator guides they never use (`forming-an-openrig-mental-model`, `mission-slice-sop`, `retiring-and-inheriting-a-seat`, …).

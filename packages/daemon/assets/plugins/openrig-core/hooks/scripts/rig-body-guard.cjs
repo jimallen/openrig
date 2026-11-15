@@ -7,6 +7,7 @@
 // inside rig can stop it: the only place to stop it is the agent harness, before the shell sees the
 // command. Two harnesses use this one file:
 //   - Claude Code: a PreToolUse hook on Bash (hooks/claude.json runs this file; main() below).
+//     The Claude hook (hookDecision) also runs the background-job guard (checkBackground); Pi does not.
 //   - Pi: pi/rig-body-guard.cjs (a Pi extension) requires this file and refuses on its tool_call event.
 //
 // It reads the SHELL STRUCTURE, not the raw text: a backtick inside single quotes, inside a quoted
@@ -918,6 +919,96 @@ function refusal(violations) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The background-job guard (Claude Code only: hookDecision runs it, check() and the Pi extension do not).
+//
+// A shell background job started inside a FOREGROUND Bash call (`( swift test ...; echo rc=$? ) > log 2>&1 &`, `nohup x &`) leaves the
+// harness nothing to wake the seat when the job ends, and the seat sits idle (eztrack build-impl2, 2026-11-15, ~40 min). The Bash tool's
+// run_in_background: true re-invokes the agent when the command exits, so the guard refuses the shell form and names that one instead.
+// It rides in this file, not a sibling script, so a Bash call still starts one node process for both checks.
+//
+// Refused, when tool_input.run_in_background is not true:
+//   - a control operator `&` at the top level of the command (the lexer reads `&&`, `&>`, `&>>`, `>&`, `<&`, `|&` and `2>&1` as the operators
+//     or redirections they are, and skips quotes, here-document bodies, comments and substitution bodies) with no `wait` command after the last one;
+//   - nohup, disown or setsid as the command word of a simple command (after assignments, keywords and wrappers such as nice or env).
+// FAIL-OPEN: a command the lexer cannot read, one with `((` arithmetic, or an unclosed `[[` before the `&`, is allowed. A false refusal blocks
+// real work; a miss costs idle time. Not seen: a `&` inside `bash -c '...'`, eval, `$( ... & )` or a script file.
+
+const DETACHERS = new Set(["nohup", "disown", "setsid"]);
+
+/** True when the simple command runs nohup, disown or setsid: its command word, or the program a wrapper (nice, env, sudo, ...) runs. */
+function runsDetacher(words) {
+  let k = 0;
+  while (k < words.length && !words[k].quoted && (ASSIGN_RE.test(words[k].text) || KEYWORDS.has(words[k].text))) k++;
+  for (let guard = 0; guard < 16 && k < words.length; guard++) {
+    if (words[k].expands || words[k].param) return false;
+    const name = baseName(words[k].text);
+    if (DETACHERS.has(name)) return true;
+    const w = WRAPPERS[name];
+    if (!w) return false;
+    k++;
+    let skip = w[1];
+    while (k < words.length) {
+      const t = words[k].text;
+      if (t === "--") { k++; break; }
+      if (t.startsWith("-") && t.length > 1) { k += w[0].has(t) ? 2 : 1; continue; }
+      if (name === "env" && ASSIGN_RE.test(t)) { k++; continue; }
+      if (skip > 0) { skip--; k++; continue; }
+      break;
+    }
+  }
+  return false;
+}
+
+/** The first non-assignment, non-keyword word of a simple command, or "". */
+function firstWord(words) {
+  let k = 0;
+  while (k < words.length && !words[k].quoted && (ASSIGN_RE.test(words[k].text) || KEYWORDS.has(words[k].text))) k++;
+  return k < words.length ? words[k].text : "";
+}
+
+/** checkBackground(command[, { budgetMs }]) -> { block, kind, reason }. kind is "ampersand" or "detach". Never throws; fails open. */
+function checkBackground(command, options) {
+  const allow = { block: false, kind: null, reason: "" };
+  if (typeof command !== "string" || command.length === 0 || command.length > MAX_LEN) return allow;
+  if (!command.includes("&") && !/nohup|disown|setsid/.test(command)) return allow;
+  let cmds;
+  try {
+    OUTER_SUB = pickMarker(command);
+    work = 0;
+    deadline = Date.now() + (options && typeof options.budgetMs === "number" ? options.budgetMs : DEFAULT_BUDGET_MS);
+    cmds = lex(command).cmds;
+  } catch {
+    return allow;
+  } finally {
+    deadline = Infinity;
+  }
+  if (cmds.some((c) => runsDetacher(c.words))) return { block: true, kind: "detach", reason: backgroundRefusal("detach") };
+  let last = -1;
+  cmds.forEach((c, i) => { if (c.sep === "&") last = i; });
+  if (last < 0) return allow;
+  // `((` is arithmetic (`(( a & b ))`), which the lexer reads as two subshells: ambiguous, allow. `$((` is read inside a word and is fine.
+  if (/(?:^|[^$])\(\(/.test(command)) return allow;
+  for (let i = 0; i <= last; i++) {
+    const c = cmds[i];
+    if (c.sep !== "&") continue;
+    const texts = c.words.map((w) => (w.quoted ? "" : w.text));
+    if (texts.lastIndexOf("[[") > texts.lastIndexOf("]]")) return allow;   // `&` inside [[ ... ]]: not a job
+  }
+  for (let i = last + 1; i < cmds.length; i++) if (baseName(firstWord(cmds[i].words)) === "wait") return allow;
+  return { block: true, kind: "ampersand", reason: backgroundRefusal("ampersand") };
+}
+
+function backgroundRefusal(kind) {
+  const what = kind === "detach"
+    ? "it uses nohup, disown or setsid to detach a job"
+    : "it starts a shell background job with `&` and does not `wait` for it";
+  return [
+    `bg-job-guard BLOCKED this command before it ran. Nothing was executed. Why: ${what}, so nothing wakes you when the job ends.`,
+    "Fix: run the command in the foreground form (no `&`, nohup, disown or setsid) with the Bash tool's run_in_background: true; you are re-invoked when it exits. To watch its output while it runs, use Monitor. If this call should block until the jobs finish, end it with `wait`.",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------------------------
 // Claude Code PreToolUse hook entry: JSON event on stdin, JSON decision on stdout.
 
 function hookDecision(rawInput) {
@@ -926,9 +1017,15 @@ function hookDecision(rawInput) {
   const command = event && typeof event === "object" && event.tool_input && typeof event.tool_input.command === "string" ? event.tool_input.command : null;
   if (command === null) return { output: null, note: "rig-body-guard: no Bash command in the hook input; allowed" };
   const verdict = check(command);
-  if (!verdict.block) return { output: null, note: null };
+  let reason = verdict.block ? verdict.reason : null;
+  if (reason === null && event.tool_input.run_in_background !== true) {
+    let bg = { block: false, reason: "" };
+    try { bg = checkBackground(command); } catch { /* fail open: a guard fault must not stop the seat's Bash calls */ }
+    if (bg.block) reason = bg.reason;
+  }
+  if (reason === null) return { output: null, note: null };
   return {
-    output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: verdict.reason } },
+    output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } },
     note: null,
   };
 }
@@ -947,4 +1044,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { check, hookDecision, refusal, lex, bodyExpands, maskPieces, DEFAULT_BUDGET_MS, MESSAGE_COMMANDS, FLAG_COMMANDS };
+module.exports = { check, checkBackground, hookDecision, refusal, lex, bodyExpands, maskPieces, DEFAULT_BUDGET_MS, MESSAGE_COMMANDS, FLAG_COMMANDS };
