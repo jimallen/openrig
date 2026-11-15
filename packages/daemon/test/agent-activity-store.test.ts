@@ -83,6 +83,18 @@ describe("AgentActivityStore", () => {
     expect(store.getLatestForNode({ nodeId: node.id, sessionName, now: NOW })).toMatchObject({ state: "idle" });
   });
 
+  it("projects a Pi seat's runtime_error (its turn ended on a model error) as needs_input until a later turn, as for OMP", () => {
+    const rig = rigRepo.createRig("pi-rig");
+    const node = rigRepo.addNode(rig.id, "verify.sec", { runtime: "pi" });
+    const sessionName = "verify-sec@pi-rig";
+    sessionRegistry.updateStatus(sessionRegistry.registerSession(node.id, sessionName).id, "running");
+    const store = new AgentActivityStore({ db, eventBus, now: () => NOW });
+    store.recordHookEvent({ sessionName, runtime: "pi", hookEvent: "Notification", subtype: "runtime_error" });
+    expect(store.getLatestForNode({ nodeId: node.id, sessionName, now: NOW })).toMatchObject({ state: "needs_input", reason: "runtime_error" });
+    store.recordHookEvent({ sessionName, runtime: "pi", hookEvent: "active", subtype: "agent_start" });
+    expect(store.getLatestForNode({ nodeId: node.id, sessionName, now: NOW })).toMatchObject({ state: "running" });
+  });
+
   it("normalizes Claude permission notifications to needs_input and idle_prompt to idle", () => {
     const { node, sessionName } = seedSession("claude-code");
     const store = new AgentActivityStore({ db, eventBus, now: () => NOW });

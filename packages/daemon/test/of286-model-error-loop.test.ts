@@ -236,6 +236,67 @@ describe.each(["pi", "omp"] as const)("OF-286 the %s runner flags 3 failed model
   });
 });
 
+/** Pi: a turn that fails once and is not retried (a 400 such as `{"detail":"Bad Request"}`): the failed message, a final agent_end, agent_settled. */
+const piFailOnce = (text = '{"detail":"Bad Request"}') => [
+  { type: "agent_start" }, { type: "message_start", message: { role: "assistant" } }, { type: "message_end", message: err(text) },
+  { type: "agent_end", messages: [] }, { type: "agent_settled" },
+];
+const FAIL_ONCE = { pi: piFailOnce, omp: (text = '{"detail":"Bad Request"}') => ompGiveUp(text) } as const;
+
+// verify-sec@cel-identity, 2026-11-13/14: after a WebSocket failure Pi's Codex provider stayed on HTTP and every turn ended on one
+// `{"detail":"Bad Request"}`, 14-15 minutes or hours apart. Never 3 failures in 15 minutes, so the window rule never flagged it for 19 hours.
+describe.each(["pi", "omp"] as const)("the %s runner flags 2 turns in a row that end on a model error, whatever their spacing", (runtime) => {
+  const s = SHAPES[runtime];
+  const failOnce = FAIL_ONCE[runtime];
+
+  it("one turn that ends on a model error is not a flag; the second in a row is, 14 minutes later", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce());
+    expect(r.anyFlag()).toBe(false);
+    r.at(14, ...failOnce());
+    expect(r.loop()).toEqual({ count: 2, total: 2, since: iso(T0), lastAt: iso(T0 + 14 * MIN), lastError: '{"detail":"Bad Request"}', gaveUpAt: iso(T0 + 14 * MIN) });
+  });
+
+  it("hours apart is still two in a row", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce()); r.at(300, ...failOnce("terminated"));
+    expect(r.loop()).toEqual({ count: 1, total: 2, since: iso(T0), lastAt: iso(T0 + 300 * MIN), lastError: "terminated", gaveUpAt: iso(T0 + 300 * MIN) });
+  });
+
+  it("a clean turn between them breaks the run", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce()); r.at(30, ...s.done); r.at(60, ...failOnce());
+    expect(r.anyFlag()).toBe(false);
+    r.at(90, ...failOnce());
+    expect(r.loop()).toMatchObject({ total: 2, since: iso(T0 + 60 * MIN) });
+  });
+
+  it("a turn whose retry got through (it ended on an answer) breaks the run too", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce()); r.at(60, ...s.cut(), ...s.done); r.at(120, ...failOnce());
+    expect(r.anyFlag()).toBe(false);
+  });
+
+  it("an empty turn (ended before anything answered or failed) neither counts nor breaks the run", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce());
+    r.at(10, runtime === "pi" ? { type: "agent_start" } : { type: "turn_start" }, runtime === "pi" ? { type: "agent_end", messages: [] } : { type: "agent_end", messages: [], isTerminal: true });
+    expect(r.anyFlag()).toBe(false);
+    r.at(20, ...failOnce());
+    expect(r.loop()).toMatchObject({ total: 2, since: iso(T0) });
+  });
+
+  it("is cleared, as before, by a turn that completes with no model error", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce()); r.at(100, ...failOnce());
+    expect(r.loop()).toBeDefined();
+    r.at(200, ...s.done);
+    expect(r.loop()).toBeUndefined();
+    r.at(300, ...failOnce());
+    expect(r.loop()).toBeUndefined();
+  });
+});
+
 describe("OF-286 a Pi run aborted during the retry backoff", () => {
   it("ends with auto_retry_end{success:false} and agent_settled only (no final agent_end); the next answered turn is then a clean turn", () => {
     const r = runner("pi");
@@ -267,9 +328,10 @@ describe("OF-286 OMP's own event order", () => {
   it("an OMP failure announced on message_end and again on turn_end counts once", () => {
     const r = runner("omp");
     r.at(0, ...ompGiveUp()); r.at(1, ...ompGiveUp());
-    expect(r.anyFlag()).toBe(false); // two failures, each repeated on turn_end: 2, not 4
+    // Two turns in a row ended on a model error, so the flag is up; it counts two failures, each repeated on turn_end: 2, not 4.
+    expect(r.loop()).toMatchObject({ count: 2, total: 2 });
     r.at(2, ...ompGiveUp());
-    expect(r.loop()).toMatchObject({ total: 3 });
+    expect(r.loop()).toMatchObject({ count: 3, total: 3 });
   });
 
   it("OMP's terminal agent_end after a failure is giving up; its non-terminal one is not", () => {
@@ -372,7 +434,7 @@ describe("OF-286 SeatModelErrorLoopHealthSource: one finding per looping seat", 
     expect(found[0]!.summary).toContain("terminated");
     expect(found[0]!.summary).toContain(loop.since);
     expect(found[0]!.suggestedInspection).toContain("rig capture verify-qa@eztrack");
-    expect(found[0]!.threshold).toBe("3 failed model requests within 15 minutes, whatever succeeded in between; kept when the runtime gives up; cleared when a turn completes with no model error");
+    expect(found[0]!.threshold).toBe("3 failed model requests within 15 minutes, whatever succeeded in between, or 2 turns in a row that end on a model error, however far apart; kept when the runtime gives up; cleared when a turn completes with no model error");
   });
   it("a flag whose last failure is old is still an active finding: the flag is read from a live sidecar, so its freshness is the read's, not the failure's", () => {
     const old = { ...loop, lastAt: iso(NOW.getTime() - 2 * 3_600_000), since: iso(NOW.getTime() - 3 * 3_600_000) };
@@ -573,6 +635,13 @@ describe("OF-286 the Chief of Staff is told every time a seat starts looping, an
     const { modelLoopStartBody } = await import("../src/domain/seat-model-error-loop-notice.js");
     expect(modelLoopStartBody("x@y", "odd name@rig", flagLike())).toContain("rig capture 'odd name@rig'");
     function flagLike(): PublishedModelErrorLoop { return { count: 3, total: 3, since: iso(T0), lastAt: iso(T0), lastError: "e" }; }
+  });
+
+  it("states both rules, so a seat flagged by 2 failed turns hours apart is not described as 3 in 15 minutes", async () => {
+    const { modelLoopStartBody } = await import("../src/domain/seat-model-error-loop-notice.js");
+    const body = modelLoopStartBody("x@y", "x@y", { count: 1, total: 2, since: iso(T0), lastAt: iso(T0 + 300 * MIN), lastError: "e", gaveUpAt: iso(T0 + 300 * MIN) });
+    expect(body).toContain("(flagged at 3 within 15 minutes, or at 2 turns in a row that end on a model error)");
+    expect(body).not.toContain("at least 3 within");
   });
 
   it("says it once while the flag lasts, however many passes see it", async () => {

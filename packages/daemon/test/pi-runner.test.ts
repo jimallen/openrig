@@ -275,6 +275,83 @@ describe("RunnerCore identity + sidecar", () => {
     core.handlePiLine("some stray warning");
     expect(lines).toContain("some stray warning");
   });
+
+  // 2026-11-14: a multi-KB encrypted-reasoning blob on Pi's stdout filled the pane and hid the error line from the Chief of Staff.
+  it("a long unparsed line is cut to its length and its two ends, so it cannot bury the lines around it", () => {
+    const { core, lines } = readyCore();
+    const blob = `HEAD${"x".repeat(8000)}TAIL`;
+    lines.length = 0;
+    core.handlePiLine(blob);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.length).toBeLessThanOrEqual(300);
+    expect(lines[0]).toContain(`${blob.length} chars`);
+    expect(lines[0]).toContain("HEADxxx");
+    expect(lines[0]).toContain("xxxTAIL");
+    core.handlePiLine("x".repeat(240));
+    expect(lines[1]).toBe("x".repeat(240)); // a line that fits is still shown whole
+  });
+});
+
+// 2026-11-13/14: verify-sec@cel-identity's every turn ended on `{"detail":"Bad Request"}` and the seat read idle. OMP has raised attention on a
+// model error since #35; Pi now raises it when a turn ends on one.
+describe("a Pi turn that ends on a model error raises attention", () => {
+  const assistantStart = { type: "message_start", message: { role: "assistant" } };
+  const failed = { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: '{"detail":"Bad Request"}', content: [] } };
+  const answered = { type: "message_end", message: { role: "assistant", stopReason: "stop", content: [] } };
+  const feed = (core: RunnerCore, ...events: Record<string, unknown>[]) => { for (const e of events) core.handlePiLine(JSON.stringify(e)); };
+
+  it("posts Notification/runtime_error instead of a plain Stop, and the next run clears it", () => {
+    const { core, activity } = readyCore();
+    activity.length = 0;
+    feed(core, { type: "agent_start" }, assistantStart, failed, { type: "agent_end", messages: [] }, { type: "agent_settled" });
+    expect(activity.at(-1)).toMatchObject({ hookEvent: "Notification", subtype: "runtime_error" });
+    expect(activity.some((a) => a.hookEvent === "Stop")).toBe(false);
+    feed(core, { type: "agent_start" }, assistantStart, answered, { type: "agent_end", messages: [] });
+    expect(activity.at(-1)).toMatchObject({ hookEvent: "Stop" });
+  });
+
+  it("a failure Pi retries, and the retry answers, ends on a plain Stop", () => {
+    const { core, activity } = readyCore();
+    activity.length = 0;
+    feed(core, { type: "agent_start" }, assistantStart, failed, { type: "agent_end", messages: [], willRetry: true },
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000 }, { type: "agent_start" }, assistantStart, answered,
+      { type: "agent_end", messages: [] }, { type: "auto_retry_end", success: true });
+    expect(activity.filter((a) => a.hookEvent === "Notification")).toEqual([]);
+    expect(activity.at(-1)).toMatchObject({ hookEvent: "Stop" });
+  });
+});
+
+describe("Pi's message diagnostics in the error notice", () => {
+  // The shape Pi 1.5.0's openai-codex provider records (pi-ai utils/diagnostics.d.ts; one seen on this host 2026-11-13).
+  const fallback = { type: "provider_transport_failure", timestamp: 1794294050515,
+    error: { name: "Error", message: "WebSocket error", stack: "Error: WebSocket error\n    at extractWebSocketError (file:///x.js:10:8322)" },
+    details: { configuredTransport: "auto", fallbackTransport: "sse", eventsEmitted: false, phase: "before_message_stream_start", requestBytes: 212012 } };
+  const failure = (diagnostics: unknown) => ({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "terminated", diagnostics, content: [] } });
+
+  it("names the diagnostic, its error and its scalar details (the transport fallback), and never the stack", () => {
+    const notice = mapPiEvent(failure([fallback])).errorNotice!;
+    expect(notice.startsWith("[pi-runner] ERROR terminated")).toBe(true);
+    expect(notice).toContain("provider_transport_failure");
+    expect(notice).toContain("WebSocket error");
+    expect(notice).toContain("fallbackTransport=sse");
+    expect(notice).toContain("configuredTransport=auto");
+    expect(notice).toContain("phase=before_message_stream_start");
+    expect(notice).not.toContain("extractWebSocketError");
+    expect(notice).not.toContain("\n");
+  });
+
+  it("is bounded and sanitized, and absent or malformed diagnostics leave the notice as it was", () => {
+    const hostile = { type: "x\u001b[2J\r\ny", error: { message: "m".repeat(20) }, details: { nested: { no: 1 }, list: [1], k: "v".repeat(2000) } };
+    const notice = mapPiEvent(failure([hostile, hostile, hostile])).errorNotice!;
+    expect(notice).not.toMatch(/[\u0000-\u001f]/);
+    expect(notice.length).toBeLessThanOrEqual(800);
+    expect(notice).not.toContain("nested");
+    expect(notice).not.toContain("list=");
+    expect(notice).toContain("k=vvv");
+    for (const none of [undefined, [], "text", [null, 7, "s"]]) {
+      expect(mapPiEvent(failure(none)).errorNotice).toBe("[pi-runner] ERROR terminated");
+    }
+  });
 });
 
 // ── event → mirror / activity mapping ────────────────────────────────────────

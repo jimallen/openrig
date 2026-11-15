@@ -3,7 +3,8 @@
 // busy and no run of "failures in a row" was ever long (Pi's retry budget is 3 and its counter resets on any answer, a tool call included).
 //
 //   flag    N failed model requests within the window (a failure is an assistant message that ended with stopReason "error"),
-//           whether or not something succeeded in between;
+//           whether or not something succeeded in between; or T turns in a row that ended on a model error, however far apart
+//           (the run is broken by a turn that ends on an answer; a turn with no assistant message neither counts nor breaks it);
 //   keep    when the runtime gives up (a turn ends on a model error), the flag stays, with `gaveUpAt`;
 //   clear   only when a turn completes with no model error in it (a retry that got through is not a clean turn).
 //
@@ -14,6 +15,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { RunnerRuntime, PiModelErrorLoop } from "./pi-runner-protocol.js";
 import { PI_MODEL_ERROR_LOOP_THRESHOLD, PI_MODEL_ERROR_LOOP_WINDOW_MS } from "./pi-runner-protocol.js";
+import { MODEL_ERROR_FAILED_TURNS_THRESHOLD } from "../domain/model-error-loop-rule.js";
 
 /** OMP marks a non-final agent_end with isTerminal:false; Pi with willRetry:true (its retry's own agent_start/agent_end follow). */
 export function isFinalAgentEnd(event: Record<string, unknown>, runtime: RunnerRuntime): boolean {
@@ -41,6 +43,11 @@ export class ModelErrorLoopTracker {
   private lastWasError = false;
   /** The failure of the assistant message in hand is already counted: OMP repeats it on turn_end, which must not count twice. */
   private counted = false;
+  /** Turns in a row that ended on a model error, the failed requests since the first of them, and the latest failure. */
+  private failedTurns = 0;
+  private runFailures = 0;
+  private runSince: string | null = null;
+  private lastFailure: { at: string; error: string } | null = null;
 
   constructor(private readonly runtime: RunnerRuntime, private readonly now: () => string) {}
 
@@ -88,7 +95,10 @@ export class ModelErrorLoopTracker {
     this.lastWasError = true;
     const nowIso = this.now();
     const nowMs = Date.parse(nowIso);
-    this.failures = [...this.failures.filter((t) => nowMs - t < PI_MODEL_ERROR_LOOP_WINDOW_MS), nowMs].slice(-MAX_REMEMBERED_FAILURES);
+    this.runFailures++;
+    this.runSince ??= nowIso;
+    this.lastFailure = { at: nowIso, error: lastError };
+    this.failures =[...this.failures.filter((t) => nowMs - t < PI_MODEL_ERROR_LOOP_WINDOW_MS), nowMs].slice(-MAX_REMEMBERED_FAILURES);
     if (this.loop) {
       const { gaveUpAt: _gone, ...rest } = this.loop;
       this.loop = { ...rest, count: this.failures.length, total: this.loop.total + 1, lastAt: nowIso, lastError };
@@ -102,12 +112,15 @@ export class ModelErrorLoopTracker {
   private endTurn(final: boolean): boolean {
     const clean = this.turnErrors === 0 && this.turnAnswers > 0;
     const gaveUp = final && this.lastWasError;
+    const hadErrors = this.turnErrors > 0;
     this.turnOpen = false;
     this.counted = false;
-    if (!this.loop) return false;
+    if (gaveUp && hadErrors) this.failedTurns++;
+    else if (!this.lastWasError && this.turnAnswers > 0) this.resetRun(); // the turn ended on an answer
+    if (!this.loop) return this.raiseForFailedTurns();
     if (clean) {
       this.loop = null;
-      this.failures = [];
+      this.failures = []; // the run of failed turns was reset above: a clean turn ended on an answer
       return true;
     }
     if (gaveUp && this.loop.gaveUpAt === undefined) {
@@ -115,5 +128,22 @@ export class ModelErrorLoopTracker {
       return true;
     }
     return false;
+  }
+
+  private resetRun(): void {
+    this.failedTurns = 0;
+    this.runFailures = 0;
+    this.runSince = null;
+  }
+
+  /** T turns in a row ended on a model error: the flag goes up already given up (the seat is idle with its task undone). */
+  private raiseForFailedTurns(): boolean {
+    if (this.failedTurns < MODEL_ERROR_FAILED_TURNS_THRESHOLD || !this.lastFailure || !this.runSince) return false;
+    const nowIso = this.now();
+    const nowMs = Date.parse(nowIso);
+    this.failures = this.failures.filter((t) => nowMs - t < PI_MODEL_ERROR_LOOP_WINDOW_MS);
+    this.loop = { count: Math.max(1, this.failures.length), total: this.runFailures, since: this.runSince, lastAt: this.lastFailure.at,
+      lastError: this.lastFailure.error, gaveUpAt: nowIso };
+    return true;
   }
 }

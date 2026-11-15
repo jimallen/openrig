@@ -78,13 +78,37 @@ function piCredentialHint(message: string): string {
     : " For managed Pi, configure this provider in the seat's PI_CODING_AGENT_DIR (auth.json or models.json). Its key is not in OpenRig's Pi environment passthrough map; default Pi logins are not automatically shared.";
 }
 
-function errorNotice(details: unknown[], runtime: RunnerRuntime): string {
+const oneLine = (text: string): string => stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim();
+
+/** An unparsed stdout line longer than this is shown as its length and its first and last UNPARSED_END_SHOWN characters. */
+const MAX_UNPARSED_LINE = 240;
+const UNPARSED_END_SHOWN = 100;
+const MAX_DIAGNOSTICS_SHOWN = 2;
+const MAX_DIAGNOSTIC_TEXT = 160;
+
+/** Pi records why a request failed beyond its error text in `message.diagnostics` (pi-ai AssistantMessageDiagnostic: type, error, details):
+ *  the openai-codex provider names a WebSocket failure and its fallback to SSE there, which the error text ("terminated") does not. Shown as
+ *  `type: error message (key=value ...)` with scalar details only, never the stack, each bounded, one line. Anything else shows nothing. */
+function diagnosticsText(diagnostics: unknown): string {
+  if (!Array.isArray(diagnostics)) return "";
+  const shown = diagnostics.filter((d): d is Record<string, unknown> => d !== null && typeof d === "object" && !Array.isArray(d) && typeof d.type === "string")
+    .slice(-MAX_DIAGNOSTICS_SHOWN).map((d) => {
+      const error = d.error as Record<string, unknown> | undefined;
+      const message = typeof error?.message === "string" ? oneLine(error.message) : "";
+      const details = d.details !== null && typeof d.details === "object" && !Array.isArray(d.details)
+        ? Object.entries(d.details as Record<string, unknown>).filter(([, v]) => ["string", "number", "boolean"].includes(typeof v)).map(([k, v]) => oneLine(`${k}=${String(v)}`)).join(" ")
+        : "";
+      const text = `${oneLine(d.type as string)}${message ? `: ${message}` : ""}${details ? ` (${details})` : ""}`;
+      return text.length > MAX_DIAGNOSTIC_TEXT ? `${text.slice(0, MAX_DIAGNOSTIC_TEXT - 1)}…` : text;
+    }).filter(Boolean);
+  return shown.length ? ` [diagnostics: ${shown.join("; ")}]` : "";
+}
+
+function errorNotice(details: unknown[], runtime: RunnerRuntime, diagnostics?: unknown): string {
   // Empty or control-only fields must not hide a later usable diagnostic.
-  const text = details.map(detail => typeof detail === "string"
-    ? stripVTControlCharacters(detail).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim()
-    : "").find(Boolean) ?? "";
+  const text = details.map(detail => typeof detail === "string" ? oneLine(detail) : "").find(Boolean) ?? "";
   const marker = runtime === "omp" ? "[omp-runner] ERROR" : PI_RUNNER_ERROR_MARKER;
-  return `${marker} ${text.slice(0, 400) || "request failed"}${runtime === "pi" ? piCredentialHint(text) : ""}`;
+  return `${marker} ${text.slice(0, 400) || "request failed"}${diagnosticsText(diagnostics)}${runtime === "pi" ? piCredentialHint(text) : ""}`;
 }
 
 /** The one model-failure detector for both runtimes. Pi and OMP report a
@@ -98,7 +122,7 @@ function modelErrorNotice(event: Record<string, unknown>, runtime: RunnerRuntime
   }
   const message = event.message as Record<string, unknown> | undefined;
   if (message?.role === "assistant" && message.stopReason === "error") {
-    return { errorNotice: errorNotice([message.errorMessage, message.error, event.error], runtime) };
+    return { errorNotice: errorNotice([message.errorMessage, message.error, event.error], runtime, message.diagnostics) };
   }
   return {};
 }
@@ -350,7 +374,7 @@ export class RunnerCore {
   private pasteLeftover = false;
   private assistantErrorShown = false;
   private started = false;
-  /** OMP attention (runtime_error | permission_prompt) that must survive the
+  /** Runner attention (runtime_error | permission_prompt) that must survive the
    *  end of the turn; cleared by the next agent_start. */
   private attention: "runtime_error" | "permission_prompt" | null = null;
   /** Whether the last activity posted is that attention. Later activity in
@@ -438,8 +462,10 @@ export class RunnerCore {
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return;
       record = parsed as Record<string, unknown>;
     } catch {
-      // Non-JSON noise on pi stdout — mirror it verbatim so nothing hides.
-      this.io.mirrorLine(line);
+      // Non-JSON noise on pi stdout: mirrored so nothing hides, but a long one (on 2026-11-14 a multi-KB encrypted-reasoning blob) is cut to its
+      // length and its two ends, so it cannot push the lines around it, an error among them, off the pane.
+      this.io.mirrorLine(line.length <= MAX_UNPARSED_LINE ? line
+        : `[${this.runtime}-runner] unparsed output, ${line.length} chars: ${line.slice(0, UNPARSED_END_SHOWN)} … ${line.slice(-UNPARSED_END_SHOWN)}`);
       return;
     }
 
@@ -841,6 +867,11 @@ export class RunnerCore {
       // has to act, so the seat shows attention rather than idle.
       if (this.runtime === "omp") this.raiseAttention("runtime_error");
     }
+    // Pi: when the run ends on a model error (no retry left, or a 400 Pi does not retry) the seat is idle with its task undone, and the operator
+    // has to act, as for OMP. Raised at the final agent_end rather than on each failed message: Pi announces a retry with agent_end{willRetry}
+    // and auto_retry_start and clears nothing itself, so attention per message would flash on every retried cut that later succeeds.
+    // assistantErrorShown is true here only if the run's latest assistant message failed (it resets at each assistant message_start).
+    if (this.runtime === "pi" && this.assistantErrorShown && isFinalAgentEnd(event, this.runtime)) this.raiseAttention("runtime_error");
     // QA A2: `compaction_start` is `active` (working) and `compaction_end` maps to nothing, so a compaction outside a run left hc
     // at `working` until the next run ended. Its end returns the seat to idle, but never inside a run: that run's own Stop ends it.
     if ((event.type === "compaction_end" || event.type === "auto_compaction_end") && !this.streaming) this.io.reportHcStatus?.("idle");

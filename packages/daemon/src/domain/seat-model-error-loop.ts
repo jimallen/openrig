@@ -1,7 +1,7 @@
 import { formatHeldAge } from "./seat-messaging/held-messages.js";
 
 // OF-286 — a Pi or OMP seat looping on model errors, as the rest of the daemon reads it. The runner decides (adapters/pi-model-error-loop.ts: 3
-// failed model requests within 15 minutes, kept when the runtime gives up, cleared by a turn that completes with no model error) and publishes
+// failed model requests within 15 minutes, or 2 turns in a row that end on a model error, kept when the runtime gives up, cleared by a turn that completes with no model error) and publishes
 // the flag in its sidecar; this is the one reading of that flag for `rig ps`, `rig health` and the notice to the Chief of Staff. It decides
 // nothing and gates nothing: a looping seat is still working through its retries, so activity, readiness and send gating are unchanged.
 

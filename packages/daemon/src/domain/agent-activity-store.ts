@@ -399,7 +399,8 @@ export function pickLatestByOrdering<T extends { activity?: Pick<AgentActivity, 
 
 /** The activity a runtime hook event means, before freshness or generation checks. The one mapping behind
  *  ingest, the send gate and the wake ladder. `seatRuntime` is the managed seat's runtime: runtime_error is
- *  an OMP runner signal, and a hook claiming OMP on another runtime's seat must not escalate it. The same
+ *  a Pi/OMP runner signal (OMP on each model error, Pi when a turn ends on one), and a hook claiming it on another
+ *  runtime's seat must not escalate it. The same
  *  holds for a pda runner's held-message report (OF-89): `Notification/<held code>` is needs_input on a pda seat only. */
 export function hookEventState(rawEvent: string | null | undefined, rawSubtype: string | null | undefined, seatRuntime: string | null): AgentActivity["state"] {
   if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") return "running";
@@ -417,7 +418,7 @@ export function hookEventState(rawEvent: string | null | undefined, rawSubtype: 
   // the relay forwards tool_name as the subtype, so `evidence` names the tool being approved.
   if (rawEvent === "PermissionRequest") return "needs_input";
   if (rawEvent === "Notification") {
-    if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog" || (seatRuntime === "omp" && rawSubtype === "runtime_error")
+    if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog" || ((seatRuntime === "omp" || seatRuntime === "pi") && rawSubtype === "runtime_error")
       || (seatRuntime === PDA_RUNTIME && isPdaHeldCode(rawSubtype))) return "needs_input";
     return rawSubtype === "idle_prompt" ? "idle" : "unknown";
   }

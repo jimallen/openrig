@@ -89,7 +89,8 @@ export interface PiRunnerState {
    *  trusted only alongside a live `aliveAt`, absent from an older runner (today's behaviour). */
   pasteLeftover?: boolean;
   /** OF-286: present while the seat is flagged as looping on model errors: PI_MODEL_ERROR_LOOP_THRESHOLD failed model requests
-   *  within PI_MODEL_ERROR_LOOP_WINDOW_MS, whatever succeeded in between. Kept when Pi gives up (`gaveUpAt`), dropped only when a
+   *  within PI_MODEL_ERROR_LOOP_WINDOW_MS, whatever succeeded in between, or MODEL_ERROR_FAILED_TURNS_THRESHOLD turns in a row that
+   *  ended on a model error, however far apart (that flag is raised with `gaveUpAt` already set). Kept when Pi gives up (`gaveUpAt`), dropped only when a
    *  turn completes with no model error in it. `rig ps` and `rig health` read it (PiRuntimeAdapter.modelErrorLoop) only alongside a
    *  live `aliveAt`. Absent from an older runner (no flag) and from a sidecar rewritten by a relaunch. Never read for send gating. */
   modelErrorLoop?: PiModelErrorLoop;

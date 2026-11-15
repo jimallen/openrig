@@ -16,7 +16,7 @@
 // recovery that happens while the daemon is down is not sent.
 import { createHash } from "node:crypto";
 import { shellWord, setOff } from "./active-occupant.js";
-import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS } from "./model-error-loop-rule.js";
+import { MODEL_ERROR_LOOP_RULE_TEXT } from "./model-error-loop-rule.js";
 import { rigChiefOfStaff, type TopologyDb } from "./rig-chief-of-staff.js";
 import type { QueueCreateInput } from "./queue-repository.js";
 import type { PublishedModelErrorLoop } from "./seat-model-error-loop.js";
@@ -46,7 +46,7 @@ export function modelLoopNoticeId(kind: "looping" | "recovered", sessionName: st
 
 export function modelLoopStartBody(seat: string, sessionName: string, loop: PublishedModelErrorLoop): string {
   return [
-    `${seat} is looping on model errors: ${loop.total} failed model requests since ${loop.since} (at least ${MODEL_ERROR_LOOP_THRESHOLD} within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes), the latest at ${loop.lastAt}: "${loop.lastError}".`,
+    `${seat} is looping on model errors: ${loop.total} failed model requests since ${loop.since} (${MODEL_ERROR_LOOP_RULE_TEXT}), the latest at ${loop.lastAt}: "${loop.lastError}".`,
     loop.gaveUpAt ? `Its runtime gave up at ${loop.gaveUpAt}: the turn ended on the error and the seat is idle with its task undone.` : "It reads busy while its runtime retries, and steps may succeed between the failures.",
     "The cut is between the runtime and the model provider, not in OpenRig. A relaunch loses the seat's context and starts the same request again, so try the cheaper things first.",
     `Look: ${setOff(`rig capture ${shellWord(sessionName)}`)}   (${setOff("rig ps --nodes")} shows the seat in ATTN with this reason; ${setOff("rig health")} names it too).`,

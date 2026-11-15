@@ -22,7 +22,7 @@ import { queryUsageSeries } from "./usage-series.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { RSI_FINDING_CATEGORY, RSI_FINDING_SEVERITY } from "./rsi/detector-ids.js";
 import { freshSeatLaunchCommand, shellWord } from "./active-occupant.js";
-import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS } from "./model-error-loop-rule.js";
+import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS, MODEL_ERROR_FAILED_TURNS_THRESHOLD, MODEL_ERROR_LOOP_RULE_TEXT } from "./model-error-loop-rule.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -458,8 +458,8 @@ function evaluateSeatModelErrorLoop(observation: Extract<HealthDetectorObservati
     category: "process",
     severity: "warning",
     summary: `Seat ${seat} (${observation.runtime}) is looping on model errors: ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt}; last error: ${observation.lastError}.${observation.gaveUpAt ? ` The runtime gave up at ${observation.gaveUpAt}.` : ""}`,
-    threshold: `${MODEL_ERROR_LOOP_THRESHOLD} failed model requests within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes, whatever succeeded in between; kept when the runtime gives up; cleared when a turn completes with no model error`,
-    explanation: `${seat} (session ${observation.sessionName}) has had ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt} (latest ${observation.lastObservedAt}), at least ${MODEL_ERROR_LOOP_THRESHOLD} of them within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes. `
+    threshold: `${MODEL_ERROR_LOOP_THRESHOLD} failed model requests within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes, whatever succeeded in between, or ${MODEL_ERROR_FAILED_TURNS_THRESHOLD} turns in a row that end on a model error, however far apart; kept when the runtime gives up; cleared when a turn completes with no model error`,
+    explanation: `${seat} (session ${observation.sessionName}) has had ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt} (latest ${observation.lastObservedAt}), ${MODEL_ERROR_LOOP_RULE_TEXT}. `
       + `The latest error was: ${observation.lastError}. It still reads busy while its runtime retries, and steps may succeed between the failures. The cut is between the runtime and the model provider, not in OpenRig.${gaveUp} `
       + `A fresh relaunch loses the seat's context and starts the same request again, so it is not the first remedy.`,
     suggestedInspection: `Look at the seat's pane and its latest errors (run this):\n  rig capture ${shellWord(observation.sessionName)}\n`
