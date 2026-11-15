@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createMockEventSourceClass } from "./helpers/mock-event-source.js";
 import { AppShell } from "../src/components/AppShell.js";
-import { HostScopePage, RigScopePage } from "../src/components/topology/ScopePages.js";
+import { HostScopePage, RigScopePage, SeatScopePage } from "../src/components/topology/ScopePages.js";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -40,8 +40,9 @@ afterEach(() => {
 // import that raced the 5000ms waitFor under fleet load. A minimal router with
 // AppShell as the root and only the topology scope routes mounts the SAME
 // components with no heavy import and no clock to race. HostScopePage takes no
-// params; RigScopePage reads useParams({ from: "/topology/rig/$rigId" }), so
-// that route path is spelled exactly to preserve the strict param binding.
+// params; RigScopePage reads useParams({ from: "/topology/rig/$rigId" }) and
+// SeatScopePage reads useParams({ from: "/topology/seat/$rigId/$logicalId" }),
+// so those route paths are spelled exactly to preserve the strict param binding.
 function buildTopologyRouter(initialPath: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const rootRoute = createRootRoute({
@@ -55,8 +56,9 @@ function buildTopologyRouter(initialPath: string) {
   });
   const hostRoute = createRoute({ getParentRoute: () => rootRoute, path: "/topology", component: HostScopePage });
   const rigRoute = createRoute({ getParentRoute: () => rootRoute, path: "/topology/rig/$rigId", component: RigScopePage });
+  const seatRoute = createRoute({ getParentRoute: () => rootRoute, path: "/topology/seat/$rigId/$logicalId", component: SeatScopePage });
   const catchAll = createRoute({ getParentRoute: () => rootRoute, path: "$", component: () => null });
-  const routeTree = rootRoute.addChildren([hostRoute, rigRoute, catchAll]);
+  const routeTree = rootRoute.addChildren([hostRoute, rigRoute, seatRoute, catchAll]);
   return createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [initialPath] }) });
 }
 
@@ -110,12 +112,53 @@ describe("SC-10: topology view-mode tabs IN-PLACE single URL", () => {
     expect(container.querySelector("[data-testid='topology-rig-tab-overview']")).toBeTruthy();
   });
 
-  // Seat scope brings in LiveNodeDetails which makes additional fetches.
-  // Host + rig scope tests above prove the IN-PLACE pattern; the
-  // source-assertion regression test below proves no view-mode-as-URL
-  // anti-patterns. Skipping the explicit seat-scope route render here.
-  it.skip("seat scope at /topology/seat/$rigId/$logicalId — covered by source-assertion + scope-page direct test", () => {});
+  // Seat scope has no outer scope tabs since V1 polish P5.1-D1: SeatScopePage mounts LiveNodeDetails, whose
+  // Overview/Details tab row is the seat's view mode. The route render proves the page resolves the route's own
+  // params, asks the daemon for that seat, and switches its tabs IN-PLACE (the URL does not move).
+  it("seat scope at /topology/seat/$rigId/$logicalId renders the seat's details and switches its tabs without changing the URL", async () => {
+    const seatPath = "/topology/seat/rig-1/dev.impl";
+    mockFetch.mockImplementation(async (url: string) => {
+      if (typeof url === "string" && url.includes("/api/rigs/rig-1/nodes/")) {
+        return new Response(JSON.stringify(SEAT_DETAIL), { headers: { "content-type": "application/json" } });
+      }
+      return new Response("[]");
+    });
+    const { container, router: r } = await renderTopologyAt(seatPath);
+    await waitFor(() => {
+      expect(container.querySelector("[data-testid='live-node-tabs']")).toBeTruthy();
+    }, { timeout: 5000 });
+    expect(container.querySelector("[data-testid='seat-scope-page'] [data-testid='live-node-details']")).toBeTruthy();
+    expect(container.textContent).toContain("dev-impl@test-rig");
+    const nodeUrls = mockFetch.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/nodes/"));
+    expect(nodeUrls, "the page asks for the route's own rig and seat").toContain("/api/rigs/rig-1/nodes/dev.impl");
+
+    const overview = container.querySelector("[data-testid='live-tab-overview']") as HTMLElement;
+    const details = container.querySelector("[data-testid='live-tab-details']") as HTMLElement;
+    expect(overview.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(details);
+    expect(r.history.location.pathname).toBe(seatPath);
+    await waitFor(() => {
+      expect(details.getAttribute("aria-selected")).toBe("true");
+    });
+    expect(overview.getAttribute("aria-selected")).toBe("false");
+    expect(r.history.location.pathname).toBe(seatPath);
+  });
 });
+
+// The seat-detail answer LiveNodeDetails reads (the daemon's GET /api/rigs/:rigId/nodes/:logicalId shape).
+const SEAT_DETAIL = {
+  rigId: "rig-1", rigName: "test-rig", logicalId: "dev.impl", podId: "dev",
+  canonicalSessionName: "dev-impl@test-rig", nodeKind: "agent", runtime: "claude-code",
+  sessionStatus: "running", startupStatus: "ready", restoreOutcome: "n-a",
+  tmuxAttachCommand: null, resumeCommand: null, recoveryGuidance: null,
+  latestError: null, model: "opus", agentRef: "local:agents/impl", profile: "default",
+  resolvedSpecName: "impl", resolvedSpecVersion: "1.0.0", cwd: "/workspace",
+  startupFiles: [], startupActions: [], recentEvents: [],
+  infrastructureStartupCommand: null,
+  peers: [], edges: { outgoing: [], incoming: [] },
+  transcript: { enabled: false, path: null, tailCommand: null },
+  compactSpec: { name: "impl", version: "1.0.0", profile: "default", skillCount: 0, guidanceCount: 0 },
+};
 
 describe("Seat scope tabs (direct render — bypasses route fetching)", () => {
   it("SeatScopePage renders all three seat tabs when mounted directly", async () => {
