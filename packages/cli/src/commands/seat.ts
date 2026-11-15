@@ -781,8 +781,8 @@ member from the rig's recorded spec source (judged by the same trust rule as set
 fields as the spec load does, and shows 'retained -> spec' for each (names and override keys only, never a
 value). Without --yes it writes nothing. With --yes it writes the runtime's fields in one transaction and records
 one audit event. A field the spec no longer states is cleared. Nothing is relaunched and no process is touched:
-the new values apply at the seat's next launch (rig seat launch, restore, rig up --existing, a handover
-successor). Other runtimes, and a kernel seat's Claude Code fields, are refused.
+the new values apply at the seat's next launch: a seat launch, a restore, rig up --existing, or a handover
+successor. Other runtimes, and a kernel seat's Claude Code fields, are refused.
 Examples:
   rig seat apply-spec verify-ops@eztrack
   rig seat apply-spec verify-ops@eztrack --yes --reason "release c84c5ba3 adds OPENAI_API_KEY"
