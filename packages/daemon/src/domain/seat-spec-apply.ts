@@ -3,6 +3,9 @@
 // later change to the spec reaches an existing seat only through this explicit step. This module is the pure part: what the
 // spec says, what the node retains, and the per-field difference between them. It reads no file and no database (the service
 // does), and it prints no environment VALUE: an env_passthrough entry is a variable NAME, and nothing here ever holds a value.
+// A Claude Code seat's two retained launch fields (remote_control, ask_in_modal: nodes.remote_control, nodes.ask_in_modal) are
+// the same kind of thing: written when the node is created or launched from the spec by `rig up`, read by every other launch
+// (seat launch, restore, handover), so this step carries them too.
 import type { RigSpecPodMember } from "./types.js";
 
 export type ModelOverrides = Record<string, Record<string, { contextWindow: number }>>;
@@ -14,7 +17,9 @@ export interface RetainedPiFields {
   piLinkOperatorModels: boolean;
 }
 
-export type RetainedFieldName = "env_passthrough" | "model_overrides" | "pi.link_operator_models";
+export type PiRetainedFieldName = "env_passthrough" | "model_overrides" | "pi.link_operator_models";
+export type ClaudeRetainedFieldName = "remote_control" | "ask_in_modal";
+export type RetainedFieldName = PiRetainedFieldName | ClaudeRetainedFieldName;
 
 export interface RetainedFieldDiff {
   field: RetainedFieldName;
@@ -57,4 +62,25 @@ export function diffRetainedPiFields(retained: RetainedPiFields, spec: RetainedP
 /** The names the apply adds to and removes from env_passthrough, for the audit line. */
 export function envNameChanges(retained: string[], spec: string[]): { added: string[]; removed: string[] } {
   return { added: spec.filter((n) => !retained.includes(n)), removed: retained.filter((n) => !spec.includes(n)) };
+}
+
+/** A Claude Code seat's two retained launch fields, as booleans: false = not declared. */
+export interface RetainedClaudeFields {
+  remoteControl: boolean;
+  askInModal: boolean;
+}
+
+/** The two fields as the spec member says them: an absent (or false) field withdraws the retained declaration. */
+export function specClaudeFields(member: Pick<RigSpecPodMember, "remoteControl" | "askInModal">): RetainedClaudeFields {
+  return { remoteControl: member.remoteControl === true, askInModal: member.askInModal === true };
+}
+
+/** One row per field, in pi.link_operator_models' display form: ["true"] when declared, [] when not. */
+export function diffRetainedClaudeFields(retained: RetainedClaudeFields, spec: RetainedClaudeFields): RetainedFieldDiff[] {
+  const row = (field: ClaudeRetainedFieldName, read: (r: RetainedClaudeFields) => boolean): RetainedFieldDiff => {
+    const a = read(retained);
+    const b = read(spec);
+    return { field, retained: a ? ["true"] : [], spec: b ? ["true"] : [], changed: a !== b };
+  };
+  return [row("remote_control", (r) => r.remoteControl), row("ask_in_modal", (r) => r.askInModal)];
 }

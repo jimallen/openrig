@@ -1,7 +1,7 @@
 import { readDeclaredMcpServer, readTrustedSeatSpec, type TrustedSeatSpecFailureKind, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
 import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
-import { diffRetainedPiFields, envNameChanges, specRetainedFields, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
+import { diffRetainedClaudeFields, diffRetainedPiFields, envNameChanges, specClaudeFields, specRetainedFields, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
@@ -132,6 +132,7 @@ export interface SeatRefusal {
     | "apply_spec_unsupported_runtime" | "apply_spec_runtime_mismatch" | "apply_spec_seat_undeclared" | "apply_spec_invalid_spec_file"
     | "apply_spec_source_unrecorded" | "apply_spec_source_unavailable" | "apply_spec_source_untrusted"
     | "apply_spec_file_unavailable" | "apply_spec_file_untrusted" | "apply_spec_rig_mismatch" | "apply_spec_fields_refused" | "apply_spec_not_saved"
+    | "apply_spec_kernel_seat"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -594,6 +595,8 @@ export class SeatLifecycleService {
    * `retained -> spec` per field. Without `yes` that is all it does. With `yes` it writes all three in ONE transaction with one
    * audit event (names only, never a value). No terminal, session or process is touched and nothing is relaunched: the new
    * values take effect at the seat's next launch. A field the spec does not carry clears the retained value.
+   * A Claude Code seat's remote_control and ask_in_modal (nodes.remote_control, nodes.ask_in_modal) take the same step: `rig up`
+   * writes them from the spec, but `rig seat launch` (stored startup), restore and handover read the node. A kernel seat is refused.
    */
   async applySpec(input: { seatRef: string; yes: boolean; actor: string | null; reason?: string; specFile?: string }): Promise<
     | { ok: true; seat: SeatDescriptor; dryRun: boolean; written: boolean; changed: boolean; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string;
@@ -608,7 +611,14 @@ export class SeatLifecycleService {
     const seat = this.describe(resolved);
     const node = this.db.prepare("SELECT runtime, cwd FROM nodes WHERE id = ?").get(seat.nodeId) as { runtime: string | null; cwd: string | null } | undefined;
     if (!node) return { ok: false, code: "seat_not_found", message: `Seat "${input.seatRef}" has no node row.` };
-    if (node.runtime !== "pi") return { ok: false, code: "apply_spec_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; env_passthrough, model_overrides and pi.link_operator_models apply to pi seats only.` };
+    if (node.runtime !== "pi" && node.runtime !== "claude-code") {
+      return { ok: false, code: "apply_spec_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; env_passthrough, model_overrides and pi.link_operator_models apply to pi seats, remote_control and ask_in_modal to claude-code seats.` };
+    }
+    const claude = node.runtime === "claude-code";
+    // The kernel's seats are launched by the kernel boot, and its spec may not declare ask_in_modal: this step does not change them.
+    if (claude && seat.rigName === "kernel") {
+      return { ok: false, code: "apply_spec_kernel_seat", message: `Seat "${input.seatRef}" belongs to the kernel rig; apply-spec does not change a kernel seat's remote_control or ask_in_modal. Nothing was changed.` };
+    }
 
     const read = readTrustedSeatSpec({
       specSource: this.rigRepo.getRigSpecSource(seat.rigId), rigName: seat.rigName, node: { logicalId: seat.logicalId, cwd: node.cwd }, purpose: "applying seat fields",
@@ -620,30 +630,45 @@ export class SeatLifecycleService {
     if (!read.ok) return { ok: false, code: APPLY_SPEC_REFUSAL_CODE[read.kind], message: read.message };
     const { member, pod, specPath, specSha256 } = read;
     if (!member || !pod) return { ok: false, code: "apply_spec_seat_undeclared", message: `The spec ${specPath} does not declare seat ${seat.logicalId}, so it says nothing about its retained fields.` };
-    if (member.runtime !== "pi" || member.runtime !== node.runtime) {
+    if (member.runtime !== node.runtime) {
       return { ok: false, code: "apply_spec_runtime_mismatch", message: `The spec ${specPath} declares ${seat.logicalId} with runtime ${member.runtime}; this seat's node runs ${node.runtime}. Nothing was changed.` };
     }
-    const rawMember = rawMemberOf(read.raw, pod.id, member.id);
-    const problems = validatePiRetainedMemberFields(rawMember ?? {}, `${pod.id}.${member.id}`);
-    if (problems.length > 0) return { ok: false, code: "apply_spec_fields_refused", message: `The spec ${specPath} states these fields in a way the spec load refuses, so nothing was changed: ${problems.join("; ")}` };
 
-    // What the node retains, as a launch reads it. A stored value a launch would refuse (a damaged row) is reported as
-    // "unreadable" and counts as a change: applying the spec is the repair.
-    const unreadable = new Set<RetainedFieldName>();
-    const retained: RetainedPiFields = {
-      envPassthrough: this.rigRepo.getNodeEnvPassthrough(seat.nodeId),
-      modelOverrides: (() => { try { return this.rigRepo.getNodeModelOverrides(seat.nodeId); } catch { unreadable.add("model_overrides"); return undefined; } })(),
-      piLinkOperatorModels: (() => { try { return this.rigRepo.getNodeLinkOperatorModels(seat.nodeId); } catch { unreadable.add("pi.link_operator_models"); return false; } })(),
-    };
-    const spec = specRetainedFields(member);
-    const fields = diffRetainedPiFields(retained, spec).map((f) => unreadable.has(f.field) ? { ...f, retained: ["unreadable (damaged stored value)"], changed: true } : f);
+    // The fields this runtime retains, as the spec states them and as the node holds them, and the one write that stores them.
+    let fields: RetainedFieldDiff[];
+    let envAdded: string[] = [];
+    let envRemoved: string[] = [];
+    let write: () => boolean;
+    if (claude) {
+      // remote_control and ask_in_modal have no rule beyond the spec load's (a boolean, claude-code only, no ask_in_modal in the
+      // kernel rig), and readTrustedSeatSpec has already validated the whole spec with it.
+      const spec = specClaudeFields(member);
+      fields = diffRetainedClaudeFields(this.rigRepo.getNodeClaudeRetainedFields(seat.nodeId), spec);
+      write = () => this.rigRepo.setNodeClaudeRetainedFields(seat.nodeId, spec);
+    } else {
+      const rawMember = rawMemberOf(read.raw, pod.id, member.id);
+      const problems = validatePiRetainedMemberFields(rawMember ?? {}, `${pod.id}.${member.id}`);
+      if (problems.length > 0) return { ok: false, code: "apply_spec_fields_refused", message: `The spec ${specPath} states these fields in a way the spec load refuses, so nothing was changed: ${problems.join("; ")}` };
+
+      // What the node retains, as a launch reads it. A stored value a launch would refuse (a damaged row) is reported as
+      // "unreadable" and counts as a change: applying the spec is the repair.
+      const unreadable = new Set<RetainedFieldName>();
+      const retained: RetainedPiFields = {
+        envPassthrough: this.rigRepo.getNodeEnvPassthrough(seat.nodeId),
+        modelOverrides: (() => { try { return this.rigRepo.getNodeModelOverrides(seat.nodeId); } catch { unreadable.add("model_overrides"); return undefined; } })(),
+        piLinkOperatorModels: (() => { try { return this.rigRepo.getNodeLinkOperatorModels(seat.nodeId); } catch { unreadable.add("pi.link_operator_models"); return false; } })(),
+      };
+      const spec = specRetainedFields(member);
+      fields = diffRetainedPiFields(retained, spec).map((f) => unreadable.has(f.field) ? { ...f, retained: ["unreadable (damaged stored value)"], changed: true } : f);
+      ({ added: envAdded, removed: envRemoved } = envNameChanges(retained.envPassthrough, spec.envPassthrough));
+      write = () => this.rigRepo.setNodePiRetainedFields(seat.nodeId, spec);
+    }
     const changed = fields.some((f) => f.changed);
-    const { added: envAdded, removed: envRemoved } = envNameChanges(retained.envPassthrough, spec.envPassthrough);
     const base = { seat, changed, declaredIn: specPath, specSource: read.operator ? "operator" as const : "recorded" as const, specSha256, fields, envAdded, envRemoved };
 
     if (!input.yes) {
       return { ok: true, ...base, dryRun: true, written: false, effect: changed
-        ? "Dry run: nothing was written. Pass --yes to write these three fields; they then take effect at the seat's next launch."
+        ? `Dry run: nothing was written. Pass --yes to write these ${claude ? "two" : "three"} fields; they then take effect at the seat's next launch.`
         : "Dry run: the seat already retains what the spec says. Nothing to write." };
     }
     if (!input.actor?.trim()) return { ok: false, code: "missing_actor", message: "Sender identity is required for the audit; pass --operator <address> when running outside a managed seat." };
@@ -652,7 +677,7 @@ export class SeatLifecycleService {
     let persisted: PersistedEvent | null = null;
     try {
       this.db.transaction(() => {
-        if (!this.rigRepo.setNodePiRetainedFields(seat.nodeId, spec)) throw new ApplySpecNotSaved();
+        if (!write()) throw new ApplySpecNotSaved();
         persisted = this.eventBus.persistWithinTransaction({
           type: "node.spec_fields_applied", rigId: seat.rigId, nodeId: seat.nodeId, logicalId: seat.logicalId,
           fields: fields.filter((f) => f.changed).map((f) => f.field), envAdded, envRemoved,

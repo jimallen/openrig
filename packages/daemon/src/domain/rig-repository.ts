@@ -954,6 +954,26 @@ export class RigRepository {
     return this.db.prepare("UPDATE nodes SET ask_in_modal = ? WHERE id = ?").run(askInModal ? 1 : null, nodeId).changes > 0;
   }
 
+  /** A Claude Code seat's two retained launch declarations as every launch reads them (1 = declared; NULL or a missing column = not). */
+  getNodeClaudeRetainedFields(nodeId: string): { remoteControl: boolean; askInModal: boolean } {
+    const read = (column: "remote_control" | "ask_in_modal") => this.hasNodeColumn(column)
+      && (this.db.prepare(`SELECT ${column} AS v FROM nodes WHERE id = ?`).get(nodeId) as { v: number | null } | undefined)?.v === 1;
+    return { remoteControl: read("remote_control"), askInModal: read("ask_in_modal") };
+  }
+
+  /**
+   * `rig seat apply-spec` on a Claude Code seat: rewrite remote_control and ask_in_modal in one UPDATE, as the spec states them
+   * (false clears to NULL, the value a node created without the field has). No silent skip, unlike the per-field setters above:
+   * a missing column throws, so the caller's transaction rolls back rather than store one of the two.
+   */
+  setNodeClaudeRetainedFields(nodeId: string, fields: { remoteControl: boolean; askInModal: boolean }): boolean {
+    for (const column of ["remote_control", "ask_in_modal"]) {
+      if (!this.hasNodeColumn(column)) throw new Error(`nodes.${column} is missing; the retained spec fields cannot be stored`);
+    }
+    return this.db.prepare("UPDATE nodes SET remote_control = ?, ask_in_modal = ? WHERE id = ?")
+      .run(fields.remoteControl ? 1 : null, fields.askInModal ? 1 : null, nodeId).changes > 0;
+  }
+
   /** Write (canonical path) or clear (null) the seat's own Claude config home. Returns false when the column
    *  isn't available or no row matched, so a caller never reports a change from it. */
   setNodeClaudeConfigDir(nodeId: string, dir: string | null): boolean {

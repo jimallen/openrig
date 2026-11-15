@@ -169,9 +169,10 @@ export type RigEvent =
   | { type: "node.claude_home_changed"; rigId: string; nodeId: string; logicalId: string; from: string | null; to: string | null; reason: string; operator: string | null }
   // Per-seat Codex MCP servers (rig seat set-mcp): one server switched on or off for one seat instance.
   | { type: "node.mcp_server_changed"; rigId: string; nodeId: string; logicalId: string; server: string; from: "on" | "off"; to: "on" | "off"; reason: string; actor: string; declaredIn: string | null; declarationSha256: string | null; commandSha256: string | null; warning: string | null; specSource: "recorded" | "operator" | null; specSha256: string | null }
-  // OF-283 (rig seat apply-spec): a Pi seat's three retained spec fields rewritten from the spec, on an explicit apply. Names only:
-  // never an environment value. `fields` are the ones that changed.
-  | { type: "node.spec_fields_applied"; rigId: string; nodeId: string; logicalId: string; fields: Array<"env_passthrough" | "model_overrides" | "pi.link_operator_models">; envAdded: string[]; envRemoved: string[]; actor: string; reason: string | null; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string }
+  // OF-283 (rig seat apply-spec): a seat's retained spec fields rewritten from the spec, on an explicit apply (a Pi seat's three, a
+  // Claude Code seat's remote_control and ask_in_modal). Names only: never an environment value. `fields` are the ones that changed;
+  // envAdded and envRemoved are empty for a Claude Code seat.
+  | { type: "node.spec_fields_applied"; rigId: string; nodeId: string; logicalId: string; fields: Array<"env_passthrough" | "model_overrides" | "pi.link_operator_models" | "remote_control" | "ask_in_modal">; envAdded: string[]; envRemoved: string[]; actor: string; reason: string | null; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string }
   | { type: "node.permissions_changed"; rigId: string; nodeId: string; from: unknown; to: unknown; actor: string; reason: string; source: "seat_selection"; effect: "future_launches_only" }
   | { type: "session.stopped"; rigId: string; nodeId: string; sessionName: string; reason: string; operator: string | null }
   | { type: "session.cleaned"; rigId: string; nodeId: string; sessionName: string | null; reason: string; operator: string | null; actions: { sessionsExited: string[]; bindingCleared: boolean } }

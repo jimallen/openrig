@@ -767,22 +767,26 @@ Examples:
     .command("apply-spec")
     .argument("<seat>", "Canonical session name or logical seat ref")
     .option("--spec <file>", "Read the member from this spec file (it must declare this rig); overrides the rig's recorded spec source")
-    .option("--yes", "Write the three fields (the default is a dry run that writes nothing)")
+    .option("--yes", "Write the fields (the default is a dry run that writes nothing)")
     .option("--reason <text>", "Reason recorded on the node.spec_fields_applied event")
     .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
     .option("--json", "JSON output for agents")
-    .description("Make a Pi seat retain the env_passthrough, model_overrides and pi.link_operator_models its spec now states (dry run unless --yes); no relaunch")
+    .description("Make a seat retain the launch fields its spec now states (Pi: env_passthrough, model_overrides, pi.link_operator_models; Claude Code: remote_control, ask_in_modal); dry run unless --yes; no relaunch")
     .addHelpText("after", `
-A Pi seat keeps these three fields on its node from the moment it was created, and every launch reads them there;
-a later spec change reaches it only through this command. It reads the seat's member from the rig's recorded
-spec source (judged by the same trust rule as set-mcp) or from --spec, checks the three fields as the spec
-load does, and shows 'retained -> spec' for each (names and override keys only, never a value). Without --yes it
-writes nothing. With --yes it writes all three in one transaction and records one audit event. A field the spec no
-longer states is cleared. Nothing is relaunched and no process is touched: the new values apply at the seat's
-next launch (stop and launch, restore, rig up --existing, a handover successor).
+A seat keeps these fields on its node, and every launch other than rig up from the spec reads them there:
+  pi           env_passthrough, model_overrides, pi.link_operator_models
+  claude-code  remote_control, ask_in_modal
+A later spec change reaches a running rig's seat only through this command (or rig up). It reads the seat's
+member from the rig's recorded spec source (judged by the same trust rule as set-mcp) or from --spec, checks the
+fields as the spec load does, and shows 'retained -> spec' for each (names and override keys only, never a
+value). Without --yes it writes nothing. With --yes it writes the runtime's fields in one transaction and records
+one audit event. A field the spec no longer states is cleared. Nothing is relaunched and no process is touched:
+the new values apply at the seat's next launch (rig seat launch, restore, rig up --existing, a handover
+successor). Other runtimes, and a kernel seat's Claude Code fields, are refused.
 Examples:
   rig seat apply-spec verify-ops@eztrack
   rig seat apply-spec verify-ops@eztrack --yes --reason "release c84c5ba3 adds OPENAI_API_KEY"
+  rig seat apply-spec exec-cos@eztrack --yes --reason "jims-team adds ask_in_modal to the CoS"
   rig seat apply-spec verify-ops@eztrack --spec ~/.agents-release/current/rigs/jims-team/rig.yaml --json`)
     .action(async (seat: string, opts: { spec?: string; yes?: boolean; reason?: string; operator?: string; json?: boolean }) => {
       const body = { yes: opts.yes === true, reason: opts.reason, operator: opts.operator, ...(opts.spec !== undefined ? { specFile: nodePath.resolve(opts.spec) } : {}) };
@@ -790,7 +794,8 @@ Examples:
         const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
         console.log(`${data["dryRun"] === true ? "Dry run for" : data["written"] === true ? "Applied to" : "Checked"} ${s?.logicalId}@${s?.rigName} (spec ${String(data["declaredIn"])}, ${String(data["specSource"])}):`);
         for (const f of (data["fields"] as Array<{ field: string; retained: string[]; spec: string[]; changed: boolean }> | undefined) ?? []) {
-          const show = (v: string[]) => (f.field === "pi.link_operator_models" ? (v.length ? "true" : "false") : `[${v.join(", ")}]`);
+          const flag = f.field === "pi.link_operator_models" || f.field === "remote_control" || f.field === "ask_in_modal";
+          const show = (v: string[]) => (flag ? (v.length ? "true" : "false") : `[${v.join(", ")}]`);
           console.log(f.changed ? `  ${f.field}: ${show(f.retained)} -> ${show(f.spec)}` : `  ${f.field}: no change (${show(f.retained)})`);
         }
         console.log(String(data["effect"]));

@@ -718,4 +718,18 @@ describe("rig seat apply-spec", () => {
     });
     expect(exitCode).toBe(1);
   });
+
+  it("a Claude Code seat's remote_control and ask_in_modal print as true/false, retained -> spec", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const claudeDry = { ...dry, seat: { logicalId: "exec.cos", rigName: "eztrack" }, envAdded: [], fields: [
+      { field: "remote_control", retained: ["true"], spec: ["true"], changed: false },
+      { field: "ask_in_modal", retained: [], spec: ["true"], changed: true },
+    ] };
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: claudeDry }, calls)).parseAsync(["node", "rig", "seat", "apply-spec", "exec-cos@eztrack"]);
+    });
+    const out = logs.join("\n");
+    expect(out).toContain("remote_control: no change (true)");
+    expect(out).toContain("ask_in_modal: false -> true");
+  });
 });

@@ -339,7 +339,7 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       expect(await apply("verify.qa@eztrack")).toMatchObject({ ok: false, code: "apply_spec_seat_undeclared" });
     });
 
-    it("refuses a seat whose runtime is not pi", async () => {
+    it("refuses a seat whose runtime is neither pi nor claude-code", async () => {
       const s = seat("eztrack", { runtime: "codex" });
       writeSpec("", "codex");
       const result = await apply(s.ref, { yes: true, actor: "jim@host" });
@@ -358,6 +358,148 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
 
     it("refuses an unknown seat", async () => {
       expect(await apply("nobody@nowhere")).toMatchObject({ ok: false, code: "seat_not_found" });
+    });
+  });
+
+  // The live case (2026-11-15): jims-team gained `ask_in_modal: true` on exec.cos, but exec-cos@eztrack's node keeps ask_in_modal
+  // NULL until `rig up` relaunches it from the spec; `rig seat launch --startup-from stored`, restore and handover read the node.
+  describe("a Claude Code seat: remote_control and ask_in_modal", () => {
+    const rcLine = "        remote_control: true\n";
+    const askLine = "        ask_in_modal: true\n";
+    function claudeSeat(rigName: string, retained: { rc?: boolean; ask?: boolean } = {}) {
+      const rig = rigRepo.createRig(rigName);
+      rigRepo.setRigSpecSource(rig.id, specPath);
+      const cwd = join(root, `ws-${rigName}`);
+      mkdirSync(cwd, { recursive: true });
+      const node = rigRepo.addNode(rig.id, "verify.ops", { runtime: "claude-code", cwd, agentRef: "local:agents/ops", profile: "default",
+        ...(retained.rc ? { remoteControl: true } : {}), ...(retained.ask ? { askInModal: true } : {}) });
+      new SessionRegistry(db).registerSession(node.id, `verify-ops@${rigName}`);
+      return { rig, node, ref: `verify-ops@${rigName}` };
+    }
+    const claudeOf = (nodeId: string) => rigRepo.getNodeClaudeRetainedFields(nodeId);
+    /** What every launch other than `rig up` reads: the node as the repository hands it to seat launch and restore. */
+    const launchView = (rigId: string, nodeId: string) => {
+      const n = rigRepo.getRig(rigId)!.nodes.find((x) => x.id === nodeId)!;
+      return { remoteControl: n.remoteControl === true, askInModal: n.askInModal === true };
+    };
+
+    it("the dry run shows retained -> spec for both fields and writes nothing", async () => {
+      writeSpec(rcLine + askLine, "claude-code");
+      const s = claudeSeat("eztrack", { rc: true });
+      const before = changes();
+      const result = await apply(s.ref);
+      if (!result.ok) throw new Error(result.message);
+      expect(result).toMatchObject({ dryRun: true, written: false, changed: true, declaredIn: specPath, envAdded: [], envRemoved: [] });
+      expect(result.fields).toEqual([
+        { field: "remote_control", retained: ["true"], spec: ["true"], changed: false },
+        { field: "ask_in_modal", retained: [], spec: ["true"], changed: true },
+      ]);
+      expect(result.effect).toContain("two fields");
+      expect(changes()).toBe(before);
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: true, askInModal: false });
+      expect(events()).toEqual([]);
+      expect(tmuxCalls).toEqual([]);
+    });
+
+    it("--yes writes ask_in_modal, keeps remote_control, records one audit event, and the next launch reads it; nothing relaunched", async () => {
+      writeSpec(rcLine + askLine, "claude-code");
+      const s = claudeSeat("eztrack", { rc: true });
+      const sessionsBefore = db.prepare("SELECT * FROM sessions WHERE node_id = ?").all(s.node.id);
+      const result = await apply(s.ref, { yes: true, actor: "jim@host", reason: "jims-team adds ask_in_modal" });
+      expect(result).toMatchObject({ ok: true, dryRun: false, written: true, changed: true });
+      expect(result.ok && result.effect).toContain("nothing was relaunched");
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: true, askInModal: true });
+      expect(launchView(s.rig.id, s.node.id)).toEqual({ remoteControl: true, askInModal: true });
+      expect(events()).toEqual([{ type: "node.spec_fields_applied", rigId: s.rig.id, nodeId: s.node.id, logicalId: "verify.ops", fields: ["ask_in_modal"],
+        envAdded: [], envRemoved: [], actor: "jim@host", reason: "jims-team adds ask_in_modal", declaredIn: specPath, specSource: "recorded",
+        specSha256: expect.stringMatching(/^[0-9a-f]{64}$/) }]);
+      expect(db.prepare("SELECT * FROM sessions WHERE node_id = ?").all(s.node.id)).toEqual(sessionsBefore);
+      expect(tmuxCalls).toEqual([]);
+    });
+
+    it("--yes writes remote_control on its own", async () => {
+      writeSpec(rcLine, "claude-code");
+      const s = claudeSeat("eztrack");
+      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: true, written: true });
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: true, askInModal: false });
+    });
+
+    it("a field the spec no longer states is withdrawn (NULL, as on a node created without it)", async () => {
+      writeSpec("", "claude-code");
+      const s = claudeSeat("eztrack", { rc: true, ask: true });
+      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: true, written: true });
+      expect(row(s.node.id)["remote_control"]).toBeNull();
+      expect(row(s.node.id)["ask_in_modal"]).toBeNull();
+    });
+
+    it("changes nothing else on the node, and nothing on a sibling seat", async () => {
+      writeSpec(rcLine + askLine, "claude-code");
+      const s = claudeSeat("eztrack");
+      const other = claudeSeat("openrig");
+      db.prepare("UPDATE nodes SET effort = 'high', model = 'claude-opus-5-5', env_passthrough = '[\"KEEP\"]' WHERE id IN (?, ?)").run(s.node.id, other.node.id);
+      const strip = (r: Record<string, unknown>) => { const { remote_control, ask_in_modal, ...rest } = r; return rest; };
+      const nodeBefore = strip(row(s.node.id));
+      const otherBefore = row(other.node.id);
+      await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(strip(row(s.node.id))).toEqual(nodeBefore);
+      expect(row(other.node.id)).toEqual(otherBefore);
+    });
+
+    it("a no-change --yes writes nothing and records nothing", async () => {
+      writeSpec(rcLine + askLine, "claude-code");
+      const s = claudeSeat("eztrack", { rc: true, ask: true });
+      const before = changes();
+      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: true, written: false, changed: false });
+      expect(changes()).toBe(before);
+      expect(events()).toEqual([]);
+    });
+
+    it("is one transaction: if the audit event cannot be stored, neither field is written", async () => {
+      writeSpec(askLine, "claude-code");
+      const s = claudeSeat("eztrack", { rc: true });
+      vi.spyOn(bus, "persistWithinTransaction").mockImplementation(() => { throw new Error("disk full"); });
+      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: false });
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: true, askInModal: false });
+    });
+
+    it("refuses a kernel seat, and writes nothing", async () => {
+      writeSpec(rcLine, "claude-code");
+      const s = claudeSeat("kernel");
+      const result = await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(result).toMatchObject({ ok: false, code: "apply_spec_kernel_seat" });
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: false, askInModal: false });
+      expect(events()).toEqual([]);
+    });
+
+    it("refuses a spec that declares the member with another runtime than the claude-code node's", async () => {
+      writeSpec("", "pi");
+      const s = claudeSeat("eztrack", { rc: true });
+      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: false, code: "apply_spec_runtime_mismatch" });
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: true, askInModal: false });
+    });
+
+    it("a Pi seat is not offered the Claude fields, nor a Claude seat the Pi ones", async () => {
+      writeSpec(envLines(NEW_ENV));
+      const pi = seat("alpha");
+      const piDry = await apply(pi.ref);
+      expect(piDry.ok && piDry.fields.map((f) => f.field)).toEqual(["env_passthrough", "model_overrides", "pi.link_operator_models"]);
+      writeSpec(rcLine, "claude-code");
+      const cc = claudeSeat("beta");
+      const ccDry = await apply(cc.ref);
+      expect(ccDry.ok && ccDry.fields.map((f) => f.field)).toEqual(["remote_control", "ask_in_modal"]);
+    });
+
+    it("the route answers a Claude seat's dry run and write", async () => {
+      writeSpec(askLine, "claude-code");
+      const setup = createTestApp(db, { appDeps: { mcpTrust: { io: TRUST, specRoots: () => [join(root, "spec")] } } });
+      const s = claudeSeat("eztrack");
+      const post = (body: Record<string, unknown>) => setup.app.request(`/api/seat/apply-spec/${encodeURIComponent(s.ref)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const dry = await post({});
+      expect(dry.status).toBe(200);
+      expect(await dry.json()).toMatchObject({ ok: true, dryRun: true, fields: [{ field: "remote_control", changed: false }, { field: "ask_in_modal", retained: [], spec: ["true"], changed: true }] });
+      const ok = await post({ yes: true, operator: "jim@host" });
+      expect(ok.status).toBe(200);
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: false, askInModal: true });
     });
   });
 
