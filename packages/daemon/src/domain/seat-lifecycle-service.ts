@@ -1,7 +1,7 @@
 import { readDeclaredMcpServer, readTrustedSeatSpec, type TrustedSeatSpecFailureKind, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
 import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
-import { diffRetainedClaudeFields, diffRetainedPiFields, envNameChanges, specClaudeFields, specRetainedFields, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
+import { diffRetainedClaudeFields, diffRetainedPiFields, diffSeatIdentity, envNameChanges, specClaudeFields, specRetainedFields, type IdentityFieldDiff, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
@@ -598,10 +598,15 @@ export class SeatLifecycleService {
    * runtime's fields (three for Pi, two for Claude Code) in ONE transaction with one audit event (names only, never a value). No
    * terminal, session or process is touched and nothing is relaunched: the new values take effect at the seat's next launch. A
    * field the spec does not carry clears the retained value. Other runtimes, and a kernel seat's Claude Code fields, are refused.
+   *
+   * It also realigns the seat's identity (agent_ref, profile) to the member's, in the same transaction and audit event: a seat
+   * re-added with `rig add` or added by rig-here as a surge seat records an absolute `path:` agent_ref, which a fresh launch
+   * from the spec refuses. A surge seat (`<member><N>`) is read as declared by its base member: only agent_ref and profile are
+   * taken from it; the surge seat's own per-seat fields (and its id, session, folder) are its own and are not rewritten.
    */
   async applySpec(input: { seatRef: string; yes: boolean; actor: string | null; reason?: string; specFile?: string }): Promise<
     | { ok: true; seat: SeatDescriptor; dryRun: boolean; written: boolean; changed: boolean; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string;
-        fields: RetainedFieldDiff[]; envAdded: string[]; envRemoved: string[]; effect: string }
+        fields: RetainedFieldDiff[]; identity: IdentityFieldDiff[]; surgeOf?: string; envAdded: string[]; envRemoved: string[]; effect: string }
     | SeatRefusal
   > {
     if (input.specFile !== undefined && !nodePath.isAbsolute(input.specFile)) {
@@ -610,7 +615,7 @@ export class SeatLifecycleService {
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;
     const seat = this.describe(resolved);
-    const node = this.db.prepare("SELECT runtime, cwd FROM nodes WHERE id = ?").get(seat.nodeId) as { runtime: string | null; cwd: string | null } | undefined;
+    const node = this.db.prepare("SELECT runtime, cwd, agent_ref, profile FROM nodes WHERE id = ?").get(seat.nodeId) as { runtime: string | null; cwd: string | null; agent_ref: string | null; profile: string | null } | undefined;
     if (!node) return { ok: false, code: "seat_not_found", message: `Seat "${input.seatRef}" has no node row.` };
     if (node.runtime !== "pi" && node.runtime !== "claude-code") {
       return { ok: false, code: "apply_spec_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; env_passthrough, model_overrides and pi.link_operator_models apply to pi seats, remote_control and ask_in_modal to claude-code seats.` };
@@ -623,6 +628,7 @@ export class SeatLifecycleService {
 
     const read = readTrustedSeatSpec({
       specSource: this.rigRepo.getRigSpecSource(seat.rigId), rigName: seat.rigName, node: { logicalId: seat.logicalId, cwd: node.cwd }, purpose: "applying seat fields",
+      surgeMembers: true,
       ...(input.specFile !== undefined ? { operatorSpecFile: input.specFile } : {}),
       trustedSpecRoots: this.mcpTrust?.specRoots?.() ?? [],
       ...(this.mcpTrust?.io ? { io: this.mcpTrust.io } : {}),
@@ -631,8 +637,9 @@ export class SeatLifecycleService {
     if (!read.ok) return { ok: false, code: APPLY_SPEC_REFUSAL_CODE[read.kind], message: read.message };
     const { member, pod, specPath, specSha256 } = read;
     if (!member || !pod) return { ok: false, code: "apply_spec_seat_undeclared", message: `The spec ${specPath} does not declare seat ${seat.logicalId}, so it says nothing about its retained fields.` };
+    const surgeOf = read.surge ? `${pod.id}.${member.id}` : undefined;
     if (member.runtime !== node.runtime) {
-      return { ok: false, code: "apply_spec_runtime_mismatch", message: `The spec ${specPath} declares ${seat.logicalId} with runtime ${member.runtime}; this seat's node runs ${node.runtime}. Nothing was changed.` };
+      return { ok: false, code: "apply_spec_runtime_mismatch", message: `The spec ${specPath} declares ${surgeOf ? `${surgeOf} (the member surge seat ${seat.logicalId} copies)` : seat.logicalId} with runtime ${member.runtime}; this seat's node runs ${node.runtime}. Nothing was changed.` };
     }
 
     // The fields this runtime retains, as the spec states them and as the node holds them, and the one write that stores them.
@@ -640,7 +647,11 @@ export class SeatLifecycleService {
     let envAdded: string[] = [];
     let envRemoved: string[] = [];
     let write: () => boolean;
-    if (claude) {
+    if (surgeOf) {
+      // A surge seat's per-seat fields are its own (set when it was added); the base member's do not describe it.
+      fields = [];
+      write = () => true;
+    } else if (claude) {
       // remote_control and ask_in_modal have no rule beyond the spec load's (a boolean, claude-code only, no ask_in_modal in the
       // kernel rig), and readTrustedSeatSpec has already validated the whole spec with it.
       const spec = specClaudeFields(member);
@@ -664,12 +675,18 @@ export class SeatLifecycleService {
       ({ added: envAdded, removed: envRemoved } = envNameChanges(retained.envPassthrough, spec.envPassthrough));
       write = () => this.rigRepo.setNodePiRetainedFields(seat.nodeId, spec);
     }
-    const changed = fields.some((f) => f.changed);
-    const base = { seat, changed, declaredIn: specPath, specSource: read.operator ? "operator" as const : "recorded" as const, specSha256, fields, envAdded, envRemoved };
+    const identity = diffSeatIdentity({ agentRef: node.agent_ref, profile: node.profile }, { agentRef: member.agentRef, profile: member.profile });
+    const fieldsChanged = fields.some((f) => f.changed);
+    const identityChanged = identity.some((f) => f.changed);
+    const changed = fieldsChanged || identityChanged;
+    const base = { seat, changed, declaredIn: specPath, specSource: read.operator ? "operator" as const : "recorded" as const, specSha256, fields, identity,
+      ...(surgeOf ? { surgeOf } : {}), envAdded, envRemoved };
 
     if (!input.yes) {
+      const what = surgeOf ? `the seat's agent_ref and profile (from ${surgeOf}, the member this surge seat copies)`
+        : `these ${claude ? "two" : "three"} fields${identityChanged ? " and the seat's agent_ref and profile" : ""}`;
       return { ok: true, ...base, dryRun: true, written: false, effect: changed
-        ? `Dry run: nothing was written. Pass --yes to write these ${claude ? "two" : "three"} fields; they then take effect at the seat's next launch.`
+        ? `Dry run: nothing was written. Pass --yes to write ${what}; they then take effect at the seat's next launch.`
         : "Dry run: the seat already retains what the spec says. Nothing to write." };
     }
     if (!input.actor?.trim()) return { ok: false, code: "missing_actor", message: "Sender identity is required for the audit; pass --operator <address> when running outside a managed seat." };
@@ -678,11 +695,14 @@ export class SeatLifecycleService {
     let persisted: PersistedEvent | null = null;
     try {
       this.db.transaction(() => {
-        if (!write()) throw new ApplySpecNotSaved();
+        if (fieldsChanged && !write()) throw new ApplySpecNotSaved();
+        if (identityChanged && !this.rigRepo.setNodeIdentityRefs(seat.nodeId, { agentRef: member.agentRef ?? null, profile: member.profile ?? null })) throw new ApplySpecNotSaved();
         persisted = this.eventBus.persistWithinTransaction({
           type: "node.spec_fields_applied", rigId: seat.rigId, nodeId: seat.nodeId, logicalId: seat.logicalId,
           fields: fields.filter((f) => f.changed).map((f) => f.field), envAdded, envRemoved,
           actor: input.actor!.trim(), reason: input.reason?.trim() || null, declaredIn: specPath, specSource: base.specSource, specSha256,
+          ...(identityChanged ? { identity: identity.filter((f) => f.changed).map((f) => ({ field: f.field, from: f.retained, to: f.spec })) } : {}),
+          ...(surgeOf ? { surgeOf } : {}),
         });
       })();
     } catch (err) {
@@ -690,7 +710,7 @@ export class SeatLifecycleService {
         message: err instanceof ApplySpecNotSaved ? `The retained fields for seat "${input.seatRef}" were not saved (no node row matched); nothing changed.` : `The retained fields for seat "${input.seatRef}" were not saved; nothing changed: ${(err as Error).message}` };
     }
     if (persisted) this.eventBus.notifySubscribers(persisted);
-    return { ok: true, ...base, dryRun: false, written: true, effect: "Saved. These take effect at this seat's next launch (stop and launch, restore, rig up --existing, a handover successor); the running process is unchanged and nothing was relaunched." };
+    return { ok: true, ...base, dryRun: false, written: true, effect: `Saved. These take effect at this seat's next launch (stop and launch, restore, rig up --existing, a handover successor); the running process is unchanged and nothing was relaunched.${identityChanged ? " A fresh launch from the spec now finds this seat's agent_ref and profile as its member declares them." : ""}` };
   }
 
   /** OPR.0.7.0.7 — requested, saved, emitted at launch and observed in the native session, each from

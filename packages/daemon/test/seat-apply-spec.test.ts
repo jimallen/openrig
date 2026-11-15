@@ -533,4 +533,125 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       expect(retainedOf(s.node.id).env).toEqual([]);
     });
   });
+
+  // Seats removed and re-added (`rig add`), and rig-here surge seats (`add-seat <pod> <member><N> --as <member>`), record
+  // agent_ref as an absolute `path:` into the release they were added from, while the spec declares `local:...`. A fresh launch
+  // from the spec then refuses the seat ("a fresh launch never changes a seat's identity"), so operators replay the old
+  // release's stored files forever. apply-spec shows the seat's agent_ref and profile `retained -> spec` and, with --yes,
+  // writes them in the same transaction and audit event as the runtime's fields.
+  describe("agent_ref and profile: realigned to the spec member, audited, dry run by default", () => {
+    const OLD_REF = "path:/Users/someone/.agents-release/e8aad5c9/agents/ops";
+    function readded(rigName: string, logicalId = "verify.ops", opts: { runtime?: string; agentRef?: string; profile?: string; rc?: boolean } = {}) {
+      const rig = rigRepo.createRig(rigName);
+      rigRepo.setRigSpecSource(rig.id, specPath);
+      const cwd = join(root, `ws-${rigName}-${logicalId}`);
+      mkdirSync(cwd, { recursive: true });
+      const node = rigRepo.addNode(rig.id, logicalId, { runtime: opts.runtime ?? "claude-code", cwd, agentRef: opts.agentRef ?? OLD_REF, profile: opts.profile ?? "default",
+        ...(opts.rc ? { remoteControl: true } : {}) });
+      const ref = `${logicalId.replace(".", "-")}@${rigName}`;
+      new SessionRegistry(db).registerSession(node.id, ref);
+      return { rig, node, ref };
+    }
+    const identityOf = (nodeId: string) => db.prepare("SELECT agent_ref AS agentRef, profile FROM nodes WHERE id = ?").get(nodeId) as { agentRef: string | null; profile: string | null };
+
+    it("the dry run shows agent_ref retained -> spec beside the Claude fields, and writes nothing", async () => {
+      writeSpec("", "claude-code");
+      const s = readded("eztrack");
+      const before = changes();
+      const result = await apply(s.ref);
+      if (!result.ok) throw new Error(result.message);
+      expect(result).toMatchObject({ dryRun: true, written: false, changed: true });
+      expect(result.identity).toEqual([
+        { field: "agent_ref", retained: OLD_REF, spec: "local:agents/ops", changed: true },
+        { field: "profile", retained: "default", spec: "default", changed: false },
+      ]);
+      expect(result.fields.map((f) => f.changed)).toEqual([false, false]);
+      expect(result.effect).toContain("agent_ref");
+      expect(changes()).toBe(before);
+      expect(identityOf(s.node.id)).toEqual({ agentRef: OLD_REF, profile: "default" });
+      expect(events()).toEqual([]);
+    });
+
+    it("--yes writes agent_ref and profile, records them old -> new on the one audit event, and changes nothing else", async () => {
+      writeSpec("", "claude-code");
+      const s = readded("eztrack", "verify.ops", { profile: "legacy" });
+      const strip = (r: Record<string, unknown>) => { const { agent_ref, profile, ...rest } = r; return rest; };
+      const before = strip(row(s.node.id));
+      const sessionsBefore = db.prepare("SELECT * FROM sessions WHERE node_id = ?").all(s.node.id);
+      const result = await apply(s.ref, { yes: true, actor: "jim@host", reason: "re-added seat" });
+      expect(result).toMatchObject({ ok: true, written: true, changed: true });
+      expect(identityOf(s.node.id)).toEqual({ agentRef: "local:agents/ops", profile: "default" });
+      expect(strip(row(s.node.id))).toEqual(before);
+      expect(db.prepare("SELECT * FROM sessions WHERE node_id = ?").all(s.node.id)).toEqual(sessionsBefore);
+      expect(events()).toEqual([expect.objectContaining({ type: "node.spec_fields_applied", logicalId: "verify.ops", fields: [], actor: "jim@host", reason: "re-added seat",
+        identity: [{ field: "agent_ref", from: OLD_REF, to: "local:agents/ops" }, { field: "profile", from: "legacy", to: "default" }] })]);
+      expect(tmuxCalls).toEqual([]);
+    });
+
+    it("a Pi seat's agent_ref is the same node column and is realigned the same way", async () => {
+      writeSpec(envLines(NEW_ENV));
+      const s = readded("eztrack", "verify.ops", { runtime: "pi" });
+      const result = await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(result).toMatchObject({ ok: true, written: true });
+      expect(identityOf(s.node.id).agentRef).toBe("local:agents/ops");
+      expect(retainedOf(s.node.id).env).toEqual(NEW_ENV);
+      expect(events()[0]).toMatchObject({ fields: ["env_passthrough"], identity: [{ field: "agent_ref", from: OLD_REF, to: "local:agents/ops" }] });
+    });
+
+    it("is one transaction: if the audit event cannot be stored, agent_ref is not written", async () => {
+      writeSpec("", "claude-code");
+      const s = readded("eztrack");
+      vi.spyOn(bus, "persistWithinTransaction").mockImplementation(() => { throw new Error("disk full"); });
+      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: false });
+      expect(identityOf(s.node.id).agentRef).toBe(OLD_REF);
+    });
+
+    it("a seat that already matches has nothing to write and records no identity on the event", async () => {
+      writeSpec("        ask_in_modal: true\n", "claude-code");
+      const s = readded("eztrack", "verify.ops", { agentRef: "local:agents/ops" });
+      const dry = await apply(s.ref);
+      expect(dry.ok && dry.identity.every((f) => !f.changed)).toBe(true);
+      await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(Object.keys(events()[0]!)).not.toContain("identity");
+    });
+
+    it("the kernel refusal stands for a drifted kernel seat: nothing is written", async () => {
+      writeSpec("", "claude-code");
+      const s = readded("kernel");
+      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: false, code: "apply_spec_kernel_seat" });
+      expect(identityOf(s.node.id).agentRef).toBe(OLD_REF);
+    });
+
+    describe("a surge seat (<member><N>, added with rig-here's add-seat --as <member>)", () => {
+      it("takes agent_ref and profile from its base member and leaves its own per-seat fields alone", async () => {
+        writeSpec("        ask_in_modal: true\n", "claude-code");
+        const s = readded("eztrack", "verify.ops2", { rc: true });
+        const dry = await apply(s.ref);
+        if (!dry.ok) throw new Error(dry.message);
+        expect(dry).toMatchObject({ dryRun: true, changed: true, surgeOf: "verify.ops", fields: [] });
+        expect(dry.identity[0]).toEqual({ field: "agent_ref", retained: OLD_REF, spec: "local:agents/ops", changed: true });
+        const wrote = await apply(s.ref, { yes: true, actor: "jim@host" });
+        expect(wrote).toMatchObject({ ok: true, written: true });
+        expect(identityOf(s.node.id).agentRef).toBe("local:agents/ops");
+        // The surge seat's own remote_control and ask_in_modal are its own: the base member's spec does not rewrite them.
+        expect(rigRepo.getNodeClaudeRetainedFields(s.node.id)).toEqual({ remoteControl: true, askInModal: false });
+        expect(events()[0]).toMatchObject({ logicalId: "verify.ops2", fields: [], surgeOf: "verify.ops" });
+      });
+
+      it("refuses a surge seat whose base member declares another runtime", async () => {
+        writeSpec("", "pi");
+        const s = readded("eztrack", "verify.ops2");
+        expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: false, code: "apply_spec_runtime_mismatch" });
+        expect(identityOf(s.node.id).agentRef).toBe(OLD_REF);
+      });
+
+      it("a seat id that is not a surge of exactly one member stays undeclared (ops1 is not a surge; no leading zero)", async () => {
+        writeSpec("", "claude-code");
+        for (const [i, id] of ["verify.ops1", "verify.ops02", "verify.opsx"].entries()) {
+          const s = readded(`rig${i}`, id);
+          expect(await apply(s.ref)).toMatchObject({ ok: false, code: "apply_spec_seat_undeclared" });
+        }
+      });
+    });
+  });
 });

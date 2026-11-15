@@ -732,4 +732,20 @@ describe("rig seat apply-spec", () => {
     expect(out).toContain("remote_control: no change (true)");
     expect(out).toContain("ask_in_modal: false -> true");
   });
+
+  it("prints the seat's agent_ref and profile retained -> spec, and names the member a surge seat copies", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const surgeDry = { ...dry, seat: { logicalId: "build.impl2", rigName: "eztrack" }, envAdded: [], fields: [], surgeOf: "build.impl", identity: [
+      { field: "agent_ref", retained: "path:/u/.agents-release/e8aad5c9/agents/impl", spec: "local:../../agents/impl", changed: true },
+      { field: "profile", retained: "default", spec: "default", changed: false },
+    ] };
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: surgeDry }, calls)).parseAsync(["node", "rig", "seat", "apply-spec", "build-impl2@eztrack"]);
+    });
+    const out = logs.join("\n");
+    expect(out).toContain("Dry run for build.impl2@eztrack");
+    expect(out).toContain("surge seat of build.impl");
+    expect(out).toContain("  agent_ref: path:/u/.agents-release/e8aad5c9/agents/impl -> local:../../agents/impl");
+    expect(out).toContain("  profile: no change (default)");
+  });
 });

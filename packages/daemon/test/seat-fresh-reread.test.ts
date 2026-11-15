@@ -14,7 +14,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
-import { FIXTURE_SPEC_SOURCE_TRUST } from "./helpers/spec-source-trust.js";
+import { FIXTURE_SPEC_SOURCE_TRUST, PERMISSIVE_JUDGE_IO } from "./helpers/spec-source-trust.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
 import type { ProjectionPlan } from "../src/domain/projection-planner.js";
@@ -163,6 +163,8 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       runtimeAdapters: { "claude-code": adapter },
       listProcesses: async () => [],
       seatStartupSource: inst,
+      // `rig seat apply-spec` reads the recorded source through the same trust rule, with the same fixture roots.
+      mcpTrust: { io: PERMISSIVE_JUDGE_IO, specRoots: () => trustedRoots },
     } as never);
   });
 
@@ -441,6 +443,82 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result).toMatchObject({ startupSource: { kind: "stored", reason: "not_in_spec" } });
     expect(result.warnings?.[0]).toContain("does not declare dev.extra");
+  });
+
+  // A seat removed and re-added (`rig add`) records agent_ref as an absolute `path:` into the release it was added from; the
+  // spec says `local:agents/impl`. A fresh launch refuses it until `rig seat apply-spec --yes` realigns the recorded ref.
+  it("a re-added declared seat launches from the spec once apply-spec has realigned its agent_ref", async () => {
+    const seat = await launchRig();
+    db.prepare("UPDATE nodes SET agent_ref = ? WHERE id = ?").run(`path:${path.join(releaseA, "agents", "impl")}`, seat.node.id);
+    retarget("bbbbbbb");
+    const refused = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+    expect(refused).toMatchObject({ ok: false, code: "startup_source_changed" });
+    const applied = await service.applySpec({ seatRef: seat.sessionName, yes: true, actor: "jim@host", reason: "realign re-added seat" });
+    expect(applied, JSON.stringify(applied)).toMatchObject({ ok: true, written: true });
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result).toMatchObject({ startupSource: { kind: "spec", specSource: linkSpec } });
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
+  });
+
+  describe("a surge seat (<member><N>, rig-here's add-seat <pod> <member><N> --as <member>)", () => {
+    /** dev.impl2 beside the spec's dev.impl, in its own folder, as rig-here adds it (through rig add). */
+    async function addSurge(rigId: string, agentRef: string) {
+      const surgeDir = path.join(root, "work-impl2");
+      fs.mkdirSync(surgeDir);
+      const added = await inst.addMemberToPod(rigId, "dev", { id: "impl2", agent_ref: agentRef, profile: "default", runtime: "claude-code", cwd: ".", model: "claude-sonnet-5" },
+        path.dirname(fs.realpathSync(linkSpec)), { cwdOverride: surgeDir });
+      expect(added.ok, JSON.stringify(added)).toBe(true);
+      const node = rigRepo.getRig(rigId)!.nodes.find((n) => n.logicalId === "dev.impl2")!;
+      return { node, surgeDir, sessionName: "dev-impl2@team" };
+    }
+    const identityAction = (nodeId: string) => (JSON.parse((db.prepare("SELECT startup_actions_json FROM node_startup_context WHERE node_id = ?").get(nodeId) as { startup_actions_json: string }).startup_actions_json) as Array<{ builtin?: string; value: string }>)
+      .find((a) => a.builtin === "session_identity")!.value;
+
+    it("a fresh launch reads its base member's persona from the spec and keeps the surge seat's own name, folder, skills owner and model", async () => {
+      const seat = await launchRig();
+      const surge = await addSurge(seat.rigId, "local:agents/impl");
+      retarget("bbbbbbb");
+      delivered = []; projected = []; reconciler.mockClear();
+      const plan = await service.planFresh({ seatRef: surge.sessionName, fresh: true, stop: true });
+      expect(plan).toMatchObject({ ok: true, startup: { source: { kind: "spec" } } });
+      const result = await service.launchFresh({ seatRef: surge.sessionName, fresh: true, stop: true, reason: "surge from spec" });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(result).toMatchObject({ startupSource: { kind: "spec", specSource: linkSpec } });
+      // The base member's persona and culture, from the release the spec reaches now.
+      expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
+      // The surge seat's own identity: its session name, its folder, its skills owner (not dev-impl@team's).
+      expect(projected.at(-1)?.cwd).toBe(surge.surgeDir);
+      const reconciles = reconciler.mock.calls.map(([call]) => `${call.apply}:${call.cwd}:${call.topologyOwner}`);
+      expect(reconciles).toContain(`true:${surge.surgeDir}:dev-impl2@team`);
+      expect(reconciles.every((r) => r.endsWith(`:${surge.surgeDir}:dev-impl2@team`))).toBe(true);
+      const identity = identityAction(surge.node.id);
+      expect(identity.split("\n")[0]).toBe("dev-impl2@team");
+      expect(identity).toContain("- member: impl2");
+      expect(identity).toContain("- logical_id: dev.impl2");
+      expect(identity).toContain("- session: dev-impl2@team");
+      expect(identity).not.toContain("dev-impl@team");
+      // Per-seat fields stay the surge seat's own; the base seat is untouched.
+      const after = rigRepo.getRig(seat.rigId)!.nodes;
+      expect(after.find((n) => n.id === surge.node.id)).toMatchObject({ logicalId: "dev.impl2", cwd: surge.surgeDir, model: "claude-sonnet-5" });
+      expect(after.find((n) => n.id === seat.node.id)).toMatchObject({ logicalId: "dev.impl", cwd: workdir });
+      expect(alive.has(seat.sessionName)).toBe(true);
+    });
+
+    it("a surge seat recorded with an old release's path: ref is refused until apply-spec realigns it, then launches from the spec", async () => {
+      const seat = await launchRig();
+      const surge = await addSurge(seat.rigId, `path:${path.join(releaseA, "agents", "impl")}`);
+      retarget("bbbbbbb");
+      const refused = await service.launchFresh({ seatRef: surge.sessionName, fresh: true, stop: true, reason: "surge" });
+      expect(refused).toMatchObject({ ok: false, code: "startup_source_changed" });
+      const applied = await service.applySpec({ seatRef: surge.sessionName, yes: true, actor: "jim@host" });
+      expect(applied, JSON.stringify(applied)).toMatchObject({ ok: true, written: true, surgeOf: "dev.impl" });
+      delivered = [];
+      const result = await service.launchFresh({ seatRef: surge.sessionName, fresh: true, stop: true, reason: "surge" });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
+      expect(identityAction(surge.node.id)).toContain("- logical_id: dev.impl2");
+    });
   });
 
   // X4: the identity a re-read delivers names the rig, not the spec (a project rig is named after its project).

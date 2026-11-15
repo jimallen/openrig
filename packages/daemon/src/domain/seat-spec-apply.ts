@@ -84,3 +84,26 @@ export function diffRetainedClaudeFields(retained: RetainedClaudeFields, spec: R
   };
   return [row("remote_control", (r) => r.remoteControl), row("ask_in_modal", (r) => r.askInModal)];
 }
+
+// A seat's identity fields: agent_ref and profile (nodes.agent_ref, nodes.profile), the same columns for every runtime. A fresh
+// launch from the spec refuses a seat whose recorded values differ from its member's ("a fresh launch never changes a seat's
+// identity"). A seat removed and re-added with `rig add`, or a rig-here surge seat, records agent_ref as an absolute `path:`
+// into the release it was added from, while the spec says `local:...`; apply-spec is the explicit, audited step that realigns
+// them. The comparison is the one readSeatStartupFromSpec makes (absent = null), so a realigned seat passes it.
+export type IdentityFieldName = "agent_ref" | "profile";
+
+export interface IdentityFieldDiff {
+  field: IdentityFieldName;
+  retained: string | null;
+  spec: string | null;
+  changed: boolean;
+}
+
+export function diffSeatIdentity(
+  retained: { agentRef: string | null; profile: string | null },
+  spec: { agentRef: string | null | undefined; profile: string | null | undefined },
+): IdentityFieldDiff[] {
+  const row = (field: IdentityFieldName, a: string | null | undefined, b: string | null | undefined): IdentityFieldDiff =>
+    ({ field, retained: a ?? null, spec: b ?? null, changed: (a ?? null) !== (b ?? null) });
+  return [row("agent_ref", retained.agentRef, spec.agentRef), row("profile", retained.profile, spec.profile)];
+}

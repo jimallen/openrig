@@ -309,6 +309,7 @@ export class RigInstantiator {
 
 import { RigSpecCodec as PodRigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema as PodRigSpecSchema, VALID_EDGE_KINDS } from "./rigspec-schema.js";
+import { specMemberForSeat } from "./surge-seat.js";
 import { rigPreflight, preflightValidatedSpec } from "./rigspec-preflight.js";
 import { resolveAgentRef, type GuardedAgentResolverFsOps } from "./agent-resolver.js";
 import { resolveNodeConfig, type ResolvedNodeConfig } from "./profile-resolver.js";
@@ -2885,10 +2886,16 @@ export class PodRigInstantiator {
     const rigSpec = { ...PodRigSpecSchema.normalize(raw as Record<string, unknown>), name: rig.rig.name };
     const rigRoot = nodePath.dirname(specPath);
 
-    const pod = rigSpec.pods.find((p) => node.logicalId.startsWith(`${p.id}.`) && p.members.some((m) => `${p.id}.${m.id}` === node.logicalId));
-    const member = pod?.members.find((m) => `${pod.id}.${m.id}` === node.logicalId);
-    // A seat the spec does not declare (added with `rig add`, or dropped from the spec) has only its saved context.
-    if (!pod || !member) return { kind: "undeclared", specSource };
+    // A seat the spec does not declare (added with `rig add`, or dropped from the spec) has only its saved context. A surge
+    // seat (`<member><N>`, added beside the member it copies) is declared by that member: it runs the member's persona
+    // (agent_ref, profile, runtime, startup layers), under its OWN member id, so the identity hint, the canonical session
+    // name and the skills owner below are the surge seat's, never the base seat's. Its folder is its recorded cwd (as for
+    // every re-read), and its per-seat launch fields (model, effort, Claude home, remote_control, ask_in_modal) stay on its
+    // node, which this read does not change.
+    const declared = specMemberForSeat(rigSpec.pods, node.logicalId);
+    if (!declared) return { kind: "undeclared", specSource };
+    const pod = declared.pod;
+    const member: RigSpecPodMember = declared.surge ? { ...declared.member, id: node.logicalId.slice(pod.id.length + 1) } : declared.member;
     const same = (a: unknown, b: unknown) => (a ?? null) === (b ?? null);
     const drift = [
       !same(member.runtime, node.runtime) ? `runtime ${member.runtime} (seat: ${node.runtime ?? "none"})` : null,

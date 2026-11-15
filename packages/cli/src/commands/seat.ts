@@ -771,11 +771,15 @@ Examples:
     .option("--reason <text>", "Reason recorded on the node.spec_fields_applied event")
     .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
     .option("--json", "JSON output for agents")
-    .description("Make a seat retain the launch fields its spec now states (Pi: env_passthrough, model_overrides, pi.link_operator_models; Claude Code: remote_control, ask_in_modal); dry run unless --yes; no relaunch")
+    .description("Make a seat retain the launch fields its spec now states (Pi: env_passthrough, model_overrides, pi.link_operator_models; Claude Code: remote_control, ask_in_modal; both: agent_ref, profile); dry run unless --yes; no relaunch")
     .addHelpText("after", `
 A seat keeps these fields on its node, and every launch other than rig up from the spec reads them there:
   pi           env_passthrough, model_overrides, pi.link_operator_models
   claude-code  remote_control, ask_in_modal
+  both         agent_ref, profile (the seat's identity: a fresh launch from the spec refuses a seat whose
+               recorded agent_ref or profile differs from its member's, as after rig add records a path: ref)
+A surge seat (<member><N>, added beside <member> with rig-here's add-seat --as) is read as declared by
+<member>: only its agent_ref and profile are taken from <member>; its own per-seat fields stay as they are.
 A later spec change reaches a running rig's seat only through this command (or rig up). It reads the seat's
 member from the rig's recorded spec source (judged by the same trust rule as set-mcp) or from --spec, checks the
 fields as the spec load does, and shows 'retained -> spec' for each (names and override keys only, never a
@@ -787,15 +791,21 @@ Examples:
   rig seat apply-spec verify-ops@eztrack
   rig seat apply-spec verify-ops@eztrack --yes --reason "release c84c5ba3 adds OPENAI_API_KEY"
   rig seat apply-spec exec-cos@eztrack --yes --reason "jims-team adds ask_in_modal to the CoS"
+  rig seat apply-spec build-impl2@eztrack --yes --reason "surge seat: agent_ref back to the spec's"
   rig seat apply-spec verify-ops@eztrack --spec ~/.agents-release/current/rigs/jims-team/rig.yaml --json`)
     .action(async (seat: string, opts: { spec?: string; yes?: boolean; reason?: string; operator?: string; json?: boolean }) => {
       const body = { yes: opts.yes === true, reason: opts.reason, operator: opts.operator, ...(opts.spec !== undefined ? { specFile: nodePath.resolve(opts.spec) } : {}) };
       await runLifecycleVerb("apply-spec", seat, body, opts, (data) => {
         const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
-        console.log(`${data["dryRun"] === true ? "Dry run for" : data["written"] === true ? "Applied to" : "Checked"} ${s?.logicalId}@${s?.rigName} (spec ${String(data["declaredIn"])}, ${String(data["specSource"])}):`);
+        const surgeOf = typeof data["surgeOf"] === "string" ? `, surge seat of ${data["surgeOf"]}` : "";
+        console.log(`${data["dryRun"] === true ? "Dry run for" : data["written"] === true ? "Applied to" : "Checked"} ${s?.logicalId}@${s?.rigName} (spec ${String(data["declaredIn"])}, ${String(data["specSource"])}${surgeOf}):`);
         for (const f of (data["fields"] as Array<{ field: string; retained: string[]; spec: string[]; changed: boolean }> | undefined) ?? []) {
           const flag = f.field === "pi.link_operator_models" || f.field === "remote_control" || f.field === "ask_in_modal";
           const show = (v: string[]) => (flag ? (v.length ? "true" : "false") : `[${v.join(", ")}]`);
+          console.log(f.changed ? `  ${f.field}: ${show(f.retained)} -> ${show(f.spec)}` : `  ${f.field}: no change (${show(f.retained)})`);
+        }
+        for (const f of (data["identity"] as Array<{ field: string; retained: string | null; spec: string | null; changed: boolean }> | undefined) ?? []) {
+          const show = (v: string | null) => v ?? "none";
           console.log(f.changed ? `  ${f.field}: ${show(f.retained)} -> ${show(f.spec)}` : `  ${f.field}: no change (${show(f.retained)})`);
         }
         console.log(String(data["effect"]));

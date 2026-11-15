@@ -975,6 +975,14 @@ export class RigRepository {
       .run(fields.remoteControl ? 1 : null, fields.askInModal ? 1 : null, nodeId).changes > 0;
   }
 
+  /**
+   * `rig seat apply-spec`: rewrite a seat's agent_ref and profile to what its spec member declares, in one UPDATE. Returns
+   * false when no row matched, so the caller's transaction rolls back rather than report a write.
+   */
+  setNodeIdentityRefs(nodeId: string, refs: { agentRef: string | null; profile: string | null }): boolean {
+    return this.db.prepare("UPDATE nodes SET agent_ref = ?, profile = ? WHERE id = ?").run(refs.agentRef, refs.profile, nodeId).changes > 0;
+  }
+
   /** Write (canonical path) or clear (null) the seat's own Claude config home. Returns false when the column
    *  isn't available or no row matched, so a caller never reports a change from it. */
   setNodeClaudeConfigDir(nodeId: string, dir: string | null): boolean {

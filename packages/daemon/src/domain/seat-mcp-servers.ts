@@ -4,6 +4,7 @@ import nodePath from "node:path";
 import type Database from "better-sqlite3";
 import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
+import { specMemberForSeat } from "./surge-seat.js";
 import type { RigSpec, RigSpecPod, RigSpecPodMember } from "./types.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { PROJECT_RIG_WORKSPACES, projectRigSlug } from "./project-rig.js";
@@ -114,7 +115,9 @@ export type DeclaredServerRead =
 /** Why a spec could not be read for a seat; each caller maps a kind to its own refusal code. */
 export type TrustedSeatSpecFailureKind = "unrecorded" | "unavailable" | "file_unavailable" | "untrusted" | "file_untrusted" | "rig_mismatch";
 export type TrustedSeatSpecRead =
-  | { ok: true; specPath: string; specSha256: string; operator: boolean; raw: Record<string, unknown>; spec: RigSpec; pod?: RigSpecPod; member?: RigSpecPodMember }
+  | { ok: true; specPath: string; specSha256: string; operator: boolean; raw: Record<string, unknown>; spec: RigSpec; pod?: RigSpecPod; member?: RigSpecPodMember;
+      /** True when `member` is the base member of a surge seat (`<member><N>`, see surge-seat.ts), not the seat's own declaration. */
+      surge?: boolean }
   | { ok: false; kind: TrustedSeatSpecFailureKind; message: string };
 
 /**
@@ -130,6 +133,8 @@ export function readTrustedSeatSpec(input: {
   node: { logicalId: string; cwd: string | null };
   /** What the caller reads the spec for, named in the refusal messages ("MCP servers"). */
   purpose: string;
+  /** Read a surge seat (`<pod>.<member><N>`) as declared by its base member (specMemberForSeat). Off: exact ids only. */
+  surgeMembers?: boolean;
   trustedSpecRoots?: string[];
   io?: PathJudgeIo;
   recordedExactDepthRoot?: () => string;
@@ -193,6 +198,11 @@ export function readTrustedSeatSpec(input: {
   const node = input.node;
   if (operator && !declaresRig(raw as Record<string, unknown>, input.rigName, node.cwd)) {
     return { ok: false, kind: "rig_mismatch", message: `The spec file ${specPath} declares rig "${spec.name}", not this seat's rig "${input.rigName}"${(raw as Record<string, unknown>)["project_rig"] === true ? " (as a project rig it would name the rig after its project folder, which is not this seat's)" : ""}.` };
+  }
+  if (input.surgeMembers) {
+    const declared = specMemberForSeat(spec.pods, node.logicalId);
+    return { ok: true, specPath, specSha256, operator, raw: raw as Record<string, unknown>, spec,
+      ...(declared ? { pod: declared.pod, member: declared.member, surge: declared.surge } : {}) };
   }
   const pod = spec.pods.find((p) => p.members.some((m) => `${p.id}.${m.id}` === node.logicalId));
   const member = pod?.members.find((m) => `${pod.id}.${m.id}` === node.logicalId);
