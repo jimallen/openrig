@@ -69,7 +69,8 @@ export function specSourceCommand(depsOverride?: StatusDeps): Command {
     .description("Record or replace the rig's spec source (trusted spec folders only; audited; changes no seat, session or saved startup context)")
     .addHelpText("after", `
 The spec must exist, parse as a rig spec, be named like this rig (or be a project rig spec for it), and
-declare every seat the rig has. The path is recorded as typed (relative paths are made absolute against this
+declare every seat the rig has. A surge seat <pod>.<member><N> (N from 2, no leading zero: impl2, qa10) added beside
+the spec's <pod>.<member> counts as declared by that member and is compared with it. The path is recorded as typed (relative paths are made absolute against this
 directory, but links are not followed), so a library link keeps leading to whatever release it points at later.
 
 This decides what the rig's seats are started from, so the spec file must be one a seat could not have written:

@@ -10,6 +10,7 @@ import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
 import { declaresRig } from "./seat-mcp-servers.js";
 import { judgeSpecSource, type SpecSourceTrust } from "./recorded-spec-source-judge.js";
+import { specMemberForSeat } from "./surge-seat.js";
 
 export type SpecSourceRefusalCode =
   | "rig_not_found" | "missing_operator" | "missing_path" | "path_not_absolute"
@@ -39,7 +40,8 @@ const EFFECT = "Only the recorded spec source changed. No seat, session or saved
 export type OperatorIdentity = "transport:v1" | "claimed:v1";
 
 type Declared = { runtime: string | null; agentRef: string | null; profile: string | null };
-type Loaded = { ok: true; resolvedPath: string; specName: string; raw: Record<string, unknown>; members: Map<string, Declared> }
+/** `declared` finds the member that declares a seat: its own, or for a surge seat (`<pod>.<member><N>`) the member it copies. */
+type Loaded = { ok: true; resolvedPath: string; specName: string; raw: Record<string, unknown>; declared: (logicalId: string) => Declared | null }
   | { ok: false; code: "spec_unreadable" | "spec_invalid"; message: string };
 
 /** Read a spec source: links followed, parsed and validated. `show` reads it the way a fresh launch does (re-anchored to the
@@ -64,13 +66,13 @@ function loadSpec(specSource: string, reanchor = true): Loaded {
     return { ok: false, code: "spec_invalid", message: `${specSource} is not a valid rig spec (${validation.errors.join("; ")}).` };
   }
   const spec = RigSpecSchema.normalize(raw as Record<string, unknown>);
-  const members = new Map<string, Declared>();
-  for (const pod of spec.pods) {
-    for (const member of pod.members) {
-      members.set(`${pod.id}.${member.id}`, { runtime: member.runtime ?? null, agentRef: member.agentRef ?? null, profile: member.profile ?? null });
-    }
-  }
-  return { ok: true, resolvedPath, specName: spec.name, raw: raw as Record<string, unknown>, members };
+  const declared = (logicalId: string): Declared | null => {
+    const found = specMemberForSeat(spec.pods, logicalId);
+    if (!found) return null;
+    const { member } = found;
+    return { runtime: member.runtime ?? null, agentRef: member.agentRef ?? null, profile: member.profile ?? null };
+  };
+  return { ok: true, resolvedPath, specName: spec.name, raw: raw as Record<string, unknown>, declared };
 }
 
 export class RigSpecSourceService {
@@ -135,7 +137,8 @@ export class RigSpecSourceService {
     const namesRig = loaded.specName === rig.rig.name || rig.nodes.some((n) => declaresRig(loaded.raw, rig.rig.name, n.cwd));
     if (!namesRig) mismatches.push(`the spec is named '${loaded.specName}', this rig is '${rig.rig.name}'`);
     for (const node of rig.nodes) {
-      if (!loaded.members.has(node.logicalId)) mismatches.push(`seat ${node.logicalId} is not declared in the spec's pods`);
+      // A surge seat (rig-here's `add-seat <pod> <member><N> --as <member>`) is declared by the member it copies.
+      if (!loaded.declared(node.logicalId)) mismatches.push(`seat ${node.logicalId} is not declared in the spec's pods`);
     }
     if (mismatches.length > 0) {
       return { ok: false, code: "spec_mismatch", mismatches,
@@ -144,8 +147,9 @@ export class RigSpecSourceService {
     // Not a refusal: a fresh launch refuses a seat whose identity moved, safely, before anything is stopped.
     const same = (a: unknown, b: unknown) => (a ?? null) === (b ?? null);
     const warnings: string[] = [];
+    // A surge seat is compared with the member it copies.
     for (const node of rig.nodes) {
-      const declared = loaded.members.get(node.logicalId)!;
+      const declared = loaded.declared(node.logicalId)!;
       const drift = [
         !same(declared.runtime, node.runtime) ? `runtime ${declared.runtime} (seat: ${node.runtime ?? "none"})` : null,
         !same(declared.agentRef, node.agentRef) ? `agent_ref ${declared.agentRef} (seat: ${node.agentRef ?? "none"})` : null,

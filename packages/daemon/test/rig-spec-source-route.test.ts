@@ -677,6 +677,66 @@ edges:
     expect((await set({ path: a, operator: "jim@ops" })).status).toBe(200);
   });
 
+  describe("surge seats (<pod>.<member><N>, N from 2) are declared by their base member", () => {
+    const refusedSeats = async (res: Response) => {
+      expect(res.status).toBe(409);
+      const body = await res.json() as { code: string; mismatches: string[] };
+      expect(body.code).toBe("spec_mismatch");
+      expect(rigRepo.getRigSpecSource(rigId)).toBeNull();
+      return body.mismatches;
+    };
+
+    it("a surge seat passes set, with no warning when it matches its base member", async () => {
+      rigRepo.addNode(rigId, "dev.impl2", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" });
+      rigRepo.addNode(rigId, "dev.qa10", { runtime: "claude-code", agentRef: "local:agents/qa", profile: "default" });
+      const a = write("a/rig.yaml", GOOD);
+      const res = await set({ path: a, operator: "jim@ops" });
+      expect(res.status).toBe(200);
+      expect((await res.json() as { warnings: string[] }).warnings).toEqual([]);
+      expect(rigRepo.getRigSpecSource(rigId)).toBe(a);
+    });
+
+    it("a non-surge extra seat is still refused, beside an accepted surge seat", async () => {
+      rigRepo.addNode(rigId, "dev.impl2", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" });
+      rigRepo.addNode(rigId, "dev.foo", { runtime: "claude-code" });
+      expect(await refusedSeats(await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" })))
+        .toEqual(["seat dev.foo is not declared in the spec's pods"]);
+    });
+
+    it("impl1 and impl02 are not surge seats", async () => {
+      rigRepo.addNode(rigId, "dev.impl1", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" });
+      rigRepo.addNode(rigId, "dev.impl02", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" });
+      expect((await refusedSeats(await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" }))).sort()).toEqual([
+        "seat dev.impl02 is not declared in the spec's pods",
+        "seat dev.impl1 is not declared in the spec's pods",
+      ]);
+    });
+
+    it("a surge seat's base member must be in its own pod", async () => {
+      rigRepo.addNode(rigId, "ops.impl2", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" });
+      expect(await refusedSeats(await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" })))
+        .toEqual(["seat ops.impl2 is not declared in the spec's pods"]);
+    });
+
+    it("a spec member literally named impl2 takes precedence: the seat is compared with it, not with impl", async () => {
+      rigRepo.addNode(rigId, "dev.impl2", { runtime: "claude-code", agentRef: "local:agents/impl2", profile: "default" });
+      const body = await (await set({ path: write("a/rig.yaml", SPEC("team", { dev: ["impl", "impl2", "qa"] })), operator: "jim@ops" })).json() as { ok: boolean; warnings: string[] };
+      expect(body.ok).toBe(true);
+      expect(body.warnings).toEqual([]);
+    });
+
+    it("the drift check compares a surge seat with its base member", async () => {
+      rigRepo.addNode(rigId, "dev.impl2", { runtime: "codex", agentRef: "path:/rel/agents/impl", profile: "other" });
+      const body = await (await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" })).json() as { ok: boolean; warnings: string[] };
+      expect(body.ok).toBe(true);
+      expect(body.warnings).toHaveLength(1);
+      expect(body.warnings[0]).toMatch(/^dev\.impl2: /);
+      expect(body.warnings[0]).toContain("runtime claude-code (seat: codex)");
+      expect(body.warnings[0]).toContain("agent_ref local:agents/impl (seat: path:/rel/agents/impl)");
+      expect(body.warnings[0]).toContain("profile default (seat: other)");
+    });
+  });
+
   describe("show", () => {
     it("a rig that records nothing says so", async () => {
       expect(await (await show()).json()).toEqual({ ok: true, rigId, rigName: "team", specSource: null, resolvedPath: null, unavailable: null });
