@@ -791,6 +791,35 @@ describe("plugin skills in the managed loadout", () => {
     expect(listPluginSkillNames(plugin)).toEqual(["delegating-work", "queue-handoff", "refocusing"]);
   });
 
+  it("matches included names against each skill's frontmatter name, not its folder name", () => {
+    const f = fixture([]);
+    const plugin = writePlugin(f.root, [".claude-plugin"], ["queue-handoff"]);
+    writeSkill(join(plugin, "skills"), "handover-folder", "seat-handover");
+
+    expect(listPluginSkillNames(plugin)).toEqual(["queue-handoff", "seat-handover"]);
+    const byName = resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code", include: ["seat-handover"] });
+    expect(byName.entries.map((entry) => [entry.id, entry.sourceDir])).toEqual([["seat-handover", join(plugin, "skills", "handover-folder")]]);
+    expect(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code", include: ["handover-folder"] }).entries).toEqual([]);
+  });
+
+  it("lists the skill names each runtime's own manifest points at when the two manifests name different folders", () => {
+    const f = fixture([]);
+    const plugin = join(f.root, "plugins", "core");
+    for (const [manifest, folder] of [[".claude-plugin", "claude-skills"], [".codex-plugin", "codex-skills"]] as const) {
+      mkdirSync(join(plugin, manifest), { recursive: true });
+      writeFileSync(join(plugin, manifest, "plugin.json"), JSON.stringify({ name: "core", version: "1.2.3", skills: `./${folder}` }));
+    }
+    writeSkill(join(plugin, "claude-skills"), "claude-only");
+    writeSkill(join(plugin, "codex-skills"), "codex-only");
+
+    expect(listPluginSkillNames(plugin)).toEqual(["claude-only"]);
+    expect(listPluginSkillNames(plugin, "claude-code")).toEqual(["claude-only"]);
+    expect(listPluginSkillNames(plugin, "codex")).toEqual(["codex-only"]);
+    // The names checked are the ones each runtime's resolve projects.
+    expect(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "codex" }).entries.map((entry) => entry.id)).toEqual(["codex-only"]);
+    expect(resolvePluginSkills({ pluginId: "core", pluginRoot: plugin, runtime: "claude-code" }).entries.map((entry) => entry.id)).toEqual(["claude-only"]);
+  });
+
   it("removes only the deselected copies OpenRig owns when a seat's selection narrows, and adds them back when it widens", () => {
     const f = fixture([]);
     const plugin = writePlugin(f.root, [".claude-plugin"], ["queue-handoff", "delegating-work", "refocusing", "mission-slice-sop"]);

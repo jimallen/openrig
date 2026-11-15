@@ -314,7 +314,7 @@ uses:
   if OpenRig projected it and it is unchanged. A copy someone edited is left in place and is no longer managed
   (`plugin_skill_kept`). Folders OpenRig didn't project are never touched. Seats that share one working directory
   (the kernel seats share `~/.openrig/workspace`) get the union of their selections.
-- Pi and OMP don't project plugin skills; the names are still checked.
+- Names are checked against the skills folder the seat's runtime reads: the one the `.codex-plugin` manifest names for Codex, the `.claude-plugin` one otherwise. Pi and OMP don't project plugin skills; their names are still checked, against the Claude manifest.
 
 **Skills resolve more widely than other resources.** For Claude Code and Codex seats, a skill ID that no declared
 resource provides is looked up at launch in the seat's runtime skill folder (`<cwd>/.claude/skills` or
@@ -513,10 +513,10 @@ restore behavior, and the distinction between readiness and verified proof.
    a plugin instead.
 12b. A plugin needs a unique non-empty `id`, a `source` object with `kind: local` and a non-empty `path`, and a
    `plugin_type` of `claude`, `codex` or `auto` when given.
+12c. Lifecycle `mechanic` must be a canonical `seat@rig` session address.
 12d. `profiles.<name>.uses.plugin_skills`, when given, must be a map whose keys appear in that profile's
    `uses.plugins`, each to a list of non-empty, unrepeated skill names. Whether each name is one of the plugin's
    skills is checked at preflight and launch (see "Choosing a plugin's skills").
-12c. Lifecycle `mechanic` must be a canonical `seat@rig` session address.
 12. Lifecycle `execution_mode` must be `interactive_resident`.
 13. Lifecycle `compaction_strategy` must be one of `default-compaction`, `managed-compaction`, `handover`, `apprentice-handover` — or a deprecated alias (`harness_native`, `pod_continuity`), which validates with a deprecation advisory and normalizes to its canonical value (OPR.0.5.6.20).
 14. Lifecycle `restore_policy` must be `resume_if_possible`, `relaunch_fresh`, or `checkpoint_only`.

@@ -479,10 +479,14 @@ export function resolvePluginSkills(input: {
   return { entries: all.entries.filter((entry) => include.has(entry.id)), warnings: all.warnings };
 }
 
-/** The names of a plugin's skills (each SKILL.md's frontmatter `name`), whatever runtime it applies to, for checking
- *  a profile's `uses.plugin_skills` before launch. A skill folder the plugin can't supply is left out. */
-export function listPluginSkillNames(pluginRoot: string): string[] {
-  return readPluginSkills("", nodePath.resolve(pluginRoot), ".claude-plugin").entries.map((entry) => entry.id);
+/** The names of a plugin's skills (each SKILL.md's frontmatter `name`), for checking a profile's `uses.plugin_skills`
+ *  before launch, whether or not the plugin applies to the runtime. The skills folder is read through the runtime's own
+ *  manifest first (.codex-plugin for Codex, .claude-plugin otherwise), as resolvePluginSkills reads it, so the names
+ *  checked are the ones that runtime would project. Runtimes that project no plugin skills (Pi, OMP) are checked
+ *  against the Claude manifest. A skill folder the plugin can't supply is left out. */
+export function listPluginSkillNames(pluginRoot: string, runtime: SkillRuntime = "claude-code"): string[] {
+  const manifestDir = runtime === "codex" ? ".codex-plugin" : ".claude-plugin";
+  return readPluginSkills("", nodePath.resolve(pluginRoot), manifestDir).entries.map((entry) => entry.id);
 }
 
 function readPluginSkills(pluginId: string, pluginRoot: string, manifestDir: string): { entries: CatalogSkill[]; warnings: string[] } {

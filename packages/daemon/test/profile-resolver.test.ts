@@ -1019,6 +1019,29 @@ describe("selected plugin skills", () => {
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
 
+    it("checks names against the runtime's own manifest when Claude and Codex manifests name different skill folders", () => {
+      const root = mkdtempSync(join(tmpdir(), "openrig-profile-plugin-manifests-"));
+      try {
+        const plugin = join(root, "plugins", "core");
+        for (const [manifest, folder, id] of [[".claude-plugin", "claude-skills", "claude-only"], [".codex-plugin", "codex-skills", "codex-only"]] as const) {
+          mkdirSync(join(plugin, manifest), { recursive: true });
+          writeFileSync(join(plugin, manifest, "plugin.json"), JSON.stringify({ name: "core", version: "0.1.0", skills: `./${folder}` }));
+          mkdirSync(join(plugin, folder, id), { recursive: true });
+          writeFileSync(join(plugin, folder, id, "SKILL.md"), `---\nname: ${id}\ndescription: Use when testing ${id}.\n---\n\n# plugin ${id}\n`);
+        }
+        const codex = resolveWithPlugin(root, plugin, [], { core: ["codex-only"] }, "codex");
+        expect(codex.ok, JSON.stringify(codex)).toBe(true);
+        if (codex.ok) expect(codex.config.skillLoadout?.entries.map((entry) => entry.id)).toEqual(["codex-only"]);
+        expect(resolveWithPlugin(root, plugin, [], { core: ["claude-only"] }, "codex"))
+          .toMatchObject({ ok: false, errors: [expect.stringMatching(/has no skill named "claude-only".*are: codex-only$/)] });
+        const claude = resolveWithPlugin(root, plugin, [], { core: ["claude-only"] }, "claude-code");
+        expect(claude.ok, JSON.stringify(claude)).toBe(true);
+        if (claude.ok) expect(claude.config.skillLoadout?.entries.map((entry) => entry.id)).toEqual(["claude-only"]);
+        expect(resolveWithPlugin(root, plugin, [], { core: ["codex-only"] }, "claude-code"))
+          .toMatchObject({ ok: false, errors: [expect.stringMatching(/has no skill named "codex-only".*are: claude-only$/)] });
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
     it("refuses a selection for a plugin the profile does not select", () => {
       const root = mkdtempSync(join(tmpdir(), "openrig-profile-plugin-unselected-"));
       try {
