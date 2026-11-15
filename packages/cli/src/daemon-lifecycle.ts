@@ -1233,7 +1233,7 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
  * status probe reflects the ACTUAL /healthz answer. Bounded by construction: a genuine-down answers
  * nothing, every attempt fails, the final error is rethrown (reported as stopped/unhealthy) — never
  * masked, never an unbounded wait. Used ONLY by getDaemonStatus; start/stop/checkPid keep their own
- * timing (start already has its own poll loop).
+ * timing (start already has its own poll loop, whose 250 ms pause also goes through deps.sleep).
  */
 async function probeHealthzWithSettle(deps: LifecycleDeps, url: string): Promise<{ ok: boolean; json?: () => Promise<unknown> }> {
   const sleep = deps.sleep ?? defaultSleep;

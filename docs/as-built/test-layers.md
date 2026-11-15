@@ -55,7 +55,8 @@ reporter in the root and every package vitest config. At the end of a run it fai
 todo test, on an `it.fails` test, and on a skipped test that no entry in
 `test/never-skip-allowlist.json` covers. An entry names one conditional skip the rule allows (a
 platform, a missing tool such as hc, tmux, rsync or python3, or an opt-in env) by file and title
-path, with the condition it waits for. A new `skipIf`/`runIf` needs its own entry, and an
+path, with its `kind` and condition: `when` is the skip condition for `skipIf`, the run condition
+for `runIf`, and the `if` around a `ctx.skip()` or a placeholder `it.skip` (`ctx.skip`, `skip-in-if`). A new `skipIf`/`runIf` needs its own entry, and an
 unconditional `it.skip` cannot have one. The guard is off for a run filtered with `-t` (vitest marks
 every unmatched test skipped there), and it only runs with the configured reporters, so a command
 line that passes its own `--reporter` drops it.

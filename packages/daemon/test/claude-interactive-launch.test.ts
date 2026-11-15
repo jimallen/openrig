@@ -81,26 +81,39 @@ describe.skipIf(!findHc() || !fs.existsSync("/bin/bash"))("classic Claude intera
     throw new Error(`hc never reported a foreground process for ${name}`);
   }
 
-  // Found by this conversion. HcInput.sendShellCommand reads the pane shell from `terminal.foreground`, which hc fills in about
-  // 0.4 s after the terminal starts (measured on Sparky, hc 0.1.15: absent at 0, 26 and 52 ms, present at 365 ms, three runs). Before
-  // that the launch is typed as `/bin/sh <script>` instead of sourced in the pane, so a `claude` that is an alias or a function of the
-  // pane's rc is "not found" (exit 127) where tmux, which knew `pane_current_command` at once, sourced it. The 36 cells below wait
-  // for the foreground to be reported, which is the only reason they pass. Delete `it.fails` when the decision stops depending on it
-  // (for instance a fallback to the terminal's own argv[0]).
-  it("sources the launch in the pane shell even when sent before hc reports a foreground process (DEFECT: race on terminal.foreground)", async (ctx) => {
+  // HcInput.sendShellCommand reads the pane shell from `terminal.foreground`, which hc fills in about 0.4 s after the terminal starts
+  // (measured on Sparky, hc 0.1.15: absent at 0, 26 and 52 ms, present at 365 ms, three runs). A launch sent before that was typed as
+  // `/bin/sh <script>` instead of sourced in the pane, so a `claude` that is an alias or a function of the pane's rc was "not found"
+  // (exit 127). Fixed in 4879f7938: paneShellOf falls back to the terminal's argv. The row used to skip itself when this host
+  // reported the foreground first, so whether it tested anything depended on timing. It now enters that window every time: the
+  // adapter's client answers terminal.get without `foreground`, as hc does in the first ~0.4 s, while the real core, pane and shell do
+  // the rest.
+  it("sources the launch in the pane shell even when sent before hc reports a foreground process", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-early-"));
     const rc = path.join(root, "bashrc"), status = path.join(root, "status");
     fs.writeFileSync(rc, `alias claude='echo ALIAS-RAN > ${quote(path.join(root, "ran"))}'\nPS1='FIXTURE> '\nPROMPT_COMMAND='printf "%s\\n" "$?" > ${status}'\n`);
-    const hc = new HcAdapter(scratch.client());
+    const real = scratch.client();
+    let unreported = 0;
+    const beforeForeground = new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop !== "call") return Reflect.get(target, prop, receiver);
+        return async (method: string, params?: unknown) => {
+          const answer = await (target.call as (m: string, p?: unknown) => Promise<unknown>).call(target, method, params);
+          if (method !== "terminal.get" || answer === null || typeof answer !== "object") return answer;
+          unreported++;
+          return { ...(answer as Record<string, unknown>), foreground: null };
+        };
+      },
+    });
+    const hc = new HcAdapter(beforeForeground);
     try {
-      await scratch.client().call("terminal.run", {
+      await real.call("terminal.run", {
         argv: ["/bin/bash", "--noprofile", "--rcfile", rc, "-i"], env: { HOME: root }, name: hcTerminalName("early"), labels: { [SEAT_LABEL]: "early" },
         cwd: root, no_parent: true, no_notify: true, outlive_parent: true,
       });
       expect(await settles(() => fs.existsSync(status)), "the rc reached its first prompt").toBe(true);
-      const before = await scratch.client().call<{ foreground?: unknown }>("terminal.get", { terminal: hcTerminalName("early") });
-      if (before.foreground) ctx.skip();  // this host reported it first: the race was not entered
       expect(await hc.sendShellCommand("early", "claude", undefined, { sourceInPane: true })).toEqual({ ok: true });
+      expect(unreported, "the adapter read the terminal without a foreground (the window was entered)").toBeGreaterThan(0);
       expect(await settles(() => fs.existsSync(path.join(root, "ran"))), "the launch ran the pane's alias").toBe(true);
     } finally { await hc.killSession("early"); fs.rmSync(root, { recursive: true, force: true }); }
   }, 30_000);
@@ -137,7 +150,7 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
           });
           await until(() => fs.existsSync(status)); fs.unlinkSync(status);
           // hc reports a terminal's foreground process on its next sweep (about 0.4 s after the start), and sendShellCommand decides to
-          // source the launch in the pane shell from it; see the it.fails below for what a launch sent before that does.
+          // source the launch in the pane shell from it; the row above pins what a launch sent before that does.
           await foregroundReported(name);
           const helper = route === "legacy" ? undefined : new SeatLaunchEnvironment(transport, {
             OPENRIG_HOME: path.join(dir, "rig-home"), HOME: "must-not-override", CLAUDE_CONFIG_DIR: "must-not-override",

@@ -20,7 +20,7 @@ vi.mock("../src/domain/seat-handover-service.js", () => ({
   },
 }));
 
-import { seatRoutes } from "../src/routes/seat.js";
+import { seatLifecycleService, seatRoutes } from "../src/routes/seat.js";
 
 function makeApp(sentinelOracle: object, sentinelInvalidator?: object) {
   const app = new Hono();
@@ -87,5 +87,19 @@ describe("Wave-O B1 — production handover construction injects the one activit
     expect(await home.json()).toMatchObject({ code: "claude_config_dir_missing" });
     handover.mockResolvedValueOnce({ ok: false, code: "successor_create_failed", message: "m", guidance: "g" } as never);
     expect((await post(app)).status).toBe(500);
+  });
+});
+
+// P16 finding A1, the other seat-route construction: the SeatLifecycleService every lifecycle route builds (routes/seat.ts
+// seatLifecycleService) receives the same context occupantInvalidator, so a fresh launch or restart invalidates the retiring occupant.
+describe("P16 A1 — the lifecycle-route construction injects the occupant invalidator", () => {
+  it("seatLifecycleService(c) passes the context's occupantInvalidator to SeatLifecycleService", () => {
+    const db = {};
+    const invalidator = { invalidateRetiringOccupant: vi.fn() };
+    const context: Record<string, unknown> = {
+      rigRepo: { db }, sessionRegistry: { db }, eventBus: { db }, tmuxAdapter: {}, occupantInvalidator: invalidator,
+    };
+    const service = seatLifecycleService({ get: (key: never) => context[key] });
+    expect(Reflect.get(service, "occupantInvalidator"), "SeatLifecycleService keeps it as occupantInvalidator").toBe(invalidator);
   });
 });
