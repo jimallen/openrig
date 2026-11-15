@@ -2902,7 +2902,7 @@ export class PodRigInstantiator {
       !same(member.agentRef, node.agentRef) ? `agent_ref ${member.agentRef} (seat: ${node.agentRef ?? "none"})` : null,
       !same(member.profile, node.profile) ? `profile ${member.profile} (seat: ${node.profile ?? "none"})` : null,
     ].filter((d): d is string => d !== null);
-    if (drift.length > 0) return changed(`it now declares ${drift.join(", ")}; a fresh launch never changes a seat's identity.`);
+    if (drift.length > 0) return changed(`it now declares ${drift.join(", ")}; a fresh launch never changes a seat's identity. To adopt the spec's agent_ref and profile, run rig seat apply-spec on this seat (dry run first, then --yes); to keep the seat as it is, launch with --startup-from stored.`);
 
     // OF-71: a builtin:terminal seat has no agent to resolve ("Cannot resolve agent_ref" for any non local:/path: ref).
     // Like first launch (processTerminalMember), it takes the terminal path: no agent, profile, starter or skills.

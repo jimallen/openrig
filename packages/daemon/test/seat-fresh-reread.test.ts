@@ -269,6 +269,8 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     ["the spec no longer parses", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), "pods: [unclosed"), "startup_source_unavailable", "parse"],
     ["the seat's agent is gone", () => fs.rmSync(path.join(releaseB, "agents"), { recursive: true }), "startup_source_unavailable", "local:agents/impl"],
     ["the seat's agent ref changed", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG("team", "local:agents/other")), "startup_source_changed", "agent_ref local:agents/other"],
+    // The refusal names the way out: apply-spec adopts the spec's identity (OF review of 68c93fb, finding 1).
+    ["the seat's agent ref changed (names apply-spec)", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG("team", "local:agents/other")), "startup_source_changed", "rig seat apply-spec"],
     ["the seat's runtime changed", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG().replace("runtime: claude-code", "runtime: codex")), "startup_source_changed", "runtime codex"],
     ["the seat's profile changed", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG().replace("profile: default", "profile: other")), "startup_source_changed", "profile other"],
     // OF-16 parity on the re-read: the agent folder may not leave the spec tree, as at first launch.
