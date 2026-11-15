@@ -173,6 +173,8 @@ export class RigSpecExporter {
         if (node.effort) member.effort = node.effort;
         // The seat's remote_control declaration round-trips export -> import.
         if (node.remoteControl) member.remoteControl = true;
+        // So does its ask_in_modal declaration.
+        if (node.askInModal) member.askInModal = true;
         // The seat's own Claude config home round-trips export -> import (canonical absolute path).
         if (node.claudeConfigDir) member.claudeConfigDir = node.claudeConfigDir;
         // The pda binding round-trips export -> import (D2: export reads the column).

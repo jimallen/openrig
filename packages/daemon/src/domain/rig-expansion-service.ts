@@ -161,6 +161,8 @@ export class RigExpansionService {
             // remote_control: PRESENCE-preserving like permission_policy -- a present-invalid value
             // reaches the canonical validator and rejects there; only an absent key is omitted.
             ...("remoteControl" in member && member.remoteControl !== undefined ? { remote_control: member.remoteControl } : {}),
+            // ask_in_modal: PRESENCE-preserving like remote_control; the canonical validator owns the checks.
+            ...("askInModal" in member && member.askInModal !== undefined ? { ask_in_modal: member.askInModal } : {}),
             // claude_config_dir: PRESENCE-preserving like remote_control; the canonical validator owns the checks.
             ...("claudeConfigDir" in member && member.claudeConfigDir !== undefined ? { claude_config_dir: member.claudeConfigDir } : {}),
             // pda: PRESENCE-preserving RAW carry like remote_control -- a present-invalid block reaches the canonical

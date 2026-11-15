@@ -127,9 +127,9 @@ describe("SeatHandoverService", () => {
     });
   }
 
-  function seedSeat(opts?: { rigName?: string; runtime?: string; withSession?: boolean; model?: string; codexConfigProfile?: string; effort?: string; remoteControl?: boolean }) {
+  function seedSeat(opts?: { rigName?: string; runtime?: string; withSession?: boolean; model?: string; codexConfigProfile?: string; effort?: string; remoteControl?: boolean; askInModal?: boolean }) {
     const rig = rigRepo.createRig(opts?.rigName ?? "seat-rig");
-    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: opts?.runtime ?? "codex", cwd: "/project", model: opts?.model, codexConfigProfile: opts?.codexConfigProfile, effort: opts?.effort, ...(opts?.remoteControl ? { remoteControl: true } : {}) });
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: opts?.runtime ?? "codex", cwd: "/project", model: opts?.model, codexConfigProfile: opts?.codexConfigProfile, effort: opts?.effort, ...(opts?.remoteControl ? { remoteControl: true } : {}), ...(opts?.askInModal ? { askInModal: true } : {}) });
     let sessionId: string | null = null;
     if (opts?.withSession !== false) {
       const session = sessionRegistry.registerSession(node.id, `dev-impl@${rig.name}`);
@@ -1601,6 +1601,16 @@ describe("SeatHandoverService", () => {
     else expect("remoteControl" in successorBinding).toBe(false);
     // The respawn is what makes the successor's terminal, so the hint for the launch wrapper travels on it too.
     expect((respawnPane.mock.calls[0]![2] as Record<string, unknown>).remoteControl).toBe(remoteControl ? true : undefined);
+  });
+
+  it.each([[true], [false]])("an ask_in_modal seat's handover launches the successor with the declaration (%s): the REAL lookupNode, createSuccessor, launchHarness path", async (askInModal) => {
+    seedSeat({ runtime: "codex", askInModal });
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });
+    expect(result.ok).toBe(true);
+    expect(launchHarness).toHaveBeenCalledTimes(1);
+    const successorBinding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
+    if (askInModal) expect(successorBinding.askInModal).toBe(true);
+    else expect("askInModal" in successorBinding).toBe(false);
   });
 
   it.each([[true], [false]])("a seat on its own Claude home hands over to a successor on the same home (%s): the REAL lookupNode, createSuccessor, respawn path", async (ownHome) => {

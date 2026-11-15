@@ -127,6 +127,8 @@ interface NodeOptions {
   effort?: string;
   /** `remote_control: true` on the member: persisted so restore and successor launches know it. */
   remoteControl?: boolean;
+  /** `ask_in_modal: true` on the member: persisted so restore and successor launches know it. */
+  askInModal?: boolean;
   /** The seat's own Claude config home, already canonical (claude-config-dir.ts): persisted as nodes.claude_config_dir. */
   claudeConfigDir?: string;
   /** The pda agent the seat drives (runtime pda): persisted as nodes.pda_binding. */
@@ -614,6 +616,12 @@ export class RigRepository {
       this.db.prepare("UPDATE nodes SET remote_control = 1 WHERE id = ?").run(id);
     }
 
+    if (opts?.askInModal) {
+      // No silent skip: a seat whose declaration was not stored would lose its guard at the next restore.
+      if (!this.hasNodeColumn("ask_in_modal")) throw new Error("nodes.ask_in_modal is missing (migration 131 has not run); the seat's ask_in_modal declaration cannot be stored");
+      this.db.prepare("UPDATE nodes SET ask_in_modal = 1 WHERE id = ?").run(id);
+    }
+
     if (opts?.claudeConfigDir) {
       // No silent skip: a seat whose home was not stored would launch on the daemon's account.
       if (!this.hasNodeColumn("claude_config_dir")) throw new Error("nodes.claude_config_dir is missing (migration 129 has not run); the seat's Claude config home cannot be stored");
@@ -939,6 +947,13 @@ export class RigRepository {
     return result.changes > 0;
   }
 
+  /** Declare (true) or withdraw (false) the seat's ask-in-modal guard, like setNodeRemoteControl: a relaunch from the
+   *  spec writes the member's current declaration, so a spec change takes effect on the next launch. */
+  setNodeAskInModal(nodeId: string, askInModal: boolean): boolean {
+    if (!this.hasNodeColumn("ask_in_modal")) return false;
+    return this.db.prepare("UPDATE nodes SET ask_in_modal = ? WHERE id = ?").run(askInModal ? 1 : null, nodeId).changes > 0;
+  }
+
   /** Write (canonical path) or clear (null) the seat's own Claude config home. Returns false when the column
    *  isn't available or no row matched, so a caller never reports a change from it. */
   setNodeClaudeConfigDir(nodeId: string, dir: string | null): boolean {
@@ -1224,6 +1239,7 @@ export class RigRepository {
       effort: row.effort ?? null,
       // Present only when declared, so nodes (and the snapshots serialized from them) that never declared it are unchanged.
       ...(row.remote_control === 1 ? { remoteControl: true } : {}),
+      ...(row.ask_in_modal === 1 ? { askInModal: true } : {}),
       // Present only when set, so nodes (and their snapshots) on the daemon's own Claude home are unchanged.
       ...(row.claude_config_dir ? { claudeConfigDir: row.claude_config_dir } : {}),
       // Present only for a pda seat, so every other node (and the snapshots serialized from them) is unchanged.
@@ -1319,6 +1335,7 @@ interface NodeRow {
   model: string | null;
   effort?: string | null;
   remote_control?: number | null;
+  ask_in_modal?: number | null;
   claude_config_dir?: string | null;
   pda_binding?: string | null;
   effort_choice?: string | null;

@@ -36,6 +36,8 @@ export interface Node {
   effort?: string | null;
   /** The seat declared `remote_control: true`; persisted so restore and successor launches know it. */
   remoteControl?: boolean;
+  /** The seat declared `ask_in_modal: true` (nodes.ask_in_modal); persisted so restore and successor launches know it. */
+  askInModal?: boolean;
   /** The seat's own Claude config home (nodes.claude_config_dir, canonical absolute path); absent = the daemon's own. */
   claudeConfigDir?: string;
   /** The pda agent this seat drives (runtime pda only; nodes.pda_binding). Absent for every other seat. */
@@ -1196,6 +1198,12 @@ export interface RigSpecPodMember {
    * Settings cannot do this: claude ignores `remoteControlAtStartup` from project/local scope.
    */
   remoteControl?: boolean;
+  /**
+   * `ask_in_modal`: every claude launch of this seat (fresh, resume, restore, fork, handover successor) carries a Stop hook
+   * (ask-in-modal-guard.cjs) that sends the turn back when it ends with a question to the human in prose. claude-code only,
+   * refused in the kernel rig (validated); absent/false = no hook.
+   */
+  askInModal?: boolean;
   /** `claude_config_dir`: this seat's own Claude Code config home (claude-code only), as written in the spec;
    *  stored on the node in canonical form (claude-config-dir.ts). Absent = the daemon's own selection. */
   claudeConfigDir?: string;
@@ -1505,6 +1513,8 @@ export interface ExpansionPodFragment {
      *  permissionPolicy: the ingress preserves RAW presence so the canonical validator rejects a
      *  non-boolean or a non-claude `true`, rather than the ingress erasing it into absence. */
     remoteControl?: unknown;
+    /** `ask_in_modal`. Typed UNKNOWN like remoteControl: RAW presence preserved so the canonical validator rejects a bad value. */
+    askInModal?: unknown;
     /** `claude_config_dir`. Typed UNKNOWN: RAW presence preserved so the canonical validator rejects a bad value. */
     claudeConfigDir?: unknown;
     /** `pda` block. Typed UNKNOWN: RAW presence is preserved so the canonical validator owns the shape. */

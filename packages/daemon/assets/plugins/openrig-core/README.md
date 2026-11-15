@@ -15,6 +15,8 @@ off, and never runs at fresh session start.
 extension the OpenRig pi-runner loads for every Pi seat). It refuses, before the shell runs it, a `rig send` / `rig queue ...` command whose text holds a command
 substitution (backticks or `$(...)`) in double quotes, unquoted, or in an unquoted here-document, and tells the model to use `--file - <<'EOF'`.
 
+**Ask-in-modal guard:** `hooks/scripts/ask-in-modal-guard.cjs` is a Claude Code `Stop` hook that sends a turn back once when it ends with a question for the human in prose, so the seat asks it in an `AskUserQuestion` modal instead. It is not in `hooks/claude.json`: the daemon puts it in the launch `--settings` of a seat whose rig-spec member declares `ask_in_modal: true`, and no other seat runs it.
+
 ## Runtimes
 
 This plugin ships dual-manifest packaging — both `.claude-plugin/` and `.codex-plugin/`. Use it with:

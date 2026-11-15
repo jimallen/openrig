@@ -1265,7 +1265,7 @@ export class PodRigInstantiator {
     const initialRefusal = eligible();
     if (initialRefusal) return refuse(initialRefusal);
 
-    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "claude_config_dir", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides", "pi"]);
+    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "ask_in_modal", "claude_config_dir", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides", "pi"]);
     if (Object.keys(memberFragment).some(key => !retainedFields.has(key))) return refuse("Retry accepts only retained member fields; topology and startup overrides require a separate change.");
     const rawSpec = { version: "0.2", name: rig.rig.name, pods: [{ id: podRow.namespace, label: podRow.label, members: [memberFragment], edges: [] }], edges: [] };
     const validation = PodRigSpecSchema.validate(rawSpec);
@@ -1290,6 +1290,8 @@ export class PodRigInstantiator {
       // A retry relaunches the seat from this member; one that dropped or added remote_control would
       // silently rewrite the persisted declaration, so it must agree with the retained seat.
       || (member.remoteControl === true) !== (node.remoteControl === true)
+      // The same for ask_in_modal: a retry must not silently add or drop the seat's guard.
+      || (member.askInModal === true) !== (node.askInModal === true)
       // The seat's Claude home must agree too: a retry that changed it would move the seat to another login.
       || !retainedClaudeConfigDirAgrees(member.claudeConfigDir, node.claudeConfigDir)
       || !retainedPdaBindingAgrees(member.pda, node)
@@ -1638,6 +1640,7 @@ export class PodRigInstantiator {
             model: member.model ?? configResult.config.model,
             effort: member.effort ?? configResult.config.effort,
             remoteControl: member.remoteControl,
+            askInModal: member.askInModal,
             ...(claudeHome.value ? { claudeConfigDir: claudeHome.value } : {}),
             pda: member.pda,
             envPassthrough: member.envPassthrough,
@@ -2015,6 +2018,7 @@ export class PodRigInstantiator {
       model: input.member.model,
       effort: input.member.effort,
       remoteControl: input.member.remoteControl,
+      askInModal: input.member.askInModal,
       ...(claudeHome.value ? { claudeConfigDir: claudeHome.value } : {}),
       pda: input.member.pda,
       envPassthrough: input.member.envPassthrough,
@@ -2192,6 +2196,8 @@ export class PodRigInstantiator {
     // the node, launches with exactly what the spec says. Outside the best-effort block above: a seat
     // that silently lost its remote declaration would restore without it.
     this.deps.rigRepo.setNodeRemoteControl(input.nodeId, input.member.remoteControl === true);
+    // The same for ask_in_modal: restore and handover read the node, so it must hold the spec's current declaration.
+    this.deps.rigRepo.setNodeAskInModal(input.nodeId, input.member.askInModal === true);
 
     // OPR.0.4.8.3 Seam B: resolve the seat's permission-policy attachment once for this
     // launch (member > rig precedence; declaring dir = the rig root, where the declaring
@@ -2282,6 +2288,7 @@ export class PodRigInstantiator {
       // updateNodeResolvedConfig; a seat without one launches with exactly that authored value.
       effort: (readSeatEffort(this.deps.rigRepo.db, input.nodeId) ?? { effective: configResult.config.effort ?? null }).effective ?? undefined,
       ...(input.member.remoteControl ? { remoteControl: true } : {}),
+      ...(input.member.askInModal ? { askInModal: true } : {}),
       ...(input.member.pda ? { pda: input.member.pda } : {}),
       codexConfigProfile: input.member.codexConfigProfile,
       // OPR.0.4.8.3 Seam B: resolved launch posture (member > rig > persisted > FLOOR)

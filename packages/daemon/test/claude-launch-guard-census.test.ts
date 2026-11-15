@@ -297,9 +297,11 @@ describe("OF-250 census: every Claude launch command is built through operationa
     });
   });
 
-  it("operationalLaunchArgs is where the guard is added, in the fixed order (native inbox first)", () => {
+  it("operationalLaunchArgs is where the guard is added, in the fixed order (native inbox first, then the guard, then the opt-in ask-in-modal Stop hook)", () => {
     const text = fs.readFileSync(nodePath.join(SRC, "adapters", "kernel-authority.ts"), "utf8");
-    expect(text).toMatch(/return withRigBodyGuard\(choice\.nativeInbox \? withNativeInboxSettings\(args\) : args, choice\.rigBodyGuardScript\);/);
+    expect(text).toMatch(/const guarded = withRigBodyGuard\(choice\.nativeInbox \? withNativeInboxSettings\(args\) : args, choice\.rigBodyGuardScript\);/);
+    // Every return of the Claude branch carries `guarded`: the ask-in-modal hook is added on top of it, never instead of it.
+    expect(text).toMatch(/return choice\.askInModal === true && !choice\.kernelAuthority \? withAskInModalGuard\(guarded, choice\.askInModalGuardScript\) : guarded;/);
   });
 
   it("both launch adapters refuse before building a command when the hook script is missing", () => {

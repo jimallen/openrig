@@ -833,6 +833,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     ["restore_policy", "bogus", "restorePolicy", "checkpoint_only"],
     ["permission_policy", 7, "permissionPolicy", "builtin:yolo"],
     ["remote_control", "yes", "remoteControl", true],
+    ["ask_in_modal", "yes", "askInModal", true],
     ["claude_config_dir", "relative/home", "claudeConfigDir", "/tmp"],
     ["session_source", "str", "sessionSource", { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } }],
     ["starter_ref", "st", "starterRef", { name: "st-ok" }],
@@ -847,7 +848,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
   it("census: every MEMBER_KEYS entry is classified, and each dual-spelling field has a shadow row", () => {
     const dual = [...new Set(rows.map((r) => r[0]))].sort();
     expect([...SINGLE_SPELLING, ...dual].sort()).toEqual([...MEMBER_KEYS].sort());
-    expect(dual).toHaveLength(11);
+    expect(dual).toHaveLength(12);
   });
 
   // Snake_case-only non-string / empty values: rig up rejects each; the old string-only read erased
@@ -886,7 +887,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "dp", label: "DP", members: [
         { id: "cc", runtime: "claude-code", profile: "default", cwd: ".", agentRef: "local:agents/impl", permissionPolicy: "builtin:yolo",
-          remoteControl: true, claudeConfigDir: "/tmp", restorePolicy: "checkpoint_only", compactionStrategy: "harness_native", starterRef: { name: "st-ok" } },
+          remoteControl: true, askInModal: true, claudeConfigDir: "/tmp", restorePolicy: "checkpoint_only", compactionStrategy: "harness_native", starterRef: { name: "st-ok" } },
         // session_source and starter_ref cannot compose (fork + starter is rejected in v0), so separate seats
         { id: "ss", runtime: "claude-code", profile: "default", cwd: ".", agentRef: "local:agents/impl",
           sessionSource: { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } } },
@@ -904,6 +905,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
       agent_ref: "local:agents/impl",
       permission_policy: "builtin:yolo",
       remote_control: true,
+      ask_in_modal: true,
       claude_config_dir: "/tmp",
       restore_policy: "checkpoint_only",
       compaction_strategy: "harness_native",

@@ -241,6 +241,18 @@ describe("SuccessorSessionLauncher", () => {
     else expect("remoteControl" in opts).toBe(false);
   });
 
+  it.each([[true], [undefined]])("the successor's launch binding carries the seat's ask_in_modal declaration (%s)", async (askInModal) => {
+    listPanes.mockResolvedValue([{ id: "%42", index: 0, cwd: "/w", width: 80, height: 24, active: true }]);
+    const res = await launcher().createSuccessor({
+      node: { id: "node-1", runtime: "codex", cwd: "/w", ...(askInModal ? { askInModal } : {}) },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(res.ok).toBe(true);
+    const binding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
+    if (askInModal) expect(binding.askInModal).toBe(true);
+    else expect("askInModal" in binding).toBe(false);
+  });
+
   it("CUTOVER: terminates the retiree then respawns (no -k) into the DEPARTING pane (preserved name, same pane id)", async () => {
     // A SEAT = one durable tmux session; the successor takes over the retiree's EXACT pane so native
     // scrollback survives. The retiree is terminated IN PLACE first (remain-on-exit → graceful SIGTERM),
