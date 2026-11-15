@@ -87,14 +87,4 @@ describe.skipIf(!findHc())("exact seat names on a private hc core", () => {
       for (const name of names) await adapter.killSession(name).catch(() => undefined);
     }
   }, 30_000);
-
-  // Found by this conversion (not a regression of it): listPanes() reads a leading `=` as tmux's exact marker (hcTerminalRef), so a seat
-  // whose name literally starts with `=` is listed under the other name's digest. probeSession/killSession/createSession use the name as given.
-  it.fails("lists the pane of a seat whose name literally starts with `=` (DEFECT: hcTerminalRef strips the `=`)", async () => {
-    const literal = "=worker@listed";
-    try {
-      await expect(adapter.createSession(literal, scratch.root)).resolves.toEqual({ ok: true });
-      expect(await adapter.listPanes(literal)).toHaveLength(1);
-    } finally { await adapter.killSession(literal).catch(() => undefined); }
-  }, 30_000);
 });

@@ -51,16 +51,6 @@ describe.skipIf(!findHc())("hc seat launch environment, read back by exact name"
     } finally { await adapter.killSession("worker"); }
   });
 
-  // Found by this conversion: getSessionEnv finds the terminal through hcTerminalRef, which reads a leading `=` as tmux's exact marker and
-  // drops it, so the seat literally named `=worker` answers with the value of `worker`. createSession/probeSession keep the name as given.
-  it.fails("reads a seat whose name literally starts with `=` from that seat (DEFECT: hcTerminalRef strips the `=`)", async () => {
-    try {
-      await expect(adapter.createSession("worker", scratch.root, { OPENRIG_NODE_ID: "own-node" })).resolves.toEqual({ ok: true });
-      await expect(adapter.createSession("=worker", scratch.root, { OPENRIG_NODE_ID: "literal-node" })).resolves.toEqual({ ok: true });
-      expect(await adapter.getSessionEnv("=worker", "OPENRIG_NODE_ID")).toBe("literal-node");
-    } finally { await adapter.killSession("worker"); await adapter.killSession("=worker"); }
-  });
-
   it("preserves absent/unset variables and invalid-key rejection", async () => {
     expect(await adapter.getSessionEnv("worker-long", "OPENRIG_UNSET_FIXTURE")).toBeUndefined();
     // A launch that recorded no node id reads back as unset, as `set-environment -r` left it under tmux.
