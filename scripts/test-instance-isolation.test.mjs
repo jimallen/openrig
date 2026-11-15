@@ -40,8 +40,9 @@ for (const prefix of ["OPENRIG", "RIGGED"]) {
     });
     let output = "";
     try {
-      const child = spawn("npm", ["test", "-w", "packages/daemon", "--",
-        "test/bundle-routes.test.ts", "test/instance-environment.test.ts", "--maxWorkers=1",
+      // The probe is outside the suite's collection (instance-environment-probe.opt-in.ts); the opt-in config adds it.
+      const child = spawn("npm", ["test", "-w", "packages/daemon", "--", "-c", "vitest.opt-in.config.ts",
+        "test/bundle-routes.test.ts", "test/instance-environment.test.ts", "test/instance-environment-probe.opt-in.ts", "--maxWorkers=1",
         "-t", "v2 bundle enters pod-aware path|test instance environment"],
       { cwd: repo, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
       child.stdout.on("data", chunk => { output += chunk; });

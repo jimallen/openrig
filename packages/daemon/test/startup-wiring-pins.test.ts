@@ -7,10 +7,9 @@
 // SAFETY-classified optional dep, that the production injection actually
 // happened. A pin here failing means a startup edit un-wired a safety feature.
 //
-// The census (P16 sweep, 2026-08-07) also found FIVE deps that are UNINJECTED
-// TODAY — those are it.todo ledger entries at the bottom (routed to the desk as
-// findings; a passing pin would freeze the defect). When a finding's fix lands,
-// its todo graduates to a real pin.
+// The census (P16 sweep, 2026-08-07) also found FIVE deps that were UNINJECTED
+// then (A1-A5) plus the 51-08 telemetry wiring. All are fixed: A5 and 51-08 are
+// pins in this file, and A1-A4 are pinned where they live (see the ledger below).
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,6 +21,7 @@ import type { AppDeps } from "../src/server.js";
 import type { ExecFn } from "../src/domain/tmux-adapter.js";
 import type Database from "better-sqlite3";
 import type { ContextMonitor } from "../src/domain/context-monitor.js";
+import { UsageSamplesStore } from "../src/domain/usage-samples-store.js";
 
 let db: Database.Database;
 let deps: AppDeps;
@@ -111,7 +111,14 @@ describe("P16 — domain-internal safety injections (the recurred class, pinned 
     expect(priv(contextMonitor, "compactionEnforcer")).toBeTruthy();
   });
 
-  it.todo("51-08 (graduates at the slice fold): ContextMonitor carries usageSamples + providerWindowSampler — pin flips live when hv/51-08-telemetry lands; asserting now would pin a wiring main does not yet carry");
+  it("51-08 GRADUATED: ContextMonitor carries the usage-samples store and the provider-window sampler (the telemetry it appends each poll)", () => {
+    // Both are optional constructor deps: without them runPoll appends no context sample and drainProviderWindowSamples returns at once.
+    expect(priv(contextMonitor, "usageSamples"), "startup passes the UsageSamplesStore").toBeInstanceOf(UsageSamplesStore);
+    const sampler = priv<(() => unknown) | null>(contextMonitor, "providerWindowSampler");
+    expect(sampler, "startup passes the provider-window sampler").toBeTypeOf("function");
+    // It reads this daemon's provider-usage directory (none in the fixture home yet): a list, not a throw.
+    expect(Array.isArray(sampler!())).toBe(true);
+  });
 
   it("ClassifierLeaseManager.isAlive is attached post-construction (the lease-liveness seam)", () => {
     expect(priv(deps.classifierLeaseManager, "isAlive")).toBeTruthy();
@@ -122,11 +129,12 @@ describe("P16 — domain-internal safety injections (the recurred class, pinned 
   });
 });
 
-describe("P16 — UNINJECTED-SERVICE findings ledger (routed to desk; todo graduates to a pin when the fix lands)", () => {
-  it.todo("FINDING A1: SeatHandoverService.occupantInvalidator UNINJECTED (routes/seat.ts construction) — every handover commits with zero state invalidation; ghost-stage atom-B lane owns the impl");
-  it.todo("FINDING A2: projection-planner resolveTargetPath UNINJECTED (rigspec-instantiator.ts:1672) — hash_conflict classification dead; operator-modified files silently overwritten");
-  it.todo("FINDING A3: InboxHandler.authenticate UNINJECTED (startup.ts:950) — sender-spoofing gate is allow-all; route forwards client-supplied authenticatedSender");
-  it.todo("FINDING A4: WorkflowValidator seatLivenessCheck never constructed — role_no_live_preferred_target advisory dead; instances stall at step 1 unwarned");
+// The findings A1-A4 of the P16 census are fixed and pinned where they live: A1 (the occupant invalidator) by startup.test.ts
+// ("wires a concrete OccupantInvalidator") and seat-route-oracle-injection.test.ts (both seat route constructions receive it);
+// A2 (resolveTargetPath) by projection-planner.test.ts ("WIRING PIN (the P16 class)"); A3 is gone by design (P18: InboxHandler has
+// no authenticate predicate, the sender is the X-OpenRig-Session header; queue-routes.test.ts "records the TRANSPORT-DERIVED
+// sender"); A4 (seatLivenessCheck) is WorkflowRuntime's own default probe (latest-row-live-first.test.ts).
+describe("P16 — UNINJECTED-SERVICE findings ledger (graduated pins)", () => {
   it("A5 GRADUATED (P19): AskService's PsProjectionService carries seatActivity — one terminalActive truth across both paths", () => {
     const ps = priv<unknown>(deps.askService, "deps") as { psProjectionService: unknown };
     expect(priv(ps.psProjectionService, "seatActivity"), "the ask path must inject seatActivity like the attention path does").toBeTruthy();

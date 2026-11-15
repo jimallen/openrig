@@ -42,15 +42,16 @@ const POISON_ENV = {
   XDG_RUNTIME_DIR: `${POISON_DIR}/run`,
 };
 
-function childVitest(testNamePattern: string, extraEnv: Record<string, string | undefined>) {
+/** A real vitest of this package: this file's rows named by `testNamePattern`, or (null) the tripwire probe, which lives outside the
+ *  suite's collection in hc-tripwire-probe.opt-in.ts and runs through vitest.opt-in.config.ts. */
+function childVitest(testNamePattern: string | null, extraEnv: Record<string, string | undefined>) {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const [key, value] of Object.entries(extraEnv)) { if (value === undefined) delete env[key]; else env[key] = value; }
   const vitestBin = join(dirname(createRequire(import.meta.url).resolve("vitest/package.json")), "vitest.mjs");
-  return spawnSync(
-    process.execPath,
-    [vitestBin, "run", "test/hc-hermetic-harness.test.ts", "-t", testNamePattern],
-    { cwd: DAEMON_ROOT, env, encoding: "utf8", timeout: 150_000 },
-  );
+  const args = testNamePattern === null
+    ? ["run", "-c", "vitest.opt-in.config.ts", "test/hc-tripwire-probe.opt-in.ts"]
+    : ["run", "test/hc-hermetic-harness.test.ts", "-t", testNamePattern];
+  return spawnSync(process.execPath, [vitestBin, ...args], { cwd: DAEMON_ROOT, env, encoding: "utf8", timeout: 150_000 });
 }
 
 describe("hc env hygiene (in process)", () => {
@@ -209,19 +210,6 @@ describe("hc scratch tripwire: the run's registry (unit)", () => {
   });
 });
 
-// The probe: only active inside the child runs below. It makes (and optionally removes) a root the way hc-scratch names it, and
-// registers it the way hc-scratch does, in the child run's own registry (the child's setup made it; the owner pid differs from ours).
-const PROBE_BASE = process.env.OPENRIG_HC_TRIPWIRE_PROBE_BASE;
-describe("hc tripwire probe (child run only)", () => {
-  it.skipIf(!PROBE_BASE)("leaves a scratch root behind unless told to clean it", () => {
-    const root = join(PROBE_BASE!, "hcs-probe1");
-    mkdirSync(root);
-    registerHcScratchRoot(root, "hc-hermetic-harness.test.ts probe");
-    if (process.env.OPENRIG_HC_TRIPWIRE_PROBE_CLEANS === "1") rmSync(root, { recursive: true, force: true });
-    expect(true).toBe(true);
-  });
-});
-
 // scripts/run-scenarios.mjs builds a hermetic scaffold outside any vitest run, which loads hc-scratch.ts. Importing vitest there
 // throws ("Vitest failed to access its internal state"): the first W20 revision did, and run-scenarios-flag-refusal and two
 // orphan-reaper rows failed in the full run for it.
@@ -237,7 +225,7 @@ describe("hc scratch tripwire: the run fails (real vitest)", () => {
   const run = (cleans: boolean) => {
     const base = mkdtempSync(join(tmpdir(), "tripwire-run-"));
     try {
-      const child = childVitest("hc tripwire probe", {
+      const child = childVitest(null, {
         OPENRIG_HC_TRIPWIRE_PROBE_BASE: base,
         OPENRIG_HC_TRIPWIRE_PROBE_CLEANS: cleans ? "1" : "0",
       });
@@ -250,7 +238,7 @@ describe("hc scratch tripwire: the run fails (real vitest)", () => {
     expect(left).toBe(true); // the probe really left it (positive control for the next two lines)
     expect(output).toContain("hcs-probe1");
     expect(output).toContain("left behind by this run");
-    expect(output, "the report names the test file that asked for the root").toContain("hc-hermetic-harness.test.ts probe");
+    expect(output, "the report names the test file that asked for the root").toContain("hc-tripwire-probe.opt-in.ts probe");
     expect(child.status, output).not.toBe(0);
   }, 180_000);
 

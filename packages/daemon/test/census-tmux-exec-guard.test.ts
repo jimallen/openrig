@@ -7,8 +7,8 @@ import { listSourceFiles, scanTmuxExecs, scanTree, type TmuxExecRule } from "./h
 
 // Census guard: zero `tmux` execs in non-test source (hc cutover W8; census-hc-tmux section 4, layer 1).
 //
-// The zero assertion cannot hold while tmux code is still in src, so it is SKIPPED until the scan finds nothing, and then
-// it runs on its own (no one has to remember to flip it). The self-tests below keep a clean zero from coming from a
+// The zero assertion cannot hold while tmux code is still in src, so until then the census row is a ratchet: the count may not
+// rise above the pinned ceiling, and it becomes the zero pin by itself when the adapter file goes. The self-tests below keep a clean zero from coming from a
 // broken scanner: one fixture per rule shape, near-misses that must not match, and the current tree, which must still
 // produce findings while the tmux adapter file exists. At cutover end the adapter file is gone, that control stops
 // applying, the zero test runs, and the exemptions allowlist stays unbuilt (zero means zero).
@@ -93,6 +93,8 @@ describe("tmux exec scanner: it would catch one (self-test)", () => {
   });
 });
 
+/** The findings at fork/main 7707edef (241: 82 command-string, 57 argv-array, 102 tmux-import). Only ever lowered. */
+const TMUX_EXEC_CEILING = 241;
 const tmuxAdapterStillInSrc = existsSync(join(REPO_ROOT, "packages", "daemon", "src", "adapters", "tmux.ts"));
 const tree = scanTree(REPO_ROOT);
 
@@ -105,8 +107,10 @@ describe("tmux exec census over packages/*/src", () => {
     expect(new Set(tree.findings.map((f) => f.rule)).has("exec-call") || new Set(tree.findings.map((f) => f.rule)).has("tmux-import")).toBe(true);
   });
 
-  // Skipped while tmux code remains; runs, and must pass, once the scan is clean.
-  it.skipIf(tree.findings.length > 0)("pins ZERO tmux execs in non-test source", () => {
-    expect(tree.findings.map((f) => `${f.file}:${f.line} ${f.rule}`)).toEqual([]);
+  // A ratchet, run on every host: while the tmux adapter exists the count may only fall from TMUX_EXEC_CEILING (lower it when you
+  // remove execs, never raise it); once the adapter file is gone the ceiling is zero, which is the census's end state.
+  it("ratchet: tmux execs in non-test source never exceed the pinned ceiling, and are ZERO once the tmux adapter is gone", () => {
+    const ceiling = tmuxAdapterStillInSrc ? TMUX_EXEC_CEILING : 0;
+    expect(tree.findings.length, `tmux execs now: ${tree.findings.length}, ceiling ${ceiling}; the last five found: ${JSON.stringify(tree.findings.slice(-5).map((f) => `${f.file}:${f.line} ${f.rule}`))}`).toBeLessThanOrEqual(ceiling);
   });
 });

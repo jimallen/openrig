@@ -50,6 +50,12 @@ to `main`. In the PR description, say which layers you ran and which you could n
 | Live-model evals | `npm run eval -w packages/daemon -- --provider rig …` | Whether a real Claude Code seat runs the expected `rig context get <entry>` for natural prompts | Determinism. Codex. Anything without a case. | Changes to shipped skills or context entries meant to steer agents. **Uses provider credits.** |
 | Testbed runbooks | `docker/testbed/runbooks/` (manual) | The testbed image itself works as a test environment | Product behaviour | Only when you change the testbed image or the container plumbing |
 
+**Opt-in runs are not tests of the suite.** Measurements, generators and child-run fixtures live in
+`test/**/*.opt-in.ts` (daemon and cli), which `vitest.config.ts` does not collect. Each package's
+`vitest.opt-in.config.ts` is the suite's own config with those files added; run one by naming it,
+for example `cd packages/daemon && npx vitest run -c vitest.opt-in.config.ts test/runner-pane-width-table.opt-in.ts`.
+Each file's header has its command.
+
 Some package tests are gated. `OPENRIG_E2E_REAL_CODEX=1` runs two daemon e2e tests against a
 real Codex (they also need tmux, `codex` and `~/.codex/auth.json`, and they use provider
 credits). `OPENRIG_REAL_CLAUDE_INTEGRATION=1` enables only a placeholder: it requires
