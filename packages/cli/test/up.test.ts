@@ -988,7 +988,7 @@ describe("Up CLI", () => {
     const savedPort = process.env["OPENRIG_PORT"];
     process.env["OPENRIG_PORT"] = "7463";
     const child = Object.assign(new EventEmitter(), { pid: 4242, exitCode: null as number | null, signalCode: null as string | null, unref: vi.fn() });
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_ms: number) => {});
     const deps: StatusDeps = {
       lifecycleDeps: {
         ...mockLifecycleDeps(),
