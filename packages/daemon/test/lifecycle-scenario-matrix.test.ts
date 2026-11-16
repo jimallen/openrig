@@ -383,6 +383,68 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
       ctx.db.close();
     });
 
+    // workspaces-o9o.3 review (verify-sec, attempt 2): a token tmux soft-wrapped across two pane rows is two fragments in an
+    // unjoined capture. Each fragment is too short for the redactor, so the stored attention evidence keeps them, and
+    // removing the newline gives the token back. The real resume adapters, driven through a real TmuxAdapter whose exec
+    // answers like tmux (rows without -J, logical lines with -J), into the persisted restore.completed event.
+    describe("resume attention evidence is never stored with a soft-wrapped secret in pieces (workspaces-o9o.3)", () => {
+      const TOKEN = "xox" + "b-1234567890-abcdefghijklmnop";
+      const paneOf = (screen: string[]) => ({
+        wrapped: [`pasted ${TOKEN.slice(0, 9)}`, TOKEN.slice(9), ...screen].join("\n"),
+        joined: [`pasted ${TOKEN}`, ...screen].join("\n"),
+      });
+
+      function restoreThroughRealResume(runtime: "claude-code" | "codex", paneCommand: string, screen: string[]) {
+        const db = createFullTestDb();
+        const rigRepo = new RigRepository(db);
+        const sessionRegistry = new SessionRegistry(db);
+        const eventBus = new EventBus(db);
+        const snapshotRepo = new SnapshotRepository(db);
+        const checkpointStore = new CheckpointStore(db);
+        const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
+        const tmux = mockTmuxForRestore({ hasSession: false });
+        const resumeTmux = mockTmuxForRestore({ paneCommand });
+        const pane = paneOf(screen);
+        const capture = new TmuxAdapter(async (cmd: string) => (cmd.includes(" -J ") ? pane.joined : pane.wrapped));
+        resumeTmux.capturePaneContent = capture.capturePaneContent.bind(capture);
+        const fast = { pollMs: 1, maxWaitMs: 1, settleMs: 0, sleep: async () => {} };
+        const orchestrator = new RestoreOrchestrator({
+          db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
+          checkpointStore, nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }), tmuxAdapter: tmux,
+          claudeResume: runtime === "claude-code" ? new ClaudeResumeAdapter(resumeTmux, fast) : mockClaudeResumeReturning({ ok: true }),
+          codexResume: runtime === "codex" ? new CodexResumeAdapter(resumeTmux, fast) : mockCodexResumeReturning({ ok: true }),
+        });
+        const rig = rigRepo.createRig("r86");
+        const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime, cwd: "/tmp" });
+        const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
+        const data = JSON.parse(JSON.stringify(snapshotRepo.getSnapshot(snap.id)!.data));
+        data.sessions = [{ id: "sess-1", nodeId: node.id, sessionName: "r86-worker", status: "running",
+          resumeType: runtime === "codex" ? "codex_id" : "claude_id", resumeToken: "tok-abc", restorePolicy: "resume_if_possible" }];
+        data.activeSessionIdByNode = { [node.id]: "sess-1" };
+        data.activeOccupantsByNode = { [node.id]: { kind: "resolved", sessionId: "sess-1" } };
+        db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snap.id);
+        return { db, orchestrator, node, snapshotId: snap.id };
+      }
+
+      it.each([
+        ["claude-code", "claude", ["How would you like to resume?", "❯ Resume from summary", "  Resume full session as-is"], "How would you like to resume?"],
+        ["codex", "zsh", ["$ codex resume tok-abc", "Error: Your access token could not be refreshed because you have since", "logged out or signed in to another account. Please sign in again."], "Please sign in again"],
+      ] as const)("%s: the stored evidence is redacted and the token cannot be put back together", async (runtime, paneCommand, screen, shown) => {
+        const ctx = restoreThroughRealResume(runtime, paneCommand, [...screen]);
+        const outcome = await ctx.orchestrator.restore(ctx.snapshotId);
+        if (!outcome.ok) throw new Error(`restore failed: ${outcome.code}`);
+        const node = outcome.result.nodes.find((n) => n.nodeId === ctx.node.id);
+        expect(node?.status).toBe("attention_required");
+        expect(node?.attentionEvidence).toContain(shown);
+        expect(node?.attentionEvidence?.replace(/\n/g, "")).not.toContain(TOKEN);
+        const payloads = (ctx.db.prepare("SELECT payload FROM events WHERE type = 'restore.completed'").all() as { payload: string }[]).map((r) => r.payload);
+        expect(payloads).toHaveLength(1);
+        expect(payloads[0]).toContain("[REDACTED]");
+        expect(payloads[0]!.replace(/\\n/g, "")).not.toContain(TOKEN);
+        ctx.db.close();
+      });
+    });
+
     // Codex side — closes the false-positive `resumed` shape that fire-and-
     // forget left open. Driver patch (this slice) added Codex verifyResume
     // mirroring Claude using existing native-resume-probe Codex outcomes.

@@ -41,6 +41,7 @@ import {
   parsePdaRunnerState, pdaRunnerLockLive, pdaSeatPaths, pdaSidecarAlive, processPidAlive,
   type PdaBinding, type PdaRunnerLock, type PdaRunnerState,
 } from "./pda-runner-protocol.js";
+import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 // The alive rule and its window live in the protocol (the runner applies them to its own lock too); re-exported here
 // because the adapter's readers and tests have always imported them from this module.
@@ -401,7 +402,7 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
 
   private async paneTail(sessionName: string): Promise<string> {
     try {
-      return ((await this.deps.tmux.capturePaneContent(sessionName, 40)) ?? "").split("\n").slice(-12).join("\n");
+      return await joinedPaneEvidence(this.deps.tmux, sessionName);
     } catch {
       return "";
     }

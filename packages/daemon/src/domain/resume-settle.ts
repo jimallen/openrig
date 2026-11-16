@@ -7,6 +7,7 @@ import { assessNativeResumeProbe } from "./native-resume-probe.js";
 import { nativePaneOccupancy, type NativeProcessLister, type NativeRuntime } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { runnerTerminalEnded, type TerminalEndedHost } from "../adapters/runner-terminal-ended.js";
+import { joinedPaneEvidence } from "./pane-evidence.js";
 
 /** How long a resumed runtime is given to exit. Unmeasured: a heuristic window, so typing also re-checks. */
 export const RESUME_SETTLE_MS = 2500;
@@ -81,7 +82,7 @@ export async function settleResume(runtime: NativeRuntime, input: {
     }
     const probe = assessNativeResumeProbe({ runtime, paneCommand, paneContent });
     if (probe.status === "attention_required") {
-      return { outcome: "attention", detail: probe.detail, evidence: paneContent.split("\n").slice(-12).join("\n") };
+      return { outcome: "attention", detail: probe.detail, evidence: await joinedPaneEvidence(input.tmux, input.session) };
     }
     // OF-200: a terminal that ended inside the settle window ended with the runtime, whatever was drawn before it went (a TUI, or the runtime's own
     // "not found" message): positive evidence, and the same outcome the surviving shell used to give.

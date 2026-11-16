@@ -31,6 +31,7 @@ import { unresolvedClaudePermissionModes } from "../domain/native-permission-sel
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
 import { registeredPaneOf } from "../domain/binding-pane.js";
 import { contextUsageDirectory, providerUsageDirectory } from "../domain/telemetry-state-paths.js";
+import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 export interface ClaudeAdapterFsOps {
   readFile(path: string): string;
@@ -493,7 +494,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           ok: false,
           error: probe.detail,
           recovery: "attention_required",
-          evidence: paneContent.split("\n").slice(-12).join("\n"),
+          evidence: await joinedPaneEvidence(this.tmux, tmuxSession),
         };
       }
 
@@ -524,7 +525,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         ok: false,
         error: finalProbe.detail,
         recovery: "attention_required",
-        evidence: finalContent.split("\n").slice(-12).join("\n"),
+        evidence: await joinedPaneEvidence(this.tmux, tmuxSession),
       };
     }
 

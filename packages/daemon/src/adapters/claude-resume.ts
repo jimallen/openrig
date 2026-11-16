@@ -13,6 +13,7 @@ import { observeClaudePermission, type AppliedLaunchObservation } from "../domai
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
 import { claudeRigBodyGuardRefusal } from "./claude-rig-body-guard.js";
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
+import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 export type ResumeResult =
   // `launchedProcess` (Claude): the process this resume's own identity check observed (#1077).
@@ -169,7 +170,7 @@ export class ClaudeResumeAdapter {
           ok: false,
           code: "attention_required",
           message: probe.detail,
-          evidence: paneContent.split("\n").slice(-12).join("\n"),
+          evidence: await joinedPaneEvidence(this.tmux, tmuxSessionName),
         };
       }
 
@@ -194,7 +195,7 @@ export class ClaudeResumeAdapter {
       return { ok: false, code: "retry_fresh", message: "Claude resume failed: no conversation found for the requested session" };
     }
     if (finalProbe.status === "attention_required") {
-      return { ok: false, code: "attention_required", message: finalProbe.detail, evidence: finalContent.split("\n").slice(-12).join("\n") };
+      return { ok: false, code: "attention_required", message: finalProbe.detail, evidence: await joinedPaneEvidence(this.tmux, tmuxSessionName) };
     }
     if (finalProbe.status === "resumed") {
       return { ok: true };
@@ -240,7 +241,7 @@ export class ClaudeResumeAdapter {
       ok: false,
       code: "attention_required",
       message: `Claude resume could not be verified; launch retained: ${finalProbe.detail}`,
-      evidence: finalContent.split("\n").slice(-12).join("\n"),
+      evidence: await joinedPaneEvidence(this.tmux, tmuxSessionName),
     };
   }
 }

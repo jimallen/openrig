@@ -40,6 +40,7 @@ import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { unrestrictedCodexConfigWrites, type CodexConfigWritePolicy } from "../domain/codex-config-write-policy.js";
 
 import { listNativeProcesses, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
+import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 // Shared by all probes of ONE launch, never reset by a delayed screen or an
 // ambiguous transport result. A separately requested launch gets a new attempt.
@@ -691,7 +692,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           updatePrompt.failure = {
             ok: false, recovery: "attention_required",
             error: `Could not skip the Codex update prompt: ${result.message}. Inspect the session before retrying.`,
-            evidence: paneContent.split("\n").slice(-12).join("\n"),
+            evidence: await joinedPaneEvidence(this.tmux, tmuxSession),
           };
           return false;
         }
@@ -992,7 +993,6 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // the quick 1.2s. Genuine gates (auth/trust/model/update) still classify
     // within the quick window. Only the awaiting_runtime boot case extends.
     let lastUnresolved: NativeResumeProbeResult | null = null;
-    let lastPaneContent = "";
     let sawRealGate = false;
 
     const totalAttempts = quickAttempts + extendedAttempts;
@@ -1006,7 +1006,6 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
       const paneCommand = await this.tmux.getPaneCommand(tmuxSession);
       const paneContent = await this.captureProbeScreen(tmuxSession);
-      lastPaneContent = paneContent;
       let probe = assessNativeResumeProbe({
         runtime: "codex",
         paneCommand,
@@ -1039,7 +1038,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           ok: false,
           error: probe.detail,
           recovery: "attention_required",
-          evidence: paneContent.split("\n").slice(-12).join("\n"),
+          evidence: await joinedPaneEvidence(this.tmux, tmuxSession),
         };
       }
 
@@ -1079,7 +1078,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       error: lastUnresolved?.detail
         ?? "Codex resume could not be confirmed: the process is alive but a restored conversation was never proven.",
       recovery: "attention_required",
-      evidence: lastPaneContent.split("\n").slice(-12).join("\n"),
+      evidence: await joinedPaneEvidence(this.tmux, tmuxSession),
     };
   }
 

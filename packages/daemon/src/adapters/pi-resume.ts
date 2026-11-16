@@ -19,6 +19,7 @@ import {
   type PiModelOverrides,
 } from "./pi-runner-protocol.js";
 import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
+import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 export { type ResumeResult };
 
@@ -167,7 +168,7 @@ export class PiResumeAdapter {
             ok: false,
             code: "resume_failed",
             message: `${this.label} resume failed: the runner exited (code ${state.exited.code ?? "unknown"})`,
-            evidence: paneContent.split("\n").slice(-12).join("\n"),
+            evidence: await joinedPaneEvidence(this.tmux, tmuxSessionName),
           } as ResumeResult;
         }
         if (state.ready) {

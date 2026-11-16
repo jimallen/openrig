@@ -15,6 +15,7 @@ import { observeCodexSandbox } from "../domain/permission-drift.js";
 import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexHcPreflight, type CodexVersionDetector } from "./hc-runtime-requirements.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
+import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 const CODEX_TYPES = new Set(["codex_id", "codex_last"]);
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
@@ -205,7 +206,7 @@ export class CodexResumeAdapter {
           ok: false,
           code: "attention_required",
           message: probe.detail,
-          evidence: paneContent.split("\n").slice(-12).join("\n"),
+          evidence: await joinedPaneEvidence(this.tmux, tmuxSessionName),
         };
       }
 
@@ -241,7 +242,7 @@ export class CodexResumeAdapter {
         ok: false,
         code: "attention_required",
         message: finalProbe.detail,
-        evidence: finalContent.split("\n").slice(-12).join("\n"),
+        evidence: await joinedPaneEvidence(this.tmux, tmuxSessionName),
       };
     }
 

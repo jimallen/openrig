@@ -36,7 +36,7 @@ async function finalObservation(output: string) {
     });
     const nativeCapture = adapter.capturePaneContent.bind(adapter);
     let captures = 0;
-    const capture = vi.spyOn(adapter, "capturePaneContent").mockImplementation(async (target, lines) => {
+    const capture = vi.spyOn(adapter, "capturePaneContent").mockImplementation(async (target, lines, opts) => {
       captures++;
       if (captures === 1) {
         await expect.poll(() => nativeCapture(target, lines), { timeout: POLL_CEILING_MS }).toContain("fixture waiting for final observation");
@@ -51,7 +51,7 @@ async function finalObservation(output: string) {
         fs.renameSync(`${gate}.tmp`, gate);
         await expect.poll(() => nativeCapture(target, lines), { timeout: POLL_CEILING_MS }).toContain(output);
       }
-      return nativeCapture(target, lines);
+      return nativeCapture(target, lines, opts);
     });
     const resume = new CodexResumeAdapter(adapter, {
       launchPath: `${bin}:/usr/bin:/bin`, codexHome: path.join(home, "private-codex"),
@@ -60,8 +60,10 @@ async function finalObservation(output: string) {
       sleep: async () => {},
     });
     const result = await resume.resume("fixture", "codex_id", "fixture-id", home);
-    // A resume the poll accepts takes one more read after the settle window (OF-167); a refused one does not.
-    expect(capture).toHaveBeenCalledTimes(result.ok ? 28 : 27);
+    // A resume the poll accepts takes one more read after the settle window (OF-167). An attention outcome takes one more
+    // too: its evidence is read again with soft wraps joined (workspaces-o9o.3). A fresh-retry outcome takes neither.
+    expect(capture).toHaveBeenCalledTimes(result.ok || (!result.ok && result.code === "attention_required") ? 28 : 27);
+    if (!result.ok && result.code === "attention_required") expect(capture).toHaveBeenLastCalledWith("fixture", 40, { joinWrappedLines: true });
     return result;
   } finally {
     await adapter.killSession("fixture");
