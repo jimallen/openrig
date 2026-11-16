@@ -11,6 +11,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { ensureCodexSeatHome } from "./codex-seat-home.js";
 import type { CodexConfigWritePolicy } from "./codex-config-write-policy.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
+import { launchFailureSuffix } from "./launch-failure-report.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
 import { getSeatCwdFault, handoverCwdRefusalMessage, type SeatCwdFault } from "./cwd-resolution.js";
@@ -476,14 +477,26 @@ export class SuccessorSessionLauncher {
       };
     }
     if (!readiness.ready) {
+      const attention = isAttentionRequiredReadinessCode(readiness.code);
+      // workspaces-o9o.3: a successor that never became ready says what its pane showed, redacted (the message is surfaced
+      // to the handover caller). An attention gate already names its own cause.
+      const shown = attention ? "" : launchFailureSuffix(await this.successorPaneContent(binding.tmuxSession));
       return {
         ok: false,
-        code: isAttentionRequiredReadinessCode(readiness.code) ? "successor_attention_required" : "successor_not_ready",
-        message: `Successor did not become a ready agent: ${readiness.reason ?? "readiness timeout"}`,
+        code: attention ? "successor_attention_required" : "successor_not_ready",
+        message: `Successor did not become a ready agent: ${readiness.reason ?? "readiness timeout"}${shown}`,
       };
     }
 
     return { ok: true, resumeToken, resumeType, appliedLaunch: launch.appliedLaunch };
+  }
+
+  /** The successor pane's recent text for a failure report; "" when it cannot be read (never a throw). */
+  private async successorPaneContent(session: string | null | undefined): Promise<string> {
+    if (!session) return "";
+    try {
+      return (await this.tmuxAdapter.capturePaneContent(session, 40)) ?? "";
+    } catch { return ""; }
   }
 
   /**

@@ -430,6 +430,35 @@ describe("PiRuntimeAdapter.launchHarness", () => {
       expect(result.evidence).toContain("bad provider config");
     }
   });
+
+  // workspaces-o9o.3: the runner's own refusal was visible only by reading the dead pane; the error said "the runner exited (code 1)".
+  it("names the runner's ERROR line in the error when the runner exits before ready, and redacts the evidence (workspaces-o9o.3)", async () => {
+    const fs = memFs();
+    const token = "sk-ant0123456789abcdefXYZ";
+    const sendShellCommand = vi.fn(async (_t: string, text: string) => {
+      fs.files[piSeatPaths(STATE_ROOT, SESSION).runnerStatePath] = JSON.stringify({
+        ready: false, launchId: launchIdFrom(text), updatedAt: "t", exited: { code: 1, at: "t" },
+      });
+      return { ok: true as const };
+    });
+    const capturePaneContent = vi.fn(async () =>
+      `ANTHROPIC_API_KEY=${token}\n[pi-runner] ERROR launch: No Pi credential for provider ollama in this managed seat; the launch is refused before Pi starts.\n$ `);
+    const adapter = adapterWith(fs, mockTmux({ sendShellCommand, capturePaneContent }));
+    const result = await adapter.launchHarness(binding, { name: SESSION });
+    if (result.ok) throw new Error("expected a failure");
+    expect(result.error).toBe("pi launch failed: the runner exited (code 1) — runner said: [pi-runner] ERROR launch: No Pi credential for provider ollama in this managed seat; the launch is refused before Pi starts.");
+    expect(result.evidence).toContain("ANTHROPIC_API_KEY=[REDACTED]");
+    expect(result.evidence).not.toContain(token);
+  });
+
+  it("quotes the pane when the runner never reports ready (workspaces-o9o.3)", async () => {
+    const capturePaneContent = vi.fn(async () => "[oh-my-zsh] Would you like to update? [Y/n] node /daemon-dist/adapters/pi-runner.js\n");
+    const adapter = adapterWith(memFs(), mockTmux({ capturePaneContent }));
+    const result = await adapter.launchHarness(binding, { name: SESSION });
+    if (result.ok) throw new Error("expected a failure");
+    expect(result.error).toBe("pi launch: timed out waiting for the runner to report ready — pane: [oh-my-zsh] Would you like to update? [Y/n] node /daemon-dist/adapters/pi-runner.js");
+    expect(result.recovery).toBe("attention_required");
+  });
 });
 
 describe("PiRuntimeAdapter.checkReady / readSessionFile", () => {

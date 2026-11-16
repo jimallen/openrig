@@ -32,6 +32,7 @@ import { isResumeGoneCode, paneForegroundState, RESUME_SETTLE_MS, type PaneForeg
 import { readStoredJsonObject } from "./stored-json.js";
 import { registeredPaneOf } from "./binding-pane.js";
 import { runnerTerminalEnded } from "../adapters/runner-terminal-ended.js";
+import { launchFailureSuffix, paneTailQuote } from "./launch-failure-report.js";
 import { startupTextId } from "./seat-messaging/long-message.js";
 import { messageId, type MessageId } from "./seat-messaging/ports.js";
 
@@ -547,7 +548,10 @@ export class StartupOrchestrator {
           errors.push(`Startup requires attention: ${readiness.reason ?? "unknown"}`);
           return this.fail(input, "attention_required", errors, undefined, isFreshLaunch);
         }
-        errors.push(`Readiness timeout after ${readinessTimeoutMs / 1000}s — harness did not become interactive: ${readiness.reason ?? "unknown"}`);
+        // workspaces-o9o.3: say what the pane showed (a prompt that swallowed the launch, a runner's own ERROR line), redacted:
+        // this error is persisted in the node.startup_failed event.
+        const shown = launchFailureSuffix(await this.paneContent(input.binding.tmuxSession));
+        errors.push(`Readiness timeout after ${readinessTimeoutMs / 1000}s — harness did not become interactive: ${readiness.reason ?? "unknown"}${shown}`);
         return this.fail(input, "failed", errors);
       }
     } catch (err) {
@@ -820,9 +824,10 @@ export class StartupOrchestrator {
       listProcesses: this.listProcesses, ...(memo ? { memo, now: this.now } : {}) });
   }
 
-  /** The last non-empty lines of the pane, for a failure that should quote what the runtime itself said. */
+  /** The last non-empty lines of the pane, for a failure that should quote what the runtime itself said. Redacted: the
+   *  quote goes into the persisted node.startup_failed event and the result's evidence (workspaces-o9o.3). */
   private async paneTail(session: string | null | undefined): Promise<string> {
-    return (await this.paneContent(session)).split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" | ").slice(0, 400);
+    return paneTailQuote(await this.paneContent(session));
   }
 
   private async paneContent(session: string | null | undefined): Promise<string> {

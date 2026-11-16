@@ -26,6 +26,8 @@ import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-plann
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
+import { launchFailureSuffix } from "../domain/launch-failure-report.js";
+import { redactTranscriptContent } from "../domain/transcript-redaction.js";
 import { runnerTerminalEnded } from "./runner-terminal-ended.js";
 import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
@@ -484,13 +486,15 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       if (state?.launchId === launchId) {
         if (state.exited) {
           const paneContent = (await this.tmux.capturePaneContent(sessionName, 40)) ?? "";
+          // workspaces-o9o.3: the runner's own refusal (its ERROR line) goes in the error, not only in the pane; the error and
+          // the evidence reach the persisted node.startup_failed event and restore results, so both are redacted.
           return {
             ok: false,
             failure: {
               ok: false,
-              error: `${this.runtime} launch failed: the runner exited (code ${state.exited.code ?? "unknown"})`,
+              error: `${this.runtime} launch failed: the runner exited (code ${state.exited.code ?? "unknown"})${launchFailureSuffix(paneContent)}`,
               recovery: "attention_required",
-              evidence: paneContent.split("\n").slice(-12).join("\n"),
+              evidence: redactTranscriptContent(paneContent.split("\n").slice(-12).join("\n")),
             },
           };
         }
@@ -498,11 +502,12 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       }
       if (attempt < attempts - 1) await this.sleep(pollMs);
     }
+    const paneContent = (await this.tmux.capturePaneContent(sessionName, 40)) ?? "";
     return {
       ok: false,
       failure: {
         ok: false,
-        error: `${this.runtime} launch: timed out waiting for the runner to report ready`,
+        error: `${this.runtime} launch: timed out waiting for the runner to report ready${launchFailureSuffix(paneContent)}`,
         recovery: "attention_required",
       },
     };

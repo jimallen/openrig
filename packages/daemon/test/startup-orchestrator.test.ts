@@ -1500,6 +1500,61 @@ describe("StartupOrchestrator", () => {
     }
   });
 
+  // workspaces-o9o.3: on Sparky an oh-my-zsh "update? [Y/n]" prompt swallowed a seat's launch command and the person saw only
+  // "Readiness timeout after 30s". The pane's last lines (and a runner's own ERROR line) must be in the surfaced error, for
+  // every runtime that reaches this branch, and pane text must be redacted before it reaches the durable events table.
+  describe("a launch that never becomes ready says what the pane showed (workspaces-o9o.3)", () => {
+    const OMZ_PANE = "Last login: Mon Nov 16 09:00:00\n[oh-my-zsh] Would you like to update? [Y/n] claude --permission-mode auto\n\n\n";
+    const failedEventPayloads = (nodeId: string): string[] =>
+      (db.prepare("SELECT payload FROM events WHERE type = 'node.startup_failed' AND node_id = ?").all(nodeId) as { payload: string }[]).map((r) => r.payload);
+
+    it.each(["claude-code", "codex", "pi"] as const)("%s: the readiness-timeout error quotes the pane's last lines (the swallowing prompt)", async (runtime) => {
+      const seed = seedSession();
+      const t = mockTmux({ capturePaneContent: vi.fn(async () => OMZ_PANE), getPaneCommand: vi.fn(async () => "zsh") });
+      const adapter = mockAdapter({ runtime, checkReady: vi.fn(async () => ({ ready: false, reason: "harness not interactive" })) });
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
+      if (result.ok) throw new Error("expected a failure");
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain("Readiness timeout after 0.1s");
+      expect(result.errors[0]).toContain("[oh-my-zsh] Would you like to update? [Y/n] claude --permission-mode auto");
+    });
+
+    it("pi: a runner ERROR line in the pane is quoted as what the runner said", async () => {
+      const seed = seedSession();
+      const pane = "[pi-runner] starting\n[pi-runner] ERROR launch: No Pi credential for provider ollama in this managed seat; set pi.operator_login_dir\n$ \n";
+      const t = mockTmux({ capturePaneContent: vi.fn(async () => pane), getPaneCommand: vi.fn(async () => "zsh") });
+      const adapter = mockAdapter({ runtime: "pi", checkReady: vi.fn(async () => ({ ready: false, reason: "pi-runner reported an error in the pane", code: "runner_error" })) });
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
+      if (result.ok) throw new Error("expected a failure");
+      expect(result.errors[0]).toContain("runner said: [pi-runner] ERROR launch: No Pi credential for provider ollama in this managed seat; set pi.operator_login_dir");
+    });
+
+    it("a secret-shaped token in the pane is redacted in the error and in the persisted node.startup_failed event", async () => {
+      const seed = seedSession();
+      const token = "sk-live0123456789abcdefABCDEF";
+      const t = mockTmux({ capturePaneContent: vi.fn(async () => `export OPENAI_API_KEY=${token}\n[Y/n] \n`), getPaneCommand: vi.fn(async () => "zsh") });
+      const adapter = mockAdapter({ checkReady: vi.fn(async () => ({ ready: false, reason: "harness not interactive" })) });
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
+      if (result.ok) throw new Error("expected a failure");
+      expect(result.errors[0]).toContain("export OPENAI_API_KEY=[REDACTED]");
+      const payloads = failedEventPayloads(seed.nodeId);
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toContain("[REDACTED]");
+      expect(payloads[0]).not.toContain(token);
+    });
+
+    it("control: an empty or unreadable pane leaves the readiness-timeout error as it was", async () => {
+      for (const capturePaneContent of [vi.fn(async () => ""), vi.fn(async () => { throw new Error("tmux gone"); })]) {
+        const seed = seedSession();
+        const t = mockTmux({ capturePaneContent, getPaneCommand: vi.fn(async () => "zsh") });
+        const adapter = mockAdapter({ checkReady: vi.fn(async () => ({ ready: false, reason: "harness not interactive" })) });
+        const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
+        if (result.ok) throw new Error("expected a failure");
+        expect(result.errors).toEqual(["Readiness timeout after 0.1s — harness did not become interactive: harness not interactive"]);
+      }
+    });
+  });
+
   it("readiness blocker fails immediately with the blocker reason instead of a timeout", async () => {
     const seed = seedSession();
     const adapter = mockAdapter({
@@ -1649,6 +1704,21 @@ describe("StartupOrchestrator", () => {
       if (result.ok) throw new Error("unreachable");
       expect(result.missingConversation).toBeUndefined();
       expect(result.errors.join("\n")).toContain("its terminal ended with it");
+    });
+
+    // workspaces-o9o.3: the resume-failure pane quote reaches the persisted node.startup_failed event and the result's
+    // evidence; at d0303ca8 it carried a secret-shaped token there verbatim.
+    it("hc: a resume-failure pane quote is redacted in the error, the evidence and the persisted event (workspaces-o9o.3)", async () => {
+      const seed = seedSession();
+      const token = "gh" + "p_0123456789abcdefghijABCDEFGHIJ";
+      const { adapter, orch } = endedHcTerminal("claude-code", `GITHUB_TOKEN=${token}\nclaude: command crashed\n`);
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("GITHUB_TOKEN=[REDACTED] | claude: command crashed");
+      expect(result.evidence).toBe("GITHUB_TOKEN=[REDACTED] | claude: command crashed");
+      const payloads = (db.prepare("SELECT payload FROM events WHERE type = 'node.startup_failed' AND node_id = ?").all(seed.nodeId) as { payload: string }[]).map((r) => r.payload);
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).not.toContain(token);
     });
 
     it("reports a pane that fell back to its shell without a native message as failed, keeping the pane output", async () => {

@@ -1,0 +1,73 @@
+// workspaces-o9o.3: the quote a failed launch carries from its pane. Expected values are written out here, not derived
+// from the module's constants, so a change to the line count, the cap, the separator or the redaction fails a row.
+import { describe, expect, it } from "vitest";
+import { launchFailureSuffix, paneTailQuote, runnerErrorQuote } from "../src/domain/launch-failure-report.js";
+
+describe("paneTailQuote", () => {
+  it("quotes the last four non-empty lines, joined with ' | '", () => {
+    expect(paneTailQuote("one\ntwo\n\nthree\nfour\n   \nfive\n\n")).toBe("two | three | four | five");
+  });
+
+  it("strips escape sequences and control characters, and turns tabs into spaces", () => {
+    expect(paneTailQuote("\x1b[1;32mgreen\x1b[0m\tword\x07\r\n\x1b]0;title\x07next")).toBe("green word | next");
+  });
+
+  it("redacts secret-shaped tokens", () => {
+    expect(paneTailQuote("key sk-abcdefghijklmnop0123 here")).toBe("key [REDACTED] here");
+  });
+
+  it("caps the quote at 400 characters with an ellipsis", () => {
+    // Space-separated filler: an unbroken run of 40+ word characters is itself a redaction match.
+    const quote = paneTailQuote("ab ".repeat(400));
+    expect(quote).toHaveLength(400);
+    expect(quote.endsWith("…")).toBe(true);
+    expect(paneTailQuote(`${"ab ".repeat(133)}a`)).toBe(`${"ab ".repeat(133)}a`); // exactly 400: not cut
+  });
+
+  it("redacts before it cuts, so a token across the cap is not left as an unredacted fragment", () => {
+    const quote = paneTailQuote(`${"ab ".repeat(130)}sk-abcdefghijklmnopqrstuvwxyz0123456789`);
+    expect(quote).toBe(`${"ab ".repeat(130)}[REDACTED]`);
+  });
+
+  it("is empty for an empty, blank or missing pane", () => {
+    expect(paneTailQuote("")).toBe("");
+    expect(paneTailQuote("\n  \n")).toBe("");
+    expect(paneTailQuote(null)).toBe("");
+    expect(paneTailQuote(undefined)).toBe("");
+  });
+});
+
+describe("runnerErrorQuote", () => {
+  it.each(["pi", "omp", "pda", "stub"])("finds a [%s-runner] ERROR line", (runtime) => {
+    expect(runnerErrorQuote(`starting\n[${runtime}-runner] ERROR launch: refused\n$ `)).toBe(`[${runtime}-runner] ERROR launch: refused`);
+  });
+
+  it("takes the last ERROR line when there are several", () => {
+    expect(runnerErrorQuote("[pi-runner] ERROR first\nmore\n[pi-runner] ERROR second\n")).toBe("[pi-runner] ERROR second");
+  });
+
+  it("is null when the pane has no runner ERROR line (a READY line, a bare word ERROR, a runner name alone)", () => {
+    expect(runnerErrorQuote("[pi-runner] READY\nERROR: something\n[pi-runner] ERRORS seen\n")).toBeNull();
+    expect(runnerErrorQuote("")).toBeNull();
+    expect(runnerErrorQuote(null)).toBeNull();
+  });
+
+  it("redacts the ERROR line", () => {
+    expect(runnerErrorQuote("[pi-runner] ERROR bad key gh" + "p_abcdefghijklmnopqrstuvwxyz")).toBe("[pi-runner] ERROR bad key [REDACTED]");
+  });
+});
+
+describe("launchFailureSuffix", () => {
+  it("prefers the runner's own ERROR line", () => {
+    expect(launchFailureSuffix("[pi-runner] ERROR launch: No Pi credential\n$ ")).toBe(" — runner said: [pi-runner] ERROR launch: No Pi credential");
+  });
+
+  it("falls back to the pane tail", () => {
+    expect(launchFailureSuffix("[oh-my-zsh] Would you like to update? [Y/n] claude\n")).toBe(" — pane: [oh-my-zsh] Would you like to update? [Y/n] claude");
+  });
+
+  it("is empty when the pane shows nothing", () => {
+    expect(launchFailureSuffix("")).toBe("");
+    expect(launchFailureSuffix(null)).toBe("");
+  });
+});
