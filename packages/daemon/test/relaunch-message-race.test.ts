@@ -376,6 +376,21 @@ describe("o9o.7 review finding 1: a socket write is decided under the lifecycle 
     node_id: NODE, session_name: SEAT, generation: null, socket_path: "/s", transcript_path: null, claude_pid: 1, exec_path: null, claude_version: null,
     probe_result: null, registered_at: "2026-11-15T23:00:00.000Z" } };
 
+  it("pump: a lease already holding the seat pauses the hop before it reads eligibility or writes", async () => {
+    const store = new MessageStore(db);
+    let eligibilityReads = 0;
+    const hop = claudeHop(store, async () => { eligibilityReads += 1; return eligible; }, async () => "all");
+    const release = deferred<void>();
+    const launch = lifecycle(release.promise);
+    await settle();
+
+    const result = await hop.attempt(acceptedMessage(store));
+    release.resolve();
+    await launch;
+
+    expect({ result, eligibilityReads, events }).toEqual({ result: { kind: "paused", reason: "busy" }, eligibilityReads: 0, events: ["lifecycle body", "lifecycle end"] });
+  });
+
   it("pump: a lease taken while the hop reads eligibility stops the write; the hop pauses and the old occupant gets nothing", async () => {
     const store = new MessageStore(db);
     const eligibility = deferred<NativeEligibility>();
