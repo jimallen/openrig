@@ -146,7 +146,6 @@ export interface SeatRefusal {
     | "apply_spec_unsupported_runtime" | "apply_spec_runtime_mismatch" | "apply_spec_seat_undeclared" | "apply_spec_invalid_spec_file"
     | "apply_spec_source_unrecorded" | "apply_spec_source_unavailable" | "apply_spec_source_untrusted"
     | "apply_spec_file_unavailable" | "apply_spec_file_untrusted" | "apply_spec_rig_mismatch" | "apply_spec_fields_refused" | "apply_spec_not_saved"
-    | "apply_spec_kernel_seat"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -657,10 +656,11 @@ export class SeatLifecycleService {
       return { ok: false, code: "apply_spec_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; env_passthrough, model_overrides and pi.link_operator_models apply to pi seats, remote_control and ask_in_modal to claude-code seats.` };
     }
     const claude = node.runtime === "claude-code";
-    // The kernel's seats are launched by the kernel boot, and its spec may not declare ask_in_modal: this step does not change them.
-    if (claude && seat.rigName === "kernel") {
-      return { ok: false, code: "apply_spec_kernel_seat", message: `Seat "${input.seatRef}" belongs to the kernel rig; apply-spec does not change a kernel seat's remote_control or ask_in_modal. Nothing was changed.` };
-    }
+    // The kernel's seats are launched by the kernel boot, and its spec may not declare ask_in_modal: this step does not change a
+    // kernel seat's Claude Code fields (3b88b97fa). Its agent_ref and profile are realigned like any seat's (workspaces-o9o.12), as
+    // its Pi siblings' already were, so a kernel spec whose refs change (o9o.20: path: to shipped:) can be adopted.
+    const kernelClaude = claude && seat.rigName === "kernel";
+    const kernelNote = kernelClaude ? " A kernel seat's remote_control and ask_in_modal are not applied by this step." : "";
 
     const read = readTrustedSeatSpec({
       specSource: this.rigRepo.getRigSpecSource(seat.rigId), rigName: seat.rigName, node: { logicalId: seat.logicalId, cwd: node.cwd }, purpose: "applying seat fields",
@@ -683,8 +683,9 @@ export class SeatLifecycleService {
     let envAdded: string[] = [];
     let envRemoved: string[] = [];
     let write: () => boolean;
-    if (surgeOf) {
-      // A surge seat's per-seat fields are its own (set when it was added); the base member's do not describe it.
+    if (surgeOf || kernelClaude) {
+      // A surge seat's per-seat fields are its own (set when it was added); the base member's do not describe it. A kernel
+      // seat's Claude Code fields are not this step's to change (above).
       fields = [];
       write = () => true;
     } else if (claude) {
@@ -720,13 +721,14 @@ export class SeatLifecycleService {
 
     if (!input.yes) {
       const what = surgeOf ? `the seat's agent_ref and profile (from ${surgeOf}, the member this surge seat copies)`
+        : kernelClaude ? "the seat's agent_ref and profile"
         : `these ${claude ? "two" : "three"} fields${identityChanged ? " and the seat's agent_ref and profile" : ""}`;
-      return { ok: true, ...base, dryRun: true, written: false, effect: changed
+      return { ok: true, ...base, dryRun: true, written: false, effect: (changed
         ? `Dry run: nothing was written. Pass --yes to write ${what}; they then take effect at the seat's next launch.`
-        : "Dry run: the seat already retains what the spec says. Nothing to write." };
+        : "Dry run: the seat already retains what the spec says. Nothing to write.") + kernelNote };
     }
     if (!input.actor?.trim()) return { ok: false, code: "missing_actor", message: "Sender identity is required for the audit; pass --operator <address> when running outside a managed seat." };
-    if (!changed) return { ok: true, ...base, dryRun: false, written: false, effect: "No change: the seat already retains what the spec says. Nothing was written and no event was recorded." };
+    if (!changed) return { ok: true, ...base, dryRun: false, written: false, effect: `No change: the seat already retains what the spec says. Nothing was written and no event was recorded.${kernelNote}` };
 
     let persisted: PersistedEvent | null = null;
     try {
@@ -746,7 +748,7 @@ export class SeatLifecycleService {
         message: err instanceof ApplySpecNotSaved ? `The retained fields for seat "${input.seatRef}" were not saved (no node row matched); nothing changed.` : `The retained fields for seat "${input.seatRef}" were not saved; nothing changed: ${(err as Error).message}` };
     }
     if (persisted) this.eventBus.notifySubscribers(persisted);
-    return { ok: true, ...base, dryRun: false, written: true, effect: `Saved. These take effect at this seat's next launch (stop and launch, restore, rig up --existing, a handover successor); the running process is unchanged and nothing was relaunched.${identityChanged ? " A fresh launch from the spec now finds this seat's agent_ref and profile as its member declares them." : ""}` };
+    return { ok: true, ...base, dryRun: false, written: true, effect: `Saved. These take effect at this seat's next launch (stop and launch, restore, rig up --existing, a handover successor); the running process is unchanged and nothing was relaunched.${identityChanged ? " A fresh launch from the spec now finds this seat's agent_ref and profile as its member declares them." : ""}${kernelNote}` };
   }
 
   /** OPR.0.7.0.7 — requested, saved, emitted at launch and observed in the native session, each from

@@ -462,11 +462,26 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       expect(claudeOf(s.node.id)).toEqual({ remoteControl: true, askInModal: false });
     });
 
-    it("refuses a kernel seat, and writes nothing", async () => {
+    // workspaces-o9o.12 (c): the narrowing is for a kernel seat's CLAUDE fields; a kernel Pi seat (Sparky's operator.agent and
+    // queue.worker) keeps taking its own retained fields from the spec, as before.
+    it("CONTROL: a kernel Pi seat still takes its Pi retained fields from the spec", async () => {
+      writeSpec(envLines(NEW_ENV));
+      const s = seat("kernel");
+      const result = await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, written: true });
+      expect(retainedOf(s.node.id).env).toEqual(NEW_ENV);
+      expect((result as { effect: string }).effect).not.toMatch(/kernel seat/);
+    });
+
+    // workspaces-o9o.12 (c): the kernel refusal (3b88b97fa) covers a kernel seat's Claude Code fields only, as its reason says.
+    it("on a kernel seat, does not apply remote_control or ask_in_modal, says so, and writes nothing", async () => {
       writeSpec(rcLine, "claude-code");
       const s = claudeSeat("kernel");
+      const dry = await apply(s.ref);
+      expect(dry, JSON.stringify(dry)).toMatchObject({ ok: true, dryRun: true, changed: false, fields: [] });
       const result = await apply(s.ref, { yes: true, actor: "jim@host" });
-      expect(result).toMatchObject({ ok: false, code: "apply_spec_kernel_seat" });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, written: false, changed: false, fields: [] });
+      expect((result as { effect: string }).effect).toMatch(/kernel seat's remote_control and ask_in_modal are not applied/);
       expect(claudeOf(s.node.id)).toEqual({ remoteControl: false, askInModal: false });
       expect(events()).toEqual([]);
     });
@@ -615,11 +630,29 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       expect(Object.keys(events()[0]!)).not.toContain("identity");
     });
 
-    it("the kernel refusal stands for a drifted kernel seat: nothing is written", async () => {
-      writeSpec("", "claude-code");
-      const s = readded("kernel");
-      expect(await apply(s.ref, { yes: true, actor: "jim@host" })).toMatchObject({ ok: false, code: "apply_spec_kernel_seat" });
-      expect(identityOf(s.node.id).agentRef).toBe(OLD_REF);
+    // workspaces-o9o.12 (c): a drifted kernel Claude seat is realigned like its Pi siblings (o9o.20 moves the kernel spec's refs
+    // to shipped:), while its Claude Code fields are still not applied.
+    it("a drifted kernel Claude seat realigns agent_ref and profile, and leaves remote_control and ask_in_modal alone", async () => {
+      writeSpec("        remote_control: true\n", "claude-code");
+      const s = readded("kernel", "verify.ops", { profile: "old-profile" });
+      const result = await apply(s.ref, { yes: true, actor: "jim@host", reason: "kernel refs to shipped:" });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, written: true, changed: true, fields: [] });
+      expect((result as { effect: string }).effect).toMatch(/kernel seat's remote_control and ask_in_modal are not applied/);
+      expect(identityOf(s.node.id)).toEqual({ agentRef: "local:agents/ops", profile: "default" });
+      expect(rigRepo.getNodeClaudeRetainedFields(s.node.id)).toEqual({ remoteControl: false, askInModal: false });
+      expect(events()).toHaveLength(1);
+      expect(events()[0]).toMatchObject({ fields: [], identity: [
+        { field: "agent_ref", from: OLD_REF, to: "local:agents/ops" },
+        { field: "profile", from: "old-profile", to: "default" },
+      ] });
+    });
+
+    it("CONTROL: a non-kernel Claude seat with the same drift also gets the spec's remote_control", async () => {
+      writeSpec("        remote_control: true\n", "claude-code");
+      const s = readded("eztrack", "verify.ops", { profile: "old-profile" });
+      const result = await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, written: true });
+      expect(rigRepo.getNodeClaudeRetainedFields(s.node.id)).toEqual({ remoteControl: true, askInModal: false });
     });
 
     describe("a surge seat (<member><N>, added with rig-here's add-seat --as <member>)", () => {

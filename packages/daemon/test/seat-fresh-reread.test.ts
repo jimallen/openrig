@@ -465,10 +465,10 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
 
   describe("a surge seat (<member><N>, rig-here's add-seat <pod> <member><N> --as <member>)", () => {
     /** dev.impl2 beside the spec's dev.impl, in its own folder, as rig-here adds it (through rig add). */
-    async function addSurge(rigId: string, agentRef: string) {
+    async function addSurge(rigId: string, agentRef: string, label?: string) {
       const surgeDir = path.join(root, "work-impl2");
       fs.mkdirSync(surgeDir);
-      const added = await inst.addMemberToPod(rigId, "dev", { id: "impl2", agent_ref: agentRef, profile: "default", runtime: "claude-code", cwd: ".", model: "claude-sonnet-5" },
+      const added = await inst.addMemberToPod(rigId, "dev", { id: "impl2", agent_ref: agentRef, profile: "default", runtime: "claude-code", cwd: ".", model: "claude-sonnet-5", ...(label ? { label } : {}) },
         path.dirname(fs.realpathSync(linkSpec)), { cwdOverride: surgeDir });
       expect(added.ok, JSON.stringify(added)).toBe(true);
       const node = rigRepo.getRig(rigId)!.nodes.find((n) => n.logicalId === "dev.impl2")!;
@@ -520,6 +520,62 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       expect(result.ok, JSON.stringify(result)).toBe(true);
       expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
       expect(identityAction(surge.node.id)).toContain("- logical_id: dev.impl2");
+    });
+
+    // workspaces-o9o.12 (a): the identity hint is the surge seat's own (68c93fb), so its member_label is the label the seat was
+    // added with, the one `rig whoami` reports from the node, not the base member's.
+    describe("its identity hint's member_label", () => {
+      const labelled = () => {
+        for (const dir of [releaseA, releaseB]) fs.writeFileSync(path.join(dir, "rig.yaml"), RIG("team", "local:agents/impl", "\n        label: Base implementer"));
+      };
+      it("is the label the surge seat was added with, not the base member's", async () => {
+        labelled();
+        const seat = await launchRig();
+        const surge = await addSurge(seat.rigId, "local:agents/impl", "Surge implementer two");
+        expect(surge.node.label).toBe("Surge implementer two");
+        retarget("bbbbbbb");
+        const result = await service.launchFresh({ seatRef: surge.sessionName, fresh: true, stop: true, reason: "surge label" });
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+        const lines = identityAction(surge.node.id).split("\n");
+        expect(lines.filter((l) => l.startsWith("- member_label:"))).toEqual(["- member_label: Surge implementer two"]);
+        // The base seat's own hint still carries the spec's label.
+        expect(identityAction(seat.node.id)).toContain("- member_label: Base implementer");
+      });
+
+      it("falls back to the base member's label when the surge seat has none of its own", async () => {
+        labelled();
+        const seat = await launchRig();
+        const surge = await addSurge(seat.rigId, "local:agents/impl");
+        expect(surge.node.label ?? null).toBeNull();
+        retarget("bbbbbbb");
+        const result = await service.launchFresh({ seatRef: surge.sessionName, fresh: true, stop: true, reason: "surge label" });
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+        expect(identityAction(surge.node.id).split("\n").filter((l) => l.startsWith("- member_label:"))).toEqual(["- member_label: Base implementer"]);
+      });
+    });
+
+    // workspaces-o9o.12 (b): a surge seat's folder is its recorded cwd. With none recorded, the spec's cwd is the BASE member's,
+    // so the two seats would share one folder and its managed CLAUDE.md. Refused before anything is stopped.
+    it("a surge seat with no recorded folder is refused, not given its base member's folder", async () => {
+      const seat = await launchRig();
+      const surge = await addSurge(seat.rigId, "local:agents/impl");
+      db.prepare("UPDATE nodes SET cwd = NULL WHERE id = ?").run(surge.node.id);
+      retarget("bbbbbbb");
+      delivered = []; projected = [];
+      const result = await service.launchFresh({ seatRef: surge.sessionName, fresh: true, stop: true, reason: "surge no cwd" });
+      expect(result).toMatchObject({ ok: false, code: "startup_source_unavailable" });
+      expect((result as { message: string }).message).toMatch(/dev\.impl2 has no recorded folder.*dev\.impl/);
+      expect(alive.has(surge.sessionName)).toBe(true);
+      expect(delivered).toEqual([]);
+      expect(projected).toEqual([]);
+    });
+
+    it("CONTROL: a declared (non-surge) seat with no recorded folder still takes its spec cwd", async () => {
+      const seat = await launchRig();
+      db.prepare("UPDATE nodes SET cwd = NULL WHERE id = ?").run(seat.node.id);
+      retarget("bbbbbbb");
+      const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true });
+      expect(plan).toMatchObject({ ok: true, startup: { source: { kind: "spec" } } });
     });
   });
 

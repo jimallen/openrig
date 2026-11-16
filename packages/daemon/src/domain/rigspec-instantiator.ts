@@ -2906,11 +2906,19 @@ export class PodRigInstantiator {
     // (agent_ref, profile, runtime, startup layers), under its OWN member id, so the identity hint, the canonical session
     // name and the skills owner below are the surge seat's, never the base seat's. Its folder is its recorded cwd (as for
     // every re-read), and its per-seat launch fields (model, effort, Claude home, remote_control, ask_in_modal) stay on its
-    // node, which this read does not change.
+    // node, which this read does not change. Its label is its own too (the one `rig whoami` reports), else the base member's.
     const declared = specMemberForSeat(rigSpec.pods, node.logicalId);
     if (!declared) return { kind: "undeclared", specSource };
     const pod = declared.pod;
-    const member: RigSpecPodMember = declared.surge ? { ...declared.member, id: node.logicalId.slice(pod.id.length + 1) } : declared.member;
+    if (declared.surge && !node.cwd) {
+      // workspaces-o9o.12: with no recorded folder the launch would take the spec's cwd, which is the BASE member's, so two seats
+      // would share one folder and its managed CLAUDE.md / AGENTS.md. No current path records a surge seat without a folder.
+      const base = `${pod.id}.${declared.member.id}`;
+      return unavailable(`the surge seat ${node.logicalId} has no recorded folder, so the spec would give it ${base}'s folder, shared with that seat and its managed instruction files. Remove the seat and add it again with a member fragment that gives it its own cwd.`);
+    }
+    const member: RigSpecPodMember = declared.surge
+      ? { ...declared.member, id: node.logicalId.slice(pod.id.length + 1), label: node.label ?? declared.member.label }
+      : declared.member;
     const same = (a: unknown, b: unknown) => (a ?? null) === (b ?? null);
     const drift = [
       !same(member.runtime, node.runtime) ? `runtime ${member.runtime} (seat: ${node.runtime ?? "none"})` : null,

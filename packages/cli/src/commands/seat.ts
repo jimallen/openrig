@@ -814,7 +814,8 @@ fields as the spec load does, and shows 'retained -> spec' for each (names and o
 value). Without --yes it writes nothing. With --yes it writes the runtime's fields in one transaction and records
 one audit event. A field the spec no longer states is cleared. Nothing is relaunched and no process is touched:
 the new values apply at the seat's next launch: a seat launch, a restore, rig up --existing, or a handover
-successor. Other runtimes, and a kernel seat's Claude Code fields, are refused.
+successor. Other runtimes are refused. A kernel seat's Claude Code fields (remote_control, ask_in_modal) are not
+applied; its agent_ref and profile are realigned like any seat's.
 Examples:
   rig seat apply-spec verify-ops@eztrack
   rig seat apply-spec verify-ops@eztrack --yes --reason "release c84c5ba3 adds OPENAI_API_KEY"
