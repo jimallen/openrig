@@ -3,9 +3,11 @@
 // Per plugin-primitive Phase 3a slice 3.2 (IMPL-PRD §2.5 + DESIGN.md §5.5).
 //
 // Responsibilities:
-//   1. ensureVendored(name): seed packages/daemon/assets/plugins/<name>/ into
-//      ~/.openrig/plugins/<name>/ when absent, or advance an older manifest
-//      version. Equal/newer installed bytes retain authority.
+//   1. ensureVendored(name): make ~/.openrig/plugins/<name>/ match the running
+//      package's packages/daemon/assets/plugins/<name>/ byte for byte, whatever
+//      version the installed copy says, then verify it (workspaces-o9o.17; Jim,
+//      2026-11-16: "Running package wins"). Every seat projects plugin files and
+//      skills from that copy, so a copy that drifts gives every seat old content.
 //   2. attemptAutoFetch(name): try to fetch latest from
 //      github.com/mvschwarz/openrig-plugins. Tolerates 404, network errors,
 //      and timeouts silently per orch direction 2026-05-10 (vendored is
@@ -30,7 +32,10 @@ export interface PluginVendorFs {
   exists(path: string): boolean;
   mkdirp(path: string): void;
   listFiles(dir: string): string[];
-  rmrf?(path: string): void;
+  /** What is at `path` without following a symlink there; null when nothing is. */
+  lstat(path: string): "file" | "directory" | "symlink" | "other" | null;
+  /** Remove one file or symlink (never its target, never recursively). */
+  removeFile(path: string): void;
   /** Source file permission bits (for mode-preserving vendor staging). Optional: no-op if absent. */
   statMode?(path: string): number;
   /** Apply permission bits to a file (for mode-preserving vendor staging). Optional: no-op if absent. */
@@ -53,6 +58,8 @@ export interface PluginVendorServiceDeps {
   fs: PluginVendorFs;
   httpClient: HttpClient;
   logger?: (...args: unknown[]) => void;
+  /** Where a copy that still differs from the package after a refresh is reported. Defaults to logger. */
+  errorLogger?: (...args: unknown[]) => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -68,21 +75,13 @@ function parseNumericVersion(raw: string, source: string): number[] {
   return value.split(".").map(Number);
 }
 
-function compareVersions(a: string, b: string): number {
-  const left = parseNumericVersion(a, "source version");
-  const right = parseNumericVersion(b, "target version");
-  for (let i = 0; i < 3; i++) {
-    if (left[i] !== right[i]) return left[i]! < right[i]! ? -1 : 1;
-  }
-  return 0;
-}
-
 export class PluginVendorService {
   private vendoredAssetsDir: string;
   private userPluginsDir: string;
   private fs: PluginVendorFs;
   private httpClient: HttpClient;
   private logger: (...args: unknown[]) => void;
+  private errorLogger: (...args: unknown[]) => void;
 
   constructor(deps: PluginVendorServiceDeps) {
     this.vendoredAssetsDir = deps.vendoredAssetsDir;
@@ -90,6 +89,7 @@ export class PluginVendorService {
     this.fs = deps.fs;
     this.httpClient = deps.httpClient;
     this.logger = deps.logger ?? (() => {});
+    this.errorLogger = deps.errorLogger ?? this.logger;
   }
 
   /** One plugin version across both harness manifests. Divergence is an
@@ -121,11 +121,14 @@ export class PluginVendorService {
   }
 
   /**
-   * Seed the vendored asset tree at <vendoredAssetsDir>/<pluginName>/ into the
-   * user plugin dir <userPluginsDir>/<pluginName> when absent, or advance it
-   * only when the bundled manifest version is strictly newer. Equal versions
-   * reconcile mode only on byte-identical files.
-   * No-op when the vendored asset doesn't exist (e.g. plugin not bundled).
+   * Make <userPluginsDir>/<pluginName> match the running package's
+   * <vendoredAssetsDir>/<pluginName> byte for byte, then verify it. The running package
+   * wins whatever version the installed copy declares, equal, older or newer (Jim,
+   * 2026-11-16, workspaces-o9o.17: "Running package wins"): the fork does not bump the
+   * plugin version with every change, so a version gate kept a 10-21 copy for weeks.
+   * A replaced installed version is logged. A copy with no manifest was not written by
+   * OpenRig and is left unchanged; a copy that still differs afterwards is reported
+   * through errorLogger. No-op when the plugin is not bundled.
    */
   async ensureVendored(pluginName: string): Promise<void> {
     const sourceDir = nodePath.join(this.vendoredAssetsDir, pluginName);
@@ -144,36 +147,30 @@ export class PluginVendorService {
         return;
       }
       const targetVersion = this.pluginVersion(targetDir);
-      const order = compareVersions(sourceVersion, targetVersion);
-      if (order < 0) {
-        this.logger(`[plugin-vendor] bundled '${pluginName}' ${sourceVersion} is not newer than installed ${targetVersion}; leaving installed bytes unchanged`);
-        return;
-      }
-      if (order === 0) {
-        // Equal versions make the installed bytes authoritative. Still repair
-        // mode on byte-identical paths: this is metadata reconciliation, not a
-        // rollback, and preserves the established executable-helper repair.
-        for (const relPath of this.fs.listFiles(sourceDir)) {
-          const srcPath = nodePath.join(sourceDir, relPath);
-          const destPath = nodePath.join(targetDir, relPath);
-          if (
-            this.fs.exists(destPath) &&
-            hashContent(this.fs.readFile(destPath)) === hashContent(this.fs.readFile(srcPath))
-          ) {
-            this.preserveMode(srcPath, destPath);
-          }
-        }
-        this.logger(`[plugin-vendor] bundled '${pluginName}' ${sourceVersion} equals installed ${targetVersion}; leaving installed bytes unchanged`);
-        return;
+      const differing = this.drift(sourceDir, targetDir, new Set());
+      if (differing.length > 0) {
+        this.logger(`[plugin-vendor] replacing installed '${pluginName}' ${targetVersion} at ${targetDir} with the running package's ${sourceVersion} (${differing.length} path(s) differ)`);
       }
     }
 
-    this.fs.mkdirp(targetDir);
+    this.mirror(sourceDir, targetDir, new Set());
+    this.reportDrift(`plugin '${pluginName}'`, sourceDir, targetDir, new Set());
+  }
 
-    const files = this.fs.listFiles(sourceDir);
-    for (const relPath of files) {
+  /**
+   * Make targetDir hold exactly sourceDir's files (and their modes), apart from the
+   * names in `keep`. Writes and removals stay inside targetDir: a path that leaves it,
+   * or that passes through or lands on a symlink, is never written or removed, so a
+   * link inside the copy cannot carry a write or a delete to a file outside it.
+   */
+  private mirror(sourceDir: string, targetDir: string, keep: ReadonlySet<string>): void {
+    this.fs.mkdirp(targetDir);
+    const sourceFiles = this.fs.listFiles(sourceDir);
+    const wanted = new Set(sourceFiles);
+    for (const relPath of sourceFiles) {
       const srcPath = nodePath.join(sourceDir, relPath);
       const destPath = nodePath.join(targetDir, relPath);
+      if (this.escapes(targetDir, destPath)) continue;
       const content = this.fs.readFile(srcPath);
       // Hash-skip: only write if content differs (idempotent re-runs). Reconcile mode even on
       // skip — a byte-identical copy staged earlier may still carry the wrong (default) mode.
@@ -185,6 +182,52 @@ export class PluginVendorService {
       this.fs.writeFile(destPath, content);
       this.preserveMode(srcPath, destPath);
     }
+    for (const relPath of this.fs.listFiles(targetDir)) {
+      if (wanted.has(relPath) || keep.has(relPath)) continue;
+      const destPath = nodePath.join(targetDir, relPath);
+      if (this.escapes(targetDir, destPath)) continue;
+      this.fs.removeFile(destPath);
+    }
+  }
+
+  /** Why `path` may not be written or removed as part of `root`, or null when it may. */
+  private escapes(root: string, path: string): string | null {
+    const rel = nodePath.relative(root, path);
+    if (rel === "" || rel === ".." || rel.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(rel)) return "outside the managed directory";
+    if (this.fs.lstat(root) === "symlink") return "the managed directory is a symlink";
+    let current = root;
+    for (const part of rel.split(nodePath.sep)) {
+      current = nodePath.join(current, part);
+      const kind = this.fs.lstat(current);
+      if (kind === null) return null;
+      if (kind === "symlink") return `${current} is a symlink`;
+      if (current !== path && kind !== "directory") return `${current} is not a directory`;
+    }
+    return null;
+  }
+
+  /** The paths under targetDir that do not match sourceDir (missing, extra or different), apart from `keep`. */
+  private drift(sourceDir: string, targetDir: string, keep: ReadonlySet<string>): string[] {
+    if (!this.fs.exists(targetDir)) return this.fs.listFiles(sourceDir);
+    const source = new Set(this.fs.listFiles(sourceDir));
+    const target = new Set(this.fs.listFiles(targetDir).filter((rel) => !keep.has(rel)));
+    const differing: string[] = [];
+    for (const rel of source) {
+      if (!target.has(rel)) differing.push(`${rel} (missing)`);
+      else if (
+        this.fs.lstat(nodePath.join(targetDir, rel)) !== "file" ||
+        hashContent(this.fs.readFile(nodePath.join(targetDir, rel))) !== hashContent(this.fs.readFile(nodePath.join(sourceDir, rel)))
+      ) differing.push(`${rel} (differs)`);
+    }
+    for (const rel of target) if (!source.has(rel)) differing.push(`${rel} (not in the package)`);
+    return differing.sort();
+  }
+
+  /** Verify a refreshed copy against its source and report what still differs. */
+  private reportDrift(what: string, sourceDir: string, targetDir: string, keep: ReadonlySet<string>): void {
+    const differing = this.drift(sourceDir, targetDir, keep);
+    if (differing.length === 0) return;
+    this.errorLogger(`[plugin-vendor] ${what} at ${targetDir} still differs from the running package at ${sourceDir} after the refresh; seats will load these paths from the old copy: ${differing.join(", ")}`);
   }
 
   /**
@@ -227,7 +270,10 @@ export class PluginVendorService {
   /**
    * Project one skill folder into the harness-global skill roots under `sourceVersion`
    * authority. A target without OpenRig's version marker was installed another way (for
-   * example by skills.sh) and is left unchanged, as is one marked equal or newer.
+   * example by skills.sh) and is left unchanged, as is a target that is itself a symlink
+   * (a shared canon). A target carrying the marker is OpenRig's own copy: it is made to
+   * match the running package's folder whatever version the marker says (Jim, 2026-11-16,
+   * workspaces-o9o.17), and a replaced version is logged.
    */
   ensureSkillDirGlobally(
     sourceDir: string,
@@ -239,39 +285,29 @@ export class PluginVendorService {
       throw new Error(`Required global seed '${skillName}' is missing at ${sourceDir}`);
     }
     parseNumericVersion(sourceVersion, `${skillName} source`);
-    const files = this.fs.listFiles(sourceDir);
+    const keep = new Set([GLOBAL_VENDOR_VERSION]);
     for (const root of globalSkillRoots) {
       const targetDir = nodePath.join(root, skillName);
       const versionMarker = nodePath.join(targetDir, GLOBAL_VENDOR_VERSION);
-      if (this.fs.exists(targetDir)) {
+      if (this.fs.exists(targetDir) || this.fs.lstat(targetDir) !== null) {
+        if (this.fs.lstat(targetDir) === "symlink") {
+          this.logger(`[plugin-vendor] global skill '${skillName}' at ${targetDir} is a symlink, unversioned/external authority; leaving it unchanged`);
+          continue;
+        }
         if (!this.fs.exists(versionMarker)) {
           this.logger(`[plugin-vendor] global skill '${skillName}' at ${targetDir} is unversioned/external authority; leaving it unchanged`);
           continue;
         }
         const targetVersion = this.fs.readFile(versionMarker).trim();
         parseNumericVersion(targetVersion, versionMarker);
-        if (compareVersions(sourceVersion, targetVersion) <= 0) {
-          this.logger(`[plugin-vendor] global skill '${skillName}' ${targetVersion} is equal/newer than bundled ${sourceVersion}; leaving it unchanged`);
-          continue;
+        const differing = this.drift(sourceDir, targetDir, keep);
+        if (differing.length > 0) {
+          this.logger(`[plugin-vendor] replacing global skill '${skillName}' ${targetVersion} at ${targetDir} with the running package's ${sourceVersion} (${differing.length} path(s) differ)`);
         }
       }
-      this.fs.mkdirp(targetDir);
-      for (const relPath of files) {
-        const srcPath = nodePath.join(sourceDir, relPath);
-        const destPath = nodePath.join(targetDir, relPath);
-        const content = this.fs.readFile(srcPath);
-        if (
-          this.fs.exists(destPath) &&
-          hashContent(this.fs.readFile(destPath)) === hashContent(content)
-        ) {
-          this.preserveMode(srcPath, destPath);
-          continue;
-        }
-        this.fs.mkdirp(nodePath.dirname(destPath));
-        this.fs.writeFile(destPath, content);
-        this.preserveMode(srcPath, destPath);
-      }
-      this.fs.writeFile(versionMarker, `${sourceVersion}\n`);
+      this.mirror(sourceDir, targetDir, keep);
+      if (!this.escapes(targetDir, versionMarker)) this.fs.writeFile(versionMarker, `${sourceVersion}\n`);
+      this.reportDrift(`global skill '${skillName}'`, sourceDir, targetDir, keep);
     }
   }
 

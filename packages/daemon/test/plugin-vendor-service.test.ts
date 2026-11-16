@@ -28,11 +28,8 @@ function mockFs(initialFiles?: Record<string, string>) {
     exists: (p: string) => p in store || Object.keys(store).some((k) => k.startsWith(p + "/")),
     mkdirp: () => {},
     listFiles: (dir: string) => Object.keys(store).filter((k) => k.startsWith(dir + "/")).map((k) => k.slice(dir.length + 1)),
-    rmrf: (p: string) => {
-      for (const k of Object.keys(store)) {
-        if (k === p || k.startsWith(p + "/")) delete store[k];
-      }
-    },
+    lstat: (p: string): "file" | "directory" | null => p in store ? "file" : Object.keys(store).some((k) => k.startsWith(p + "/")) ? "directory" : null,
+    removeFile: (p: string) => { delete store[p]; },
     _store: store,
   };
 }
@@ -92,7 +89,9 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
     expect(Object.values(writeCounts).reduce((a, b) => a + b, 0)).toBe(0);
   });
 
-  it("does not let an older bundled plugin overwrite a newer installed plugin", async () => {
+  // workspaces-o9o.17 reversed this row (Jim, 2026-11-16: "Running package wins"). It used to pin that a newer installed
+  // version kept its bytes; a rollback then left every seat on the newer copy's skills and hooks.
+  it("replaces a newer installed plugin with the running package's bytes and logs the version it replaced", async () => {
     const installedSkill = "/home/test/.openrig/plugins/openrig-core/skills/openrig-skills/SKILL.md";
     const fs = mockFs({
       ...VENDORED_OPENRIG_CORE,
@@ -110,12 +109,14 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
 
     await svc.ensureVendored("openrig-core");
 
-    expect(fs._store[installedSkill]).toBe("# newer installed canon");
-    expect(fs._store["/home/test/.openrig/plugins/openrig-core/.claude-plugin/plugin.json"]).toContain('"0.2.0"');
-    expect(logger).toHaveBeenCalledWith(expect.stringMatching(/not newer.*unchanged/i));
+    expect(fs._store[installedSkill]).toBe("# openrig-skills index");
+    expect(fs._store["/home/test/.openrig/plugins/openrig-core/.claude-plugin/plugin.json"]).toContain('"0.1.0"');
+    expect(logger).toHaveBeenCalledWith(expect.stringMatching(/replacing installed 'openrig-core' 0\.2\.0 .* with the running package's 0\.1\.0/));
   });
 
-  it("does not replace different installed bytes at the same plugin version", async () => {
+  // workspaces-o9o.17 reversed this row: equal versions with different bytes is exactly how the 10-21 copy outlived
+  // every fork release (the plugin version stayed 0.1.9 while 16 files changed).
+  it("replaces different installed bytes at the same plugin version", async () => {
     const installedSkill = "/home/test/.openrig/plugins/openrig-core/skills/openrig-skills/SKILL.md";
     const fs = mockFs({
       ...VENDORED_OPENRIG_CORE,
@@ -132,7 +133,7 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
 
     await svc.ensureVendored("openrig-core");
 
-    expect(fs._store[installedSkill]).toBe("# same-version installed authority");
+    expect(fs._store[installedSkill]).toBe("# openrig-skills index");
   });
 
   it("upgrades an older installed plugin only when the bundled manifest version is newer", async () => {
@@ -292,7 +293,10 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
     expect(fs._store[marker]).toBe("0.2.0\n");
   });
 
-  it("does not overwrite an equal or newer globally projected skill", async () => {
+  // workspaces-o9o.17 reversed this row: a target carrying OpenRig's marker is OpenRig's copy and follows the running
+  // package, whatever version the marker says. Unmarked and symlinked targets are still left alone (rows above and
+  // plugin-vendor-projection-drift.test.ts).
+  it("makes a marked global skill with a newer marker match the running package", async () => {
     const marker = "/home/test/.agents/skills/openrig-skills/.openrig-vendor-version";
     const skill = "/home/test/.agents/skills/openrig-skills/SKILL.md";
     const fs = mockFs({
@@ -312,8 +316,8 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
 
     svc.ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.agents/skills"]);
 
-    expect(fs._store[skill]).toBe("# projected 0.2.0");
-    expect(fs._store[marker]).toBe("0.2.0\n");
+    expect(fs._store[skill]).toBe("# bundled 0.1.0");
+    expect(fs._store[marker]).toBe("0.1.0\n");
   });
 
   it("fails loudly when the required global seed is missing from the vendored plugin", async () => {
@@ -361,7 +365,8 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
     expect(logger).toHaveBeenCalledWith(expect.stringMatching(/'rigs'.*unversioned\/external authority.*unchanged/i));
   });
 
-  it("refreshes a projected skill folder on a newer version, keeps it on an equal one, and refuses a version that isn't x.y.z", () => {
+  // workspaces-o9o.17 reversed the middle step: an equal version with different bytes is refreshed, not kept.
+  it("refreshes a projected skill folder on a newer version and on an equal one with different bytes, and refuses a version that isn't x.y.z", () => {
     const marker = "/home/test/.claude/skills/rigs/.openrig-vendor-version";
     const skill = "/home/test/.claude/skills/rigs/SKILL.md";
     const fs = mockFs({ [`${RIGS}/SKILL.md`]: "# rigs 0.6.8", [marker]: "0.6.7\n", [skill]: "# rigs 0.6.7" });
@@ -373,7 +378,7 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
 
     fs._store[`${RIGS}/SKILL.md`] = "# rigs edited, same version";
     svc.ensureSkillDirGlobally(RIGS, "rigs", "0.6.8", ["/home/test/.claude/skills"]);
-    expect(fs._store[skill]).toBe("# rigs 0.6.8");
+    expect(fs._store[skill]).toBe("# rigs edited, same version");
 
     expect(() => svc.ensureSkillDirGlobally(RIGS, "rigs", "unknown", ["/home/test/.claude/skills"])).toThrow(/invalid version 'unknown'/);
     expect(fs._store[marker]).toBe("0.6.8\n");

@@ -10,30 +10,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
-import { PluginVendorService, type PluginVendorFs } from "../src/domain/plugin-vendor-service.js";
+import { PluginVendorService } from "../src/domain/plugin-vendor-service.js";
+import { nodePluginVendorFs } from "../src/adapters/plugin-vendor-fs.js";
 import { mkTemp } from "./helpers/temp-roots.js";
 
-function realVendorFs(): PluginVendorFs {
-  return {
-    readFile: (p) => fs.readFileSync(p, "utf-8"),
-    writeFile: (p, c) => fs.writeFileSync(p, c, "utf-8"),
-    exists: (p) => fs.existsSync(p),
-    mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
-    listFiles: (dir) => {
-      const r: string[] = [];
-      const w = (d: string, pre: string) => {
-        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-          if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name));
-          else r.push(pre ? nodePath.join(pre, e.name) : e.name);
-        }
-      };
-      w(dir, "");
-      return r;
-    },
-    statMode: (p) => fs.statSync(p).mode,
-    chmod: (p, m) => fs.chmodSync(p, m),
-  };
-}
+const realVendorFs = nodePluginVendorFs;
 
 const httpClient = async () => ({ ok: false, status: 404 });
 const perm = (p: string) => fs.statSync(p).mode & 0o777;
@@ -149,7 +130,7 @@ describe("PluginVendorService preserves executable mode during vendor staging (Q
     expect(logs.join("\n")).toMatch(/unversioned\/external authority.*unchanged/i);
   });
 
-  it("updates a real marked global projection only when its source version is newer", async () => {
+  it("updates a real marked global projection to the source (here an older marker; o9o.17: any marker version follows the running package)", async () => {
     const base = mkTemp(nodePath.join(os.tmpdir(), "vendor-global-upgrade-"));
     const assets = nodePath.join(base, "assets", "plugins");
     seedAssets(assets);

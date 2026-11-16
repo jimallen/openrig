@@ -225,11 +225,18 @@ At this pin, the route's source filter accepts vendored, Claude-cache and Codex-
 ### Vendoring and projection
 
 `packages/daemon/src/domain/plugin-vendor-service.ts` owns `PluginVendorService`.
-`ensureVendored()` seeds absent plugins or advances an older numeric manifest version.
-Equal/newer installed versions preserve installed bytes; equal versions can reconcile file
-modes on byte-identical files. Missing target version authority is preserved rather than
-overwritten; invalid or conflicting manifest versions are errors. Advancing a version writes
-changed files but never deletes files the new version dropped.
+`ensureVendored()` makes `OPENRIG_HOME/plugins/<name>` match the running package's bundled
+plugin at every daemon start, whatever version the installed copy declares (equal, older or
+newer: workspaces-o9o.17, Jim 2026-11-16, "Running package wins"). It writes changed files,
+reconciles file modes, removes files the package no longer ships, logs the installed version it
+replaced, then verifies the copy and reports any path that still differs through `errorLogger`
+(`console.error` at startup). Writes and removals never leave the plugin folder and never pass
+through or land on a symlink; a copy that is itself a symlink is left alone and reported. Missing
+target version authority (no manifest) is preserved rather than overwritten; invalid or
+conflicting manifest versions are errors. Global skill seeds (`ensureSkillDirGlobally`) follow
+the same rule for a target carrying OpenRig's `.openrig-vendor-version` marker; an unmarked or
+symlinked target is left unchanged. Seat copies under `<cwd>/.claude` and `<cwd>/.codex` are
+re-projected from this folder at each seat start, and do not yet remove files the folder dropped.
 
 `ensureSkillGlobally()` projects a named plugin skill using a vendor-version marker.
 An existing unversioned global skill remains externally owned. Startup wires this service

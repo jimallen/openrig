@@ -10,6 +10,15 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Seats get the running OpenRig's `openrig-core` plugin, not an older copy (workspaces-o9o.17)
+
+- Symptom: after an upgrade, seats kept loading old `openrig-core` skills and plugin files. Measured on 2026-11-16 on 0.6.10: `~/.openrig/plugins/openrig-core` was a copy from 10-21 that differed from the installed package in 16 files (its `hooks/claude.json` had no PreToolUse guard), and every Claude seat projected that day got that copy's skills. The global `openrig-skills` seed in `~/.claude/skills` and `~/.agents/skills` was stale too.
+- Cause: the daemon replaced the copy only when the bundled plugin's manifest version was strictly newer, and the plugin's content changed across releases without a version bump.
+- Now, at every daemon start, `OPENRIG_HOME/plugins/openrig-core` is made to match the running package byte for byte, whatever version the installed copy declares, and then verified. Files the package no longer ships are removed, the replaced version is logged, and any path that still differs is reported on stderr. Writes and removals stay inside the plugin folder and never follow a symlink.
+- **Reverses an earlier promise.** The 0.5.x note "an older runtime cannot silently overwrite newer installed guidance" no longer holds. Decision (Jim, 2026-11-16): "Running package wins". A rollback now also rolls the installed plugin back, and logs that it did.
+- Global skill seeds that OpenRig marked (`.openrig-vendor-version`) follow the same rule. A seed installed another way (no marker) or one that is a symlink is still left unchanged.
+- Seat copies (`.claude/plugins/…`, `.claude/skills/…`, `.codex/plugins/…`) pick up the refreshed content at each seat's next start.
+
 ### Proof readiness no longer says "watching" while its file watch is dead (workspaces-o9o.38)
 
 - Symptom: when the inotify watch limit was reached (Sparky hit 65,364 of 65,536 on 2026-11-16), proof readiness stopped pushing changes, yet the daemon still reported its source watch as `watching`.
