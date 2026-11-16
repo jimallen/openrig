@@ -72,7 +72,9 @@ describe("pickLatestByOrdering: what may clear a waiting prompt (workspaces-o9o.
   const at = (s: number) => new Date(Date.UTC(2026, 9, 26, 0, 0, 0) + s).toISOString();
   const prompt = { activity: { rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input" as const, eventAt: at(30_000) } };
   const question = { activity: { rawEvent: "PermissionRequest", rawSubtype: "AskUserQuestion", state: "needs_input" as const, dialog: "question" as const, eventAt: at(30_000) } };
-  const tool = (rawEvent: string, rawSubtype: string, ms: number) => ({ activity: { rawEvent, rawSubtype, state: "running" as const, eventAt: at(ms) } });
+  const tool = (rawEvent: string, rawSubtype: string, ms: number, toolCallId?: string) =>
+    ({ activity: { rawEvent, rawSubtype, state: "running" as const, eventAt: at(ms), ...(toolCallId ? { toolCallId } : {}) } });
+  const turnStart = (ms: number) => ({ activity: { rawEvent: "UserPromptSubmit", state: "running" as const, eventAt: at(ms) } });
   const pick = (...rows: Array<{ activity: Record<string, unknown> }>) => pickLatestByOrdering(rows as never) as { activity: { rawEvent: string; rawSubtype: string } } | null;
 
   it.each([
@@ -84,6 +86,13 @@ describe("pickLatestByOrdering: what may clear a waiting prompt (workspaces-o9o.
     ["a tool end stamped exactly 2 s after a permission prompt does not clear it", [tool("PostToolUse", "Read", 32_000), prompt], "Notification"],
     ["a tool end stamped 2 s + 1 ms after it does", [tool("PostToolUse", "Read", 32_001), prompt], "PostToolUse"],
     ["once the question is answered, a later start is the latest", [tool("PreToolUse", "Bash", 70_000), tool("PostToolUse", "AskUserQuestion", 60_000), question], "PreToolUse"],
+    // With call ids (the relay since workspaces-o9o.4): the end must name an AskUserQuestion call this turn started, and none may stay open.
+    ["with ids: the end of the turn's own question clears it",
+      [tool("PostToolUse", "AskUserQuestion", 60_000, "toolu_q"), question, tool("PreToolUse", "AskUserQuestion", 29_990, "toolu_q"), turnStart(0)], "PostToolUse"],
+    ["with ids: a late end of an earlier turn's question does not clear the new one",
+      [tool("PostToolUse", "AskUserQuestion", 60_000, "toolu_old"), question, tool("PreToolUse", "AskUserQuestion", 29_990, "toolu_new"), turnStart(0),
+        tool("PreToolUse", "AskUserQuestion", -60_000, "toolu_old")], "PermissionRequest"],
+    ["with ids: an end whose call this turn never started does not clear it", [tool("PostToolUse", "AskUserQuestion", 60_000, "toolu_q"), question, turnStart(0)], "PermissionRequest"],
   ])("%s", (_label, rows, expected) => {
     expect(pick(...(rows as Array<{ activity: Record<string, unknown> }>))?.activity.rawEvent).toBe(expected);
   });

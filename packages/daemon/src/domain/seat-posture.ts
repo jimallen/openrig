@@ -1,5 +1,5 @@
 import type { AgentActivity } from "./types.js";
-import { AGENT_ACTIVITY_FRESHNESS_MS, latestHookState, type OpenToolCall } from "./agent-activity-store.js";
+import { AGENT_ACTIVITY_FRESHNESS_MS, latestHookState, QUESTION_DIALOG_TOOL, type OpenToolCall } from "./agent-activity-store.js";
 
 // OF-267 — what a sender may be told about a seat that has not yet received its message.
 //
@@ -74,7 +74,8 @@ function toolFacts(activity: AgentActivity, openCalls: readonly OpenToolCall[], 
   const oldest = openCalls[0];
   const named = oldest
     ? { tool: oldest.tool, startedAt: oldest.startedAt, others: openCalls.length - 1 }
-    : activity.rawEvent === "PreToolUse" && activity.rawSubtype ? { tool: activity.rawSubtype, startedAt: activity.eventAt ?? null, others: 0 } : null;
+    : activity.rawEvent === "PreToolUse" && activity.rawSubtype && activity.rawSubtype !== QUESTION_DIALOG_TOOL
+      ? { tool: activity.rawSubtype, startedAt: activity.eventAt ?? null, others: 0 } : null;
   if (!named) return NO_TOOL;
   const startMs = named.startedAt ? Date.parse(named.startedAt) : Number.NaN;
   const confirmed = Number.isFinite(startMs) && startMs <= nowMs + FUTURE_SLACK_MS && nowMs - startMs <= AGENT_ACTIVITY_FRESHNESS_MS;

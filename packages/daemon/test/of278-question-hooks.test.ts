@@ -118,8 +118,8 @@ describe("the shipped manifest", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]!.matcher).toBe("AskUserQuestion");
     expect(groups[0]!.hooks.map((h) => h.command.match(/scripts\/([a-z-]+\.cjs)/)![1])).toEqual(["activity-relay.cjs", "question-wait.cjs"]);
-    // workspaces-o9o.4 relays PreToolUse (async, unscoped) for the running tool; the relay itself drops it for AskUserQuestion, so the
-    // question is still reported by its PermissionRequest alone (claude-relay-subagent-filter.test.ts pins the drop).
+    // workspaces-o9o.4 relays PreToolUse (async, unscoped) for the running tool, AskUserQuestion's included for its call id; the question
+    // is still reported by its PermissionRequest alone (seat-posture-open-calls.test.ts pins that a start never displaces it).
     const preRelay = (manifest.hooks.PreToolUse as Array<{ matcher?: string; hooks: Array<{ command: string; async?: boolean }> }>).filter((g) => g.hooks.some((h) => h.command.includes("activity-relay")));
     expect(preRelay.map((g) => [g.matcher ?? null, g.hooks.map((h) => h.async === true)])).toEqual([[null, [true]]]);
   });

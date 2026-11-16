@@ -52,11 +52,16 @@ function seat(runtime: string) {
     expect(body).not.toBeNull();
     return store.recordHookEvent(body as never);
   };
+  /** The same, but what the relay drops is not posted: the production path for a hook the relay filters. */
+  const relayed = (provider: Record<string, unknown>, ms: number) => {
+    const body = relay.buildOpenRigPayload(provider, { OPENRIG_SESSION_NAME: SEAT, OPENRIG_RUNTIME: runtime }, () => new Date(T0 + ms));
+    return body ? store.recordHookEvent(body as never) : null;
+  };
   const row = async (ms: number, seatTerminalStatus?: SeatTerminalStatusReader) => (await attachAgentActivity(
     [{ canonicalSessionName: SEAT, runtime, attachmentType: "hc", logicalId: "verify.sec", sessionStatus: "running" }] as never,
     { tmuxAdapter: {} as never, activityStore: store, now: new Date(T0 + ms), ...(seatTerminalStatus ? { seatTerminalStatus } : {}) },
   ))[0]!;
-  return { fire, fireViaRelay, row };
+  return { fire, fireViaRelay, relayed, row };
 }
 
 describe("F1: a tool start past the freshness window is never shown as a confirmed running tool", () => {
@@ -157,13 +162,95 @@ describe("F3: a late-stamped async hook never hides a prompt; the real relay sta
   });
 
   it("a question to the human is cleared by its own tool's end only, never another call's late end", async () => {
-    const { fire, fireViaRelay, row } = seat("claude-code");
+    const { fire, fireViaRelay, relayed, row } = seat("claude-code");
     fire("UserPromptSubmit", null, 0);
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, MIN - 20);
     fire("PermissionRequest", "AskUserQuestion", MIN);
     fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "Read", tool_use_id: "toolu_read" }, MIN + 30_000); // another call, much later
     expect((await row(MIN + 40_000)).seatPosture).toMatchObject({ kind: "needs_input", line: expect.stringMatching(/^waiting on a question to the human/) });
     fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, MIN + 60_000); // answered
     expect((await row(MIN + 65_000)).seatPosture?.kind).toBe("busy");
+  });
+
+  // verify-qa re-review of 08ab4d1c8 (F3 remaining case), its exact sequence through the real relay: the previous question's end, relayed
+  // late, must not answer the question asked after it.
+  it("a delayed end of an EARLIER question does not clear a newer question; the newer question's own end does", async () => {
+    const { fire, fireViaRelay, relayed, row } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_previous_question" }, 5_000);
+    fire("PermissionRequest", "AskUserQuestion", 5_020);
+    fire("UserPromptSubmit", null, MIN); // the next turn: the previous question's end has not arrived
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_new_question" }, MIN + 5_000);
+    fire("PermissionRequest", "AskUserQuestion", MIN + 5_020);
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_previous_question" }, MIN + 10_000);
+    expect((await row(MIN + 12_000)).seatPosture).toMatchObject({ kind: "needs_input", line: expect.stringMatching(/^waiting on a question to the human/) });
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_new_question" }, MIN + 60_000); // answered
+    expect((await row(MIN + 61_000)).seatPosture?.kind).toBe("busy");
+  });
+
+  it("a question stays open while any AskUserQuestion call of the turn is open: one call's end does not clear it", async () => {
+    const { fire, fireViaRelay, relayed, row } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_q1" }, 1_000);
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_q2" }, 1_010);
+    fire("PermissionRequest", "AskUserQuestion", 1_030);
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_q1" }, 30_000);
+    expect((await row(31_000)).seatPosture?.kind).toBe("needs_input");
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_q2" }, 40_000);
+    expect((await row(41_000)).seatPosture?.kind).toBe("busy");
+  });
+
+  it("an AskUserQuestion call is never shown as the running tool, open or not", async () => {
+    const { fire, fireViaRelay, relayed, row } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    fireViaRelay({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "toolu_bash" }, 1_000);
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, 2_000);
+    // Before its PermissionRequest lands the question's start is the newest hook: the seat is busy, and no tool line names the question.
+    const before = (await row(2_010)).seatPosture!;
+    expect(before).toMatchObject({ kind: "busy", tool: "Bash", otherOpenCalls: 0 });
+    expect(before.line).not.toMatch(/AskUserQuestion/);
+    const only = seat("claude-code");
+    only.fire("UserPromptSubmit", null, 0);
+    only.relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, 2_000);
+    const alone = (await only.row(2_010)).seatPosture!;
+    expect(alone.tool ?? null).toBeNull();
+    // The hook is named as evidence; no tool clause claims the question runs.
+    expect(alone.line).toMatch(/^busy: turn running, last hook PreToolUse AskUserQuestion \S+$/);
+  });
+
+  it("a question answered while another tool call is still open clears: only AskUserQuestion calls hold it", async () => {
+    const { fire, fireViaRelay, relayed, row } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    fireViaRelay({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "toolu_bash" }, 1_000);
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, 2_000);
+    fire("PermissionRequest", "AskUserQuestion", 2_020);
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, 30_000);
+    expect((await row(31_000)).seatPosture).toMatchObject({ kind: "busy", tool: "Bash" });
+  });
+
+  // The latest read looks at the newest 20 rows; the question's calls are read from the whole turn (up to 200 rows).
+  it("the question's own start more than 20 rows back (other calls' hooks arrived between it and the dialog) still lets its end clear it", async () => {
+    const { fire, fireViaRelay, relayed, row } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    relayed({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, 1_000);
+    for (let i = 0; i < 12; i += 1) { // parallel Read calls of the same message, relayed before the dialog's PermissionRequest
+      fireViaRelay({ hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: `toolu_read_${i}` }, 1_100 + i);
+      fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "Read", tool_use_id: `toolu_read_${i}` }, 1_200 + i);
+    }
+    fire("PermissionRequest", "AskUserQuestion", 1_500);
+    expect((await row(10_000)).seatPosture?.kind).toBe("needs_input");
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" }, 30_000);
+    expect((await row(31_000)).seatPosture?.kind).toBe("busy");
+  });
+
+  it("an end with no call id (a seat on the relay from before workspaces-o9o.4, until relaunch) keeps the old rule: any AskUserQuestion end clears", async () => {
+    const { fire, fireViaRelay, row } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    fire("PermissionRequest", "AskUserQuestion", MIN);
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "Read" }, MIN + 30_000);
+    expect((await row(MIN + 31_000)).seatPosture?.kind).toBe("needs_input");
+    fireViaRelay({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" }, MIN + 40_000);
+    expect((await row(MIN + 41_000)).seatPosture?.kind).toBe("busy");
   });
 
   it("a permission prompt (it names no tool): a tool end stamped within 2 s of it does not clear it; one well after it does", async () => {

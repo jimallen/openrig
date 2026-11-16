@@ -66,9 +66,9 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   // agent_type; the main agent's carry neither). Its PostToolUse must not tell the daemon the seat moved on. Its PreToolUse
   // (relayed since workspaces-o9o.4) would name a call the main turn never closes: the main agent's own Agent call is the open one.
   if ((hookEvent === "PreToolUse" || hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") && firstString(providerPayload.agent_id)) return null;
-  // OF-278: an AskUserQuestion dialog is reported by its PermissionRequest, relayed synchronously milliseconds after this async start; each
-  // relay stamps its own time, so the start could land newer and read the seat as running a tool instead of waiting on a question.
-  if (hookEvent === "PreToolUse" && firstString(providerPayload.tool_name) === "AskUserQuestion") return null;
+  // OF-278 / workspaces-o9o.4 F3: an AskUserQuestion start IS relayed, with its call id: the daemon ties the question to its own call, so a
+  // late end of an earlier question cannot answer it. The question itself is reported by its PermissionRequest; a start never displaces
+  // it and is never shown as the running tool (agent-activity-store promptClearedBy, openToolCallsIn).
 
   const subtype = firstString(
     providerPayload.subtype,

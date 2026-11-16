@@ -19,10 +19,11 @@ describe("the relay ignores a subagent's tool completions", () => {
     expect(relay.buildOpenRigPayload({ hook_event_name: event, tool_name: "Bash" }, ENV)?.hookEvent).toBe(event);
   });
 
-  // workspaces-o9o.4 / OF-278: the AskUserQuestion dialog is reported by its synchronous PermissionRequest; an async start of the same call,
-  // stamped by its own relay, could land newer and read the seat as running a tool. The relay drops that one start.
-  it("the main agent's PreToolUse of AskUserQuestion is not relayed; its PermissionRequest and PostToolUse are", () => {
-    expect(relay.buildOpenRigPayload({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion" }, ENV)).toBeNull();
+  // workspaces-o9o.4 F3 / OF-278: the AskUserQuestion start is relayed with its call id, so the daemon can tie the question to its own call
+  // (a late end of an earlier question must not answer it). The daemon never lets the start displace the question or name a running tool.
+  it("the main agent's PreToolUse of AskUserQuestion is relayed with its call id, as are its PermissionRequest and PostToolUse", () => {
+    expect(relay.buildOpenRigPayload({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_q" }, ENV))
+      .toMatchObject({ hookEvent: "PreToolUse", subtype: "AskUserQuestion", toolCallId: "toolu_q" });
     expect(relay.buildOpenRigPayload({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion" }, ENV)?.hookEvent).toBe("PermissionRequest");
     expect(relay.buildOpenRigPayload({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" }, ENV)?.hookEvent).toBe("PostToolUse");
     expect(relay.buildOpenRigPayload({ hook_event_name: "PreToolUse", tool_name: "Bash" }, ENV)?.hookEvent).toBe("PreToolUse");
