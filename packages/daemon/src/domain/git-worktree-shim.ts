@@ -26,16 +26,23 @@ const SHIM_BODY = `#!/usr/bin/env bash
 # openrig git worktree placement shim — only 'git worktree add' paths are governed.
 set -euo pipefail
 real_git() {
-  # first git NOT this shim
-  local self; self="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)'"/${SHIM_FILE_NAME}"'"
-  local p; for p in \$(command -v -a git); do
-    if [ "\$(cd "\$(dirname "\$p")" 2>/dev/null && pwd)/git" != "\$self" ]; then
-      printf '%s\n' "\$p"; return 0
+  # The first git on PATH that is not this shim, compared by physical directory so
+  # a symlinked rig-bin is still this shim. 'type -aP' lists every git on PATH
+  # (bash 3.2 and later); bash's 'command' has no -a. No git but this shim: fail
+  # like a plain missing git rather than exec ourselves.
+  local self p
+  self="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd -P)/${SHIM_FILE_NAME}"
+  while IFS= read -r p; do
+    [ -n "\$p" ] || continue
+    if [ "\$(cd "\$(dirname "\$p")" 2>/dev/null && pwd -P)/${SHIM_FILE_NAME}" != "\$self" ]; then
+      printf '%s\\n' "\$p"; return 0
     fi
-  done
-  command -v /usr/bin/git || command -v git
+  done < <(type -aP git || true)
+  printf '%s\\n' "git: command not found (openrig shim: no git on PATH other than \$self)" >&2
+  return 127
 }
-if [ "\$#" -ge 1 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
+real="\$(real_git)" || exit \$?
+if [ "\$#" -ge 2 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
   # parse: git worktree add [-f] [-b branch] <path> [commit-ish]
   args=(); i=2
   while [ \$i -lt \$# ]; do
@@ -46,16 +53,16 @@ if [ "\$#" -ge 1 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
       *) args+=("\$a"); i=\$((i+1)) ;;
     esac
   done
-  target="\${args[0]}"
-  toplevel="\$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  if [ -z "\$toplevel" ]; then exec "\$(real_git)" "\$@"; fi
+  target="\${args[0]:-}"
+  toplevel="\$("\$real" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "\$toplevel" ]; then exec "\$real" "\$@"; fi
   if [ -n "\$target" ] && [[ "\$target" != "\$toplevel/.rig-worktrees"/* ]]; then
     args[0]="\$toplevel/.rig-worktrees/\$(basename "\$target")"
     mkdir -p "\$toplevel/.rig-worktrees"
-    exec "\$(real_git)" worktree add "\${args[@]}"
+    exec "\$real" worktree add "\${args[@]}"
   fi
 fi
-exec "\$(real_git)" "\$@"
+exec "\$real" "\$@"
 `;
 
 export function shimPath(openrigHome: string): string {
