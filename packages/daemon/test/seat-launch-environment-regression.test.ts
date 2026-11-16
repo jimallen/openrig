@@ -23,10 +23,11 @@ function fixture(cliOverride?: string) {
   }
   const env = { PATH: `${shared}:/usr/bin:/bin`, OPENRIG_HOME: path.join(root, "instance"), OPENRIG_URL: "http://127.0.0.1:7433", HOME: root };
   const identity: Record<string, string> = { OPENRIG_NODE_ID: "node", OPENRIG_SESSION_NAME: "seat@rig", OPENRIG_RUNTIME: "claude-code", OPENRIG_OCCUPANT_GENERATION: "generation" };
-  const tmux = { getSessionEnv: vi.fn(async (_s: string, key: string) => identity[key]), getPaneCommand: vi.fn(async () => "bash"), sendShellCommand: vi.fn(async (_session: string, _command: string) => ({ ok: true })) };
+  const tmux = { getSessionEnv: vi.fn(async (_s: string, key: string) => identity[key]), getPaneCommand: vi.fn(async (): Promise<string | null> => "bash"), sendShellCommand: vi.fn(async (_session: string, _command: string) => ({ ok: true })) };
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   // Fourth argument injects only a fake installed CLI path; production derives its paired CLI.
-  const launch = new (SeatLaunchEnvironment as any)(tmux, env, root, cliOverride ?? cli) as SeatLaunchEnvironment;
+  // A short foreground wait keeps the unknown-foreground rows fast; production waits up to 3 s.
+  const launch = new (SeatLaunchEnvironment as any)(tmux, env, root, cliOverride ?? cli, undefined, { timeoutMs: 300, pollMs: 20 }) as SeatLaunchEnvironment;
   const run = (command: string) => exec("/bin/bash", ["--noprofile", "--norc", "-c", command], { cwd, env: { ...env, PATH: `${user}:/usr/bin:/bin` }, timeout: 5000 });
   return { root, shared, user, runtime, cwd, cli, env, identity, tmux, warn, launch, run, exe };
 }
@@ -203,4 +204,29 @@ it.each([
   expect(args.filter(a => a.startsWith("allow_login_shell"))).toEqual(["allow_login_shell=false"]);
   expect(operationalLaunchArgs("claude-code", choice).join(" ")).not.toContain("allow_login_shell");
   expect(operationalLaunchArgs("pi", choice).join(" ")).not.toContain("allow_login_shell");
+});
+
+// Measured in a scratch daemon on Sparky (hc, the real login zsh): the Pi launch fell back with `pi_pane_shell: none`. A fresh hc terminal
+// reports no foreground process for its first ~0.5 s (a private-core probe read null, then zsh, 3 runs of 3), and the launch read it inside
+// that window. The fix waits for the foreground to be known; the gate itself is unchanged.
+it("H: a Pi launch whose pane foreground is not known yet waits for it, then applies the same POSIX-shell gate", async () => {
+  const f = fixture();
+  f.tmux.getPaneCommand.mockResolvedValueOnce(null).mockResolvedValueOnce("").mockResolvedValue("zsh");
+  const command = await f.launch.command("seat@rig", "/bin/sh -c 'command -v rig'", { runtime: "pi" });
+  expect(f.warn).not.toHaveBeenCalled();
+  expect(readlinkSync((await f.run(command)).stdout.trim())).toBe(realpathSync(f.cli));
+  expect(f.tmux.getPaneCommand).toHaveBeenCalledTimes(3);
+});
+it("H: a foreground that never becomes known still falls back, after a bounded wait, naming it", async () => {
+  const f = fixture(); f.tmux.getPaneCommand.mockResolvedValue(null);
+  const started = Date.now();
+  expect(await f.launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" })).toBe("node '/runner.js'");
+  expect(Date.now() - started).toBeLessThan(2000);
+  expect(String(f.warn.mock.calls[0]![0])).toContain("(pi_pane_shell: none)");
+  expect(f.tmux.getPaneCommand.mock.calls.length).toBeGreaterThan(1);
+});
+it("H: a known non-POSIX foreground is refused at once, without waiting", async () => {
+  const f = fixture(); f.tmux.getPaneCommand.mockResolvedValue("fish");
+  expect(await f.launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" })).toBe("node '/runner.js'");
+  expect(f.tmux.getPaneCommand).toHaveBeenCalledTimes(1);
 });

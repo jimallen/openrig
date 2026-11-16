@@ -84,7 +84,21 @@ export class SeatLaunchEnvironment {
     private readonly sessionEnv: Readonly<Record<string, string | undefined>>,
     private readonly daemonCwd: string,
     private readonly cliPath?: string,
-    private readonly codexHome?: string) {}
+    private readonly codexHome?: string,
+    /** How long to wait for a fresh pane's foreground process to be known (see foreground()). */
+    private readonly foregroundWait: { timeoutMs: number; pollMs: number } = { timeoutMs: 3000, pollMs: 100 }) {}
+
+  /** The pane's foreground process name. A fresh hc terminal reports none for its first ~0.5 s, while its login shell starts (measured on
+   *  Sparky: null, then zsh), and a launch typed at once read that gap as "no shell" and fell back. Waits, bounded, until a name is known;
+   *  a known name is returned at once, whatever it is, so the gate below judges it unchanged. */
+  private async foreground(session: string): Promise<string> {
+    const deadline = Date.now() + this.foregroundWait.timeoutMs;
+    for (;;) {
+      const name = path.basename(await this.tmux.getPaneCommand(session) ?? "").replace(/^-/, "");
+      if (name !== "" || Date.now() >= deadline) return name;
+      await new Promise(resolve => setTimeout(resolve, this.foregroundWait.pollMs));
+    }
+  }
 
   private rigBin(): string {
     const cli = realpathSync(this.cliPath ?? pairedCli());
@@ -119,8 +133,7 @@ export class SeatLaunchEnvironment {
     let step = "pane_read_failed";
     try {
       // Nushell does not expand "$PATH". Keep its pre-existing literal command.
-      const foreground = await this.tmux.getPaneCommand(session);
-      const shell = path.basename(foreground ?? "").replace(/^-/, "");
+      const shell = await this.foreground(session);
       if (shell === "nu" || shell === "nu.exe") throw new LaunchCorrectionUnavailable("non_posix_pane");
       // Pi keeps its existing command on shells where this PATH expression is not supported.
       if (target.runtime === "pi" && !["bash", "zsh", "sh", "dash", "ksh"].includes(shell)) {
