@@ -64,7 +64,7 @@ export interface SpawnDaemonEntrypointOptions {
  *  inside vitest had already been scrubbed (test/hermetic-env.setup.ts) but from a standalone tsx caller carried the seat's
  *  XDG_RUNTIME_DIR, and the test daemons joined the LIVE hc core (incident 2026-11-16 ~20:50Z). An allow-list, not a scrub: a name a
  *  later release starts reading is withheld until someone adds it here. */
-export const TEST_DAEMON_INHERITED_ENV: readonly string[] = ["PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "USER", "LOGNAME"];
+export const TEST_DAEMON_INHERITED_ENV: readonly string[] = ["PATH", "TERM", "LANG", "LANGUAGE", "TZ", "TMPDIR", "USER", "LOGNAME"];
 /** Locale names (LC_ALL, LC_CTYPE, ...) are inherited by prefix. */
 const INHERITED_ENV_PREFIX = "LC_";
 
@@ -106,6 +106,13 @@ function canonicalSocketUnder(socket: string, home: string): boolean {
   return true;
 }
 
+/** The allow-listed names of `parent` (TEST_DAEMON_INHERITED_ENV and LC_*), and nothing else. Shared by every test helper that
+ *  starts a daemon, CLI or seat from a caller's env (testDaemonEnv here; prepareHermeticEnv's scaffold, workspaces-o9o.66). */
+export function inheritedTestEnv(parent: Record<string, string | undefined>): Record<string, string | undefined> {
+  return Object.fromEntries(Object.entries(parent).filter(([name]) =>
+    TEST_DAEMON_INHERITED_ENV.includes(name) || name.startsWith(INHERITED_ENV_PREFIX)));
+}
+
 export function testDaemonEnv(
   opts: Pick<SpawnDaemonEntrypointOptions, "home" | "env" | "privateHcSocket">, port: number, parent: NodeJS.ProcessEnv = process.env,
 ): Record<string, string | undefined> {
@@ -117,8 +124,7 @@ export function testDaemonEnv(
   if (opts.privateHcSocket !== undefined && !canonicalSocketUnder(opts.privateHcSocket, opts.home)) {
     throw new Error(`spawnDaemonEntrypoint: privateHcSocket ${opts.privateHcSocket} is not under the test home ${opts.home} (it must be a canonical path, no link, inside the home's real path)`);
   }
-  const inherited = Object.fromEntries(Object.entries(parent).filter(([name]) =>
-    TEST_DAEMON_INHERITED_ENV.includes(name) || name.startsWith(INHERITED_ENV_PREFIX)));
+  const inherited = inheritedTestEnv(parent);
   const userHome = path.join(opts.home, "user-home");
   return {
     ...inherited,

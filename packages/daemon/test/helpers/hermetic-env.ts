@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { startHcScratch, type HcScratch } from "./hc-scratch.js";
+import { inheritedTestEnv } from "./daemon-entrypoint.js";
 import { hasProcFs, reapWhenOwnerDies, stopOwnedTmuxServerSync } from "./orphan-reaper.js";
 
 /**
@@ -245,13 +246,6 @@ export function assertNoAmbientTmux(env: EnvLike = process.env): void {
   }
 }
 
-/**
- * Credential vars scrubbed from the child env alongside the daemon-target vars.
- * Not fail-closed triggers on their own (they carry no target address), but they
- * must never bleed into a scenario-local daemon's environment.
- */
-const CREDENTIAL_ENV_VARS = ["OPENRIG_AUTH_BEARER_TOKEN", "RIGGED_AUTH_BEARER_TOKEN"] as const;
-
 /** A per-run hermetic scaffold: scratch dirs + a clean child-process env + teardown. */
 export interface HermeticScaffold {
   /** The scaffold root (a fresh temp dir); everything lives INSIDE it. */
@@ -314,6 +308,13 @@ export interface PrepareHermeticEnvOptions {
    * way the var is set — a pre-existing one in baseEnv is refused as a leak.
    */
   injectClockNow?: string;
+  /**
+   * workspaces-o9o.66: names handed to the scenario's daemon, CLI, TUI and seats ON PURPOSE (a configuration a test checks reaches
+   * a seat, the real-Codex opt-in's CODEX_HOME). The base env gives only its allow-listed names; these are added after them, and
+   * the scaffold's own scratch paths still win. Refused like the base env when they name a daemon target, a tmux attachment or a
+   * clock.
+   */
+  childEnv?: Record<string, string | undefined>;
 }
 
 /**
@@ -341,6 +342,11 @@ export function prepareHermeticEnv(opts: PrepareHermeticEnvOptions = {}): Hermet
   // D5: an inherited tmux ATTACHMENT would put real scenario seats on the
   // operator's server. Refuse before any filesystem effect, like the others.
   assertNoAmbientTmux(baseEnv);
+  if (opts.childEnv) {
+    assertNoForeignDaemon(opts.childEnv);
+    assertNoAmbientClock(opts.childEnv);
+    assertNoAmbientTmux(opts.childEnv);
+  }
 
   const root = mkdtempSync(join(tmpdir(), "openrig-scenario-"));
   const home = join(root, "home");
@@ -381,19 +387,13 @@ process.exit(result.status ?? 1);
     { mode: 0o755 },
   ));
 
-  // Clean child env: copy, scrub every redirect/credential var, then set scratch paths.
-  const env: Record<string, string | undefined> = { ...baseEnv };
-  for (const name of DAEMON_TARGET_ENV_VARS) delete env[name];
-  for (const name of CREDENTIAL_ENV_VARS) delete env[name];
-  // Scrub any injected-clock var (defense in depth behind the fail-closed guard) so
-  // only an explicit injectClockNow can set it below — never an inherited value.
-  for (const name of TEST_CLOCK_ENV_VARS) delete env[name];
-  // Every `HC_`-prefixed name selects a core or acts as a terminal of one (a positional predicate, not a list: a selector a
-  // later hc release adds is covered too). The scaffold's own selectors are set by `startHcCore()`, never inherited.
-  for (const name of Object.keys(env)) if (name.startsWith("HC_")) delete env[name];
-  // hc finds its socket under XDG_RUNTIME_DIR before any state dir, so an inherited one would send a scaffold with no private
-  // core of its own to the host's `default` core. Without it the socket falls under the scaffold's own XDG_STATE_HOME.
-  delete env.XDG_RUNTIME_DIR;
+  // Clean child env (workspaces-o9o.66): the allow-listed names of the base (PATH, TERM, locale, TZ, TMPDIR, USER, LOGNAME:
+  // daemon-entrypoint.ts inheritedTestEnv), then the scratch paths below. It was a copy with a deny-list removed (the daemon
+  // target, credentials, the clock, HC_*, XDG_RUNTIME_DIR), which let every other name a seat carries through: where its
+  // transcripts are written, its shared-docs tree, database, skills and workspace roots, CODEX_HOME, CLAUDE_CONFIG_DIR. Those
+  // and a selector a later release adds are now withheld by construction. The refusals above still fail closed first; the
+  // scaffold's own hc selectors come from `startHcCore()` and its clock only from injectClockNow.
+  const env: Record<string, string | undefined> = { ...inheritedTestEnv(baseEnv), ...opts.childEnv };
   env.HOME = home;
   // Host-neutral shell: a login shell of zsh with no startup files in the scratch HOME runs
   // the zsh-newuser-install wizard, which eats the first keystroke typed into a seat pane

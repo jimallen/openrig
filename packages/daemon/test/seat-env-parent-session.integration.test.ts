@@ -48,8 +48,11 @@ describe.skipIf(!findHc())("seat environment from a daemon started inside Claude
   });
 
   it("seats receive none of the parent session's identity variables, and configuration passes through unchanged", async () => {
+    // The parent identity and the configuration are handed to the daemon on purpose (childEnv): the scaffold's base env passes
+    // only its allow-list (workspaces-o9o.66), and this test is about what the DAEMON does with them.
     const scaffold = prepareHermeticEnv({
-      baseEnv: { HOME: process.env.HOME, PATH: process.env.PATH, TERM: "xterm", ...PARENT_SESSION, ...CONFIGURATION },
+      baseEnv: { HOME: process.env.HOME, PATH: process.env.PATH, TERM: "xterm" },
+      childEnv: { ...PARENT_SESSION, ...CONFIGURATION },
     });
     scaffolds.push(scaffold);
     const scratch = startHcScratch();
