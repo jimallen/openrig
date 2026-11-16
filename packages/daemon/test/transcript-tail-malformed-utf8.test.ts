@@ -20,7 +20,9 @@ it.each(["é", "界", "🙂"])("preserves a valid %s character split across the 
   root = mkdtempSync(join(tmpdir(), "openrig-tail-valid-"));
   const store = new TranscriptStore({ transcriptsRoot: root });
   store.ensureTranscriptDir("fixture");
-  const suffix = "x".repeat(16 * 1024 - 1);
+  // 16 KiB - 1 single-byte characters on one line. Hyphen-broken, so the tail's redaction (workspaces-o9o.47: its
+  // 40+ character run rule) leaves the line as written and the assertion stays about the multibyte boundary.
+  const suffix = ("abc-".repeat(4096)).slice(0, 16 * 1024 - 1);
   writeFileSync(store.getTranscriptPath("fixture", "dev@fixture"), character + suffix);
   expect(store.readTail("fixture", "dev@fixture", 50)).toBe(character + suffix + "\n");
 });

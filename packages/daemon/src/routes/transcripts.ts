@@ -6,7 +6,6 @@ import type { TranscriptIngestHealth, TranscriptStore } from "../domain/transcri
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { startTmuxTranscriptCapture } from "../domain/transcript-capture.js";
 import { isTerminalAttachment } from "../domain/binding-pane.js";
-import { redactTranscriptContent } from "../domain/transcript-redaction.js";
 
 interface SessionRow {
   node_id: string;
@@ -269,11 +268,9 @@ export function transcriptRoutes(): Hono {
       return c.json({ error: transcriptIngestError(sessionName, emptyHealth), ingestHealth: emptyHealth }, 503);
     }
 
-    // Apply route-level redaction BEFORE serialization. Per Quality Lesson
-    // v9 + orch decision approved-option-a: the wire payload MUST be
-    // already redacted; do NOT rely on client-side redaction.
-    const content = redactTranscriptContent(raw);
-    return c.json({ session: sessionName, content, ingestHealth });
+    // The wire payload is already redacted (Quality Lesson v9 + orch decision approved-option-a): every TranscriptStore
+    // read redacts (workspaces-o9o.47), so this route, /tail and /grep share that one site. Never rely on the client.
+    return c.json({ session: sessionName, content: raw, ingestHealth });
   });
 
   return router;

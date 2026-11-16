@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { redactTranscriptContent } from "./transcript-redaction.js";
 
 export type ExecDep = (cmd: string, args: string[]) => Promise<{ stdout: string; exitCode: number }>;
 
@@ -89,6 +90,16 @@ function escapeRegex(s: string): string {
 }
 
 /** A JSONL event line can be huge; cap what we echo so a hit stays readable. */
+/**
+ * workspaces-o9o.47: the evidence a search returns. Each line is redacted with the shared transcript policy, and only
+ * lines the question still matches AFTER redaction are kept: rg/grep match the raw files, so a keyword that only a
+ * secret's raw bytes contain (a probe like the first characters of a key) would otherwise confirm the secret.
+ */
+function redactedEvidence(lines: string[], keywords: string[]): string[] {
+  const matcher = new RegExp(keywords.join("|"), "i");
+  return lines.map(redactTranscriptContent).filter((line) => matcher.test(line));
+}
+
 function truncateExcerpt(line: string, max = 240): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
@@ -226,13 +237,13 @@ export class HistoryQuery {
 
     const rg = await this.exec("rg", ["-i", "--no-filename", "-e", pattern, filePath]);
     if (rg.exitCode === 0 || rg.exitCode === 1) {
-      const excerpts = this.parseExcerpts(rg.stdout).map((e) => truncateExcerpt(e));
+      const excerpts = redactedEvidence(this.parseExcerpts(rg.stdout), keywords).map((e) => truncateExcerpt(e));
       return { backend: "rg", token: sessionToken, found: true, path: filePath, sizeBytes, excerpts, insufficient: excerpts.length === 0, advisory };
     }
 
     const grep = await this.exec("grep", ["-E", "-i", "-h", "-e", pattern, filePath]);
     if (grep.exitCode === 0 || grep.exitCode === 1) {
-      const excerpts = this.parseExcerpts(grep.stdout).map((e) => truncateExcerpt(e));
+      const excerpts = redactedEvidence(this.parseExcerpts(grep.stdout), keywords).map((e) => truncateExcerpt(e));
       return { backend: "grep", token: sessionToken, found: true, path: filePath, sizeBytes, excerpts, insufficient: excerpts.length === 0, advisory };
     }
 
@@ -267,7 +278,7 @@ export class HistoryQuery {
     const rgResult = await this.exec("rg", ["-i", "--no-filename", "-e", pattern, rigDir]);
 
     if (rgResult.exitCode === 0 || rgResult.exitCode === 1) {
-      const excerpts = this.parseExcerpts(rgResult.stdout);
+      const excerpts = redactedEvidence(this.parseExcerpts(rgResult.stdout), keywords);
       // exit 0 = matches found, exit 1 = no matches → insufficient
       return { backend: "rg", excerpts, insufficient: excerpts.length === 0 };
     }
@@ -282,7 +293,7 @@ export class HistoryQuery {
     const grepResult = await this.exec("grep", ["-E", "-i", "-h", "-e", pattern, ...logFiles]);
 
     if (grepResult.exitCode === 0 || grepResult.exitCode === 1) {
-      const excerpts = this.parseExcerpts(grepResult.stdout);
+      const excerpts = redactedEvidence(this.parseExcerpts(grepResult.stdout), keywords);
       return { backend: "grep", excerpts, insufficient: excerpts.length === 0 };
     }
 
@@ -355,7 +366,8 @@ export class HistoryQuery {
         generation += 1;
         continue;
       }
-      const line = stripAnsi(raw).trim();
+      // workspaces-o9o.47: matched and returned redacted, so a hit never carries, or confirms, a secret.
+      const line = redactTranscriptContent(stripAnsi(raw).trim());
       if (line === "") continue;
       sawConversation = true;
       if (pattern && pattern.test(line)) hits.push({ generation, text: line });

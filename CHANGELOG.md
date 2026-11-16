@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Transcript text is redacted on every read route, and searches match the redacted text
+
+- Symptom: `GET /api/transcripts/<session>/tail` and `/grep` returned a seat's transcript as stored, so a key or token a seat printed reached `rig transcript`, the UI's transcript panel (which opens on tail) and any API caller. Only `/full` redacted. `POST /api/ask` (`rig ask`) returned rig, seat and session excerpts unredacted too.
+- Now every transcript read (tail, grep, full) is redacted with the shared transcript policy (`redactTranscriptContent`) where the daemon reads it, and so is every `rig ask` excerpt and seat hit. `/grep` tests its pattern against the redacted lines, and `rig ask` keeps an excerpt only if the question still matches it once redacted, so a pattern or keyword that only a secret's raw characters satisfy finds nothing. A caller cannot recover a secret by probing it a few characters at a time.
+- Not changed: `GET /api/sessions/<name>/generation-record`, which serves a seat's native Claude or Codex record byte for byte to `rig walk` behind terminal auth; redacting it would break its byte offsets (tracked as workspaces-o9o.60). Chat-message excerpts in `rig ask` are messages, not transcripts.
 ### A stray plugin folder no longer stops the daemon (workspaces-o9o.44)
 
 - Symptom: on 2026-11-16 an operator's backup copy, `~/.openrig/plugins/openrig-core.bak-20261021-stale`, sat beside the real `openrig-core`. Its hooks duplicated the real ones, the daemon threw "Duplicate hook registration" while starting, and systemd restarted it 55 times in about 11 minutes. Every seat's `rig` CLI was down until the folder was moved out by hand.

@@ -1,3 +1,4 @@
+import { redactTranscriptContent } from "./transcript-redaction.js";
 import { mkdirSync, appendFileSync, existsSync, openSync, readSync, closeSync, statSync, fstatSync, readFileSync } from "node:fs";
 import { join, dirname, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -331,7 +332,8 @@ export class TranscriptStore {
 
         const cleanedTail = this.cleanupTailLines(rawTail, lines);
         if (cleanedTail.length >= lines || rawMultiplier >= MAX_MULTIPLIER) {
-          const finalTail = cleanedTail.slice(-lines);
+          // workspaces-o9o.47: transcript text leaves the store redacted (redactTranscriptContent), line by line.
+          const finalTail = cleanedTail.slice(-lines).map(redactTranscriptContent);
           return finalTail.length > 0 ? finalTail.join("\n") + "\n" : "";
         }
 
@@ -364,24 +366,24 @@ export class TranscriptStore {
   }
 
   /**
-   * Read the entire transcript file as a single string. Returns the raw
-   * file contents (callers handle ANSI/cleanup as needed for their use
-   * case). Returns null if the file is missing OR any I/O error occurs.
-   * Returns "" for an existing-but-empty file.
+   * Read the entire transcript file as a single string, redacted with the
+   * shared transcript policy (`redactTranscriptContent`) and otherwise as
+   * stored: no ANSI or terminal cleanup, which the caller handles for its use.
+   * Returns null if the file is missing OR any I/O error occurs. Returns ""
+   * for an existing-but-empty file.
    *
    * Used by GET /api/transcripts/:session/full (M2c-Daemon). Unlike
    * `readTail`, this does not apply terminal-cleanup heuristics — the
    * route's caller (e.g., the restore-packet generator) needs the
-   * unfiltered content the runtime emitted. Route-level redaction is
-   * applied at the route layer via `redactTranscriptContent` BEFORE
-   * serialization (per orch decision approved-option-a:
-   * open-route-with-redaction-as-protective-primitive).
+   * unfiltered content the runtime emitted. workspaces-o9o.47: every read
+   * here (readTail, readFull, grep) redacts, so no route can serve
+   * transcript text unredacted by forgetting to; the store has no raw read.
    */
   readFull(rigName: string, sessionName: string): string | null {
     try {
       const filePath = this.getTranscriptPath(rigName, sessionName);
       if (!existsSync(filePath)) return null;
-      return readFileSync(filePath, "utf-8");
+      return redactTranscriptContent(readFileSync(filePath, "utf-8"));
     } catch {
       return null;
     }
@@ -418,7 +420,7 @@ export class TranscriptStore {
         for (const rawLine of lines) {
           const stripped = this.stripAnsi(rawLine);
           for (const subLine of stripped.split("\n")) {
-            const cleaned = stripShellPromptPrefix(subLine);
+            const cleaned = redactTranscriptContent(stripShellPromptPrefix(subLine));
             if (cleaned && regex.test(cleaned)) {
               matches.push(cleaned);
             }
@@ -431,7 +433,7 @@ export class TranscriptStore {
       if (finalChunk) {
         const stripped = this.stripAnsi(finalChunk);
         for (const subLine of stripped.split("\n")) {
-          const cleaned = stripShellPromptPrefix(subLine);
+          const cleaned = redactTranscriptContent(stripShellPromptPrefix(subLine));
           if (cleaned && regex.test(cleaned)) {
             matches.push(cleaned);
           }
