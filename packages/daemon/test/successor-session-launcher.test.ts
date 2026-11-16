@@ -457,6 +457,14 @@ describe("SuccessorSessionLauncher", () => {
     expect(res.message).not.toContain(token);
   });
 
+  it("an attention gate keeps its own reason and quotes no pane (workspaces-o9o.3)", async () => {
+    checkReady.mockResolvedValue({ ready: false, reason: "Codex is waiting for workspace trust approval.", code: "trust_gate" });
+    capturePaneContent.mockResolvedValue("Do you trust the files in this folder? [Y/n]\n");
+    const res = await launcher().createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "a@r" });
+    expect(res).toMatchObject({ ok: false, step: "start_agent", code: "successor_attention_required",
+      message: "Successor did not become a ready agent: Codex is waiting for workspace trust approval." });
+  });
+
   describe("readiness deadline", () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ["Date"] });
