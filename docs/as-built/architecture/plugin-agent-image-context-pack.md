@@ -211,10 +211,22 @@ and profile references. These references describe authored specs, not proof of a
 harness loading a plugin.
 
 The service constructor is not read-only: it retires obsolete refocus hook registrations
-from the older bundled plugin and rejects duplicate vendored hook registrations across
-providers. Cached plugin versions are excluded from that duplicate-provider check. Startup
-constructs the service while building the daemon's dependencies and doesn't catch that
-rejection, so a duplicate vendored hook stops daemon creation.
+from the older bundled plugin. A folder it cannot write is reported and left as it is.
+Startup builds the service while it builds the daemon's dependencies, so nothing the
+constructor finds in the plugins folder may throw (workspaces-o9o.44: one backup copy of
+openrig-core crash-looped Sparky's daemon 55 times).
+
+When two vendored folders register the same hook, `findIgnoredVendoredPlugins()` keeps one
+and ignores the other, whole. A folder whose manifest names the folder (`openrig-core/`
+declaring `openrig-core`) is kept before a copy that does not (`openrig-core.bak-.../`);
+after that, folder order decides. The constructor logs each ignored folder, the hook the
+two share, and the folder kept. `listPlugins()` leaves ignored folders out. Nothing is
+moved or deleted. Cached plugin versions are not considered. `rig doctor` reports the same
+folders through the `@openrig/daemon/vendored-plugin-conflicts` surface (check
+`vendored_plugins`), reading the folder from disk, so it answers while the daemon is down.
+Seats load a vendored plugin only through a spec's `source.path`
+(`openrig-home:plugins/openrig-core`), never by scanning the folder, so an ignored copy is
+never loaded by a seat.
 
 `packages/daemon/src/routes/plugins.ts` exposes GET-only inspection at `/api/plugins`:
 list, detail, used-by and file list/read. The file routes use the discovered plugin root as

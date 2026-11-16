@@ -10,6 +10,8 @@ import { buildWritableHomeCheck } from "../system-preflight.js";
 import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, readHcHello, type HcHelloOutcome } from "../tmux-health.js";
 import { parse as parseYaml } from "yaml";
 import { compareSpecToLive, topologyFromRigSpec, topologyFromLiveLogicalIds } from "@openrig/daemon/spec-conformance";
+import { findIgnoredVendoredPlugins } from "@openrig/daemon/vendored-plugin-conflicts";
+import { getDefaultOpenRigPath } from "../openrig-compat.js";
 import { classifyNodeVersion } from "../node-support.js";
 import { checkProviderReadiness } from "../provider-auth.js";
 
@@ -47,6 +49,8 @@ export interface DoctorDeps {
   fetchLiveLogicalIds?: (rigName: string) => Promise<string[] | null>;
   /** One `hello` to the hc core's socket (default: the real socket). Never starts a core. */
   readHcHello?: () => Promise<HcHelloOutcome>;
+  /** The daemon's vendored plugins folder (default: OPENRIG_HOME/plugins). */
+  pluginsDir?: string;
 }
 
 const DEFAULT_PORT = 7433;
@@ -150,6 +154,9 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
     fix: writableCheck.fix,
   });
 
+  // 6b. Vendored plugin folders the daemon ignores (workspaces-o9o.44). Read from disk, so it answers while the daemon is down.
+  checks.push(buildVendoredPluginsCheck(deps.pluginsDir ?? getDefaultOpenRigPath("plugins")));
+
   // 7. Port availability (async) — daemon already running on that port counts as OK.
   // OPR.0.4.7 slice-05 item-4b: resolve the daemon host+port ONCE from config and use
   // BOTH for checkPort, healthz, and messages (a daemon on a non-default
@@ -201,6 +208,24 @@ async function buildHcCoreCheck(deps: DoctorDeps): Promise<DoctorCheck> {
   }
   const failure = buildHcHostFailure(core.code, core.detail ?? "unknown hc core failure");
   return { name: "hc_core", status: "fail", message: failure.message, reason: failure.reason, fix: failure.fix };
+}
+
+/**
+ * workspaces-o9o.44 — a second folder in the plugins folder that registers a hook another folder already provides (an
+ * operator's backup copy of openrig-core, say) once crash-looped the daemon. The daemon now ignores it and starts; this
+ * check names the same folders, by the same rule, so the person can move them out. Nothing is moved or deleted here.
+ */
+function buildVendoredPluginsCheck(pluginsDir: string): DoctorCheck {
+  const name = "vendored_plugins";
+  const ignored = findIgnoredVendoredPlugins(pluginsDir);
+  if (ignored.length === 0) return { name, status: "pass", message: `No duplicate plugin folders in ${pluginsDir}.` };
+  return {
+    name,
+    status: "warn",
+    message: ignored.map((i) => `${i.path} is ignored (${i.keptPath} is used): ${i.reason}.`).join(" "),
+    reason: "Two folders in the plugins folder register the same hook. The daemon keeps one and ignores the other; it never moves or deletes either.",
+    fix: `Move ${ignored.map((i) => i.path).join(", ")} out of ${pluginsDir}.`,
+  };
 }
 
 /**

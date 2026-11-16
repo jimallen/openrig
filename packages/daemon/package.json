@@ -42,6 +42,10 @@
       "types": "./dist/spec-conformance-surface.d.ts",
       "import": "./dist/spec-conformance-surface.js"
     },
+    "./vendored-plugin-conflicts": {
+      "types": "./dist/vendored-plugin-conflicts-surface.d.ts",
+      "import": "./dist/vendored-plugin-conflicts-surface.js"
+    },
     "./seat-recap-store": {
       "types": "./dist/seat-recap-store-surface.d.ts",
       "import": "./dist/seat-recap-store-surface.js"

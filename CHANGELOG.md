@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A stray plugin folder no longer stops the daemon (workspaces-o9o.44)
+
+- Symptom: on 2026-11-16 an operator's backup copy, `~/.openrig/plugins/openrig-core.bak-20261021-stale`, sat beside the real `openrig-core`. Its hooks duplicated the real ones, the daemon threw "Duplicate hook registration" while starting, and systemd restarted it 55 times in about 11 minutes. Every seat's `rig` CLI was down until the folder was moved out by hand.
+- Now the daemon starts. Of two folders that register the same hook, it keeps the one whose manifest names the folder (`openrig-core/`), then the first in folder order, and ignores the other. The log names the ignored folder, the shared hook and the folder kept. `/api/plugins` leaves the ignored folder out. Nothing is moved or deleted.
+- `rig doctor` has a new `vendored_plugins` check that warns with the same folders and says to move them out. It reads the folder from disk, so it works while the daemon is down.
+- A read-only `openrig-lab` folder whose obsolete refocus hook can't be retired is reported and ignored too, instead of stopping the daemon.
+- Changed contract: two different plugins that register the same hook no longer fail daemon start; the later one is ignored and reported.
 ### A busy host's process table no longer blinds liveness, identity and delivery checks (workspaces-o9o.67)
 
 - Symptom: during a process spike on Sparky (2026-11-16) `ps` printed 85,038 lines, 17.4 MB. Both full-table process listers had an 8 MiB output buffer, so both failed outright: one returned no processes and the other rejected, and every liveness, identity and delivery check lost every row at once, with nothing in the log.

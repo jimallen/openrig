@@ -177,6 +177,18 @@ export interface PluginDiscoveryServiceOpts {
    * enumeration from running-rig state.
    */
   cwdScanRoots?: string[];
+  /** Where a plugin folder the service ignores is reported (default: console.warn). */
+  warn?: (message: string) => void;
+}
+
+/** A folder in the vendored plugins dir that is not loaded, because another folder already provides its hooks. */
+export interface IgnoredVendoredPlugin {
+  /** The ignored folder. */
+  path: string;
+  /** The folder kept instead. */
+  keptPath: string;
+  /** Which hook the two share, and in which files. */
+  reason: string;
 }
 
 export interface ListPluginsOpts {
@@ -200,20 +212,36 @@ const OBSOLETE_LAB_PLUGIN_ID = "openrig-lab";
 export class PluginDiscoveryService {
   private readonly opts: PluginDiscoveryServiceOpts;
 
+  /**
+   * Built while the daemon starts, so nothing here may throw on what sits in the plugins folder: one stray folder
+   * (an operator's backup copy of openrig-core, say) once crash-looped the daemon (workspaces-o9o.44). A folder whose
+   * hooks another folder already provides is ignored and reported, never moved or deleted.
+   */
   constructor(opts: PluginDiscoveryServiceOpts) {
     this.opts = opts;
     this.retireObsoleteLabRefocusHooks();
-    this.assertNoDuplicateVendoredHooks();
+    const dir = this.opts.openrigPluginsDir;
+    for (const ignored of findIgnoredVendoredPlugins(dir)) {
+      this.warn(
+        `[openrig] plugin folder ${ignored.path} ignored: ${ignored.reason}. ${ignored.keptPath} is used instead. `
+        + `Nothing was moved or deleted; move ${ignored.path} out of ${dir} to clear this.`,
+      );
+    }
+  }
+
+  private warn(message: string): void {
+    (this.opts.warn ?? console.warn)(message);
   }
 
   listPlugins(filterOpts: ListPluginsOpts = {}): PluginEntry[] {
     const out: PluginEntry[] = [];
 
-    // 1. Vendored OpenRig plugins.
+    // 1. Vendored OpenRig plugins, less any folder whose hooks another folder already provides.
     if (existsSync(this.opts.openrigPluginsDir)) {
+      const ignored = new Set(findIgnoredVendoredPlugins(this.opts.openrigPluginsDir).map((i) => i.path));
       for (const entry of safeReaddir(this.opts.openrigPluginsDir)) {
         const pluginPath = join(this.opts.openrigPluginsDir, entry);
-        if (!isDir(pluginPath)) continue;
+        if (!isDir(pluginPath) || ignored.has(pluginPath)) continue;
         const detected = this.detectPlugin(pluginPath, "vendored", entry);
         if (detected) out.push(detected);
       }
@@ -421,47 +449,16 @@ export class PluginDiscoveryService {
       const registry = readJsonObject(hooksPath);
       if (!registry || !removeObsoleteLabRefocusCommands(registry)) continue;
 
-      writeJsonAtomically(hooksPath, registry);
-      if (!hasHookRegistrations(registry)) {
-        delete manifest.raw["hooks"];
-        writeJsonAtomically(manifestPath, manifest.raw);
-      }
-    }
-  }
-
-  /**
-   * Runtime plugin loaders activate every vendored manifest, so the same hook
-   * registered by two plugins fires twice. Reject that load shape before the
-   * discovery service can describe it as healthy. Cache entries are excluded:
-   * multiple cached versions are inventory, not simultaneous providers.
-   */
-  private assertNoDuplicateVendoredHooks(): void {
-    if (!existsSync(this.opts.openrigPluginsDir)) return;
-
-    const seen = new Map<string, { pluginPath: string; hooksPath: string }>();
-    for (const entry of safeReaddir(this.opts.openrigPluginsDir).sort()) {
-      const pluginPath = join(this.opts.openrigPluginsDir, entry);
-      if (!isDir(pluginPath)) continue;
-
-      for (const [runtime, manifestRel] of [
-        ["claude", CLAUDE_MANIFEST_REL],
-        ["codex", CODEX_MANIFEST_REL],
-      ] as const) {
-        const manifest = readManifest(join(pluginPath, manifestRel));
-        const hooksRef = manifest?.raw["hooks"];
-        if (typeof hooksRef !== "string" || !hooksRef.trim()) continue;
-
-        const hooksPath = join(pluginPath, hooksRef);
-        for (const identity of extractHookIdentities(hooksPath, runtime, pluginPath)) {
-          const prior = seen.get(identity);
-          if (prior && prior.pluginPath !== pluginPath) {
-            throw new Error(
-              `Duplicate hook registration "${identity}" found in both ${prior.hooksPath} and ${hooksPath}. `
-              + "Archive or disable one provider before loading plugins.",
-            );
-          }
-          seen.set(identity, { pluginPath, hooksPath });
+      // A folder the daemon cannot write (read-only, another owner) must not stop it starting: the lab copy
+      // then keeps its refocus hook, and the duplicate rule below ignores the whole folder instead.
+      try {
+        writeJsonAtomically(hooksPath, registry);
+        if (!hasHookRegistrations(registry)) {
+          delete manifest.raw["hooks"];
+          writeJsonAtomically(manifestPath, manifest.raw);
         }
+      } catch (err) {
+        this.warn(`[openrig] could not retire the obsolete refocus hooks in ${pluginPath}: ${(err as Error).message}`);
       }
     }
   }
@@ -699,6 +696,58 @@ function isObsoleteLabRefocusHook(value: unknown): boolean {
 
 function hasHookRegistrations(registry: Record<string, unknown>): boolean {
   return isObject(registry.hooks) && Object.keys(registry.hooks).length > 0;
+}
+
+/**
+ * The folders in the vendored plugins dir that are not loaded because another folder already registers one of their
+ * hooks: the same hook from two providers would fire twice. Which one stays is deterministic: a folder whose manifest
+ * names the folder (openrig-core/ declaring "openrig-core") comes before a copy that does not
+ * (openrig-core.bak-.../), then folder order. A folder is kept or ignored whole. Reads only; never throws on what it
+ * finds. Cache entries are not considered: several cached versions are inventory, not simultaneous providers.
+ * Shared by the daemon's discovery service and `rig doctor`, so both name the same folders.
+ */
+export function findIgnoredVendoredPlugins(pluginsDir: string): IgnoredVendoredPlugin[] {
+  const folders = safeReaddir(pluginsDir)
+    .filter((entry) => isDir(join(pluginsDir, entry)))
+    .map((entry) => ({ entry, pluginPath: join(pluginsDir, entry), hooks: vendoredHookIdentities(join(pluginsDir, entry)) }))
+    .map((folder) => ({ ...folder, namesItself: manifestNames(folder.pluginPath).includes(folder.entry) }))
+    .sort((a, b) => Number(b.namesItself) - Number(a.namesItself) || (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+
+  const claimed = new Map<string, { pluginPath: string; hooksPath: string }>();
+  const ignored: IgnoredVendoredPlugin[] = [];
+  for (const folder of folders) {
+    const clash = folder.hooks.find((hook) => claimed.has(hook.identity));
+    if (clash) {
+      const kept = claimed.get(clash.identity)!;
+      ignored.push({
+        path: folder.pluginPath,
+        keptPath: kept.pluginPath,
+        reason: `its hook ${clash.identity} in ${clash.hooksPath} is already registered by ${kept.hooksPath}`,
+      });
+      continue;
+    }
+    for (const hook of folder.hooks) claimed.set(hook.identity, { pluginPath: folder.pluginPath, hooksPath: hook.hooksPath });
+  }
+  return ignored;
+}
+
+/** Every hook a vendored plugin folder registers, through either runtime's manifest. */
+function vendoredHookIdentities(pluginPath: string): Array<{ identity: string; hooksPath: string }> {
+  const out: Array<{ identity: string; hooksPath: string }> = [];
+  for (const [runtime, manifestRel] of [["claude", CLAUDE_MANIFEST_REL], ["codex", CODEX_MANIFEST_REL]] as const) {
+    const hooksRef = readManifest(join(pluginPath, manifestRel))?.raw["hooks"];
+    if (typeof hooksRef !== "string" || !hooksRef.trim()) continue;
+    const hooksPath = join(pluginPath, hooksRef);
+    for (const identity of extractHookIdentities(hooksPath, runtime, pluginPath)) out.push({ identity, hooksPath });
+  }
+  return out;
+}
+
+/** The plugin names a folder's manifests declare. */
+function manifestNames(pluginPath: string): string[] {
+  return [CLAUDE_MANIFEST_REL, CODEX_MANIFEST_REL]
+    .map((rel) => readManifest(join(pluginPath, rel))?.name)
+    .filter((name): name is string => typeof name === "string");
 }
 
 function writeJsonAtomically(path: string, value: Record<string, unknown>): void {

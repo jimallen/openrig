@@ -13,6 +13,7 @@
       "@openrig/daemon/spec-conformance": [
         "../daemon/dist/spec-conformance-surface.d.ts"
       ],
+      "@openrig/daemon/vendored-plugin-conflicts": ["../daemon/dist/vendored-plugin-conflicts-surface.d.ts"],
       "@openrig/daemon/gateway-protocol": ["../daemon/dist/gateway-protocol-surface.d.ts"],
       "@openrig/daemon/instance-initialization": [
         "../daemon/dist/instance-initialization-surface.d.ts"

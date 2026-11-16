@@ -768,6 +768,12 @@
   "when": "!findHc() || !fs.existsSync(\"/bin/bash\")"
  },
  {
+  "file": "packages/daemon/test/plugin-stray-vendored-folder.test.ts",
+  "kind": "skipIf",
+  "task": "o9o.44: a stray folder in OPENRIG_HOME/plugins does not stop plugin discovery > a read-only openrig-lab whose obsolete refocus hook cannot be retired is ignored, not fatal (needs non-root)",
+  "when": "process.getuid?.() === 0"
+ },
+ {
   "file": "packages/daemon/test/pod-bundle-readonly-staging.test.ts",
   "kind": "skipIf",
   "task": "read-only bundle sources",
