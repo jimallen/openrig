@@ -157,6 +157,70 @@ describe("persistence and the fresh launch env", () => {
     expect(captured.find(c => c.name === plain.sessionName)?.env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
   });
 
+  // workspaces-o9o.10 (a): a Claude seat with its own home, no model of its own (nodes.model: spec or rig seat set-model)
+  // and no `model` in <home>/settings.json launches with no --model, so Claude picks the project setting or the account
+  // default and OpenRig said nothing. The launch warns; it never refuses.
+  describe("a seat home with no default model (workspaces-o9o.10)", () => {
+    const fsRead = { exists: fs.existsSync, isDirectory: (p: string) => fs.statSync(p).isDirectory(), readFile: (p: string) => fs.readFileSync(p, "utf8") };
+    function readingLauncher(captured: Array<{ name: string; env?: Record<string, string> }>) {
+      const tmux = partial<TmuxAdapter>({
+        createSession: async (name: string, _cwd?: string, env?: Record<string, string>) => { captured.push({ name, env }); return { ok: true as const }; },
+        killSession: async () => ({ ok: true as const }), listPanes: async () => [],
+        hasSession: async () => false, sendText: async () => ({ ok: true as const }), sendKeys: async () => ({ ok: true as const }),
+      });
+      return new NodeLauncher({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: tmux,
+        sessionEnv: { OPENRIG_HOME: scratch("ccd-openrig-") }, claudeHomeRead: fsRead });
+    }
+    function home(settings?: string): string {
+      const dir = scratch("ccd-model-");
+      fs.writeFileSync(path.join(dir, ".claude.json"), "{}");
+      if (settings !== undefined) fs.writeFileSync(path.join(dir, "settings.json"), settings);
+      return dir;
+    }
+    const noModel = (warnings: string[] | undefined) => (warnings ?? []).filter((w) => w.includes("sets no model"));
+
+    it.each([
+      ["no settings.json", undefined],
+      ["settings.json without a model", JSON.stringify({ skipDangerousModePermissionPrompt: true })],
+      ["an empty model", JSON.stringify({ model: "" })],
+      ["unparseable settings.json", "{ not json"],
+    ])("warns at launch, and still launches, when the home has %s and the seat has no model", async (_label, settings) => {
+      const dir = home(settings);
+      const rig = rigRepo.createRig("r");
+      rigRepo.addNode(rig.id, "dev.cel", { runtime: "claude-code", claudeConfigDir: dir });
+      const captured: Array<{ name: string; env?: Record<string, string> }> = [];
+      const result = await readingLauncher(captured).launchNode(rig.id, "dev.cel");
+      if (!result.ok) throw new Error(result.message);
+      expect(captured).toHaveLength(1);
+      expect(noModel(result.warnings)).toEqual([
+        `dev.cel: ${path.join(dir, "settings.json")} sets no model and the seat has none of its own, so Claude uses the model the project's .claude/settings.local.json or .claude/settings.json sets, if either does, else the account's default model. Pin one with: rig seat set-model ${result.sessionName} --model <model> --reason <why>, or set "model" in ${path.join(dir, "settings.json")}.`,
+      ]);
+    });
+
+    it("warns for the stub stand-in too, as set-claude-home accepts it", async () => {
+      const rig = rigRepo.createRig("r");
+      rigRepo.addNode(rig.id, "dev.stub", { runtime: "stub", claudeConfigDir: home() });
+      const result = await readingLauncher([]).launchNode(rig.id, "dev.stub");
+      if (!result.ok) throw new Error(result.message);
+      expect(noModel(result.warnings)).toHaveLength(1);
+    });
+
+    it("says nothing when the seat has a model, the home sets one, the seat has no home of its own, or the seat is not Claude (terminal)", async () => {
+      const rig = rigRepo.createRig("r");
+      const pinned = rigRepo.addNode(rig.id, "dev.pinned", { runtime: "claude-code", claudeConfigDir: home() });
+      rigRepo.setNodeModel(pinned.id, "opus");
+      rigRepo.addNode(rig.id, "dev.homeset", { runtime: "claude-code", claudeConfigDir: home(JSON.stringify({ model: "sonnet" })) });
+      rigRepo.addNode(rig.id, "dev.plain", { runtime: "claude-code" });
+      rigRepo.addNode(rig.id, "dev.term", { runtime: "terminal", claudeConfigDir: home() });
+      const nl = readingLauncher([]);
+      for (const logicalId of ["dev.pinned", "dev.homeset", "dev.plain", "dev.term"]) {
+        const result = await nl.launchNode(rig.id, logicalId);
+        if (!result.ok) throw new Error(`${logicalId}: ${result.message}`);
+        expect(noModel(result.warnings), logicalId).toEqual([]);
+      }
+    });
+  });
+
   it("refuses the launch, before any session exists, when the seat's home is gone", async () => {
     const rig = rigRepo.createRig("r");
     rigRepo.addNode(rig.id, "dev.cel", { runtime: "claude-code", claudeConfigDir: path.join(scratch("ccd-gone-"), "missing") });
@@ -312,6 +376,36 @@ describe("SeatLifecycleService.setClaudeHome", () => {
     process.env.HOME = userHome;
     const stub = seat("dev.stub", "stub");
     expect(await service.setClaudeHome({ seatRef: stub.sessionName, dir: "/x", reason: "scenario" })).toMatchObject({ ok: true, to: "/x" });
+  });
+
+  // workspaces-o9o.10 (a): set-claude-home names the gap when it saves a home for a seat with no model of its own.
+  it("reports a home with no default model for a seat with no model, and not once the seat has one (workspaces-o9o.10)", async () => {
+    const userHome = scratch("ccd-user-");
+    process.env.HOME = userHome;
+    const cel = path.join(userHome, ".claude-cel");
+    fs.mkdirSync(cel);
+    fs.writeFileSync(path.join(cel, ".claude.json"), "{}");
+    const { node, sessionName } = seat("dev.impl");
+    const settings = path.join(cel, "settings.json");
+    const expected = `${settings} sets no model and the seat has none of its own, so Claude uses the model the project's .claude/settings.local.json or .claude/settings.json sets, if either does, else the account's default model. Pin one with: rig seat set-model ${sessionName} --model <model> --reason <why>, or set "model" in ${settings}.`;
+    const first = await service.setClaudeHome({ seatRef: sessionName, dir: cel, reason: "cel account" });
+    if (!first.ok) throw new Error(first.message);
+    expect(first.findings).toContain(expected);
+
+    rigRepo.setNodeModel(node.id, "opus");
+    const pinned = await service.setClaudeHome({ seatRef: sessionName, dir: cel, reason: "same" });
+    if (!pinned.ok) throw new Error(pinned.message);
+    expect(pinned.findings.filter((f) => f.includes("sets no model"))).toEqual([]);
+  });
+
+  it("a home that is not a directory gets its own finding, not the no-model one (workspaces-o9o.10)", async () => {
+    const userHome = scratch("ccd-user-");
+    process.env.HOME = userHome;
+    const { sessionName } = seat("dev.impl");
+    const result = await service.setClaudeHome({ seatRef: sessionName, dir: path.join(userHome, ".claude-gone"), reason: "not made yet" });
+    if (!result.ok) throw new Error(result.message);
+    expect(result.findings.join("\n")).toMatch(/not a directory/);
+    expect(result.findings.filter((f) => f.includes("sets no model"))).toEqual([]);
   });
 
   it("reports, names only, what the home lacks for a full-bypass seat", async () => {

@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { claudeConfigDirLaunchRefusal, seatClaudeConfigDirEnv } from "./claude-config-dir.js";
+import { claudeConfigDirLaunchRefusal, claudeHomeNoModelFinding, seatClaudeConfigDirEnv, type ClaudeHomeReader } from "./claude-config-dir.js";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
@@ -60,6 +60,9 @@ interface NodeLauncherDeps {
   /** Extra launch env for one runtime only (OMP's provider keys), merged over
    *  sessionEnv so other runtimes' seats never receive it. */
   runtimeSessionEnv?: Record<string, Record<string, string | undefined>>;
+  /** workspaces-o9o.10: read-only access to a seat's own Claude home, for the no-default-model launch warning. Absent:
+   *  no warning (nothing is read). The daemon wires node:fs at startup. */
+  claudeHomeRead?: ClaudeHomeReader;
   /** Default silence window (seconds). Currently used only as the
    *  SeatActivityService global default (3s). Per-seat override via
    *  LaunchOpts is currently inert. */
@@ -86,6 +89,7 @@ export class NodeLauncher {
   private transcriptStore: TranscriptStore | null;
   private sessionEnv: Record<string, string>;
   private runtimeSessionEnv: Record<string, Record<string, string | undefined>>;
+  private claudeHomeRead: ClaudeHomeReader | undefined;
   private defaultSilenceWindowSeconds: number;
   private codexConfigWritePolicy: CodexConfigWritePolicy | null;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
@@ -111,6 +115,7 @@ export class NodeLauncher {
     this.transcriptStore = deps.transcriptStore ?? null;
     this.sessionEnv = compactEnv(deps.sessionEnv ?? {});
     this.runtimeSessionEnv = deps.runtimeSessionEnv ?? {};
+    this.claudeHomeRead = deps.claudeHomeRead;
     this.defaultSilenceWindowSeconds = deps.defaultSilenceWindowSeconds ?? 3;
     this.tmuxOptionDefaults = deps.tmuxOptionDefaults ?? null;
     this.codexConfigWritePolicy = deps.codexConfigWritePolicy ?? null;
@@ -174,6 +179,11 @@ export class NodeLauncher {
     // letting Claude start on a blank home (a login screen) or on the daemon's account.
     const claudeHomeRefusal = claudeConfigDirLaunchRefusal(node.claudeConfigDir);
     if (claudeHomeRefusal) return { ok: false, code: "claude_config_dir_missing", message: `${logicalId}: ${claudeHomeRefusal}` };
+    // workspaces-o9o.10: a Claude seat (or its stub stand-in) with its own home and no model of its own launches with no
+    // --model; say what Claude will pick when the home sets none either. A warning only: the launch goes on.
+    const claudeModelWarning = this.claudeHomeRead && node.claudeConfigDir && !node.model?.trim()
+      && (node.runtime === "claude-code" || node.runtime === "stub")
+      ? claudeHomeNoModelFinding(node.claudeConfigDir, sessionName, this.claudeHomeRead) : null;
 
     // 3. Reserve the source-bound occupant generation before the process starts. Reservation is
     // side-effect-free and fail-open: an unavailable ledger yields null and the launch remains valid.
@@ -235,7 +245,7 @@ export class NodeLauncher {
     }
 
     // The session's own non-fatal warnings (#771: the parent-session identity cleanup).
-    const launchWarnings: string[] = [...codexSeatWarnings, ...(tmuxResult.warnings ?? [])];
+    const launchWarnings: string[] = [...codexSeatWarnings, ...(tmuxResult.warnings ?? []), ...(claudeModelWarning ? [`${logicalId}: ${claudeModelWarning}`] : [])];
 
     // Observe the pane before the DB transaction. A concrete pane is committed
     // with session+binding; an unresolved pane gets a durable named verdict in

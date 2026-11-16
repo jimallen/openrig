@@ -104,6 +104,33 @@ export function claudeConfigDirFindings(dir: string, opts: { fullBypass: boolean
   return findings;
 }
 
+/** Read-only file access a Claude-home check needs; the edge supplies it (node:fs), tests a scratch folder. */
+export interface ClaudeHomeReader { exists: (p: string) => boolean; isDirectory: (p: string) => boolean; readFile: (p: string) => string }
+
+/**
+ * workspaces-o9o.10: what a seat with its own Claude home gets when the seat has no model of its own (nodes.model: the
+ * spec's, or `rig seat set-model`). OpenRig then passes no `--model` (and none of its `--settings` carries one), so
+ * Claude takes `model` from its settings layers, highest first: the project's .claude/settings.local.json, its
+ * .claude/settings.json, then the user settings, which for this seat are <home>/settings.json; with none, the account's
+ * default (Claude Code settings reference). Returns a warning when <home>/settings.json sets no model (missing,
+ * unparseable, or not a non-empty string); null when it sets one or the home is not a directory (that has its own
+ * refusal). Never a refusal. ANTHROPIC_MODEL is not checked: it is not on the provider-env allow-list
+ * (startup.ts KNOWN_PROVIDER_AUTH_ENV), and a managed launch runs under env -i, so OpenRig never gives it to a seat.
+ */
+export function claudeHomeNoModelFinding(dir: string, seatRef: string, read: ClaudeHomeReader): string | null {
+  try {
+    if (!read.exists(dir) || !read.isDirectory(dir)) return null;
+  } catch { return null; }
+  const settings = path.join(dir, "settings.json");
+  let model: unknown;
+  try {
+    const parsed = read.exists(settings) ? JSON.parse(read.readFile(settings)) as unknown : null;
+    model = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>)["model"] : undefined;
+  } catch { /* unparseable: reported as not set */ }
+  if (typeof model === "string" && model.trim().length > 0) return null;
+  return `${settings} sets no model and the seat has none of its own, so Claude uses the model the project's .claude/settings.local.json or .claude/settings.json sets, if either does, else the account's default model. Pin one with: rig seat set-model ${seatRef} --model <model> --reason <why>, or set "model" in ${settings}.`;
+}
+
 /**
  * A native fork (`claude --resume <parent> --fork-session`) reads the parent conversation from the launching seat's own
  * Claude home. When that home lacks the parent but another known home holds it, the fork could only fail (or, worse,

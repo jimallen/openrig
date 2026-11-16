@@ -1,5 +1,5 @@
 import { readDeclaredMcpServer, readTrustedSeatSpec, type TrustedSeatSpecFailureKind, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
-import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
+import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeHomeNoModelFinding, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedClaudeFields, diffRetainedPiFields, diffSeatIdentity, envNameChanges, specClaudeFields, specRetainedFields, type IdentityFieldDiff, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
@@ -465,6 +465,9 @@ export class SeatLifecycleService {
       fullBypass: (posture?.node ?? posture?.rig) === "full_bypass",
       nonInterruptive: this.rigRepo.getRigNonInterruptive(seat.rigId),
     }, this.claudeHomeRead) : [];
+    // workspaces-o9o.10: a seat with no model of its own takes whatever this home's settings say; say when they say none.
+    const noModel = to && this.claudeHomeRead && !resolved.entry.model?.trim() ? claudeHomeNoModelFinding(to, input.seatRef, this.claudeHomeRead) : null;
+    if (noModel) findings.push(noModel);
     const running = await this.runningState(seat.nodeId);
     const effect = (to === null
       ? "Cleared: the seat goes back to the daemon's own Claude home (nothing exported) at its next launch, resume, restore or handover successor."
