@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readlinkSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
@@ -283,4 +283,45 @@ it("I: a read that hangs after earlier polls is bounded by the time LEFT, not by
     expect(settled).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   } finally { vi.useRealTimers(); }
+});
+
+// Review of 3eb791147 (verify-qa, FAIL 2): the launch wait was bounded but the read it abandoned was not. On a tmux host the read is a
+// `tmux display-message` child with no timeout, so a hung tmux outlived the launch. The read itself now carries the time left and is killed.
+it("J: a tmux pane read that never exits is killed by the time the launch has fallen back", async () => {
+  const { TmuxAdapter } = await import("../src/adapters/tmux.js");
+  const { execCommand, execArgvCommand } = await import("../src/adapters/tmux-exec.js");
+  const f = fixture();
+  const fakeBin = path.join(f.root, "hung-tmux-bin"); mkdirSync(fakeBin);
+  const pidFile = path.join(f.root, "hung-tmux.pid");
+  // A tmux that records its pid and never exits (exec keeps the pid). It ignores SIGTERM (an ignored signal stays ignored across exec),
+  // so only a SIGKILL ends it: a hung tmux is not trusted to honour a gentler signal.
+  f.exe(path.join(fakeBin, "tmux"), `#!/bin/sh\necho $$ >> ${shellQuote(pidFile)}\ntrap '' TERM\nexec sleep 600\n`);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${fakeBin}:${savedPath}`;
+  let pids: number[] = [];
+  try {
+    const tmux = new TmuxAdapter(execCommand, undefined, execArgvCommand);
+    const launch = new SeatLaunchEnvironment(tmux, f.env, f.root, f.cli, undefined, { timeoutMs: 300, pollMs: 20 });
+    expect(await launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" })).toBe("node '/runner.js'");
+    expect(String(f.warn.mock.calls[0]![0])).toContain("(pi_pane_shell: none)");
+    // Every read the wait started (one per poll) recorded its pid; each must be gone once killed by its own timeout.
+    pids = readFileSync(pidFile, "utf8").trim().split("\n").map(Number);
+    expect(pids.length).toBeGreaterThan(0);
+    const alive = (): number[] => pids.filter(p => { try { process.kill(p, 0); return true; } catch { return false; } });
+    for (let i = 0; i < 50 && alive().length > 0; i++) await new Promise(r => setTimeout(r, 20));
+    expect(alive(), "abandoned tmux reads still running after the launch returned").toEqual([]);
+  } finally {
+    process.env.PATH = savedPath;
+    try { pids = readFileSync(pidFile, "utf8").trim().split("\n").map(Number); } catch { /* none started */ }
+    for (const p of pids) { try { process.kill(p, "SIGKILL"); } catch { /* already gone */ } }
+  }
+});
+it("J: only the bounded read carries a timeout to exec; a pane read without one runs exactly as before", async () => {
+  const { TmuxAdapter } = await import("../src/adapters/tmux.js");
+  const argvExec = vi.fn(async (_argv: string[], _options?: { timeoutMs?: number }) => "zsh\n");
+  const tmux = new TmuxAdapter(async () => "", undefined, argvExec);
+  expect(await tmux.getPaneCommand("%1")).toBe("zsh");
+  expect(argvExec.mock.calls[0]).toHaveLength(1);
+  expect(await tmux.getPaneCommand("%1", { timeoutMs: 250 })).toBe("zsh");
+  expect(argvExec.mock.calls[1]![1]).toEqual({ timeoutMs: 250 });
 });

@@ -7,7 +7,10 @@ import { parentSessionEnvKeys } from "../domain/parent-session-env.js";
 import { partitionLaunchEnv, renderSecretEnvScript } from "./tmux-launch-env-channel.js";
 import type { SeatLaunchHints } from "./hc-remote-control-env.js";
 
-export type ExecFn = (cmd: string) => Promise<string>;
+/** Per-call exec options. `timeoutMs` (a positive bound) kills the child when it passes; used by reads that must not outlive their caller. */
+export interface TmuxExecOptions { timeoutMs?: number }
+
+export type ExecFn = (cmd: string, options?: TmuxExecOptions) => Promise<string>;
 
 interface TmuxShellCommandOptions {
   /** Pi can send commands within the terminal byte bound directly. */
@@ -29,7 +32,7 @@ interface TmuxShellCommandOptions {
  * The daemon wires it: no shell process per call.
  * When absent every method uses the legacy shell-string path unchanged.
  */
-export type ArgvExecFn = (argv: string[]) => Promise<string>;
+export type ArgvExecFn = (argv: string[], options?: TmuxExecOptions) => Promise<string>;
 
 /**
  * Injectable file/buffer operations for `sendText`.
@@ -521,9 +524,9 @@ export class TmuxAdapter {
    * differently (the `-F "..."` double-quoted formats); pass it ONLY to
    * preserve an exact legacy string, never to smuggle new semantics.
    */
-  private async run(argv: string[], legacy?: string): Promise<string> {
-    if (this.argvExec) return this.argvExec(argv);
-    return this.exec(legacy ?? posixJoinArgv(argv));
+  private async run(argv: string[], legacy?: string, options?: TmuxExecOptions): Promise<string> {
+    if (this.argvExec) return options ? this.argvExec(argv, options) : this.argvExec(argv);
+    return options ? this.exec(legacy ?? posixJoinArgv(argv), options) : this.exec(legacy ?? posixJoinArgv(argv));
   }
 
   /** Start an empty native terminal server, without inventing a seat/session. */
@@ -1244,11 +1247,12 @@ export class TmuxAdapter {
   }
 
   /** Get the current foreground command in a pane. Returns null if unavailable. */
-  async getPaneCommand(paneId: string): Promise<string | null> {
+  /** `options.timeoutMs` bounds this one read: the tmux child is killed when it passes, and the read answers null. */
+  async getPaneCommand(paneId: string, options?: TmuxExecOptions): Promise<string | null> {
     const target = exactTarget(paneId, "pane");
     try {
       const output = await this.run(["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
-        `tmux display-message -p -t ${shellQuote(target)} "#{pane_current_command}"`);
+        `tmux display-message -p -t ${shellQuote(target)} "#{pane_current_command}"`, options);
       const trimmed = output.trim();
       return trimmed || null;
     } catch {

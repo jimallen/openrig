@@ -106,7 +106,10 @@ export class SeatLaunchEnvironment {
    *  failure is absorbed; a read that fails in time still throws, so the caller's fallback names it. */
   private async boundedPaneCommand(session: string, withinMs: number): Promise<string | null> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const read = this.tmux.getPaneCommand(session);
+    // The read itself carries the time left, so a tmux child that does not answer is killed rather than abandoned (review of
+    // 3eb791147). The race below still bounds a host whose read takes no timeout: an hc read runs on in the background for up to ~20 s
+    // (HcClient.call sends a hello, then the request, each with its own 10 s default).
+    const read = this.tmux.getPaneCommand(session, { timeoutMs: Math.max(1, withinMs) });
     try {
       return await Promise.race([read, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.max(0, withinMs)); })]);
     } finally {
