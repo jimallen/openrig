@@ -121,7 +121,7 @@ imports:
 `);
     const result = validateAgentSpec(raw);
     expect(result.valid).toBe(false);
-    expect(result.errors[0]).toMatch(/must start with "local:" or "path:"/);
+    expect(result.errors[0]).toMatch(/must start with "local:", "path:" or "shipped:"/);
   });
 
   // T3b: local:/abs/path rejected
@@ -148,6 +148,34 @@ imports:
     const result = validateAgentSpec(raw);
     expect(result.valid).toBe(false);
     expect(result.errors[0]).toMatch(/path:.*absolute path/);
+  });
+
+  // workspaces-o9o.1: shipped:<rel> names the running install's specs folder, so it must be relative and stay inside it.
+  const importRef = (ref: string) => validateAgentSpec(parseAgentSpec(`name: test\nversion: "1.0"\nimports:\n  - ref: "${ref}"\n`));
+
+  it("shipped: with a relative path inside the specs folder is accepted (an import of the running install's shared persona)", () => {
+    const result = importRef("shipped:agents/shared");
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it("shipped: with an absolute path is rejected", () => {
+    expect(importRef("shipped:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared").errors)
+      .toEqual(['imports[0].ref: shipped: ref must be a path relative to the installed OpenRig\'s specs folder (got "shipped:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared")']);
+  });
+
+  it("shipped: that climbs out of the specs folder is rejected, directly or after a detour", () => {
+    for (const ref of ["shipped:..", "shipped:../agents/shared", "shipped:agents/../../x"]) {
+      expect(importRef(ref).errors, ref).toEqual([`imports[0].ref: shipped: ref must stay inside the installed OpenRig's specs folder (got "${ref}")`]);
+    }
+  });
+
+  it("CONTROL: a .. that stays inside the specs folder is accepted (agents/x/../shared is agents/shared)", () => {
+    expect(importRef("shipped:agents/x/../shared").valid).toBe(true);
+  });
+
+  it("shipped: with no path is rejected", () => {
+    expect(importRef("shipped:").errors).toEqual(["imports[0].ref: shipped: ref must have a path"]);
   });
 
   // T4: version range rejected

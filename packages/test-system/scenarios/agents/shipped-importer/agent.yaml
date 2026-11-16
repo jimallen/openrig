@@ -1,0 +1,11 @@
+name: shipped-importer
+version: "1.0.0"
+resources:
+  skills: []
+imports:
+  # workspaces-o9o.1: the running install's shared persona, on any install prefix.
+  - ref: shipped:agents/shared
+profiles:
+  default:
+    uses:
+      skills: []

@@ -37,27 +37,16 @@ export function canonicalContinuityMechanic(value: unknown): string | null {
   return parseSessionName(value).kind === "canonical" ? value : null;
 }
 const VALID_RESTORE_POLICIES = new Set(["resume_if_possible", "relaunch_fresh", "checkpoint_only"]);
-const VALID_IMPORT_PREFIXES = ["local:", "path:"];
 
 import { validateSafePath } from "./path-safety.js";
+import { parseAgentRef } from "./agent-ref-grammar.js";
 
 // -- Import validation --
 
 function validateImportRef(ref: string, index: number): string | null {
   if (!ref || typeof ref !== "string") return `imports[${index}].ref: must be a non-empty string`;
-  const hasValidPrefix = VALID_IMPORT_PREFIXES.some((p) => ref.startsWith(p));
-  if (!hasValidPrefix) return `imports[${index}].ref: must start with "local:" or "path:" (got "${ref}")`;
-  if (ref.startsWith("local:")) {
-    const path = ref.slice("local:".length);
-    if (!path) return `imports[${index}].ref: local: ref must have a path`;
-    if (path.startsWith("/")) return `imports[${index}].ref: local: ref must be a relative path (got "${ref}")`;
-  }
-  if (ref.startsWith("path:")) {
-    const path = ref.slice("path:".length);
-    if (!path) return `imports[${index}].ref: path: ref must have a path`;
-    if (!path.startsWith("/")) return `imports[${index}].ref: path: ref must be an absolute path (got "${ref}")`;
-  }
-  return null;
+  const parsed = parseAgentRef(ref);
+  return parsed.ok ? null : `imports[${index}].ref: ${parsed.reason}`;
 }
 
 function validateImportVersion(version: unknown, index: number): string | null {

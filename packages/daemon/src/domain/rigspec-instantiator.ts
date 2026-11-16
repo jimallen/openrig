@@ -2803,18 +2803,26 @@ export class PodRigInstantiator {
   }
 
   /**
-   * OF-122: the agent provenance of the persona a seat's `path:` agent_ref reaches now (through the guarded reader, as
-   * at first launch). A `local:` ref is relative to a rig root a stored-context launch does not have, so it is not
-   * re-read here. Reads only.
+   * OF-122: the agent provenance of the persona a seat's `path:` or `shipped:` agent_ref reaches now (through the guarded
+   * reader, as at first launch). A `local:` ref is relative to a rig root a stored-context launch does not have, so it is
+   * not re-read here. Reads only.
    */
   readSeatAgentProvenance(input: { nodeId: string }): { name: string; version: string; hash: string } | null {
     const row = this.deps.db.prepare("SELECT agent_ref FROM nodes WHERE id = ?").get(input.nodeId) as { agent_ref: string | null } | undefined;
     const ref = row?.agent_ref;
-    if (!ref || !ref.startsWith("path:")) return null;
+    if (!ref) return null;
     // The refresh is only true when the saved files came through the typed path (OF-99 and later): then the launch delivers
     // the release it reaches now. A context saved before OF-99 holds the release's real path and replays that release, so
     // refreshing from the typed path would name a release the seat is not given: it keeps its recorded provenance.
-    const typed = nodePath.resolve(ref.slice("path:".length));
+    let typed: string;
+    let shipped: ReturnType<typeof resolveAgentRef> | undefined;
+    if (ref.startsWith("path:")) typed = nodePath.resolve(ref.slice("path:".length));
+    else if (ref.startsWith("shipped:")) {
+      // A shipped: ref needs no rig root: it names a folder in the running install, recorded as at first launch.
+      shipped = resolveAgentRef(ref, nodePath.sep, this.deps.fsOps);
+      if (!shipped.ok) return null;
+      typed = shipped.resolved.sourcePath;
+    } else return null;
     const saved = this.deps.db.prepare("SELECT projection_entries_json, resolved_files_json FROM node_startup_context WHERE node_id = ?")
       .get(input.nodeId) as { projection_entries_json: string; resolved_files_json: string } | undefined;
     if (!saved) return null;
@@ -2825,7 +2833,7 @@ export class PodRigInstantiator {
         .some((p) => typeof p === "string" && nodePath.resolve(p) === typed);
       if (!throughTyped) return null;
     } catch { return null; }
-    const resolved = resolveAgentRef(ref, nodePath.dirname(ref.slice("path:".length)), this.deps.fsOps);
+    const resolved = shipped ?? resolveAgentRef(ref, nodePath.dirname(typed), this.deps.fsOps);
     return resolved.ok ? { name: resolved.resolved.spec.name, version: resolved.resolved.spec.version, hash: resolved.resolved.hash } : null;
   }
 

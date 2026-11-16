@@ -414,7 +414,32 @@ describe("RigSpec schema (pod-aware)", () => {
     (rig.pods[0]!.members[0] as Record<string, unknown>)["agent_ref"] = "github:foo/bar";
     const result = RigSpecSchema.validate(rig);
     expect(result.valid).toBe(false);
-    expect(result.errors[0]).toMatch(/agent_ref.*must start with "local:" or "path:"/);
+    expect(result.errors[0]).toMatch(/agent_ref.*must start with "local:", "path:" or "shipped:"/);
+  });
+
+  // workspaces-o9o.1: a member may name a persona in the running install's specs folder (the kernel rig's members).
+  it("member agent_ref shipped:<relative> is accepted", () => {
+    const rig = structuredClone(VALID_RIG);
+    (rig.pods[0]!.members[0] as Record<string, unknown>)["agent_ref"] = "shipped:rigs/launch/kernel/agents/operator/agent";
+    const result = RigSpecSchema.validate(rig);
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it("member agent_ref shipped: that is absolute, climbs out, or is empty is rejected with the grammar's reason", () => {
+    const cases: Array<[string, RegExp]> = [
+      ["shipped:/abs/agents/x", /agent_ref: shipped: ref must be a path relative to the installed OpenRig's specs folder \(got "shipped:\/abs\/agents\/x"\)$/],
+      ["shipped:../x", /agent_ref: shipped: ref must stay inside the installed OpenRig's specs folder \(got "shipped:\.\.\/x"\)$/],
+      ["shipped:", /agent_ref: shipped: ref must have a path$/],
+    ];
+    for (const [ref, msg] of cases) {
+      const rig = structuredClone(VALID_RIG);
+      (rig.pods[0]!.members[0] as Record<string, unknown>)["agent_ref"] = ref;
+      const result = RigSpecSchema.validate(rig);
+      expect(result.valid, ref).toBe(false);
+      expect(result.errors, ref).toHaveLength(1);
+      expect(result.errors[0], ref).toMatch(msg);
+    }
   });
 
   // R7: cross-pod edge from dev.impl to dev.qa (same pod) rejected

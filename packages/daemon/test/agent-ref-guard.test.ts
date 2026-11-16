@@ -342,6 +342,109 @@ describe("the refusal reaches the preflight surface", () => {
   });
 });
 
+// workspaces-o9o.1: the ~/.agents release imported `path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared`
+// in every agent.yaml, so it broke on any other install prefix (Linux: ~/.local/lib/node_modules). `shipped:<rel>` names
+// the RUNNING install's own specs folder instead.
+describe("shipped: refs resolve inside the running install's specs folder", () => {
+  // The oracle is this checkout's specs folder, derived from the TEST's location, not from the module under test.
+  const REPO_SPECS = nodePath.resolve(import.meta.dirname, "..", "specs");
+  /** A fake install at `<root>/<prefix>/@openrig/cli/daemon/specs` holding one persona `agents/<name>`. */
+  function install(prefix: string, name = "shared"): string {
+    const specs = nodePath.join(root, prefix, "@openrig", "cli", "daemon", "specs");
+    persona(nodePath.join(specs, "agents", name), name);
+    return specs;
+  }
+  const at = (specs: string): AgentResolverFsOps => ({ ...realFs, shippedSpecsRoot: specs } as AgentResolverFsOps);
+
+  it("SYMPTOM: a persona importing the running install's shared persona by shipped: resolves on THIS install (default root)", () => {
+    persona(nodePath.join(root, "rig", "agents", "impl"), "impl", ["shipped:agents/shared"]);
+    const r = resolveAgentRef("local:agents/impl", nodePath.join(root, "rig"), realFs);
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (!r.ok) return;
+    expect(r.imports.map((i) => i.sourcePath)).toEqual([nodePath.join(REPO_SPECS, "agents", "shared")]);
+    expect(r.imports[0]!.spec.name).toBe("shared");
+  });
+
+  it("SYMPTOM (member ref): a rig member's shipped: agent_ref resolves to the running install's persona", () => {
+    const r = resolveAgentRef("shipped:rigs/launch/kernel/agents/operator/agent", nodePath.join(root, "rig"), realFs);
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(REPO_SPECS, "rigs", "launch", "kernel", "agents", "operator", "agent"));
+  });
+
+  it("the same ref follows whichever install is running: Homebrew and ~/.local prefixes each resolve to their own specs", () => {
+    for (const prefix of ["opt/homebrew/lib/node_modules", "home/u/.local/lib/node_modules"]) {
+      const specs = install(prefix);
+      const r = resolveAgentRef("shipped:agents/shared", nodePath.join(root, "rig"), at(specs));
+      expect(r.ok, `${prefix}: ${JSON.stringify(r)}`).toBe(true);
+      if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(specs, "agents", "shared"));
+    }
+  });
+
+  it("a symlinked install root (Homebrew: lib/node_modules/@openrig/cli -> Cellar) is recorded as typed and confined by its real location", () => {
+    const cellarSpecs = install("Cellar/openrig/1.2.3/libexec/lib/node_modules");
+    const linkParent = nodePath.join(root, "opt", "homebrew", "lib", "node_modules", "@openrig");
+    fs.mkdirSync(linkParent, { recursive: true });
+    fs.symlinkSync(nodePath.resolve(cellarSpecs, "..", ".."), nodePath.join(linkParent, "cli"));
+    const linkedSpecs = nodePath.join(linkParent, "cli", "daemon", "specs");
+    const r = resolveAgentRef("shipped:agents/shared", nodePath.join(root, "rig"), at(linkedSpecs));
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (!r.ok) return;
+    expect(r.resolved.sourcePath).toBe(nodePath.join(linkedSpecs, "agents", "shared"));
+    expect(fs.realpathSync(r.resolved.sourcePath)).toBe(nodePath.join(cellarSpecs, "agents", "shared"));
+  });
+
+  it("SH1: a .. that climbs out of the specs folder is refused, even when the target does not exist", () => {
+    const specs = install("lib/node_modules");
+    persona(nodePath.join(root, "lib", "node_modules", "@openrig", "cli", "daemon", "outside"), "outside");
+    refusedWith(resolveAgentRef("shipped:../outside", nodePath.join(root, "rig"), at(specs)), "ref_refused", /outside .*installed OpenRig's specs folder/);
+    refusedWith(resolveAgentRef("shipped:agents/../../nowhere", nodePath.join(root, "rig"), at(specs)), "ref_refused", /installed OpenRig's specs folder/);
+  });
+
+  it("SH1b: a lexical .. out of the specs folder is refused even when a symlink there points back inside (as L5 for local:)", () => {
+    const specs = install("lib/node_modules");
+    fs.symlinkSync(specs, nodePath.join(nodePath.dirname(specs), "specs-alias"));
+    refusedWith(resolveAgentRef("shipped:../specs-alias/agents/shared", nodePath.join(root, "rig"), at(specs)), "ref_refused", /installed OpenRig's specs folder/);
+  });
+
+  it("SH4b: a shipped persona's local: import of a sibling inside the specs folder resolves, with no rigs/ marker around it", () => {
+    const specs = install("lib/node_modules", "base");
+    fs.writeFileSync(nodePath.join(specs, "agents", "base", "agent.yaml"), AGENT("base", ["local:../shared"]));
+    persona(nodePath.join(specs, "agents", "shared"), "shared");
+    const r = resolveAgentRef("shipped:agents/base", nodePath.join(root, "rig"), at(specs));
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (r.ok) expect(r.imports.map((i) => i.sourcePath)).toEqual([nodePath.join(specs, "agents", "shared")]);
+  });
+
+  it("SH2: a symlink inside the specs folder that resolves outside it is refused after realpath", () => {
+    const specs = install("lib/node_modules");
+    persona(nodePath.join(root, "elsewhere"), "elsewhere");
+    fs.symlinkSync(nodePath.join(root, "elsewhere"), nodePath.join(specs, "agents", "escape"));
+    refusedWith(resolveAgentRef("shipped:agents/escape", nodePath.join(root, "rig"), at(specs)), "ref_refused", /resolves to .*elsewhere, outside /);
+  });
+
+  it("SH3: an absolute shipped: path is refused; an empty one cannot be resolved", () => {
+    const specs = install("lib/node_modules");
+    refusedWith(resolveAgentRef(`shipped:${nodePath.join(specs, "agents", "shared")}`, nodePath.join(root, "rig"), at(specs)), "ref_refused", /relative to the installed OpenRig's specs folder/);
+    refusedWith(resolveAgentRef("shipped:", nodePath.join(root, "rig"), at(specs)), "not_found", /Cannot resolve agent_ref "shipped:"/);
+  });
+
+  it("SH4: a shipped persona's own local: import may not climb out of the specs folder", () => {
+    const specs = install("lib/node_modules", "base");
+    fs.writeFileSync(nodePath.join(specs, "agents", "base", "agent.yaml"), AGENT("base", ["local:../../../outside"]));
+    // agents/base/../../.. is daemon/, one level above the specs folder.
+    persona(nodePath.join(root, "lib", "node_modules", "@openrig", "cli", "daemon", "outside"), "outside");
+    const r = resolveAgentRef("shipped:agents/base", nodePath.join(root, "rig"), at(specs));
+    refusedWith(r, "import_error", /refused: .*outside /);
+  });
+
+  it("SH5: a scheme that only looks like shipped: is not one (Shipped:, shipped-x:)", () => {
+    const specs = install("lib/node_modules");
+    for (const ref of ["Shipped:agents/shared", "shipped-x:agents/shared"]) {
+      refusedWith(resolveAgentRef(ref, nodePath.join(root, "rig"), at(specs)), "not_found", /Cannot resolve agent_ref/);
+    }
+  });
+});
+
 describe("census pins: every production filesystem the resolver is given carries the guard", () => {
   const src = (rel: string) => fs.readFileSync(nodePath.join(import.meta.dirname, "..", "src", rel), "utf-8");
 

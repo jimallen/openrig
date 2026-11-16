@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import nodePath from "node:path";
 import { checkGuardedFile, type GuardedFileKind } from "./culture-file-guard.js";
+import { runningShippedSpecsRoot } from "./builtin-startup-files.js";
 
 /**
  * TRUST BOUNDARY (read this before changing anything here). Same decision as culture-file-guard.ts.
@@ -26,6 +27,13 @@ import { checkGuardedFile, type GuardedFileKind } from "./culture-file-guard.js"
  *
  * `path:` refs. Must be absolute; `..` is normalised away. The folder is CHECKED by its realpath but RECORDED as typed
  * (OF-99, see asTyped). No allowlist.
+ *
+ * `shipped:` refs (workspaces-o9o.1). Relative to the RUNNING install's specs folder (runningShippedSpecsRoot:
+ * `<install>/daemon/specs`, or `packages/daemon/specs` in a checkout), so one spec names the same persona on every
+ * install prefix. Confined like a `local:` ref, to that folder: both the lexical and the real target must be inside it
+ * (`..` or a symlink out is refused), and so are the persona's own `local:` imports. Recorded as typed under the root as
+ * given (OF-99). Node already reports the module's real path, so in production the root is the install's real folder;
+ * the stored files then follow a moved install through the existing re-anchoring (builtin-startup-files.ts).
  *
  * Persona file. The resolver reads exactly one file per persona folder, `agent.yaml`. It must be, after
  * realpath, a regular file with a single link, at most PERSONA_FILE_MAX_BYTES, read through ONE descriptor
@@ -82,6 +90,8 @@ export const guardedAgentRefFsOps = {
 export interface AgentRefFs {
   exists(path: string): boolean;
   realpath?(path: string): string;
+  /** The specs folder a `shipped:` ref is relative to; the running install's when unset (tests point it elsewhere). */
+  shippedSpecsRoot?: string;
 }
 
 export type AgentRefDir =
@@ -152,6 +162,25 @@ export function resolveAgentRefDir(ref: string, baseDir: string, fs: AgentRefFs,
     // The path as typed (normalised), not its realpath: see asTyped.
     const typed = nodePath.resolve(abs);
     return { ok: true, dir: asTyped(fs, typed, realOrSame(fs, typed)) };
+  }
+  if (ref.startsWith("shipped:")) {
+    const rel = ref.slice("shipped:".length);
+    if (!rel) return { ok: false, kind: "malformed", message: `Cannot resolve agent_ref "${ref}"` };
+    if (nodePath.isAbsolute(rel)) {
+      return { ok: false, kind: "refused", message: `agent_ref "${ref}": a shipped: ref must be a path relative to the installed OpenRig's specs folder` };
+    }
+    const typedRoot = nodePath.resolve(fs.shippedSpecsRoot ?? runningShippedSpecsRoot());
+    const root = realOrSame(fs, typedRoot);
+    const lexical = nodePath.resolve(root, rel);
+    const target = realOrSame(fs, lexical);
+    if (!isInside(root, lexical) || !isInside(root, target)) {
+      return {
+        ok: false,
+        kind: "refused",
+        message: `agent_ref "${ref}" resolves to ${target}, outside ${root}, the installed OpenRig's specs folder; a shipped: ref must stay inside it`,
+      };
+    }
+    return { ok: true, dir: asTyped(fs, nodePath.resolve(typedRoot, rel), target), importRoot: root };
   }
   return { ok: false, kind: "malformed", message: `Cannot resolve agent_ref "${ref}"` };
 }

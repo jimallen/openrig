@@ -201,13 +201,18 @@ imports:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ref` | string | yes | Reference to another AgentSpec directory. Must start with `local:` (relative) or `path:` (absolute). The referenced directory must contain an `agent.yaml`. |
+| `ref` | string | yes | Reference to another AgentSpec directory. Must start with `local:` (relative), `path:` (absolute) or `shipped:` (relative to the installed OpenRig's specs folder). The referenced directory must contain an `agent.yaml`. |
 | `version` | string | no | Optional version constraint. Must be an exact version — no ranges (`~`, `^`, `>=`, etc.). When set, the imported spec's `version` must equal it, or resolution fails with `version_mismatch`. |
 
 ### Import Resolution
 
-- `local:` paths resolve relative to the importing spec's directory
+- `local:` paths resolve relative to the importing spec's directory, and must stay inside the spec tree around it
 - `path:` paths are absolute filesystem paths
+- `shipped:` paths resolve relative to the specs folder of the OpenRig install that is running
+  (`<install>/daemon/specs`, or `packages/daemon/specs` in a checkout), wherever it is installed: `shipped:agents/shared`
+  is the shared builtin spec under Homebrew, under `~/.local` and in a checkout alike. The path must be relative and may
+  not leave that folder: an absolute path, a `..` that climbs out of it, or a symlink inside it that points outside is
+  refused
 - Imported resources become available for `uses` references in profiles
 - A qualified reference `namespace:id` (e.g., `shared:openrig-core`) names the imported spec by its `name` field
 - An unqualified reference (just `id`) resolves against the spec's own resources first, then against the one import that
@@ -222,6 +227,14 @@ Most built-in agents import the shared builtin spec:
 ```yaml
 imports:
   - ref: local:../../shared
+```
+
+A spec that lives outside the OpenRig install (a release of your own agents, for example) imports the same shared spec
+with `shipped:`, so it works on any install prefix:
+
+```yaml
+imports:
+  - ref: shipped:agents/shared
 ```
 
 This gives access to the shared pool: skills such as `systematic-debugging`, `verification-before-completion`,
@@ -499,7 +512,8 @@ restore behavior, and the distinction between readiness and verified proof.
 
 1. `name` and `version` are required non-empty strings.
 2. `imports` must be an array of objects with `ref` field.
-3. Import `ref` must start with `local:` (relative) or `path:` (absolute).
+3. Import `ref` must start with `local:` (relative), `path:` (absolute) or `shipped:` (relative to the installed
+   OpenRig's specs folder, and not leaving it).
 4. Import `version` must be an exact version (no ranges).
 5. `profiles` must be a map (object), not an array.
 6. Profile `uses` references other than skills must resolve to declared resources (local or imported). Skill

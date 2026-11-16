@@ -1,0 +1,12 @@
+version: "0.2"
+name: shipped-agent-ref-stub
+culture_file: culture.md
+pods:
+  - id: work
+    label: Work
+    members:
+      # a member whose agent_ref names a persona in the running install's specs folder
+      - {id: shipped, agent_ref: "shipped:agents/development/implementer", profile: default, runtime: stub, cwd: .}
+      # a member whose own persona imports the running install's shared persona
+      - {id: importer, agent_ref: "local:agents/shipped-importer", profile: default, runtime: stub, cwd: .}
+    edges: []

@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { parseAgentSpec, validateAgentSpec, normalizeAgentSpec } from "./agent-manifest.js";
 import type { AgentSpec, AgentResources } from "./types.js";
 import { PersonaFileRefused, resolveAgentRefDir } from "./agent-ref-guard.js";
+import { hasAgentRefScheme } from "./agent-ref-grammar.js";
 
 // -- Types --
 
@@ -17,6 +18,8 @@ export interface AgentResolverFsOps {
    * lexically and agent.yaml is read with `readFile`.
    */
   realpath?(path: string): string;
+  /** The specs folder a `shipped:` ref is relative to. Unset in production: the running install's own (agent-ref-guard.ts). */
+  shippedSpecsRoot?: string;
   readPersonaFile?(path: string): string;
 }
 
@@ -73,7 +76,7 @@ const RESOURCE_CATEGORIES: (keyof AgentResources)[] = [
 
 /**
  * Resolve an agent_ref to a concrete AgentSpec, including flat imports.
- * @param ref - agent_ref string (e.g. "local:agents/impl" or "path:/abs/agents/impl")
+ * @param ref - agent_ref string (e.g. "local:agents/impl", "path:/abs/agents/impl" or "shipped:agents/shared")
  * @param rigRoot - absolute path to rig root directory
  * @param fsOps - injectable filesystem operations
  * @returns structured resolve result
@@ -231,7 +234,7 @@ function resolveWithImports(
 
   for (const imp of base.spec.imports) {
     // Remote sources already rejected by AS-T01 validation, but double-check at resolve time
-    if (!imp.ref.startsWith("local:") && !imp.ref.startsWith("path:")) {
+    if (!hasAgentRefScheme(imp.ref)) {
       return { ok: false, code: "import_error", error: `Remote import source not supported in v1: "${imp.ref}"`, importRef: imp.ref };
     }
 

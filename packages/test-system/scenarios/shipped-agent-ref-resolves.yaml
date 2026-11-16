@@ -1,0 +1,26 @@
+# Family: rig spec resolution (`up` of a spec whose personas use `shipped:` agent refs).
+# Defect class (workspaces-o9o.1): a persona release that names the installed OpenRig's own specs folder by an absolute
+#   `path:` (for example /opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared) breaks on every other
+#   install prefix. `shipped:<rel>` names the RUNNING install's specs folder instead.
+# What this proves: STUB PLUMBING through the real CLI, daemon and SQLite. `rig up` resolves a member agent_ref
+#   `shipped:agents/development/implementer` and a local persona whose agent.yaml imports `shipped:agents/shared`,
+#   against whichever specs folder the daemon under test runs from (the checkout in host mode, the installed package
+#   in the container), and both seats come up.
+# What this does NOT prove: what the shipped personas project into a Claude Code or Codex seat (a stub projects into
+#   its own .openrig/stub/skills, see docs/as-built/arteries.md), or the confinement refusals (unit tests in
+#   packages/daemon/test/agent-ref-guard.test.ts cover those).
+# Planted negative: remove the `shipped:` branch from resolveAgentRefDir (agent-ref-guard.ts). `up` then fails to
+#   resolve the member ref ("Cannot resolve agent_ref"), so the rig never reaches 2 running seats.
+# Deps: R-10 runner (`up`, `ps` surface). No emit, no env preconditions.
+scenario: shipped-agent-ref-resolves
+topology: ./shipped-agent-ref-stub.yaml
+steps:
+  - up: {}
+  - expect:
+      surface: ps
+      within: 30s
+      match:
+        - name: shipped-agent-ref-stub
+          status: running
+          nodeCount: 2
+          runningCount: 2

@@ -174,7 +174,9 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
-      fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
+      fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p),
+        // The install's specs folder for shipped: refs is the `current` link, as an install reached through a link is.
+        shippedSpecsRoot: current },
       adapters: { "claude-code": adapter },
       tmuxAdapter: tmux,
       onboardingEnabledResolver: () => false,
@@ -306,6 +308,23 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     expectRoleFrom("1.0.0");
     expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
     expect(nodeHash(seat.nodeId)).toBe(hashBefore);
+  });
+
+  // workspaces-o9o.1: a shipped: ref needs no rig root either (it names the running install's specs folder), so a launch
+  // from stored context refreshes its provenance as a path: ref's is; the kernel's path: members move to shipped:.
+  it("a seat whose agent_ref is shipped: gets the version and hash of the release it is given after a retarget", async () => {
+    fs.writeFileSync(linkSpec, RIG("shipped:agents/impl"));
+    const seat = await launchRig();
+    expect(storedFiles(seat.nodeId).find((f) => f.path === "guidance/role.md")!.ownerRoot).toBe(path.join(current, "agents", "impl"));
+    expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
+    retarget("bbbbbbb");
+
+    const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "shipped ref" });
+
+    expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
+    expectRoleFrom("2.0.0");
+    expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
+    expect(nodeHash(seat.nodeId)).toBe(sha256Of(path.join(root, "releases", "bbbbbbb", "agents", "impl", "agent.yaml")));
   });
 
   it("a seat whose agent_ref is not a typed path keeps its recorded version and hash (a local: ref has no rig root to re-read from)", async () => {

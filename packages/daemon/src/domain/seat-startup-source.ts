@@ -86,9 +86,9 @@ export interface SeatStartupSpecReader {
   readSeatStartupFromSpec(input: { rigId: string; nodeId: string; adapter: RuntimeAdapter; sessionName: string }): Promise<SeatStartupRead>;
   projectSeatSkills(skills: SeatSkillProjection): SeatSkillProjectionResult;
   /**
-   * OF-122: the agent provenance (name, version, hash) of the persona a seat's `path:` agent_ref reaches NOW, for a launch
-   * that replays the saved startup files (they follow the path as typed, so they deliver that release). Null when the
-   * seat has no `path:` ref or the persona cannot be read: the recorded provenance then stays as it is. Reads only.
+   * OF-122: the agent provenance (name, version, hash) of the persona a seat's `path:` or `shipped:` agent_ref reaches
+   * NOW, for a launch that replays the saved startup files (they follow the path as typed, so they deliver that release).
+   * Null when the seat has neither ref or the persona cannot be read: the recorded provenance then stays as it is. Reads only.
    */
   readSeatAgentProvenance?(input: { nodeId: string }): { name: string; version: string; hash: string } | null;
   /**

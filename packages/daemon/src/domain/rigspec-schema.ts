@@ -16,6 +16,7 @@ import type {
 } from "./types.js";
 import { WORKSPACE_KINDS } from "./types.js";
 import { validateSafePath } from "./path-safety.js";
+import { parseAgentRef } from "./agent-ref-grammar.js";
 import { CLAUDE_MANAGED_BLOCK_FILES } from "./managed-blocks.js";
 import { canonicalCompactionStrategy, canonicalContinuityMechanic } from "./agent-manifest.js";
 import { aliasModelPinAdvisory } from "./spec-validation-advisory.js";
@@ -43,7 +44,6 @@ export const VALID_EDGE_KINDS = new Set(["delegates_to", "spawned_by", "can_obse
 export const SPEC_VALIDATION_CAPABILITIES: ReadonlySet<string> = new Set(["model-pin-canonicalization"]);
 const VALID_SYNC_TRIGGERS = new Set(["pre_compaction", "pre_shutdown", "manual", "milestone"]);
 const VALID_RESTORE_POLICIES = new Set(["resume_if_possible", "relaunch_fresh", "checkpoint_only"]);
-const VALID_IMPORT_PREFIXES = ["local:", "path:"];
 const VALID_SERVICES_KIND = new Set(["compose"]);
 const VALID_DOWN_POLICIES = new Set(["leave_running", "down", "down_and_volumes"]);
 const VALID_WAIT_TARGET_CONDITIONS = new Set(["healthy"]);
@@ -711,21 +711,10 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
     }
   }
 
-  // agent_ref: must be local: or path: with correct shape (skip for terminal sentinel)
+  // agent_ref: one of the agent_ref grammar's schemes with its shape (skip for terminal sentinel)
   if (typeof member["agent_ref"] === "string" && !isTerminalRef) {
-    const ref = member["agent_ref"] as string;
-    const hasValidPrefix = VALID_IMPORT_PREFIXES.some((p) => ref.startsWith(p));
-    if (!hasValidPrefix) {
-      errors.push(`${prefix}.agent_ref: must start with "local:" or "path:" (got "${ref}")`);
-    } else if (ref.startsWith("local:")) {
-      const path = ref.slice("local:".length);
-      if (!path) errors.push(`${prefix}.agent_ref: local: ref must have a path`);
-      else if (path.startsWith("/")) errors.push(`${prefix}.agent_ref: local: ref must be a relative path (got "${ref}")`);
-    } else if (ref.startsWith("path:")) {
-      const path = ref.slice("path:".length);
-      if (!path) errors.push(`${prefix}.agent_ref: path: ref must have a path`);
-      else if (!path.startsWith("/")) errors.push(`${prefix}.agent_ref: path: ref must be an absolute path (got "${ref}")`);
-    }
+    const parsed = parseAgentRef(member["agent_ref"] as string);
+    if (!parsed.ok) errors.push(`${prefix}.agent_ref: ${parsed.reason}`);
   }
 
   // Member startup block validation
