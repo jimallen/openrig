@@ -43,7 +43,8 @@ import type {
   NodeStartupSnapshot,
   RestoreStartupSource,
 } from "./types.js";
-import { projectRereadSkills, readSnapshotStartupCopy, specSourceUntrusted, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { readSeatSkillDrift, skillsDriftEventAfterLaunch } from "./seat-skill-drift.js";
+import { projectRereadSkills, readSnapshotStartupCopy, skillsAfterLaunch, specSourceUntrusted, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { asReplayContext, decideListedFreshSeat, startupToValidateForSeat } from "./fresh-seat-restore-decision.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
@@ -1328,6 +1329,15 @@ export class RestoreOrchestrator {
     // Propagate launch warnings (includes transcript attach failures)
     if (launchResult.warnings?.length) {
       warnings?.push(...launchResult.warnings);
+    }
+
+    // workspaces-o9o.30: a fresh seat is now running: record its skills against its spec (a drift, or an in-line launch
+    // that clears a drift `rig seat status` shows).
+    if (freshStartup) {
+      const driftEvent = skillsDriftEventAfterLaunch(
+        { rigId, nodeId, logicalId: node.logicalId, sessionName: launchResult.sessionName },
+        skillsAfterLaunch(freshStartup), readSeatSkillDrift(this.db, nodeId) !== null);
+      if (driftEvent) this.eventBus.emit(driftEvent);
     }
 
     const given = freshStartup ? asReplayContext(freshStartup) : savedSetup;

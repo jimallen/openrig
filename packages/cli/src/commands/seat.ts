@@ -53,6 +53,8 @@ interface SeatStatusResponse {
   previous_occupant: string | null;
   handover_at: string | null;
   restore_outcome: string;
+  /** workspaces-o9o.30; absent from a daemon older than it. */
+  skills_drift?: { extra: string[]; missing: string[]; specSource: string; startupSource: "stored" | "snapshot"; snapshotId?: string; fix: string; observedAt: string } | null;
 }
 
 interface SeatStatusError {
@@ -201,6 +203,18 @@ function printHuman(status: SeatStatusResponse): void {
   console.log(`Handover result: ${display(status.handover_result)}`);
   console.log(`Previous occupant: ${display(status.previous_occupant)}`);
   console.log(`Handover at: ${display(status.handover_at)}`);
+  if (status.skills_drift !== undefined) console.log(`Skills drift: ${skillsDriftLine(status.skills_drift)}`);
+}
+
+/** workspaces-o9o.30: one line for `rig seat status`, naming the fix as the daemon spelled it. */
+function skillsDriftLine(drift: NonNullable<SeatStatusResponse["skills_drift"]> | null): string {
+  if (!drift) return "none known";
+  const parts = [
+    drift.extra.length > 0 ? `no longer in the spec: ${drift.extra.join(", ")}` : null,
+    drift.missing.length > 0 ? `in the spec but not projected: ${drift.missing.join(", ")}` : null,
+  ].filter((part): part is string => part !== null);
+  const from = drift.startupSource === "snapshot" ? `snapshot ${drift.snapshotId ?? "(unknown)"}'s copy of its startup files` : "its saved startup files";
+  return `${parts.join("; ")} (spec ${drift.specSource}; seen ${drift.observedAt} after a launch from ${from}). To bring them in line with the spec, run: ${drift.fix}`;
 }
 
 function printHumanHandoverPlan(plan: SeatHandoverPlan): void {

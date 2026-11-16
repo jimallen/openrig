@@ -2154,7 +2154,7 @@ export class PodRigInstantiator {
     for (const receipt of projection.receipts.filter(isKeptPluginSkill)) {
       warnings.push(`plugin_skill_kept: ${receipt.id}: ${receipt.detail.slice("kept: ".length)} (${receipt.target})`);
     }
-    return { ok: true, warnings };
+    return { ok: true, warnings, ...(projection.topologySelection ? { topologySelection: projection.topologySelection } : {}) };
   }
 
   /** OF-32 N6: apply the skill loadout a re-read checked, once the caller has cleared the way to launch. */
@@ -3016,6 +3016,7 @@ export class PodRigInstantiator {
       ...(agentConfig ? { resolvedSpec: { name: agentConfig.resolvedSpecName, version: agentConfig.resolvedSpecVersion, hash: agentConfig.resolvedSpecHash } } : {}),
       warnings: [...(agentConfig?.skillWarnings ?? []), ...startup.conflictWarnings, ...preflight.warnings],
       skills,
+      ...(skillCheck?.ok && skillCheck.topologySelection ? { skillSelection: skillCheck.topologySelection } : {}),
     };
   }
 

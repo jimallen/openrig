@@ -20,6 +20,7 @@ import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./bu
 import type { SkillLoadout, SkillRuntime } from "./skill-catalog.js";
 import { newestUsableSnapshotCopy, startupContextUnusable, unreadableSnapshotsNote, type UsableSnapshotCopy } from "./own-startup-replay.js";
 import { rigAdviceHandleIn } from "./rig-ref.js";
+import { compareSeatSkillSelection, seatSkillDriftFix, seatSkillDriftUncheckedWarning, seatSkillDriftWarning, type ReplayedStartup, type SeatSkillDriftObservation, type SkillsAfterLaunch } from "./seat-skill-drift.js";
 
 /** What the operator asked a fresh launch to start from. `snapshot:<id>` (OF-36 Q2, Jim 2026-10-20): that snapshot's
  *  copy of the seat's startup context, held to the same rule as the seat's own row before anything is stopped. */
@@ -63,6 +64,8 @@ export type SeatStartupRead =
       warnings: string[];
       /** OF-32 N6: the re-read's S04 skill loadout, already checked (nothing written); null when nothing reconciles. */
       skills: SeatSkillProjection | null;
+      /** workspaces-o9o.30: what that check found for the seat's own topology selection; absent when nothing reconciles. */
+      skillSelection?: SeatTopologySelection;
     };
 
 /** One seat's S04 managed-skill loadout as a launch reconciles it: first launch, and a fresh re-read of its spec. */
@@ -74,7 +77,11 @@ export interface SeatSkillProjection {
   topologyOwner: string;
 }
 
-export type SeatSkillProjectionResult = { ok: true; warnings: string[] } | { ok: false; error: string };
+export type SeatSkillProjectionResult = { ok: true; warnings: string[]; topologySelection?: SeatTopologySelection } | { ok: false; error: string };
+
+/** workspaces-o9o.30: one seat's topology skill selection as its ownership manifest records it now (`recorded`) and as
+ *  its spec's loadout would record it (`planned`), from a check that wrote nothing. */
+export interface SeatTopologySelection { owner: string; recorded: string[]; planned: string[] }
 
 /**
  * The seam a fresh launch asks for a re-read; PodRigInstantiator implements it. `readSeatStartupFromSpec` reads only
@@ -130,6 +137,20 @@ export interface FreshStartupContext {
   sourceWarnings: string[];
   /** OF-32 N6: set only on a re-read: the skills its launch reconciles through `SeatStartupSpecReader.projectSeatSkills`. */
   skills?: SeatSkillProjection;
+  /** workspaces-o9o.30: set only on a replay (stored files or a snapshot's copy) whose skills differ from the spec's
+   *  current selection. The launch records it (`seat.skills_drift_observed`) once it has started the seat. */
+  skillsDrift?: SeatSkillDriftObservation;
+  /** workspaces-o9o.30: set only on a replay whose comparison found its skills in line with the spec. */
+  skillsInLine?: { specSource: string; replayed: ReplayedStartup };
+}
+
+/** workspaces-o9o.30: what a launch from this context, once started, says about its seat's skills against its spec. */
+export function skillsAfterLaunch(context: FreshStartupContext): SkillsAfterLaunch {
+  if (context.source.kind === "spec") return { kind: "in_line", specSource: context.source.specSource, startupSource: "spec" };
+  if (context.skillsDrift) return { kind: "drift", observation: context.skillsDrift };
+  const inLine = context.skillsInLine;
+  if (!inLine) return { kind: "unknown" };
+  return { kind: "in_line", specSource: inLine.specSource, startupSource: inLine.replayed.kind, ...(inLine.replayed.kind === "snapshot" ? { snapshotId: inLine.replayed.snapshotId } : {}) };
 }
 
 /**
@@ -215,7 +236,9 @@ export async function resolveFreshSeatStartup(
   if (fromSnapshot) {
     // OF-36 Q2: an explicitly named snapshot's copy, checked here, before anything is stopped or launched.
     const copy = readSnapshotStartupCopy(deps.db, input, fromSnapshot);
-    return copy.ok ? { ok: true, context: copy.context } : { ok: false, code: "startup_source_unavailable", message: copy.message, guidance: copy.guidance };
+    if (!copy.ok) return { ok: false, code: "startup_source_unavailable", message: copy.message, guidance: copy.guidance };
+    await checkReplayedSkillDrift(deps, input, copy.context, { kind: "snapshot", snapshotId: fromSnapshot });
+    return { ok: true, context: copy.context };
   }
   let reread: FreshStartupContext | null = null;
   let storedReason: "requested" | "no_recorded_source" | "not_in_spec" = "requested";
@@ -309,7 +332,45 @@ export async function resolveFreshSeatStartup(
       message: `Persisted startup context runtime '${context.runtime}' does not match current node runtime '${input.runtime ?? "missing"}'.`,
     };
   }
+  // workspaces-o9o.30: only a replay the operator asked for has a spec to compare with; a seat with no recorded source
+  // or one its spec does not declare already replays with a warning that says why.
+  if (context.source.kind === "stored" && context.source.reason === "requested") await checkReplayedSkillDrift(deps, input, context, { kind: "stored" });
   return { ok: true, context };
+}
+
+/**
+ * workspaces-o9o.30: a replayed context never reconciles skills, so compare the seat's recorded topology selection with
+ * the one its spec gives now, through the same re-read a spec-sourced launch runs, which checks its skills and writes
+ * nothing. Nothing from the re-read is used for the launch: only the comparison. A drift becomes a source warning and
+ * `context.skillsDrift`; a spec that cannot be read leaves the launch as it is and says the skills were not compared.
+ * No recorded source, a seat the spec does not declare, or no skills to reconcile: nothing to compare, nothing said.
+ */
+async function checkReplayedSkillDrift(
+  deps: { db: Database.Database; rigRepo: { getRigSpecSource(rigId: string): string | null }; specReader: SeatStartupSpecReader | null; runtimeAdapters: Record<string, RuntimeAdapter | undefined> },
+  input: { rigId: string; nodeId: string; logicalId: string; runtime: string | null; sessionName: string },
+  context: FreshStartupContext,
+  replayed: ReplayedStartup,
+): Promise<void> {
+  const adapter = input.runtime ? deps.runtimeAdapters[input.runtime] : undefined;
+  if (!deps.specReader || !adapter || !deps.rigRepo.getRigSpecSource(input.rigId)) return;
+  const read = await deps.specReader.readSeatStartupFromSpec({ rigId: input.rigId, nodeId: input.nodeId, adapter, sessionName: input.sessionName });
+  if (read.kind === "refused") {
+    context.sourceWarnings.push(seatSkillDriftUncheckedWarning(replayed, read.message));
+    return;
+  }
+  if (read.kind !== "spec" || !read.skillSelection) return;
+  const drift = compareSeatSkillSelection(read.skillSelection);
+  if (!drift) {
+    context.skillsInLine = { specSource: read.specSource, replayed };
+    return;
+  }
+  const rigName = (deps.db.prepare("SELECT name FROM rigs WHERE id = ?").get(input.rigId) as { name: string } | undefined)?.name;
+  const observation: SeatSkillDriftObservation = {
+    ...drift, specSource: read.specSource, replayed,
+    fix: seatSkillDriftFix(input.logicalId, rigName === undefined ? input.rigId : rigAdviceHandleIn(deps.db, input.rigId, rigName)),
+  };
+  context.skillsDrift = observation;
+  context.sourceWarnings.push(seatSkillDriftWarning(observation));
 }
 
 /**

@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A seat relaunched from its saved startup files says when its skills no longer match its spec
+
+- Symptom: a seat relaunched with `--startup-from stored` (or `snapshot:<id>`) kept the skills its last spec launch projected, because a replay never updates skills. After the spec narrowed a seat's `plugin_skills`, the old skills stayed in its skill folder and nothing said so.
+- `rig seat launch --fresh` and `rig up --existing --fresh <seat>` from stored files or a snapshot's copy (and their `--plan` and restore checks) now compare the seat's own recorded skill selection with the one its spec gives now, through a read of the spec that writes nothing, and warn when they differ: `skills_drift: … (no longer in the spec: …; in the spec but not projected: …). To bring them in line with the spec, run: rig seat launch '<seat>' --fresh --stop --reason "<why>"`. The launch itself is unchanged. If the spec cannot be read, the warning is `skills_drift_unchecked: …` with the reason.
+- Visible change: `rig seat status` has a `Skills drift:` line (`skills_drift` in `--json`): the newest drift a replay found, or `none known`. A later fresh launch from the spec, or a replay that finds the skills in line, clears it. A new event, `seat.skills_drift_observed`, records each drift and each clear.
+
 ### Seats get the running OpenRig's `openrig-core` plugin, not an older copy (workspaces-o9o.17)
 
 - Symptom: after an upgrade, seats kept loading old `openrig-core` skills and plugin files. Measured on 2026-11-16 on 0.6.10: `~/.openrig/plugins/openrig-core` was a copy from 10-21 that differed from the installed package in 16 files (its `hooks/claude.json` had no PreToolUse guard), and every Claude seat projected that day got that copy's skills. The global `openrig-skills` seed in `~/.claude/skills` and `~/.agents/skills` was stale too.

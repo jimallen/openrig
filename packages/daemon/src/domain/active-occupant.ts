@@ -200,11 +200,12 @@ export function setOff(command: string): string {
  *  (The one place `rig up --existing` is named is not a fresh-start suggestion but a measured non-recommendation: the
  *  malformed-startup-context guidance in seat-startup-source.ts says why `rig down` + `rig up --existing --fresh` does not
  *  reliably heal an unreadable saved row.) */
-export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: import("./seat-startup-source.js").StartupFrom): string {
+export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: import("./seat-startup-source.js").StartupFrom, opts?: { stop?: boolean }): string {
   const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
   // OF-32: a fresh seat re-reads its rig's spec by default. An operator who chose `--startup-from stored` for this
-  // restore is told the same escape for the seats it could not start.
-  return `rig seat launch ${seat} --fresh${startupFrom && startupFrom !== "spec" ? ` --startup-from ${startupFrom}` : ""} --reason "<why>"`;
+  // restore is told the same escape for the seats it could not start. `stop`: the seat is live (a live managed seat
+  // requires --stop), as after a launch that just started it.
+  return `rig seat launch ${seat} --fresh${opts?.stop ? " --stop" : ""}${startupFrom && startupFrom !== "spec" ? ` --startup-from ${startupFrom}` : ""} --reason "<why>"`;
 }
 
 /** The stop-for-decision explanation for such a seat, worded once for apply and preview. */

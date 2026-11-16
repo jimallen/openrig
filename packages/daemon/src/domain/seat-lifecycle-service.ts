@@ -18,7 +18,8 @@ import { deriveSessionName, parseSessionName } from "./session-name.js";
 import type { NodeLauncher } from "./node-launcher.js";
 import { writeStartupContext, type StartupOrchestrator } from "./startup-orchestrator.js";
 import { freshSeatLaunchCommand, setOff } from "./active-occupant.js";
-import { projectRereadSkills, readStoredStartupContext, resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { readSeatSkillDrift, skillsDriftEventAfterLaunch } from "./seat-skill-drift.js";
+import { projectRereadSkills, readStoredStartupContext, resolveFreshSeatStartup, skillsAfterLaunch, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
@@ -1749,6 +1750,7 @@ export class SeatLifecycleService {
     if (!identity.ok) this.sessionRegistry.updateStartupStatus(launch.session.id, "attention_required");
 
     let persisted: PersistedEvent | null = null;
+    let driftPersisted: PersistedEvent | null = null;
     const tx = this.db.transaction(() => {
       this.db.prepare(`
         UPDATE nodes SET
@@ -1782,9 +1784,16 @@ export class SeatLifecycleService {
         operator: input.operator ?? null,
         status: attentionRequired ? "attention_required" : "ready",
       });
+      // workspaces-o9o.30: the seat's skills against its spec, as this launch found them (a drift, or an in-line launch
+      // that clears a drift `rig seat status` shows).
+      const driftEvent = skillsDriftEventAfterLaunch(
+        { rigId: seat.rigId, nodeId: node.id, logicalId: seat.logicalId, sessionName: canonicalSessionName },
+        skillsAfterLaunch(startup), readSeatSkillDrift(this.db, node.id) !== null);
+      if (driftEvent) driftPersisted = this.eventBus.persistWithinTransaction(driftEvent);
     });
     tx();
     if (persisted) this.eventBus.notifySubscribers(persisted);
+    if (driftPersisted) this.eventBus.notifySubscribers(driftPersisted);
 
     if (attentionRequired) {
       return {

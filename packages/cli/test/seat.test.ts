@@ -251,6 +251,37 @@ describe("rig seat status", () => {
     expect(output).toContain("Previous occupant: none");
   });
 
+  // workspaces-o9o.30: the skills drift line, with the fix exactly as the daemon spelled it; none from an older daemon.
+  it.each([
+    ["a drift after a stored launch", {
+      extra: ["gamma"], missing: ["beta"], specSource: "/lib/team/rig.yaml", startupSource: "stored",
+      fix: `rig seat launch 'dev.impl@seat-rig' --fresh --stop --reason "<why>"`, observedAt: "2026-11-16 19:00:00",
+    }, `Skills drift: no longer in the spec: gamma; in the spec but not projected: beta (spec /lib/team/rig.yaml; seen 2026-11-16 19:00:00 after a launch from its saved startup files). To bring them in line with the spec, run: rig seat launch 'dev.impl@seat-rig' --fresh --stop --reason "<why>"`],
+    ["a drift after a snapshot launch", {
+      extra: [], missing: ["beta"], specSource: "/s", startupSource: "snapshot", snapshotId: "S1",
+      fix: "F", observedAt: "T",
+    }, "Skills drift: in the spec but not projected: beta (spec /s; seen T after a launch from snapshot S1's copy of its startup files). To bring them in line with the spec, run: F"],
+    ["no drift known", null, "Skills drift: none known"],
+  ] as const)("prints the skills drift line: %s", async (_label, drift, line) => {
+    const deps = makeDeps({ status: 200, data: { ...STATUS, skills_drift: drift } }, []);
+
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "status", "dev-impl@seat-rig"]);
+    });
+
+    expect(logs.filter((l) => l.startsWith("Skills drift:"))).toEqual([line]);
+  });
+
+  it("prints no skills drift line for a daemon that does not report one", async () => {
+    const deps = makeDeps({ status: 200, data: STATUS }, []);
+
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "status", "dev-impl@seat-rig"]);
+    });
+
+    expect(logs.filter((l) => l.startsWith("Skills drift:"))).toEqual([]);
+  });
+
   it("explains a confirmed missing tmux session", async () => {
     const deps = makeDeps({
       status: 200,

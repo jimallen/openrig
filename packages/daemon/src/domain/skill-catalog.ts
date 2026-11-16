@@ -124,6 +124,10 @@ export interface ReconcileSkillLoadoutResult {
   receipts: SkillProjectionReceipt[];
   removed: string[];
   errors: SkillCatalogFailure[];
+  /** workspaces-o9o.30: the reconciling owner's topology selection as the ownership manifest records it now
+   *  (`recorded`), and as this loadout would record it (`planned`). Set once both are known, so a dry run
+   *  (`apply: false`) can say how a launch that does not reconcile differs from one that would. */
+  topologySelection?: { owner: string; recorded: string[]; planned: string[] };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1128,7 +1132,8 @@ export function reconcileSkillLoadout(input: {
   }
 
   if (errors.length > 0 || !input.apply) {
-    return { ok: errors.length === 0, applied: false, freshLaunchRequired: false, runtime: input.runtime, targetRoot, manifestPath, receipts, removed: [], errors };
+    const topologySelection = { owner: topologyOwner, recorded: Object.hasOwn(manifest.topologySelections, topologyOwner) ? [...manifest.topologySelections[topologyOwner]!].sort(compareBytes) : [], planned: currentTopology };
+    return { ok: errors.length === 0, applied: false, freshLaunchRequired: false, runtime: input.runtime, targetRoot, manifestPath, receipts, removed: [], errors, topologySelection };
   }
 
   const changed = receipts.filter((receipt) => receipt.status === "missing" || receipt.status === "stale");
