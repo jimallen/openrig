@@ -8,6 +8,7 @@ import type { StatusDeps } from "./status.js";
 import { shellQuote } from "../cross-host-executor.js";
 import { damagedRowsIn, unreadableHeldIn, warnDamagedRows, warnSavedRowRefusal } from "../lib/damaged-rows.js";
 import { setOff, shellWord } from "@openrig/daemon/command-text";
+import { formatQueuedListing, type QueuedListingView } from "../lib/queued-listing.js";
 
 export type SeatDeps = StatusDeps;
 
@@ -354,6 +355,29 @@ process writing directly to the terminal. Disable deliberately before lifecycle 
     .description("Read retained messages outside the protected terminal; reading never delivers them")
     .action(async (seat: string, opts: {limit: string; offset: string; id?: string; json?: boolean}) => {
       await guardRequest("GET", `/api/seat/held-messages/${encodeURIComponent(seat)}?limit=${encodeURIComponent(opts.limit)}&offset=${encodeURIComponent(opts.offset)}${opts.id ? `&id=${encodeURIComponent(opts.id)}` : ""}`, undefined, opts.json);
+    });
+  // workspaces-o9o.9: the rows `rig send` calls "queued", which held-messages (the typing guard's retained rows) never lists.
+  cmd.command("queued").argument("<seat>").option("--limit <n>", "Most rows to show", "100").option("--json")
+    .description("List the messages waiting for a seat (accepted, not yet received), in delivery order; reading changes nothing")
+    .addHelpText("after", `
+<seat> is the exact session name, as rig send and rig seat cancel-message take it.
+Each row: id, sender, when it was recorded, state (accepted, or attempting), attempt count,
+why the last attempt paused, and a short preview of the body. Previews go through the
+same secret redaction as transcripts. The first row is the next one the seat gets.
+These are not the typing guard's held messages: rig seat held-messages lists those.
+End a message that will never arrive with rig seat cancel-message <seat> <id> --reason <text>.
+`)
+    .action(async (seat: string, opts: { limit: string; json?: boolean }) => {
+      const deps = getDeps(); const daemon = await getDaemonStatus(deps.lifecycleDeps);
+      if (!daemonStatusGuard(daemon)) return;
+      const result = await deps.clientFactory(getDaemonUrl(daemon)).get<Record<string, unknown>>(`/api/seat/queued/${encodeURIComponent(seat)}?limit=${encodeURIComponent(opts.limit)}`);
+      if (result.status >= 400) {
+        console.error(typeof result.data["error"] === "string" ? result.data["error"] : `rig seat queued failed (HTTP ${result.status})`);
+        process.exitCode = result.status >= 500 ? 2 : 1;
+        return;
+      }
+      if (opts.json) { console.log(JSON.stringify(result.data)); return; }
+      for (const line of formatQueuedListing(result.data as unknown as QueuedListingView)) console.log(line);
     });
   cmd.command("retire-held-message").argument("<seat>").argument("<id>").requiredOption("--reason <text>").option("--json")
     .description("Release one held message's active quota, preserving evidence; does not deliver or close work")

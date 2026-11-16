@@ -3,6 +3,8 @@ import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
+import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
@@ -47,6 +49,8 @@ function seed(f: Fixture): void {
   f.outbox.retain({ outboxId: "held-1", senderSession: "lead@test", destinationSession: "worker@test", body: "held body" }, f.guard.target("a"));
   f.outbox.retain({ outboxId: "held-2", senderSession: "lead@test", destinationSession: "worker@test", body: "second held body" }, f.guard.target("a"));
   f.outbox.record({ outboxId: "rec-1", senderSession: "lead@test", destinationSession: "worker@test", body: "recorded body" });
+  // workspaces-o9o.9: an open row the pump owes a delivery, which `GET /api/seat/queued/:seat` lists.
+  new MessageStore(f.db).accept({ id: messageId("open-1"), seat: "worker@test", sender: "lead@test", body: "open body" });
   f.db.prepare("UPDATE outbox_entries SET native_nonce = ?").run(SENTINEL);
 }
 
@@ -64,18 +68,20 @@ describe("the native nonce never leaves the daemon", () => {
     await call("POST /api/seat/retire-held-message/:seat/:id", "POST", "/api/seat/retire-held-message/worker@test/held-2", "lead@test", { reason: "read" });
     await call("POST /api/queue/outbox/record", "POST", "/api/queue/outbox/record", "lead@test", { destinationSession: "worker@test", body: "new" });
     await call("GET /api/queue/outbox/list", "GET", "/api/queue/outbox/list?senderSession=lead@test", "lead@test");
+    await call("GET /api/seat/queued/:seat", "GET", "/api/seat/queued/worker@test", "lead@test");
     await call("POST /api/transport/cancel-message/:seat/:id", "POST", "/api/transport/cancel-message/worker@test/rec-1", "lead@test", { reason: "x" });
 
     // Positive control: the routes answered with the rows, so a clean zero is not an empty answer.
     expect(responses.map((r) => [r.route, r.status])).toEqual([
       ["GET /api/seat/held-messages/:seat", 200], ["GET /api/seat/held-messages/:seat?id=", 200],
       ["POST /api/seat/retire-held-message/:seat/:id", 200], ["POST /api/queue/outbox/record", 201],
-      ["GET /api/queue/outbox/list", 200], ["POST /api/transport/cancel-message/:seat/:id", expect.any(Number)],
+      ["GET /api/queue/outbox/list", 200], ["GET /api/seat/queued/:seat", 200], ["POST /api/transport/cancel-message/:seat/:id", expect.any(Number)],
     ]);
     expect(responses[0]!.text).toContain("held body");
     expect(responses[1]!.text).toContain("held body");
     expect(responses[2]!.text).toContain("second held body");
     expect(responses[4]!.text).toContain("recorded body");
+    expect(responses[5]!.text).toContain("open body");
     for (const r of responses) {
       expect(r.text, r.route).not.toContain(SENTINEL);
       expect(r.text, r.route).not.toMatch(/nonce/i);

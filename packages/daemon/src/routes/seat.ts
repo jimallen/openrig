@@ -20,8 +20,13 @@ import { buildRebuildPrimingChain } from "../domain/rebuild-priming-chain.js";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { transportSenderSession } from "./require-sender-identity.js";
+import { listQueued } from "../domain/seat-messaging/queued-messages.js";
+import { SqliteQueuedMessages } from "../adapters/sqlite-queued-messages.js";
 
 export const seatRoutes = new Hono();
+
+const QUEUED_DEFAULT_LIMIT = 100;
+const QUEUED_MAX_LIMIT = 1000;
 
 // S09 is an independent delivery preference, never a lifecycle or permission change.
 seatRoutes.post("/set-typing-guard/:seatRef", async c => {
@@ -54,6 +59,16 @@ seatRoutes.get("/held-messages/:seatRef", c => {
     }
     return c.json(outbox.heldForNode(target.nodeId, Number(c.req.query("limit") ?? 100), Number(c.req.query("offset") ?? 0)));
   } catch (error) { return c.json({ error: (error as Error).message }, 400); }
+});
+
+// workspaces-o9o.9: the rows `rig send` calls "queued" — open, owed a delivery by the pump — which held-messages (the guard's retained rows)
+// never lists. Keyed on the exact session name, as cancel-message is, so an id read here is the id that command takes. Read-only.
+seatRoutes.get("/queued/:seat", c => {
+  const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
+  if (!outbox) return c.json({ error: "Outbox unavailable" }, 503);
+  const raw = Number(c.req.query("limit") ?? QUEUED_DEFAULT_LIMIT);
+  const limit = Number.isInteger(raw) && raw > 0 ? Math.min(raw, QUEUED_MAX_LIMIT) : QUEUED_DEFAULT_LIMIT;
+  return c.json(listQueued(new SqliteQueuedMessages(outbox.db), c.req.param("seat"), limit));
 });
 
 seatRoutes.post("/retire-held-message/:seatRef/:id", async c => {

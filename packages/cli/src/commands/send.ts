@@ -1178,11 +1178,13 @@ async function runFanOutSend(params: {
   }
 
   const data = res.data;
-  const results = (data["results"] as Array<{ sessionName: string; ok: boolean; error?: string; outcome?: string }>) ?? [];
+  const results = (data["results"] as Array<{ sessionName: string; ok: boolean; error?: string; outcome?: string; reason?: string }>) ?? [];
   // Round-2 F1 (desk-binding): ONE verdict line per recipient. A
   // staged-unresolved recipient gets its staged verdict INSTEAD of "sent" —
   // the false delivery claim is suppressed entirely, not qualified.
   for (const r of results) {
+    // A row the pump carries waits for a busy seat; only the typing guard's rows are "held" (workspaces-o9o.9).
+    if (r.outcome === "retained" && r.reason === "handed_to_pump") { console.log(`${r.sessionName}: accepted, not yet received; list what waits for it with rig seat queued ${shellWord(r.sessionName)}`); continue; }
     if (r.outcome === "retained") { console.log(`${r.sessionName}: retained, not delivered; inspect with rig seat held-messages`); continue; }
     if (!r.ok) {
       console.log(`${r.sessionName}: FAILED — ${r.error ?? "unknown error"}`);

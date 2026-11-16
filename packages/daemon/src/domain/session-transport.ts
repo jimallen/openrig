@@ -24,6 +24,7 @@ import type { MessageHandOff } from "./seat-messaging/hand-off.js";
 import { messageId } from "./seat-messaging/ports.js";
 import { MessageStore } from "./seat-messaging/message-store.js";
 import { describeHeld, describeQueuedForSend, type HeldMessages } from "./seat-messaging/held-messages.js";
+import { queuedListCommand } from "./seat-messaging/queued-messages.js";
 import { splitMarkedBlock } from "../adapters/seat-gate-marker.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
@@ -1735,9 +1736,9 @@ export class SessionTransport {
       const nowMs = Date.now();
       try { heldMessages = describeHeld(new MessageStore(this.db).openFor(sessionName), nowMs); } catch { /* best effort, like the posture */ }
       // These rows wait for the pump, not for a typing-guard release: they are "queued", never "held" (`rig seat held-messages` lists only
-      // guard-retained rows, so "3 held" beside its empty list read as a stuck seat). No command lists them by row, so no pointer is given.
+      // guard-retained rows, so "3 held" beside its empty list read as a stuck seat). `rig seat queued` lists them by row (workspaces-o9o.9).
       const busy = seatPosture?.kind === "busy"; // an unknown-open-turn only may be busy: its posture line says so itself
-      const queued = heldMessages ? ` (${describeQueuedForSend(heldMessages, nowMs, busy)})` : "";
+      const queued = heldMessages ? ` (${describeQueuedForSend(heldMessages, nowMs, busy)}; list them: ${setOff(queuedListCommand(sessionName, shellWord))})` : "";
       return { ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
         warning: `Accepted, not yet received: OpenRig carries it until the seat's gate records it.${seatPosture ? ` (seat ${seatPosture.line})` : ""}${queued}`,
         ...(seatPosture ? { seatPosture } : {}), ...(heldMessages ? { heldMessages } : {}) };

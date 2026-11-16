@@ -117,7 +117,8 @@ describe("SessionTransport and the pump", () => {
         db.prepare("UPDATE outbox_entries SET ts_dispatched = ? WHERE outbox_id = 'q1'").run(new Date(Date.now() - 381 * 60_000).toISOString());
         const result = await transport.send(SEAT, "two", { deliveryId: "q2", actorSession: "lead@hr" });
         expect(result.seatPosture).toMatchObject({ kind: "busy" });
-        expect(result.warning).toMatch(/\(2 queued \(seat busy\) for this seat, oldest 6h2[01]m\)$/);
+        // workspaces-o9o.9: and the command that lists them, so the count is never a number nobody can look behind.
+        expect(result.warning).toMatch(/\(2 queued \(seat busy\) for this seat, oldest 6h2[01]m; list them: 'rig seat queued dev@hr'\)$/);
         expect(result.warning).not.toContain("held");
         expect(result.heldMessages).toMatchObject({ count: 2 }); // the JSON field keeps its name and shape
       });
@@ -144,7 +145,7 @@ describe("SessionTransport and the pump", () => {
         expect(second.seatPosture).toMatchObject({ kind: "needs_input" });
         expect(second.seatPosture?.line).toMatch(/^waiting on a question to the human since /);
         // Not busy: the posture line says what the seat waits on, and the rows are only "queued".
-        expect(second.warning).toMatch(/\(seat waiting on a question to the human since .*\) \(2 queued for this seat, oldest 6h2[01]m\)$/);
+        expect(second.warning).toMatch(/\(seat waiting on a question to the human since .*\) \(2 queued for this seat, oldest 6h2[01]m; list them: 'rig seat queued dev@hr'\)$/);
         expect(second.warning).not.toContain("held");
         expect(second.warning).not.toContain("permission_prompt");
       });

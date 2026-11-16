@@ -490,6 +490,9 @@ version, from checking the environment to a useful report to the OpenRig team.
   draft in that seat: automatic input is retained instead of typed while the guard is on.
   **`rig seat held-messages`** lists what was retained and **`rig seat retire-held-message`**
   retires one; disabling the guard does not replay held messages.
+- **`rig seat queued <seat>`** — list the messages waiting for a seat that is busy or not yet
+  taking input (what `rig send` calls "queued"), in delivery order, with sender, age, attempts and
+  a redacted preview. Read-only; end one that will never arrive with `rig seat cancel-message`.
 - **`rig compact-plan`** → **`rig compact`** — who is near the context wall, then act on it.
   **Ordering matters: running `compact` without the plan is guessing which seat needed it.**
   Managed compaction waits for the seat's restore map before compacting; `rig compact --state`,

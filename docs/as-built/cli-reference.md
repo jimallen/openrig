@@ -885,6 +885,7 @@ onto a discovered successor, so the command has input; it no longer pairs with `
 | `rig seat` | — | — |
 | `rig seat set-typing-guard <seat>` | — | `--enabled <boolean>` **required**<br>`--reason <text>` **required**<br>`--json` |
 | `rig seat held-messages <seat>` | — | `--limit <n>`<br>`--offset <n>`<br>`--id <id>`<br>`--json` |
+| `rig seat queued <seat>` | — | `--limit <n>`<br>`--json`<br>Lists the messages waiting for the seat (accepted, not yet received) in delivery order, previews redacted; read-only |
 | `rig seat retire-held-message <seat> <id>` | — | `--reason <text>` **required**<br>`--json` |
 | `rig seat retire-unsettled-send <seat> <id>` | — | `--reason <text>` **required**<br>`--json`<br>Closes an unsettled hc send at least 15 minutes old; refuses a settled row or another seat's |
 | `rig seat status <seat>` | — | `--json` |
