@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { getNodeInventory } from "../src/domain/node-inventory.js";
 import { relayEventNames } from "../src/domain/claude-activity-hooks.js";
@@ -879,6 +879,18 @@ describe("RestoreCheckService", () => {
     expect(result.counts.red).toBe(0);
     expect(result.verdict).toBe("restorable_with_caveats");
     expect(result.rigs[0]).toEqual(expect.objectContaining({ status: "ready_with_caveats", blockingChecks: [] }));
+  });
+
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("o9o.46: with no substrate root injected, the spec is looked for under the instance's own home, not the account's", () => {
+    vi.stubEnv("OPENRIG_SHARED_DOCS_ROOT", undefined);
+    vi.stubEnv("HOME", "/home/operator");
+    const looked: string[] = [];
+    const service = new RestoreCheckService(mockDeps({ exists: (p) => { looked.push(p); return true; } }));
+    service.check({ noHooks: true });
+    expect(looked).toContain(path.join("/custom-instance", "shared-docs", "rigs", "test-rig", "rig.yaml"));
+    expect(looked.filter((p) => p.startsWith("/home/operator"))).toEqual([]);
   });
 
   it("rig root exists but rig.yaml missing produces spec-present yellow", () => {

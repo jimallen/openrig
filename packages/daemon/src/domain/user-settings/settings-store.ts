@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync, lstatSy
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as os from "node:os";
+import { resolveSharedDocsRigsRoot } from "../../openrig-compat.js";
 
 const DEFAULT_CONFIG_PATH = path.join(
   process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig"),
@@ -51,16 +52,15 @@ const DEFAULT_SKILLS_ROOT = path.join(
 
 /** OPR.0.5.3.6 — the LEGACY topology location, ruled an arbitrary folder
  *  (founder, 2026-08-14) but kept readable so pre-convention rigs migrate
- *  instead of flag-daying. Resolves where legacy code ACTUALLY wrote —
- *  mirroring the codex adapter's shared-docs precedent (OPENRIG_SHARED_DOCS_ROOT
- *  env, else the literal ~/.openrig/shared-docs), NOT $OPENRIG_HOME: boxes with
- *  a non-default home still carry their legacy tree at ~/.openrig/shared-docs.
- *  This helper is the ONE home for the literal: walkers call it for their
- *  fallback and must emit the named advisory when a read resolves here. */
+ *  instead of flag-daying. The shared-docs rigs folder: OPENRIG_SHARED_DOCS_ROOT,
+ *  else <OPENRIG_HOME>/shared-docs (workspaces-o9o.46: it was the account's
+ *  ~/.openrig/shared-docs whatever OPENRIG_HOME said, so a scratch instance read
+ *  and wrote the operator's tree; a box with a non-default home and its tree
+ *  still at ~/.openrig/shared-docs is told once to set OPENRIG_SHARED_DOCS_ROOT).
+ *  The rule is shared-docs-root.ts; walkers call this for their fallback and must
+ *  emit the named advisory when a read resolves here. */
 export function resolveLegacyTopologyRigsRoot(): string {
-  const sharedDocsRoot = process.env["OPENRIG_SHARED_DOCS_ROOT"]?.trim()
-    || path.join(os.homedir(), ".openrig", "shared-docs");
-  return path.join(sharedDocsRoot, "rigs");
+  return resolveSharedDocsRigsRoot();
 }
 
 export const SETTINGS_VALID_KEYS = [

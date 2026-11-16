@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import {
   getDefaultOpenRigPath,
   readOpenRigEnv,
+  resolveSharedDocsRigsRoot,
 } from "./openrig-compat.js";
 
 // User Settings v0 — extends the existing ConfigStore with new namespaces
@@ -230,15 +231,13 @@ const DEFAULT_WORKSPACE_ROOT = getDefaultOpenRigPath("workspace");
 
 /** OPR.0.5.3.6 — twin of the daemon settings-store helper. The LEGACY topology
  *  location, kept readable (advisory-emitting fallback) so pre-convention rigs
- *  migrate instead of flag-daying. Resolves where legacy code ACTUALLY wrote —
- *  the codex adapter's shared-docs precedent (OPENRIG_SHARED_DOCS_ROOT env,
- *  else the literal ~/.openrig/shared-docs), NOT $OPENRIG_HOME: boxes with a
- *  non-default home still carry their legacy tree at ~/.openrig/shared-docs.
- *  This is the ONE CLI home for the literal; walkers import it and carry none. */
+ *  migrate instead of flag-daying. The shared-docs rigs folder: OPENRIG_SHARED_DOCS_ROOT,
+ *  else <OPENRIG_HOME>/shared-docs (workspaces-o9o.46: it was the account's
+ *  ~/.openrig/shared-docs whatever OPENRIG_HOME said; a box with a non-default
+ *  home and its tree still there is told once to set OPENRIG_SHARED_DOCS_ROOT).
+ *  The rule is @openrig/daemon/shared-docs-root; walkers import this and carry none. */
 export function resolveLegacyTopologyRigsRoot(): string {
-  const sharedDocsRoot = process.env["OPENRIG_SHARED_DOCS_ROOT"]?.trim()
-    || join(homedir(), ".openrig", "shared-docs");
-  return join(sharedDocsRoot, "rigs");
+  return resolveSharedDocsRigsRoot();
 }
 
 const DEFAULT_CLAUDE_COMPACTION_PRE_COMPACT_INSTRUCTION =

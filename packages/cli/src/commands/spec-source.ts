@@ -74,7 +74,8 @@ the spec's <pod>.<member> counts as declared by that member and is compared with
 directory, but links are not followed), so a library link keeps leading to whatever release it points at later.
 
 This decides what the rig's seats are started from, so the spec file must be one a seat could not have written:
-it has to lie (by its real location, links followed) under <OPENRIG_HOME>/shared-docs/rigs, the released copies
+it has to lie (by its real location, links followed) under the shared-docs rigs folder (<OPENRIG_HOME>/shared-docs/rigs, or
+$OPENRIG_SHARED_DOCS_ROOT/rigs when that is set), the released copies
 (~/.agents-release) or the spec library, be a regular file with one link, and sit on a path owned by you or root
 and not writable by group or others. A spec in a temp folder, a git work tree or a seat's folder is refused.
 The same rules are applied again every time the recorded source is READ (a fresh launch, a --fresh restore and its

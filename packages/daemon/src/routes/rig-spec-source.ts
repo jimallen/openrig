@@ -20,7 +20,7 @@ import type { RigRepository } from "../domain/rig-repository.js";
 import { RigSpecSourceService, type SpecSourceRefusalCode } from "../domain/rig-spec-source-service.js";
 import { specSourceTrustOf } from "../domain/recorded-spec-source-judge.js";
 import type { SeatLifecycleDeps } from "../domain/seat-lifecycle-service.js";
-import { getOpenRigHome } from "../openrig-compat.js";
+import { resolveSharedDocsRigsRoot } from "../openrig-compat.js";
 import { transportSenderSession } from "./require-sender-identity.js";
 
 export interface RigSpecSourceRoutesOpts {
@@ -39,7 +39,7 @@ function statusOf(code: SpecSourceRefusalCode): 400 | 404 | 409 {
 export function rigSpecSourceRoutes(opts?: RigSpecSourceRoutesOpts): Hono {
   const router = new Hono();
   const requireOperator = authBearerTokenMiddleware({ expectedToken: opts?.bearerToken ?? null });
-  const sharedDocsRigsRoot = () => opts?.sharedDocsRigsRoot ?? nodePath.join(getOpenRigHome(), "shared-docs", "rigs");
+  const sharedDocsRigsRoot = () => opts?.sharedDocsRigsRoot ?? resolveSharedDocsRigsRoot();
 
   const service = (c: { get: (key: string) => unknown }) => {
     // The MCP trust roots (released copies, spec library) and their judging io, read here, never widened for them.

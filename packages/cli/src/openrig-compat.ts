@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { legacySharedDocsNotice, sharedDocsRoot } from "@openrig/daemon/shared-docs-root";
 
 const warnedKeys = new Set<string>();
 
@@ -105,4 +106,18 @@ export function getCompatibleOpenRigPath(filename: string): string {
   }
 
   return primaryPath;
+}
+
+/** workspaces-o9o.46: this instance's shared-docs tree (OPENRIG_SHARED_DOCS_ROOT, else <OpenRig home>/shared-docs), the rule in
+ *  shared-docs-root.ts. Says once per process how to keep a tree left at ~/.openrig/shared-docs by a non-default home. */
+export function resolveSharedDocsRoot(): string {
+  const sources = { env: process.env, openrigHome: getOpenRigHome() };
+  const notice = legacySharedDocsNotice({ ...sources, accountHome: homedir() }, existsSync);
+  if (notice) warnOnce("path:shared-docs", notice);
+  return sharedDocsRoot(sources);
+}
+
+/** The rigs folder of resolveSharedDocsRoot(). */
+export function resolveSharedDocsRigsRoot(): string {
+  return join(resolveSharedDocsRoot(), "rigs");
 }

@@ -205,7 +205,7 @@ import { NtfyNotificationAdapter } from "./domain/mission-control/notification-a
 import { WebhookNotificationAdapter } from "./domain/mission-control/notification-adapter-webhook.js";
 import type { NotificationAdapter } from "./domain/mission-control/notification-adapter-types.js";
 import type { BindingAttachmentType } from "./domain/types.js";
-import { OPENRIG_HOME } from "./openrig-compat.js";
+import { OPENRIG_HOME, resolveSharedDocsRoot } from "./openrig-compat.js";
 import { SeatLeaseStore } from "./adapters/seat-lease-store.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
@@ -733,9 +733,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     sharedCodexHome: codexHome, seatCwd: launch.cwd,
     profileFile: launch.profile ? nodePath.join(codexSeatHomePath(OPENRIG_HOME, launch.sessionName), `${launch.profile}.config.toml`) : null,
   }));
+  // workspaces-o9o.46: resolved once at boot, which is also where a tree left at ~/.openrig/shared-docs by a non-default home is
+  // reported (once; nothing is moved).
+  const sharedDocsRootPath = resolveSharedDocsRoot();
   const prepareTeamWorkspace = (sessionName: string) => prepareCodexTeamWorkspace(sessionName,
-    new ContextPackSettingsStore().resolveConfig().workspaceRoot,
-    process.env.OPENRIG_SHARED_DOCS_ROOT?.trim() || nodePath.join(daemonHome, ".openrig", "shared-docs"), daemonHome);
+    new ContextPackSettingsStore().resolveConfig().workspaceRoot, sharedDocsRootPath, daemonHome);
   // S2: a Codex seat's restart settles its seen store against the thread's rollout. `contextUsageStore` is read at the restart, not here.
   const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
   const seatMessages = new MessageStore(db);

@@ -2,7 +2,8 @@ import { savedRowDamageMessage } from "./node-row-damage.js";
 import { claudeActivityRelayPath } from "./claude-activity-hooks.js";
 import { existsSync, accessSync, constants } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { getCompatibleOpenRigPath } from "../openrig-compat.js";
+import { getCompatibleOpenRigPath, getOpenRigHome } from "../openrig-compat.js";
+import { sharedDocsRoot } from "../shared-docs-root.js";
 import { shellQuote as quoteShellArgument } from "../adapters/shell-quote.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import { validatePreRestore } from "./restore-preconditions.js";
@@ -1553,7 +1554,8 @@ export class RestoreCheckService {
 
   private checkSpecPresent(rig: { rigId: string; name: string }): CheckEntry {
     // OPR.0.3.2.14 — subpath scrubbed (internal-team layout → generic placeholder).
-    const substrateRoot = this.deps.substrateRoot ?? join(process.env["HOME"] ?? "~", ".openrig", "shared-docs");
+    // workspaces-o9o.46: this daemon's own tree (OPENRIG_SHARED_DOCS_ROOT, else <its home>/shared-docs), not the account's.
+    const substrateRoot = this.deps.substrateRoot ?? sharedDocsRoot({ env: process.env, openrigHome: this.deps.stateDir ?? getOpenRigHome() });
     const rigRoot = join(substrateRoot, "rigs", rig.name);
     const rigYaml = join(rigRoot, "rig.yaml");
 

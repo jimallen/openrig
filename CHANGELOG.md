@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The shared-docs tree follows OPENRIG_HOME (workspaces-o9o.46)
+
+- Symptom: a scratch daemon started with its own `OPENRIG_HOME` created `~/.openrig/shared-docs/rigs/<rig>/state/<pod>` in the operator's real home and gave that folder to a Codex seat as a writable `--add-dir`. So an instance meant to be isolated wrote into the live one's tree.
+- Cause: eight places built the shared-docs path, two ways. Five used the account's home (`~/.openrig/shared-docs`) whatever `OPENRIG_HOME` said: the Codex queue-state `--add-dir`, the team workspace the daemon prepares for a Codex seat, the legacy topology fallback in the daemon and the CLI, and restore-check's spec lookup (which also ignored `OPENRIG_SHARED_DOCS_ROOT`). Two used `OPENRIG_HOME`: the trusted rig-spec folder of `rig spec-source` and its judge. `rig heartbeat` read only the variable.
+- Now there is one rule, in one place (`@openrig/daemon/shared-docs-root`): `OPENRIG_SHARED_DOCS_ROOT` when set, else `<OPENRIG_HOME>/shared-docs`. All eight use it. The trusted spec folder now honours `OPENRIG_SHARED_DOCS_ROOT` too, so it is always the same tree the Codex state folders live in. `rig heartbeat` finds `<OPENRIG_HOME>/shared-docs` with no variable set (`RIGX_SHARED_DOCS_ROOT` still comes first).
+- **Behaviour change.** It reverses the choice recorded in the code ("NOT $OPENRIG_HOME: boxes with a non-default home still carry their legacy tree at ~/.openrig/shared-docs"). With the default home (`~/.openrig`) the path is unchanged; every live host measured on 2026-11-16 uses the default. On a box with a non-default `OPENRIG_HOME` whose tree is still at `~/.openrig/shared-docs` and has none at `<OPENRIG_HOME>/shared-docs`, the daemon (at start) and the CLI print one warning naming the old tree. Nothing is moved or copied. To keep using it, set `OPENRIG_SHARED_DOCS_ROOT=~/.openrig/shared-docs`.
+
 ### The relaunch preview's Pi notice names the Pi a login shell resolves, not the daemon's (workspaces-o9o.65)
 
 - Symptom: the relaunch preview said "Pi version 1.5.0 answered on the daemon's PATH" (`~/.local/bin/pi`), while every seat ran `~/.pi/agent/bin/pi` 1.4.0 (sparky, 2026-11-16).

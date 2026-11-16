@@ -71,7 +71,8 @@ function makeEntry(overrides?: Partial<ProjectionEntry>): ProjectionEntry {
   };
 }
 
-function testQueueRoot(sharedDocsRoot = nodePath.join(os.homedir(), ".openrig", "shared-docs")): string {
+// workspaces-o9o.46: the default tree is <OPENRIG_HOME>/shared-docs (the fixture home the vitest setup sets), no longer the account's.
+function testQueueRoot(sharedDocsRoot = nodePath.join(process.env["OPENRIG_HOME"] ?? "", "shared-docs")): string {
   return nodePath.join(sharedDocsRoot, "rigs", "test-rig", "state", "dev");
 }
 
@@ -557,6 +558,25 @@ describe("Codex runtime adapter", () => {
       "r01-qa",
       expectedFreshLaunchCommand({ queueRoot: testQueueRoot("/custom/shared-docs") })
     );
+  });
+
+  it("o9o.46: an instance with its own OPENRIG_HOME gives Codex a queue state root under that home, not the account's", async () => {
+    vi.stubEnv("OPENRIG_HOME", "/instance/home");
+    const tmux = mockTmux();
+    const adapter = new CodexRuntimeAdapter({
+      tmux,
+      fsOps: { ...mockFs(), homedir: "/home/operator" },
+      listProcesses: () => [],
+      sleep: async () => {},
+    });
+
+    const result = await adapter.launchHarness(makeBinding(), { name: "dev-qa@test-rig" });
+
+    expect(result.ok).toBe(true);
+    const sendText = tmux.sendText as ReturnType<typeof vi.fn>;
+    const command = String(sendText.mock.calls[0]?.[1]);
+    expect(command).toContain(`--add-dir ${quote(testQueueRoot("/instance/home/shared-docs"))}`);
+    expect(command).not.toContain("/home/operator");
   });
 
   it("launchHarness does not guess a queue state writable root for non-canonical session names", async () => {

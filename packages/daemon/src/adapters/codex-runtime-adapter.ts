@@ -5,6 +5,7 @@ import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
+import { resolveSharedDocsRoot } from "../openrig-compat.js";
 import Database from "better-sqlite3";
 import { parse as parseToml } from "smol-toml";
 import type { TmuxAdapter } from "./tmux.js";
@@ -623,9 +624,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   }
 
   private buildQueueStateAddDirArg(sessionName: string): string {
-    const sharedDocsRoot = process.env.OPENRIG_SHARED_DOCS_ROOT?.trim()
-      || nodePath.join(this.fs.homedir ?? os.homedir(), ".openrig", "shared-docs");
-    const root = codexQueueStateRoot(sessionName, sharedDocsRoot);
+    // workspaces-o9o.46: this instance's tree (OPENRIG_SHARED_DOCS_ROOT, else <OPENRIG_HOME>/shared-docs), never the account's.
+    const root = codexQueueStateRoot(sessionName, resolveSharedDocsRoot());
     return root ? ` --add-dir ${shellQuote(root)}` : "";
   }
 

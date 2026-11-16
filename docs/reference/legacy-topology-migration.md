@@ -1,8 +1,8 @@
 # Migrating a pre-convention rig's topology context
 
 For rigs whose hand-authored context predates the chain-file convention and
-lives at the legacy location (`~/.openrig/shared-docs/rigs/<rig>/`, or
-`$OPENRIG_SHARED_DOCS_ROOT/rigs/<rig>/`). Nothing here is destructive: the
+lives at the legacy location (`<OPENRIG_HOME>/shared-docs/rigs/<rig>/`, which is
+`~/.openrig/shared-docs/rigs/<rig>/` with the default home, or `$OPENRIG_SHARED_DOCS_ROOT/rigs/<rig>/`). Nothing here is destructive: the
 legacy tree is left in place, `rig context trace` keeps reading it at the rig and
 seat levels throughout (with an advisory), and every copy is no-clobber. The refocus
 trace, `seat:` profile atoms and handover priming read only `topology.root`, so
@@ -13,7 +13,8 @@ they see these files only after migration.
 ```bash
 # 0. Know both roots — never hardcode either.
 DEST="$(rig config get topology.root)"
-SRC="${OPENRIG_SHARED_DOCS_ROOT:-$HOME/.openrig/shared-docs}/rigs"
+# An instance with its own OPENRIG_HOME whose tree is still at ~/.openrig/shared-docs: set OPENRIG_SHARED_DOCS_ROOT to it first.
+SRC="${OPENRIG_SHARED_DOCS_ROOT:-${OPENRIG_HOME:-$HOME/.openrig}/shared-docs}/rigs"
 
 # 1. BEFORE: prove the fallback is carrying this rig (expect ADVISORY lines
 #    on stderr for every level that resolves at the legacy location).

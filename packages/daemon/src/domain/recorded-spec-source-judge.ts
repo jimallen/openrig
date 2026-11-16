@@ -19,7 +19,7 @@ import nodePath from "node:path";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { DEFAULT_PATH_JUDGE_IO, specFileTrustProblem, type PathJudgeIo } from "./codex-mcp-servers.js";
 import { RigSpecCodec } from "./rigspec-codec.js";
-import { getOpenRigHome } from "../openrig-compat.js";
+import { resolveSharedDocsRigsRoot } from "../openrig-compat.js";
 
 export interface SpecSourceTrust {
   /** Where a spec may live: released copies, the spec library, the running install's bundled specs. */
@@ -35,7 +35,7 @@ export interface SpecSourceTrust {
 export function specSourceTrustOf(mcp: { specRoots?: () => string[]; io?: PathJudgeIo } | undefined, exactDepthRoot?: () => string): SpecSourceTrust {
   return {
     roots: () => [...(mcp?.specRoots?.() ?? [])],
-    exactDepthRoot: exactDepthRoot ?? (() => nodePath.join(getOpenRigHome(), "shared-docs", "rigs")),
+    exactDepthRoot: exactDepthRoot ?? resolveSharedDocsRigsRoot,
     ...(mcp?.io ? { io: mcp.io } : {}),
   };
 }

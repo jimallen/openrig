@@ -208,7 +208,7 @@ it, so the seat can reach the local daemon. If Codex can't be asked or doesn't
 answer in time, the launch is left unchanged.
 Fresh Codex launches also add writable access to the workspace's `.git` and the
 pod's shared queue-state directory with `--add-dir`; the shared root comes from
-`OPENRIG_SHARED_DOCS_ROOT` or `~/.openrig/shared-docs`.
+`OPENRIG_SHARED_DOCS_ROOT` or `<OPENRIG_HOME>/shared-docs` (`~/.openrig/shared-docs` with the default home).
 A team seat with no permission policy, per-seat choice or (for Codex) named
 profile also gets the per-launch team default: Claude gets `--settings` allowing
 ordinary `rig` commands, project reads and common tests, with a session-only

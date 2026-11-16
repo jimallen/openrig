@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { sharedDocsRoot } from "@openrig/daemon/shared-docs-root";
+import { getOpenRigHome } from "../openrig-compat.js";
 import fs from "node:fs";
 import nodePath from "node:path";
 import { Command } from "commander";
@@ -287,12 +289,13 @@ export async function sendHeartbeatNudges(
   return results;
 }
 
+/** RIGX_SHARED_DOCS_ROOT (the older name) when it holds a rigs folder, else the shared-docs rule (workspaces-o9o.46:
+ *  OPENRIG_SHARED_DOCS_ROOT from `env`, else this instance's <OPENRIG_HOME>/shared-docs) when that does. */
 function resolveSharedDocsRoot(env: NodeJS.ProcessEnv): string | null {
-  for (const key of ["RIGX_SHARED_DOCS_ROOT", "OPENRIG_SHARED_DOCS_ROOT"]) {
-    const value = env[key];
-    if (value && fs.existsSync(nodePath.join(value, "rigs"))) return value;
-  }
-  return null;
+  const legacy = env["RIGX_SHARED_DOCS_ROOT"];
+  if (legacy && fs.existsSync(nodePath.join(legacy, "rigs"))) return legacy;
+  const root = sharedDocsRoot({ env, openrigHome: getOpenRigHome() });
+  return fs.existsSync(nodePath.join(root, "rigs")) ? root : null;
 }
 
 function discoverQueueFiles(sharedDocsRoot: string, rig?: string): string[] {

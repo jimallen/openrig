@@ -25,6 +25,7 @@
       "import": "./dist/daemon-shutdown.js"
     },
     "./transport-budget": { "types": "./dist/transport-budget.d.ts", "import": "./dist/transport-budget.js" },
+    "./shared-docs-root": { "types": "./dist/shared-docs-root.d.ts", "import": "./dist/shared-docs-root.js" },
     "./hc": { "types": "./dist/hc-surface.d.ts", "import": "./dist/hc-surface.js" },
     "./crash-cart": {
       "types": "./dist/crash-cart-surface.d.ts",
