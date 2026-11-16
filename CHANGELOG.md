@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A Claude seat with its own home and no model is warned; a handover prints its successor's warnings
+
+- Symptom: a Claude seat with its own `CLAUDE_CONFIG_DIR` home and no model of its own started with no `--model`, and nothing said which model Claude would pick. A seat whose home's `settings.json` sets no model then ran on whatever its other sources gave it, often the account's default.
+- `rig up`, restore, `rig seat launch --fresh`, a handover's successor and `rig seat set-claude-home` now warn when the seat (`claude-code`, or its `stub` stand-in) has a home of its own, no model of its own, and the home's `settings.json` sets no model (missing, unparseable or empty). The warning names Claude's other model sources (managed policy settings, `ANTHROPIC_MODEL` in the seat's environment, the project's `.claude/settings.local.json` or `.claude/settings.json`), then the account's default, and gives `rig seat set-model <seat> --model <model> --reason <why>`. A warning only: the launch goes on.
+- Visible change: `rig seat handover` now prints the successor launch's warnings (`Warning: …`), and the handover result's JSON carries them as `warnings`. Before, the handover dropped them, including the codex seat-home and tmux-default warnings a fresh launch already printed.
+
 ### Claude seats can't start an untracked shell background job
 
 - Symptom: a Claude seat ran a long job as `( swift test …; echo rc=$? ) > log 2>&1 &` (or `nohup x &`) inside a normal Bash call. The call returned at once, nothing woke the seat when the job ended, and it sat idle (about 40 minutes on 2026-11-15).

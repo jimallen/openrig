@@ -577,6 +577,32 @@ describe("rig seat status", () => {
     });
   });
 
+  // workspaces-o9o.10 review: the successor launch's warnings ride the handover result; the human output prints each one,
+  // as `rig seat launch` does.
+  it("handover human output prints each successor-launch warning (workspaces-o9o.10)", async () => {
+    const warnings = ["tmux mouse default not applied: test", "/h/settings.json sets no model and the seat has none of its own"];
+    const deps = makeDeps({ status: 200, data: { ...HANDOVER_RESULT, warnings } }, []);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { exitCode } = await captureLogs(async () => {
+        await makeCommand(deps).parseAsync(["node", "rig", "seat", "handover", "dev-impl@seat-rig", "--source", "discovered:disc-1", "--reason", "mvp-proof"]);
+      });
+      expect(exitCode).toBeUndefined();
+      expect(warn.mock.calls.map((c) => c.join(" "))).toEqual(warnings.map((w) => `Warning: ${w}`));
+    } finally { warn.mockRestore(); }
+  });
+
+  it("control: handover human output with no warnings prints none", async () => {
+    const deps = makeDeps({ status: 200, data: HANDOVER_RESULT }, []);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await captureLogs(async () => {
+        await makeCommand(deps).parseAsync(["node", "rig", "seat", "handover", "dev-impl@seat-rig", "--source", "discovered:disc-1", "--reason", "mvp-proof"]);
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
   it("handover non-dry-run human output avoids continuity claims (discovered, no context delivery)", async () => {
     const deps = makeDeps({ status: 200, data: HANDOVER_RESULT }, []);
 

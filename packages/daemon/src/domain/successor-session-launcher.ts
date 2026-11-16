@@ -1,5 +1,5 @@
 import { ulid } from "ulid";
-import { claudeConfigDirLaunchRefusal, seatClaudeConfigDirEnv } from "./claude-config-dir.js";
+import { claudeConfigDirLaunchRefusal, claudeHomeNoModelFinding, seatClaudeConfigDirEnv, type ClaudeHomeReader } from "./claude-config-dir.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { RuntimeHint } from "./discovery-types.js";
@@ -119,6 +119,7 @@ export class SuccessorSessionLauncher {
   private exitPollMs: number;
   private exitTimeoutMs: number;
   private seatCwdFault: (cwd: string) => SeatCwdFault | null;
+  private claudeHomeRead: ClaudeHomeReader | null;
 
   constructor(
     tmuxAdapter: TmuxAdapter,
@@ -150,6 +151,8 @@ export class SuccessorSessionLauncher {
       exitTimeoutMs?: number;
       /** What is wrong with the folder the successor is handed (null when it is a directory). Tests inject a fake. */
       seatCwdFault?: (cwd: string) => SeatCwdFault | null;
+      /** workspaces-o9o.10: reads the seat's own Claude home for the no-model warning, as NodeLauncher does. Absent: no warning. */
+      claudeHomeRead?: ClaudeHomeReader;
     } = {},
   ) {
     this.seatCwdFault = opts.seatCwdFault ?? ((cwd) => getSeatCwdFault(cwd));
@@ -166,6 +169,7 @@ export class SuccessorSessionLauncher {
     this.codexConfigWritePolicy = opts.codexConfigWritePolicy ?? null;
     this.exitPollMs = opts.exitPollMs ?? 100;
     this.exitTimeoutMs = opts.exitTimeoutMs ?? 3_000;
+    this.claudeHomeRead = opts.claudeHomeRead ?? null;
   }
 
   /**
@@ -220,7 +224,7 @@ export class SuccessorSessionLauncher {
           ...(this.codexConfigWritePolicy ? { configWritePolicy: this.codexConfigWritePolicy } : {}),
         });
         env["CODEX_HOME"] = seatHome.path;
-        seatHomeWarnings.push(...seatHome.warnings); // OF-115: told to the operator in the handover result
+        seatHomeWarnings.push(...seatHome.warnings); // OF-115: returned as warnings; the handover result carries them and rig seat handover prints them
       } catch (err) {
         // seeding failed — keep the sessionEnv projection, and say so (a fresh launch says it too)
         seatHomeWarnings.push(`codex per-seat CODEX_HOME seeding failed (${err instanceof Error ? err.message : String(err)}); the successor launches on the shared home and may inherit a foreign session identity`);
@@ -246,6 +250,12 @@ export class SuccessorSessionLauncher {
     if (claudeHomeRefusal) {
       return { ok: false, code: "claude_config_dir_missing", step: "resolve_pane", replacementStarted: false, message: `${departingSession}: ${claudeHomeRefusal}` };
     }
+    // workspaces-o9o.10: the same no-model warning a fresh launch gives (NodeLauncher), for a Claude seat (or its stub
+    // stand-in) with its own home and no model of its own. A warning only: the handover goes on.
+    const claudeModelWarning = this.claudeHomeRead && input.node.claudeConfigDir && !input.node.model?.trim()
+      && (input.node.runtime === "claude-code" || input.node.runtime === "stub")
+      ? claudeHomeNoModelFinding(input.node.claudeConfigDir, departingSession, this.claudeHomeRead) : null;
+    if (claudeModelWarning) seatHomeWarnings.push(claudeModelWarning);
 
     // 1. Resolve the DEPARTING session's active pane — the retiree's pane we take over. A probe throw or
     //    an empty result is a structured resolve_pane failure BEFORE any respawn, so the seat is wholly

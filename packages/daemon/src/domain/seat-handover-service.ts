@@ -100,6 +100,9 @@ export interface SeatHandoverMutationResult {
   sourceOutcome?:
     | { mode: "fork"; forkedFrom: string; forkId?: "captured" | "pending"; limit?: string }
     | { mode: "rebuild"; primedArtifacts: Array<{ address: string; label: string }>; gaps: string[]; emptyChainReason?: string };
+  /** Non-fatal warnings from launching the successor (codex seat home, tmux defaults, a Claude home with no model).
+   *  Absent when there are none, and for a discovered successor, which OpenRig did not launch. */
+  warnings?: string[];
 }
 
 export type SeatHandoverResult =
@@ -192,6 +195,8 @@ interface SeatHandoverServiceDeps {
   tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
   /** OF-183: forwarded to the successor launcher. */
   codexConfigWritePolicy?: import("./codex-config-write-policy.js").CodexConfigWritePolicy;
+  /** workspaces-o9o.10: forwarded to the successor launcher for the no-model warning. */
+  claudeHomeRead?: import("./claude-config-dir.js").ClaudeHomeReader;
   /**
    * Ghost-stage (e) seam — the per-store retiring-occupant invalidator, authored by the ghost-stage
    * slice and CALLED once at commit() so the cutover successor never inherits a predecessor's seat-name-
@@ -296,6 +301,7 @@ export class SeatHandoverService {
       tmuxOptionDefaults: deps.tmuxOptionDefaults,
       ...(deps.codexConfigWritePolicy ? { codexConfigWritePolicy: deps.codexConfigWritePolicy } : {}),
       ...(deps.seatCwdFault ? { seatCwdFault: deps.seatCwdFault } : {}),
+      ...(deps.claudeHomeRead ? { claudeHomeRead: deps.claudeHomeRead } : {}),
     });
     this.captureDeps = {
       contextUsageStore: deps.contextUsageStore ?? null,
@@ -603,7 +609,7 @@ export class SeatHandoverService {
 
     // 4. Verify continuity + rebind via the EXISTING discovered->commit path.
     //    On any failure, unwind the created successor (no binding to unwind).
-    return this.finalizeWithDiscovered({
+    const finalized = await this.finalizeWithDiscovered({
       seatRef: input.seatRef,
       status: statusResult.status,
       node,
@@ -621,6 +627,10 @@ export class SeatHandoverService {
       sourceOutcome,
       cleanup: () => this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId),
     });
+    // The launch's warnings reach the operator through the result (they were dropped here before workspaces-o9o.10).
+    return launch.warnings?.length && finalized.ok && "result" in finalized
+      ? { ...finalized, result: { ...finalized.result, warnings: launch.warnings } }
+      : finalized;
   }
 
   /**

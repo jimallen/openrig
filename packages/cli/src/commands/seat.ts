@@ -136,6 +136,8 @@ interface SeatHandoverMutationResult {
   sourceOutcome?:
     | { mode: "fork"; forkedFrom: string; forkId?: "captured" | "pending"; limit?: string }
     | { mode: "rebuild"; primedArtifacts: Array<{ address: string; label: string }>; gaps: string[]; emptyChainReason?: string };
+  /** Non-fatal warnings from launching the successor (wire mirror of the daemon shape). */
+  warnings?: string[];
   sideEffects: {
     departingSessionKilled: false;
     startupContextDelivered: boolean;
@@ -261,6 +263,8 @@ function printHumanHandoverResult(result: SeatHandoverMutationResult): void {
     // separate context delivery is performed.
     console.log("No conversation continuity, startup context delivery, provenance markdown, or session stop was performed.");
   }
+  // workspaces-o9o.10: the successor launch's warnings, printed like a launch's.
+  for (const warning of result.warnings ?? []) console.warn(`Warning: ${warning}`);
 }
 
 function printHumanSwitchClient(r: SeatSwitchClientResponse): void {

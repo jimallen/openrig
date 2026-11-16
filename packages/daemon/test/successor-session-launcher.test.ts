@@ -129,6 +129,45 @@ describe("SuccessorSessionLauncher", () => {
     expect(respawnPane).not.toHaveBeenCalled();
   });
 
+  // workspaces-o9o.10 review, finding 1: a handover launches the successor without NodeLauncher, so it must give the same
+  // no-model warning a fresh launch gives for a Claude seat with its own home and no model of its own.
+  it("warns, and still launches, when a Claude seat's own home sets no model and the seat has none (workspaces-o9o.10)", async () => {
+    listPanes.mockResolvedValue([{ id: "%42", index: 0, cwd: "/w", width: 80, height: 24, active: true }]);
+    const claudeHomeRead = { exists: (p: string) => fs.existsSync(p), isDirectory: (p: string) => fs.statSync(p).isDirectory(), readFile: (p: string) => fs.readFileSync(p, "utf8") };
+    const adapters = { "claude-code": fakeAdapter("claude-code"), stub: fakeAdapter("stub") };
+    const noModel = (warnings: string[] | undefined) => (warnings ?? []).filter((w) => w.includes("sets no model"));
+    const settings = path.join(seatHomes, "settings.json");
+    for (const runtime of ["claude-code", "stub"]) {
+      const res = await launcher(undefined, "/daemon-codex", { runtimeAdapters: adapters, claudeHomeRead }).createSuccessor({
+        node: { id: "node-1", runtime, cwd: "/w", claudeConfigDir: seatHomes },
+        departingSessionName: "dev-impl@rig",
+      });
+      expect(res.ok).toBe(true);
+      const found = res.ok ? noModel(res.warnings) : [];
+      expect(found).toHaveLength(1);
+      expect(found[0]!.startsWith(`${settings} sets no model and the seat has none of its own, `)).toBe(true);
+      expect(found[0]).toContain("Pin one with: rig seat set-model dev-impl@rig --model <model>");
+    }
+
+    // Controls: a seat with a model of its own, and a home whose settings.json sets one, get no warning.
+    const withModel = await launcher(undefined, "/daemon-codex", { runtimeAdapters: adapters, claudeHomeRead }).createSuccessor({
+      node: { id: "node-1", runtime: "claude-code", cwd: "/w", claudeConfigDir: seatHomes, model: "opus" },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(withModel.ok && noModel(withModel.warnings)).toEqual([]);
+    const codexSeat = await launcher(undefined, "/daemon-codex", { claudeHomeRead }).createSuccessor({
+      node: { id: "node-1", runtime: "codex", cwd: "/w", claudeConfigDir: seatHomes },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(codexSeat.ok && noModel(codexSeat.warnings)).toEqual([]);
+    fs.writeFileSync(settings, JSON.stringify({ model: "sonnet" }));
+    const homeSetsOne = await launcher(undefined, "/daemon-codex", { runtimeAdapters: adapters, claudeHomeRead }).createSuccessor({
+      node: { id: "node-1", runtime: "claude-code", cwd: "/w", claudeConfigDir: seatHomes },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(homeSetsOne.ok && noModel(homeSetsOne.warnings)).toEqual([]);
+  });
+
   // OF-115: a profile withheld for carrying a seat identity, and a per-seat home that could not be made, are told in the
   // handover result, as a fresh launch tells them. (Before, the first was a console line and the second was silent.)
   it("tells the handover result which codex profile was withheld, by name and variable, never by value", async () => {

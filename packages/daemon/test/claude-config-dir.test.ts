@@ -206,6 +206,21 @@ describe("persistence and the fresh launch env", () => {
       expect(constructions[0]).toMatch(/\n    claudeHomeRead: \{ exists: /);
     });
 
+    // workspaces-o9o.10 review: a handover's successor is launched by SuccessorSessionLauncher, built inside
+    // SeatHandoverService from its deps; the one production SeatHandoverService is the handover route's. Same instrument:
+    // a text scan of each construction (src census: one `new SeatHandoverService({` in routes/seat.ts, one
+    // `new SuccessorSessionLauncher(` in seat-handover-service.ts).
+    it("the handover route's successor launcher is wired with a Claude-home reader (workspaces-o9o.10)", () => {
+      const route = fs.readFileSync(path.resolve(import.meta.dirname, "../src/routes/seat.ts"), "utf-8");
+      const handovers = route.match(/new SeatHandoverService\(\{[\s\S]*?\n  \}\);/g) ?? [];
+      expect(handovers).toHaveLength(1);
+      expect(handovers[0]).toMatch(/\n    claudeHomeRead: \{ exists: /);
+      const service = fs.readFileSync(path.resolve(import.meta.dirname, "../src/domain/seat-handover-service.ts"), "utf-8");
+      const launchers = service.match(/new SuccessorSessionLauncher\([\s\S]*?\n    \}\);/g) ?? [];
+      expect(launchers).toHaveLength(1);
+      expect(launchers[0]).toMatch(/claudeHomeRead: deps\.claudeHomeRead/);
+    });
+
     it("warns for the stub stand-in too, as set-claude-home accepts it", async () => {
       const rig = rigRepo.createRig("r");
       rigRepo.addNode(rig.id, "dev.stub", { runtime: "stub", claudeConfigDir: home() });

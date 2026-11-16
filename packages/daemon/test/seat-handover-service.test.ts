@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
-import { realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -100,8 +100,8 @@ describe("SeatHandoverService", () => {
     return { hasSession, probeSession: probeSessionFromHasSession, createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
   }
 
-  function codexAdapter(): RuntimeAdapter {
-    return { runtime: "codex", launchHarness, checkReady } as unknown as RuntimeAdapter;
+  function fakeAdapter(runtime = "codex"): RuntimeAdapter {
+    return { runtime, launchHarness, checkReady } as unknown as RuntimeAdapter;
   }
 
   function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }, seatCwdFault: () => SeatCwdFault | null = () => null): SeatHandoverService {
@@ -115,7 +115,7 @@ describe("SeatHandoverService", () => {
       now: () => new Date("2026-04-24T18:30:00.000Z"),
       newSuccessorId: () => "01SUCCID0",
       seatCwdFault, // the fixtures' seat folders are fake paths; the folder check has its own rows (successor-session-launcher.test.ts)
-      runtimeAdapters: { codex: codexAdapter() },
+      runtimeAdapters: { codex: fakeAdapter() },
       contextUsageStore: { readSidecar } as never,
       resumeTokenCapturer: { captureCodexThreadId } as never,
       ...(claudeProcessStartedAt ? { claudeProcessStartedAt } : {}),
@@ -721,6 +721,55 @@ describe("SeatHandoverService", () => {
     expect(successorGen).not.toBe(retiringGen);
   });
 
+  // workspaces-o9o.10 review: the successor launcher returns non-fatal warnings (tmux defaults, codex seat home, a Claude home
+  // with no model); the handover result must carry them, or the operator never sees them (they were dropped here).
+  describe("the successor launch's warnings reach the handover result (workspaces-o9o.10)", () => {
+    let claudeHome: string;
+    beforeEach(() => { claudeHome = mkdtempSync(`${tmpdir()}/sh-claude-home-`); });
+    afterEach(() => { rmSync(claudeHome, { recursive: true, force: true }); });
+
+    function claudeService(): SeatHandoverService {
+      return new SeatHandoverService({
+        db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
+        tmuxAdapter: tmux(),
+        now: () => new Date("2026-04-24T18:30:00.000Z"),
+        newSuccessorId: () => "01SUCCID0",
+        seatCwdFault: () => null,
+        runtimeAdapters: { "claude-code": fakeAdapter("claude-code") },
+        activityOracle: { declareOccupantSwap },
+        predecessorRecapResolver: resolvePredecessorRecap as never,
+        readinessTimeoutMs: 50,
+        sleep: async () => {},
+        claudeHomeRead: { exists: (p) => existsSync(p), isDirectory: (p) => statSync(p).isDirectory(), readFile: (p) => readFileSync(p, "utf8") },
+      });
+    }
+    const warningsOf = (result: Awaited<ReturnType<SeatHandoverService["handover"]>>): string[] | undefined =>
+      result.ok && "result" in result ? result.result.warnings : undefined;
+
+    it("a tmux-default warning from the successor's pane is in the result", async () => {
+      seedSeat({ runtime: "claude-code", model: "opus" });
+      respawnPane.mockResolvedValue({ ok: true, warnings: ["tmux mouse default not applied: test"] });
+      const result = await claudeService().handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+      expect(result.ok).toBe(true);
+      expect(warningsOf(result)).toEqual(["tmux mouse default not applied: test"]);
+    });
+
+    it("a Claude seat whose own home sets no model, with no model of its own, is warned in the result", async () => {
+      const { node } = seedSeat({ runtime: "claude-code" });
+      rigRepo.setNodeClaudeConfigDir(node.id, claudeHome);
+      const result = await claudeService().handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+      expect(result.ok).toBe(true);
+      expect(warningsOf(result)).toEqual([expect.stringContaining(`${claudeHome}/settings.json sets no model and the seat has none of its own`)]);
+    });
+
+    it("control: a clean successor launch leaves warnings out of the result", async () => {
+      seedSeat({ runtime: "claude-code", model: "opus" });
+      const result = await claudeService().handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+      expect(result.ok).toBe(true);
+      expect(result.ok && "result" in result ? result.result : {}).not.toHaveProperty("warnings");
+    });
+  });
+
   it("does NOT invalidate the retiring occupant when the handover fails before commit (no re-key on a non-committed handover)", async () => {
     seedSeat({ runtime: "codex" });
     respawnPane.mockResolvedValue({ ok: false, code: "no_server", message: "no server running" });
@@ -823,7 +872,7 @@ describe("SeatHandoverService", () => {
       now: () => new Date("2026-04-24T18:30:00.000Z"),
       newSuccessorId: () => "01SUCCID0",
       seatCwdFault: () => null, // the fixtures' seat folders are fake paths; the folder check has its own rows (successor-session-launcher.test.ts)
-      runtimeAdapters: { codex: codexAdapter() },
+      runtimeAdapters: { codex: fakeAdapter() },
       contextUsageStore: { readSidecar } as never,
       resumeTokenCapturer: { captureCodexThreadId } as never,
       occupantInvalidator: { invalidateRetiringOccupant },
