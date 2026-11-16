@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A Pi seat recovers from a failed model connection on its own (workspaces-o9o.13)
+
+- Symptom: after a model connection failure a Pi seat stopped with its task undone and stayed stopped until it was relaunched. Two causes were observed. On 2026-11-13..16 (verify-sec@eztrack and verify-sec@cel-identity) every turn ended on `{"detail":"Bad Request"}` after one WebSocket failure. On 2026-11-16 (verify-qa@openrig) a turn ended on `Responses websocket connection limit reached (60 minutes)`.
+- Cause, read from Pi 1.4.0's Codex provider (1.5.0 is the same): one WebSocket failure keeps that session on HTTP for the rest of the Pi process, and the provider rejected those requests with a 400 that Pi does not retry. The 60-minute connection limit, when it hits mid-reply, is not retried either, although the next request opens a new connection.
+- Now the runner restarts Pi on the same session file when a turn ends on a non-retryable 4xx after a failed WebSocket connection in that process, at most once per launch. A new process sends the full history over WebSocket, which the provider accepted (measured on one live turn, workspaces-o9o.22). For the 60-minute limit, the runner asks the same process to continue. Either way Pi then gets one fixed prompt, marked as from OpenRig, to continue its task. A message that arrives during the restart goes to the new process instead. Nothing is retried again until a turn has answered. The restart writes no `exited` record and keeps the launch, the pane and the session. The sidecar records the latest recovery (`transportRecovery`).
+- If the restarted Pi is rejected again, the seat stays flagged as provider-rejected and the pane says to relaunch it fresh, as before.
 ### A seat relaunched from its saved startup files says when its skills no longer match its spec
 
 - Symptom: a seat relaunched with `--startup-from stored` (or `snapshot:<id>`) kept the skills its last spec launch projected, because a replay never updates skills. After the spec narrowed a seat's `plugin_skills`, the old skills stayed in its skill folder and nothing said so.

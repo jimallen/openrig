@@ -97,6 +97,11 @@ export interface PiRunnerState {
   modelErrorLoop?: PiModelErrorLoop;
   /** S2: the seat gate this runner carries (SEAT_GATE_VERSION). Absent from a runner with none. */
   seatGate?: number;
+  /** workspaces-o9o.13: the runner's latest automatic recovery from a failed model connection (pi-transport-recovery.ts), kept for the rest of
+   *  the launch. `transport_reset` restarted pi on the same session; `connection_cap_continue` asked the same process to continue. `outcome`:
+   *  `restarting` until the new process answers get_state, `resumed` once the continue prompt (or a held message) was sent, `session_mismatch`
+   *  when the restarted pi opened another session file (nothing was sent). A record only: nothing reads it for gating. */
+  transportRecovery?: { kind: "transport_reset" | "connection_cap_continue"; at: string; outcome: "restarting" | "resumed" | "session_mismatch" };
 }
 
 /** OF-286: a flagged seat. `count` is the failed requests inside the window at `lastAt`; `total` the failed requests since the flag

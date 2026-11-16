@@ -21,7 +21,7 @@
 import fs from "node:fs";
 import nodePath from "node:path";
 import readline from "node:readline";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
@@ -43,6 +43,7 @@ import {
 } from "./pi-runner-protocol.js";
 import { applyPiModelOverrides } from "./pi-model-overrides.js";
 import { ModelErrorLoopTracker, isFinalAgentEnd } from "./pi-model-error-loop.js";
+import { PI_TRANSPORT_CONTINUE_PROMPT, hasTransportFailureDiagnostic, transportRecoveryFor, type TransportRecoveryKind } from "./pi-transport-recovery.js";
 
 // ── Submitted input boundaries ─────────────────────────────────────────────
 // pda L0: the editor and the activity endpoint lookup live in runner-pane-io.ts, shared with other
@@ -260,6 +261,10 @@ export interface RunnerIo {
   sessionFileExists?(path: string): boolean;
   /** Terminate OMP when get_state cannot establish a resumable seat. */
   stopChild?(): void;
+  /** workspaces-o9o.13 (Pi only): stop the pi child and start a new one resuming `sessionFile`; the runner itself, its pane and its
+   *  launch go on. Once the new child's RPC stream is up, the caller calls RunnerCore.childRestarted(); if it cannot start, the child's
+   *  exit is reported as any other (handlePiExit). */
+  restartChild?(sessionFile: string): void;
   /** OPR.0.7.0.2 (only with --usage-facts): POST usage facts from persisted entries to the daemon. Best-effort;
    *  resolves true only when the daemon accepted them, `{ refused }` (the daemon's code) when it answered 413. */
   postUsageFacts?(payload: Record<string, unknown>): Promise<boolean | { charged: string[]; rejected?: number } | { refused: string }>;
@@ -416,6 +421,21 @@ export class RunnerCore {
   private gateSendCount = 0;
   /** OF-286: failed model requests per window; its flag is carried in the sidecar (modelErrorLoop). Never touches activity or attention. */
   private readonly modelErrorLoop: ModelErrorLoopTracker;
+  /** workspaces-o9o.13 (pi-transport-recovery.ts). This pi PROCESS recorded a provider_transport_failure (it is on HTTP until it ends). */
+  private transportFailed = false;
+  /** How the run's latest assistant message ended (null before one, or when it was aborted), and its error text when it failed. */
+  private runOutcome: "error" | "answer" | null = null;
+  private runErrorText = "";
+  /** The recovery the run that just ended calls for, carried out at agent_settled (when Pi has finished the whole run). */
+  private pendingRecovery: TransportRecoveryKind | null = null;
+  /** No automatic recovery again until a run has answered: a continue turn that fails the same way is left to the operator. */
+  private recoveryArmed = true;
+  /** The one transport reset of this launch has been used. */
+  private transportResetUsed = false;
+  /** A restarted child has not answered get_state yet: its session file, and the blocks that arrived meanwhile (sent to the new child). */
+  private restartingOn: string | null = null;
+  private restartWaiting: Array<{ block: string; intent: GateIntent | undefined }> = [];
+  private transportRecovery: PiRunnerState["transportRecovery"];
 
   constructor(
     private io: RunnerIo,
@@ -515,6 +535,8 @@ export class RunnerCore {
 
   /** The block as Pi takes it. A marked one carries an RPC id, so Pi's answer can be tied to its intent. */
   private sendBlock(block: string, intent: GateIntent | undefined): void {
+    // o9o.13: the old pi's pipe is closing and the new one has not answered get_state yet; the block goes to the new pi.
+    if (this.restartingOn !== null) { this.restartWaiting.push({ block, intent }); return; }
     if (block === "/abort") {
       this.io.sendRpc({ type: "abort" });
       this.io.mirrorLine("[pi-runner] abort sent");
@@ -589,11 +611,95 @@ export class RunnerCore {
     this.io.postActivity(this.activityPayload("Stop", `${this.runtime}_exited`));
   }
 
+  /** o9o.13: the new pi child's RPC stream is up (main calls this after restartChild). Its get_state answer finishes the restart. */
+  childRestarted(): void {
+    this.streaming = false;
+    this.io.sendRpc({ type: "get_state", id: GET_STATE_ID });
+  }
+
+  /** o9o.13: follow the run. A failed assistant message records its text, and whether this process is now on its HTTP fallback; the
+   *  run's final agent_end decides the recovery, which runs at agent_settled. A run that ended on an answer arms the next one. */
+  private judgeRecovery(event: Record<string, unknown>, message: Record<string, unknown> | undefined): void {
+    // A new run (an operator's prompt got in first) supersedes a recovery not yet carried out.
+    if (event.type === "agent_start") { this.runOutcome = null; this.pendingRecovery = null; return; }
+    if (event.type === "message_end" && message?.role === "assistant") {
+      if (hasTransportFailureDiagnostic(message.diagnostics)) this.transportFailed = true;
+      if (message.stopReason === "error") {
+        this.runOutcome = "error";
+        this.runErrorText = typeof message.errorMessage === "string" ? message.errorMessage : (typeof message.error === "string" ? message.error : "");
+      } else {
+        this.runOutcome = message.stopReason === "aborted" ? null : "answer";
+      }
+      return;
+    }
+    if (!isFinalAgentEnd(event, this.runtime)) return;
+    if (this.runOutcome === "answer") { this.recoveryArmed = true; return; }
+    if (this.runOutcome !== "error") return;
+    const kind = transportRecoveryFor(this.runErrorText, this.transportFailed);
+    if (kind === "transport_reset" && this.transportResetUsed) {
+      this.io.mirrorLine(`${PI_RUNNER_ERROR_MARKER} the provider rejected the request again after OpenRig's one transport reset for this launch; relaunch the seat fresh`);
+      return;
+    }
+    if (kind !== null && this.recoveryArmed) this.pendingRecovery = kind;
+  }
+
+  /** o9o.13: carry out the recovery the run that just ended called for (pi-transport-recovery.ts). */
+  private recover(kind: TransportRecoveryKind): void {
+    this.recoveryArmed = false;
+    const at = this.io.now();
+    if (kind === "connection_cap_continue") {
+      this.transportRecovery = { kind, at, outcome: "resumed" };
+      this.io.mirrorLine("[pi-runner] the provider closed the model connection at its 60-minute limit; OpenRig asks pi to continue the task");
+      this.writeSidecar({});
+      this.sendBlock(PI_TRANSPORT_CONTINUE_PROMPT, undefined);
+      return;
+    }
+    if (!this.sessionFile || !this.io.restartChild) {
+      this.io.mirrorLine(`${PI_RUNNER_ERROR_MARKER} the provider rejected the request after pi's WebSocket connection failed, and pi cannot be restarted here (no session file); relaunch the seat`);
+      return;
+    }
+    this.transportResetUsed = true;
+    this.transportFailed = false; // a new process: nothing recorded yet
+    this.restartingOn = this.sessionFile;
+    this.transportRecovery = { kind, at, outcome: "restarting" };
+    this.io.mirrorLine("[pi-runner] the provider rejected the request after pi's WebSocket connection failed; pi stays on HTTP for the rest of its process, so OpenRig restarts pi on the same session (once per launch)");
+    this.writeSidecar({});
+    this.io.restartChild(this.sessionFile);
+  }
+
+  /** o9o.13: the restarted pi answered get_state. Same session file: the held blocks, or else the continue prompt, go to it. */
+  private finishRestart(sessionFile: string | undefined): void {
+    const expected = this.restartingOn!;
+    this.restartingOn = null;
+    const waiting = this.restartWaiting;
+    this.restartWaiting = [];
+    // Commands sent to the old process are never answered now: settle their intents against the session file, as after a crash.
+    this.gateSends.clear();
+    try { this.opts.gate?.reconcile(); } catch { this.gateWriteFailed(); }
+    if (sessionFile !== expected) {
+      this.transportRecovery = { kind: "transport_reset", at: this.transportRecovery?.at ?? this.io.now(), outcome: "session_mismatch" };
+      this.io.mirrorLine(`${PI_RUNNER_ERROR_MARKER} the restarted pi opened ${sessionFile ?? "no session file"}, not ${expected}; nothing was sent to it, relaunch the seat`);
+      this.writeSidecar({});
+      for (const held of waiting) this.sendBlock(held.block, held.intent);
+      return;
+    }
+    this.transportRecovery = { kind: "transport_reset", at: this.transportRecovery?.at ?? this.io.now(), outcome: "resumed" };
+    this.io.mirrorLine(`[pi-runner] pi restarted on the same session (${expected})`);
+    this.writeSidecar({});
+    if (waiting.length > 0) { for (const held of waiting) this.sendBlock(held.block, held.intent); return; }
+    this.sendBlock(PI_TRANSPORT_CONTINUE_PROMPT, undefined);
+  }
+
   private handleResponse(record: Record<string, unknown>): void {
     this.settleGateSend(record);
     if (record.success === false || record.error != null) {
       const detail = typeof record.error === "string" ? record.error : "request failed";
       const message = detail + (this.runtime === "pi" ? piCredentialHint(detail) : "");
+      if (record.id === GET_STATE_ID && this.restartingOn !== null) {
+        this.io.mirrorLine(`${PI_RUNNER_ERROR_MARKER} rpc get_state after the transport reset: ${message}`);
+        this.finishRestart(undefined);
+        return;
+      }
       if (record.id === GET_STATE_ID) {
         this.ready = false;
         this.writeSidecar({});
@@ -609,6 +715,11 @@ export class RunnerCore {
       if (this.runtime === "omp" && typeof record.command === "string" && Object.hasOwn(INPUT_COMMANDS, record.command)) {
         this.raiseAttention("runtime_error");
       }
+      return;
+    }
+    if (record.id === GET_STATE_ID && this.restartingOn !== null) {
+      const data = (record.data ?? record.state ?? record) as Record<string, unknown>;
+      this.finishRestart(typeof data.sessionFile === "string" ? data.sessionFile : undefined);
       return;
     }
     if (record.id === GET_STATE_ID) {
@@ -802,6 +913,7 @@ export class RunnerCore {
     const message = event.message as Record<string, unknown> | undefined;
     // OF-286: the flag is rewritten the moment it changes, so a seat that stops after giving up still carries it.
     if (this.modelErrorLoop.observe(event) && this.ready) this.writeSidecar({});
+    if (this.runtime === "pi") this.judgeRecovery(event, message);
     if (event.type === "message_start" && message?.role === "user") {
       const shown = userMessageText(message);
       if (shown !== null) {
@@ -846,6 +958,12 @@ export class RunnerCore {
     if (mapped.streaming !== undefined && mapped.streaming !== this.streaming) {
       this.streaming = mapped.streaming;
       this.writeSidecar({});
+    }
+    // o9o.13: Pi has finished the whole run (retries included) and is idle, so a prompt now starts a new run.
+    if (this.runtime === "pi" && event.type === "agent_settled" && this.pendingRecovery !== null && !this.streaming) {
+      const kind = this.pendingRecovery;
+      this.pendingRecovery = null;
+      this.recover(kind);
     }
     // OMP writes its JSONL lazily; re-announce identity after each turn until
     // the daemon confirms the token. Pi's get_state identity is final.
@@ -956,6 +1074,7 @@ export class RunnerCore {
       ...(this.pasteLeftover ? { pasteLeftover: true } : {}),
       ...(this.modelErrorLoop.current ? { modelErrorLoop: this.modelErrorLoop.current } : {}),
       ...(this.opts.gate ? { seatGate: SEAT_GATE_VERSION } : {}),
+      ...(this.transportRecovery ? { transportRecovery: this.transportRecovery } : {}),
       ...patch,
     });
   }
@@ -1389,16 +1508,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (gate.action === "refuse") { refuseLaunch(gate.message); return; }
     if (gate.action === "exempt") credentialGateNote = gate.message;
   }
-  const childArgs = buildPiChildArgs({
+  // The one Pi child argv (census: test/pi-runner-rig-body-guard.test.ts), for the launch and for a transport reset's restart (o9o.13),
+  // which resumes the session file the first child opened and never forks again.
+  const childArgsFor = (resume: { sessionFile?: string; forkRef?: string }) => buildPiChildArgs({
     sessionsDir: paths.sessionsDir,
     sessionName: args.sessionName,
     model: args.model,
     trust: args.trust,
-    sessionFile: args.sessionFile,
-    forkRef: args.forkRef,
+    sessionFile: resume.sessionFile,
+    forkRef: resume.forkRef,
     runtime,
     extensions: guard?.ok ? [guard.path] : undefined,
   });
+  const childArgs = childArgsFor({ sessionFile: args.sessionFile, forkRef: args.forkRef });
 
   // OF-213: the seat names itself first, on every start (a restart is a new runner process): the terminal's title for the pane
   // header and the listing, and one banner line on the pane. Neither depends on Pi, which runs behind this runner over RPC.
@@ -1449,14 +1571,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // (or was added after it, and is then seen by the next one).
   const launchCredentialEvidence = args.openRouterCharge === true && runtime === "pi" ? credentialEvidence() : undefined;
 
-  const child = spawn(command, childArgs, {
-    cwd: args.cwd,
-    env: childEnv,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  // The child may close its pipe before the first RPC write completes.
-  child.stdin.on("error", () => { /* spawn/exit handlers own the diagnosis */ });
+  const spawnChild = (childArgv: string[]) => {
+    const spawned = spawn(command, childArgv, {
+      cwd: args.cwd,
+      env: childEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    // The child may close its pipe before the first RPC write completes.
+    spawned.stdin.on("error", () => { /* spawn/exit handlers own the diagnosis */ });
+    return spawned;
+  };
+  // o9o.13: a Pi seat's child can be replaced once per launch (restartChild below); everything that talks to it reads this binding.
+  let child = spawnChild(childArgs);
+  /** Children stopped on purpose by restartChild: their exit is not the runner's, and their late output is not the seat's. */
+  const replaced = new WeakSet<ChildProcessWithoutNullStreams>();
+  /** Set below for a Pi seat, once the child's exit handling exists. */
+  let restartPi: (sessionFile: string) => void = () => {};
 
   const chargeLookup = new OpenRouterChargeLookup({
     fetchGeneration: openRouterGenerationFetcher(() => childEnv["OPENROUTER_API_KEY"]),
@@ -1509,6 +1639,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       { writeFile: (p, c) => fs.writeFileSync(p, c), rename: (a, b) => fs.renameSync(a, b) }, paths.runnerStatePath, state),
     now: () => new Date().toISOString(),
     stopChild: () => { child.kill(); },
+    ...(runtime === "pi" ? { restartChild: (sessionFile: string) => { restartPi(sessionFile); } } : {}),
     sessionFileExists: (path) => fs.existsSync(path),
     postUsageFacts: async (payload) => {
       if (!endpoint || typeof fetch !== "function") return false;
@@ -1548,7 +1679,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }, { catchUpSince, runtime, usageFacts: args.usageFacts === true, openRouterCharge: args.openRouterCharge === true, launchCredentialEvidence, gate: SeatGateStore.open(seatGateLogPath(paths.seatRoot)) });
 
   let transportUp = runtime === "pi";
-  readline.createInterface({ input: child.stdout }).on("line", (line) => {
+  const attachStdout = (from: ChildProcessWithoutNullStreams) => readline.createInterface({ input: from.stdout }).on("line", (line) => {
+    if (replaced.has(from)) return;
     if (runtime === "omp" && !core.isReady()) {
       try {
         const frame = JSON.parse(line) as { type?: string };
@@ -1560,6 +1692,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     core.handlePiLine(line);
   });
+  attachStdout(child);
   startAliveTick(core);
   // Re-deliver OMP identity until the daemon confirms the resume token.
   const identityRetry = runtime === "omp" ? setInterval(() => core.retrySessionIdentity(), IDENTITY_RETRY_MS) : undefined;
@@ -1568,8 +1701,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // reported with its own words in the error, not only above it.
   const stderrTail: string[] = [];
   let reportedPiCapability = false;
-  readline.createInterface({ input: child.stderr }).on("line", (line) => {
-    if (!line.trim()) return;
+  const attachStderr = (from: ChildProcessWithoutNullStreams) => readline.createInterface({ input: from.stderr }).on("line", (line) => {
+    if (!line.trim() || replaced.has(from)) return;
     process.stdout.write(`[${runtime}:err] ${sanitizeForPane(line)}\n`);
     stderrTail.push(line.length > OMP_STDERR_TAIL_CHARS ? `${line.slice(0, OMP_STDERR_TAIL_CHARS)}...` : line);
     if (stderrTail.length > OMP_STDERR_TAIL_LINES) stderrTail.shift();
@@ -1587,21 +1720,46 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
     }
   });
+  attachStderr(child);
   const input = wirePiRunnerInput(core, process.stdin, process.stdout, frame);
 
   if (runtime === "pi") {
-    child.on("error", (err) => {
-      console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} failed to spawn pi: ${err.message}`));
-      const code = (err as NodeJS.ErrnoException).code === "ENOENT" ? 127 : 1;
-      core.handlePiExit(code);
-      input.close();
-      process.exitCode = code;
-    });
-    child.on("exit", (code) => {
-      core.handlePiExit(code);
-      input.close();
-      process.exitCode = code ?? 1;
-    });
+    // A child stopped on purpose (restartPi) ends neither the launch nor the runner: no `exited` record, the pane stays open.
+    const attachPiExit = (from: ChildProcessWithoutNullStreams) => {
+      from.on("error", (err) => {
+        if (replaced.has(from)) return;
+        console.error(sanitizeForPane(`${PI_RUNNER_ERROR_MARKER} failed to spawn pi: ${err.message}`));
+        const code = (err as NodeJS.ErrnoException).code === "ENOENT" ? 127 : 1;
+        core.handlePiExit(code);
+        input.close();
+        process.exitCode = code;
+      });
+      from.on("exit", (code) => {
+        if (replaced.has(from)) return;
+        core.handlePiExit(code);
+        input.close();
+        process.exitCode = code ?? 1;
+      });
+    };
+    attachPiExit(child);
+    // o9o.13 (RunnerCore.recover): stop the current pi, then start one resuming the same session file. The new child is wired exactly as
+    // the first; the core asks it get_state and finishes the restart on its answer.
+    restartPi = (sessionFile) => {
+      const old = child;
+      replaced.add(old);
+      const startNext = () => {
+        child = spawnChild(childArgsFor({ sessionFile }));
+        attachStdout(child);
+        attachStderr(child);
+        attachPiExit(child);
+        core.childRestarted();
+      };
+      if (old.exitCode !== null || old.signalCode !== null) { startNext(); return; }
+      const killTimer = setTimeout(() => { old.kill("SIGKILL"); }, PI_RESTART_KILL_GRACE_MS);
+      killTimer.unref();
+      old.once("exit", () => { clearTimeout(killTimer); startNext(); });
+      old.kill();
+    };
     core.start();
     return;
   }
@@ -1642,6 +1800,8 @@ const OMP_STDERR_TAIL_LINES = 5;
 const OMP_STDERR_TAIL_CHARS = 300;
 /** How long after OMP's own exit to wait for its stderr to drain. */
 const OMP_EXIT_GRACE_MS = 1_000;
+/** o9o.13: how long a pi stopped for a transport reset has to exit after SIGTERM before it is killed. */
+const PI_RESTART_KILL_GRACE_MS = 5_000;
 
 // Compiled-entry guard: run main() only when executed directly (not imported
 // by tests). import.meta.url === file URL of process.argv[1] when direct.
