@@ -28,6 +28,7 @@ import { loadHumanRegistry } from "./domain/gateway/human-registry.js";
 import { EventBus } from "./domain/event-bus.js";
 import { NodeLauncher } from "./domain/node-launcher.js";
 import { seatRestartEnv } from "./domain/seat-restart-env.js";
+import { describeShimRefresh, refreshGitWorktreeShim } from "./domain/git-worktree-shim.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
@@ -661,6 +662,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     LOGNAME: process.env.LOGNAME,
     CODEX_HOME: codexHome,
   };
+  // workspaces-o9o.50: the rig-bin git shim is refreshed at every daemon start, not only at a seat launch. Running seats
+  // exec <OPENRIG_HOME>/rig-bin/git on every git call, so without this a deploy reaches them only when some seat launches
+  // on that host (stu and mbp ran the pre-o9o.2 shim after releases 1 and 2). Same OPENRIG_HOME the seats get.
+  try {
+    const shimRefresh = await refreshGitWorktreeShim(launchSessionEnv["OPENRIG_HOME"]!);
+    if (shimRefresh.kind === "refused") {
+      console.error(`[openrig] ${describeShimRefresh(shimRefresh)}; running seats keep whatever is there`);
+    } else {
+      console.log(`[openrig] ${describeShimRefresh(shimRefresh)}`);
+    }
+  } catch (err) {
+    console.error(`[openrig] git worktree shim: refresh failed (${(err as Error).message}); running seats keep whatever is there`);
+  }
   // OPR.0.4.6.02 S1 — ONE shared tmux option-defaults applier, injected into
   // BOTH NodeLauncher and (via AppDeps → the seat-handover route) the fresh
   // successor launcher, so every fresh seat gets the same mouse/status/

@@ -1,4 +1,5 @@
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import * as path from "node:path";
 
 /**
@@ -172,24 +173,111 @@ export function shimDir(openrigHome: string): string {
   return path.join(openrigHome, SHIM_DIR_NAME);
 }
 
+const SHIM_MODE = 0o755;
+
+/** What one refresh of <OPENRIG_HOME>/rig-bin/git did. Hashes are sha256 hex. */
+export type ShimRefresh =
+  | { kind: "created"; path: string; sha256: string }
+  | { kind: "replaced"; path: string; fromSha256: string; toSha256: string }
+  | { kind: "mode-fixed"; path: string; fromMode: number; toMode: number }
+  | { kind: "unchanged"; path: string; sha256: string }
+  | { kind: "refused"; path: string; reason: string };
+
+const sha256 = (body: string | Buffer) => createHash("sha256").update(body).digest("hex");
+
+async function kindAt(p: string): Promise<"file" | "directory" | "symlink" | "other" | null> {
+  try {
+    const st = await fs.lstat(p);
+    return st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : st.isFile() ? "file" : "other";
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
 /**
- * Idempotently write the shim. Content-matched writes only — a running seat
- * mid-launch never sees a torn script.
+ * Make <OPENRIG_HOME>/rig-bin/git the package's shim, byte for byte and mode 0755, and say what that took. Called at
+ * daemon start (so a deploy reaches running seats, which exec this file on every git call) and at every seat launch.
+ *
+ * Never through a symlink: rig-bin or rig-bin/git being a symlink (or not a directory / not a regular file) refuses the
+ * refresh and nothing is written. The current file is read with O_NOFOLLOW. A write is atomic: an O_EXCL temp in rig-bin,
+ * its mode set, renamed over git (rename replaces the name itself, never a link's target); a failed write removes the
+ * temp and leaves the old file whole, so a seat mid-exec never sees a torn script. OPENRIG_HOME itself is not checked,
+ * the same anchor rule as the openrig-core refresh. Residual, accepted by Jim on 2026-11-16 for that refresh (o9o.17):
+ * rig-bin swapped for a symlink between the lstat and the mkdir, open or rename that follows; Node has no openat or
+ * renameat on a folder handle, and it takes a concurrent process of the same user that could write the shim directly.
  */
-export async function ensureGitWorktreeShim(openrigHome: string): Promise<string> {
+export async function refreshGitWorktreeShim(openrigHome: string): Promise<ShimRefresh> {
   const dir = shimDir(openrigHome);
   const file = shimPath(openrigHome);
-  await fs.mkdir(dir, { recursive: true });
-  try {
-    const current = await fs.readFile(file, "utf8");
-    if (current === SHIM_BODY) return dir;
-  } catch {
-    // absent — write below
+  const dirKind = await kindAt(dir);
+  if (dirKind === "symlink") return { kind: "refused", path: file, reason: `${dir} is a symlink` };
+  if (dirKind !== null && dirKind !== "directory") return { kind: "refused", path: file, reason: `${dir} is not a directory` };
+  if (dirKind === null) await fs.mkdir(dir, { recursive: true });
+
+  const fileKind = await kindAt(file);
+  if (fileKind === "symlink") return { kind: "refused", path: file, reason: `${file} is a symlink` };
+  if (fileKind !== null && fileKind !== "file") return { kind: "refused", path: file, reason: `${file} is not a regular file` };
+
+  let current: { body: Buffer; mode: number } | null = null;
+  if (fileKind === "file") {
+    const fh = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      current = { body: await fh.readFile(), mode: (await fh.stat()).mode & 0o777 };
+    } finally {
+      await fh.close();
+    }
   }
-  const tmp = file + ".tmp-" + process.pid;
-  await fs.writeFile(tmp, SHIM_BODY, { mode: 0o755 });
-  await fs.rename(tmp, file);
-  return dir;
+  const want = sha256(SHIM_BODY);
+  if (current && current.body.equals(Buffer.from(SHIM_BODY, "utf8"))) {
+    if (current.mode === SHIM_MODE) return { kind: "unchanged", path: file, sha256: want };
+    await installShim(dir, file);
+    return { kind: "mode-fixed", path: file, fromMode: current.mode, toMode: SHIM_MODE };
+  }
+  await installShim(dir, file);
+  return current
+    ? { kind: "replaced", path: file, fromSha256: sha256(current.body), toSha256: want }
+    : { kind: "created", path: file, sha256: want };
+}
+
+async function installShim(dir: string, file: string): Promise<void> {
+  const tmp = path.join(dir, `.git.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
+  const fh = await fs.open(tmp, "wx", SHIM_MODE);
+  try {
+    try {
+      await fh.writeFile(SHIM_BODY, "utf8");
+      await fh.chmod(SHIM_MODE);
+    } finally {
+      await fh.close();
+    }
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
+}
+
+/** One log line for a refresh; the caller picks the stream (a refusal is an error). */
+export function describeShimRefresh(r: ShimRefresh): string {
+  const short = (h: string) => h.slice(0, 12);
+  const octal = (m: number) => m.toString(8).padStart(4, "0");
+  switch (r.kind) {
+    case "created": return `git worktree shim: created ${r.path} (sha256 ${short(r.sha256)})`;
+    case "replaced": return `git worktree shim: replaced ${r.path} (sha256 ${short(r.fromSha256)} -> ${short(r.toSha256)})`;
+    case "mode-fixed": return `git worktree shim: mode-fixed ${r.path} (${octal(r.fromMode)} -> ${octal(r.toMode)})`;
+    case "unchanged": return `git worktree shim: unchanged ${r.path} (sha256 ${short(r.sha256)})`;
+    case "refused": return `git worktree shim: refused ${r.path}: ${r.reason}`;
+  }
+}
+
+/**
+ * The seat-launch form: refresh, and throw on a refusal so the launch goes ahead without the shim on PATH (the
+ * launcher's warning says so). Returns the rig-bin dir.
+ */
+export async function ensureGitWorktreeShim(openrigHome: string): Promise<string> {
+  const r = await refreshGitWorktreeShim(openrigHome);
+  if (r.kind === "refused") throw new Error(describeShimRefresh(r));
+  return shimDir(openrigHome);
 }
 
 /** Seat PATH: shim first. Inert when the caller's PATH is absent (tests). */

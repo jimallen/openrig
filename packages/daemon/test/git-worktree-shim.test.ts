@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { ensureGitWorktreeShim, shimDir, withWorktreeShimPath } from "../src/domain/git-worktree-shim.js";
+import { ensureGitWorktreeShim, refreshGitWorktreeShim, shimDir, withWorktreeShimPath } from "../src/domain/git-worktree-shim.js";
 import { ensureCodexSeatHome } from "../src/domain/codex-seat-home.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -90,6 +90,97 @@ describe("git-worktree-shim", () => {
     expect((await fs.lstat(path.join(dir, "git"))).mode & 0o100).toBeTruthy();
     // second call is a no-op
     await ensureGitWorktreeShim(tmp);
+  });
+
+  // workspaces-o9o.50: one refresh for daemon start and seat launch; never through a symlink, atomic, says what it did.
+  describe("refresh: never through a symlink, atomic, reports what it did", () => {
+    const STALE = "#!/usr/bin/env bash\nexec /usr/bin/git \"$@\"\n";
+
+    it("launch refuses a symlinked rig-bin: throws, and the link's target is not written", async () => {
+      const elsewhere = path.join(tmp, "elsewhere");
+      await fs.mkdir(elsewhere);
+      await fs.writeFile(path.join(elsewhere, "git"), STALE, { mode: 0o755 });
+      await fs.symlink(elsewhere, path.join(tmp, "rig-bin"));
+      await expect(ensureGitWorktreeShim(tmp)).rejects.toThrow(/refused .*rig-bin is a symlink/);
+      expect(await fs.readFile(path.join(elsewhere, "git"), "utf8")).toBe(STALE);
+      expect(await fs.readdir(elsewhere)).toEqual(["git"]);
+    });
+
+    it("launch refuses a symlinked rig-bin/git: throws, the target is not written, the link stays", async () => {
+      const target = path.join(tmp, "real-git");
+      await fs.writeFile(target, STALE, { mode: 0o755 });
+      await fs.mkdir(path.join(tmp, "rig-bin"));
+      await fs.symlink(target, path.join(tmp, "rig-bin", "git"));
+      await expect(ensureGitWorktreeShim(tmp)).rejects.toThrow(/refused .*rig-bin\/git is a symlink/);
+      expect(await fs.readFile(target, "utf8")).toBe(STALE);
+      expect(await fs.readlink(path.join(tmp, "rig-bin", "git"))).toBe(target);
+    });
+
+    it("rig-bin that is a file, or git that is a directory, is refused, not replaced", async () => {
+      await fs.writeFile(path.join(tmp, "rig-bin"), "x");
+      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "refused", path: path.join(tmp, "rig-bin", "git"), reason: `${path.join(tmp, "rig-bin")} is not a directory` });
+      await fs.rm(path.join(tmp, "rig-bin"));
+      await fs.mkdir(path.join(tmp, "rig-bin", "git"), { recursive: true });
+      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "refused", path: path.join(tmp, "rig-bin", "git"), reason: `${path.join(tmp, "rig-bin", "git")} is not a regular file` });
+      expect((await fs.lstat(path.join(tmp, "rig-bin", "git"))).isDirectory()).toBe(true);
+    });
+
+    it("a failed write leaves the old shim whole and no temp behind", async () => {
+      const dir = path.join(tmp, "rig-bin");
+      await fs.mkdir(dir);
+      await fs.writeFile(path.join(dir, "git"), STALE, { mode: 0o755 });
+      await fs.chmod(dir, 0o555);
+      try {
+        await expect(refreshGitWorktreeShim(tmp)).rejects.toThrow(/EACCES/);
+      } finally {
+        await fs.chmod(dir, 0o755);
+      }
+      expect(await fs.readFile(path.join(dir, "git"), "utf8")).toBe(STALE);
+      expect(await fs.readdir(dir)).toEqual(["git"]);
+    });
+
+    it("a rename that fails after the temp exists leaves the old shim whole and removes the temp", async () => {
+      const dir = path.join(tmp, "rig-bin");
+      await fs.mkdir(dir);
+      await fs.writeFile(path.join(dir, "git"), STALE, { mode: 0o755 });
+      const rename = vi.spyOn(fs, "rename").mockRejectedValueOnce(Object.assign(new Error("EXDEV: simulated"), { code: "EXDEV" }));
+      try {
+        await expect(refreshGitWorktreeShim(tmp)).rejects.toThrow(/EXDEV: simulated/);
+        expect(rename).toHaveBeenCalledOnce();
+        expect(path.dirname(String(rename.mock.calls[0]![0]))).toBe(dir);
+      } finally {
+        rename.mockRestore();
+      }
+      expect(await fs.readFile(path.join(dir, "git"), "utf8")).toBe(STALE);
+      expect(await fs.readdir(dir)).toEqual(["git"]);
+    });
+
+    it("under a 077 umask the shim is still written 0755 (the mode is set, not left to the umask)", async () => {
+      const old = process.umask(0o077);
+      try {
+        await refreshGitWorktreeShim(tmp);
+      } finally {
+        process.umask(old);
+      }
+      expect((await fs.stat(path.join(tmp, "rig-bin", "git"))).mode & 0o777).toBe(0o755);
+    });
+
+    it("created, then unchanged, then replaced, then mode-fixed: each says what it did, with hashes", async () => {
+      const file = path.join(tmp, "rig-bin", "git");
+      const created = await refreshGitWorktreeShim(tmp);
+      expect(created).toMatchObject({ kind: "created", path: file });
+      const want = (created as { sha256: string }).sha256;
+      expect(want).toMatch(/^[0-9a-f]{64}$/);
+      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "unchanged", path: file, sha256: want });
+      await fs.writeFile(file, STALE);
+      const replaced = await refreshGitWorktreeShim(tmp);
+      expect(replaced).toMatchObject({ kind: "replaced", path: file, toSha256: want });
+      expect((replaced as { fromSha256: string }).fromSha256).not.toBe(want);
+      await fs.chmod(file, 0o700);
+      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "mode-fixed", path: file, fromMode: 0o700, toMode: 0o755 });
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o755);
+      expect(await fs.readdir(path.join(tmp, "rig-bin"))).toEqual(["git"]);
+    });
   });
 
   it("redirects out-of-repo 'git worktree add' into .rig-worktrees, keeps normal add", async () => {
