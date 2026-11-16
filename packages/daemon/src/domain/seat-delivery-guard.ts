@@ -42,6 +42,8 @@ export class SeatDeliveryGuard {
   private readonly scope = new AsyncLocalStorage<Map<string, Lease>>();
   private readonly lifecycleLeases = new Map<string, Lease>();
   private readonly humanLeases = new Set<Lease>();
+  /** Socket writes in flight per seat (workspaces-o9o.7): a lifecycle lease waits for these to finish before its body runs. */
+  private readonly socketWrites = new Map<string, { count: number; drained: Array<() => void> }>();
 
   constructor(
     readonly db: Database.Database,
@@ -187,11 +189,50 @@ export class SeatDeliveryGuard {
         const lease = this.scope.getStore()!.get(id)!;
         lease.lifecycle = true;
         this.lifecycleLeases.set(id, lease);
-        try { return await acquire(index + 1); }
+        try {
+          // workspaces-o9o.7: from here no socket write to this seat starts; one already writing finishes before the operation does anything.
+          await this.socketWritesDrained(id);
+          return await acquire(index + 1);
+        }
         finally { this.lifecycleLeases.delete(id); }
       });
     };
     return acquire(0);
+  }
+
+  /** A write that types nothing, the Claude inbox socket, made atomically with respect to lifecycle leases (workspaces-o9o.7). The socket is not a
+   *  typing operation, so it never queues on the seat's serial lease and the typing guard does not apply; but it must never write into an occupant a
+   *  lifecycle operation (`rig seat launch --fresh --stop`, a handover, a restore) is replacing. Invariant: no socket write runs while a lifecycle
+   *  operation's body runs on the seat.
+   *  - A lease already held: `held()`, without waiting.
+   *  - Otherwise the write is counted in flight in the same synchronous step as the check, and a lease taken later waits for it (`lifecycle`).
+   *  - `clear()` is true while no lease has been taken since. Call it with no await between it and the write: a write still deciding when a lease
+   *    arrives then writes nothing.
+   *  Inside the seat's own lease, `fn` runs as it is: the caller is the operation. An unresolvable seat cannot be leased. */
+  async outsideLifecycle<T>(name: string, fn: (clear: () => boolean) => Promise<T>, held: () => Promise<T>): Promise<T> {
+    const target = this.maybeTarget(name);
+    if (!target) return fn(() => true);
+    const nodeId = target.nodeId;
+    if (this.scope.getStore()?.get(nodeId)?.active) return fn(() => true);
+    if (this.lifecycleLeases.has(nodeId)) return held();
+    const writes = this.socketWrites.get(nodeId) ?? { count: 0, drained: [] };
+    writes.count += 1;
+    this.socketWrites.set(nodeId, writes);
+    try {
+      return await fn(() => !this.lifecycleLeases.has(nodeId));
+    } finally {
+      writes.count -= 1;
+      if (writes.count === 0) {
+        this.socketWrites.delete(nodeId);
+        for (const done of writes.drained.splice(0)) done();
+      }
+    }
+  }
+
+  private socketWritesDrained(nodeId: string): Promise<void> {
+    const writes = this.socketWrites.get(nodeId);
+    if (!writes) return Promise.resolve();
+    return new Promise<void>((resolve) => { writes.drained.push(resolve); });
   }
 
   /** Called only after an intentional lifecycle binding change, under its lease.

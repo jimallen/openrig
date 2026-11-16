@@ -106,6 +106,20 @@ const APPLY_SPEC_REFUSAL_CODE: Record<TrustedSeatSpecFailureKind, SeatRefusal["c
 };
 
 /** The raw (snake_case) member of a parsed spec, for the validator that checks the spec's own spelling. */
+/** An ISO 8601 date-time with its zone (`Z` or `±HH:MM`), as a UTC instant; null for anything else. `Date.parse` alone also takes
+ *  `11/15/2026` and reads a zoneless time in the daemon's own zone, so the shape and the calendar are checked first (workspaces-o9o.7). */
+const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+export function handOverSinceInstant(text: string): string | null {
+  const parts = ISO_INSTANT.exec(text);
+  if (!parts) return null;
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = parts.slice(1).map((part) => (part === undefined ? 0 : Number(part)));
+  const calendar = new Date(Date.UTC(year!, month! - 1, day!));
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month! - 1 || calendar.getUTCDate() !== day) return null;
+  if (hour! > 23 || minute! > 59 || second! > 59 || offsetHour! > 23 || offsetMinute! > 59) return null;
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? new Date(at).toISOString() : null;
+}
+
 function rawMemberOf(raw: Record<string, unknown>, podId: string, memberId: string): Record<string, unknown> | undefined {
   const pods = Array.isArray(raw["pods"]) ? (raw["pods"] as Array<Record<string, unknown>>) : [];
   const pod = pods.find((p) => p["id"] === podId);
@@ -1460,8 +1474,8 @@ export class SeatLifecycleService {
         message: "Explicit fresh launch requires fresh=true (--fresh); no continuity mode is inferred.",
       };
     }
-    if (input.handOverSince !== undefined && !Number.isFinite(Date.parse(input.handOverSince))) {
-      return { ok: false, code: "invalid_hand_over_since", message: `--hand-over-since takes a time, such as 2026-11-15T23:06:06Z (got "${input.handOverSince}").` };
+    if (input.handOverSince !== undefined && handOverSinceInstant(input.handOverSince) === null) {
+      return { ok: false, code: "invalid_hand_over_since", message: `--hand-over-since takes an ISO 8601 time with its zone, such as 2026-11-15T23:06:06Z (got "${input.handOverSince}").` };
     }
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;
@@ -1800,7 +1814,7 @@ export class SeatLifecycleService {
 
   /** workspaces-o9o.7: hands what the stopped occupant took, or may have taken, to the fresh one (MessageHandOff.handOverFromRetiringOccupant). */
   private handOverFromRetiringOccupant(seat: string, handOverSince: string | undefined, launchBeganAt: string, retiringGeneration: string | null): LaunchHandOver {
-    const since = handOverSince === undefined ? launchBeganAt : new Date(Date.parse(handOverSince)).toISOString();
+    const since = handOverSince === undefined ? launchBeganAt : handOverSinceInstant(handOverSince)!;
     const base = { since, sinceSource: handOverSince === undefined ? "launch_began" as const : "hand_over_since" as const };
     const handOff = this.tmuxAdapter.messageHandOff;
     if (!handOff) return { ...base, carried: [], reissued: [], notHandedOver: [], skipped: "the message pump is off (transport.message_pump), so nothing here tracks what the old occupant took" };

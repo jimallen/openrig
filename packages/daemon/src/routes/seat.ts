@@ -392,6 +392,10 @@ seatRoutes.post("/launch/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const startupFrom = startupFromOf(body);
   if (startupFrom === null) return c.json(INVALID_STARTUP_FROM, 400);
+  // workspaces-o9o.7: a since-time that is not a string is refused, never dropped (a dropped one would hand over less than asked).
+  if (body["handOverSince"] !== undefined && typeof body["handOverSince"] !== "string") {
+    return c.json({ ok: false, code: "invalid_hand_over_since", message: "handOverSince must be an ISO 8601 time string, such as 2026-11-15T23:06:06Z." }, 400);
+  }
   const result = await seatLifecycleService(c).launchFresh({
     startupFrom,
     seatRef: c.req.param("seatRef")!,

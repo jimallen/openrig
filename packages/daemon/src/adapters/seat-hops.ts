@@ -96,6 +96,8 @@ function shortPaste(message: SeatMessage, marker: SeatMarker, index: number, tot
 export interface HopGuard {
   operation<T>(name: string, fn: () => Promise<T>, held?: (target: GuardTarget) => Promise<T>): Promise<T>;
   heldByAnotherLifecycle?(name: string): boolean;
+  /** A socket write made atomically with respect to lifecycle leases: see SeatDeliveryGuard.outsideLifecycle. */
+  outsideLifecycle?<T>(name: string, fn: (clear: () => boolean) => Promise<T>, held: () => Promise<T>): Promise<T>;
 }
 
 export type HcHopInput = CodexPasteInput;
@@ -256,27 +258,39 @@ export class ClaudeSeatHop implements LastHop {
   async attempt(message: SeatMessage): Promise<LastHopResult> {
     const text = markedText(message, this.deps.rows);
     if (text === null) return unmarked;
-    const id = message.ids[0];
     // workspaces-o9o.7: the socket types nothing, so it never queues on the guard, but it must not write into an occupant that a lifecycle operation
-    // (a `rig seat launch --fresh --stop`, a handover, a restore) is replacing: that session is about to die with the text. It pauses as a paste does.
-    if (this.deps.guard.heldByAnotherLifecycle?.(message.seat)) return { kind: "paused", reason: "busy" };
-    const eligible = await this.deps.eligibility(message.seat);
-    if (eligible.ok) {
-      const lastSocketWriteMs = this.deps.rows.lastSocketWriteMs(id);
-      const step = decideClaudeRetry({ text, socketEligible: true, nowMs: this.now(), lastSocketAttemptMs: lastSocketWriteMs, gateSeen: false, atRest: true, composer: null });
-      // An identical line inside the window would vanish with no trace (M1): this attempt was not made, so it costs no backoff.
-      if (step.kind === "wait") return { kind: "paused", reason: "busy" };
-      // OF-285: Claude queues a socket line while a dialog is open or a tool call runs, and takes it at the next input point. Until the seat
-      // has passed one since this message's last write, that write is most likely still queued, and a repeat would queue a copy for the gate to
-      // block. The first write always goes. The wait spends no attempt and no write.
-      if (lastSocketWriteMs !== null && (await this.writeStillQueued(message.seat, eligible.nodeId, lastSocketWriteMs))) return { kind: "paused", reason: "busy" };
-      this.deps.rows.recordSocketWrite(id, this.now());
-      const written = await this.deps.writeToSeat(eligible.endpoint, this.deps.rows.senderOf(id) ?? "unknown", text);
-      if (written !== "none") return { kind: "sent" };
-    }
+    // (a `rig seat launch --fresh --stop`, a handover, a restore) is replacing: that session is about to die with the text. The decision and the
+    // write are made under the guard's lifecycle exclusion, so a lease taken while eligibility is read stops the write. It pauses as a paste does.
+    const busy = async (): Promise<LastHopResult> => ({ kind: "paused", reason: "busy" });
+    const guard = this.deps.guard;
+    const socket = guard.outsideLifecycle
+      ? await guard.outsideLifecycle(message.seat, (clear) => this.socketAttempt(message, text, clear), busy)
+      : guard.heldByAnotherLifecycle?.(message.seat) ? await busy() : await this.socketAttempt(message, text, () => true);
+    if (socket !== null) return socket;
+    // The paste stays outside the exclusion: it queues on the guard's serial lease, which a lifecycle holds while it waits for socket writes to end.
     const pasted = this.pasteable(message);
     if (pasted === null) return { kind: "paused", reason: "long_no_socket" };
     return carrying(await this.paste(pasted, markedText(pasted, this.deps.rows)!), pasted, message);
+  }
+
+  /** The socket attempt: a result, or null when the socket wrote nothing and the paste should be tried. `clear` is read with no await before the
+   *  write, so a lifecycle lease taken while this was deciding stops it. */
+  private async socketAttempt(message: SeatMessage, text: string, clear: () => boolean): Promise<LastHopResult | null> {
+    const id = message.ids[0];
+    const eligible = await this.deps.eligibility(message.seat);
+    if (!eligible.ok) return null;
+    const lastSocketWriteMs = this.deps.rows.lastSocketWriteMs(id);
+    const step = decideClaudeRetry({ text, socketEligible: true, nowMs: this.now(), lastSocketAttemptMs: lastSocketWriteMs, gateSeen: false, atRest: true, composer: null });
+    // An identical line inside the window would vanish with no trace (M1): this attempt was not made, so it costs no backoff.
+    if (step.kind === "wait") return { kind: "paused", reason: "busy" };
+    // OF-285: Claude queues a socket line while a dialog is open or a tool call runs, and takes it at the next input point. Until the seat
+    // has passed one since this message's last write, that write is most likely still queued, and a repeat would queue a copy for the gate to
+    // block. The first write always goes. The wait spends no attempt and no write.
+    if (lastSocketWriteMs !== null && (await this.writeStillQueued(message.seat, eligible.nodeId, lastSocketWriteMs))) return { kind: "paused", reason: "busy" };
+    if (!clear()) return { kind: "paused", reason: "busy" };
+    this.deps.rows.recordSocketWrite(id, this.now());
+    const written = await this.deps.writeToSeat(eligible.endpoint, this.deps.rows.senderOf(id) ?? "unknown", text);
+    return written !== "none" ? { kind: "sent" } : null;
   }
 
   /** True only when the daemon's hook record shows the seat has not passed an input point since `sinceMs` AND its terminal does not read at rest.

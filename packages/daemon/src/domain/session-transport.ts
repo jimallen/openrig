@@ -1788,7 +1788,12 @@ export class SessionTransport {
     // waits for it, measured). Any doubt, or nothing written, falls through to the tmux path below.
     // A slash command on the socket is plain text (M10): it reaches the model as a prompt and runs nothing, so it goes by paste.
     if (this.nativeInbox && !opts?.forceTmux && !opts?.dangerouslyInteract && !opts?.submitOnly && !startsLikeCommand(text)) {
-      const native = await this.sendNative(sessionName, text, opts);
+      // workspaces-o9o.7: never into an occupant a lifecycle operation is replacing. A lease held, or taken while eligibility is read, sends this
+      // to the guarded tmux path below, which waits for the lease and refuses if the occupant changed.
+      const lifecycleGuard = this.tmuxAdapter.deliveryGuard;
+      const native = lifecycleGuard
+        ? await lifecycleGuard.outsideLifecycle(sessionName, (clear) => this.sendNative(sessionName, text, opts, clear), async () => null)
+        : await this.sendNative(sessionName, text, opts, () => true);
       if (native) return native;
     }
     const guard = this.tmuxAdapter.deliveryGuard;
@@ -2020,10 +2025,11 @@ export class SessionTransport {
   }
 
   /** Native comms step 3: the native attempt, or null to use tmux. */
-  private async sendNative(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult | null> {
+  /** `clear` is read with no await before the write: false means a lifecycle lease arrived while this was deciding, so nothing is written. */
+  private async sendNative(sessionName: string, text: string, opts: SendOpts | undefined, clear: () => boolean): Promise<SendResult | null> {
     const inbox = this.nativeInbox!;
     const eligible = await inbox.eligibility(sessionName).catch(() => ({ ok: false as const, reason: "eligibility_error" }));
-    if (!eligible.ok) return null;
+    if (!eligible.ok || !clear()) return null;
     let delivered;
     try {
       delivered = await inbox.deliver({ sessionName, senderSession: opts?.actorSession ?? "unknown", text, endpoint: eligible.endpoint,

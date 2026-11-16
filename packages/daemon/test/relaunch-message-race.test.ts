@@ -28,6 +28,11 @@ import { messageId, type GateLookup, type LastHop, type LastHopResult, type Mess
 import { ClaudeSeatHop, type HopGuard } from "../src/adapters/seat-hops.js";
 import type { NativeEligibility, NativeEndpointRow } from "../src/domain/claude-native-inbox.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { SeatDeliveryGuard, type GuardTarget } from "../src/domain/seat-delivery-guard.js";
+import { SessionTransport } from "../src/domain/session-transport.js";
+import { QueueRepository } from "../src/domain/queue-repository.js";
+import { MessageObligations } from "../src/domain/seat-messaging/pump-ports.js";
+import { WAKE_INTENT_PREFIX } from "../src/domain/outbox-handler.js";
 
 const SEAT_DIR = existingRigRoot("project");
 const SEAT = "dev-impl@race-rig";
@@ -265,6 +270,21 @@ describe("o9o.7: a message the old occupant took around rig seat launch --fresh 
     expect(alive.has(SEAT)).toBe(true);
   });
 
+  // Review finding 3: the help promises ISO 8601. Date.parse also takes these, and reads a zoneless time in the daemon's own zone.
+  it.each(["11/15/2026", "2026-11-15T23:06:06", "2026-11-15", "2026-02-30T10:00:00Z", "2026-11-15T24:00:00Z", "Sun, 15 Nov 2026 23:06:06 GMT"])(
+    "a --hand-over-since that is not an ISO 8601 time with its zone (%s) is refused before anything is stopped", async (since) => {
+      const launched = await relaunch(since);
+
+      expect(launched).toMatchObject({ ok: false, code: "invalid_hand_over_since" });
+      expect(alive.has(SEAT)).toBe(true);
+    });
+
+  it("an ISO 8601 time with an offset is taken as the same instant in UTC", async () => {
+    const launched = await relaunch("2026-11-16T00:06:06+01:00");
+
+    expect(launched).toMatchObject({ ok: true, handOver: { since: "2026-11-15T23:06:06.000Z", sinceSource: "hand_over_since" } });
+  });
+
   it("a message whose copy the old occupant's gate recorded just before the stop, not yet read by the pump, reaches the fresh occupant", async () => {
     send("m-late");
     await pump.tick();
@@ -301,6 +321,159 @@ describe("o9o.7: nothing goes to the dying session while a lifecycle lease holds
 
     expect(result).toEqual({ kind: "paused", reason: "busy" });
     expect(writes).toEqual([]);
+    db.close();
+  });
+});
+
+/** A promise and the hand that settles it: a step the test holds open while it does something else. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** Lets every queued promise step run: the lease to be taken, an attempt to reach its next await. */
+const settle = async (): Promise<void> => { for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r)); };
+
+describe("o9o.7 review finding 1: a socket write is decided under the lifecycle lease, on the pump and the direct path", () => {
+  const NODE = "node-race";
+  const bound: GuardTarget = { nodeId: NODE, session: SEAT, occupant: "occupant-old", pane: "%old" };
+  let db: Database.Database;
+  let guard: SeatDeliveryGuard;
+  /** What happened, in order: a socket write starting and ending, the lifecycle operation's body starting and ending. */
+  let events: string[];
+
+  beforeEach(() => {
+    db = createDb();
+    migrate(db, ALL_MIGRATIONS);
+    guard = new SeatDeliveryGuard(db, (name) => (name === SEAT || name === NODE ? bound : null));
+    events = [];
+  });
+  afterEach(() => db.close());
+
+  /** `rig seat launch --fresh --stop` as the guard sees it: a lifecycle lease on the seat, whose body runs until `release` resolves. */
+  function lifecycle(release: Promise<void>): Promise<void> {
+    return guard.lifecycle([NODE], async () => { events.push("lifecycle body"); await release; events.push("lifecycle end"); });
+  }
+
+  function claudeHop(store: MessageStore, eligibility: () => Promise<NativeEligibility>, write: () => Promise<"none" | "all" | "partial">) {
+    return new ClaudeSeatHop({
+      rows: store, guard, input: { submitText: async () => ({ ok: true as const }), sendKeys: async () => ({ ok: true as const }) },
+      client: { call: async () => { throw new Error("no hc in this test"); } },
+      eligibility,
+      writeToSeat: async () => { events.push("socket write"); const written = await write(); events.push("socket write done"); return written; },
+    });
+  }
+
+  function acceptedMessage(store: MessageStore): SeatMessage {
+    const id = messageId("m-race");
+    store.accept({ id, seat: SEAT, sender: "exec-cos@race-rig", body: "sent as launch --stop begins" });
+    store.claimAttempt(store.headOf(SEAT)!, 0);
+    return { ids: [id], seat: SEAT, body: "sent as launch --stop begins", messageClass: "content", lane: 2 };
+  }
+
+  const eligible: NativeEligibility = { ok: true, nodeId: NODE, endpoint: {
+    node_id: NODE, session_name: SEAT, generation: null, socket_path: "/s", transcript_path: null, claude_pid: 1, exec_path: null, claude_version: null,
+    probe_result: null, registered_at: "2026-11-15T23:00:00.000Z" } };
+
+  it("pump: a lease taken while the hop reads eligibility stops the write; the hop pauses and the old occupant gets nothing", async () => {
+    const store = new MessageStore(db);
+    const eligibility = deferred<NativeEligibility>();
+    const hop = claudeHop(store, () => eligibility.promise, async () => "all");
+    const attempt = hop.attempt(acceptedMessage(store));
+    await settle();
+    const release = deferred<void>();
+    const launch = lifecycle(release.promise);
+    await settle();
+    eligibility.resolve(eligible);
+    await settle();
+    release.resolve();
+    await launch;
+
+    expect(await attempt).toEqual({ kind: "paused", reason: "busy" });
+    expect(events).toEqual(["lifecycle body", "lifecycle end"]);
+  });
+
+  it("pump: a write already on the socket when a lease is taken finishes before the lifecycle body runs", async () => {
+    const store = new MessageStore(db);
+    const write = deferred<"none" | "all" | "partial">();
+    const hop = claudeHop(store, async () => eligible, () => write.promise);
+    const attempt = hop.attempt(acceptedMessage(store));
+    await settle();
+    const release = deferred<void>();
+    const launch = lifecycle(release.promise);
+    await settle();
+    write.resolve("all");
+    await settle();
+    release.resolve();
+    await launch;
+
+    expect(await attempt).toEqual({ kind: "sent" });
+    expect(events).toEqual(["socket write", "socket write done", "lifecycle body", "lifecycle end"]);
+  });
+
+  it("direct: a rig send whose eligibility read is overtaken by a lease writes nothing to the socket while the lease holds the seat", async () => {
+    const rigRepo = new RigRepository(db);
+    const sessionRegistry = new SessionRegistry(db);
+    const rig = rigRepo.createRig("race-rig");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "terminal" });
+    const session = sessionRegistry.registerSession(node.id, SEAT);
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: "%old" });
+    new EventBus(db);
+    const tmux = Object.assign(mockTmuxAdapter(), {
+      hasSession: async () => true,
+      probeSession: async () => ({ state: "present" as const }),
+      capturePaneContent: async () => "idle\n❯ ",
+      getPaneCommand: async () => "bash",
+      sendText: async () => { events.push("paste"); return { ok: true as const }; },
+      sendKeys: async () => ({ ok: true as const }),
+      deliveryGuard: guard,
+    });
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux });
+    const eligibility = deferred<NativeEligibility>();
+    Object.assign(transport, { nativeInbox: {
+      eligibility: () => eligibility.promise,
+      deliver: async () => { events.push("socket write"); return { kind: "fallback", reason: "fixture", outboxIds: [], acked: false }; },
+    } });
+
+    const sent = transport.send(SEAT, "sent as launch --stop begins", { deliveryId: "m-direct", actorSession: "exec-cos@race-rig" });
+    await settle();
+    const release = deferred<void>();
+    const launch = lifecycle(release.promise);
+    await settle();
+    eligibility.resolve(eligible);
+    await settle();
+    release.resolve();
+    await launch;
+    await sent;
+
+    expect(events.slice(0, 2)).toEqual(["lifecycle body", "lifecycle end"]);
+    expect(events).not.toContain("socket write");
+  });
+});
+
+describe("o9o.7 review finding 2: a carried blocker wake stays wanted while its item still waits on that transition", () => {
+  it("the real QueueRepository's wake check reads the carry row as the wake it re-delivers", async () => {
+    const db = createDb();
+    migrate(db, ALL_MIGRATIONS);
+    const queue = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
+    const item = await queue.create({ sourceSession: "exec-cos@race-rig", destinationSession: SEAT, body: "work", nudge: false });
+    const { transition_id: transitionId } = db.prepare("SELECT transition_id FROM queue_transitions WHERE qitem_id = ? ORDER BY transition_id DESC LIMIT 1")
+      .get(item.qitemId) as { transition_id: number };
+    const store = new MessageStore(db);
+    const pump = new MessagePump({
+      store, directory: new DbSeatDirectory(db), held: { status: () => "held" },
+      senders: { returnToSender: async () => ({ kind: "returned", qitemId: "q" }) },
+      clock: () => Date.now(), log: () => undefined, ports: { gateFor: () => null, hopFor: () => null },
+    });
+    const obligations = new MessageObligations();
+    queue.attachMessagePump(new PumpHandOff(store, pump, { gateFor: () => null, hopFor: () => null }), obligations);
+    const wakeId = `${WAKE_INTENT_PREFIX}blocker-${transitionId}`;
+    const asked = (id: string) => obligations.whyNoLongerWanted({ id: messageId(id), seat: SEAT, messageClass: "content", attempts: 0, occupantGeneration: null, auditPointer: item.qitemId });
+
+    expect({ original: asked(wakeId), carried: asked(carryIdOf(wakeId, "abcd1234")) }).toEqual({ original: null, carried: null });
+    pump.stop();
     db.close();
   });
 });

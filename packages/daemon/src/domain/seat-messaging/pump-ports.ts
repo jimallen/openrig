@@ -3,7 +3,8 @@
  * has lifted, and how a message goes back to its sender. Each is a question about the fleet, asked in the Seat Messaging words, so
  * the pump never reads `nodes`, `rigs` or a guard table itself.
  */
-import type { LastHop, MessageId, SeatGate, SeatMessageClass } from "./ports.js";
+import { messageId, type LastHop, type MessageId, type SeatGate, type SeatMessageClass } from "./ports.js";
+import { carryOriginOf } from "./message-store.js";
 
 /** Which seats the pump may serve (design: migration note 6). A seat with no gate is left as it is, and shows on health. */
 export interface SeatMessagingPorts {
@@ -74,8 +75,12 @@ export class MessageObligations {
     this.checks.push({ idPrefix, check });
   }
 
+  /** A carry row (`<id>.relaunch-<tag>`, workspaces-o9o.7) re-delivers its original message to a fresh occupant, so it stands for exactly what the
+   *  original stood for: its owner's check reads the original id. Checks parse their own ids (a blocker wake's transition number is its suffix). */
   whyNoLongerWanted(message: ObligedMessage): string | null {
-    return this.checks.find((entry) => message.id.startsWith(entry.idPrefix))?.check(message) ?? null;
+    const origin = carryOriginOf(message.id);
+    const asOwned = origin === null ? message : { ...message, id: messageId(origin) };
+    return this.checks.find((entry) => asOwned.id.startsWith(entry.idPrefix))?.check(asOwned) ?? null;
   }
 }
 

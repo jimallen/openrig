@@ -251,6 +251,16 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
     expect(await bad.json()).toMatchObject({ ok: false, code: "invalid_hand_over_since" });
   });
 
+  // Review finding 3: a since-time that is not a string is refused, never dropped (dropped, the launch would hand over less than was asked).
+  it.each([[1763247966000], [{ at: "2026-11-15T23:06:06Z" }], [null]])("launch refuses a handOverSince that is not a string (%j) with 400, without calling the service", async (since) => {
+    const spy = vi.spyOn(SeatLifecycleService.prototype, "launchFresh");
+    const bad = await post("launch", "dev-impl@seat-rig", { fresh: true, reason: "r", stop: true, handOverSince: since });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ ok: false, code: "invalid_hand_over_since" });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
   // OF-32: where a fresh launch takes its startup files from reaches the service; anything else is refused.
   it.each([["launch", "launchFresh"], ["launch-plan", "planFresh"]] as const)("%s forwards startupFrom and refuses an unknown value", async (route, method) => {
     const spy = vi.spyOn(SeatLifecycleService.prototype, method).mockResolvedValue({ ok: false, code: "fixture", message: "fixture" } as never);
