@@ -87,7 +87,9 @@ function baseOperationalLaunchArgs(runtime: string, choice: LaunchChoice): strin
   if (runtime === "codex") {
     // Managed seats leave Codex upgrades to the operator. This is launch-local;
     // it does not write config or accept a rate-limit model switch.
-    return ["-c", "check_for_update_on_startup=false", ...nonInterruptiveArgs(runtime,
+    // The seat PATH head (Jim, 2026-11-16, "Non-login shells"): Codex runs tool commands in a login shell by default, and a login profile
+    // (macOS path_helper, brew shellenv) reorders PATH and buries the seat PATH head. A non-login shell inherits Codex's own PATH.
+    return ["-c", "check_for_update_on_startup=false", "-c", "allow_login_shell=false", ...nonInterruptiveArgs(runtime,
       choice.kernelAuthority ? { launchPosture: "full_bypass", nonInterruptive: true } : choice)];
   }
   if (!choice.kernelAuthority) {

@@ -715,7 +715,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
   const claudeManagedLaunch = new ClaudeManagedLaunch(db, { ...launchSessionEnv, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }, {
     OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN: process.env.OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN,
-  });
+  }, () => seatLaunchEnvironment.pathHead());
   // Native comms step 3: `transport.native_claude`, read at every launch and every send decision (a changed setting
   // reaches the next launch and the next send; seats need a relaunch to carry the inbox setting).
   // OF-180 N4: the answer is kept until the settings file or the env override changes (one stat per decision, no parse).

@@ -11,7 +11,7 @@ import { codexDaemonSupportProbe } from "../src/domain/codex-daemon-support.js";
 
 const exec = promisify(execFile), roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function fixture() {
+function fixture(cliOverride?: string) {
   const root = mkdtempSync(path.join(tmpdir(), "seat-env-regression-")); roots.push(root);
   const shared = path.join(root, "shared bin's"), user = path.join(root, "user"), runtime = path.join(root, "runtime"), cwd = path.join(root, "workspace");
   for (const dir of [shared, user, runtime, cwd]) mkdirSync(dir);
@@ -26,7 +26,7 @@ function fixture() {
   const tmux = { getSessionEnv: vi.fn(async (_s: string, key: string) => identity[key]), getPaneCommand: vi.fn(async () => "bash"), sendShellCommand: vi.fn(async (_session: string, _command: string) => ({ ok: true })) };
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   // Fourth argument injects only a fake installed CLI path; production derives its paired CLI.
-  const launch = new (SeatLaunchEnvironment as any)(tmux, env, root, cli) as SeatLaunchEnvironment;
+  const launch = new (SeatLaunchEnvironment as any)(tmux, env, root, cliOverride ?? cli) as SeatLaunchEnvironment;
   const run = (command: string) => exec("/bin/bash", ["--noprofile", "--norc", "-c", command], { cwd, env: { ...env, PATH: `${user}:/usr/bin:/bin` }, timeout: 5000 });
   return { root, shared, user, runtime, cwd, cli, env, identity, tmux, warn, launch, run, exe };
 }
@@ -103,7 +103,9 @@ it.each(["fresh", "resume", "fork"] as const)("C: %s uses the probe's separate N
   const userPath = `${decoyBin}:/usr/bin:/bin`;
   const { stdout } = await exec("/bin/bash", ["--noprofile", "--norc", "-c", command], { cwd: f.cwd, env: { ...f.env, PATH: userPath }, timeout: 5000 });
   const observed = JSON.parse(stdout); expect(observed.started).toBe(true); expect(observed.node).toBe(process.execPath);
-  expect(observed.path.split(":").slice(1).join(":")).toBe(userPath);
+  // Seat PATH head: the rig link, worktree shim) then the user PATH, unchanged.
+  expect(observed.path.split(":").slice(2).join(":")).toBe(userPath);
+  expect(observed.path.split(":")[1]).toBe(path.join(f.env.OPENRIG_HOME, "rig-bin"));
 });
 
 it("B: the default resolver links this workspace's built CLI, not its PATH-first rig", async () => {
@@ -130,4 +132,75 @@ it.each(["nu", "nu.exe", "fish", "csh", "", "unknown"])("Pi preserves its existi
   expect(await f.launch.command("seat@rig", command, { runtime: "pi" })).toBe(command);
   expect(f.tmux.getSessionEnv).not.toHaveBeenCalled();
   expect(f.warn).toHaveBeenCalledTimes(1);
+});
+
+// "Seat PATH head": the git worktree shim is prepended AFTER the pane rc, beside the rig link, so a user PATH that puts its own git
+// first (linuxbrew on Sparky, /opt/homebrew on macOS) cannot bury it. Measured before the fix: rig-bin at PATH entry 13 (Sparky) and 18 (stu).
+it.each(["claude-code", "pi", "codex"] as const)("E: %s launched through the seat launch environment resolves git to the worktree shim ahead of the user's own git", async runtime => {
+  const f = fixture();
+  const { ensureGitWorktreeShim } = await import("../src/domain/git-worktree-shim.js");
+  const shimDir = await ensureGitWorktreeShim(f.env.OPENRIG_HOME);
+  const probe = "/bin/sh -c 'command -v git; command -v rig'";
+  // Codex: the probed executable (here a POSIX script on the daemon PATH) runs the same probe as its child tool would.
+  if (runtime === "codex") f.exe(path.join(f.shared, "codex"), `#!/bin/sh\nexec ${probe}\n`);
+  const command = runtime === "codex"
+    ? await f.launch.command("seat@rig", "codex --no-daemon", { codexCwd: f.cwd, runtime })
+    : await f.launch.command("seat@rig", probe, { runtime });
+  // f.run is the post-rc pane: the user's dir (holding its own git and rig) is first on PATH.
+  const [git, rig] = (await f.run(command)).stdout.trim().split("\n");
+  expect(git).toBe(path.join(shimDir, "git"));
+  expect(readlinkSync(rig!)).toBe(realpathSync(f.cli));
+  expect(f.warn).not.toHaveBeenCalled();
+});
+
+it("E: pathHead is the rig link then the worktree shim under this instance's home", () => {
+  const f = fixture();
+  const [seatBin, shim, ...more] = f.launch.pathHead();
+  expect(more).toEqual([]);
+  expect(seatBin!.startsWith(path.join(f.env.OPENRIG_HOME, "run", "seat-bin") + path.sep)).toBe(true);
+  expect(shim).toBe(path.join(f.env.OPENRIG_HOME, "rig-bin"));
+});
+
+// The fallback names WHY, by a fixed code and no value from the environment, so a fallback in the field can be diagnosed.
+it.each([
+  ["transport", "identity_read_failed"],
+  ["missing-node", "identity_missing"],
+  ["different-node", "identity_mismatch"],
+  ["nushell", "non_posix_pane"],
+  ["missing-cli", "seat_bin_unavailable"],
+] as const)("F: a %s fallback names its reason %s", async (kind, reason) => {
+  const f = fixture(kind === "missing-cli" ? path.join(tmpdir(), "openrig-no-such-cli", "missing-cli") : undefined);
+  if (kind === "transport") f.tmux.getSessionEnv.mockRejectedValue(Error("synthetic-transport-secret"));
+  if (kind === "missing-node") delete f.identity.OPENRIG_NODE_ID;
+  if (kind === "nushell") f.tmux.getPaneCommand.mockResolvedValue("nu");
+  expect(await f.launch.command("seat@rig", "claude", { nodeId: kind === "different-node" ? "other" : "node" })).toBe("claude");
+  expect(f.warn).toHaveBeenCalledTimes(1);
+  expect(String(f.warn.mock.calls[0]![0])).toBe(`[seat launch] Environment correction unavailable for seat@rig (${reason}); using the previous launch command.`);
+  expect(JSON.stringify(f.warn.mock.calls)).not.toContain("synthetic-transport-secret");
+});
+it.each([
+  ["fish", "pi_pane_shell: fish"],
+  ["", "pi_pane_shell: none"],
+  ["git", "pi_pane_shell: git"],
+  ["weird name;rm", "pi_pane_shell: other"],
+] as const)("F: a Pi fallback on pane foreground %j names the foreground it saw", async (shell, reason) => {
+  const f = fixture(); f.tmux.getPaneCommand.mockResolvedValue(shell);
+  expect(await f.launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" })).toBe("node '/runner.js'");
+  expect(String(f.warn.mock.calls[0]![0])).toBe(`[seat launch] Environment correction unavailable for seat@rig (${reason}); using the previous launch command.`);
+});
+
+// Jim, 2026-11-16, "Non-login shells": Codex runs a tool command in a LOGIN shell by default (allow_login_shell, default true), and a login
+// profile reorders PATH (macOS path_helper + brew shellenv buried a launch-time head at entry 15-16 on stu and mbp). Every Codex seat launch says no.
+it.each([
+  ["a team seat", { kernelAuthority: false }],
+  ["a kernel seat", { kernelAuthority: true }],
+  ["a full-bypass seat", { kernelAuthority: false, launchPosture: "full_bypass", nonInterruptive: true }],
+] as const)("G: %s's Codex launch args turn login shells off, exactly once", async (_kind, choice: Parameters<typeof import("../src/adapters/kernel-authority.js").operationalLaunchArgs>[1]) => {
+  const { operationalLaunchArgs } = await import("../src/adapters/kernel-authority.js");
+  const args = operationalLaunchArgs("codex", choice);
+  const at = args.indexOf("allow_login_shell=false");
+  expect(at).toBeGreaterThan(0); expect(args[at - 1]).toBe("-c");
+  expect(args.filter(a => a.startsWith("allow_login_shell"))).toEqual(["allow_login_shell=false"]);
+  expect(operationalLaunchArgs("claude-code", choice).join(" ")).not.toContain("allow_login_shell");
+  expect(operationalLaunchArgs("pi", choice).join(" ")).not.toContain("allow_login_shell");
 });

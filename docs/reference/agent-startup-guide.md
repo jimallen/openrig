@@ -448,6 +448,13 @@ remain shared.
 
 ### Runtime Differences
 
+**Every runtime: the seat PATH.** A seat's tool commands run with two OpenRig directories first on `PATH`, ahead of
+everything your shell startup files add: `$OPENRIG_HOME/run/seat-bin/<id>`, which holds only this install's `rig`, and
+`$OPENRIG_HOME/rig-bin`, which holds the `git` shim that places `git worktree add` under `<repo>/.rig-worktrees`. OpenRig
+adds them after the pane's shell has read its rc files, so a Homebrew or linuxbrew `git` earlier on your `PATH` does not
+bypass the shim. If OpenRig cannot build this prefix, the seat still launches, and the daemon log names the reason:
+`[seat launch] Environment correction unavailable for <seat> (<reason>)`.
+
 **Claude Code:**
 - Reads from `CLAUDE.md` and `.claude/` directory
 - Recurring tasks via the `/loop` command (e.g., `/loop 5m "check rig health"`) — this is NOT hooks; hooks are event-driven
@@ -473,6 +480,10 @@ remain shared.
   `CODEX_HOME`, read its login and fetch managed policy, as a Codex start does.
 - Managed launches pass `-c check_for_update_on_startup=false`, so Codex skips its startup update check; your Codex
   config is not changed.
+- Managed launches also pass `-c allow_login_shell=false`, so Codex runs each tool command in a non-login shell that
+  keeps the seat's PATH. A login shell re-runs your login profile (on macOS, `path_helper` and `brew shellenv`), which
+  reorders PATH and would put your own `git` ahead of OpenRig's worktree shim. Commands that rely on something only a
+  login profile sets need it in your interactive shell setup instead; your Codex config is not changed.
 - Can self-install dependencies from instructions but timer/recurring behavior is not reliably available
 
 **Pi and OMP:**

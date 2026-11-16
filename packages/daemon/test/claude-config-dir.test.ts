@@ -288,7 +288,7 @@ console.log(JSON.stringify({ CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ??
     const rigRepo = new RigRepository(db);
     const rig = rigRepo.createRig("r");
     const node = rigRepo.addNode(rig.id, "dev.cel", { runtime: "claude-code", cwd, ...(opts.seatHome !== "none" ? { claudeConfigDir: seatHome } : {}) });
-    const managed = new ClaudeManagedLaunch(db, env, {});
+    const managed = new ClaudeManagedLaunch(db, env, {}, () => []);
     const fsOps: ClaudeAdapterFsOps = {
       homedir: home, exists: fs.existsSync, mkdirp: p => { fs.mkdirSync(p, { recursive: true }); },
       readFile: p => fs.readFileSync(p, "utf8"), writeFile: (p, t) => fs.writeFileSync(p, t),
@@ -483,7 +483,7 @@ describe("a native fork across Claude homes is refused up front", () => {
     const saved = process.env.CLAUDE_CONFIG_DIR;
     delete process.env.CLAUDE_CONFIG_DIR;
     try {
-      const adapter = new ClaudeCodeAdapter({ tmux, fsOps, claudeManagedLaunch: new ClaudeManagedLaunch(db, { HOME: home, PATH: "/usr/bin" }, {}) });
+      const adapter = new ClaudeCodeAdapter({ tmux, fsOps, claudeManagedLaunch: new ClaudeManagedLaunch(db, { HOME: home, PATH: "/usr/bin" }, {}, () => []) });
       const binding = { id: "b", nodeId: node.id, cwd: root, tmuxSession: "dev-cel@r", tmuxPane: "%1" } as NodeBinding;
       const result = await adapter.launchHarness(binding, { name: "dev-cel@r", forkSource: { kind: "native_id", value: "parent-1" } });
       expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/^fork_across_claude_homes:/) });

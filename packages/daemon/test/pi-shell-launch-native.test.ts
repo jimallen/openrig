@@ -147,7 +147,9 @@ setInterval(() => {}, 1000);
           generation: launchMode === "resume" ? "existing-generation" : "reserved-generation",
           agentDir: piSeatPaths(stateRoot, session).agentDir,
           sessionsDir: piSeatPaths(stateRoot, session).sessionsDir, extraPresent: false });
-        const [owned, ...rest] = received.route.PATH.split(":");
+        // "Seat PATH head": the rig link, then the git worktree shim, ahead of everything the pane rc put first.
+        const [owned, shim, ...rest] = received.route.PATH.split(":");
+        expect(shim).toBe(path.join(temp, "instance", "rig-bin"));
         expect(fs.readlinkSync(path.join(owned, "rig"))).toBe(cli);
         expect(rest.join(":")).toBe(path.join(temp, "user-bin") + ":" + sessionEnv.PATH);
       }

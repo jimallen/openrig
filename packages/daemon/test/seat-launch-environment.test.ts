@@ -68,7 +68,9 @@ function fixture() {
     expect(observed).toMatchObject({ body: { node: "node-current" }, home: env.OPENRIG_HOME, node: "node-current" });
     if (!managed) expect(observed).toMatchObject({ generation: "successor-generation", HOME: "/user/home", CODEX_HOME: "/user/codex", CLAUDE_CONFIG_DIR: "/user/claude", USER_VALUE: "keep" });
     if (!managed) {
-      const [owned, ...rest] = observed.PATH.split(":");
+      // "Seat PATH head": the rig link, then the git worktree shim, ahead of everything the pane rc put first.
+      const [owned, shim, ...rest] = observed.PATH.split(":");
+      expect(shim).toBe(path.join(env.OPENRIG_HOME, "rig-bin"));
       expect(rest.join(":")).toBe(`${userBin}:${bin}:/usr/bin:/bin`);
       expect(readlinkSync(path.join(owned, "rig"))).toBe(path.join(bin, "rig"));
     }
@@ -114,11 +116,27 @@ describe.skipIf(process.platform === "win32")("seat launch environment after she
     db.exec("INSERT INTO bindings VALUES ('b','node-current','seat@rig','%1'); INSERT INTO occupant_tenures VALUES ('node-current','current-generation',1)");
     // Include the same user-tool dir in the existing managed PATH; managed PATH/HOME stay bound.
     f.env.PATH += ":" + path.join(f.root, "user-bin");
-    const managed = new ClaudeManagedLaunch(db, f.env, {});
+    const managed = new ClaudeManagedLaunch(db, f.env, {}, () => f.launch.pathHead());
     const prepared = await managed.prepare({ nodeId: "node-current", session: "seat@rig", pane: "%1" }, "auto");
     const observed = await f.execute(prepared.command(["--permission-mode", "auto"]), true);
-    expect(observed.HOME).toBe(f.env.HOME); expect(observed.PATH).toBe(f.env.PATH);
+    // The managed `env -i` PATH starts with the same seat PATH head, then the bound daemon PATH, unchanged.
+    expect(observed.HOME).toBe(f.env.HOME); expect(observed.PATH).toBe([...f.launch.pathHead(), f.env.PATH].join(":"));
+    expect(readlinkSync(path.join(observed.PATH.split(":")[0], "rig"))).toBe(path.join(f.bin, "rig"));
+    expect(observed.PATH.split(":")[1]).toBe(path.join(f.env.OPENRIG_HOME, "rig-bin"));
     expect(observed.generation).toBe("current-generation");
+  });
+  it("managed Claude whose seat PATH head cannot be built still launches on its bound PATH, with one diagnostic and no refusal", async () => {
+    const f = fixture();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const db = new Database(":memory:"); cleanup.push(() => { db.close(); });
+    db.exec("CREATE TABLE nodes(id TEXT,runtime TEXT,cwd TEXT); CREATE TABLE bindings(id TEXT,node_id TEXT,tmux_session TEXT,tmux_pane TEXT); CREATE TABLE occupant_tenures(node_id TEXT,generation_uuid TEXT,generation_ordinal INTEGER)");
+    db.prepare("INSERT INTO nodes VALUES ('node-current','claude-code',?)").run(f.binding.cwd);
+    db.exec("INSERT INTO bindings VALUES ('b','node-current','seat@rig','%1'); INSERT INTO occupant_tenures VALUES ('node-current','current-generation',1)");
+    const prepared = await new ClaudeManagedLaunch(db, f.env, {}, () => { throw Error("synthetic-head-secret"); }).prepare({ nodeId: "node-current", session: "seat@rig", pane: "%1" }, "auto");
+    expect(prepared.command(["--permission-mode", "auto"])).toContain(shellQuote(`PATH=${f.env.PATH}`));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain("(seat_bin_unavailable)");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-head-secret");
   });
   it("managed Claude keeps a non-public URL on its inherited channel without changing the native context", async () => {
     const f = fixture();
@@ -128,7 +146,7 @@ describe.skipIf(process.platform === "win32")("seat launch environment after she
     db.exec("CREATE TABLE nodes(id TEXT,runtime TEXT,cwd TEXT); CREATE TABLE bindings(id TEXT,node_id TEXT,tmux_session TEXT,tmux_pane TEXT); CREATE TABLE occupant_tenures(node_id TEXT,generation_uuid TEXT,generation_ordinal INTEGER)");
     db.prepare("INSERT INTO nodes VALUES ('node-current','claude-code',?)").run(f.binding.cwd);
     db.exec("INSERT INTO bindings VALUES ('b','node-current','seat@rig','%1'); INSERT INTO occupant_tenures VALUES ('node-current','current-generation',1)");
-    const prepared = await new ClaudeManagedLaunch(db, f.env, {}).prepare({ nodeId: "node-current", session: "seat@rig", pane: "%1" }, "auto");
+    const prepared = await new ClaudeManagedLaunch(db, f.env, {}, () => []).prepare({ nodeId: "node-current", session: "seat@rig", pane: "%1" }, "auto");
     const command = prepared.command(["--permission-mode", "auto"]);
     expect(command).not.toContain(f.env.OPENRIG_URL);
     expect(command).toContain('"OPENRIG_URL=${OPENRIG_URL-}"');

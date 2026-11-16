@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { shimDir } from "./git-worktree-shim.js";
 
 // Explicit public launch metadata, not a prefix/denylist over credential names.
 // Provider keys and OPENRIG_ACTIVITY_HOOK_TOKEN keep their non-typed channel.
@@ -100,29 +101,41 @@ export class SeatLaunchEnvironment {
     return bin;
   }
 
+  /** Invariant "seat PATH head": in every process a seat runs tool commands from, PATH starts with this install's
+   *  rig-only link, then the git worktree shim (`<OPENRIG_HOME>/rig-bin`), ahead of every entry the pane's rc put first.
+   *  The one place that order is defined; the launch command and the managed launch both take it from here. */
+  pathHead(): string[] {
+    const seatBin = this.rigBin();
+    return [seatBin, shimDir(path.resolve(this.daemonCwd, this.sessionEnv.OPENRIG_HOME!))];
+  }
+
   async command(session: string, command: string, target: { codexCwd?: string; nodeId?: string; generation?: string; runtime?: string } = {}): Promise<string> {
     const searchPath = this.sessionEnv.PATH;
     const codexEnv = target.codexCwd !== undefined
       ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", this.codexHome ? `CODEX_HOME=${shellQuote(this.codexHome)}` : ""].filter(Boolean)
       : [];
     const fallback = codexEnv.length ? `env ${codexEnv.join(" ")} ${command}` : command;
+    // The step under way names a failure that is not one of the typed refusals below.
+    let step = "pane_read_failed";
     try {
       // Nushell does not expand "$PATH". Keep its pre-existing literal command.
-      const shell = path.basename(await this.tmux.getPaneCommand(session) ?? "").replace(/^-/, "");
-      if (shell === "nu" || shell === "nu.exe") throw new Error("Non-POSIX pane");
+      const foreground = await this.tmux.getPaneCommand(session);
+      const shell = path.basename(foreground ?? "").replace(/^-/, "");
+      if (shell === "nu" || shell === "nu.exe") throw new LaunchCorrectionUnavailable("non_posix_pane");
       // Pi keeps its existing command on shells where this PATH expression is not supported.
       if (target.runtime === "pi" && !["bash", "zsh", "sh", "dash", "ksh"].includes(shell)) {
-        throw new Error("Unsupported Pi pane shell");
+        throw new LaunchCorrectionUnavailable(`pi_pane_shell: ${foregroundLabel(shell)}`);
       }
+      step = "identity_read_failed";
       const identity: Record<string, string | undefined> = {};
       for (const key of ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION"]) {
         identity[key] = await this.tmux.getSessionEnv(session, key);
       }
       if (!identity.OPENRIG_NODE_ID || !identity.OPENRIG_SESSION_NAME) {
-        throw new Error("Seat launch requires the session's OpenRig identity.");
+        throw new LaunchCorrectionUnavailable("identity_missing");
       }
       if (target.nodeId !== undefined && identity.OPENRIG_NODE_ID !== target.nodeId) {
-        throw new Error("Seat launch identity differs from the intended node.");
+        throw new LaunchCorrectionUnavailable("identity_mismatch");
       }
       // Handover respawns an existing pane with -e; tmux's session environment
       // still names the predecessor. The caller owns the reserved generation.
@@ -131,10 +144,14 @@ export class SeatLaunchEnvironment {
       // Codex help/preflight uses the daemon PATH. Preserve its executable and
       // interpreter selection while child tools retain the user's PATH.
       if (target.codexCwd !== undefined) {
-        if (!searchPath || !command.startsWith("codex ")) throw new Error("Expected a Codex launch command and PATH.");
+        if (!searchPath || !command.startsWith("codex ")) throw new LaunchCorrectionUnavailable("codex_command_shape");
+        step = "codex_entry_unavailable";
         command = codexEntry(searchPath, target.codexCwd) + command.slice(5);
       }
-      const binDir = this.rigBin();
+      step = "seat_bin_unavailable";
+      // Prepended here, after the pane rc has run, so nothing the rc puts first can bury it.
+      const head = `PATH=${this.pathHead().map(shellQuote).join(":")}:"$PATH"`;
+      step = "internal";
       const env = publicSeatEnvironment({ OPENRIG_TRANSCRIPTS_LINES: "", OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS: "", ...this.sessionEnv, ...identity });
       if (target.codexCwd !== undefined && this.codexHome) env.CODEX_HOME = this.codexHome;
       // Classic Claude may be an rc alias or function, not a PATH executable.
@@ -142,15 +159,28 @@ export class SeatLaunchEnvironment {
       // assignments preserve shell lookup; /usr/bin/env would bypass it.
       if (target.runtime === "claude-code") {
         const assignments = Object.entries(env).map(([key, value]) => `${key}=${shellQuote(value)}`);
-        return `${assignments.join(" ")} PATH=${shellQuote(binDir)}:"$PATH" ${command}`;
+        return `${assignments.join(" ")} ${head} ${command}`;
       }
       const assignments = Object.entries(env).map(([key, value]) => shellQuote(`${key}=${value}`));
-      return `/usr/bin/env ${assignments.join(" ")} PATH=${shellQuote(binDir)}:"$PATH" ${command}`;
-    } catch {
-      // This best-effort correction is not a new launch admission gate. Do not
-      // include error details: transport errors may contain environment values.
-      console.warn("[seat launch] Environment correction unavailable; using the previous launch command.");
+      return `/usr/bin/env ${assignments.join(" ")} ${head} ${command}`;
+    } catch (error) {
+      // This best-effort correction is not a new launch admission gate. Never
+      // include error text: transport errors may contain environment values.
+      // The reason is a fixed code (plus, for Pi, a sanitized process name).
+      const reason = error instanceof LaunchCorrectionUnavailable ? error.reason : step;
+      console.warn(`[seat launch] Environment correction unavailable for ${session} (${reason}); using the previous launch command.`);
       return fallback;
     }
   }
+}
+
+/** A typed refusal of the launch correction, carrying a fixed reason code and never an environment value. */
+class LaunchCorrectionUnavailable extends Error {
+  constructor(readonly reason: string) { super(reason); }
+}
+
+/** The pane's foreground process name as a diagnostic: absent reads "none"; anything but a plain short name reads "other". */
+function foregroundLabel(name: string): string {
+  if (name === "") return "none";
+  return /^[A-Za-z0-9._+-]{1,40}$/.test(name) ? name : "other";
 }

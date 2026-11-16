@@ -258,7 +258,9 @@ resume launches (`codex-runtime-adapter.ts:378`, `codex-resume.ts:103`).
   fresh launch whose thread id is not captured returns `{ ok: true }` with its
   applied launch but no token (`:466`). Every Codex launch, fresh, fork or resume,
   also carries `-c check_for_update_on_startup=false`, so a managed seat leaves Codex
-  upgrades to the operator (`kernel-authority.ts:60`, added to the posture at
+  upgrades to the operator, and `-c allow_login_shell=false`, so tool commands run in a
+  non-login shell that keeps the seat PATH head (both in `baseOperationalLaunchArgs`,
+  `kernel-authority.ts`, added to the posture at
   `codex-runtime-adapter.ts:363`).
 - **Network default.** On the plain `-s workspace-write` floor,
   `domain/codex-network-default.ts` asks a one-shot `codex app-server` for the

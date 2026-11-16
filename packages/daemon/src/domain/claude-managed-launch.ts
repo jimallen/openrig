@@ -34,7 +34,9 @@ interface TargetSnapshot {
 export class ClaudeManagedLaunch {
   constructor(private readonly db: Database.Database,
     private readonly sessionEnv: Readonly<Record<string, string | undefined>>,
-    private readonly rendererEnv: Readonly<NodeJS.ProcessEnv>) {}
+    private readonly rendererEnv: Readonly<NodeJS.ProcessEnv>,
+    /** The seat PATH head (SeatLaunchEnvironment.pathHead): prepended to the bound PATH, never searched for claude. */
+    private readonly pathHead: () => readonly string[]) {}
 
   private target(nodeId: string): TargetSnapshot {
     // claude_config_dir arrived in migration 129; without it every seat reads as on the daemon's own home.
@@ -88,14 +90,15 @@ export class ClaudeManagedLaunch {
     return this.sessionEnv.CLAUDE_CONFIG_DIR ? this.configPaths(cwd).statePath : undefined;
   }
 
-  private context(cwd: string, seatHome: string | null) {
+  private context(cwd: string, seatHome: string | null, head: readonly string[]) {
     const { PATH, HOME, CLAUDE_CONFIG_DIR } = this.sessionEnv;
     if (!PATH || !HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: managed PATH and absolute HOME are required.");
     // Relative/empty PATH entries are interpreted at the intended seat cwd,
     // including for /usr/bin/env shebangs inside the selected executable.
     const search = PATH.split(path.delimiter).map(p => path.resolve(cwd, p));
     const { configDir } = this.configPaths(cwd, seatHome);
-    const env: Record<string, string> = { PATH: search.join(path.delimiter), HOME };
+    // `env -i` drops the pane's PATH, so the seat PATH head goes first here; the executable is still found on the bound PATH alone.
+    const env: Record<string, string> = { PATH: [...head, ...search].join(path.delimiter), HOME };
     // Session storage needs a directory, but exporting the default changes
     // Claude's global config selection. Preserve an unset native selection.
     // `env -i` drops the pane's environment, so a seat's own home is stated here.
@@ -134,7 +137,11 @@ export class ClaudeManagedLaunch {
     const seatHome = before.claudeConfigDir;
     const homeRefusal = claudeConfigDirLaunchRefusal(seatHome);
     if (homeRefusal) throw new Error(homeRefusal);
-    const context = this.context(cwd, seatHome);
+    // A head that cannot be built is left out with one diagnostic, as the unmanaged launch falls back: never a new refusal.
+    let head: readonly string[] = [];
+    try { head = this.pathHead(); }
+    catch { console.warn(`[seat launch] Managed launch for ${target.session ?? target.nodeId} has no seat PATH head (seat_bin_unavailable); using the bound PATH.`); }
+    const context = this.context(cwd, seatHome, head);
     // This is the existing managed session channel, not arbitrary shell variables.
     // Filter out the explicit capability environment and overwrite launch identity.
     const inherited = Object.keys(this.sessionEnv).filter(key => this.sessionEnv[key] !== undefined
@@ -142,7 +149,7 @@ export class ClaudeManagedLaunch {
     if (inherited.some(key => !/^[A-Z_][A-Z0-9_]*$/.test(key))) throw new Error("Invalid managed environment key.");
     const assertCurrent = () => {
       if (JSON.stringify(this.target(target.nodeId)) !== JSON.stringify(before)
-        || JSON.stringify(this.context(cwd, seatHome)) !== JSON.stringify(context)
+        || JSON.stringify(this.context(cwd, seatHome, head)) !== JSON.stringify(context)
         || JSON.stringify(Object.keys(this.sessionEnv).filter(key => this.sessionEnv[key] !== undefined
           && !["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"].includes(key))) !== JSON.stringify(inherited)) {
         throw new Error("Claude managed launch context changed during capability discovery/input; retry explicitly.");
