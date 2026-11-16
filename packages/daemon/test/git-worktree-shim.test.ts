@@ -437,6 +437,34 @@ describe("git-worktree-shim", () => {
       });
     }
 
+    // verify-sec, review of cc9a1496 (FAIL 2/3): the leaf was checked for a symlink but not .rig-worktrees itself, so
+    // with the ROOT a symlink to an outside dir, mkdir -p and git both followed it and the worktree landed outside.
+    it("real git: when .rig-worktrees itself is a symlink to an outside dir, the redirect is refused and nothing lands there", async () => {
+      const repo = path.join(tmp, "rootlink");
+      await fs.mkdir(repo);
+      const git = path.join(realGitDir(), "git");
+      expect(spawnSync(git, ["init", "-q", repo]).status).toBe(0);
+      expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
+      const outside = path.join(tmp, "root-target");
+      await fs.mkdir(outside);
+      await fs.symlink(outside, path.join(repo, ".rig-worktrees"));
+      const shim = await ensureGitWorktreeShim(tmp);
+      const r = runGit(["worktree", "add", "-b", "escape", path.join(tmp, "outside2", "asked")], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
+      expect(r.status).toBe(128);
+      expect(r.stderr).toMatch(/^openrig git shim: refusing worktree path [^\n]*\n$/);
+      expect(await fs.readdir(outside), "nothing is created through the symlinked root").toEqual([]);
+      expect(existsSync(path.join(tmp, "outside2")), "nor at the path asked for").toBe(false);
+    });
+
+    it("when .rig-worktrees exists but is not a directory, the redirect is refused before mkdir or git runs", async () => {
+      const { realTop, outside, run } = await setup();
+      await fs.writeFile(path.join(realTop, ".rig-worktrees"), "not a dir\n");
+      const r = run(["-b", "feat", outside]);
+      expect(r.status).toBe(128);
+      expect(r.argv, "git did not run").toEqual([]);
+      expect(r.stderr).toMatch(/^openrig git shim: refusing worktree path [^\n]*\n$/);
+    });
+
     it("real git: the portal itself as the path ('.rig-worktrees/portal', a symlink to an empty outside dir) is refused, not redirected onto itself", async () => {
       const { portalTarget, run } = await realRepo();
       const r = run(["-b", "escaped", ".rig-worktrees/portal"]);

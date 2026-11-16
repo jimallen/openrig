@@ -92,12 +92,17 @@ if [ "\$#" -ge 2 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
     fi
     if [ "\$inside" = no ]; then
       # Redirect by the path's last name (basename, without \$(...)). A name that is not a
-      # directory inside .rig-worktrees ('', '.', '..', or a symlink already there) is refused.
+      # directory inside .rig-worktrees ('', '.', '..', or a symlink already there) is refused,
+      # and so is every redirect while .rig-worktrees itself is a symlink or not a directory:
+      # mkdir -p and git would both follow it, and nothing is ever made through it.
       name="\$target"
       while [ "\${#name}" -gt 1 ] && [ "\${name%/}" != "\$name" ]; do name="\${name%/}"; done
       name="\${name##*/}"
       dest="\$toplevel/.rig-worktrees/\$name"
       case "\$name" in ""|.|..) dest="" ;; esac
+      if [ -L "\$toplevel/.rig-worktrees" ] || { [ -e "\$toplevel/.rig-worktrees" ] && [ ! -d "\$toplevel/.rig-worktrees" ]; }; then
+        dest=""
+      fi
       if [ -z "\$dest" ] || [ -L "\$dest" ]; then
         printf 'openrig git shim: refusing worktree path %q (it does not name a directory inside %q)\\n' "\$target" "\$toplevel/.rig-worktrees" >&2
         exit 128
