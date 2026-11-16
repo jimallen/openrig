@@ -174,7 +174,9 @@ export class PluginVendorService {
    * review): a symlinked ancestor (OPENRIG_HOME/plugins -> elsewhere) or a link inside the copy cannot carry a write or a
    * delete outside it. A refused target is reported, not written.
    *
-   * Residual, accepted (Jim, 2026-11-16: "Accept the residual"): an ancestor directory swapped for a symlink between
+   * Residual, accepted on 2026-11-16 by OpenRig's 15-minute auto-answer (the question to Jim went unanswered, so OpenRig
+   * took its Recommended option, "Accept the residual", at 18:21Z; queue record qa-f5c084b1679e94516e44aff1e88a8361), which counts
+   * as Jim's go under his 2026-11-08 rule. The residual: an ancestor directory swapped for a symlink between
    * the last lstat walk and the mkdir, open, chmod, rename or unlink that follows it. Node has no
    * openat/renameat/unlinkat on a directory handle, so the window cannot be closed here. rename and unlink act on the
    * final component itself (never through a link there), and temps are created O_EXCL. Precondition: a concurrent
