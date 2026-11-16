@@ -26,15 +26,16 @@ const SHIM_BODY = `#!/usr/bin/env bash
 # openrig git worktree placement shim — only 'git worktree add' paths are governed.
 set -euo pipefail
 real_git() {
-  # The first git on PATH that is not this shim, compared by physical directory so
-  # a symlinked rig-bin is still this shim. 'type -aP' lists every git on PATH
-  # (bash 3.2 and later); bash's 'command' has no -a. No git but this shim: fail
-  # like a plain missing git rather than exec ourselves.
+  # The first git on PATH that is not this shim. Identity is the file: -ef compares
+  # device and inode after following symlinks, so a symlinked rig-bin, a file
+  # symlink or a hard link to this shim is still this shim. 'type -aP' lists every
+  # git on PATH (bash 3.2 and later); bash's 'command' has no -a. No git but this
+  # shim: fail like a plain missing git rather than exec ourselves.
   local self p
-  self="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd -P)/${SHIM_FILE_NAME}"
+  self="\${BASH_SOURCE[0]}"
   while IFS= read -r p; do
     [ -n "\$p" ] || continue
-    if [ "\$(cd "\$(dirname "\$p")" 2>/dev/null && pwd -P)/${SHIM_FILE_NAME}" != "\$self" ]; then
+    if [ ! "\$p" -ef "\$self" ]; then
       printf '%s\\n' "\$p"; return 0
     fi
   done < <(type -aP git || true)

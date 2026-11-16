@@ -156,6 +156,23 @@ describe("git-worktree-shim", () => {
       expect(r.stderr).toBe("");
     });
 
+    // verify-sec, review of 6a6c796e: the shim knew itself by its directory, so a `git` elsewhere on PATH that is
+    // the shim under another name (a file symlink or a hard link) counted as a real git, and the shim exec'd
+    // itself until killed. Identity is the file (device and inode), not the path.
+    for (const kind of ["file symlink", "hard link"] as const) {
+      it(`skips the shim when another PATH dir holds it as a ${kind} (no exec loop)`, async () => {
+        const shim = await ensureGitWorktreeShim(tmp);
+        const alias = path.join(tmp, "alias-dir");
+        await fs.mkdir(alias);
+        if (kind === "file symlink") await fs.symlink(path.join(shim, "git"), path.join(alias, "git"));
+        else await fs.link(path.join(shim, "git"), path.join(alias, "git"));
+        const r = runGit(["--version"], [shim, alias, await prefGitDir(), "/usr/bin", "/bin"], tmp);
+        expect(r.signal, "the shim did not exec itself until the timeout").toBeNull();
+        expect(r.stdout).toBe("PREF --version\n");
+        expect(r.stderr).toBe("");
+      });
+    }
+
     it("with no git on PATH but the shim, fails at once with 127 and never runs a git off PATH", async () => {
       const shim = await ensureGitWorktreeShim(tmp);
       const r = runGit(["--version"], [shim, await toolsDir("bash", "dirname")], tmp);
