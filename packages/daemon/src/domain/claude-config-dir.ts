@@ -110,12 +110,14 @@ export interface ClaudeHomeReader { exists: (p: string) => boolean; isDirectory:
 /**
  * workspaces-o9o.10: what a seat with its own Claude home gets when the seat has no model of its own (nodes.model: the
  * spec's, or `rig seat set-model`). OpenRig then passes no `--model` (and none of its `--settings` carries one), so
- * Claude takes `model` from its settings layers, highest first: the project's .claude/settings.local.json, its
- * .claude/settings.json, then the user settings, which for this seat are <home>/settings.json; with none, the account's
- * default (Claude Code settings reference). Returns a warning when <home>/settings.json sets no model (missing,
- * unparseable, or not a non-empty string); null when it sets one or the home is not a directory (that has its own
- * refusal). Never a refusal. ANTHROPIC_MODEL is not checked: it is not on the provider-env allow-list
- * (startup.ts KNOWN_PROVIDER_AUTH_ENV), and a managed launch runs under env -i, so OpenRig never gives it to a seat.
+ * Claude takes its model from its other sources, highest first: managed policy settings, ANTHROPIC_MODEL in the seat's
+ * environment, the project's .claude/settings.local.json, its .claude/settings.json, then the user settings, which for
+ * this seat are <home>/settings.json; with none, the account's default (Claude Code settings and model-config
+ * reference). Returns a warning when <home>/settings.json sets no model (missing, unparseable, or not a non-empty
+ * string); null when it sets one or the home is not a directory (that has its own refusal). Never a refusal. Only the
+ * seat's home is read: managed policy and the project files are not this seat's, and ANTHROPIC_MODEL is not knowable
+ * here (a managed launch runs under env -i, but a non-managed one inherits the daemon's environment), so the warning
+ * names them as sources rather than ruling them out.
  */
 export function claudeHomeNoModelFinding(dir: string, seatRef: string, read: ClaudeHomeReader): string | null {
   try {
@@ -128,7 +130,7 @@ export function claudeHomeNoModelFinding(dir: string, seatRef: string, read: Cla
     model = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>)["model"] : undefined;
   } catch { /* unparseable: reported as not set */ }
   if (typeof model === "string" && model.trim().length > 0) return null;
-  return `${settings} sets no model and the seat has none of its own, so Claude uses the model the project's .claude/settings.local.json or .claude/settings.json sets, if either does, else the account's default model. Pin one with: rig seat set-model ${seatRef} --model <model> --reason <why>, or set "model" in ${settings}.`;
+  return `${settings} sets no model and the seat has none of its own, so Claude takes its model from its other sources if one sets it (managed policy settings, ANTHROPIC_MODEL in the seat's environment, the project's .claude/settings.local.json or .claude/settings.json), else the account's default model. Pin one with: rig seat set-model ${seatRef} --model <model> --reason <why>, or set "model" in ${settings}.`;
 }
 
 /**

@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import type Database from "better-sqlite3";
-import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeForkHomeRefusal, claudeConfigDirShapeError, normalizeClaudeConfigDir, seatClaudeConfigDirEnv } from "../src/domain/claude-config-dir.js";
+import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeHomeNoModelFinding, claudeForkHomeRefusal, claudeConfigDirShapeError, normalizeClaudeConfigDir, seatClaudeConfigDirEnv } from "../src/domain/claude-config-dir.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -193,7 +193,7 @@ describe("persistence and the fresh launch env", () => {
       if (!result.ok) throw new Error(result.message);
       expect(captured).toHaveLength(1);
       expect(noModel(result.warnings)).toEqual([
-        `dev.cel: ${path.join(dir, "settings.json")} sets no model and the seat has none of its own, so Claude uses the model the project's .claude/settings.local.json or .claude/settings.json sets, if either does, else the account's default model. Pin one with: rig seat set-model ${result.sessionName} --model <model> --reason <why>, or set "model" in ${path.join(dir, "settings.json")}.`,
+        `dev.cel: ${path.join(dir, "settings.json")} sets no model and the seat has none of its own, so Claude takes its model from its other sources if one sets it (managed policy settings, ANTHROPIC_MODEL in the seat's environment, the project's .claude/settings.local.json or .claude/settings.json), else the account's default model. Pin one with: rig seat set-model ${result.sessionName} --model <model> --reason <why>, or set "model" in ${path.join(dir, "settings.json")}.`,
       ]);
     });
 
@@ -396,7 +396,7 @@ describe("SeatLifecycleService.setClaudeHome", () => {
     fs.writeFileSync(path.join(cel, ".claude.json"), "{}");
     const { node, sessionName } = seat("dev.impl");
     const settings = path.join(cel, "settings.json");
-    const expected = `${settings} sets no model and the seat has none of its own, so Claude uses the model the project's .claude/settings.local.json or .claude/settings.json sets, if either does, else the account's default model. Pin one with: rig seat set-model ${sessionName} --model <model> --reason <why>, or set "model" in ${settings}.`;
+    const expected = `${settings} sets no model and the seat has none of its own, so Claude takes its model from its other sources if one sets it (managed policy settings, ANTHROPIC_MODEL in the seat's environment, the project's .claude/settings.local.json or .claude/settings.json), else the account's default model. Pin one with: rig seat set-model ${sessionName} --model <model> --reason <why>, or set "model" in ${settings}.`;
     const first = await service.setClaudeHome({ seatRef: sessionName, dir: cel, reason: "cel account" });
     if (!first.ok) throw new Error(first.message);
     expect(first.findings).toContain(expected);
@@ -405,6 +405,14 @@ describe("SeatLifecycleService.setClaudeHome", () => {
     const pinned = await service.setClaudeHome({ seatRef: sessionName, dir: cel, reason: "same" });
     if (!pinned.ok) throw new Error(pinned.message);
     expect(pinned.findings.filter((f) => f.includes("sets no model"))).toEqual([]);
+  });
+
+  // workspaces-o9o.10 review: the home is not Claude's only model source. Managed policy settings and ANTHROPIC_MODEL
+  // (a non-managed launch inherits the daemon's environment) outrank it, so the warning must not rule them out.
+  it("names managed policy settings and ANTHROPIC_MODEL among the sources Claude may take a model from (workspaces-o9o.10)", () => {
+    const read = { exists: (p: string) => p === "/h", isDirectory: () => true, readFile: () => "{}" };
+    const finding = claudeHomeNoModelFinding("/h", "dev-impl@r", read) ?? "";
+    expect(finding).toMatch(/managed policy settings, ANTHROPIC_MODEL in the seat's environment, the project's \.claude\/settings\.local\.json or \.claude\/settings\.json\), else the account's default model\./);
   });
 
   it("a home that is not a directory gets its own finding, not the no-model one (workspaces-o9o.10)", async () => {
