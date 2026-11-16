@@ -201,6 +201,24 @@ describe("Daemon Lifecycle", () => {
     }
   });
 
+  // workspaces-o9o.36 (verify-sec re-review): `rig daemon start` writes the layout before the daemon runs, so it opens a home its owner
+  // cannot enter (0600) to 0700 first, as the daemon does. Real filesystem for the layout, in the fixture home; only spawn and healthz are fakes.
+  it("start: a 0600 OpenRig home is opened to 0700 and the layout written into it, on the real filesystem, before the daemon is spawned", async () => {
+    const real = realDeps();
+    const before = new Set(fs.readdirSync(OPENRIG_DIR));
+    fs.chmodSync(OPENRIG_DIR, 0o600);
+    try {
+      const deps = startableDeps({ exists: real.exists, mkdirp: real.mkdirp, writeFile: real.writeFile, pathKind: real.pathKind });
+      await startDaemon({ port: 7433, db: "openrig.sqlite" }, deps);
+      expect(fs.statSync(OPENRIG_DIR).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(OPENRIG_DIR, "state")).isDirectory()).toBe(true);
+      expect(deps.spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.chmodSync(OPENRIG_DIR, 0o700);
+      for (const name of fs.readdirSync(OPENRIG_DIR)) if (!before.has(name)) fs.rmSync(path.join(OPENRIG_DIR, name), { recursive: true, force: true });
+    }
+  });
+
   // Test 3: start waits for healthz, writes daemon.json with pid+port+db+startedAt
   it("start: writes daemon.json with pid, port, db, startedAt after healthz", async () => {
     const deps = startableDeps();
