@@ -41,6 +41,25 @@ rather than carrying another copy of its file bytes. `skills/` and `topology/`
 are created as empty roots; their respective catalog and topology workflows own
 their contents.
 
+## Permissions
+
+An instance is private to the user who runs it. Seat conversations (Pi session
+files, Codex rollouts, pane transcripts) hold full tool output, which can include
+secrets, so the daemon keeps `$OPENRIG_HOME` at `0700` on every start, whatever
+the login umask. On the same pass it removes group and other access from
+everything below the home, keeping the owner's bits, so an executable such as
+`rig-bin/git` or a `handover/*/release.sh` stays executable by its owner.
+
+The pass never follows a symlink and never walks outside the home: a workspace,
+context, skills or topology root configured elsewhere keeps its modes, and so
+does the target of a link such as `state/pi/<seat>/agent/auth.json`. It refuses a
+home that is the user's own home directory or one above it, and changes nothing
+there. A file it cannot change is named in the daemon log; start goes on.
+
+Transcripts can live outside the home (`transcripts.path`), so the transcript
+writer keeps its root and each rig folder at `0700` and writes transcripts `0600`
+wherever that root is.
+
 ## Context library setting
 
 The addressable context library has one typed setting and one environment

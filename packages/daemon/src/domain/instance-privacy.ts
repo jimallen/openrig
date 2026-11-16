@@ -3,8 +3,12 @@ import { join, relative, isAbsolute, sep } from "node:path";
 /**
  * Instance privacy (workspaces-o9o.36). Invariant, owned by the OpenRig instance:
  *
- *   An OpenRig instance is private to its owner. Its home is 0700, and nothing under it grants group or other
- *   access.
+ *   An OpenRig instance is private to its owner: its home is 0700, so nothing under it is reachable by another
+ *   user, whatever the modes below it.
+ *
+ * Every start also removes group and other bits from everything under the home. A few writers restore a public
+ * mode afterwards, and that is harmless inside the 0700 home: vendored plugin copies take their package source's
+ * mode (plugin-vendor-service, the Codex and Pi adapters) and the built-in policy reference is re-pinned 0444.
  *
  * A seat's conversation (Pi session files, Codex rollouts, pane transcripts) holds full tool output, secrets
  * included. Every OpenRig process runs under the login umask (0002 on Ubuntu), and more than a hundred writers
