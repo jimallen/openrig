@@ -101,6 +101,30 @@ describe("workspaces-o9o.47: transcript text leaves the daemon redacted", () => 
     expect(text).not.toContain("OPENAI_KEY");
   });
 
+  describe("GET /grep on a transcript whose last line has no newline (the store's final-chunk path)", () => {
+    beforeEach(() => {
+      const store = new TranscriptStore({ transcriptsRoot: join(root, "transcripts"), enabled: true });
+      writeFileSync(store.getTranscriptPath("my-rig", "dev-impl@my-rig"), `starting deploy\n${LINE}`);
+    });
+
+    it("returns the last line redacted", async () => {
+      const { status, text, body } = await get(`/api/transcripts/dev-impl@my-rig/grep?pattern=${encodeURIComponent("OPENAI_KEY")}`);
+
+      expect(status).toBe(200);
+      expect(text).not.toContain(SECRET);
+      expect(body["matches"]).toEqual(["export OPENAI_KEY=[REDACTED] # set by the deploy step"]);
+    });
+
+    it("a regex only the raw secret satisfies finds nothing", async () => {
+      const { status, text, body } = await get(`/api/transcripts/dev-impl@my-rig/grep?pattern=${encodeURIComponent(escapeRegex(PROBE))}`);
+
+      expect(status).toBe(200);
+      expect(body["matches"]).toEqual([]);
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain("OPENAI_KEY");
+    });
+  });
+
   it("GET /full stays redacted", async () => {
     const { status, text, body } = await get("/api/transcripts/dev-impl@my-rig/full");
 
@@ -158,6 +182,21 @@ describe("workspaces-o9o.47: transcript text leaves the daemon redacted", () => 
       expect(result.excerpts[0]).toContain("export OPENAI_KEY=[REDACTED] # set by the deploy step");
     });
 
+    it("session search: a secret straddling the 240-character excerpt cut is redacted before the cut", async () => {
+      // The secret starts at character 232 of the JSONL line, so cutting first would leave an 8-character stub of it
+      // ("sk-" and five more) that the policy no longer recognises, and that stub would be returned as is.
+      const text = `${"pad ".repeat(50).slice(0, 197)} OPENAI_KEY=${SECRET} # set by the deploy step`;
+      const raw = JSON.stringify({ type: "user", text });
+      expect(raw.indexOf(SECRET)).toBe(232);
+      mkdirSync(join(root, "projects", "-work-repo"), { recursive: true });
+      writeFileSync(join(root, "projects", "-work-repo", "tok-o9o47-long.jsonl"), `${raw}\n`);
+
+      const result = await hq().searchSession("tok-o9o47-long", "where is OPENAI_KEY exported");
+
+      expect(JSON.stringify(result)).not.toContain(SECRET.slice(0, 6));
+      expect(result.excerpts).toEqual([`${raw.replace(SECRET, "[REDACTED]").slice(0, 240)}…`]);
+    });
+
     it("session search: a keyword only the raw secret contains finds nothing", async () => {
       writeSession("tok-o9o47");
       const result = await hq().searchSession("tok-o9o47", `who used ${PROBE}`);
@@ -165,6 +204,46 @@ describe("workspaces-o9o.47: transcript text leaves the daemon redacted", () => 
       expect(JSON.stringify(result)).not.toContain(PROBE);
       expect(result.excerpts).toEqual([]);
       expect(result.insufficient).toBe(true);
+    });
+
+    describe("when rg fails and the search falls back to grep", () => {
+      const rgFails: ExecDep = (cmd, args) => (cmd === "rg" ? Promise.resolve({ stdout: "", exitCode: 2 }) : realExec(cmd, args));
+      const hqGrep = () => new HistoryQuery({ transcriptsRoot: join(root, "transcripts"), exec: rgFails, claudeProjectsRoot: join(root, "projects") });
+
+      it("rig-wide search: excerpts are redacted", async () => {
+        const result = await hqGrep().search("my-rig", "where is OPENAI_KEY exported");
+
+        expect(result.backend).toBe("grep");
+        expect(JSON.stringify(result)).not.toContain(SECRET);
+        expect(result.excerpts).toEqual(["export OPENAI_KEY=[REDACTED] # set by the deploy step"]);
+      });
+
+      it("rig-wide search: a keyword only the raw secret contains finds nothing", async () => {
+        const result = await hqGrep().search("my-rig", `who used ${PROBE}`);
+
+        expect(result.backend).toBe("grep");
+        expect(JSON.stringify(result)).not.toContain(PROBE);
+        expect(result.excerpts).toEqual([]);
+      });
+
+      it("session search: excerpts are redacted", async () => {
+        writeSession("tok-o9o47");
+        const result = await hqGrep().searchSession("tok-o9o47", "where is OPENAI_KEY exported");
+
+        expect(result.backend).toBe("grep");
+        expect(JSON.stringify(result)).not.toContain(SECRET);
+        expect(result.excerpts).toHaveLength(1);
+        expect(result.excerpts[0]).toContain("export OPENAI_KEY=[REDACTED] # set by the deploy step");
+      });
+
+      it("session search: a keyword only the raw secret contains finds nothing", async () => {
+        writeSession("tok-o9o47");
+        const result = await hqGrep().searchSession("tok-o9o47", `who used ${PROBE}`);
+
+        expect(result.backend).toBe("grep");
+        expect(JSON.stringify(result)).not.toContain(PROBE);
+        expect(result.excerpts).toEqual([]);
+      });
     });
   });
 });
