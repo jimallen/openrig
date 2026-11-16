@@ -12,6 +12,7 @@
 // reservation and the bind.
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 
@@ -54,6 +55,48 @@ export interface SpawnDaemonEntrypointOptions {
   attempts?: number;
 }
 
+/** workspaces-o9o.61: the names a test daemon takes from whoever started it. Nothing here names a place where live state lives:
+ *  the hc core (HC_*, XDG_RUNTIME_DIR, XDG_STATE_HOME, HOME), the tmux server (TMUX, TMUX_TMPDIR), the daemon and its files
+ *  (OPENRIG_*, RIGGED_*), or a harness's own state (CODEX_HOME, CLAUDE_CONFIG_DIR). The old helper spread process.env, which
+ *  inside vitest had already been scrubbed (test/hermetic-env.setup.ts) but from a standalone tsx caller carried the seat's
+ *  XDG_RUNTIME_DIR, and the test daemons joined the LIVE hc core (incident 2026-11-16 ~20:50Z). An allow-list, not a scrub: a name a
+ *  later release starts reading is withheld until someone adds it here. */
+export const TEST_DAEMON_INHERITED_ENV: readonly string[] = ["PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "USER", "LOGNAME"];
+/** Locale names (LC_ALL, LC_CTYPE, ...) are inherited by prefix. */
+const INHERITED_ENV_PREFIX = "LC_";
+
+/** The whole env of a test daemon: the allow-listed names from `parent`, then every location under `opts.home` (a caller's
+ *  `opts.env` may name another on purpose, e.g. a private hc core's HC_SOCKET), then the pinned bind and home names. */
+export function testDaemonEnv(
+  opts: Pick<SpawnDaemonEntrypointOptions, "home" | "env">, port: number, parent: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const inherited = Object.fromEntries(Object.entries(parent).filter(([name]) =>
+    TEST_DAEMON_INHERITED_ENV.includes(name) || name.startsWith(INHERITED_ENV_PREFIX)));
+  const userHome = path.join(opts.home, "user-home");
+  return {
+    ...inherited,
+    HOME: userHome,
+    XDG_CONFIG_HOME: path.join(userHome, ".config"),
+    XDG_STATE_HOME: path.join(userHome, ".local", "state"),
+    XDG_DATA_HOME: path.join(userHome, ".local", "share"),
+    XDG_CACHE_HOME: path.join(userHome, ".cache"),
+    // tmux's default server is <TMUX_TMPDIR or /tmp>/tmux-<uid>/default: with nothing set it is the operator's own.
+    TMUX_TMPDIR: path.join(opts.home, "tmux"),
+    // tmux and seat panes start in $SHELL; the operator's (zsh with no startup files in this HOME) runs its first-use wizard.
+    SHELL: "/bin/bash",
+    // A test daemon never starts an hc core under its scratch HOME and leaves it behind (as test/hermetic-env.setup.ts sets for
+    // in-process daemons).
+    OPENRIG_HC_NO_START_CORE: "1",
+    ...opts.env,
+    OPENRIG_NO_KERNEL: "1",
+    OPENRIG_HOME: opts.home,
+    OPENRIG_DB: opts.env?.["OPENRIG_DB"] ?? path.join(opts.home, "openrig.sqlite"),
+    OPENRIG_PORT: String(port),
+    OPENRIG_URL: "",
+    OPENRIG_BIND_HOST: TEST_DAEMON_BIND_HOST,
+  };
+}
+
 async function waitHealthy(port: number, child: ChildProcess, stderr: () => string, timeoutMs: number): Promise<"ready" | "exited"> {
   let exited = child.exitCode !== null || child.signalCode !== null;
   child.once("exit", () => { exited = true; });
@@ -77,18 +120,9 @@ export async function spawnDaemonEntrypoint(opts: SpawnDaemonEntrypointOptions):
   let lastStderr = "";
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const port = await (opts.portSource ?? getFreeLoopbackPort)();
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      ...opts.env,
-      OPENRIG_NO_KERNEL: "1",
-      OPENRIG_HOME: opts.home,
-      OPENRIG_DB: opts.env?.["OPENRIG_DB"] ?? path.join(opts.home, "openrig.sqlite"),
-      OPENRIG_PORT: String(port),
-      OPENRIG_URL: "",
-      OPENRIG_BIND_HOST: TEST_DAEMON_BIND_HOST,
-    };
-    delete env["VITEST"];
-    delete env["NODE_ENV"];
+    const env = testDaemonEnv(opts, port);
+    // The daemon changes into HOME at start, so the private one must exist.
+    fs.mkdirSync(env["HOME"]!, { recursive: true });
     const child = spawn(process.execPath, ["--import", "tsx", ...(opts.nodeArgs ?? []), DAEMON_ENTRYPOINT], {
       env: env as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
