@@ -110,6 +110,18 @@ describe("SessionTransport and the pump", () => {
         expect(result.warning).toContain("(seat busy: last tool started 16:04Z (bash))");
       });
 
+      // 2026-11-16: "3 held" beside an empty `rig seat held-messages` (which lists only guard-retained rows) read as a stuck seat.
+      it("rows waiting for a busy seat are 'queued (seat busy)', with the oldest's age and the command to look at the seat, never 'held'", async () => {
+        clock.now = HOOK_AT + 2 * 60_000;
+        await transport.send(SEAT, "one", { deliveryId: "q1", actorSession: "lead@hr" });
+        db.prepare("UPDATE outbox_entries SET ts_dispatched = ? WHERE outbox_id = 'q1'").run(new Date(Date.now() - 381 * 60_000).toISOString());
+        const result = await transport.send(SEAT, "two", { deliveryId: "q2", actorSession: "lead@hr" });
+        expect(result.seatPosture).toMatchObject({ kind: "busy" });
+        expect(result.warning).toMatch(/\(2 queued \(seat busy\) for this seat, oldest 6h2[01]m\)$/);
+        expect(result.warning).not.toContain("held");
+        expect(result.heldMessages).toMatchObject({ count: 2 }); // the JSON field keeps its name and shape
+      });
+
       it("a wake the drain already claimed gets the same answer", async () => {
         clock.now = HOOK_AT + 66 * 60_000;
         const outbox = new OutboxHandler(db);
@@ -131,7 +143,9 @@ describe("SessionTransport and the pump", () => {
         expect(second.heldMessages?.line).toMatch(/^2 held, oldest 6h2[01]m$/);
         expect(second.seatPosture).toMatchObject({ kind: "needs_input" });
         expect(second.seatPosture?.line).toMatch(/^waiting on a question to the human since /);
-        expect(second.warning).toMatch(/\(seat waiting on a question to the human since .*\) \(2 held, oldest 6h2[01]m for this seat\)$/);
+        // Not busy: the posture line says what the seat waits on, and the rows are only "queued".
+        expect(second.warning).toMatch(/\(seat waiting on a question to the human since .*\) \(2 queued for this seat, oldest 6h2[01]m\)$/);
+        expect(second.warning).not.toContain("held");
         expect(second.warning).not.toContain("permission_prompt");
       });
 

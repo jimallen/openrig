@@ -30,3 +30,11 @@ export function describeHeld(open: { open: number; oldestAcceptedAt: string } | 
   if (ageMs < HELD_NOTICE_AFTER_MS) return null;
   return { count: open.open, oldestAt: new Date(acceptedMs).toISOString(), line: `${open.open} held, oldest ${formatHeldAge(ageMs)}` };
 }
+
+/** The same rows as `rig send` names them to its sender: queued for a busy seat, not "held". "Held" is the typing guard's word for a retained
+ *  message (`rig seat held-messages` lists only those), and on 2026-11-16 "3 held" next to an empty held-messages list read as a stuck seat.
+ *  `busy` (the seat's posture is a turn in progress) adds "(seat busy)"; a seat waiting on something else is named by its posture line instead. */
+export function describeQueuedForSend(held: HeldMessages, nowMs: number, busy: boolean): string {
+  const oldestMs = Date.parse(held.oldestAt);
+  return `${held.count} queued${busy ? " (seat busy)" : ""} for this seat${Number.isFinite(oldestMs) ? `, oldest ${formatHeldAge(Math.max(0, nowMs - oldestMs))}` : ""}`;
+}

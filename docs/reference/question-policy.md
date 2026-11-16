@@ -53,8 +53,9 @@ dialog open, and a hook with `timeout` 1200 s was honoured at 960 s. The longest
 ## A waiting question and the messages behind it
 
 While a seat waits on a question, messages sent to it wait too (OpenRig never types into an open dialog). `rig ps` shows `N held, oldest Xm`
-for any seat with messages waiting more than a minute, `rig send` says the same in its "Accepted, not yet received" line, and the seat's posture
-reads `waiting on a question to the human`, not `permission_prompt`.
+for any seat with messages waiting more than a minute, `rig send` says `N queued for this seat, oldest Xm` (`N queued (seat busy) ...` when the
+seat is busy) in its "Accepted, not yet received" line, and the seat's posture reads `waiting on a question to the human`, not `permission_prompt`.
+These rows wait for the seat; they are not the typing guard's held messages, which `rig seat held-messages` lists.
 
 ## Residual risks
 

@@ -10,7 +10,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { deriveSeatPosture } from "../src/domain/seat-posture.js";
-import { describeHeld, formatHeldAge, HELD_NOTICE_AFTER_MS } from "../src/domain/seat-messaging/held-messages.js";
+import { describeHeld, describeQueuedForSend, formatHeldAge, HELD_NOTICE_AFTER_MS } from "../src/domain/seat-messaging/held-messages.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { SeatQuestionHealthSource } from "../src/domain/seat-question-health.js";
 import { attachAgentActivity } from "../src/domain/node-inventory.js";
@@ -83,6 +83,16 @@ describe("the activity store names a question dialog", () => {
   it("a PostToolUse after the question is the seat moving on: nothing is recorded as asking", () => {
     hook("PermissionRequest", "AskUserQuestion"); now += 4_000; hook("PostToolUse", "AskUserQuestion");
     expect(latest()).toMatchObject({ state: "running" });
+  });
+});
+
+describe("describeQueuedForSend: the rig send wording for the same rows", () => {
+  it("says queued, adds (seat busy) only for a busy seat, gives the oldest's age, and never says held", () => {
+    const held = { count: 3, oldestAt: "2031-03-04T10:00:00.000Z", line: "3 held, oldest 6h21m" };
+    const now = Date.parse("2031-03-04T16:21:00.000Z");
+    expect(describeQueuedForSend(held, now, true)).toBe("3 queued (seat busy) for this seat, oldest 6h21m");
+    expect(describeQueuedForSend(held, now, false)).toBe("3 queued for this seat, oldest 6h21m");
+    expect(describeQueuedForSend({ ...held, oldestAt: "not a time" }, now, true)).toBe("3 queued (seat busy) for this seat");
   });
 });
 
