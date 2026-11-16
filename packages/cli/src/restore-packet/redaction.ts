@@ -1,6 +1,6 @@
-// redaction.ts — applies the v0 redaction policy.
+// redaction.ts — applies the transcript redaction policy.
 //
-// Per M1 contract § 4: v0 defines two named policies:
+// Per M1 contract § 4, extended by workspaces-o9o.28: the named policies:
 // - `velocity-v1`: mirrors the Velocity generator's token patterns at
 //   field-notes/2026-04-27-velocity-claude-from-codex-restore/tools/
 //   codex-jsonl-to-restore-packet.mjs:34-48 (sk-*, gh[pousr]_*,
@@ -8,6 +8,11 @@
 // - `openrig-v0`: the productized v0 policy, identical patterns to
 //   `velocity-v1` but with the canonical name. v0 generator emits
 //   `redaction_policy_id: "openrig-v0"`.
+// - `openrig-v1`: the v0 patterns plus vendor token shapes (Slack, GitLab,
+//   npm, JWT, AWS, Google), URL passwords and secret-named assignments
+//   (workspaces-o9o.28). SECRET_PATTERNS below IS this list. The validator
+//   accepts the id now; the writer still emits `openrig-v0` until a later
+//   revision flips it, so an older CLI never rejects a newer packet.
 //
 // Redaction is applied to:
 // - transcript content in transcript-latest.md and transcript.md.
@@ -20,24 +25,45 @@
 // (per § 4 + § 8: enforcement is generator-side at write time).
 
 /**
- * v0 secret-pattern list. Mirrors Velocity prior art `:34-48` exactly:
- *
- * 1. /\bsk-[A-Za-z0-9_-]{16,}\b/g — OpenAI-style secret tokens.
- * 2. /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g — GitHub personal/OAuth tokens.
- * 3. /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g — GitHub fine-grained PATs.
- * 4. /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/g — generic Bearer tokens.
- * 5. /\b[A-Za-z0-9+/]{40,}={0,2}\b/g — base64-shaped strings ≥40 chars.
+ * The transcript secret-pattern list: credential SHAPES, whatever text carries
+ * them (workspaces-o9o.28). Identical, pattern for pattern, to the daemon twin
+ * packages/daemon/src/domain/transcript-redaction.ts TRANSCRIPT_SECRET_PATTERNS;
+ * packages/daemon/test/transcript-redaction.test.ts fails on any drift. The
+ * first four and the last are the v0 / Velocity patterns (`:34-48`); the
+ * pattern comments are in the daemon twin. Every pattern carries the `g` flag
+ * and nothing else, because hasSecretPattern rebuilds each from `source`.
  */
 export const SECRET_PATTERNS: readonly RegExp[] = [
+  // v0 (Velocity prior art).
   /\bsk-[A-Za-z0-9_-]{16,}\b/g,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/g,
-  /\b[A-Za-z0-9+/]{40,}={0,2}\b/g,
+  // Vendor token shapes.
+  /\bxox[abeposr]-[A-Za-z0-9-]{10,}/g, // Slack bot/user/app/refresh/config tokens
+  /\bxapp-[A-Za-z0-9-]{10,}/g, // Slack app-level token
+  /\bglpat-[A-Za-z0-9_-]{20,}/g, // GitLab personal access token
+  /\bnpm_[A-Za-z0-9]{36}\b/g, // npm access token
+  /\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g, // JWT (header.payload.signature)
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, // AWS access key id
+  /\bAIza[0-9A-Za-z_-]{35}/g, // Google API key
+  // The password in scheme://user:password@host; the user and host are kept.
+  /(?<=\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@/]+(?=@)/g,
+  // The value of a secret-named assignment (NAME=value, name: value, "name": "value"); the name is kept.
+  // Names: an UPPER_SNAKE name ending in a secret word; a lower snake/kebab compound ending in one
+  // (client_secret, db-password); a camelCase one (accessToken, apiKey); or bare password/passwd.
+  // Bare "key", "token" or "secret" in lower case is prose or code ("the key: ...", "{ key: value }"),
+  // and SORT_KEY / primary_key are not secret names, so none of those match. The value must be 8+
+  // characters and not a reference ($VAR, ${VAR}, <placeholder>, %VAR%).
+  /(?<=(?<![A-Za-z0-9_])(?:(?:[A-Z0-9]+_)*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY)|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:password|passwd|secret|token|api_?key|access_?key|private_?key)|[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)*(?:Password|Passwd|Secret|Token|ApiKey|AccessKey|PrivateKey)|password|passwd)["']?\s*[=:]\s*["']?)(?![$<{%])[^\s"',;}]{8,}/g,
+  // v0: any unbroken base64-shaped run of 40+ (last: the generic catch-all), EXCEPT a pure-hex run of
+  // exactly 40 or 64 characters (a git sha, a sha256), which stays visible. Jim, 2026-11-16 (o9o.49):
+  // "Keep shas, exempt hex 40/64". A 41-hex run, or any 40+ run with a non-hex character, is still redacted.
+  /\b(?![0-9a-fA-F]{40}(?![A-Za-z0-9+/=])|[0-9a-fA-F]{64}(?![A-Za-z0-9+/=]))[A-Za-z0-9+/]{40,}={0,2}\b/g,
 ];
 
 /**
- * Apply the openrig-v0 redaction policy to a string. Returns the input
+ * Apply the transcript redaction policy (SECRET_PATTERNS) to a string. Returns the input
  * with each match of the secret patterns replaced by the literal
  * string `[REDACTED]`. Pure function; no side effects.
  *

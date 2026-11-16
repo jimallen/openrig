@@ -134,6 +134,14 @@ describe("M2 restore-packet schema-validator", () => {
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
+  it("accepts redaction_policy_id openrig-v1 (reader before writer, workspaces-o9o.28)", () => {
+    const summary = validSummary();
+    summary["redaction_policy_id"] = "openrig-v1";
+    const result = validateRestoreSummary(summary);
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
   it("rejects when redaction_policy_id is not a known policy", () => {
     const summary = validSummary();
     summary["redaction_policy_id"] = "custom-policy";
@@ -351,8 +359,10 @@ describe("M2b redaction (openrig-v0 / velocity-v1 patterns)", () => {
     expect(hasSecretPattern("")).toBe(false);
   });
 
-  it("exposes the pattern list (5 patterns per Velocity prior art)", () => {
-    expect(SECRET_PATTERNS.length).toBe(5);
+  it("exposes the pattern list (5 Velocity patterns, hex 40/64 exempt, + 9 credential shapes, workspaces-o9o.28)", () => {
+    // Per-shape rows, over-redaction negatives and the daemon-twin parity check live in
+    // packages/daemon/test/transcript-redaction.test.ts, which runs every row on this module too.
+    expect(SECRET_PATTERNS.length).toBe(14);
   });
 });
 

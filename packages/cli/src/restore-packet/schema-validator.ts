@@ -179,7 +179,7 @@ export const RESTORE_SUMMARY_SCHEMA: Record<string, unknown> = {
         enum: ["reasoning_records", "raw_tool_outputs", "function_call_output", "redacted_secrets"],
       },
     },
-    redaction_policy_id: { type: "string", enum: ["velocity-v1", "openrig-v0"] },
+    redaction_policy_id: { type: "string", enum: ["velocity-v1", "openrig-v0", "openrig-v1"] },
     source_trust_ranking: {
       type: "array",
       items: {
