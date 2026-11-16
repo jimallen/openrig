@@ -118,6 +118,55 @@ describe("workspaces-o9o.7: seat launch --hand-over-since", () => {
   });
 });
 
+describe("workspaces-o9o.8: seat launch --despite, the handover file, and seat lease", () => {
+  const ready = (extra: Record<string, unknown>) => ({ ok: true, seat: { logicalId: "dev.impl", rigName: "fixture" }, sessionName: "dev@fixture", generation: "g2",
+    startupPolicyHash: "h", supersededSessionIds: [], ...extra });
+  it("sends each --despite, and prints the handover file the since-time came from and the pointer sent", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: ready({
+      handOver: { since: "2026-11-16T09:00:00.000Z", sinceSource: "handover_file", handoverFile: "/seat/HANDOVER.md", carried: [], reissued: [], notHandedOver: [] },
+      handoverPointer: { path: "/seat/HANDOVER.md", sent: true },
+    }) }, calls);
+    const { logs } = await captureLogs(() => makeCommand(deps).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--stop", "--despite", "lease", "--despite", "children", "--reason", "abandoned build",
+    ]));
+    expect(calls).toEqual([{ path: "/api/seat/launch/dev%40fixture", body: { fresh: true, reason: "abandoned build", stop: true, operator: undefined, despite: ["lease", "children"] } }]);
+    const out = logs.join("\n");
+    expect(out).toContain("taken since 2026-11-16T09:00:00.000Z, when /seat/HANDOVER.md was last written)");
+    expect(out).toContain("The fresh occupant was told its predecessor's handover is at /seat/HANDOVER.md.");
+  });
+  it("a refused launch exits 1 and prints what holds the seat and how to launch anyway", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const data = { ok: false, code: "relaunch_check_held", message: "Fresh launch refused before anything was stopped: dev@fixture holds a lease: ui-test-host (pid 9001).",
+      guidance: "Let the work finish, or launch anyway with --despite lease (the --reason is recorded)." };
+    const { logs, errors, exitCode } = await captureLogs(() => makeCommand(makeDeps({ status: 409, data }, calls)).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--stop", "--reason", "relaunch",
+    ]).then(() => {}));
+    expect(exitCode).toBe(1);
+    const out = [...logs, ...errors].join("\n");
+    expect(out).toContain("ui-test-host (pid 9001)");
+    expect(out).toContain("--despite lease");
+  });
+  it("lease registers with a pid and releases without one", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: { ok: true, seat: "dev@fixture", holder: "ui-test-host", lease: { holder: "ui-test-host", pid: 9001 } } }, calls);
+    await captureLogs(() => makeCommand(deps).parseAsync(["node", "rig", "seat", "lease", "dev@fixture", "--holder", "ui-test-host", "--pid", "9001", "--reason", "UI tests"]));
+    await captureLogs(() => makeCommand(deps).parseAsync(["node", "rig", "seat", "lease", "dev@fixture", "--holder", "ui-test-host", "--release"]));
+    expect(calls).toEqual([
+      { path: "/api/seat/lease/dev%40fixture", body: { holder: "ui-test-host", pid: 9001, reason: "UI tests" } },
+      { path: "/api/seat/lease/dev%40fixture", body: { holder: "ui-test-host", release: true } },
+    ]);
+  });
+  it("lease without a usable --pid is refused before the daemon is asked", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const { exitCode } = await captureLogs(() => makeCommand(makeDeps({ status: 200, data: {} }, calls)).parseAsync([
+      "node", "rig", "seat", "lease", "dev@fixture", "--holder", "ui-test-host", "--pid", "soon",
+    ]).then(() => {}));
+    expect(exitCode).toBe(1);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("default-path rig seat continue", () => {
   it.each([false, true])("names CLI inspection for an ambiguous continuation refusal (json=%s)", async json => {
     const data = { ok: false, code: "continuation_unavailable", message: "No verified pending fresh-context delivery exists for this occupant. Refresh to inspect its actual state." };

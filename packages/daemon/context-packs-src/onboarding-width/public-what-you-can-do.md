@@ -378,7 +378,15 @@ not have to tear one down to change it, and you rarely have to start from nothin
   delivered to the old occupant once the launch starts, and messages it took from
   `--hand-over-since <time>` on (default: when the launch began) are re-delivered to the fresh one,
   labelled with the original id. Pass the time of your own pre-relaunch check: the default misses
-  what arrived between that check and the launch.
+  what arrived between that check and the launch. Before it stops anything, the launch checks the
+  seat's own unfinished work and refuses, naming it, while a lease is held (see `rig seat lease`) or
+  the seat's agent still runs processes other than MCP servers, language servers and caffeinate;
+  `--despite lease` / `--despite children` launches anyway. A check it cannot read only warns. The
+  seat's newest `HANDOVER*.md` reaches the since-time back to when it was written, and the fresh
+  occupant is told its path.
+- **`rig seat lease <seat> --holder <name> --pid <pid>`** (`--release` to end it) — a script the
+  seat runs registers what it holds that others wait on (a shared UI test host, say), so a fresh
+  launch does not stop the seat under it. A lease counts while its process is alive.
 - **`rig add`** / **`rig expand`** — graft one more member, or a whole new pod, onto a rig that is
   already running. `rig add` takes the rig's name or ID; a name two active rigs share is refused
   with `rig_ambiguous` and the candidates. `rig grow --new-pod` and `rig expand` are one ingress; choose by input shape.

@@ -596,7 +596,7 @@ identity remains unverified; a version number alone cannot clear it.
   // Thin CLI over the daemon's SeatLifecycleService; refusals print message +
   // guidance + match list exactly as the daemon named them.
   const runLifecycleVerb = async (
-    path: "set-model" | "set-effort" | "set-claude-home" | "set-mcp" | "apply-spec" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
+    path: "set-model" | "set-effort" | "set-claude-home" | "set-mcp" | "apply-spec" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify" | "lease",
     seat: string,
     body: Record<string, unknown>,
     opts: { json?: boolean },
@@ -920,6 +920,7 @@ resume/successor launch reads it at call time. Examples:
     .option("--plan", "Preview this fresh launch without changing any seat or starting tmux")
     .option("--stop", "Stop the current live managed occupant before launching fresh")
     .option("--hand-over-since <time>", "Messages the stopped occupant took from this time on (ISO 8601, e.g. 2026-11-15T23:06:06Z) are re-delivered to the fresh one. Default: the moment this launch began, which misses anything taken between your own pre-relaunch check and the launch: pass your check's time")
+    .option("--despite <check>", "Launch even though this relaunch check is held: lease (the seat's work holds a lease, see rig seat lease) or children (the seat's agent is still running processes other than MCP servers, language servers and caffeinate). Repeat for both; the --reason is recorded", (value: string, previous: string[]) => [...previous, value], [] as string[])
     .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; snapshot:<snapshot-id>: replay that snapshot's copy of the seat's startup files (checked before anything is stopped); stored: replay the startup files saved by the seat's last successful launch")
     .option("--operator <address>", "Operator recorded on the audit event")
     .option("--json", "JSON output for agents")
@@ -945,6 +946,14 @@ From the moment launch starts, nothing is delivered to the seat's old occupant. 
 stopped, every message it took from --hand-over-since on goes to the fresh occupant as a
 labelled re-delivery naming the original id (the old one may have acted on it), and any
 message already attempted on it goes again. The result names the since-time used.
+Before a live occupant is stopped, the launch checks the seat's own unfinished work: a
+lease registered with rig seat lease whose holder process is alive, and processes running
+under the seat's agent other than MCP servers, language servers and caffeinate. Either
+refuses the launch, naming each holder or process, until it finishes or you pass
+--despite lease / --despite children. A check that cannot be read only warns.
+The seat's newest HANDOVER*.md (in its folder) is when its old occupant last wrote down
+what it knew: when it is earlier than the since-time, messages taken from then on are
+handed over too, and the fresh occupant is told the file's path.
 Preview is a read-only snapshot, not a reservation or a native readiness check.
 A successful preview exits 0; inspect launchable to decide whether launch is allowed.
 Unreadable tmux produces complete:false and unknown eligibility unless already blocked.
@@ -953,8 +962,9 @@ Examples:
   rig seat launch dev-impl@my-rig --fresh --reason "deliberate blank restart"
   rig seat launch dev.impl --fresh --stop --reason "replace managed occupant" --json
   rig seat launch dev.impl --fresh --stop --startup-from stored --reason "keep the running persona"
-  rig seat launch dev.impl --fresh --stop --hand-over-since 2026-11-15T23:06:06Z --reason "relaunch after check"`)
-    .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; startupFrom?: string; handOverSince?: string; operator?: string; json?: boolean }) => {
+  rig seat launch dev.impl --fresh --stop --hand-over-since 2026-11-15T23:06:06Z --reason "relaunch after check"
+  rig seat launch dev.impl --fresh --stop --despite children --reason "the build it runs is abandoned"`)
+    .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; startupFrom?: string; handOverSince?: string; despite?: string[]; operator?: string; json?: boolean }) => {
       if (opts.startupFrom !== undefined && parseStartupFromArg(opts.startupFrom) === null) {
         const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes ${STARTUP_FROM_HELP} (got "${opts.startupFrom}").` };
         if (opts.json) console.log(JSON.stringify(error, null, 2));
@@ -976,6 +986,7 @@ Examples:
         operator: opts.operator,
         ...(opts.startupFrom ? { startupFrom: opts.startupFrom } : {}),
         ...(opts.handOverSince !== undefined && !opts.plan ? { handOverSince: opts.handOverSince } : {}),
+        ...(opts.despite && opts.despite.length > 0 ? { despite: opts.despite } : {}),
       }, opts, (data) => {
         if (opts.plan) {
           console.log(`Fresh launch preview: ${String(data["sessionName"])} (no changes made).`);
@@ -998,13 +1009,51 @@ Examples:
         console.log(`Startup policy: ${String(data["startupPolicyHash"])}; superseded sessions: ${superseded?.length ?? 0}.`);
         const source = data["startupSource"] as StartupSourceReport | undefined;
         if (source) console.log(describeStartupSource(source));
-        const handOver = data["handOver"] as { since: string; sinceSource: string; carried: unknown[]; reissued: unknown[]; notHandedOver: string[]; skipped?: string } | undefined;
+        const handOver = data["handOver"] as { since: string; sinceSource: string; handoverFile?: string; carried: unknown[]; reissued: unknown[]; notHandedOver: string[]; skipped?: string } | undefined;
         if (handOver) {
-          console.log(`Messages handed to the fresh occupant (taken since ${handOver.since}, ${handOver.sinceSource === "hand_over_since" ? "--hand-over-since" : "when this launch began; pass --hand-over-since <your check's time> to reach further back"}): ${handOver.carried.length} re-delivered, ${handOver.reissued.length} sent again.`);
+          const sinceFrom = handOver.sinceSource === "hand_over_since" ? "--hand-over-since"
+            : handOver.sinceSource === "handover_file" ? `when ${handOver.handoverFile ?? "the seat's handover file"} was last written`
+            : "when this launch began; pass --hand-over-since <your check's time> to reach further back";
+          console.log(`Messages handed to the fresh occupant (taken since ${handOver.since}, ${sinceFrom}): ${handOver.carried.length} re-delivered, ${handOver.reissued.length} sent again.`);
           if (handOver.notHandedOver.length > 0) console.log(`Not handed over (this seat has no message pump): ${handOver.notHandedOver.join(", ")}.`);
           if (handOver.skipped) console.log(`Nothing handed over: ${handOver.skipped}.`);
         }
+        const pointer = data["handoverPointer"] as { path: string; sent: boolean; detail?: string } | undefined;
+        if (pointer) console.log(pointer.sent ? `The fresh occupant was told its predecessor's handover is at ${pointer.path}.` : `Tell the fresh occupant its predecessor's handover is at ${pointer.path} (not sent: ${pointer.detail ?? "unknown"}).`);
         console.log("No continuity source was used; siblings and durable work were preserved.");
+      });
+    });
+
+  cmd
+    .command("lease")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .requiredOption("--holder <name>", "What holds the lease, e.g. ui-test-host (letters, digits, dot, dash, underscore)")
+    .option("--pid <pid>", "The process that holds it; the lease counts while this process is alive (required unless --release)")
+    .option("--reason <text>", "What it is for, shown to an operator whose launch it refuses")
+    .option("--release", "Release the holder's lease")
+    .option("--json", "JSON output for agents")
+    .description("Register (or release) a lease the seat's own work holds, so a fresh launch does not stop the seat under it")
+    .addHelpText("after", `
+A script a seat runs that takes something others wait on (a shared UI test host, say)
+registers it on acquire and releases it when done. While its process is alive,
+rig seat launch --fresh --stop refuses to stop the seat's occupant unless the operator
+passes --despite lease. A lease whose process has gone is stale and ignored.
+Examples:
+  rig seat lease dev.impl --holder ui-test-host --pid $$ --reason "UI tests on the shared host"
+  rig seat lease dev.impl --holder ui-test-host --release`)
+    .action(async (seat: string, opts: { holder: string; pid?: string; reason?: string; release?: boolean; json?: boolean }) => {
+      const pid = opts.pid === undefined ? undefined : Number(opts.pid);
+      if (!opts.release && (pid === undefined || !Number.isInteger(pid))) {
+        const error = { ok: false, code: "invalid_lease_pid", message: `--pid takes the holder's process id, a whole number (got "${opts.pid ?? ""}").` };
+        if (opts.json) console.log(JSON.stringify(error, null, 2));
+        else console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      await runLifecycleVerb("lease", seat, {
+        holder: opts.holder, ...(opts.release ? { release: true } : { pid }), ...(opts.reason ? { reason: opts.reason } : {}),
+      }, opts, (data) => {
+        console.log(data["released"] ? `Released ${opts.holder}'s lease on ${String(data["seat"])}.` : `${opts.holder} holds a lease on ${String(data["seat"])} while pid ${String(pid)} runs.`);
       });
     });
 

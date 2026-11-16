@@ -3,7 +3,8 @@ import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeHomeNoMode
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedClaudeFields, diffRetainedPiFields, diffSeatIdentity, envNameChanges, specClaudeFields, specRetainedFields, type IdentityFieldDiff, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
-import type { NativeProcessLister } from "./native-process-lineage.js";
+import { listNativeProcesses, type NativeProcessLister, type NativeProcessRow } from "./native-process-lineage.js";
+import { blockingChecks, checkWarnings, describeHeld, judgeChildren, judgeLeases, newestHandoverFile, RELAUNCH_CHECK_NAMES, type RelaunchCheckName, type RelaunchCheckPort, type RelaunchChecks, type SeatLeaseRegistry } from "./relaunch-checks.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { rigAdviceHandle, seatRefRigs } from "./rig-ref.js";
@@ -23,6 +24,7 @@ import { projectRereadSkills, readStoredStartupContext, resolveFreshSeatStartup,
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
+import { messageId } from "./seat-messaging/ports.js";
 import { observeSolePane } from "./pane-binding-observation.js";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { validateNativePermissionSelection, unresolvedClaudePermissionModes } from "./native-permission-selection.js";
@@ -95,6 +97,11 @@ export interface SeatLifecycleDeps {
   /** OF-32: re-reads a fresh seat's startup policy from its rig's recorded spec source (PodRigInstantiator). */
   seatStartupSource?: SeatStartupSpecReader;
   /** Where a session's native transcript is (the context-usage store); without it native effort is NOT VERIFIED. */
+  /** workspaces-o9o.8: the seat's leases and folder, read before a fresh launch stops a live occupant. Absent: the lease check reads as
+   *  unknown (a warning) and no handover file is looked for. */
+  relaunchChecks?: RelaunchCheckPort;
+  /** workspaces-o9o.8: where `rig seat lease` registers a seat's leases. Absent: the verb is unavailable. */
+  seatLeases?: SeatLeaseRegistry;
   transcripts?: { readSidecar(sessionName: string): { ok: true; data: { transcript_path?: string | null; session_id?: string | null } } | { ok: false }; readCodexTranscriptPath(threadId: string): string | null };
 }
 
@@ -166,6 +173,9 @@ export interface SeatRefusal {
     | "startup_source_untrusted"
     | "invalid_startup_from"
     | "invalid_hand_over_since"
+    | "invalid_despite"
+    | "relaunch_check_held"
+    | "invalid_lease_holder" | "invalid_lease_pid" | "lease_not_found" | "leases_unavailable"
     | "runtime_adapter_missing"
     | "launch_unavailable"
     | "fresh_start_unsupported"
@@ -297,6 +307,10 @@ export type LaunchFreshResult =
       supersededSessionIds: string[];
       warnings?: string[];
       handOver?: LaunchHandOver;
+      /** workspaces-o9o.8: what the checks found before the live occupant was stopped (absent when none was). */
+      relaunchChecks?: RelaunchChecks;
+      /** workspaces-o9o.8: the message telling the fresh occupant where its predecessor's handover is. */
+      handoverPointer?: { path: string; sent: boolean; detail?: string };
     }
   | (SeatRefusal & {
       status?: "attention_required" | "failed";
@@ -305,14 +319,24 @@ export type LaunchFreshResult =
       generation?: string;
       warnings?: string[];
       handOver?: LaunchHandOver;
+      relaunchChecks?: RelaunchChecks;
     });
+
+/** workspaces-o9o.8: `rig seat lease`'s answer. */
+export type SeatLeaseResult =
+  | { ok: true; seat: string; holder: string; lease: { holder: string; pid: number; reason?: string; registeredAt: string } }
+  | { ok: true; seat: string; holder: string; released: true }
+  | SeatRefusal;
 
 /** workspaces-o9o.7: what a fresh launch handed from the occupant it stopped to the fresh one, and from what time. `since` is the operator's
  *  --hand-over-since, or the moment this launch began: a message the old occupant took between an operator's own check and that moment is
  *  handed over only when the check's time is passed. */
 export interface LaunchHandOver {
   since: string;
-  sinceSource: "hand_over_since" | "launch_began";
+  /** workspaces-o9o.8: `handover_file` when the seat's newest handover file was written before the other two times. */
+  sinceSource: "hand_over_since" | "launch_began" | "handover_file";
+  /** workspaces-o9o.8: the seat's newest handover file, when there is one. */
+  handoverFile?: string;
   /** Re-deliveries: new rows for messages the old occupant took from `since` on. */
   carried: Array<{ id: string; original: string; gateRecordedAt: string }>;
   /** Open messages already attempted on the old occupant, going again under a new nonce. */
@@ -355,6 +379,8 @@ export class SeatLifecycleService {
   private readonly inPlaceRestartDaemonStartedAt?: Date;
   private readonly transcripts: SeatLifecycleDeps["transcripts"] | null;
   private readonly seatStartupSource: SeatStartupSpecReader | null;
+  private readonly relaunchCheckPort: RelaunchCheckPort | null;
+  private readonly seatLeases: SeatLeaseRegistry | null;
 
   private readonly mcpTrust?: SeatLifecycleDeps["mcpTrust"];
   private readonly claudeHomeRead: ClaudeHomeRead | undefined;
@@ -370,6 +396,8 @@ export class SeatLifecycleService {
     this.eventBus = deps.eventBus;
     this.tmuxAdapter = deps.tmuxAdapter;
     this.listProcesses = deps.listProcesses;
+    this.relaunchCheckPort = deps.relaunchChecks ?? null;
+    this.seatLeases = deps.seatLeases ?? null;
     this.nodeLauncher = deps.nodeLauncher ?? null;
     this.startupOrchestrator = deps.startupOrchestrator ?? null;
     this.runtimeAdapters = deps.runtimeAdapters ?? {};
@@ -1383,7 +1411,7 @@ export class SeatLifecycleService {
    * Errors are reduced to safe codes;
    * startup text, credentials and process output are not included in the response.
    */
-  async planFresh(input: { seatRef: string; fresh: boolean; stop?: boolean; startupFrom?: StartupFrom; storedEscape?: StoredEscape }) {
+  async planFresh(input: { seatRef: string; fresh: boolean; stop?: boolean; startupFrom?: StartupFrom; storedEscape?: StoredEscape; despite?: readonly RelaunchCheckName[] }) {
     const refusal = (error: SeatRefusal) => ({
       ...error, planOnly: true as const, complete: error.code !== "tmux_probe_failed", launchable: false as const,
       // Parser/probe errors can embed persisted startup content or process output.
@@ -1420,6 +1448,7 @@ export class SeatLifecycleService {
     const currentOccupant = "code" in probe ? "unknown" : probe.state;
     let stopRequired: boolean | null = currentOccupant === "absent" ? false : null;
     let owned = false;
+    let relaunchChecks: RelaunchChecks | undefined;
     if ("code" in probe) record(probe);
     else if (probe.state === "present") {
       // Check ownership even without --stop; presence alone is not permission to stop.
@@ -1429,6 +1458,13 @@ export class SeatLifecycleService {
         owned = true;
         stopRequired = true;
         if (!input.stop) blockers.push({ code: "session_live", message: "A live managed occupant requires --stop." });
+        // workspaces-o9o.8: what a launch would judge before it stopped this occupant.
+        relaunchChecks = await this.relaunchChecks(canonicalSessionName, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)));
+        if (blockingChecks(relaunchChecks).length > 0) {
+          blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
+            guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
+        }
+        warnings.push(...checkWarnings(relaunchChecks));
       }
     }
     const launchable = blockers.length > 0 ? false : complete ? true : null;
@@ -1440,6 +1476,7 @@ export class SeatLifecycleService {
       sessionName: canonicalSessionName, currentOccupant,
       stopRequired, wouldStop: blockers.length > 0 ? false : tmuxUnknown ? null : owned && input.stop === true,
       blockers, warnings, siblings,
+      ...(relaunchChecks ? { relaunchChecks } : {}),
       startup: { source: startup.source, projectionCount: startup.plan.entries.length,
         fileCount: startup.resolvedStartupFiles.filter(f => f.appliesOn.includes("fresh_start")).length,
         actionCount: startup.startupActions.filter(a => a.appliesOn.includes("fresh_start")).length },
@@ -1466,6 +1503,8 @@ export class SeatLifecycleService {
     /** workspaces-o9o.7: what the stopped occupant took from this time on (ISO) goes to the fresh one. Absent: the moment this launch began, and
      *  only when it stops an occupant. */
     handOverSince?: string;
+    /** workspaces-o9o.8: held relaunch checks the operator names to launch anyway ("lease", "children"). */
+    despite?: readonly RelaunchCheckName[];
   }): Promise<LaunchFreshResult> {
     return this.launchFreshFrom(input, new Date().toISOString());
   }
@@ -1483,6 +1522,11 @@ export class SeatLifecycleService {
     if (input.handOverSince !== undefined && handOverSinceInstant(input.handOverSince) === null) {
       return { ok: false, code: "invalid_hand_over_since", message: `--hand-over-since takes an ISO 8601 time with its zone, such as 2026-11-15T23:06:06Z (got "${input.handOverSince}").` };
     }
+    const unknownDespite = (input.despite ?? []).filter((name) => !RELAUNCH_CHECK_NAMES.includes(name));
+    if (unknownDespite.length > 0) {
+      return { ok: false, code: "invalid_despite", message: `--despite takes ${RELAUNCH_CHECK_NAMES.join(" or ")} (got "${unknownDespite.join(", ")}").` };
+    }
+    const despite = input.despite ?? [];
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;
     const guard = this.tmuxAdapter.deliveryGuard;
@@ -1550,9 +1594,19 @@ export class SeatLifecycleService {
     }
     if ("code" in canonicalProbe) return canonicalProbe;
     let stoppedOccupant = false;
+    let relaunchChecks: RelaunchChecks | undefined;
     if (canonicalProbe.state === "present") {
       const currentSession = await this.validateFreshCollision(resolved, canonicalSessionName, input.stop === true);
       if ("code" in currentSession) return currentSession;
+      // workspaces-o9o.8: the seat's own unfinished work is judged BEFORE its occupant is stopped.
+      relaunchChecks = await this.relaunchChecks(canonicalSessionName, despite);
+      if (blockingChecks(relaunchChecks).length > 0) {
+        return {
+          ok: false, code: "relaunch_check_held", relaunchChecks,
+          message: `Fresh launch refused before anything was stopped: ${describeHeld(relaunchChecks, canonicalSessionName)}`,
+          guidance: `Let the work finish, or launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")} (the --reason is recorded).`,
+        };
+      }
       const stopped = await this.stopManagedTmuxSeat(
         resolved,
         currentSession,
@@ -1597,9 +1651,12 @@ export class SeatLifecycleService {
     }
 
     // workspaces-o9o.7: the old session is gone, so nothing more can reach it or be recorded by it, and the new one has not started.
+    const handoverFile = stoppedOccupant || input.handOverSince !== undefined ? this.seatHandoverFile(node.cwd) : null;
     const handOver = stoppedOccupant || input.handOverSince !== undefined
-      ? this.handOverFromRetiringOccupant(canonicalSessionName, input.handOverSince, launchBeganAt, retiringGeneration)
+      ? this.handOverFromRetiringOccupant(canonicalSessionName, input.handOverSince, launchBeganAt, retiringGeneration, handoverFile)
       : undefined;
+    const checkWarningList = relaunchChecks ? checkWarnings(relaunchChecks) : [];
+    const withChecks = relaunchChecks ? { relaunchChecks } : {};
     const withHandOver = handOver ? { handOver } : {};
 
     // OF-32 N6: a re-read seat gets its release's skills as first launch does. The re-read already checked them before
@@ -1782,6 +1839,7 @@ export class SeatLifecycleService {
         ...(startup.source.kind === "snapshot" ? { snapshotId: startup.source.snapshotId } : {}),
         reason: input.reason.trim(),
         operator: input.operator ?? null,
+        ...(despite.length > 0 ? { despite: [...despite] } : {}),
         status: attentionRequired ? "attention_required" : "ready",
       });
       // workspaces-o9o.30: the seat's skills against its spec, as this launch found them (a drift, or an in-line launch
@@ -1810,8 +1868,10 @@ export class SeatLifecycleService {
       };
     }
 
+    const handoverPointer = handoverFile ? this.sendHandoverPointer(canonicalSessionName, handoverFile.path, generation) : undefined;
     return {
-      ok: true, ...withHandOver,
+      ok: true, ...withHandOver, ...withChecks,
+      ...(handoverPointer ? { handoverPointer } : {}),
       seat,
       status: "ready",
       sessionName: canonicalSessionName,
@@ -1822,14 +1882,80 @@ export class SeatLifecycleService {
       startupPolicyHash: startup.hash,
       startupSource: startup.source,
       supersededSessionIds,
-      warnings: withSourceWarnings(startupResult.warnings),
+      warnings: withSourceWarnings([...(startupResult.warnings ?? []), ...checkWarningList]),
     };
   }
 
+  /**
+   * workspaces-o9o.8: `rig seat lease`. The seat's own work registers what it holds that others wait on (a UI test host, say) while its
+   * process runs, and releases it when done; a fresh launch that would stop the seat's occupant refuses while it is held.
+   */
+  seatLease(input: { seatRef: string; holder: string; pid?: number; reason?: string; release?: boolean }): SeatLeaseResult {
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+    if (!this.seatLeases) return { ok: false, code: "leases_unavailable", message: "This daemon has no seat lease record." };
+    const seat = deriveCanonicalFromEntry(resolved.entry) ?? deriveSessionName(resolved.entry.rigName, resolved.entry.logicalId);
+    if (input.release) {
+      return this.seatLeases.release(seat, input.holder)
+        ? { ok: true, seat, holder: input.holder, released: true }
+        : { ok: false, code: "lease_not_found", message: `${seat} has no lease held by "${input.holder}".` };
+    }
+    const acquired = this.seatLeases.acquire(seat, { holder: input.holder, pid: input.pid ?? Number.NaN, ...(input.reason ? { reason: input.reason } : {}) });
+    return acquired.ok ? { ok: true, seat, holder: input.holder, lease: acquired.lease } : acquired;
+  }
+
+  /** workspaces-o9o.8: the leases and agent children of the seat whose live occupant is about to be stopped. */
+  private async relaunchChecks(sessionName: string, despite: readonly RelaunchCheckName[]): Promise<RelaunchChecks> {
+    const port = this.relaunchCheckPort;
+    const lease = port
+      ? judgeLeases(() => port.leases(sessionName), despite)
+      : { verdict: "unknown" as const, cause: "this daemon has no lease record wired" };
+    let panePid: number | null = null;
+    let processes: NativeProcessRow[] | null = null;
+    try {
+      panePid = await this.tmuxAdapter.getPanePid(sessionName);
+      if (panePid !== null) processes = await (this.listProcesses ?? listNativeProcesses)();
+    } catch {
+      processes = null;
+    }
+    return { lease, children: judgeChildren(processes, panePid, despite) };
+  }
+
+  /** workspaces-o9o.8: the seat's newest handover file; null when there is none or its folder cannot be read. */
+  private seatHandoverFile(cwd: string | null): { path: string; modifiedAt: string } | null {
+    if (!cwd || !this.relaunchCheckPort) return null;
+    try {
+      return newestHandoverFile(cwd, this.relaunchCheckPort);
+    } catch {
+      return null;
+    }
+  }
+
+  /** workspaces-o9o.8: tells the fresh occupant, and only it (its generation), where its predecessor's handover is. */
+  private sendHandoverPointer(seat: string, path: string, generation: string): { path: string; sent: boolean; detail?: string } {
+    const handOff = this.tmuxAdapter.messageHandOff;
+    if (!handOff || !handOff.takes(seat)) {
+      return { path, sent: false, detail: "the message pump does not serve this seat; the path is in this result" };
+    }
+    const accepted = handOff.accept({
+      id: messageId(`handover-pointer-${generation.slice(0, 8)}`), seat, sender: "openrig", occupantGeneration: generation,
+      body: `Your predecessor's handover is at ${path}. Read it before you start.`,
+    });
+    return accepted.kind === "accepted" ? { path, sent: true } : { path, sent: false, detail: `the message store answered ${accepted.kind}` };
+  }
+
   /** workspaces-o9o.7: hands what the stopped occupant took, or may have taken, to the fresh one (MessageHandOff.handOverFromRetiringOccupant). */
-  private handOverFromRetiringOccupant(seat: string, handOverSince: string | undefined, launchBeganAt: string, retiringGeneration: string | null): LaunchHandOver {
-    const since = handOverSince === undefined ? launchBeganAt : handOverSinceInstant(handOverSince)!;
-    const base = { since, sinceSource: handOverSince === undefined ? "launch_began" as const : "hand_over_since" as const };
+  private handOverFromRetiringOccupant(seat: string, handOverSince: string | undefined, launchBeganAt: string, retiringGeneration: string | null,
+    handoverFile: { path: string; modifiedAt: string } | null): LaunchHandOver {
+    // workspaces-o9o.8: the earliest of the operator's time, the seat's handover file and the launch start. What the old occupant took
+    // after it last wrote its handover is not in that handover, so it goes to the fresh occupant.
+    const candidates: Array<{ at: string; source: LaunchHandOver["sinceSource"] }> = [
+      handOverSince === undefined ? { at: launchBeganAt, source: "launch_began" } : { at: handOverSinceInstant(handOverSince)!, source: "hand_over_since" },
+      ...(handoverFile ? [{ at: handoverFile.modifiedAt, source: "handover_file" as const }] : []),
+    ];
+    const earliest = candidates.reduce((a, b) => (b.at < a.at ? b : a));
+    const since = earliest.at;
+    const base = { since, sinceSource: earliest.source, ...(handoverFile ? { handoverFile: handoverFile.path } : {}) };
     const handOff = this.tmuxAdapter.messageHandOff;
     if (!handOff) return { ...base, carried: [], reissued: [], notHandedOver: [], skipped: "the message pump is off (transport.message_pump), so nothing here tracks what the old occupant took" };
     const handed = handOff.handOverFromRetiringOccupant(seat, since, (retiringGeneration ?? "unknown").slice(0, 8));

@@ -22,6 +22,8 @@ import { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { transportSenderSession } from "./require-sender-identity.js";
 import { listQueued } from "../domain/seat-messaging/queued-messages.js";
 import { SqliteQueuedMessages } from "../adapters/sqlite-queued-messages.js";
+import { nodeRelaunchChecks, type SeatLeaseStore } from "../adapters/seat-lease-store.js";
+import { RELAUNCH_CHECK_NAMES, type RelaunchCheckName } from "../domain/relaunch-checks.js";
 
 export const seatRoutes = new Hono();
 
@@ -256,6 +258,7 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
 // One service, one resolution path, one status mapping shared by all three verbs.
 export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifecycleService {
   const rigRepo = c.get("rigRepo" as never) as RigRepository;
+  const seatLeases = c.get("seatLeases" as never) as SeatLeaseStore | undefined;
   return new SeatLifecycleService({
     db: rigRepo.db,
     rigRepo,
@@ -273,6 +276,8 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
     mcpTrust: (c.get("mcpTrust" as never) as import("../domain/seat-lifecycle-service.js").SeatLifecycleDeps["mcpTrust"] | undefined) ?? undefined,
     // set-claude-home's read-only findings about a Claude home (names only; never a credential file).
     claudeHomeRead: { exists: (p) => existsSync(p), isDirectory: (p) => statSync(p).isDirectory(), readFile: (p) => readFileSync(p, "utf8") },
+    // workspaces-o9o.8: the seat's leases and folder, read before a fresh launch stops a live occupant.
+    ...(seatLeases ? { seatLeases, relaunchChecks: nodeRelaunchChecks(seatLeases) } : {}),
   });
 }
 
@@ -280,11 +285,12 @@ function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
   if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required"
     || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from" || code === "invalid_hand_over_since"
     || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file" || code === "apply_spec_invalid_spec_file"
-    || code === "invalid_claude_config_dir") return 400;
-  if (code === "seat_not_found") return 404;
+    || code === "invalid_claude_config_dir" || code === "invalid_despite" || code === "invalid_lease_holder" || code === "invalid_lease_pid") return 400;
+  if (code === "seat_not_found" || code === "lease_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed"
-    || code === "effort_unavailable" || code === "mcp_unavailable" || code === "apply_spec_not_saved" || code === "claude_home_unavailable") return 500;
+    || code === "effort_unavailable" || code === "mcp_unavailable" || code === "apply_spec_not_saved" || code === "claude_home_unavailable"
+    || code === "leases_unavailable") return 500;
   // seat_ambiguous / session_live / session_not_live / no_session / claimed_session /
   // nothing_to_clean — state conflicts, not client syntax errors.
   return 409;
@@ -394,13 +400,37 @@ function startupFromOf(body: Record<string, unknown>): StartupFrom | undefined |
 }
 const INVALID_STARTUP_FROM = { ok: false, code: "invalid_startup_from", message: `startupFrom must be ${STARTUP_FROM_FORMS}.` } as const;
 
+// workspaces-o9o.8: held relaunch checks the operator names to launch anyway. Anything but an array of check names is refused, never dropped
+// (a dropped one would launch without the override the operator meant, or with one they did not).
+const INVALID_DESPITE = { ok: false, code: "invalid_despite", message: `despite must be a list of ${RELAUNCH_CHECK_NAMES.join(", ")}.` } as const;
+function despiteOf(body: Record<string, unknown>): RelaunchCheckName[] | null {
+  const value = body["despite"];
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((name): name is RelaunchCheckName => typeof name === "string" && (RELAUNCH_CHECK_NAMES as readonly string[]).includes(name))) return null;
+  return value;
+}
+
+seatRoutes.post("/lease/:seatRef", async (c) => {
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  if (typeof body["holder"] !== "string") return c.json({ ok: false, code: "invalid_lease_holder", message: "holder is required." }, 400);
+  if (body["release"] !== true && typeof body["pid"] !== "number") return c.json({ ok: false, code: "invalid_lease_pid", message: "pid is required, a number." }, 400);
+  const result = seatLifecycleService(c).seatLease({
+    seatRef: c.req.param("seatRef")!, holder: body["holder"], release: body["release"] === true,
+    ...(typeof body["pid"] === "number" ? { pid: body["pid"] } : {}),
+    ...(typeof body["reason"] === "string" && body["reason"].trim() ? { reason: body["reason"].trim() } : {}),
+  });
+  return result.ok ? c.json(result) : c.json(result, seatLifecycleStatus(result.code));
+});
+
 // A distinct route fails closed against older daemons that do not support previews.
 seatRoutes.post("/launch-plan/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const startupFrom = startupFromOf(body);
   if (startupFrom === null) return c.json(INVALID_STARTUP_FROM, 400);
+  const despite = despiteOf(body);
+  if (despite === null) return c.json(INVALID_DESPITE, 400);
   const result = await seatLifecycleService(c).planFresh({
-    seatRef: c.req.param("seatRef")!, fresh: body["fresh"] === true, stop: body["stop"] === true, startupFrom,
+    seatRef: c.req.param("seatRef")!, fresh: body["fresh"] === true, stop: body["stop"] === true, startupFrom, despite,
   });
   return result.ok ? c.json(result) : c.json(result, seatLifecycleStatus(result.code));
 });
@@ -413,7 +443,10 @@ seatRoutes.post("/launch/:seatRef", async (c) => {
   if (body["handOverSince"] !== undefined && typeof body["handOverSince"] !== "string") {
     return c.json({ ok: false, code: "invalid_hand_over_since", message: "handOverSince must be an ISO 8601 time string, such as 2026-11-15T23:06:06Z." }, 400);
   }
+  const despite = despiteOf(body);
+  if (despite === null) return c.json(INVALID_DESPITE, 400);
   const result = await seatLifecycleService(c).launchFresh({
+    despite,
     startupFrom,
     seatRef: c.req.param("seatRef")!,
     fresh: body["fresh"] === true,

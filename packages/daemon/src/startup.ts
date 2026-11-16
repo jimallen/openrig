@@ -204,6 +204,7 @@ import { WebhookNotificationAdapter } from "./domain/mission-control/notificatio
 import type { NotificationAdapter } from "./domain/mission-control/notification-adapter-types.js";
 import type { BindingAttachmentType } from "./domain/types.js";
 import { OPENRIG_HOME } from "./openrig-compat.js";
+import { SeatLeaseStore } from "./adapters/seat-lease-store.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { guardedAgentRefFsOps } from "./domain/agent-ref-guard.js";
@@ -1710,6 +1711,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     kernelBootTracker,
     specReviewService,
     mcpTrust,
+    // workspaces-o9o.8: what `rig seat lease` registers and a fresh launch's relaunch checks read.
+    seatLeases: new SeatLeaseStore(nodePath.join(OPENRIG_HOME, "state", "seat-leases")),
     specLibraryService: (() => {
       const userSpecsRoot = userSpecLibraryRoot;
       const legacySpecsRoot = compatibleSpecLibraryRoot;

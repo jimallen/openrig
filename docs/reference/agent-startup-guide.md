@@ -236,6 +236,23 @@ post-launch files. If it needs them, first look at what that occupant has done; 
 `rig seat launch <seat> --fresh --reason <text>` starts a blank conversation for the seat. If the occupant is still
 live, the command refuses with `session_live` unless you also pass `--stop`, which replaces that occupant deliberately.
 
+**Relaunch checks.** Before `--stop` stops a live occupant, the launch checks the seat's own unfinished work, and
+refuses with `relaunch_check_held` (naming each holder or process; nothing is stopped) when:
+- a lease is held on the seat: `rig seat lease <seat> --holder <name> --pid <pid> [--reason <text>]` registers one
+  (a script that takes a shared UI test host, say, registers on acquire and runs `--release` when done). It counts
+  while its process is alive; a lease whose process has gone is stale, ignored and named in a warning;
+- the seat's agent is still running processes other than MCP servers, language servers and caffeinate (a build or a
+  test run left under it would be orphaned, still writing into the worktree).
+
+`--despite lease` and `--despite children` launch anyway, one check each; the launch event records them with the
+`--reason`. A check that cannot be read (no pane process, an unreadable lease folder) only warns, so a broken seat can
+still be recovered. `--plan` shows every check's verdict.
+
+The seat's newest `HANDOVER*.md` in its own folder is when its old occupant last wrote down what it knew. When that is
+earlier than `--hand-over-since` (or the launch's own start), messages the old occupant took from then on are handed
+to the fresh one as well, the result names the file (`handOver.sinceSource: handover_file`), and the fresh occupant
+is sent its path. The pattern and the expected children are fixed defaults for now (`RELAUNCH_CHECK_DEFAULTS`).
+
 **Where a fresh seat's startup files come from.** A fresh conversation has no continuity, so `rig seat launch --fresh`
 reads the rig's spec again as it is now. OpenRig records the spec a rig was launched from in the spelling you used: a
 spec library link keeps its link path, so a link that now points at a newer release gives the fresh seat that

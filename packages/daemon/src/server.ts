@@ -340,6 +340,8 @@ export interface AppDeps {
   contextUsageStore?: import("./domain/context-usage-store.js").ContextUsageStore;
   /** Per-seat Codex MCP servers: trusted --spec roots (and, in tests, the trust rule's reads). */
   mcpTrust?: import("./domain/seat-lifecycle-service.js").SeatLifecycleDeps["mcpTrust"];
+  /** workspaces-o9o.8: seat leases (rig seat lease), read by a fresh launch's relaunch checks. */
+  seatLeases?: import("./adapters/seat-lease-store.js").SeatLeaseStore;
   /** 0.5.10 S04 — one on-demand, read-only health projection shared by consumers. */
   healthProjection?: import("./domain/health-detectors.js").HealthProjectionService;
   healthDiagnosis?: HealthDiagnosisService;
@@ -614,6 +616,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("permissionDriftObserver" as never, permissionDriftObserver);
     c.set("contextUsageStore" as never, deps.contextUsageStore);
     c.set("mcpTrust" as never, deps.mcpTrust);
+    c.set("seatLeases" as never, deps.seatLeases);
     c.set("healthProjection" as never, deps.healthProjection);
     c.set("healthDiagnosis" as never, deps.healthDiagnosis);
     c.set("healthPolicy" as never, deps.healthPolicy);
