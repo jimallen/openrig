@@ -588,6 +588,12 @@
   "when": "process.platform === \"linux\" && !!findHc()"
  },
  {
+  "file": "packages/daemon/test/launch-failure-pane-tail.real.test.ts",
+  "kind": "skipIf",
+  "task": "a launch swallowed by a shell prompt names the prompt in its error (real tmux)",
+  "when": "!HAS_TMUX || process.platform === \"win32\""
+ },
+ {
   "file": "packages/daemon/test/lifecycle-ops.real.test.ts",
   "kind": "skipIf",
   "task": "OF-241: lifecycle leases, end to end on a real daemon and a private hc core",
