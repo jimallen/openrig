@@ -374,9 +374,10 @@ export function startTranscriptRotation(
         return;
       }
 
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      // A transcript is the seat's conversation: private to its owner whatever the umask (workspaces-o9o.36).
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
       const tmpPath = `${outputPath}.tmp.${process.pid}`;
-      fs.writeFileSync(tmpPath, payload);
+      fs.writeFileSync(tmpPath, payload, { mode: 0o600 });
       fs.renameSync(tmpPath, outputPath);
       // Persistence succeeded — only NOW is the tick healthy, so record liveness.
       // A throw above jumps to the catch and never reaches here, so a failed

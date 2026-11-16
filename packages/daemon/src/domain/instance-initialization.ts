@@ -9,6 +9,7 @@ import {
   DEFAULT_SYSTEM_WORLD_MANIFEST,
   DEFAULT_SYSTEM_WORLD_RELATIVE_PATH,
 } from "./system-world.js";
+import { secureInstanceHome, type InstancePrivacyPort, type InstancePrivacyResult } from "./instance-privacy.js";
 
 export interface OpenRigInstanceInitializationOptions {
   home: string;
@@ -18,6 +19,8 @@ export interface OpenRigInstanceInitializationOptions {
   topologyRoot?: string;
   dryRun?: boolean;
   fs?: InitializationFsOps;
+  /** When given, the instance is kept private to its owner after the layout is reconciled (workspaces-o9o.36). */
+  privacy?: InstancePrivacyPort;
 }
 
 export interface OpenRigInstanceInitializationResult {
@@ -26,6 +29,8 @@ export interface OpenRigInstanceInitializationResult {
   createdPaths: string[];
   conflicts: InitializationConflict[];
   dryRun: boolean;
+  /** Present when a privacy port was given and the layout was written. */
+  privacy?: InstancePrivacyResult;
 }
 
 export function openRigContextLibraryRoots(contextRoot: string): [string, string] {
@@ -102,8 +107,9 @@ export function ensureOpenRigInstance(
     if (systemWorldKind === "missing") fs.writeFile(systemWorldPath, DEFAULT_SYSTEM_WORLD_MANIFEST);
     ensureDefaultWorkspace({ root: workspaceRoot, fs });
   }
+  const privacy = !dryRun && options.privacy ? secureInstanceHome(options.home, options.privacy) : undefined;
 
-  return { ok: true, home: options.home, createdPaths, conflicts: [], dryRun };
+  return { ok: true, home: options.home, createdPaths, conflicts: [], dryRun, ...(privacy ? { privacy } : {}) };
 }
 
 export function formatInstanceInitializationConflicts(

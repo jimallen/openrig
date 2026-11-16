@@ -122,6 +122,24 @@ describe("daemon startServer", () => {
     });
   });
 
+  it("workspaces-o9o.36: daemon start makes the instance private to its owner (home 0700, a 0664 session file 0600)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { OPENRIG_HOME } = await import("../src/openrig-compat.js");
+    const sessions = path.join(OPENRIG_HOME, "state", "pi", "verify-ops@openrig", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const session = path.join(sessions, "a.jsonl");
+    fs.writeFileSync(session, "{}\n");
+    fs.chmodSync(session, 0o664);
+    fs.chmodSync(OPENRIG_HOME, 0o755);
+    const { startServer } = await import("../src/index.js");
+
+    await startServer(7441);
+
+    expect({ home: fs.statSync(OPENRIG_HOME).mode & 0o777, session: fs.statSync(session).mode & 0o777 })
+      .toEqual({ home: 0o700, session: 0o600 });
+  });
+
   it("does not require a terminal bearer token for the default loopback bind", async () => {
     const { startServer } = await import("../src/index.js");
 

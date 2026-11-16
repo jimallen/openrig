@@ -38,6 +38,7 @@ import {
 import type { SlowOperationInstrumentation } from "./domain/slow-op-recorder.js";
 import type { ProviderService } from "./domain/provider/provider-service.js";
 import { SettingsStore } from "./domain/user-settings/settings-store.js";
+import { nodeInstancePrivacy } from "./adapters/instance-privacy-fs.js";
 import {
   ensureOpenRigInstance,
   formatInstanceInitializationConflicts,
@@ -261,9 +262,18 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
     contextRoot: instanceConfig.contextRoot,
     skillsRoot: instanceConfig.skillsRoot,
     topologyRoot: instanceConfig.topologyRoot,
+    privacy: nodeInstancePrivacy(),
   });
   if (!initialization.ok) {
     throw new Error(`OpenRig instance initialization blocked: ${formatInstanceInitializationConflicts(initialization)}`);
+  }
+  // workspaces-o9o.36: the instance is private to its owner. Say so when that could not be kept, never block start.
+  const privacy = initialization.privacy;
+  if (privacy?.status === "refused") {
+    console.error(`[instance-privacy] OPENRIG_HOME ${OPENRIG_HOME} is the user's home or above it; its modes were left alone`);
+  }
+  for (const failure of privacy?.failures ?? []) {
+    console.error(`[instance-privacy] could not remove group/other access from ${failure.path}: ${failure.error}`);
   }
 
   // bug-fix slice auth-bearer-tailscale-trust: distinguish "explicit

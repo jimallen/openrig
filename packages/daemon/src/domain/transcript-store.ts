@@ -1,5 +1,5 @@
 import { redactTranscriptContent } from "./transcript-redaction.js";
-import { mkdirSync, appendFileSync, existsSync, openSync, readSync, closeSync, statSync, fstatSync, readFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, chmodSync, existsSync, openSync, readSync, closeSync, statSync, fstatSync, readFileSync } from "node:fs";
 import { join, dirname, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getCompatibleOpenRigPath } from "../openrig-compat.js";
@@ -214,6 +214,15 @@ export class TranscriptStore {
     return this._enabled;
   }
 
+  /** A transcript holds the seat's conversation, so the root and the rig directory are private to their owner
+   * whatever the umask, and wherever transcripts.path points (workspaces-o9o.36). */
+  private ensurePrivateDir(dir: string): void {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const path of new Set([this.root, dir])) {
+      if ((statSync(path).mode & 0o077) !== 0) chmodSync(path, 0o700);
+    }
+  }
+
   getTranscriptPath(rigName: string, sessionName: string): string {
     const resolved = join(this.root, rigName, `${sessionName}.log`);
     // Guard against path traversal from rig/session names containing "..".
@@ -268,7 +277,7 @@ export class TranscriptStore {
       if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
         return false;
       }
-      mkdirSync(dir, { recursive: true });
+      this.ensurePrivateDir(dir);
       return true;
     } catch {
       return false;
@@ -284,9 +293,9 @@ export class TranscriptStore {
       // Restore orchestration writes the marker before launch; the
       // launcher creates the dir later, which used to lose markers
       // for the first restore on a fresh rig.
-      mkdirSync(dirname(filePath), { recursive: true });
+      this.ensurePrivateDir(dirname(filePath));
       const marker = `--- SESSION BOUNDARY: ${reason} at ${new Date().toISOString()} ---\n`;
-      appendFileSync(filePath, marker, "utf-8");
+      appendFileSync(filePath, marker, { encoding: "utf-8", mode: 0o600 });
       return true;
     } catch {
       return false;
