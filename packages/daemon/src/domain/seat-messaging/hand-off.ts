@@ -1,7 +1,7 @@
 import { nativeMarker } from "../claude-native-inbox.js";
 import { OutboxHandlerError } from "../outbox-handler.js";
 import type { MessagePump } from "./message-pump.js";
-import type { MessageAcceptInput, MessageOutcome, MessageStore } from "./message-store.js";
+import type { MessageAcceptInput, MessageOutcome, MessageStore, RetiringOccupantHandOver } from "./message-store.js";
 import { messageId, type MessageId } from "./ports.js";
 import type { SeatMessagingPorts } from "./pump-ports.js";
 
@@ -36,6 +36,10 @@ export interface MessageHandOff {
    *  nothing lands between two of them. Call it in a `finally`. It lives and dies with this process: a daemon that died mid-sequence is not
    *  still running it, and a hold on disk would wedge the seat's queue for good. */
   holdContentLane(seat: string): () => void;
+  /** workspaces-o9o.7: a fresh launch stopped `seat`'s occupant. What it took from `sinceIso` on, and what was attempted on it and is still open,
+   *  goes to the fresh occupant (MessageStore.handOverFromRetiringOccupant). A seat the pump does not serve has nothing here to carry it: its
+   *  messages delivered since are named in `notHandedOver`, never dropped in silence. Call it once the old session is gone. */
+  handOverFromRetiringOccupant(seat: string, sinceIso: string, retiringTag: string): RetiringOccupantHandOver & { readonly notHandedOver: readonly MessageId[] };
 }
 
 export class PumpHandOff implements MessageHandOff {
@@ -82,5 +86,12 @@ export class PumpHandOff implements MessageHandOff {
 
   holdContentLane(seat: string): () => void {
     return this.pump.holdContentLane(seat);
+  }
+
+  handOverFromRetiringOccupant(seat: string, sinceIso: string, retiringTag: string): RetiringOccupantHandOver & { readonly notHandedOver: readonly MessageId[] } {
+    if (!this.takes(seat)) return { carried: [], reissued: [], notHandedOver: this.store.deliveredSinceUnpumped(seat, sinceIso) };
+    // No pass is asked for here: the caller holds the seat's lifecycle lease and the new occupant does not exist yet, so a pass now would judge the
+    // rows against the occupant that just ended. They are due at once, and go on the first pass after the launch.
+    return { ...this.store.handOverFromRetiringOccupant(seat, sinceIso, retiringTag), notHandedOver: [] };
   }
 }

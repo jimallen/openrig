@@ -241,6 +241,16 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
       guidance: "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch." });
   });
 
+  // workspaces-o9o.7: the operator's check time reaches the service, and one that is not a time is refused with 400 before anything is stopped.
+  it("launch forwards handOverSince, and refuses one that is not a time", async () => {
+    const spy = vi.spyOn(SeatLifecycleService.prototype, "launchFresh").mockResolvedValueOnce({ ok: false, code: "no_session", message: "fixture" });
+    await post("launch", "dev-impl@seat-rig", { fresh: true, reason: "r", stop: true, handOverSince: "2026-11-15T23:06:06Z" });
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ handOverSince: "2026-11-15T23:06:06Z" }));
+    const bad = await post("launch", "dev-impl@seat-rig", { fresh: true, reason: "r", stop: true, handOverSince: "after lunch" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ ok: false, code: "invalid_hand_over_since" });
+  });
+
   // OF-32: where a fresh launch takes its startup files from reaches the service; anything else is refused.
   it.each([["launch", "launchFresh"], ["launch-plan", "planFresh"]] as const)("%s forwards startupFrom and refuses an unknown value", async (route, method) => {
     const spy = vi.spyOn(SeatLifecycleService.prototype, method).mockResolvedValue({ ok: false, code: "fixture", message: "fixture" } as never);

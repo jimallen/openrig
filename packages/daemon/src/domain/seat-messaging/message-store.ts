@@ -137,6 +137,30 @@ function toMessage(row: MessageRow): StoredMessage {
   };
 }
 
+/** workspaces-o9o.7: what a fresh launch handed from the occupant it stopped to the fresh one. */
+export interface RetiringOccupantHandOver {
+  /** New rows, one per message the old occupant received from the hand-over time on. */
+  readonly carried: ReadonlyArray<{ readonly id: MessageId; readonly original: MessageId; readonly gateRecordedAt: string }>;
+  /** Open rows already attempted on the old occupant: each goes again under a new nonce. */
+  readonly reissued: readonly MessageId[];
+}
+
+/** A carry row's id: the original's, then `.relaunch-` and a tag (the first 8 characters of the retiring occupant's generation). The one home of
+ *  this shape: a reader that must tell a re-delivery from a message uses `carryOriginOf`, never a copy of the pattern. */
+const CARRY_ID = /^(.+)\.relaunch-([0-9A-Za-z-]{1,8})$/;
+export function carryIdOf(originalId: string, retiringTag: string): MessageId {
+  return messageId(`${originalId}.relaunch-${retiringTag}`);
+}
+/** The original id a carry row re-delivers, or null when `id` is not a carry row's. */
+export function carryOriginOf(id: string): string | null {
+  return CARRY_ID.exec(id)?.[1] ?? null;
+}
+
+/** The first line of a re-delivered message: what it is, its original id and when the previous occupant's gate recorded it. */
+export function redeliveryLabel(originalId: string, gateRecordedAt: string): string {
+  return `[OpenRig re-delivery: the previous occupant of this seat took message ${originalId} at ${gateRecordedAt}, just before this seat was relaunched. It may already have been acted on: check before doing the work again.]`;
+}
+
 /** Rolls a group's claim back: another claim took one of its rows first. */
 class LostClaim extends Error {}
 
@@ -367,6 +391,55 @@ export class MessageStore {
   moveToSuccessor(id: MessageId, successor: string): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET destination_session = ?, next_attempt_at = NULL, message_pause_reason = NULL
       WHERE outbox_id = ? AND ${OPEN}`).run(successor, id).changes === 1;
+  }
+
+  /**
+   * workspaces-o9o.7: a fresh launch stopped the seat's occupant, and what that occupant took from `sinceIso` on, or may have taken, now goes to the
+   * fresh one. Called once the old session is gone and before the new one starts, so no record can follow. Content and nudges only: lifecycle text
+   * stays with the occupant it was for (Jim's rule), and the pump never carries a command.
+   *
+   * - A row the old occupant RECEIVED at or after `sinceIso` stays received, a true record of what that session took. A new row carries it: same
+   *   sender, the body under a label that names it a re-delivery, with the original id and its gate time (duplicates are by design: the old
+   *   session may have acted on it). Its id is the original's plus `.relaunch-<tag>`, so a repeat of this hand-over is the same row, and the
+   *   original's id prefix (which names its obligation check) stays. Bound to no occupant, so the pump adds no second label.
+   * - A row still OPEN that has been attempted gets a new nonce: a record the dying session wrote on disk is of the old (id, nonce), so it no
+   *   longer reads as arrival, and the next attempt goes to the fresh occupant. Its id and body never change (invariant 2).
+   */
+  handOverFromRetiringOccupant(seat: string, sinceIso: string, retiringTag: string): RetiringOccupantHandOver {
+    const sinceMs = Date.parse(sinceIso);
+    if (!Number.isFinite(sinceMs)) throw new OutboxHandlerError("invalid_hand_over_since", `The hand-over time "${sinceIso}" is not a time.`);
+    return this.db.transaction(() => {
+      const taken = (this.db.prepare(`SELECT outbox_id AS id, sender_session AS sender, body, gate_recorded_at AS gateAt, class, audit_pointer AS auditPointer FROM outbox_entries
+          WHERE destination_session = ? AND message_state = 'received' AND gate_recorded_at IS NOT NULL AND coalesce(class, 'content') IN ('content', 'nudge') ORDER BY rowid`)
+        .all(seat) as Array<{ id: string; sender: string; body: string; gateAt: string; class: string | null; auditPointer: string | null }>)
+        .filter((row) => Date.parse(row.gateAt) >= sinceMs);
+      const carried: Array<RetiringOccupantHandOver["carried"][number]> = [];
+      for (const row of taken) {
+        const id = carryIdOf(row.id, retiringTag);
+        if (this.outbox.getById(id)) continue;
+        this.accept({
+          id, seat, sender: row.sender, body: `${redeliveryLabel(row.id, row.gateAt)}\n${row.body}`,
+          messageClass: row.class === "nudge" ? "nudge" : "content", lane: MESSAGE_LANES.content, ...(row.auditPointer ? { auditPointer: row.auditPointer } : {}),
+        });
+        this.db.prepare("UPDATE outbox_entries SET occupant_generation = NULL WHERE outbox_id = ?").run(id);
+        carried.push({ id, original: messageId(row.id), gateRecordedAt: row.gateAt });
+      }
+      const attempted = (this.db.prepare(`SELECT outbox_id AS id FROM outbox_entries WHERE destination_session = ? AND ${OPEN} AND native_nonce IS NOT NULL
+          AND coalesce(class, 'content') IN ('content', 'nudge') ORDER BY rowid`).all(seat) as Array<{ id: string }>).map((r) => messageId(r.id));
+      const reissue = this.db.prepare(`UPDATE outbox_entries SET native_nonce = ?, message_socket_written_ms = NULL, next_attempt_at = NULL, message_pause_reason = NULL,
+          message_parts_done = CASE WHEN message_parts IS NULL THEN message_parts_done ELSE 0 END WHERE outbox_id = ? AND ${OPEN}`);
+      for (const id of attempted) reissue.run(randomBytes(16).toString("hex"), id);
+      return { carried, reissued: attempted };
+    })();
+  }
+
+  /** What a seat with no pump was delivered from `sinceIso` on: nothing here can carry it, so the launch names it. Content and nudges, SELECT only. */
+  deliveredSinceUnpumped(seat: string, sinceIso: string): MessageId[] {
+    const sinceMs = Date.parse(sinceIso);
+    return (this.db.prepare(`SELECT outbox_id AS id, coalesce(gate_recorded_at, delivered_at) AS at FROM outbox_entries
+        WHERE destination_session = ? AND delivery_state = 'delivered' AND coalesce(class, 'content') IN ('content', 'nudge') ORDER BY rowid`)
+      .all(seat) as Array<{ id: string; at: string | null }>)
+      .filter((row) => row.at !== null && Date.parse(row.at) >= sinceMs).map((row) => messageId(row.id));
   }
 
   /** Held rows still the guard's, oldest first. A binding that is not JSON reads as null: the seat is on the row. A command is not a

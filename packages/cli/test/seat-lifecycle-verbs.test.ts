@@ -93,6 +93,31 @@ describe("#729 startup warnings", () => {
   });
 });
 
+describe("workspaces-o9o.7: seat launch --hand-over-since", () => {
+  const ready = (handOver: Record<string, unknown>) => ({ ok: true, seat: { logicalId: "dev.impl", rigName: "fixture" }, sessionName: "dev@fixture", generation: "g2",
+    startupPolicyHash: "h", supersededSessionIds: [], handOver });
+  it("sends the operator's check time and says it was used", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: ready({ since: "2026-11-15T23:06:06.000Z", sinceSource: "hand_over_since", carried: [{ id: "a.relaunch-1", original: "a", gateRecordedAt: "t" }], reissued: [], notHandedOver: [] }) }, calls);
+    const { logs } = await captureLogs(() => makeCommand(deps).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--stop", "--hand-over-since", "2026-11-15T23:06:06Z", "--reason", "relaunch after check",
+    ]));
+    expect(calls).toEqual([{ path: "/api/seat/launch/dev%40fixture", body: { fresh: true, reason: "relaunch after check", stop: true, operator: undefined, handOverSince: "2026-11-15T23:06:06Z" } }]);
+    expect(logs.join("\n")).toContain("taken since 2026-11-15T23:06:06.000Z, --hand-over-since): 1 re-delivered, 0 sent again.");
+  });
+  it("with no --hand-over-since, sends none and tells the operator the default reaches back only to the launch", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: ready({ since: "2026-11-15T23:06:10.000Z", sinceSource: "launch_began", carried: [], reissued: ["b"], notHandedOver: ["c"] }) }, calls);
+    const { logs } = await captureLogs(() => makeCommand(deps).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--stop", "--reason", "relaunch",
+    ]));
+    expect(calls).toEqual([{ path: "/api/seat/launch/dev%40fixture", body: { fresh: true, reason: "relaunch", stop: true, operator: undefined } }]);
+    const out = logs.join("\n");
+    expect(out).toContain("taken since 2026-11-15T23:06:10.000Z, when this launch began; pass --hand-over-since <your check's time> to reach further back): 0 re-delivered, 1 sent again.");
+    expect(out).toContain("Not handed over (this seat has no message pump): c.");
+  });
+});
+
 describe("default-path rig seat continue", () => {
   it.each([false, true])("names CLI inspection for an ambiguous continuation refusal (json=%s)", async json => {
     const data = { ok: false, code: "continuation_unavailable", message: "No verified pending fresh-context delivery exists for this occupant. Refresh to inspect its actual state." };

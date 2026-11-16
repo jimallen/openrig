@@ -261,7 +261,7 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
 
 function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
   if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required"
-    || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from"
+    || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from" || code === "invalid_hand_over_since"
     || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file" || code === "apply_spec_invalid_spec_file"
     || code === "invalid_claude_config_dir") return 400;
   if (code === "seat_not_found") return 404;
@@ -399,6 +399,7 @@ seatRoutes.post("/launch/:seatRef", async (c) => {
     reason: typeof body["reason"] === "string" ? body["reason"] : "",
     stop: body["stop"] === true,
     operator: typeof body["operator"] === "string" ? body["operator"] : null,
+    ...(typeof body["handOverSince"] === "string" ? { handOverSince: body["handOverSince"] } : {}),
   });
   if (result.ok) return c.json(result);
   return c.json(result, seatLifecycleStatus(result.code));

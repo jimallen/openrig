@@ -151,6 +151,7 @@ export interface SeatRefusal {
     | "startup_source_changed"
     | "startup_source_untrusted"
     | "invalid_startup_from"
+    | "invalid_hand_over_since"
     | "runtime_adapter_missing"
     | "launch_unavailable"
     | "fresh_start_unsupported"
@@ -281,6 +282,7 @@ export type LaunchFreshResult =
       startupSource: FreshStartupSource;
       supersededSessionIds: string[];
       warnings?: string[];
+      handOver?: LaunchHandOver;
     }
   | (SeatRefusal & {
       status?: "attention_required" | "failed";
@@ -288,7 +290,24 @@ export type LaunchFreshResult =
       sessionId?: string;
       generation?: string;
       warnings?: string[];
+      handOver?: LaunchHandOver;
     });
+
+/** workspaces-o9o.7: what a fresh launch handed from the occupant it stopped to the fresh one, and from what time. `since` is the operator's
+ *  --hand-over-since, or the moment this launch began: a message the old occupant took between an operator's own check and that moment is
+ *  handed over only when the check's time is passed. */
+export interface LaunchHandOver {
+  since: string;
+  sinceSource: "hand_over_since" | "launch_began";
+  /** Re-deliveries: new rows for messages the old occupant took from `since` on. */
+  carried: Array<{ id: string; original: string; gateRecordedAt: string }>;
+  /** Open messages already attempted on the old occupant, going again under a new nonce. */
+  reissued: string[];
+  /** Messages the old occupant took from `since` on that nothing can carry (the pump does not serve this seat). */
+  notHandedOver: string[];
+  /** Set when nothing was handed over because the message pump is off. */
+  skipped?: string;
+}
 
 interface LatestSessionRow {
   id: string;
@@ -1424,7 +1443,14 @@ export class SeatLifecycleService {
     startupFrom?: StartupFrom;
     /** OF-38: how a refused re-read names the stored escape: "flag" (default) for a caller that can pass `startupFrom`, "command" for one that cannot. */
     storedEscape?: StoredEscape;
+    /** workspaces-o9o.7: what the stopped occupant took from this time on (ISO) goes to the fresh one. Absent: the moment this launch began, and
+     *  only when it stops an occupant. */
+    handOverSince?: string;
   }): Promise<LaunchFreshResult> {
+    return this.launchFreshFrom(input, new Date().toISOString());
+  }
+
+  private async launchFreshFrom(input: Parameters<SeatLifecycleService["launchFresh"]>[0], launchBeganAt: string): Promise<LaunchFreshResult> {
     const required = this.requireReason(input.reason);
     if (required) return required;
     if (input.fresh !== true) {
@@ -1434,11 +1460,14 @@ export class SeatLifecycleService {
         message: "Explicit fresh launch requires fresh=true (--fresh); no continuity mode is inferred.",
       };
     }
+    if (input.handOverSince !== undefined && !Number.isFinite(Date.parse(input.handOverSince))) {
+      return { ok: false, code: "invalid_hand_over_since", message: `--hand-over-since takes a time, such as 2026-11-15T23:06:06Z (got "${input.handOverSince}").` };
+    }
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;
     const guard = this.tmuxAdapter.deliveryGuard;
     if (guard && !guard.ownsLifecycle(resolved.nodeId)) {
-      return guard.lifecycle([resolved.nodeId], () => this.launchFresh(input));
+      return guard.lifecycle([resolved.nodeId], () => this.launchFreshFrom(input, launchBeganAt));
     }
     const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom, input.storedEscape);
     if ("code" in prepared) return prepared;
@@ -1547,13 +1576,19 @@ export class SeatLifecycleService {
       };
     }
 
+    // workspaces-o9o.7: the old session is gone, so nothing more can reach it or be recorded by it, and the new one has not started.
+    const handOver = stoppedOccupant || input.handOverSince !== undefined
+      ? this.handOverFromRetiringOccupant(canonicalSessionName, input.handOverSince, launchBeganAt, retiringGeneration)
+      : undefined;
+    const withHandOver = handOver ? { handOver } : {};
+
     // OF-32 N6: a re-read seat gets its release's skills as first launch does. The re-read already checked them before
     // any stop, so a failure here is a change in the cwd since then. Nothing has been launched, but an occupant this
     // launch stopped stays stopped: say so, and name the way back that does not reconcile skills.
     const skills = projectRereadSkills(this.seatStartupSource, startup);
     if (!skills.ok) {
       return {
-        ok: false, code: "launch_failed",
+        ok: false, ...withHandOver, code: "launch_failed",
         message: `${skills.message} No session was started.${stoppedOccupant ? " This launch had already stopped the seat's previous session, so the seat is not running now." : ""}`,
         guidance: `To start it on the startup files saved at its last successful launch, which leaves its skills as they are, run: ${freshSeatLaunchCommand(seat.logicalId, rigAdviceHandle(this.rigRepo, seat.rigId, seat.rigName), "stored")}.`,
       };
@@ -1574,7 +1609,7 @@ export class SeatLifecycleService {
     });
     if (!launch.ok) {
       // The launcher's own refusal about the folder keeps its code (it was checked before the stop, so this is the backstop).
-      return { ok: false, code: launch.code === "seat_cwd_unusable" ? "seat_cwd_unusable" : "launch_failed", message: launch.message };
+      return { ok: false, ...withHandOver, code: launch.code === "seat_cwd_unusable" ? "seat_cwd_unusable" : "launch_failed", message: launch.message };
     }
     const observedGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
     const generation = observedGeneration && observedGeneration !== retiringGeneration
@@ -1595,8 +1630,8 @@ export class SeatLifecycleService {
         errors: ["new occupant generation was not persisted"],
       });
       return compensation === "zero"
-        ? { ok: false, code: "startup_failed", status: "failed", message: "Fresh launch could not persist a new occupant generation; the new session was rolled back." }
-        : { ok: false, code: "attention_required", status: "attention_required", message: "Fresh launch could not persist a new occupant generation and the new process could not be confirmed stopped; the seat requires attention.", sessionName: canonicalSessionName, sessionId: launch.session.id };
+        ? { ok: false, ...withHandOver, code: "startup_failed", status: "failed", message: "Fresh launch could not persist a new occupant generation; the new session was rolled back." }
+        : { ok: false, ...withHandOver, code: "attention_required", status: "attention_required", message: "Fresh launch could not persist a new occupant generation and the new process could not be confirmed stopped; the seat requires attention.", sessionName: canonicalSessionName, sessionId: launch.session.id };
     }
     this.activityOracle?.declareOccupantSwap(node.id, generation);
 
@@ -1663,14 +1698,14 @@ export class SeatLifecycleService {
       });
       return compensation === "zero"
         ? {
-            ok: false,
+            ok: false, ...withHandOver,
             code: "startup_failed",
             status: "failed",
             message: `Fresh startup failed and was rolled back to zero live session/binding: ${startupErrors.join("; ")}`,
             warnings: withSourceWarnings(startupResult.warnings),
           }
         : {
-            ok: false,
+            ok: false, ...withHandOver,
             code: "attention_required",
             status: "attention_required",
             message: `Fresh startup failed and the new process could not be confirmed stopped; the seat requires attention: ${startupErrors.join("; ")}`,
@@ -1734,7 +1769,7 @@ export class SeatLifecycleService {
 
     if (attentionRequired) {
       return {
-        ok: false,
+        ok: false, ...withHandOver,
         code: startupResult.ok ? "runtime_identity_unverified" : "attention_required",
         status: "attention_required",
         message: startupResult.ok
@@ -1748,7 +1783,7 @@ export class SeatLifecycleService {
     }
 
     return {
-      ok: true,
+      ok: true, ...withHandOver,
       seat,
       status: "ready",
       sessionName: canonicalSessionName,
@@ -1761,6 +1796,16 @@ export class SeatLifecycleService {
       supersededSessionIds,
       warnings: withSourceWarnings(startupResult.warnings),
     };
+  }
+
+  /** workspaces-o9o.7: hands what the stopped occupant took, or may have taken, to the fresh one (MessageHandOff.handOverFromRetiringOccupant). */
+  private handOverFromRetiringOccupant(seat: string, handOverSince: string | undefined, launchBeganAt: string, retiringGeneration: string | null): LaunchHandOver {
+    const since = handOverSince === undefined ? launchBeganAt : new Date(Date.parse(handOverSince)).toISOString();
+    const base = { since, sinceSource: handOverSince === undefined ? "launch_began" as const : "hand_over_since" as const };
+    const handOff = this.tmuxAdapter.messageHandOff;
+    if (!handOff) return { ...base, carried: [], reissued: [], notHandedOver: [], skipped: "the message pump is off (transport.message_pump), so nothing here tracks what the old occupant took" };
+    const handed = handOff.handOverFromRetiringOccupant(seat, since, (retiringGeneration ?? "unknown").slice(0, 8));
+    return { ...base, carried: handed.carried.map((c) => ({ id: c.id, original: c.original, gateRecordedAt: c.gateRecordedAt })), reissued: [...handed.reissued], notHandedOver: [...handed.notHandedOver] };
   }
 
   /**

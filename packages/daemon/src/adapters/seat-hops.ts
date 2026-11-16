@@ -257,6 +257,9 @@ export class ClaudeSeatHop implements LastHop {
     const text = markedText(message, this.deps.rows);
     if (text === null) return unmarked;
     const id = message.ids[0];
+    // workspaces-o9o.7: the socket types nothing, so it never queues on the guard, but it must not write into an occupant that a lifecycle operation
+    // (a `rig seat launch --fresh --stop`, a handover, a restore) is replacing: that session is about to die with the text. It pauses as a paste does.
+    if (this.deps.guard.heldByAnotherLifecycle?.(message.seat)) return { kind: "paused", reason: "busy" };
     const eligible = await this.deps.eligibility(message.seat);
     if (eligible.ok) {
       const lastSocketWriteMs = this.deps.rows.lastSocketWriteMs(id);

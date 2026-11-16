@@ -374,7 +374,11 @@ not have to tear one down to change it, and you rarely have to start from nothin
   `rig seat launch <session> --fresh --stop`.
 - **`rig seat launch <seat> --fresh --reason <why>`** — deliberately create a blank occupant for
   exactly one existing seat. It uses no resume, fork, rebuild, snapshot, or restore packet;
-  siblings and durable work stay put, and unmanaged ambiguity refuses.
+  siblings and durable work stay put, and unmanaged ambiguity refuses. With `--stop`, nothing is
+  delivered to the old occupant once the launch starts, and messages it took from
+  `--hand-over-since <time>` on (default: when the launch began) are re-delivered to the fresh one,
+  labelled with the original id. Pass the time of your own pre-relaunch check: the default misses
+  what arrived between that check and the launch.
 - **`rig add`** / **`rig expand`** — graft one more member, or a whole new pod, onto a rig that is
   already running. `rig add` takes the rig's name or ID; a name two active rigs share is refused
   with `rig_ambiguous` and the candidates. `rig grow --new-pod` and `rig expand` are one ingress; choose by input shape.

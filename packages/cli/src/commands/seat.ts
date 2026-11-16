@@ -876,6 +876,7 @@ resume/successor launch reads it at call time. Examples:
     .option("--reason <text>", "Audit reason (required when executing, optional with --plan)")
     .option("--plan", "Preview this fresh launch without changing any seat or starting tmux")
     .option("--stop", "Stop the current live managed occupant before launching fresh")
+    .option("--hand-over-since <time>", "Messages the stopped occupant took from this time on (ISO 8601, e.g. 2026-11-15T23:06:06Z) are re-delivered to the fresh one. Default: the moment this launch began, which misses anything taken between your own pre-relaunch check and the launch: pass your check's time")
     .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; snapshot:<snapshot-id>: replay that snapshot's copy of the seat's startup files (checked before anything is stopped); stored: replay the startup files saved by the seat's last successful launch")
     .option("--operator <address>", "Operator recorded on the audit event")
     .option("--json", "JSON output for agents")
@@ -897,6 +898,10 @@ them unchanged. --startup-from stored replays them instead of reading the spec. 
 created before OpenRig recorded spec sources, and a seat the spec does not declare
 (one added with rig add), replay them too and say so in a warning.
 Resume never re-reads the spec: the conversation already holds the text it was given.
+From the moment launch starts, nothing is delivered to the seat's old occupant. Once it is
+stopped, every message it took from --hand-over-since on goes to the fresh occupant as a
+labelled re-delivery naming the original id (the old one may have acted on it), and any
+message already attempted on it goes again. The result names the since-time used.
 Preview is a read-only snapshot, not a reservation or a native readiness check.
 A successful preview exits 0; inspect launchable to decide whether launch is allowed.
 Unreadable tmux produces complete:false and unknown eligibility unless already blocked.
@@ -904,8 +909,9 @@ Examples:
   rig seat launch dev.impl --fresh --plan --json
   rig seat launch dev-impl@my-rig --fresh --reason "deliberate blank restart"
   rig seat launch dev.impl --fresh --stop --reason "replace managed occupant" --json
-  rig seat launch dev.impl --fresh --stop --startup-from stored --reason "keep the running persona"`)
-    .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; startupFrom?: string; operator?: string; json?: boolean }) => {
+  rig seat launch dev.impl --fresh --stop --startup-from stored --reason "keep the running persona"
+  rig seat launch dev.impl --fresh --stop --hand-over-since 2026-11-15T23:06:06Z --reason "relaunch after check"`)
+    .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; startupFrom?: string; handOverSince?: string; operator?: string; json?: boolean }) => {
       if (opts.startupFrom !== undefined && parseStartupFromArg(opts.startupFrom) === null) {
         const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes ${STARTUP_FROM_HELP} (got "${opts.startupFrom}").` };
         if (opts.json) console.log(JSON.stringify(error, null, 2));
@@ -926,6 +932,7 @@ Examples:
         stop: opts.stop === true,
         operator: opts.operator,
         ...(opts.startupFrom ? { startupFrom: opts.startupFrom } : {}),
+        ...(opts.handOverSince !== undefined && !opts.plan ? { handOverSince: opts.handOverSince } : {}),
       }, opts, (data) => {
         if (opts.plan) {
           console.log(`Fresh launch preview: ${String(data["sessionName"])} (no changes made).`);
@@ -948,6 +955,12 @@ Examples:
         console.log(`Startup policy: ${String(data["startupPolicyHash"])}; superseded sessions: ${superseded?.length ?? 0}.`);
         const source = data["startupSource"] as StartupSourceReport | undefined;
         if (source) console.log(describeStartupSource(source));
+        const handOver = data["handOver"] as { since: string; sinceSource: string; carried: unknown[]; reissued: unknown[]; notHandedOver: string[]; skipped?: string } | undefined;
+        if (handOver) {
+          console.log(`Messages handed to the fresh occupant (taken since ${handOver.since}, ${handOver.sinceSource === "hand_over_since" ? "--hand-over-since" : "when this launch began; pass --hand-over-since <your check's time> to reach further back"}): ${handOver.carried.length} re-delivered, ${handOver.reissued.length} sent again.`);
+          if (handOver.notHandedOver.length > 0) console.log(`Not handed over (this seat has no message pump): ${handOver.notHandedOver.join(", ")}.`);
+          if (handOver.skipped) console.log(`Nothing handed over: ${handOver.skipped}.`);
+        }
         console.log("No continuity source was used; siblings and durable work were preserved.");
       });
     });
