@@ -60,10 +60,10 @@ async function prefGitDir(): Promise<string> {
 
 /** Run 'git <args>' through PATH lookup, as a seat does, under real bash via the shim's shebang. A loop is
  * cut off by the timeout and shows as a signal. */
-function runGit(args: string[], pathDirs: string[], cwd: string) {
+function runGit(args: string[], pathDirs: string[], cwd: string, extraEnv: Record<string, string> = {}) {
   const r = spawnSync("git", args, {
     cwd,
-    env: { ...process.env, PATH: pathDirs.join(path.delimiter) },
+    env: { ...process.env, PATH: pathDirs.join(path.delimiter), ...extraEnv },
     timeout: 5000,
   });
   return { status: r.status, signal: r.signal, stdout: r.stdout?.toString() ?? "", stderr: r.stderr?.toString() ?? "" };
@@ -244,6 +244,158 @@ describe("git-worktree-shim", () => {
         );
       }
     }
+  });
+
+  // workspaces-o9o.5: when the redirect fires, git must receive the caller's argv with only the path word
+  // rewritten. At 6a6c796e the shim rebuilt the call from the positional words alone, so -b/-B and every
+  // flag were dropped; it also parsed --track and --guess-remote as taking a value (git 2.43.0's
+  // `git worktree add -h` lists both as booleans), and rewrote an inside path given relative.
+  describe("worktree add redirect: only the path word changes", () => {
+    const NOT_CHECKED = "openrig git shim: worktree path not checked (unrecognised option ";
+
+    /** A git stand-in that prints its argv NUL-separated; rev-parse answers the physical cwd as the toplevel. */
+    async function recordingGitDir(): Promise<string> {
+      const dir = path.join(tmp, "recording");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "git"),
+        "#!/bin/sh\nif [ \"$1\" = rev-parse ]; then pwd -P; exit 0; fi\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done\n",
+        { mode: 0o755 },
+      );
+      return dir;
+    }
+
+    async function setup() {
+      const shim = await ensureGitWorktreeShim(tmp);
+      const top = path.join(tmp, "top");
+      await fs.mkdir(top, { recursive: true });
+      const realTop = await fs.realpath(top);
+      const outside = path.join(tmp, "elsewhere", "wt");
+      const redirected = path.join(realTop, ".rig-worktrees", "wt");
+      const pathDirs = [shim, await recordingGitDir(), "/usr/bin", "/bin"];
+      const run = (args: string[]) => {
+        const r = runGit(["worktree", "add", ...args], pathDirs, top);
+        return { ...r, argv: r.stdout.split("\0").slice(0, -1) };
+      };
+      return { top, realTop, outside, redirected, run };
+    }
+
+    // One row per option form in git 2.43.0's `git worktree add -h`, the --no-* forms and the attached forms.
+    const KNOWN_FORMS: string[][] = [
+      ["-f"], ["--force"], ["--no-force"],
+      ["-b", "feat"], ["-bfeat"], ["-B", "feat"], ["-Bfeat"],
+      ["--orphan"], ["--no-orphan"],
+      ["-d"], ["--detach"], ["--no-detach"],
+      ["--checkout"], ["--no-checkout"],
+      ["--lock"], ["--no-lock"], ["--lock", "--reason", "why not"], ["--lock", "--reason=why"], ["--no-reason"],
+      ["-q"], ["--quiet"], ["--no-quiet"],
+      ["--track", "-b", "feat"], ["--no-track"],
+      ["--guess-remote", "-b", "feat"], ["--no-guess-remote"],
+    ];
+
+    for (const form of KNOWN_FORMS) {
+      it(`'${form.join(" ")}' before an outside path: every word reaches git, only the path is rewritten`, async () => {
+        const { outside, redirected, run } = await setup();
+        const r = run([...form, outside]);
+        expect(r.argv).toEqual(["worktree", "add", ...form, redirected]);
+        expect(r.stderr).toBe("");
+        expect(r.status).toBe(0);
+      });
+    }
+
+    it("keeps the commit-ish and options after the path, in order", async () => {
+      const { outside, redirected, run } = await setup();
+      const r = run(["-b", "feat", outside, "HEAD~0", "--quiet"]);
+      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", redirected, "HEAD~0", "--quiet"]);
+      expect(r.stderr).toBe("");
+    });
+
+    it("after '--' the next word is the path, even when it starts with a dash", async () => {
+      const { realTop, run } = await setup();
+      const r = run(["-b", "feat", "--", "-wt"]);
+      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", "--", path.join(realTop, ".rig-worktrees", "-wt")]);
+      expect(r.stderr).toBe("");
+    });
+
+    for (const unknown of [["--det"], ["-fq"], ["--lock", "--rea", "x"], ["--some-future-option"]]) {
+      it(`an option the shim does not know ('${unknown.join(" ")}') passes through unredirected, with one stderr line`, async () => {
+        const { outside, run } = await setup();
+        const r = run([...unknown, outside]);
+        expect(r.argv).toEqual(["worktree", "add", ...unknown, outside]);
+        const word = unknown.find(w => w.startsWith("-") && !["--lock"].includes(w));
+        expect(r.stderr).toBe(`${NOT_CHECKED}${word})\n`);
+        expect(r.status).toBe(0);
+      });
+    }
+
+    it("an inside path given absolute or relative reaches git byte-for-byte unchanged", async () => {
+      const { realTop, run } = await setup();
+      for (const inside of [path.join(realTop, ".rig-worktrees", "in"), ".rig-worktrees/in", "./.rig-worktrees/in"]) {
+        const r = run(["-b", "feat", inside]);
+        expect(r.argv, inside).toEqual(["worktree", "add", "-b", "feat", inside]);
+        expect(r.stderr, inside).toBe("");
+      }
+    });
+
+    it("from a cwd reached through a symlink (macOS /tmp), a relative inside path is still recognised as inside", async () => {
+      const { top, realTop } = await setup();
+      const linked = path.join(tmp, "linked-top");
+      await fs.symlink(realTop, linked);
+      const shim = await ensureGitWorktreeShim(tmp);
+      // A shell that cd'd through the symlink exports the logical PWD; without it bash falls back to the
+      // physical getcwd() and the symlink is never seen.
+      const r = runGit(["worktree", "add", "-b", "feat", ".rig-worktrees/in"], [shim, await recordingGitDir(), "/usr/bin", "/bin"], linked, { PWD: linked });
+      expect(top).not.toBe(linked);
+      expect(r.stdout.split("\0").slice(0, -1)).toEqual(["worktree", "add", "-b", "feat", ".rig-worktrees/in"]);
+      expect(r.stderr).toBe("");
+    });
+
+    it("'--' with nothing after it passes through to git unchanged", async () => {
+      const { run } = await setup();
+      const r = run(["-b", "feat", "--"]);
+      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", "--"]);
+      expect(r.stderr).toBe("");
+      expect(r.status).toBe(0);
+    });
+
+    // bash 3.2 (the macOS system bash) differs from the host's 5.x in ways the host rows cannot see: in 3.2 a
+    // backslash in a ${var//pat/rep} replacement stays in the result. Same assertions, in the 3.2 image.
+    it.skipIf(!dockerImagePresent("bash:3.2"))(
+      "bash:3.2: a relative './' inside path is unchanged and '-b feat <outside>' keeps -b (NOT RUN without docker and the bash:3.2 image)",
+      async () => {
+        const shim = await ensureGitWorktreeShim(tmp);
+        const rec = await recordingGitDir();
+        const r = spawnSync("docker", [
+          "run", "--rm", "--init", "--network", "none",
+          "-v", `${shim}:/s/rig-bin:ro`, "-v", `${rec}:/s/rec:ro`, "bash:3.2",
+          "bash", "-c",
+          "mkdir -p /top && cd /top && export PATH=/s/rig-bin:/s/rec:/usr/local/bin:/usr/bin:/bin; " +
+            "timeout -s KILL 5 git worktree add -b feat ./.rig-worktrees/in; printf '\\n'; " +
+            "timeout -s KILL 5 git worktree add -b feat /elsewhere/wt",
+        ], { timeout: 60000 });
+        expect(r.status).toBe(0);
+        expect(r.stderr.toString()).toBe("");
+        const [inside, outside] = r.stdout.toString().split("\n").map(line => line.split("\0").slice(0, -1));
+        expect(inside).toEqual(["worktree", "add", "-b", "feat", "./.rig-worktrees/in"]);
+        expect(outside).toEqual(["worktree", "add", "-b", "feat", "/top/.rig-worktrees/wt"]);
+      },
+    );
+
+    it("real git: 'worktree add -b feat <outside>' creates branch feat, checked out in the redirected worktree", async () => {
+      const repo = path.join(tmp, "repo");
+      await fs.mkdir(repo);
+      const git = path.join(realGitDir(), "git");
+      expect(spawnSync(git, ["init", "-q", repo]).status).toBe(0);
+      expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
+      await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
+      const shim = await ensureGitWorktreeShim(tmp);
+      const r = runGit(["worktree", "add", "-b", "feat", path.join(tmp, "outside-b")], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
+      expect(r.status, r.stderr).toBe(0);
+      const wt = path.join(repo, ".rig-worktrees", "outside-b");
+      const branch = spawnSync(git, ["-C", wt, "branch", "--show-current"]).stdout.toString().trim();
+      expect(branch).toBe("feat");
+      expect(existsSync(path.join(tmp, "outside-b"))).toBe(false);
+    });
   });
 
   it("codex and claude seats both get the shim dir FIRST on PATH", async () => {

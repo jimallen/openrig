@@ -44,23 +44,38 @@ real_git() {
 }
 real="\$(real_git)" || exit \$?
 if [ "\$#" -ge 2 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
-  # parse: git worktree add [-f] [-b branch] <path> [commit-ish]
-  args=(); i=2
-  while [ \$i -lt \$# ]; do
-    a="\${@:\$((i+1)):1}"
+  # Find the <path> word by git 2.43.0's grammar ('git worktree add -h'); every other
+  # word reaches git unchanged. -b, -B and --reason take the next word as a value.
+  # An option not listed here (an abbreviation, a cluster, a newer git's option) is
+  # never guessed at: the call goes through unredirected, with one line saying so.
+  words=("\$@"); n=\$#; i=2; pathi=""; unknown=""
+  while [ "\$i" -lt "\$n" ]; do
+    a="\${words[\$i]}"
     case "\$a" in
-      -f|--force|-q|--quiet|--no-track|-d|--detach|--lock|--orphan) i=\$((i+1)) ;;
-      -b|-B|--track|--guess-remote) i=\$((i+2)) ;;
-      *) args+=("\$a"); i=\$((i+1)) ;;
+      --) if [ \$((i+1)) -lt "\$n" ]; then pathi=\$((i+1)); fi; break ;;
+      -b|-B|--reason) i=\$((i+2)) ;;
+      -b?*|-B?*|--reason=*) i=\$((i+1)) ;;
+      -f|--force|--no-force|-d|--detach|--no-detach|-q|--quiet|--no-quiet|--orphan|--no-orphan|\\
+      --checkout|--no-checkout|--lock|--no-lock|--no-reason|--track|--no-track|--guess-remote|--no-guess-remote)
+        i=\$((i+1)) ;;
+      -?*) unknown="\$a"; break ;;
+      *) pathi=\$i; break ;;
     esac
   done
-  target="\${args[0]:-}"
+  if [ -n "\$unknown" ]; then
+    printf '%s\\n' "openrig git shim: worktree path not checked (unrecognised option \$unknown)" >&2
+    exec "\$real" "\$@"
+  fi
+  target="\${pathi:+\${words[\$pathi]}}"
   toplevel="\$("\$real" rev-parse --show-toplevel 2>/dev/null || true)"
-  if [ -z "\$toplevel" ]; then exec "\$real" "\$@"; fi
-  if [ -n "\$target" ] && [[ "\$target" != "\$toplevel/.rig-worktrees"/* ]]; then
-    args[0]="\$toplevel/.rig-worktrees/\$(basename "\$target")"
-    mkdir -p "\$toplevel/.rig-worktrees"
-    exec "\$real" worktree add "\${args[@]}"
+  if [ -n "\$target" ] && [ -n "\$toplevel" ]; then
+    case "\$target" in /*) abs="\$target" ;; *) abs="\$(pwd -P)/\$target" ;; esac
+    while [[ "\$abs" == */./* ]]; do abs="\${abs%%/./*}/\${abs#*/./}"; done
+    if [[ "\$abs" != "\$toplevel/.rig-worktrees/"* ]]; then
+      words[\$pathi]="\$toplevel/.rig-worktrees/\$(basename -- "\$target")"
+      mkdir -p "\$toplevel/.rig-worktrees"
+      exec "\$real" "\${words[@]}"
+    fi
   fi
 fi
 exec "\$real" "\$@"
