@@ -47,6 +47,7 @@ import { AgentSpecDisplay } from "./AgentSpecDisplay.js";
 import { RigSpecDisplay } from "./RigSpecDisplay.js";
 import { buildSetupPrompt } from "../lib/build-setup-prompt.js";
 import { copyText } from "../lib/copy-text.js";
+import { findShippedAgentEntry } from "../lib/agent-ref.js";
 
 interface LibraryReviewProps {
   entryId: string;
@@ -104,6 +105,8 @@ function LibraryRigReviewContent({ review }: { review: LibraryRigReview }) {
   const reviewEdges = review.edges ?? [];
 
   const resolveMemberAgent = (agentRef: string) => {
+    // A shipped: ref names a persona in the running install's specs folder: its builtin entry, matched by path.
+    if (agentRef.startsWith("shipped:")) return findShippedAgentEntry(agentRef, agentEntries);
     if (!agentRef.startsWith("local:")) return null;
     const refPath = agentRef.slice("local:".length);
 

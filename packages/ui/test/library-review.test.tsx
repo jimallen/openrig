@@ -233,6 +233,58 @@ describe("LibraryReview", () => {
     });
   });
 
+  // workspaces-o9o.1: a member's `shipped:<rel>` ref names a persona in the running install's specs folder, which the spec
+  // library indexes as its builtin root, so the builtin entry whose relativePath is `<rel>/agent.yaml` is that persona.
+  function shippedRig(agentEntries: unknown[]) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/specs/library?kind=agent") return new Response(JSON.stringify(agentEntries), { status: 200 });
+      if (url === "/api/specs/library/shipped-rig/review") {
+        return new Response(JSON.stringify({
+          sourceState: "library_item", kind: "rig", name: "team", version: "0.2", format: "pod_aware",
+          pods: [{ id: "dev", label: "Dev", members: [{ id: "impl", agentRef: "shipped:agents/development/implementer", runtime: "claude-code", profile: "default" }], edges: [] }],
+          edges: [], graph: { nodes: [], edges: [] }, raw: "name: team\n", libraryEntryId: "shipped-rig",
+          sourcePath: "/home/u/.agents-release/current/rigs/team/rig.yaml",
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+  const entry = (id: string, sourceType: string, relativePath: string, name = "implementer") => ({
+    id, kind: "agent", name, version: "1.0", sourceType, sourcePath: `/install/daemon/specs/${relativePath}`, relativePath, updatedAt: new Date().toISOString(),
+  });
+  async function openShippedMember(agentEntries: unknown[]) {
+    vi.stubGlobal("fetch", shippedRig(agentEntries));
+    render(createAppTestRouter({
+      initialPath: "/specs/library/shipped-rig",
+      routes: [
+        { path: "/specs/library/shipped-rig", component: () => <LibraryReview entryId="shipped-rig" /> },
+        { path: "/specs/library/builtin-implementer", component: () => <div data-testid="shipped-agent-drilldown">implementer</div> },
+        { path: "/specs/library/user-implementer", component: () => <div data-testid="wrong-agent-drilldown">user copy</div> },
+      ],
+    }));
+    await waitFor(() => { expect(screen.getByTestId("library-review-rig")).toBeDefined(); });
+    fireEvent.click(screen.getByTestId("lib-tab-configuration"));
+    await waitFor(() => { expect(screen.getByTestId("lib-member-open-agent-dev-impl")).toBeDefined(); });
+    fireEvent.click(screen.getByTestId("lib-member-open-agent-dev-impl"));
+  }
+
+  it("opens the builtin agent a shipped: member ref names, matched by its path in the specs folder", async () => {
+    await openShippedMember([
+      entry("user-implementer", "user_file", "agents/implementer/agent.yaml"),
+      entry("builtin-implementer", "builtin", "agents/development/implementer/agent.yaml"),
+    ]);
+    await waitFor(() => { expect(screen.getByTestId("shipped-agent-drilldown")).toBeDefined(); });
+    expect(screen.queryByTestId("wrong-agent-drilldown")).toBeNull();
+  });
+
+  it("CONTROL: a shipped: ref opens nothing when no builtin entry has its path, even if a user entry shares its name", async () => {
+    await openShippedMember([entry("user-implementer", "user_file", "agents/development/implementer/agent.yaml")]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId("wrong-agent-drilldown")).toBeNull();
+    expect(screen.getByTestId("library-review-rig")).toBeDefined();
+  });
+
   it("renders workflow review with topology graph + steps + Activate as Lens (Workflows in Spec Library v0)", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

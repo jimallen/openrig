@@ -8,22 +8,9 @@ import { RuntimeBadge } from "./graphics/RuntimeMark.js";
 // wrapped — click → SubSpecPreview in drawer (referenced agent spec). Per
 // content-drawer.md L31 sub-spec auto-open trigger contract.
 import { SubSpecTrigger } from "./drawer-triggers/SubSpecTrigger.js";
-
-// agentRef shape examples: "local:agents/impl", "local:agents/orch-lead",
-// "fork:agents/qa@0.2.0", "builtin:agents/driver". The leg after agents/ is
-// the spec name; everything before agents/ is the source qualifier.
-function parseAgentRef(agentRef: string): { specName: string; source: "builtin" | "user_file" | "fork" } {
-  const trimmed = agentRef.startsWith("local:") ? agentRef.slice("local:".length) : agentRef;
-  const stripQual = trimmed.replace(/^(builtin|user|fork):/, "");
-  const after = stripQual.startsWith("agents/") ? stripQual.slice("agents/".length) : stripQual;
-  const specName = after.split("@")[0] ?? after;
-  const source = agentRef.startsWith("fork:")
-    ? "fork"
-    : agentRef.startsWith("builtin:")
-      ? "builtin"
-      : "user_file";
-  return { specName, source };
-}
+// agentRef shape examples: "local:agents/impl", "shipped:agents/development/implementer", "fork:agents/qa@0.2.0",
+// "builtin:agents/driver" (lib/agent-ref.ts).
+import { describeAgentRef } from "../lib/agent-ref.js";
 
 type Tab = "topology" | "configuration" | "environment" | "yaml";
 
@@ -114,7 +101,7 @@ export function RigSpecDisplay({ review, yaml, testIdPrefix = "", yamlTestId, sh
                       </td>
                       <td className="py-1 text-on-surface-variant">
                         {(() => {
-                          const parsed = parseAgentRef(m.agentRef);
+                          const parsed = describeAgentRef(m.agentRef);
                           return (
                             <SubSpecTrigger
                               data={{

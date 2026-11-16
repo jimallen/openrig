@@ -126,7 +126,8 @@ skills/<name>/                 — a shared skill the author's bundle.yaml decla
 - `bundle.yaml` is the manifest — always present, always at the root
 - `rig.yaml` is the rig spec — rewritten during assembly with vendored `agent_ref` paths
 - Agent directories are vendored copies of the original agent specs with all their resources
-- Import refs are rewritten from the original `local:` or `path:` paths to bundle-relative `local:` paths
+- Import refs are rewritten from the original `local:`, `path:` or `shipped:` refs to bundle-relative `local:` paths (a
+  `shipped:` persona is vendored from the specs folder of the OpenRig install that builds the bundle)
 - All file paths within the archive are safe relative paths (no `..`, no absolute, no symlinks)
 
 ---

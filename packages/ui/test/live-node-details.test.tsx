@@ -581,6 +581,37 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
     });
   });
 
+  // workspaces-o9o.1: a seat whose agent_ref is `shipped:<rel>` shows the builtin agent spec at `<rel>/agent.yaml` in the
+  // library (the running install's specs folder), matched by path, not "No agent spec available".
+  function mockShipped(agentRef: string, entries: Array<Record<string, unknown>>) {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (typeof url === "string" && url.includes("/nodes/")) return { ok: true, json: async () => ({ ...NODE_DETAIL, agentRef }) };
+      if (typeof url === "string" && url === "/api/specs/library?kind=agent") return { ok: true, json: async () => entries };
+      if (typeof url === "string" && url.includes("/api/specs/library/shipped-op/review")) {
+        return { ok: true, json: async () => ({ kind: "agent", name: "operator.agent", version: "1.0.0", raw: "", sourcePath: "/install/daemon/specs/rigs/launch/kernel/agents/operator/agent/agent.yaml", sourceState: "library_item", libraryEntryId: "shipped-op", description: null, profiles: [], resources: { plugins: [], skills: [], guidance: [], hooks: [] }, startup: { files: [], actions: [] } }) };
+      }
+      if (typeof url === "string" && url.startsWith("/api/specs/library")) return { ok: true, json: async () => [] };
+      if (typeof url === "string" && url === "/api/plugins") return { ok: true, json: async () => [] };
+      return { ok: true, json: async () => ({}) };
+    });
+  }
+  const OP_ENTRY = { id: "shipped-op", kind: "agent", name: "operator.agent", version: "1.0.0", sourceType: "builtin", sourcePath: "/install/daemon/specs/rigs/launch/kernel/agents/operator/agent/agent.yaml", relativePath: "rigs/launch/kernel/agents/operator/agent/agent.yaml" };
+
+  it("Details tab: a shipped: agentRef shows the builtin agent spec at that path (its name need not match the folder)", async () => {
+    mockShipped("shipped:rigs/launch/kernel/agents/operator/agent", [OP_ENTRY]);
+    renderDetails();
+    fireEvent.click(await screen.findByTestId("live-tab-details"));
+    await waitFor(() => { expect(screen.getByTestId("live-agent-plugins-section")).toBeDefined(); });
+    expect(screen.queryByTestId("agent-spec-unavailable")).toBeNull();
+  });
+
+  it("CONTROL: a shipped: agentRef whose path no builtin entry has shows unavailable", async () => {
+    mockShipped("shipped:rigs/launch/kernel/agents/queue/worker", [OP_ENTRY]);
+    renderDetails();
+    fireEvent.click(await screen.findByTestId("live-tab-details"));
+    await waitFor(() => { expect(screen.getByTestId("agent-spec-unavailable")).toBeDefined(); });
+  });
+
   // Startup files surface inside Details > Startup section.
   it("Details tab: Startup section shows startup files", async () => {
     mockNodeDetail(NODE_DETAIL);

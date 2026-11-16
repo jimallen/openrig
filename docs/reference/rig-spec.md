@@ -517,9 +517,12 @@ All three must be present together. Any partial combination is a validation erro
 
 ### agent_ref Rules
 
-- Must start with `local:` or `path:`
+- Must start with `local:`, `path:` or `shipped:` (or be `builtin:terminal`, for a terminal node)
 - `local:` paths are relative to the rig spec file's directory (the rig root)
 - `path:` paths are absolute filesystem paths
+- `shipped:` paths are relative to the specs folder of the running OpenRig install (`<install>/daemon/specs`, or
+  `packages/daemon/specs` in a checkout), for example `shipped:rigs/launch/kernel/agents/operator/agent`. They may not
+  leave that folder: an absolute path, a `..` that climbs out, or a symlink inside it that points outside is refused
 - The referenced path must contain an `agent.yaml` file
 - Exception: `builtin:terminal` for terminal nodes
 
@@ -797,8 +800,10 @@ spec can pass `rig spec validate` and then fail at preflight or import. Run
 5. Member IDs must not contain dots and must be unique within their pod.
 6. `agent_ref`, `profile`, `runtime`, and `cwd` are required for every member.
 7. Terminal nodes require the exact triple: `runtime: terminal`, `agent_ref: builtin:terminal`, `profile: none`.
-8. `agent_ref` must start with `local:` (relative) or `path:` (absolute), except `builtin:terminal`.
-9. `local:` refs must be relative paths. `path:` refs must be absolute paths.
+8. `agent_ref` must start with `local:` (relative), `path:` (absolute) or `shipped:` (relative to the installed OpenRig's
+   specs folder), except `builtin:terminal`.
+9. `local:` refs must be relative paths. `path:` refs must be absolute paths. `shipped:` refs must be relative paths that
+   do not climb out of the specs folder.
 10. `restore_policy` must be one of: `resume_if_possible`, `relaunch_fresh`, `checkpoint_only`.
 11. Pod-local edges use unqualified member IDs. Cross-pod edges use `pod.member` format.
 12. Cross-pod edges must reference different pods.
