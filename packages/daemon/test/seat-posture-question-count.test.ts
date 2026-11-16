@@ -57,7 +57,7 @@ function seat() {
     { tmuxAdapter: {} as never, activityStore: store, now: new Date(T0 + ms) },
   ))[0]!.seatPosture!;
   const stillAsking = () => ports.stillAsking(node.id, null);
-  return { store, nodeId: node.id, prompt, start, ask, end, holdRecords, posture, stillAsking };
+  return { store, nodeId: node.id, hook, prompt, start, ask, end, holdRecords, posture, stillAsking };
 }
 
 describe("workspaces-o9o.59: a follow-up question in the same turn is not masked by the earlier question's late end", () => {
@@ -151,6 +151,28 @@ describe("workspaces-o9o.59: a follow-up question in the same turn is not masked
     s.start("toolu_B", 40_100);
     s.end("toolu_B", 90_000);
     expect((await s.posture(91_000)).kind).toBe("busy");
+  });
+
+  it("both questions recorded only by the hold (the relay's PermissionRequests lost): A's late end leaves B waiting", async () => {
+    const s = seat();
+    s.prompt(0);
+    s.start("toolu_A", 1_000);
+    s.holdRecords(1_020);
+    s.holdRecords(40_000);
+    s.end("toolu_A", 40_050);
+    expect((await s.posture(41_000)).line).toMatch(WAITING);
+  });
+
+  it("another tool's end is not a question's end: a Read ending in the turn does not pay for B's ask", async () => {
+    const s = seat();
+    s.prompt(0);
+    s.start("toolu_A", 1_000);
+    s.ask(1_020);
+    s.hook({ hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "toolu_read" }, 30_000);
+    s.hook({ hook_event_name: "PostToolUse", tool_name: "Read", tool_use_id: "toolu_read" }, 30_100);
+    s.ask(40_000);
+    s.end("toolu_A", 40_050);
+    expect((await s.posture(41_000)).line).toMatch(WAITING);
   });
 
   it("asks of an earlier turn do not count: a new turn's single question is cleared by its own end", async () => {
