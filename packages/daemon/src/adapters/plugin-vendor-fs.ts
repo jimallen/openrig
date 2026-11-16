@@ -17,6 +17,24 @@ function listFiles(dir: string): string[] {
   return files;
 }
 
+/** The top of the git work tree holding `path` (or its nearest existing parent), symlinks resolved; null if none. */
+function gitWorkTreeOf(path: string): string | null {
+  let current = nodePath.resolve(path);
+  while (!fs.existsSync(current)) {
+    const parent = nodePath.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+  current = fs.realpathSync(current);
+  for (;;) {
+    // A work tree's .git is a directory, or a file in a linked worktree or a submodule.
+    if (fs.lstatSync(nodePath.join(current, ".git"), { throwIfNoEntry: false })) return current;
+    const parent = nodePath.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
 export function nodePluginVendorFs(): PluginVendorFs {
   return {
     readFile: (p) => fs.readFileSync(p, "utf-8"),
@@ -32,6 +50,7 @@ export function nodePluginVendorFs(): PluginVendorFs {
       return stat.isFile() ? "file" : "other";
     },
     removeFile: (p) => fs.unlinkSync(p),
+    gitWorkTreeOf,
     statMode: (p) => fs.statSync(p).mode,
     chmod: (p, m) => fs.chmodSync(p, m),
   };

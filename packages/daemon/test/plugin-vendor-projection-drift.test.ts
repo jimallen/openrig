@@ -15,6 +15,7 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
+import { execFileSync } from "node:child_process";
 import { PluginVendorService } from "../src/domain/plugin-vendor-service.js";
 import { nodePluginVendorFs } from "../src/adapters/plugin-vendor-fs.js";
 import { resolvePluginPath, type ProjectionEntry, type ProjectionPlan } from "../src/domain/projection-planner.js";
@@ -304,5 +305,66 @@ describe("o9o.17: global skill targets OpenRig did not write are left alone", ()
     expect(read(nodePath.join(markedRoot, "openrig-skills", "SKILL.md"))).toBe(PACKAGE_TREE["skills/openrig-skills/SKILL.md"]);
     expect(fs.existsSync(nodePath.join(markedRoot, "openrig-skills", "dropped.md"))).toBe(false);
     expect(read(nodePath.join(markedRoot, "openrig-skills", ".openrig-vendor-version"))).toBe(`${VERSION}\n`);
+  });
+});
+
+/** git in `cwd`, isolated from the user's and the system's git config. */
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], {
+    cwd,
+    encoding: "utf-8",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+  });
+}
+
+describe("o9o.17: a global skill target inside a git work tree is the repo's, and is left alone", () => {
+  // Measured on stu 2026-11-16: ~/.agents is a git repo (Jim's) whose tracked skills/rigs carries OpenRig's marker
+  // and Jim's own commits; skills/openrig-skills and skills/refocusing are tracked there too.
+  it("a marked seed tracked and edited in a git repo stays byte-identical and the repo stays clean, while ~/.claude (not in git) is refreshed", async () => {
+    const host = driftedHost();
+    const agentsHome = nodePath.join(host.home, ".agents");
+    const agentsRoot = nodePath.join(agentsHome, "skills");
+    const jims = skill("openrig-skills", "Jim's own edit, committed in his repo");
+    writeTree(nodePath.join(agentsRoot, "openrig-skills"), { "SKILL.md": jims, "notes.md": "tracked, not in the package\n" });
+    writeTree(nodePath.join(agentsRoot, "refocusing"), { "SKILL.md": skill("refocusing", "Jim's refocus"), ".openrig-vendor-version": "0.1.0\n" });
+    git(agentsHome, "init", "-q");
+    git(agentsHome, "add", "-A");
+    git(agentsHome, "commit", "-q", "-m", "jim's skills");
+    const before = git(agentsHome, "ls-files", "-s");
+    const logs: string[] = [];
+
+    await daemonStart(host, logs);
+
+    expect(git(agentsHome, "status", "--porcelain", "--untracked-files=all")).toBe("");
+    expect(git(agentsHome, "ls-files", "-s")).toBe(before);
+    expect(read(nodePath.join(agentsRoot, "openrig-skills", "SKILL.md"))).toBe(jims);
+    expect(read(nodePath.join(agentsRoot, "openrig-skills", ".openrig-vendor-version"))).toBe(`${VERSION}\n`);
+    expect(logs.join("\n")).toContain(`global skill 'openrig-skills' at ${nodePath.join(agentsRoot, "openrig-skills")} is inside the git work tree at ${fs.realpathSync(agentsHome)}`);
+    // Positive control: the same start refreshes the marked seed outside git.
+    expect(read(nodePath.join(host.home, ".claude", "skills", "openrig-skills", "SKILL.md"))).toBe(PACKAGE_TREE["skills/openrig-skills/SKILL.md"]);
+  });
+
+  it("a seed root reached through a symlink into a linked git worktree gets no new seed, and that worktree stays clean", async () => {
+    const host = driftedHost();
+    const repo = nodePath.join(host.home, "dotfiles");
+    writeTree(repo, { "README.md": "dotfiles\n", "agents/skills/.keep": "" });
+    git(repo, "init", "-q");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "init");
+    const linked = nodePath.join(host.home, "dotfiles-linked");
+    git(repo, "worktree", "add", "-q", linked);
+    expect(fs.lstatSync(nodePath.join(linked, ".git")).isFile()).toBe(true);
+    // ~/.agents is a symlink to a folder inside the linked worktree (not its top), and holds no openrig seed yet.
+    const agentsHome = nodePath.join(host.home, ".agents");
+    fs.rmSync(agentsHome, { recursive: true });
+    fs.symlinkSync(nodePath.join(linked, "agents"), agentsHome);
+
+    await daemonStart(host);
+
+    expect(fs.existsSync(nodePath.join(linked, "agents", "skills", "openrig-skills"))).toBe(false);
+    expect(fs.existsSync(nodePath.join(linked, "agents", "skills", "refocusing"))).toBe(false);
+    expect(git(linked, "status", "--porcelain", "--untracked-files=all")).toBe("");
+    // Positive control: ~/.claude is outside git and gets the package's seed.
+    expect(read(nodePath.join(host.home, ".claude", "skills", "refocusing", "SKILL.md"))).toBe(PACKAGE_TREE["skills/refocusing/SKILL.md"]);
   });
 });

@@ -235,7 +235,9 @@ through or land on a symlink; a copy that is itself a symlink is left alone and 
 target version authority (no manifest) is preserved rather than overwritten; invalid or
 conflicting manifest versions are errors. Global skill seeds (`ensureSkillDirGlobally`) follow
 the same rule for a target carrying OpenRig's `.openrig-vendor-version` marker; an unmarked or
-symlinked target is left unchanged. Seat copies under `<cwd>/.claude` and `<cwd>/.codex` are
+symlinked target is left unchanged, and so is any target inside a git work tree (found by
+`PluginVendorFs.gitWorkTreeOf`: a `.git` entry above the target's real path), whose repo is its
+authority. Seat copies under `<cwd>/.claude` and `<cwd>/.codex` are
 re-projected from this folder at each seat start, and do not yet remove files the folder dropped.
 
 `ensureSkillGlobally()` projects a named plugin skill using a vendor-version marker.

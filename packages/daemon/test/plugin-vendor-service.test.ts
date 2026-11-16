@@ -30,6 +30,7 @@ function mockFs(initialFiles?: Record<string, string>) {
     listFiles: (dir: string) => Object.keys(store).filter((k) => k.startsWith(dir + "/")).map((k) => k.slice(dir.length + 1)),
     lstat: (p: string): "file" | "directory" | null => p in store ? "file" : Object.keys(store).some((k) => k.startsWith(p + "/")) ? "directory" : null,
     removeFile: (p: string) => { delete store[p]; },
+    gitWorkTreeOf: (): string | null => null,
     _store: store,
   };
 }

@@ -36,6 +36,11 @@ export interface PluginVendorFs {
   lstat(path: string): "file" | "directory" | "symlink" | "other" | null;
   /** Remove one file or symlink (never its target, never recursively). */
   removeFile(path: string): void;
+  /**
+   * The top of the git work tree that holds `path` (or, when `path` does not exist yet, its nearest existing
+   * parent), with symlinks resolved; null when no git work tree holds it.
+   */
+  gitWorkTreeOf(path: string): string | null;
   /** Source file permission bits (for mode-preserving vendor staging). Optional: no-op if absent. */
   statMode?(path: string): number;
   /** Apply permission bits to a file (for mode-preserving vendor staging). Optional: no-op if absent. */
@@ -271,9 +276,12 @@ export class PluginVendorService {
    * Project one skill folder into the harness-global skill roots under `sourceVersion`
    * authority. A target without OpenRig's version marker was installed another way (for
    * example by skills.sh) and is left unchanged, as is a target that is itself a symlink
-   * (a shared canon). A target carrying the marker is OpenRig's own copy: it is made to
-   * match the running package's folder whatever version the marker says (Jim, 2026-11-16,
-   * workspaces-o9o.17), and a replaced version is logged.
+   * (a shared canon). A target inside a git work tree is left unchanged too, marked or not and
+   * existing or not: the repo is its authority, and a write would erase the owner's tracked edits
+   * and leave the repo dirty (measured on stu 2026-11-16: ~/.agents is a git repo whose tracked
+   * skills/rigs carries OpenRig's marker and Jim's own commits). A target carrying the marker
+   * otherwise is OpenRig's own copy: it is made to match the running package's folder whatever
+   * version the marker says (Jim, 2026-11-16, workspaces-o9o.17), and a replaced version is logged.
    */
   ensureSkillDirGlobally(
     sourceDir: string,
@@ -289,6 +297,11 @@ export class PluginVendorService {
     for (const root of globalSkillRoots) {
       const targetDir = nodePath.join(root, skillName);
       const versionMarker = nodePath.join(targetDir, GLOBAL_VENDOR_VERSION);
+      const workTree = this.fs.gitWorkTreeOf(targetDir);
+      if (workTree !== null) {
+        this.logger(`[plugin-vendor] global skill '${skillName}' at ${targetDir} is inside the git work tree at ${workTree}; the repo is its authority, leaving it unchanged`);
+        continue;
+      }
       if (this.fs.exists(targetDir) || this.fs.lstat(targetDir) !== null) {
         if (this.fs.lstat(targetDir) === "symlink") {
           this.logger(`[plugin-vendor] global skill '${skillName}' at ${targetDir} is a symlink, unversioned/external authority; leaving it unchanged`);
