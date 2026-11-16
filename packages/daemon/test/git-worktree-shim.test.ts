@@ -219,6 +219,31 @@ describe("git-worktree-shim", () => {
         },
       );
     }
+
+    // The alias loop under the macOS bash version: the shim reached again as a file symlink or a hard link from
+    // another PATH dir. The shim is copied into the container's own filesystem first, because a hard link
+    // cannot cross the read-only bind mount.
+    for (const image of ["bash:3.2", "bash:5.2"]) {
+      for (const [kind, link] of [["file symlink", "ln -s"], ["hard link", "ln"]] as const) {
+        it.skipIf(!dockerImagePresent(image))(
+          `${image}: skips the shim held as a ${kind} in another PATH dir, no exec loop (NOT RUN without docker and the ${image} image)`,
+          async () => {
+            const shim = await ensureGitWorktreeShim(tmp);
+            const pref = await prefGitDir();
+            const r = spawnSync("docker", [
+              "run", "--rm", "--init", "--network", "none",
+              "-v", `${shim}:/s/rig-bin:ro`, "-v", `${pref}:/s/pref:ro`, image,
+              "bash", "-c",
+              `mkdir -p /rb /alias && cp /s/rig-bin/git /rb/git && chmod 755 /rb/git && ${link} /rb/git /alias/git && ` +
+                "cd /tmp && PATH=/rb:/alias:/s/pref:/usr/local/bin:/usr/bin:/bin timeout -s KILL 5 git --version",
+            ], { timeout: 60000 });
+            expect(r.status, "137 is the timeout killing an exec loop").toBe(0);
+            expect(r.stdout.toString()).toBe("PREF --version\n");
+            expect(r.stderr.toString()).toBe("");
+          },
+        );
+      }
+    }
   });
 
   it("codex and claude seats both get the shim dir FIRST on PATH", async () => {
