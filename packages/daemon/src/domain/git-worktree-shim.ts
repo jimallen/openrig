@@ -57,8 +57,12 @@ while [ "\$s" -lt "\$n" ]; do
     -C)
       [ \$((s+1)) -lt "\$n" ] || break
       d="\${words[\$((s+1))]}"
+      # cd reads a bare '-' as \$OLDPWD; git reads it as a directory named '-'. The physical dir is printed
+      # with a '/' sentinel, since \$(...) strips a trailing newline that may be part of the name.
+      case "\$d" in -) d="./-" ;; esac
       if [ -n "\$d" ]; then
-        base="\$(unset CDPATH; cd -P -- "\${base:-.}" 2>/dev/null && cd -P -- "\$d" 2>/dev/null && pwd -P)" || exec "\$real" "\$@"
+        base="\$(unset CDPATH; cd -P -- "\${base:-.}" 2>/dev/null && cd -P -- "\$d" 2>/dev/null && printf '%s/' "\$PWD")" || exec "\$real" "\$@"
+        base="\${base%/}"
       fi
       s=\$((s+2)) ;;
     -c|--namespace|--config-env|--attr-source) s=\$((s+2)) ;;
@@ -109,7 +113,10 @@ if [ \$((s+2)) -le "\$n" ] && [ "\${words[\$s]}" = "worktree" ] && [ "\${words[\
     exec "\$real" "\$@"
   fi
   target="\${pathi:+\${words[\$pathi]}}"
-  toplevel="\$(cd -P -- "\${base:-.}" && "\$real" rev-parse --show-toplevel 2>/dev/null || true)"
+  # rev-parse ends its line with a newline and the toplevel's own name may end in one: a '/' sentinel keeps
+  # both from \$(...)'s stripping, then exactly the one rev-parse added is removed.
+  toplevel="\$({ cd -P -- "\${base:-.}" && "\$real" rev-parse --show-toplevel 2>/dev/null && printf /; } || true)"
+  toplevel="\${toplevel%/}"; toplevel="\${toplevel%\$'\\n'}"
   if [ -n "\$target" ] && [ -n "\$toplevel" ]; then
     # Inside is judged on the PHYSICAL path, not its text: the deepest ancestor that exists is
     # resolved with cd -P, the rest is taken by name. A '..' in the part that does not exist yet

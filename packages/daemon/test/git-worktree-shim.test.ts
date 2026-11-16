@@ -811,6 +811,48 @@ describe("git-worktree-shim", () => {
       expect(existsSync(path.join(tmp, "outside-c")), "the out-of-place target is not created").toBe(false);
       expect(r.stderr).not.toMatch(/openrig git shim|unbound variable/);
     });
+
+    // verify-sec, review of 39c68720 (FAIL 1/3): two -C forms escaped .rig-worktrees on real git 2.43.0 and 2.55.0.
+    // Each row runs every distinct real git this host has: the first on PATH, and /usr/bin/git.
+    const realGits = () => [...new Set([realGitDir(), ...(existsSync("/usr/bin/git") ? ["/usr/bin"] : [])])];
+    async function repoAt(dir: string, gitDir: string): Promise<void> {
+      const git = path.join(gitDir, "git");
+      await fs.mkdir(dir, { recursive: true });
+      expect(spawnSync(git, ["init", "-q", dir]).status).toBe(0);
+      expect(spawnSync(git, ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
+      await fs.appendFile(path.join(dir, ".git", "info", "exclude"), ".rig-worktrees/\n");
+    }
+
+    it("real git: 'git -C - worktree add' where '-' is a directory: '-' is that directory, never OLDPWD, and the outside path is redirected", async () => {
+      const shim = await ensureGitWorktreeShim(tmp);
+      for (const [k, gitDir] of realGits().entries()) {
+        const work = path.join(tmp, `dash-${k}`);
+        const repo = path.join(work, "-");
+        await repoAt(repo, gitDir);
+        const elsewhere = path.join(tmp, `oldpwd-${k}`);
+        await fs.mkdir(elsewhere);
+        const r = runGit(["-C", "-", "worktree", "add", "-b", "feat", "../../outside-dash"], [shim, gitDir, "/usr/bin", "/bin"], work, { OLDPWD: elsewhere });
+        expect(r.status, `${gitDir}: ${r.stderr}`).toBe(0);
+        const wt = path.join(await fs.realpath(repo), ".rig-worktrees", "outside-dash");
+        expect(spawnSync(path.join(gitDir, "git"), ["-C", wt, "branch", "--show-current"]).stdout.toString().trim(), gitDir).toBe("feat");
+        expect(existsSync(path.join(tmp, "outside-dash")), `${gitDir}: the out-of-place target is not created`).toBe(false);
+        expect(r.stdout, gitDir).not.toContain(elsewhere);
+        await fs.rm(path.join(repo, ".rig-worktrees"), { recursive: true, force: true });
+      }
+    });
+
+    it("real git: 'git -C <repo whose path ends in a newline> worktree add <outside>': the newline is kept and the path is redirected under that repo", async () => {
+      const shim = await ensureGitWorktreeShim(tmp);
+      for (const [k, gitDir] of realGits().entries()) {
+        const repo = path.join(tmp, `nl-${k}`, "repo\n");
+        await repoAt(repo, gitDir);
+        const r = runGit(["-C", repo, "worktree", "add", "-b", "feat", "../outside-nl"], [shim, gitDir, "/usr/bin", "/bin"], tmp);
+        expect(r.status, `${gitDir}: ${r.stderr}`).toBe(0);
+        const wt = path.join(await fs.realpath(repo), ".rig-worktrees", "outside-nl");
+        expect(spawnSync(path.join(gitDir, "git"), ["-C", wt, "branch", "--show-current"]).stdout.toString().trim(), gitDir).toBe("feat");
+        expect(existsSync(path.join(tmp, `nl-${k}`, "outside-nl")), `${gitDir}: the out-of-place target is not created`).toBe(false);
+      }
+    });
   });
 
   it("codex and claude seats both get the shim dir FIRST on PATH", async () => {
