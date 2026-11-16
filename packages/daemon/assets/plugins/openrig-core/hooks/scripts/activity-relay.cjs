@@ -113,7 +113,18 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
 function questionKeyOf(toolInput) {
   const questions = toolInput && typeof toolInput === "object" ? toolInput.questions : undefined;
   if (!Array.isArray(questions) || questions.length === 0) return null;
-  return crypto.createHash("sha256").update(JSON.stringify(questions)).digest("hex").slice(0, 32);
+  return crypto.createHash("sha256").update(canonicalJson(questions)).digest("hex").slice(0, 32);
+}
+
+// JSON with every object's keys sorted, at every depth; lists keep their order (twin of the daemon's canonicalJson).
+function canonicalJson(value) {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return "{" + entries.map(([k, v]) => JSON.stringify(k) + ":" + canonicalJson(v)).join(",") + "}";
+  }
+  const text = JSON.stringify(value);
+  return text === undefined ? "null" : text;
 }
 
 // OPR.0.4.3.28 B1+B3 — resolve the ingest base URL + token without depending on

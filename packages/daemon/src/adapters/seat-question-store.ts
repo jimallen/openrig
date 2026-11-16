@@ -45,9 +45,11 @@ export class SqliteSeatQuestionStore implements SeatQuestionRepository {
   }
 
   /** The seat moved on: its open questions settle by what happened. The end of an AskUserQuestion call answers its own question (a human's
-   *  answer unless the daemon sent one): with a `questionKey`, only the oldest open question whose questions have that digest, so a late end
-   *  of an earlier question never settles a newer one (workspaces-o9o.56); without one (a relay copy from before), every open question.
-   *  Any other end of the turn abandons what waited. SELECT then CAS per row. */
+   *  answer unless the daemon sent one): with a `questionKey`, the one open question whose questions have that digest, so a late end of an
+   *  earlier question never settles a newer one (workspaces-o9o.56); without one (a relay copy from before), every open question.
+   *  When more than one open question has that digest (the same question asked again while the first is open), the ends can land in either
+   *  order and the digest cannot say whose this is: it settles none of them, and the waiting ones are held as ambiguous, so none is
+   *  auto-answered or confirmed by a guess (review of 00eb2e90d). Any other end of the turn abandons what waited. SELECT then CAS per row. */
   settleFromActivity(nodeId: string, rawEvent: string | null, rawSubtype: string | null, atIso: string, questionKey: string | null = null): number {
     const answered = (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure") && rawSubtype === "AskUserQuestion";
     const ended = rawEvent === "Stop" || rawEvent === "SessionEnd" || rawEvent === "SessionStart" || rawEvent === "UserPromptSubmit";
@@ -55,7 +57,14 @@ export class SqliteSeatQuestionStore implements SeatQuestionRepository {
     const open = this.db.prepare("SELECT id, state, tool_input FROM seat_questions WHERE node_id = ? AND state IN ('waiting', 'held', 'answered_auto') ORDER BY asked_at, rowid")
       .all(nodeId) as Array<{ id: string; state: SeatQuestionState; tool_input: string }>;
     const own = (q: { tool_input: string }): boolean => { try { return questionKeyOf(JSON.parse(q.tool_input)) === questionKey; } catch { return false; } };
-    const settling = answered && questionKey !== null ? open.filter(own).slice(0, 1) : open;
+    const matching = answered && questionKey !== null ? open.filter(own) : null;
+    if (matching && matching.length > 1) {
+      const note = `ambiguous: an AskUserQuestion end matched ${matching.length} identical open questions; none is answered by it`;
+      let held = 0;
+      for (const q of matching) if (q.state === "waiting" && this.settle(q.id, ["waiting"], "held", atIso, note)) held += 1;
+      return held;
+    }
+    const settling = matching ?? open;
     let moved = 0;
     for (const q of settling) {
       const to: SeatQuestionState = q.state === "answered_auto" ? "confirmed_auto" : answered ? "answered_human" : "abandoned";

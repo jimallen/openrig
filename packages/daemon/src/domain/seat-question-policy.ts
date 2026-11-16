@@ -61,12 +61,23 @@ export function planAnswer(toolInput: unknown): AnswerPlan {
 
 /** OF-278 / workspaces-o9o.56: the digest that ties a recorded question to the end of its own AskUserQuestion call: sha256 of the JSON of
  *  tool_input.questions, first 32 hex. Measured on Claude Code 2.1.325: the PermissionRequest that opens the dialog carries no tool_use_id,
- *  and tool_input.questions is the same on PreToolUse, PermissionRequest and PostToolUse. Twin of questionKeyOf in the seat's relay
+ *  and tool_input.questions is the same on PreToolUse, PermissionRequest and PostToolUse. The JSON is canonical (object keys sorted at every
+ *  depth, list order kept), so the order a producer writes keys in never changes the digest. Twin of questionKeyOf in the seat's relay
  *  (assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs; a test holds them equal). Null when the input has no questions. */
 export function questionKeyOf(toolInput: unknown): string | null {
   const questions = toolInput !== null && typeof toolInput === "object" ? (toolInput as { questions?: unknown }).questions : undefined;
   if (!Array.isArray(questions) || questions.length === 0) return null;
-  return createHash("sha256").update(JSON.stringify(questions)).digest("hex").slice(0, 32);
+  return createHash("sha256").update(canonicalJson(questions)).digest("hex").slice(0, 32);
+}
+
+/** JSON with every object's keys sorted, at every depth; lists keep their order. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 /** What a questionKey looks like on the wire; anything else is taken as no key. */

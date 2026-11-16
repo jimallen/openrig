@@ -6,7 +6,8 @@
 // Measured on Claude Code 2.1.325 (interactive, two AskUserQuestion calls in one turn, a hook dumping stdin): the PermissionRequest that
 // opens the dialog carries no tool_use_id, and tool_input.questions is the same on PreToolUse, PermissionRequest and PostToolUse
 // (PostToolUse adds `answers`, and `annotations` when a human answered). So a question is tied to its own end by the content of its
-// questions. Every hook below is built by the REAL scripts (activity-relay.cjs, question-wait.cjs) and goes through the REAL routes,
+// questions. Two IDENTICAL questions open at once cannot be told apart that way (their async ends land in either order), so that case
+// fails closed: the end settles neither and the waiting ones are held (verify-qa review of 00eb2e90d). Every hook below is built by the REAL scripts (activity-relay.cjs, question-wait.cjs) and goes through the REAL routes,
 // on a 2031 clock far from wall clock.
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -141,15 +142,61 @@ describe("OF-278 a question is settled only by the end of its own AskUserQuestio
     expect([state(a.rowId), state(b.rowId)]).toEqual(["answered_human", "waiting"]);
   });
 
-  it("the same question asked twice: the late end of the first settles the first, not the re-ask", async () => {
+  it("the same question asked twice, the FIRST's end lands first: still ambiguous, it settles neither (both held)", async () => {
     await relayed(provider("UserPromptSubmit", null));
     const first = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
     clock += MIN;
     const again = await opens("req-colour-0002", COLOUR, "toolu_colour_0002");
     await ends(COLOUR, "toolu_colour_0001", { "Pick a colour": "Blue" });
-    expect([state(first.rowId), state(again.rowId)]).toEqual(["answered_human", "waiting"]);
+    expect([state(first.rowId), state(again.rowId)]).toEqual(["held", "held"]);
+  });
+
+  it("the same question asked again AFTER the first was settled is not ambiguous: its own end settles it", async () => {
+    await relayed(provider("UserPromptSubmit", null));
+    const first = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
+    await ends(COLOUR, "toolu_colour_0001", { "Pick a colour": "Blue" });
+    clock += MIN;
+    const again = await opens("req-colour-0002", COLOUR, "toolu_colour_0002");
     await ends(COLOUR, "toolu_colour_0002", { "Pick a colour": "Red (Recommended)" });
-    expect(state(again.rowId)).toBe("answered_human");
+    expect([state(first.rowId), state(again.rowId)]).toEqual(["answered_human", "answered_human"]);
+  });
+
+  // verify-qa FAIL of 00eb2e90d (finding 1): the async ends of two IDENTICAL questions can land in either order, so the digest cannot say whose
+  // end it is. Ambiguity fails closed: that end settles neither, and neither is auto-answered or confirmed by it.
+  it("RED (review F1): two identical questions open, the SECOND's end lands first: it settles neither, and neither is auto-answered", async () => {
+    await relayed(provider("UserPromptSubmit", null));
+    const first = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
+    clock += MIN;
+    const second = await opens("req-colour-0002", COLOUR, "toolu_colour_0002");
+    await ends(COLOUR, "toolu_colour_0002", { "Pick a colour": "Blue" });   // the second call's end, first to arrive
+    expect([state(first.rowId), state(second.rowId)]).toEqual(["held", "held"]);
+    expect(questions.get(second.rowId)?.note).toMatch(/^ambiguous/);
+    clock = second.askedAtMs + 15 * MIN;                                   // past the rig's wait for both
+    for (const q of [first, second]) expect((await poll(q.requestId, COLOUR, q.askedAtMs)).action).toBe("none");
+    await ends(COLOUR, "toolu_colour_0001", { "Pick a colour": "Red (Recommended)" });
+    expect([state(first.rowId), state(second.rowId)]).toEqual(["held", "held"]);
+    await relayed(provider("Stop", null));                                 // the end of the turn abandons them, as before
+    expect([state(first.rowId), state(second.rowId)]).toEqual(["abandoned", "abandoned"]);
+  });
+
+  it("RED (review F1): A auto-answered, identical B waiting, B's human end lands first: A is NOT confirmed and B is NOT auto-answered", async () => {
+    await relayed(provider("UserPromptSubmit", null));
+    const a = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
+    expect(questions.claimAutoAnswer(a.rowId, new Date(clock).toISOString(), { "Pick a colour": "Red (Recommended)" })).toBe(true);
+    clock += MIN;
+    const b = await opens("req-colour-0002", COLOUR, "toolu_colour_0002");
+    await ends(COLOUR, "toolu_colour_0002", { "Pick a colour": "Blue" });   // B's human answer, first to arrive
+    expect([state(a.rowId), state(b.rowId)]).toEqual(["answered_auto", "held"]);
+    clock = b.askedAtMs + 15 * MIN;
+    expect((await poll(b.requestId, COLOUR, b.askedAtMs)).action).toBe("none");
+  });
+
+  it("RED (review F2): the same questions with their keys in another order are the same question: its end settles it", async () => {
+    await relayed(provider("UserPromptSubmit", null));
+    const a = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
+    const reordered = COLOUR.map((q) => ({ multiSelect: q.multiSelect, options: q.options.map((o) => ({ description: o.description, label: o.label })), header: q.header, question: q.question }));
+    await ends(reordered as Questions, "toolu_colour_0001", { "Pick a colour": "Blue" });
+    expect(state(a.rowId)).toBe("answered_human");
   });
 
   it("an answer the daemon sent is confirmed by its own call's end, not by an earlier question's late end", async () => {
@@ -205,6 +252,17 @@ describe("the question digest: the relay's and the daemon's are one function (wo
   it("gives the same key on every input, null where there are no questions", () => {
     for (const input of corpus) expect(relay.questionKeyOf(input), JSON.stringify(input)).toBe(questionKeyOf(input));
     expect(corpus.map((i) => questionKeyOf(i) === null)).toEqual([false, false, false, false, false, true, true, true, true, true, true]);
+  });
+  it("RED (review F2): is blind to the order of keys, at every depth, in the relay and in the daemon", () => {
+    const plain = { questions: [{ question: "Q?", header: "H", multiSelect: false, options: [{ label: "A (Recommended)", description: "a" }] }] };
+    const shuffled = { questions: [{ options: [{ description: "a", label: "A (Recommended)" }], multiSelect: false, header: "H", question: "Q?" }] };
+    expect(questionKeyOf(shuffled)).toBe(questionKeyOf(plain));
+    expect(relay.questionKeyOf(shuffled)).toBe(relay.questionKeyOf(plain));
+    expect(relay.questionKeyOf(shuffled)).toBe(questionKeyOf(plain));
+    // Order inside a list is the question's own (which option is first): it still tells questions apart.
+    const swapped = { questions: [{ ...plain.questions[0]!, options: [{ label: "B", description: "b" }, ...plain.questions[0]!.options] }] };
+    const other = { questions: [{ ...plain.questions[0]!, options: [...plain.questions[0]!.options, { label: "B", description: "b" }] }] };
+    expect(questionKeyOf(swapped)).not.toBe(questionKeyOf(other));
   });
   it("ignores the answers an end adds, and tells different questions apart", () => {
     expect(questionKeyOf({ questions: COLOUR, answers: { "Pick a colour": "Blue" }, annotations: {} })).toBe(questionKeyOf({ questions: COLOUR }));
