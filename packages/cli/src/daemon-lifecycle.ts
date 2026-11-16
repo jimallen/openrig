@@ -15,6 +15,8 @@ import {
   ensureDefaultWorkspace,
   ensureOpenRigInstance,
   formatInstanceInitializationConflicts,
+  instanceHomeConflict,
+  nodeInstancePrivacy,
   type InitializationFsOps,
   type InitWorkspaceResult,
   type ManagedPathKind,
@@ -683,6 +685,12 @@ async function startOwnedDaemon(opts: StartOptions, deps: LifecycleDeps, lock: D
   }
   const daemonEntry = path.join(getDaemonPath(), "dist/index.js");
 
+  // workspaces-o9o.36: an OpenRig home that is the user's home or above it is refused before anything is written,
+  // here as in the daemon, since this writes the layout before the daemon runs. Read-only: no mode is changed here.
+  const homeConflict = instanceHomeConflict(OPENRIG_DIR, nodeInstancePrivacy());
+  if (homeConflict) {
+    throw new Error(`OpenRig instance initialization blocked: ${formatInstanceInitializationConflicts({ conflicts: [homeConflict] })}`);
+  }
   const initialization = ensureOpenRigInstance({
     home: OPENRIG_DIR,
     workspaceRoot: opts.workspaceRoot,

@@ -44,6 +44,12 @@ export function openRigContextLibraryRoots(contextRoot: string): [string, string
   return [contextRoot, join(contextRoot, "system")];
 }
 
+/** The conflict for an OpenRig home that is the user's home directory or an ancestor of it (compared on real paths
+ * too), or null. Every path that writes an instance layout checks it before writing (workspaces-o9o.36). */
+export function instanceHomeConflict(home: string, privacy: InstancePrivacyPort): InitializationConflict | null {
+  return privateRootRefusal(home, privacy) ? { path: home, expected: "instance-home", actual: "user-home" } : null;
+}
+
 /** Reconcile one canonical OpenRig instance layout. This is the shared owner
  * for CLI setup and daemon first-start. It owns empty roots and config.json;
  * S01 owns workspace contents, S04 owns skill contents, and topology owns its
@@ -54,15 +60,8 @@ export function ensureOpenRigInstance(
   const fs = options.fs ?? nodeInitializationFs();
   const dryRun = options.dryRun ?? false;
   // workspaces-o9o.36: the refusal comes first, so a refused home is never written to.
-  if (options.privacy && privateRootRefusal(options.home, options.privacy)) {
-    return {
-      ok: false,
-      home: options.home,
-      createdPaths: [],
-      conflicts: [{ path: options.home, expected: "instance-home", actual: "user-home" }],
-      dryRun,
-    };
-  }
+  const homeConflict = options.privacy ? instanceHomeConflict(options.home, options.privacy) : null;
+  if (homeConflict) return { ok: false, home: options.home, createdPaths: [], conflicts: [homeConflict], dryRun };
   const workspaceRoot = options.workspaceRoot ?? join(options.home, "workspace");
   const contextRoot = options.contextRoot ?? join(options.home, "context");
   const skillsRoot = options.skillsRoot ?? join(options.home, "skills");

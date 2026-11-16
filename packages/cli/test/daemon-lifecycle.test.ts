@@ -183,6 +183,24 @@ describe("Daemon Lifecycle", () => {
     expect(deps.spawn).not.toHaveBeenCalled();
   });
 
+  // workspaces-o9o.36: `rig daemon start` writes the layout before the daemon runs, so it refuses first too.
+  it("start: refuses an OpenRig home that is the user's home or above it before any write or spawn", async () => {
+    for (const userHome of [OPENRIG_DIR, path.join(OPENRIG_DIR, "jim")]) {
+      vi.stubEnv("HOME", userHome);
+      try {
+        const deps = startableDeps();
+        await expect(startDaemon({ port: 7433, db: "openrig.sqlite" }, deps)).rejects.toThrow(
+          `${OPENRIG_DIR}: expected instance-home, found user-home`,
+        );
+        expect(deps.mkdirp).not.toHaveBeenCalled();
+        expect(deps.writeFile).not.toHaveBeenCalled();
+        expect(deps.spawn).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
+  });
+
   // Test 3: start waits for healthz, writes daemon.json with pid+port+db+startedAt
   it("start: writes daemon.json with pid, port, db, startedAt after healthz", async () => {
     const deps = startableDeps();
