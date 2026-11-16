@@ -366,6 +366,12 @@
   "when": "!dockerImagePresent(\"bash:3.2\")"
  },
  {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > global options before the subcommand > bash:3.2: 'git -C /top worktree add -b feat ../elsewhere/wt' from / redirects and keeps -C and -b (NOT RUN without docker and the bash:3.2 image)",
+  "when": "!dockerImagePresent(\"bash:3.2\")"
+ },
+ {
   "file": "packages/daemon/test/hc-capture.real.test.ts",
   "kind": "skipIf",
   "task": "HcCapture against a private hc core",

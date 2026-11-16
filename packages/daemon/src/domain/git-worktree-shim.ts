@@ -9,7 +9,8 @@ import * as path from "node:path";
  * The daemon materializes a 'git' shim into <OPENRIG_HOME>/rig-bin and
  * NodeLauncher prepends that dir to a seat's PATH. The shim intercepts ONLY
  * `git worktree add … <path>` whose target is outside the current repo's
- * .rig-worktrees dir — redirecting it in place — and forwards every other git
+ * .rig-worktrees dir (reached past git's global options, so `git -C <dir> worktree
+ * add` counts, from that dir) — redirecting it in place — and forwards every other git
  * invocation byte-for-byte. The path computation happens inside the calling
  * shell's repo; the shim itself never guesses repos.
  *
@@ -43,12 +44,52 @@ real_git() {
   return 127
 }
 real="\$(real_git)" || exit \$?
-if [ "\$#" -ge 2 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
+# Reach the subcommand past git's global options (git 2.43.0 and 2.55.0: 'git -h', 'git help git').
+# -C and -c take only the next word; the others that take a value also take '=value'. Each -C
+# moves from the one before ('' does nothing), so a relative path resolves from base, as in git.
+# --git-dir, --work-tree and --bare move what git calls the toplevel, and an option not listed
+# here is never guessed at: either one stops the scan and the call goes through unchanged,
+# saying so only when it goes on to 'worktree add'.
+words=("\$@"); n=\$#; s=0; base=""; held=""; heldword=""
+while [ "\$s" -lt "\$n" ]; do
+  a="\${words[\$s]}"
+  case "\$a" in
+    -C)
+      [ \$((s+1)) -lt "\$n" ] || break
+      d="\${words[\$((s+1))]}"
+      if [ -n "\$d" ]; then
+        base="\$(unset CDPATH; cd -P -- "\${base:-.}" 2>/dev/null && cd -P -- "\$d" 2>/dev/null && pwd -P)" || exec "\$real" "\$@"
+      fi
+      s=\$((s+2)) ;;
+    -c|--namespace|--config-env|--attr-source) s=\$((s+2)) ;;
+    --namespace=*|--config-env=*|--attr-source=*|--exec-path=*|-p|--paginate|-P|--no-pager|\\
+    --no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|\\
+    --no-optional-locks|--no-lazy-fetch|--no-advice)
+      s=\$((s+1)) ;;
+    --git-dir|--git-dir=*|--work-tree|--work-tree=*|--bare) held="global option"; heldword="\${a%%=*}"; break ;;
+    -v|--version|-h|--help|--exec-path|--html-path|--man-path|--info-path|--list-cmds=*) exec "\$real" "\$@" ;;
+    -*) held="unrecognised option"; heldword="\$a"; break ;;
+    *) break ;;
+  esac
+done
+if [ -n "\$held" ]; then
+  j=\$s
+  while [ \$((j+1)) -lt "\$n" ]; do
+    if [ "\${words[\$j]}" = "worktree" ] && [ "\${words[\$((j+1))]}" = "add" ]; then
+      # %q: a newline or a control character in the word stays on this one line, quoted.
+      printf 'openrig git shim: worktree path not checked (%s %q)\\n' "\$held" "\$heldword" >&2
+      break
+    fi
+    j=\$((j+1))
+  done
+  exec "\$real" "\$@"
+fi
+if [ \$((s+2)) -le "\$n" ] && [ "\${words[\$s]}" = "worktree" ] && [ "\${words[\$((s+1))]}" = "add" ]; then
   # Find the <path> word by git 2.43.0's grammar ('git worktree add -h'); every other
   # word reaches git unchanged. -b, -B and --reason take the next word as a value.
   # An option not listed here (an abbreviation, a cluster, a newer git's option) is
   # never guessed at: the call goes through unredirected, with one line saying so.
-  words=("\$@"); n=\$#; i=2; pathi=""; unknown=""
+  i=\$((s+2)); pathi=""; unknown=""
   while [ "\$i" -lt "\$n" ]; do
     a="\${words[\$i]}"
     case "\$a" in
@@ -68,14 +109,14 @@ if [ "\$#" -ge 2 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
     exec "\$real" "\$@"
   fi
   target="\${pathi:+\${words[\$pathi]}}"
-  toplevel="\$("\$real" rev-parse --show-toplevel 2>/dev/null || true)"
+  toplevel="\$(cd -P -- "\${base:-.}" && "\$real" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "\$target" ] && [ -n "\$toplevel" ]; then
     # Inside is judged on the PHYSICAL path, not its text: the deepest ancestor that exists is
     # resolved with cd -P, the rest is taken by name. A '..' in the part that does not exist yet
     # counts as outside. (A dangling symlink there is no way out: git fails to create through it,
     # measured on 2.43.0.) The target never goes through \$(...),
     # which strips a trailing newline; the resolved ancestor is printed with a '/' sentinel.
-    case "\$target" in /*) p="\$target" ;; *) p="\$(pwd -P)/\$target" ;; esac
+    case "\$target" in /*) p="\$target" ;; *) p="\${base:-\$(pwd -P)}/\$target" ;; esac
     rest=""; inside=yes
     while [ -n "\$p" ] && [ ! -d "\$p" ]; do
       c="\${p##*/}"

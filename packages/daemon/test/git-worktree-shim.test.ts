@@ -590,6 +590,229 @@ describe("git-worktree-shim", () => {
     }
   });
 
+  // workspaces-o9o.24: git's global options come before the subcommand ('git -C <dir> worktree add ...', which
+  // CULTURE recommends from a seat folder). At 6dc59b2b the shim governed worktree add only when $1 was
+  // 'worktree', so every global option bypassed the placement rule. Option grammar measured on git 2.43.0
+  // (/usr/bin/git) and 2.55.0 (linuxbrew) on Sparky, 2026-11-16: 'git -h', 'git help git' and running each form.
+  describe("global options before the subcommand", () => {
+    /** A git stand-in that applies leading '-C <dir>' words as git does (cd in order, '' is a no-op), answers
+     * rev-parse with the physical cwd as the toplevel, and otherwise (a failed -C included) prints its argv
+     * NUL-separated. */
+    async function globalRecordingGitDir(): Promise<string> {
+      const dir = path.join(tmp, "grecording");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "git"),
+        [
+          "#!/usr/bin/env bash",
+          "unset CDPATH # git's chdir for -C ignores it",
+          'args=("$@"); i=0',
+          'while [ "$i" -lt "$#" ] && [ "${args[$i]}" = -C ]; do',
+          '  d="${args[$((i+1))]}"; if [ -n "$d" ]; then cd "$d" 2>/dev/null || break; fi; i=$((i+2))',
+          "done",
+          'if [ "${args[$i]:-}" = rev-parse ]; then pwd -P; exit 0; fi',
+          "for a in \"$@\"; do printf '%s\\0' \"$a\"; done",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      return dir;
+    }
+
+    async function setup() {
+      const shim = await ensureGitWorktreeShim(tmp);
+      const top = path.join(tmp, "top");
+      await fs.mkdir(path.join(top, "sub"), { recursive: true });
+      const realTop = await fs.realpath(top);
+      const realTmp = await fs.realpath(tmp);
+      const outside = path.join(tmp, "elsewhere", "wt");
+      const redirected = path.join(realTop, ".rig-worktrees", "wt");
+      const pathDirs = [shim, await globalRecordingGitDir(), "/usr/bin", "/bin"];
+      const run = (args: string[], cwd: string = top) => {
+        const r = runGit(args, pathDirs, cwd);
+        return { ...r, argv: r.stdout.split("\0").slice(0, -1) };
+      };
+      return { top, realTop, realTmp, outside, redirected, run };
+    }
+
+    // Every global option that does not move the repo, in each form git accepts. Value options take the next word
+    // ('-c' and '-C' take only that form: '-ca.b=1' and '-Cr' are unknown options to both versions).
+    const LOCATION_NEUTRAL: string[][] = [
+      ["-c", "a.b=1"], ["-c", "-x=1"],
+      ["--config-env", "a.b=HOME"], ["--config-env=a.b=HOME"],
+      ["--namespace", "ns"], ["--namespace=ns"],
+      ["--attr-source", "HEAD"], ["--attr-source=HEAD"],
+      ["--exec-path=/nonexistent"],
+      ["-p"], ["--paginate"], ["-P"], ["--no-pager"],
+      ["--no-replace-objects"], ["--literal-pathspecs"], ["--glob-pathspecs"], ["--noglob-pathspecs"],
+      ["--icase-pathspecs"], ["--no-optional-locks"],
+      ["--no-lazy-fetch"], ["--no-advice"], // 2.55.0 only; 2.43.0 rejects them itself
+      ["-C", ""], ["-C", "."],
+      ["-c", "a.b=1", "--no-pager", "-C", "."],
+    ];
+
+    for (const globals of LOCATION_NEUTRAL) {
+      it(`'git ${globals.map(w => w || "''").join(" ")} worktree add -b feat <outside>': redirected, every other word unchanged`, async () => {
+        const { outside, redirected, run } = await setup();
+        const r = run([...globals, "worktree", "add", "-b", "feat", outside]);
+        expect(r.argv).toEqual([...globals, "worktree", "add", "-b", "feat", redirected]);
+        expect(r.stderr).toBe("");
+        expect(r.status).toBe(0);
+      });
+    }
+
+    it("'git -C <repo> worktree add <outside>' from outside the repo redirects under that repo's toplevel", async () => {
+      const { top, outside, redirected, run } = await setup();
+      const r = run(["-C", top, "worktree", "add", outside], tmp);
+      expect(r.argv).toEqual(["-C", top, "worktree", "add", redirected]);
+      expect(r.stderr).toBe("");
+    });
+
+    it("a relative path after -C resolves from the -C dir: '../elsewhere/wt' is outside, so redirected", async () => {
+      const { redirected, run } = await setup();
+      const r = run(["-C", "top", "worktree", "add", "-b", "feat", "../elsewhere/wt"], tmp);
+      expect(r.argv).toEqual(["-C", "top", "worktree", "add", "-b", "feat", redirected]);
+      expect(r.stderr).toBe("");
+    });
+
+    it("a relative inside path after -C resolves from the -C dir and reaches git unchanged", async () => {
+      const { run } = await setup();
+      const r = run(["-C", "top", "worktree", "add", ".rig-worktrees/in"], tmp);
+      expect(r.argv).toEqual(["-C", "top", "worktree", "add", ".rig-worktrees/in"]);
+      expect(r.stderr).toBe("");
+    });
+
+    it("-C words chain, each relative to the one before: '-C top -C sub' and '../.rig-worktrees/in' is inside", async () => {
+      const { realTop, run } = await setup();
+      // The stand-in's toplevel is the cwd it ends in (top/sub), so the inside dir is top/sub/.rig-worktrees.
+      const r = run(["-C", "top", "-C", "sub", "worktree", "add", ".rig-worktrees/in"], tmp);
+      expect(r.argv).toEqual(["-C", "top", "-C", "sub", "worktree", "add", ".rig-worktrees/in"]);
+      expect(r.stderr).toBe("");
+      const r2 = run(["-C", "top", "-C", "sub", "worktree", "add", "../elsewhere-wt"], tmp);
+      expect(r2.argv).toEqual(["-C", "top", "-C", "sub", "worktree", "add", path.join(realTop, "sub", ".rig-worktrees", "elsewhere-wt")]);
+    });
+
+    it("a CDPATH in the caller's env does not move a relative -C dir (git's own chdir ignores CDPATH)", async () => {
+      const { top, outside, redirected } = await setup();
+      const decoy = path.join(tmp, "decoy");
+      await fs.mkdir(path.join(decoy, "top"), { recursive: true });
+      const shim = await ensureGitWorktreeShim(tmp);
+      const r = runGit(["-C", "top", "worktree", "add", outside], [shim, await globalRecordingGitDir(), "/usr/bin", "/bin"], tmp, { CDPATH: decoy });
+      expect(top).toBe(path.join(tmp, "top"));
+      expect(r.stdout.split("\0").slice(0, -1)).toEqual(["-C", "top", "worktree", "add", redirected]);
+      expect(r.stderr).toBe("");
+    });
+
+    it("a -C dir that does not exist: git gets the call unchanged and reports it itself", async () => {
+      const { outside, run } = await setup();
+      const r = run(["-C", "no-such-dir", "worktree", "add", outside], tmp);
+      expect(r.argv).toEqual(["-C", "no-such-dir", "worktree", "add", outside]);
+      expect(r.stderr).toBe("");
+    });
+
+    // --git-dir, --work-tree and --bare move what git calls the toplevel (with --git-dir alone it is the cwd), so a
+    // redirect could plant .rig-worktrees in the wrong place: pass through, and say the path was not checked.
+    for (const globals of [["--git-dir", "x/.git"], ["--git-dir=x/.git"], ["--work-tree", "x"], ["--work-tree=x"], ["--bare"]]) {
+      it(`'${globals.join(" ")}' before worktree add: unchanged, one stderr line naming the option`, async () => {
+        const { outside, run } = await setup();
+        const r = run([...globals, "worktree", "add", outside]);
+        expect(r.argv).toEqual([...globals, "worktree", "add", outside]);
+        expect(r.stderr).toBe(`openrig git shim: worktree path not checked (global option ${(globals[0] ?? "").split("=")[0]})\n`);
+        expect(r.status).toBe(0);
+      });
+    }
+
+    // An option the shim does not know stops the scan: the call goes through unchanged. Only a call that goes on to
+    // 'worktree add' says so; any other git call stays silent.
+    for (const unknown of ["-x", "--frobnicate", "-Cr", "-ca.b=1", "--"]) {
+      it(`unknown global '${unknown}' before worktree add: unchanged, one stderr line`, async () => {
+        const { outside, run } = await setup();
+        const r = run([unknown, "worktree", "add", outside]);
+        expect(r.argv).toEqual([unknown, "worktree", "add", outside]);
+        expect(r.stderr).toBe(`openrig git shim: worktree path not checked (unrecognised option ${unknown})\n`);
+      });
+    }
+
+    it("an unknown global with control characters before worktree add is quoted in a one-line notice", async () => {
+      const { outside, run } = await setup();
+      for (const word of ["--x\nforged line", "--\u001b[31mred"]) {
+        const r = run([word, "worktree", "add", outside]);
+        expect(r.argv).toEqual([word, "worktree", "add", outside]);
+        expect(r.stderr.startsWith("openrig git shim: worktree path not checked (unrecognised option ")).toBe(true);
+        expect(/[\u0000-\u001f\u007f]/.test(r.stderr.slice(0, -1)), JSON.stringify(r.stderr)).toBe(false);
+      }
+    });
+
+    it("an unknown global on any other git call passes through silently", async () => {
+      const { run } = await setup();
+      for (const args of [["--frobnicate", "status"], ["-x", "log", "worktree"], ["-x", "worktree", "list"]]) {
+        const r = run(args);
+        expect(r.argv, args.join(" ")).toEqual(args);
+        expect(r.stderr, args.join(" ")).toBe("");
+      }
+    });
+
+    // Options after which git prints and exits: no subcommand runs, nothing to check, nothing to say.
+    for (const terminal of [["-v"], ["--version"], ["-h"], ["--help"], ["--exec-path"], ["--html-path"], ["--man-path"], ["--info-path"], ["--list-cmds=main"]]) {
+      it(`'${terminal[0]}' then 'worktree add <outside>': unchanged and silent`, async () => {
+        const { outside, run } = await setup();
+        const r = run([...terminal, "worktree", "add", outside]);
+        expect(r.argv).toEqual([...terminal, "worktree", "add", outside]);
+        expect(r.stderr).toBe("");
+      });
+    }
+
+    for (const dangling of [["-C"], ["-c"], ["--git-dir"], ["-C", "top"], ["-c", "a.b=1"]]) {
+      it(`'git ${dangling.join(" ")}' with no subcommand passes through instead of dying under set -u`, async () => {
+        const { run } = await setup();
+        const r = run(dangling, tmp);
+        expect(r.argv).toEqual(dangling);
+        expect(r.stderr).toBe("");
+        expect(r.status).toBe(0);
+      });
+    }
+
+    it.skipIf(!dockerImagePresent("bash:3.2"))(
+      "bash:3.2: 'git -C /top worktree add -b feat ../elsewhere/wt' from / redirects and keeps -C and -b (NOT RUN without docker and the bash:3.2 image)",
+      async () => {
+        const shim = await ensureGitWorktreeShim(tmp);
+        const rec = await globalRecordingGitDir();
+        const r = spawnSync("docker", [
+          "run", "--rm", "--init", "--network", "none",
+          "-v", `${shim}:/s/rig-bin:ro`, "-v", `${rec}:/s/rec:ro`, "bash:3.2",
+          "bash", "-c",
+          "mkdir -p /top && cd / && export PATH=/s/rig-bin:/s/rec:/usr/local/bin:/usr/bin:/bin; " +
+            "timeout -s KILL 5 git -C /top worktree add -b feat ../elsewhere/wt; printf '\\n'; " +
+            // An outside path, so a -c that is not skipped as a value option shows as a missed redirect.
+            "timeout -s KILL 5 git -c a.b=1 -C /top worktree add /elsewhere/wt2; printf '\\n'; " +
+            "timeout -s KILL 5 git -C /top worktree add .rig-worktrees/in",
+        ], { timeout: 60000 });
+        expect(r.status).toBe(0);
+        expect(r.stderr.toString()).toBe("");
+        const [relOutside, withC, inside] = r.stdout.toString().split("\n").map(line => line.split("\0").slice(0, -1));
+        expect(relOutside).toEqual(["-C", "/top", "worktree", "add", "-b", "feat", "/top/.rig-worktrees/wt"]);
+        expect(withC).toEqual(["-c", "a.b=1", "-C", "/top", "worktree", "add", "/top/.rig-worktrees/wt2"]);
+        expect(inside).toEqual(["-C", "/top", "worktree", "add", ".rig-worktrees/in"]);
+      },
+    );
+
+    it("real git: 'git -C <repo> worktree add -b feat ../outside' from outside the repo lands in <repo>/.rig-worktrees on branch feat", async () => {
+      const repo = path.join(tmp, "repo");
+      await fs.mkdir(repo);
+      const git = path.join(realGitDir(), "git");
+      expect(spawnSync(git, ["init", "-q", repo]).status).toBe(0);
+      expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
+      await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
+      const shim = await ensureGitWorktreeShim(tmp);
+      const r = runGit(["-C", repo, "worktree", "add", "-b", "feat", "../outside-c"], [shim, realGitDir(), "/usr/bin", "/bin"], tmp);
+      expect(r.status, r.stderr).toBe(0);
+      const wt = path.join(await fs.realpath(repo), ".rig-worktrees", "outside-c");
+      expect(spawnSync(git, ["-C", wt, "branch", "--show-current"]).stdout.toString().trim()).toBe("feat");
+      expect(existsSync(path.join(tmp, "outside-c")), "the out-of-place target is not created").toBe(false);
+      expect(r.stderr).not.toMatch(/openrig git shim|unbound variable/);
+    });
+  });
+
   it("codex and claude seats both get the shim dir FIRST on PATH", async () => {
     const db: Database.Database = createFullTestDb();
     const rigRepo = new RigRepository(db);
