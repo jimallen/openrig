@@ -174,10 +174,12 @@ export class PluginVendorService {
    * review): a symlinked ancestor (OPENRIG_HOME/plugins -> elsewhere) or a link inside the copy cannot carry a write or a
    * delete outside it. A refused target is reported, not written.
    *
-   * Residual, not closable in Node: a directory swapped for a symlink between that check and the syscall that follows
-   * it. Node has no openat/renameat/unlinkat on a directory handle. rename and unlink act on the final component itself
-   * (never through a link there), and temps are created O_EXCL, so the window is an ancestor swap in those few
-   * microseconds, by someone who can already write inside the managed tree.
+   * Residual, accepted (Jim, 2026-11-16: "Accept the residual"): an ancestor directory swapped for a symlink between
+   * the last lstat walk and the mkdir, open, chmod, rename or unlink that follows it. Node has no
+   * openat/renameat/unlinkat on a directory handle, so the window cannot be closed here. rename and unlink act on the
+   * final component itself (never through a link there), and temps are created O_EXCL. Precondition: a concurrent
+   * process running as the same user, writing inside the managed tree during that window; such a process is outside
+   * the threat model, since it can already write the managed files directly.
    */
   private mirror(sourceDir: string, targetDir: string, keep: ReadonlySet<string>, anchor: string): void {
     const refusal = this.unsafe(anchor, targetDir, targetDir);

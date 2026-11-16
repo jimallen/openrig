@@ -234,8 +234,12 @@ replaced, then verifies the copy and reports any path that still differs through
 from `OPENRIG_HOME` (a seed's anchor: its root's parent) down to the file is lstat-checked, and a
 symlink or non-directory anywhere on it refuses the step; a refused copy or seed root is reported.
 Writes are atomic: an O_EXCL temp file in the same folder, its mode set, renamed over the target;
-a failed write removes the temp and leaves the old file. The window between that check and the
-syscall cannot be closed in Node (no `openat`/`unlinkat` on a directory handle). Missing
+a failed write removes the temp and leaves the old file. Residual, accepted by Jim on 2026-11-16:
+an ancestor folder swapped for a symlink between the last check and the mkdir, open, chmod,
+rename or unlink that follows it. The window cannot be closed in Node (no
+`openat`/`renameat`/`unlinkat` on a directory handle). It needs a concurrent process running as
+the same user, writing inside the managed tree at that moment, which is outside the threat
+model. Missing
 target version authority (no manifest) is preserved rather than overwritten; invalid or
 conflicting manifest versions are errors. Global skill seeds (`ensureSkillDirGlobally`) follow
 the same rule for a target carrying OpenRig's `.openrig-vendor-version` marker; an unmarked or
