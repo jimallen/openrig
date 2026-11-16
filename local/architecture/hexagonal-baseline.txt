@@ -238,7 +238,6 @@ src/domain/restore-orchestrator.ts src/adapters/pi-resume.js type upstream
 src/domain/restore-orchestrator.ts src/adapters/tmux.js type upstream
 src/domain/restore-plan-preview.ts better-sqlite3 type upstream
 src/domain/restore-seat-gates.ts better-sqlite3 type fork
-src/domain/resume-metadata-refresher.ts node:child_process value upstream
 src/domain/resume-metadata-refresher.ts node:fs value upstream
 src/domain/resume-metadata-refresher.ts node:os value upstream
 src/domain/resume-metadata-refresher.ts src/adapters/tmux.js type upstream

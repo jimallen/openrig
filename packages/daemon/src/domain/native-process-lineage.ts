@@ -1,11 +1,77 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { isShellForeground } from "./shell-classifier.js";
 import { runAsyncSite } from "./sync-site-wrap.js";
 import { readNativeExecutablePaths } from "./native-process-executable.js";
 import { sameProcessIdentity, withTrueStartTimes } from "./process-start-clock.js";
 
-const execFileAsync = promisify(execFile);
+/** The most `ps` output one process-table read accepts. A busy host printed 17.4 MB (85,038 lines; Sparky,
+ *  2026-11-16, workspaces-o9o.67), past the 8 MiB buffer the listers had, and every row was lost at once; this bound is
+ *  about 15 times that table. Past it the read fails with ProcessTableTooLargeError, never a silent truncation. */
+export const PROCESS_TABLE_MAX_BYTES = 256 * 1024 * 1024;
+
+/** `ps` printed more than the bound: the table was not read, and `ps` was stopped. */
+export class ProcessTableTooLargeError extends Error {
+  readonly code = "PROCESS_TABLE_TOO_LARGE";
+  constructor(readonly args: readonly string[], readonly maxBytes: number) {
+    super(`ps ${args.join(" ")} printed more than ${maxBytes} bytes, so the process table was not read`);
+    this.name = "ProcessTableTooLargeError";
+  }
+}
+
+/** Runs `ps` with `args` and returns all it prints, read as a stream with no buffer smaller than `maxBytes`
+ *  (default PROCESS_TABLE_MAX_BYTES). Rejects with ProcessTableTooLargeError past the bound (and stops `ps` at once),
+ *  with the spawn error (ENOENT ...) when `ps` cannot start, and when `ps` exits non-zero or is killed by `timeoutMs`.
+ *  The one way every full process-table listing reads `ps` (artery: native process observation). */
+export function readProcessTable(
+  args: readonly string[],
+  opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxBytes?: number } = {},
+): Promise<string> {
+  const maxBytes = opts.maxBytes ?? PROCESS_TABLE_MAX_BYTES;
+  return new Promise((resolve, reject) => {
+    const child = spawn("ps", [...args], { env: opts.env ?? process.env, stdio: ["ignore", "pipe", "pipe"], timeout: opts.timeoutMs, windowsHide: true });
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let stderr = "";
+    let settled = false;
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(err);
+    };
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      bytes += chunk.length;
+      if (bytes > maxBytes) fail(new ProcessTableTooLargeError(args, maxBytes));
+      else chunks.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => { if (stderr.length < 4096) stderr += chunk.toString("utf8"); });
+    child.on("error", fail);
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
+      else reject(new Error(`ps ${args.join(" ")} ${code === null ? `was killed (${signal})` : `exited ${code}`}${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
+    });
+  });
+}
+
+const unreadableProcessTable = new Map<string, string>();
+
+/** Says in the daemon log that `site` could not read the process table and why, once per distinct reason, so a host that
+ *  stays past the bound logs one line rather than one per poll. */
+export function reportProcessTableFailure(site: string, err: unknown, warn: (message: string) => void = console.warn): void {
+  const reason = err instanceof Error ? `${(err as NodeJS.ErrnoException).code ? `${(err as NodeJS.ErrnoException).code}: ` : ""}${err.message}` : String(err);
+  if (unreadableProcessTable.get(site) === reason) return;
+  unreadableProcessTable.set(site, reason);
+  warn(`[openrig] ${site} could not read the process table: ${reason}. Checks that read it (liveness, identity, delivery) see no processes until it can be read again.`);
+}
+
+/** Says in the daemon log that `site` reads the process table again, once, after reportProcessTableFailure. */
+export function reportProcessTableRead(site: string, warn: (message: string) => void = console.warn): void {
+  if (!unreadableProcessTable.delete(site)) return;
+  warn(`[openrig] ${site}: the process table can be read again.`);
+}
 
 export interface NativeProcessRow {
   pid: number;
@@ -400,9 +466,9 @@ export async function listNativeProcesses(): Promise<NativeProcessRow[]> {
   try {
     const output = await runAsyncSite("codex.runtime.list_processes", async () => {
       // lstart is locale-formatted; the child-only C locale keeps the English date the parser expects.
-      const { stdout } = await execFileAsync("ps", ["-Ao", "pid,ppid,pgid,tpgid,ucomm,lstart,command"], { encoding: "utf-8", maxBuffer: 8 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
-      return stdout;
+      return readProcessTable(["-Ao", "pid,ppid,pgid,tpgid,ucomm,lstart,command"], { env: { ...process.env, LC_ALL: "C" } });
     });
+    reportProcessTableRead("codex.runtime.list_processes");
     let rows: NativeProcessRow[] = output.split("\n").slice(1).flatMap((line) => {
       // ucomm may contain spaces on every platform: macOS app helpers (`Slack Helper`), and on
       // Linux task names set by prctl(PR_SET_NAME) or process.title (`tmux: server`,
@@ -419,7 +485,10 @@ export async function listNativeProcesses(): Promise<NativeProcessRow[]> {
       for (const row of candidates) row.executablePath = paths.get(row.pid);
     }
     return rows;
-  } catch { return []; }
+  } catch (err) {
+    reportProcessTableFailure("codex.runtime.list_processes", err);
+    return [];
+  }
 }
 
 export type NativeProcessLister = () => NativeProcessRow[] | Promise<NativeProcessRow[]>;

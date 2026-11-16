@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A busy host's process table no longer blinds liveness, identity and delivery checks (workspaces-o9o.67)
+
+- Symptom: during a process spike on Sparky (2026-11-16) `ps` printed 85,038 lines, 17.4 MB. Both full-table process listers had an 8 MiB output buffer, so both failed outright: one returned no processes and the other rejected, and every liveness, identity and delivery check lost every row at once, with nothing in the log.
+- Now every full process-table read (the native process lister, the resume-metadata lister behind the process census, and the native inbox's two listers, which had 64 MiB) reads `ps` as a stream through one reader, `readProcessTable`, bounded at 256 MiB. Past the bound it fails at once with a named error, `ProcessTableTooLargeError`, and stops `ps`; it never truncates the table.
+- The daemon log now says when a lister cannot read the process table and why (once per reason, not once per poll), and says again when it can.
 ### Projection keeps generated plugin files out of `git add` in a repo with no `.git/info` (workspaces-o9o.70)
 
 - Symptom: in a repo made with a git template that has no `info/` directory (a custom or empty template; git does not guarantee `.git/info/exclude` exists), projection did not write the exclusion for the generated `openrig-core` plugin files. It logged `generated_file_exclude_skipped: ... ENOENT ... .git/info`, and `git add .` then picked the generated files up.

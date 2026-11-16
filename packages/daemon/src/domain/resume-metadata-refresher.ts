@@ -1,8 +1,6 @@
 import os from "node:os";
 import fs from "node:fs";
 import nodePath from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import {
@@ -19,10 +17,9 @@ import {
 import { runAsyncSite } from "./sync-site-wrap.js";
 import { withTrueStartTimes } from "./process-start-clock.js";
 import { isClaudeSidecarFromEarlierProcess, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
-import { observeClaudePaneRuntime, type NativeProcessLister } from "./native-process-lineage.js";
+import { observeClaudePaneRuntime, readProcessTable, reportProcessTableFailure, reportProcessTableRead, type NativeProcessLister } from "./native-process-lineage.js";
 import { validateResumeToken, isTypedResumeWord, observedResumeTokenToWrite } from "./resume-token-validation.js";
 
-const execFileAsync = promisify(execFile);
 
 export interface ResumeRefreshSession {
   sessionId: string;
@@ -413,8 +410,14 @@ export async function defaultListProcessesStrict(): Promise<Array<{ pid: number;
     // (r1's pid-reuse remedy): a reused pid changes lstart, so a consumer
     // holding last cycle's identity can invalidate without any extra spawn.
     // lstart is locale-formatted; the child-only C locale keeps the English date the parser expects.
-    const { stdout } = await execFileAsync("ps", ["-Ao", "pid,ppid,lstart,command"], { encoding: "utf-8", maxBuffer: 8 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
-    return stdout;
+    try {
+      const stdout = await readProcessTable(["-Ao", "pid,ppid,lstart,command"], { env: { ...process.env, LC_ALL: "C" } });
+      reportProcessTableRead("resume_metadata.list_processes");
+      return stdout;
+    } catch (err) {
+      reportProcessTableFailure("resume_metadata.list_processes", err);
+      throw err;
+    }
   });
   return withTrueStartTimes(output
     .split("\n")

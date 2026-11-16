@@ -1,10 +1,19 @@
-import { beforeEach, expect, it, vi } from "vitest";
-const { execute, paths } = vi.hoisted(() => ({ execute: vi.fn(), paths: vi.fn() }));
-vi.mock("node:child_process", () => ({ execFile: Object.assign(vi.fn(), { [Symbol.for("nodejs.util.promisify.custom")]: execute }) }));
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+const { paths } = vi.hoisted(() => ({ paths: vi.fn() }));
 vi.mock("../src/domain/native-process-executable.js", () => ({ readNativeExecutablePaths: paths }));
 import { listNativeProcesses } from "../src/domain/native-process-lineage.js";
 const line = (pid: number, name: string, argv: string) => `${pid} 10 11 11 ${name} Sun Oct  4 15:21:03 2026 ${argv}`;
-beforeEach(() => { vi.resetAllMocks(); });
+// The lister reads a real child process (workspaces-o9o.67); a hermetic `ps` on an otherwise empty PATH prints the table.
+let scratch: string;
+const execute = { mockResolvedValue: ({ stdout }: { stdout: string }): void => {
+  fs.writeFileSync(path.join(scratch, "table.txt"), stdout);
+  fs.writeFileSync(path.join(scratch, "ps"), `#!/bin/sh\n/bin/cat '${path.join(scratch, "table.txt")}'\n`, { mode: 0o755 });
+} };
+beforeEach(() => { vi.resetAllMocks(); scratch = fs.mkdtempSync(path.join(os.tmpdir(), "path-sampling-ps-")); vi.stubEnv("PATH", scratch); });
+afterEach(() => { vi.unstubAllEnvs(); fs.rmSync(scratch, { recursive: true, force: true }); });
 it("batches only unresolved version-named Claude candidates; healthy seats need no extra subprocess", async () => {
   const healthy = [line(10, "zsh", "-zsh"), line(11, "claude", "claude"), line(12, "codex", "codex"), line(13, "2.1.289", "/x/.local/share/claude/versions/2.1.289"), line(14, "2.1.289", "unrelated")];
   execute.mockResolvedValue({ stdout: "HEADER\n" + healthy.join("\n") });

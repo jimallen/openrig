@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { INJECT_FORMAT_LITERAL, type ProcessRow } from "../domain/claude-native-inbox.js";
 import { NAME_ENVELOPE_PARSER_LITERAL } from "../domain/native-name-envelope.js";
 import { clockStartForPsStart, installedProcessStartClock } from "../domain/process-start-clock.js";
+import { readProcessTable, reportProcessTableFailure, reportProcessTableRead } from "../domain/native-process-lineage.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,7 +49,14 @@ export function writeSocketLines(socketPath: string, lines: unknown[], timeoutMs
 
 /** Every process's pid, parent pid and full argv, in one `ps` call. */
 export async function listProcesses(): Promise<ProcessRow[]> {
-  const { stdout } = await execFileAsync("ps", ["-A", "-ww", "-o", "pid=,ppid=,args="], { maxBuffer: 64 * 1024 * 1024, timeout: 10_000 });
+  let stdout: string;
+  try {
+    stdout = await readProcessTable(["-A", "-ww", "-o", "pid=,ppid=,args="], { timeoutMs: 10_000 });
+  } catch (err) {
+    reportProcessTableFailure("native_inbox.list_processes", err);
+    throw err;
+  }
+  reportProcessTableRead("native_inbox.list_processes");
   const out: ProcessRow[] = [];
   for (const line of stdout.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(line);
@@ -62,8 +70,12 @@ export async function listProcesses(): Promise<ProcessRow[]> {
 export async function foregroundGroupPrograms(pgid: number): Promise<Array<{ name: string; argv0: string }>> {
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("ps", ["-A", "-ww", "-o", "pgid=,tpgid=,comm=,args="], { maxBuffer: 64 * 1024 * 1024, timeout: 10_000 }));
-  } catch { return []; }
+    stdout = await readProcessTable(["-A", "-ww", "-o", "pgid=,tpgid=,comm=,args="], { timeoutMs: 10_000 });
+  } catch (err) {
+    reportProcessTableFailure("native_inbox.foreground_group", err);
+    return [];
+  }
+  reportProcessTableRead("native_inbox.foreground_group");
   return parseForegroundGroup(stdout, pgid);
 }
 
