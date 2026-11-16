@@ -434,7 +434,9 @@ export class RunnerCore {
   private transportResetUsed = false;
   /** A restarted child has not answered get_state yet: its session file, and the blocks that arrived meanwhile (sent to the new child). */
   private restartingOn: string | null = null;
-  private restartWaiting: Array<{ block: string; intent: GateIntent | undefined }> = [];
+  /** Raw blocks, held before the seat gate sees them: admitted only when replayed to the new pi, so the restart's reconcile never
+   *  touches them and a repeat of their marker is still caught (verify-qa review of 5758abc9a, finding 1). */
+  private restartWaiting: string[] = [];
   private transportRecovery: PiRunnerState["transportRecovery"];
 
   constructor(
@@ -507,6 +509,8 @@ export class RunnerCore {
   /** One aggregated paste block from pane stdin. A block with a marker goes through the seat gate first (S2): a durable intent, then
    *  the text alone to Pi, then a record when Pi shows the message. A repeat of an id stops here. */
   handleUserBlock(block: string): void {
+    // o9o.13: the old pi's pipe is closing and the new one has not answered get_state yet. The block waits, unadmitted, for the new pi.
+    if (this.restartingOn !== null) { this.restartWaiting.push(block); return; }
     const gate = this.opts.gate;
     const { text, markers } = gate ? splitMarkedBlock(block) : { text: block, markers: [] };
     if (!gate || markers.length === 0) { this.sendBlock(block, undefined); return; }
@@ -535,8 +539,6 @@ export class RunnerCore {
 
   /** The block as Pi takes it. A marked one carries an RPC id, so Pi's answer can be tied to its intent. */
   private sendBlock(block: string, intent: GateIntent | undefined): void {
-    // o9o.13: the old pi's pipe is closing and the new one has not answered get_state yet; the block goes to the new pi.
-    if (this.restartingOn !== null) { this.restartWaiting.push({ block, intent }); return; }
     if (block === "/abort") {
       this.io.sendRpc({ type: "abort" });
       this.io.mirrorLine("[pi-runner] abort sent");
@@ -679,14 +681,21 @@ export class RunnerCore {
     if (sessionFile !== expected) {
       this.transportRecovery = { kind: "transport_reset", at: this.transportRecovery?.at ?? this.io.now(), outcome: "session_mismatch" };
       this.io.mirrorLine(`${PI_RUNNER_ERROR_MARKER} the restarted pi opened ${sessionFile ?? "no session file"}, not ${expected}; nothing was sent to it, relaunch the seat`);
+      // Fail closed (verify-qa review of 5758abc9a, finding 2): a held message never goes into another session's history. The held blocks
+      // were never admitted, so a marked one is not recorded as received; unmarked text is shown so the person can send it again.
+      for (const held of waiting) {
+        const { text, markers } = splitMarkedBlock(held);
+        this.io.mirrorLine(`[pi-runner] not sent: ${markers.length > 0 ? `${text.slice(0, 200)} (its marker was not recorded as received)` : held.slice(0, 200)}`);
+      }
       this.writeSidecar({});
-      for (const held of waiting) this.sendBlock(held.block, held.intent);
+      // The runner ends with this pi: its exit writes the `exited` record, so the seat reads as down until it is relaunched.
+      this.io.stopChild?.();
       return;
     }
     this.transportRecovery = { kind: "transport_reset", at: this.transportRecovery?.at ?? this.io.now(), outcome: "resumed" };
     this.io.mirrorLine(`[pi-runner] pi restarted on the same session (${expected})`);
     this.writeSidecar({});
-    if (waiting.length > 0) { for (const held of waiting) this.sendBlock(held.block, held.intent); return; }
+    if (waiting.length > 0) { for (const held of waiting) this.handleUserBlock(held); return; }
     this.sendBlock(PI_TRANSPORT_CONTINUE_PROMPT, undefined);
   }
 

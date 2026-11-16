@@ -336,3 +336,55 @@ describe("o9o.13: what a recovery leaves behind", () => {
     }
   });
 });
+
+describe("o9o.13 (verify-qa review): messages held during a restart", () => {
+  /** A core with a real seat gate on disk, already through one failed run that started a restart. */
+  function restarting() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "o9o13-held-"));
+    const session = path.join(dir, "s.jsonl");
+    fs.writeFileSync(session, `${JSON.stringify({ type: "session", version: 3, id: "x", timestamp: "2026-01-02T03:04:05.000Z", cwd: dir })}\n`);
+    const log = seatGateLogPath(dir);
+    const rpc: Array<Record<string, unknown>> = [];
+    const lines: string[] = [];
+    let stopped = 0;
+    const io = { sendRpc: (c: Record<string, unknown>) => { rpc.push(c); }, mirrorLine: (l: string) => { lines.push(l); }, mirrorAppend: () => {}, postActivity: () => {},
+      writeSidecar: () => {}, now: () => "2026-11-16T21:00:00.000Z", restartChild: () => {}, stopChild: () => { stopped++; } } as RunnerIo;
+    const c = new RunnerCore(io, { sessionName: "s", launchId: "l" }, { runtime: "pi", gate: SeatGateStore.open(log) });
+    const feed = (o: Record<string, unknown>) => c.handlePiLine(JSON.stringify(o));
+    c.start();
+    feed({ type: "response", id: "pi-runner-get-state", success: true, data: { sessionFile: session, sessionId: "x" } });
+    feed({ type: "agent_start" });
+    feed({ type: "message_end", message: { role: "assistant", ...rejected([TRANSPORT_DIAGNOSTIC]) } });
+    feed({ type: "agent_end", messages: [] });
+    feed({ type: "agent_settled" });
+    c.childRestarted();
+    const prompts = (text: string) => rpc.filter((r) => (r.type === "prompt" || r.type === "steer") && r.message === text).length;
+    return { dir, session, log, c, feed, lines, prompts, stopped: () => stopped, done: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  }
+  const MARKED = "the held instruction\n[openrig-msg m1:0123456789abcdef]";
+
+  it("a marked message held through the restart keeps its gate record: a repeat of its marker is dropped, never sent twice", () => {
+    const s = restarting();
+    try {
+      s.c.handleUserBlock(MARKED);
+      s.feed({ type: "response", id: "pi-runner-get-state", success: true, data: { sessionFile: s.session, sessionId: "x" } });
+      expect(s.prompts("the held instruction")).toBe(1);
+      expect(fs.readFileSync(s.log, "utf8")).not.toContain("restart_not_in_session");
+      s.c.handleUserBlock(MARKED);
+      expect(s.prompts("the held instruction"), "the repeat was sent again").toBe(1);
+    } finally { s.done(); }
+  });
+
+  it("a restarted pi on another session file gets none of the held messages: the runner stops it and the messages stay unsent", () => {
+    const s = restarting();
+    try {
+      s.c.handleUserBlock(MARKED);
+      s.c.handleUserBlock("typed by hand");
+      s.feed({ type: "response", id: "pi-runner-get-state", success: true, data: { sessionFile: path.join(s.dir, "other.jsonl"), sessionId: "y" } });
+      expect(s.prompts("the held instruction")).toBe(0);
+      expect(s.prompts("typed by hand")).toBe(0);
+      expect(s.stopped(), "the mismatched pi is stopped, so the seat reads as down").toBe(1);
+      expect(s.lines.join("\n")).toMatch(/not sent: typed by hand/);
+    } finally { s.done(); }
+  });
+});
