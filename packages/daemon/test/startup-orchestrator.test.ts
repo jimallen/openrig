@@ -1290,6 +1290,26 @@ describe("StartupOrchestrator", () => {
     expect(session!.startupStatus).toBe("ready");
   });
 
+  // workspaces-o9o.3: a launch's attention evidence leaves startNode as StartupResult.evidence, which restore copies into
+  // attentionEvidence and persists in restore.completed. The runtime adapters capture it raw from the pane; fail() is the
+  // one place every StartupResult failure passes, so it is redacted there.
+  it("redacts a launch's attention evidence on the StartupResult (workspaces-o9o.3)", async () => {
+    const seed = seedSession();
+    const token = "git" + "hub_pat_0123456789abcdefghijKLMN";
+    const launchHarness = vi.fn().mockResolvedValueOnce({
+      ok: false as const,
+      error: "Codex auth-refusal: please sign in again",
+      recovery: "attention_required",
+      evidence: `$ export GH_TOKEN=${token}\nError: Please sign in again.`,
+    });
+    const result = await createOrchestrator().startNode(makeInput(seed, {
+      adapter: mockAdapter({ runtime: "codex", launchHarness }), isRestore: true, resumeToken: "stale-token", resumeType: "codex_id",
+    }));
+    if (result.ok) throw new Error("expected attention");
+    expect(result.startupStatus).toBe("attention_required");
+    expect(result.evidence).toBe("$ export GH_TOKEN=[REDACTED]\nError: Please sign in again.");
+  });
+
   // Pod-aware Codex auth-refusal: when launchHarness reports
   // recovery: "attention_required" with evidence, the orchestrator must
   // surface startup_status: "attention_required" with the evidence preserved

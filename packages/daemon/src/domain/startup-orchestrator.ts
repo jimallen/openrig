@@ -33,6 +33,7 @@ import { readStoredJsonObject } from "./stored-json.js";
 import { registeredPaneOf } from "./binding-pane.js";
 import { runnerTerminalEnded } from "../adapters/runner-terminal-ended.js";
 import { launchFailureSuffix, paneTailQuote } from "./launch-failure-report.js";
+import { redactTranscriptContent } from "./transcript-redaction.js";
 import { startupTextId } from "./seat-messaging/long-message.js";
 import { messageId, type MessageId } from "./seat-messaging/ports.js";
 
@@ -865,7 +866,9 @@ export class StartupOrchestrator {
       ...(freshContextPending ? { freshContextPending: true } : {}),
       ...(input.submissionDiagnostics?.length ? { submissionDiagnostics: input.submissionDiagnostics } : {}),
     });
-    return { ok: false, startupStatus: status, errors, evidence, ...(recovery ? { recovery } : {}),
+    // workspaces-o9o.3: every StartupResult failure passes here. Its evidence is pane text the adapters captured raw, and restore
+    // persists it (attentionEvidence in restore.completed), so it is redacted once, here.
+    return { ok: false, startupStatus: status, errors, evidence: evidence === undefined ? undefined : redactTranscriptContent(evidence), ...(recovery ? { recovery } : {}),
       ...(missingConversation ? { missingConversation: true as const } : {}) };
   }
 

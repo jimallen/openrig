@@ -95,6 +95,7 @@ export type ReconcileNodeResult =
 import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, freshSeatLaunchCommand } from "./active-occupant.js";
 import { rigAdviceHandle, rigAdviceHandleIn } from "./rig-ref.js";
 import { registeredPaneOf } from "./binding-pane.js";
+import { redactTranscriptContent } from "./transcript-redaction.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -1574,7 +1575,8 @@ export class RestoreOrchestrator {
             logicalId: node.logicalId,
             status: "attention_required",
             error: resumeOutcome.message,
-            attentionEvidence: resumeOutcome.evidence ?? null,
+            // workspaces-o9o.3: the resume adapters capture this raw from the pane, and restore.completed persists it.
+            attentionEvidence: resumeOutcome.evidence === undefined ? null : redactTranscriptContent(resumeOutcome.evidence),
           };
         } else {
           // OPR.0.3.4.2 (B): resume CONCLUDED failed — the launched session is

@@ -357,6 +357,31 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
       ctx.db.close();
     });
 
+    // workspaces-o9o.3: the resume's pane evidence is copied into attentionEvidence and the whole RestoreResult is persisted in
+    // the restore.completed event. At d0303ca8 a secret-shaped token in that pane reached the events table verbatim.
+    it("Claude resume attention evidence is redacted on the node result and in the persisted restore.completed event (workspaces-o9o.3)", async () => {
+      const token = "sk-ant-api03-0123456789abcdefXYZ";
+      const ctx = setupClaudeAttentionRequiredScenario({
+        claudeResult: {
+          ok: false,
+          code: "attention_required",
+          message: "Claude is at a resume-selection prompt; an operator must choose the conversation to continue.",
+          evidence: `ANTHROPIC_API_KEY=${token}\nChoose a conversation to resume:\n  1. project-foo`,
+        },
+      });
+
+      const outcome = await ctx.orchestrator.restore(ctx.snapshotId);
+      if (!outcome.ok) throw new Error(`restore failed: ${outcome.code}`);
+      const workerNode = outcome.result.nodes.find((n) => n.nodeId === ctx.node.id);
+      expect(workerNode?.attentionEvidence).toBe("ANTHROPIC_API_KEY=[REDACTED]\nChoose a conversation to resume:\n  1. project-foo");
+      const payloads = (ctx.db.prepare("SELECT payload FROM events WHERE type = 'restore.completed'").all() as { payload: string }[]).map((r) => r.payload);
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toContain("[REDACTED]");
+      expect(payloads[0]).not.toContain(token);
+
+      ctx.db.close();
+    });
+
     // Codex side — closes the false-positive `resumed` shape that fire-and-
     // forget left open. Driver patch (this slice) added Codex verifyResume
     // mirroring Claude using existing native-resume-probe Codex outcomes.
