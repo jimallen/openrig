@@ -2,6 +2,7 @@
 // real-fs tests use the same object, so what they prove about symlinks and removal is what the daemon does.
 import * as fs from "node:fs";
 import nodePath from "node:path";
+import { randomBytes } from "node:crypto";
 import type { PluginVendorFs } from "../domain/plugin-vendor-service.js";
 
 /** List every non-directory entry under `dir` as a relative path. A symlink is listed as itself and never followed. */
@@ -35,10 +36,31 @@ function gitWorkTreeOf(path: string): string | null {
   }
 }
 
+/**
+ * Replace `path` atomically: write a temp file in the same directory, created exclusively (O_EXCL, so it never opens
+ * through a link planted at its name), set its mode, then rename it over `path` (rename replaces a link at `path`
+ * itself, never its target). On any failure the temp this call created is removed and the old file is untouched.
+ */
+function writeFileAtomic(path: string, content: string, mode?: number): void {
+  const temp = nodePath.join(nodePath.dirname(path), `.${nodePath.basename(path)}.openrig-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+  let created = false;
+  try {
+    const fd = fs.openSync(temp, "wx", mode ?? 0o644);
+    created = true;
+    try { fs.writeFileSync(fd, content, "utf-8"); } finally { fs.closeSync(fd); }
+    if (mode !== undefined) fs.chmodSync(temp, mode);
+    fs.renameSync(temp, path);
+    created = false;
+  } catch (err) {
+    if (created) { try { fs.unlinkSync(temp); } catch { /* best effort: the original error is the one to report */ } }
+    throw err;
+  }
+}
+
 export function nodePluginVendorFs(): PluginVendorFs {
   return {
     readFile: (p) => fs.readFileSync(p, "utf-8"),
-    writeFile: (p, c) => fs.writeFileSync(p, c, "utf-8"),
+    writeFile: writeFileAtomic,
     exists: (p) => fs.existsSync(p),
     mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
     listFiles,

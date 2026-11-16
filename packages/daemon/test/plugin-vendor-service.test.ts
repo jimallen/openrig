@@ -275,8 +275,11 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
     const skill = "/home/test/.agents/skills/openrig-skills/SKILL.md";
     const fs = mockFs({
       ...VENDORED_OPENRIG_CORE,
-      "/home/test/.openrig/plugins/openrig-core/.claude-plugin/plugin.json": '{"name":"openrig-core","version":"0.2.0"}',
-      "/home/test/.openrig/plugins/openrig-core/skills/openrig-skills/SKILL.md": "# bundled 0.2.0",
+      // workspaces-o9o.17 (verify-sec review): global seeds come from the running package, so the bundled skill lives in
+      // the package fixture, not in OPENRIG_HOME/plugins.
+      "/asset-root/openrig-core/.claude-plugin/plugin.json": '{"name":"openrig-core","version":"0.2.0"}',
+      "/asset-root/openrig-core/.codex-plugin/plugin.json": '{"name":"openrig-core","version":"0.2.0","description":"v"}',
+      "/asset-root/openrig-core/skills/openrig-skills/SKILL.md": "# bundled 0.2.0",
       [marker]: "0.1.0\n",
       [skill]: "# projected 0.1.0",
     });
@@ -302,8 +305,8 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
     const skill = "/home/test/.agents/skills/openrig-skills/SKILL.md";
     const fs = mockFs({
       ...VENDORED_OPENRIG_CORE,
-      "/home/test/.openrig/plugins/openrig-core/.claude-plugin/plugin.json": '{"name":"openrig-core","version":"0.1.0"}',
-      "/home/test/.openrig/plugins/openrig-core/skills/openrig-skills/SKILL.md": "# bundled 0.1.0",
+      // Seeds come from the running package (see the row above).
+      "/asset-root/openrig-core/skills/openrig-skills/SKILL.md": "# bundled 0.1.0",
       [marker]: "0.2.0\n",
       [skill]: "# projected 0.2.0",
     });

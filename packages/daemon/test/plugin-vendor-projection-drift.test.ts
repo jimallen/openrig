@@ -92,11 +92,11 @@ function driftedHost() {
 }
 
 /** What a daemon start does with openrig-core (startup.ts: ensureLatest, then the global seeds). */
-async function daemonStart(host: ReturnType<typeof driftedHost>, logs: string[] = [], errors: string[] = []) {
+async function daemonStart(host: ReturnType<typeof driftedHost>, logs: string[] = [], errors: string[] = [], vendorFs = startupVendorFs()) {
   const vendor = new PluginVendorService({
     vendoredAssetsDir: host.assetsDir,
     userPluginsDir: nodePath.join(host.openrigHome, "plugins"),
-    fs: startupVendorFs(),
+    fs: vendorFs,
     httpClient: async () => ({ ok: false, status: 404 }),
     logger: (...args: unknown[]) => logs.push(args.join(" ")),
     errorLogger: (...args: unknown[]) => errors.push(args.join(" ")),
@@ -366,5 +366,77 @@ describe("o9o.17: a global skill target inside a git work tree is the repo's, an
     expect(git(linked, "status", "--porcelain", "--untracked-files=all")).toBe("");
     // Positive control: ~/.claude is outside git and gets the package's seed.
     expect(read(nodePath.join(host.home, ".claude", "skills", "refocusing", "SKILL.md"))).toBe(PACKAGE_TREE["skills/refocusing/SKILL.md"]);
+  });
+});
+
+describe("o9o.17 (verify-sec review): no write or delete through a symlinked ancestor, and seeds come from the running package", () => {
+  it("OPENRIG_HOME/plugins as a symlink to an outside folder: nothing there is overwritten or deleted, and the refusal is reported", async () => {
+    const host = driftedHost();
+    const plugins = nodePath.join(host.openrigHome, "plugins");
+    const external = nodePath.join(host.home, "external-plugins");
+    fs.renameSync(plugins, external);
+    fs.symlinkSync(external, plugins);
+    const errors: string[] = [];
+    await daemonStart(host, [], errors);
+
+    expect(read(nodePath.join(external, PLUGIN, "hooks", "claude.json"))).toBe(STALE_HOOKS);
+    expect(fs.existsSync(nodePath.join(external, PLUGIN, "hooks", "scripts", "retired-helper.cjs"))).toBe(true);
+    expect(fs.existsSync(nodePath.join(external, PLUGIN, "hooks", "scripts", "rig-body-guard.cjs"))).toBe(false);
+    expect(errors.join("\n")).toContain(`not writing ${nodePath.join(plugins, PLUGIN)}: ${plugins} is a symlink`);
+  });
+
+  it("a global seed root that is a symlink to an outside folder is not written, even when its seed is marked", async () => {
+    const host = driftedHost();
+    const claudeRoot = nodePath.join(host.home, ".claude", "skills");
+    const external = nodePath.join(host.home, "external-skills");
+    fs.renameSync(claudeRoot, external);
+    fs.symlinkSync(external, claudeRoot);
+    await daemonStart(host);
+
+    expect(read(nodePath.join(external, "openrig-skills", "SKILL.md"))).toBe(skill("openrig-skills", "stale text"));
+    expect(fs.existsSync(nodePath.join(external, "refocusing"))).toBe(false);
+    // Positive control: the same start refreshes the seed under the real ~/.agents/skills.
+    expect(read(nodePath.join(host.home, ".agents", "skills", "openrig-skills", "SKILL.md"))).toBe(PACKAGE_TREE["skills/openrig-skills/SKILL.md"]);
+  });
+
+  it("a directory swapped for an outside symlink after the first check is caught by the check right before the write", async () => {
+    const host = driftedHost();
+    const hooks = nodePath.join(host.openrigHome, "plugins", PLUGIN, "hooks");
+    const outside = nodePath.join(host.home, "outside-hooks");
+    writeTree(outside, { "claude.json": "outside\n" });
+    const real = startupVendorFs();
+    let swapped = false;
+    let reads = 0;
+    // The swap lands while mirror reads the package's hooks manifest: after the loop's first check, before the write.
+    // (The 1st read of that file is the drift check before mirror; the 2nd is mirror's own.)
+    const racing = { ...real, readFile: (p: string) => {
+      if (p === nodePath.join(host.packageDir, "hooks", "claude.json")) reads++;
+      if (!swapped && reads === 2) {
+        swapped = true;
+        fs.renameSync(hooks, `${hooks}.moved`);
+        fs.symlinkSync(outside, hooks);
+      }
+      return real.readFile(p);
+    } };
+    await daemonStart(host, [], [], racing);
+
+    expect(swapped).toBe(true);
+    expect(read(nodePath.join(outside, "claude.json"))).toBe("outside\n");
+    expect(fs.readdirSync(outside)).toEqual(["claude.json"]);
+  });
+
+  it("with the plugin copy left alone (a symlink), a marked global seed still gets the running package's text, not the copy's", async () => {
+    const host = driftedHost();
+    const copy = nodePath.join(host.openrigHome, "plugins", PLUGIN);
+    const elsewhere = nodePath.join(host.home, "dev-checkout", PLUGIN);
+    fs.mkdirSync(nodePath.dirname(elsewhere), { recursive: true });
+    fs.renameSync(copy, elsewhere);
+    fs.symlinkSync(elsewhere, copy);
+    await daemonStart(host);
+
+    expect(read(nodePath.join(elsewhere, "skills", "openrig-skills", "SKILL.md"))).toBe(skill("openrig-skills", "stale text"));
+    for (const root of [nodePath.join(host.home, ".claude", "skills"), nodePath.join(host.home, ".agents", "skills")]) {
+      expect(read(nodePath.join(root, "openrig-skills", "SKILL.md"))).toBe(PACKAGE_TREE["skills/openrig-skills/SKILL.md"]);
+    }
   });
 });

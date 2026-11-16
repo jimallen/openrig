@@ -230,8 +230,12 @@ plugin at every daemon start, whatever version the installed copy declares (equa
 newer: workspaces-o9o.17, Jim 2026-11-16, "Running package wins"). It writes changed files,
 reconciles file modes, removes files the package no longer ships, logs the installed version it
 replaced, then verifies the copy and reports any path that still differs through `errorLogger`
-(`console.error` at startup). Writes and removals never leave the plugin folder and never pass
-through or land on a symlink; a copy that is itself a symlink is left alone and reported. Missing
+(`console.error` at startup). Right before each write, chmod, mkdir or delete, every path component
+from `OPENRIG_HOME` (a seed's anchor: its root's parent) down to the file is lstat-checked, and a
+symlink or non-directory anywhere on it refuses the step; a refused copy or seed root is reported.
+Writes are atomic: an O_EXCL temp file in the same folder, its mode set, renamed over the target;
+a failed write removes the temp and leaves the old file. The window between that check and the
+syscall cannot be closed in Node (no `openat`/`unlinkat` on a directory handle). Missing
 target version authority (no manifest) is preserved rather than overwritten; invalid or
 conflicting manifest versions are errors. Global skill seeds (`ensureSkillDirGlobally`) follow
 the same rule for a target carrying OpenRig's `.openrig-vendor-version` marker; an unmarked or
@@ -240,7 +244,8 @@ symlinked target is left unchanged, and so is any target inside a git work tree 
 authority. Seat copies under `<cwd>/.claude` and `<cwd>/.codex` are
 re-projected from this folder at each seat start, and do not yet remove files the folder dropped.
 
-`ensureSkillGlobally()` projects a named plugin skill using a vendor-version marker.
+`ensureSkillGlobally()` projects a named plugin skill, read from the running package (never from
+`OPENRIG_HOME/plugins`), using a vendor-version marker.
 An existing unversioned global skill remains externally owned. Startup wires this service
 and its filesystem implementation; inspect that wiring when changing projection roots. At
 startup only `openrig-core` is vendored, and its `openrig-skills` and `refocusing` skills are

@@ -28,7 +28,12 @@ import { createHash } from "node:crypto";
 
 export interface PluginVendorFs {
   readFile(path: string): string;
-  writeFile(path: string, content: string): void;
+  /**
+   * Replace `path` with `content` atomically (a temp file in the same directory, renamed over it), so a failed write
+   * leaves the old file or none, never a partial one, and leaves no temp behind. `mode` sets the new file's permission
+   * bits before the rename.
+   */
+  writeFile(path: string, content: string, mode?: number): void;
   exists(path: string): boolean;
   mkdirp(path: string): void;
   listFiles(dir: string): string[];
@@ -158,50 +163,72 @@ export class PluginVendorService {
       }
     }
 
-    this.mirror(sourceDir, targetDir, new Set());
+    this.mirror(sourceDir, targetDir, new Set(), nodePath.dirname(this.userPluginsDir));
     this.reportDrift(`plugin '${pluginName}'`, sourceDir, targetDir, new Set());
   }
 
   /**
-   * Make targetDir hold exactly sourceDir's files (and their modes), apart from the
-   * names in `keep`. Writes and removals stay inside targetDir: a path that leaves it,
-   * or that passes through or lands on a symlink, is never written or removed, so a
-   * link inside the copy cannot carry a write or a delete to a file outside it.
+   * Make targetDir hold exactly sourceDir's files (and their modes), apart from the names in `keep`. Every mutating
+   * step (mkdirp, write, chmod, unlink) is preceded, immediately, by a check that walks every component from `anchor`
+   * down to the path it touches and refuses a symlink or a non-directory among them (workspaces-o9o.17, verify-sec
+   * review): a symlinked ancestor (OPENRIG_HOME/plugins -> elsewhere) or a link inside the copy cannot carry a write or a
+   * delete outside it. A refused target is reported, not written.
+   *
+   * Residual, not closable in Node: a directory swapped for a symlink between that check and the syscall that follows
+   * it. Node has no openat/renameat/unlinkat on a directory handle. rename and unlink act on the final component itself
+   * (never through a link there), and temps are created O_EXCL, so the window is an ancestor swap in those few
+   * microseconds, by someone who can already write inside the managed tree.
    */
-  private mirror(sourceDir: string, targetDir: string, keep: ReadonlySet<string>): void {
+  private mirror(sourceDir: string, targetDir: string, keep: ReadonlySet<string>, anchor: string): void {
+    const refusal = this.unsafe(anchor, targetDir, targetDir);
+    if (refusal !== null) {
+      this.errorLogger(`[plugin-vendor] not writing ${targetDir}: ${refusal}`);
+      return;
+    }
     this.fs.mkdirp(targetDir);
     const sourceFiles = this.fs.listFiles(sourceDir);
     const wanted = new Set(sourceFiles);
     for (const relPath of sourceFiles) {
       const srcPath = nodePath.join(sourceDir, relPath);
       const destPath = nodePath.join(targetDir, relPath);
-      if (this.escapes(targetDir, destPath)) continue;
+      if (this.unsafe(anchor, targetDir, destPath)) continue;
       const content = this.fs.readFile(srcPath);
+      const mode = this.fs.statMode ? this.fs.statMode(srcPath) & 0o777 : undefined;
       // Hash-skip: only write if content differs (idempotent re-runs). Reconcile mode even on
       // skip — a byte-identical copy staged earlier may still carry the wrong (default) mode.
       if (this.fs.exists(destPath) && hashContent(this.fs.readFile(destPath)) === hashContent(content)) {
+        if (this.unsafe(anchor, targetDir, destPath)) continue;
         this.preserveMode(srcPath, destPath);
         continue;
       }
+      if (this.unsafe(anchor, targetDir, destPath)) continue;
       this.fs.mkdirp(nodePath.dirname(destPath));
-      this.fs.writeFile(destPath, content);
-      this.preserveMode(srcPath, destPath);
+      if (this.unsafe(anchor, targetDir, destPath)) continue;
+      this.fs.writeFile(destPath, content, mode);
     }
     for (const relPath of this.fs.listFiles(targetDir)) {
       if (wanted.has(relPath) || keep.has(relPath)) continue;
       const destPath = nodePath.join(targetDir, relPath);
-      if (this.escapes(targetDir, destPath)) continue;
+      if (this.unsafe(anchor, targetDir, destPath)) continue;
       this.fs.removeFile(destPath);
     }
   }
 
-  /** Why `path` may not be written or removed as part of `root`, or null when it may. */
-  private escapes(root: string, path: string): string | null {
-    const rel = nodePath.relative(root, path);
-    if (rel === "" || rel === ".." || rel.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(rel)) return "outside the managed directory";
-    if (this.fs.lstat(root) === "symlink") return "the managed directory is a symlink";
-    let current = root;
-    for (const part of rel.split(nodePath.sep)) {
+  /**
+   * Why `path` may not be written or removed as part of `root`, or null when it may: `path` must sit lexically inside
+   * `root`, `root` inside `anchor`, and no component from below `anchor` down to `path` may be a symlink or (above `path`)
+   * a non-directory. Components that do not exist yet end the walk: mkdirp creates them as real directories.
+   */
+  private unsafe(anchor: string, root: string, path: string): string | null {
+    const inside = (outer: string, inner: string, allowSame: boolean) => {
+      const rel = nodePath.relative(outer, inner);
+      if (rel === "") return allowSame;
+      return !(rel === ".." || rel.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(rel));
+    };
+    if (!inside(root, path, path === root)) return "outside the managed directory";
+    if (!inside(anchor, root, false)) return `the managed directory is not inside ${anchor}`;
+    let current = anchor;
+    for (const part of nodePath.relative(anchor, path).split(nodePath.sep)) {
       current = nodePath.join(current, part);
       const kind = this.fs.lstat(current);
       if (kind === null) return null;
@@ -250,25 +277,27 @@ export class PluginVendorService {
     if ((this.fs.statMode(dest) & 0o777) !== srcMode) this.fs.chmod(dest, srcMode);
   }
 
-  /** Project one plugin skill into the harness-global skill roots. */
+  /** Project one plugin skill, from the running package, into the harness-global skill roots. */
   ensureSkillGlobally(
     pluginName: string,
     skillName: string,
     globalSkillRoots: string[],
   ): void {
+    // From the running package, never from OPENRIG_HOME/plugins: a copy the refresh refused (a symlinked one, say)
+    // would otherwise carry its old seed over a marked global target (verify-sec review, workspaces-o9o.17).
     const sourceDir = nodePath.join(
-      this.userPluginsDir,
+      this.vendoredAssetsDir,
       pluginName,
       "skills",
       skillName,
     );
     if (!this.fs.exists(sourceDir)) {
       throw new Error(
-        `Required global seed '${skillName}' is missing from plugin '${pluginName}'`,
+        `Required global seed '${skillName}' is missing from the running package's plugin '${pluginName}'`,
       );
     }
 
-    const sourceVersion = this.pluginVersion(nodePath.join(this.userPluginsDir, pluginName));
+    const sourceVersion = this.pluginVersion(nodePath.join(this.vendoredAssetsDir, pluginName));
     this.ensureSkillDirGlobally(sourceDir, skillName, sourceVersion, globalSkillRoots);
   }
 
@@ -318,8 +347,10 @@ export class PluginVendorService {
           this.logger(`[plugin-vendor] replacing global skill '${skillName}' ${targetVersion} at ${targetDir} with the running package's ${sourceVersion} (${differing.length} path(s) differ)`);
         }
       }
-      this.mirror(sourceDir, targetDir, keep);
-      if (!this.escapes(targetDir, versionMarker)) this.fs.writeFile(versionMarker, `${sourceVersion}\n`);
+      // The anchor is the seed root's parent (~/.claude for ~/.claude/skills): a symlinked seed root is refused.
+      const anchor = nodePath.dirname(root);
+      this.mirror(sourceDir, targetDir, keep, anchor);
+      if (!this.unsafe(anchor, targetDir, versionMarker)) this.fs.writeFile(versionMarker, `${sourceVersion}\n`);
       this.reportDrift(`global skill '${skillName}'`, sourceDir, targetDir, keep);
     }
   }
