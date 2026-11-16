@@ -25,7 +25,9 @@ import { join, relative, resolve, isAbsolute, sep } from "node:path";
  * - A symlink below the root is never followed (its target is not ours to change), and nothing outside the root is
  *   ever walked.
  *
- * Residual, accepted (Jim, 2026-11-16, the same threat model as o9o.17, "Accept the residual"): an entry, or an
+ * Residual, accepted on 2026-11-16 under the same-user threat model: first for o9o.17 by OpenRig's 15-minute auto-answer
+ * (queue record qa-f5c084b1679e94516e44aff1e88a8361, which took the Recommended option under Jim's rule of 2026-11-08),
+ * then confirmed for o9o.36 by Jim's own modal answer at 20:03Z. The window: an entry, or an
  * ancestor directory, swapped for a symlink between the lstat that classifies it and the chmod that follows. Node
  * has no fchmodat with AT_SYMLINK_NOFOLLOW and no openat on a directory handle, so the window cannot be closed
  * here. Precondition: a concurrent process running as the same user, writing inside the private root during that

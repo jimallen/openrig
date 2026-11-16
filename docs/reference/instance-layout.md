@@ -68,8 +68,11 @@ transcripts `0600`.
 One window stays open: a file or folder swapped for a symlink between the check
 and the mode change. Closing it needs `openat`-style calls that Node does not
 have. It needs a concurrent process running as the same user, which can already
-read and change those files, so Jim accepted it on 2026-11-16 under the same
-threat model as o9o.17.
+read and change those files.
+This residual was accepted on 2026-11-16 under the same-user threat model: first
+for o9o.17 by OpenRig's 15-minute auto-answer (queue record
+qa-f5c084b1679e94516e44aff1e88a8361, the Recommended option under Jim's rule of
+2026-11-08), then confirmed for o9o.36 by Jim's own modal answer at 20:03Z.
 
 ## Context library setting
 
