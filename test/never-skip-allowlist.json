@@ -318,6 +318,54 @@
   "when": "process.platform === \"win32\""
  },
  {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > real_git: the first git on PATH that is not this shim > bash:3.2 with no /usr/bin/git: resolves the next git on PATH, no stderr, no exec loop (NOT RUN without docker and the bash:3.2 image)",
+  "when": "!dockerImagePresent(\"bash:3.2\")"
+ },
+ {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > real_git: the first git on PATH that is not this shim > bash:5.2 with no /usr/bin/git: resolves the next git on PATH, no stderr, no exec loop (NOT RUN without docker and the bash:5.2 image)",
+  "when": "!dockerImagePresent(\"bash:5.2\")"
+ },
+ {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > real_git: the first git on PATH that is not this shim > bash:3.2: skips the shim held as a file symlink in another PATH dir, no exec loop (NOT RUN without docker and the bash:3.2 image)",
+  "when": "!dockerImagePresent(\"bash:3.2\")"
+ },
+ {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > real_git: the first git on PATH that is not this shim > bash:3.2: skips the shim held as a hard link in another PATH dir, no exec loop (NOT RUN without docker and the bash:3.2 image)",
+  "when": "!dockerImagePresent(\"bash:3.2\")"
+ },
+ {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > real_git: the first git on PATH that is not this shim > bash:5.2: skips the shim held as a file symlink in another PATH dir, no exec loop (NOT RUN without docker and the bash:5.2 image)",
+  "when": "!dockerImagePresent(\"bash:5.2\")"
+ },
+ {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > real_git: the first git on PATH that is not this shim > bash:5.2: skips the shim held as a hard link in another PATH dir, no exec loop (NOT RUN without docker and the bash:5.2 image)",
+  "when": "!dockerImagePresent(\"bash:5.2\")"
+ },
+ {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > worktree add redirect: only the path word changes > bash:3.2: a relative './' inside path is unchanged and '-b feat <outside>' keeps -b (NOT RUN without docker and the bash:3.2 image)",
+  "when": "!dockerImagePresent(\"bash:3.2\")"
+ },
+ {
+  "file": "packages/daemon/test/git-worktree-shim.test.ts",
+  "kind": "skipIf",
+  "task": "git-worktree-shim > worktree add redirect: only the path word changes > bash:3.2: '..' and a symlink portal are redirected, '.' is refused, a trailing newline is kept, the diagnostic is one line (NOT RUN without docker and the bash:3.2 image)",
+  "when": "!dockerImagePresent(\"bash:3.2\")"
+ },
+ {
   "file": "packages/daemon/test/hc-capture.real.test.ts",
   "kind": "skipIf",
   "task": "HcCapture against a private hc core",

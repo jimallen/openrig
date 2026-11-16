@@ -63,16 +63,46 @@ if [ "\$#" -ge 2 ] && [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
     esac
   done
   if [ -n "\$unknown" ]; then
-    printf '%s\\n' "openrig git shim: worktree path not checked (unrecognised option \$unknown)" >&2
+    # %q: a newline or a control character in the word stays on this one line, quoted.
+    printf 'openrig git shim: worktree path not checked (unrecognised option %q)\\n' "\$unknown" >&2
     exec "\$real" "\$@"
   fi
   target="\${pathi:+\${words[\$pathi]}}"
   toplevel="\$("\$real" rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "\$target" ] && [ -n "\$toplevel" ]; then
-    case "\$target" in /*) abs="\$target" ;; *) abs="\$(pwd -P)/\$target" ;; esac
-    while [[ "\$abs" == */./* ]]; do abs="\${abs%%/./*}/\${abs#*/./}"; done
-    if [[ "\$abs" != "\$toplevel/.rig-worktrees/"* ]]; then
-      words[\$pathi]="\$toplevel/.rig-worktrees/\$(basename -- "\$target")"
+    # Inside is judged on the PHYSICAL path, not its text: the deepest ancestor that exists is
+    # resolved with cd -P, the rest is taken by name. A '..' in the part that does not exist yet
+    # counts as outside. (A dangling symlink there is no way out: git fails to create through it,
+    # measured on 2.43.0.) The target never goes through \$(...),
+    # which strips a trailing newline; the resolved ancestor is printed with a '/' sentinel.
+    case "\$target" in /*) p="\$target" ;; *) p="\$(pwd -P)/\$target" ;; esac
+    rest=""; inside=yes
+    while [ -n "\$p" ] && [ ! -d "\$p" ]; do
+      c="\${p##*/}"
+      case "\$c" in
+        ..) inside=no; break ;;
+        .|"") ;;
+        *) rest="/\$c\$rest" ;;
+      esac
+      p="\${p%/*}"
+    done
+    if [ "\$inside" = yes ]; then
+      head="\$(cd -P -- "\${p:-/}" 2>/dev/null && printf '%s/' "\$PWD")" || inside=no
+      [[ "\${head%/}\$rest" == "\$toplevel/.rig-worktrees/"?* ]] || inside=no
+    fi
+    if [ "\$inside" = no ]; then
+      # Redirect by the path's last name (basename, without \$(...)). A name that is not a
+      # directory inside .rig-worktrees ('', '.', '..', or a symlink already there) is refused.
+      name="\$target"
+      while [ "\${#name}" -gt 1 ] && [ "\${name%/}" != "\$name" ]; do name="\${name%/}"; done
+      name="\${name##*/}"
+      dest="\$toplevel/.rig-worktrees/\$name"
+      case "\$name" in ""|.|..) dest="" ;; esac
+      if [ -z "\$dest" ] || [ -L "\$dest" ]; then
+        printf 'openrig git shim: refusing worktree path %q (it does not name a directory inside %q)\\n' "\$target" "\$toplevel/.rig-worktrees" >&2
+        exit 128
+      fi
+      words[\$pathi]="\$dest"
       mkdir -p "\$toplevel/.rig-worktrees"
       exec "\$real" "\${words[@]}"
     fi
