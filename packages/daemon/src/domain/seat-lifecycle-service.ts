@@ -97,8 +97,8 @@ export interface SeatLifecycleDeps {
   /** OF-32: re-reads a fresh seat's startup policy from its rig's recorded spec source (PodRigInstantiator). */
   seatStartupSource?: SeatStartupSpecReader;
   /** Where a session's native transcript is (the context-usage store); without it native effort is NOT VERIFIED. */
-  /** workspaces-o9o.8: the seat's leases and folder, read before a fresh launch stops a live occupant. Absent: the lease check reads as
-   *  unknown (a warning) and no handover file is looked for. */
+  /** workspaces-o9o.8: the seat's leases and folder, read before a fresh launch stops a live occupant. The daemon always wires it (the
+   *  seat route's service factory); a service built without it runs no relaunch checks and looks for no handover file. */
   relaunchChecks?: RelaunchCheckPort;
   /** workspaces-o9o.8: where `rig seat lease` registers a seat's leases. Absent: the verb is unavailable. */
   seatLeases?: SeatLeaseRegistry;
@@ -1459,12 +1459,14 @@ export class SeatLifecycleService {
         stopRequired = true;
         if (!input.stop) blockers.push({ code: "session_live", message: "A live managed occupant requires --stop." });
         // workspaces-o9o.8: what a launch would judge before it stopped this occupant.
-        relaunchChecks = await this.relaunchChecks(canonicalSessionName, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)));
-        if (blockingChecks(relaunchChecks).length > 0) {
-          blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
-            guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
+        if (this.relaunchCheckPort) {
+          relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)));
+          if (blockingChecks(relaunchChecks).length > 0) {
+            blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
+              guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
+          }
+          warnings.push(...checkWarnings(relaunchChecks));
         }
-        warnings.push(...checkWarnings(relaunchChecks));
       }
     }
     const launchable = blockers.length > 0 ? false : complete ? true : null;
@@ -1598,9 +1600,9 @@ export class SeatLifecycleService {
     if (canonicalProbe.state === "present") {
       const currentSession = await this.validateFreshCollision(resolved, canonicalSessionName, input.stop === true);
       if ("code" in currentSession) return currentSession;
-      // workspaces-o9o.8: the seat's own unfinished work is judged BEFORE its occupant is stopped.
-      relaunchChecks = await this.relaunchChecks(canonicalSessionName, despite);
-      if (blockingChecks(relaunchChecks).length > 0) {
+      // workspaces-o9o.8: the seat's own unfinished work is judged BEFORE its occupant is stopped (when the daemon wires the checks).
+      relaunchChecks = this.relaunchCheckPort ? await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, despite) : undefined;
+      if (relaunchChecks && blockingChecks(relaunchChecks).length > 0) {
         return {
           ok: false, code: "relaunch_check_held", relaunchChecks,
           message: `Fresh launch refused before anything was stopped: ${describeHeld(relaunchChecks, canonicalSessionName)}`,
@@ -1905,11 +1907,8 @@ export class SeatLifecycleService {
   }
 
   /** workspaces-o9o.8: the leases and agent children of the seat whose live occupant is about to be stopped. */
-  private async relaunchChecks(sessionName: string, despite: readonly RelaunchCheckName[]): Promise<RelaunchChecks> {
-    const port = this.relaunchCheckPort;
-    const lease = port
-      ? judgeLeases(() => port.leases(sessionName), despite)
-      : { verdict: "unknown" as const, cause: "this daemon has no lease record wired" };
+  private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, despite: readonly RelaunchCheckName[]): Promise<RelaunchChecks> {
+    const lease = judgeLeases(() => port.leases(sessionName), despite);
     let panePid: number | null = null;
     let processes: NativeProcessRow[] | null = null;
     try {

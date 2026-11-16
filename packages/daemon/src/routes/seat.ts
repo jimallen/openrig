@@ -430,7 +430,8 @@ seatRoutes.post("/launch-plan/:seatRef", async (c) => {
   const despite = despiteOf(body);
   if (despite === null) return c.json(INVALID_DESPITE, 400);
   const result = await seatLifecycleService(c).planFresh({
-    seatRef: c.req.param("seatRef")!, fresh: body["fresh"] === true, stop: body["stop"] === true, startupFrom, despite,
+    seatRef: c.req.param("seatRef")!, fresh: body["fresh"] === true, stop: body["stop"] === true, startupFrom,
+    ...(despite.length > 0 ? { despite } : {}),
   });
   return result.ok ? c.json(result) : c.json(result, seatLifecycleStatus(result.code));
 });
@@ -446,7 +447,7 @@ seatRoutes.post("/launch/:seatRef", async (c) => {
   const despite = despiteOf(body);
   if (despite === null) return c.json(INVALID_DESPITE, 400);
   const result = await seatLifecycleService(c).launchFresh({
-    despite,
+    ...(despite.length > 0 ? { despite } : {}),
     startupFrom,
     seatRef: c.req.param("seatRef")!,
     fresh: body["fresh"] === true,
