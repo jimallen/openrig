@@ -14,7 +14,8 @@ describe("restore-check Claude activity-hook contract", () => {
     // Native comms step 2 adds PostToolUse and PostToolUseFailure: a seat projected before it shows yellow (missing relay
     // entries) until relaunched, which is true of that seat.
     // OF-278 adds PermissionRequest (scoped to AskUserQuestion), once: the question-wait hook beside the relay is not a second relay entry.
-    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Notification"]);
+    // workspaces-o9o.4 adds PreToolUse (async): a seat projected before it is yellow, missing PreToolUse, until relaunched.
+    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Notification"]);
   });
 
   it("does not claim hook readiness when the canonical manifest is unavailable", () => {

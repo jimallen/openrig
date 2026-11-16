@@ -98,7 +98,7 @@ describe("SessionTransport and the pump", () => {
         clock.now = HOOK_AT + 66 * 60_000;
         const result = await transport.send(SEAT, "hello", { deliveryId: "m1", actorSession: "lead@hr" });
         expect(result.seatPosture).toMatchObject({ kind: "unknown-open-turn", source: "runtime_hook", tool: "bash", at: "2031-03-04T16:04:41.008Z" });
-        expect(result.warning).toBe("Accepted, not yet received: OpenRig carries it until the seat's gate records it. (seat unknown: last hook PreToolUse bash 16:04Z (66 min ago), no Stop since)");
+        expect(result.warning).toBe("Accepted, not yet received: OpenRig carries it until the seat's gate records it. (seat unknown: bash started 16:04Z, 66 min ago, no end recorded)");
         expect(result.warning).not.toContain("busy");
         expect(result.warning).not.toContain("\n");
       });
@@ -107,7 +107,7 @@ describe("SessionTransport and the pump", () => {
         clock.now = HOOK_AT + 2 * 60_000;
         const result = await transport.send(SEAT, "hello", { deliveryId: "m1", actorSession: "lead@hr" });
         expect(result.seatPosture).toMatchObject({ kind: "busy" });
-        expect(result.warning).toContain("(seat busy: last tool started 16:04Z (bash))");
+        expect(result.warning).toContain("(seat busy: running bash for 2 min (since 16:04Z))");
       });
 
       // 2026-11-16: "3 held" beside an empty `rig seat held-messages` (which lists only guard-retained rows) read as a stuck seat.
@@ -173,13 +173,15 @@ describe("SessionTransport and the pump", () => {
           clock.now = HOOK_AT + 66 * 60_000;
         };
 
-        it("working since the run began: busy, sourced to hc status, in the field and in the warning", async () => {
+        // workspaces-o9o.4: the run is working (hc) and its newest hook is a tool start with no end, so the answer names that tool and times
+        // it from its own start, not from the start of the run.
+        it("an open tool call in a working run: busy on that tool, timed from its start, sourced to hc status, in the field and in the warning", async () => {
           const asked: string[] = [];
           piSeat(async (seat) => { asked.push(seat); return { live: true, status: "working", sinceMs }; });
           const result = await transport.send(SEAT, "hello", { deliveryId: "m1", actorSession: "lead@hr" });
           expect(asked).toEqual([SEAT]);
-          expect(result.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.000Z" });
-          expect(result.warning).toBe("Accepted, not yet received: OpenRig carries it until the seat's gate records it. (seat busy: working since 16:04Z (hc status))");
+          expect(result.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", tool: "bash", at: "2031-03-04T16:04:41.008Z" });
+          expect(result.warning).toBe("Accepted, not yet received: OpenRig carries it until the seat's gate records it. (seat busy: running bash for 66 min (since 16:04Z, hc status))");
         });
 
         it.each([

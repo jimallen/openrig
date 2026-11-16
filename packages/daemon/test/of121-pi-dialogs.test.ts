@@ -78,7 +78,7 @@ describe("OF-121 Pi nested tool calls", () => {
     r.feed({ type: "tool_execution_start", toolCallId: "p1", toolName: "task", args: {} },
       { type: "tool_execution_end", toolCallId: "p1", toolName: "task" });
     expect(r.lines).toEqual(["  ⚙ task …", "  ⚙ task done"]);
-    expect(hooks(r.activity)).toEqual([["PreToolUse", "task"]]);
+    expect(hooks(r.activity)).toEqual([["PreToolUse", "task"], ["PostToolUse", "task"]]); // the end too since workspaces-o9o.4
   });
 
   it("a null parentToolCallId is top-level", () => {

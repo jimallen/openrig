@@ -83,7 +83,7 @@ describe.skipIf(!HC)("the busy report's hc reader, through the real createDaemon
     const answers = JSON.parse(readFileSync(out, "utf8")) as Answers;
     expect(answers.hasReaderInDeps, "startup hands the reader to the server's deps").toBe(true);
     expect(answers.viaTransport, "startup hands the reader to the SessionTransport").toMatchObject({ kind: "busy", source: "hc_status" });
-    expect(answers.viaTransport!.line).toMatch(/^busy: working since .*Z \(hc status\)$/);
+    expect(answers.viaTransport!.line).toMatch(/^busy: running bash for 66 min \(since .*Z, hc status\)$/); // workspaces-o9o.4: the open tool call, timed from its start
     expect(answers.viaRoute, "the node list route sees it through the server's context").toMatchObject({ kind: "busy", source: "hc_status" });
   }, 120_000);
 });

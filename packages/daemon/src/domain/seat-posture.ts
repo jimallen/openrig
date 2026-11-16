@@ -12,8 +12,11 @@ import { latestHookState } from "./agent-activity-store.js";
 //                      this is never reported as busy. The line states the facts (last hook, how long ago) instead.
 //   idle / needs_input as the store's own helpers read them (a stale Stop still means idle; a stale unanswered prompt still waits).
 //   unknown            everything else: no hook, generation-mismatched or unresolvable evidence, an unmapped event.
-// Pi records the START of each tool call (PreToolUse) and never its end, and Claude records the end (PostToolUse) and never the
-// start, so no runtime's hooks can say "a tool call is running since T". The wording says "last tool started" / "last hook".
+// workspaces-o9o.4 — the running tool. Claude (an async PreToolUse relay beside its PostToolUse one) and the Pi and pda runners (a
+// PostToolUse at each top-level tool end beside the PreToolUse at its start) now record both ends of a tool call. So a newest hook that
+// is a tool START names a call that is still open: its tool, and how long it has run. A seat launched before its relay or runner
+// carried the end has no PostToolUse to close the call; relaunch it (restore-check names the missing relay entry for Claude). Codex
+// records neither end, and keeps the turn line.
 
 /** A timestamp more than this ahead of the reader's clock is not believed (clock skew, not evidence): a hook dated so, or an hc status begun so. */
 const FUTURE_SLACK_MS = 60_000;
@@ -27,7 +30,7 @@ export interface SeatPosture {
   source: SeatPostureSource | null;
   /** When the evidence was observed: the newest hook's eventAt, or for hc_status the time the status began. Null when none. */
   at: string | null;
-  /** The newest hook's tool name (Pi PreToolUse), when it has one. */
+  /** The open tool call's tool: set only when the newest hook is a tool start (PreToolUse) with a name. `at` is then when it started. */
   tool: string | null;
   /** One human line, already worded for `rig send` and `rig ps`. */
   line: string;
@@ -47,6 +50,19 @@ export function formatPostureAge(ms: number): string {
   if (minutes < 120) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
   return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
+}
+
+/** How long an open tool call has run: seconds under a minute (a hung call and a quick one differ there too), then as formatPostureAge. */
+export function formatToolAge(ms: number): string {
+  const safe = Math.max(0, ms);
+  return safe < 60_000 ? `${Math.floor(safe / 1000)} s` : formatPostureAge(safe);
+}
+
+function runningToolLine(tool: string, at: string | null, nowMs: number, source: string | null): string {
+  const atMs = at ? Date.parse(at) : Number.NaN;
+  const since = formatPostureTime(at, nowMs);
+  const sinceClause = since ? ` (since ${since}${source ? `, ${source}` : ""})` : source ? ` (${source})` : "";
+  return Number.isFinite(atMs) ? `busy: running ${tool} for ${formatToolAge(nowMs - atMs)}${sinceClause}` : `busy: running ${tool}${sinceClause}`;
 }
 
 function hookLabel(activity: AgentActivity): string {
@@ -81,10 +97,16 @@ export function deriveSeatPosture(activity: AgentActivity | null | undefined, se
   if (state === "running") {
     if (fresh) {
       return { ...base, kind: "busy", line: tool
-        ? `busy: last tool started ${when ?? "at an unknown time"} (${tool})`
+        ? runningToolLine(tool, at, nowMs, null)
         : `busy: turn running, last hook ${hookLabel(activity)}${when ? ` ${when}` : ""}` };
     }
     const atMs = at ? Date.parse(at) : NaN;
+    // Past the freshness window the call may have hung, or the agent may have been interrupted with no hook: the line gives the tool
+    // and its age and claims no more.
+    if (tool) {
+      const ago = Number.isFinite(atMs) ? `, ${formatToolAge(nowMs - atMs)} ago` : "";
+      return { ...base, kind: "unknown-open-turn", line: `unknown: ${tool} started ${when ?? "at an unknown time"}${ago}, no end recorded` };
+    }
     const age = Number.isFinite(atMs) ? ` (${formatPostureAge(nowMs - atMs)} ago)` : "";
     return { ...base, kind: "unknown-open-turn", line: `unknown: last hook ${hookLabel(activity)}${when ? ` ${when}` : ""}${age}, no Stop since` };
   }
@@ -116,6 +138,8 @@ export function withTerminalStatus(posture: SeatPosture, status: SeatTerminalSta
   if (posture.kind !== "unknown-open-turn" || !status || !status.live || status.status !== "working") return posture;
   const since = status.sinceMs;
   if (since === null || !Number.isFinite(since) || since > now.getTime() + FUTURE_SLACK_MS) return posture;
+  // A run is open (hc) and its newest hook is a tool start with no end: that tool is what the run is doing, timed from its own start.
+  if (posture.tool) return { kind: "busy", source: "hc_status", at: posture.at, tool: posture.tool, line: runningToolLine(posture.tool, posture.at, now.getTime(), "hc status") };
   const at = new Date(since).toISOString();
   return { kind: "busy", source: "hc_status", at, tool: null, line: `busy: working since ${formatPostureTime(at, now.getTime())} (hc status)` };
 }

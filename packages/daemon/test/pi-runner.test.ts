@@ -415,6 +415,14 @@ describe("mapPiEvent", () => {
     expect(failed.mirrorLines[0]).toContain("FAILED");
   });
 
+  // workspaces-o9o.4: the end of each top-level call is posted, so a newest PreToolUse names a call that is still open.
+  it("a top-level tool end posts PostToolUse with the tool, failed or not; a nested one posts nothing", () => {
+    expect(mapPiEvent({ type: "tool_execution_end", toolName: "bash", isError: false }).activity).toEqual({ hookEvent: "PostToolUse", subtype: "bash" });
+    expect(mapPiEvent({ type: "tool_execution_end", toolName: "bash", isError: true }).activity).toEqual({ hookEvent: "PostToolUse", subtype: "bash" });
+    expect(mapPiEvent({ type: "tool_execution_end", name: "read" }).activity).toEqual({ hookEvent: "PostToolUse", subtype: "read" });
+    expect(mapPiEvent({ type: "tool_execution_end", toolName: "bash", parentToolCallId: "call_1" })).toEqual({ mirrorLines: [] });
+  });
+
   it("compaction and retry map to their honest states", () => {
     expect(mapPiEvent({ type: "compaction_start" }).activity).toEqual({ hookEvent: "active", subtype: "compaction" });
     expect(mapPiEvent({ type: "auto_retry_start" }).activity).toEqual({ hookEvent: "active", subtype: "auto_retry" });
@@ -619,7 +627,7 @@ describe("Pi 1.3.0 RPC stdout transcript through RunnerCore (one tool turn, one 
   const refreshReply = (ids: string[]) => ({ type: "response", id: "pi-runner-cursor-refresh", success: true,
     data: { entries: ids.map(id => ({ type: "message", id })) } });
 
-  it("shows the tool call and the reply, and posts active, PreToolUse, then exactly one Stop", () => {
+  it("shows the tool call and the reply, and posts active, PreToolUse, PostToolUse, then exactly one Stop", () => {
     // The tool turn is the real thinking turn: its content is [thinking, toolCall] (index 11 of the 18).
     expect(PI13_TOOL_TURN.content.map(c => c.type)).toEqual(["thinking", "toolCall"]);
     expect(PI13_STOP_TURN.content.map(c => c.type)).toEqual(["text"]);
@@ -628,7 +636,7 @@ describe("Pi 1.3.0 RPC stdout transcript through RunnerCore (one tool turn, one 
     // lines are message_end's line terminators (the user and tool-result messages also end with one, as before).
     expect(r.pane).toBe("\n\n  ⚙ bash …\n  ⚙ bash done\n\n<scrubbed reply>\n\n");
     expect(r.activity.map(a => [a.hookEvent, a.subtype])).toEqual([
-      ["active", "agent_start"], ["PreToolUse", "bash"], ["Stop", "agent_end"],
+      ["active", "agent_start"], ["PreToolUse", "bash"], ["PostToolUse", "bash"], ["Stop", "agent_end"],
     ]);
     // agent_settled is the quiet tail: it adds no second Stop and no activity of its own.
     expect(r.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(1);

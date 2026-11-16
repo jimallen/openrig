@@ -247,6 +247,24 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
     for (const a of rig.activity) expect(a).toMatchObject({ sessionName: "seat-under-test", nodeId: "node-under-test", generation: "gen-7", runtime: "pda" });
   });
 
+  // workspaces-o9o.4: the end of each top-level call is posted (a faulted one too), once per call id, so a newest PreToolUse names a call
+  // that is still open.
+  it("posts PostToolUse at each top-level call's end, once per call, faulted ones included", async () => {
+    const { rig, stream } = await attached();
+    stream.push(runStart());
+    await waitFor(() => rig.sidecar().busy, "busy after run_start");
+    stream.push(toolStart("e1", "bash", { command: "ls" }));
+    stream.push(toolEnd("e1", "bash", toolResultEntry(601, "e1", "ok")));
+    stream.push(toolEnd("e1", "bash", toolResultEntry(601, "e1", "ok"))); // the same end again (a resync)
+    stream.push(toolStart("e2", "write", { path: "x" }));
+    stream.push(toolEnd("e2", "write")); // faulted: no result entry
+    stream.push(runEnd());
+    await waitFor(() => !rig.sidecar().busy, "idle after run_end");
+    expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual([
+      "Stop/attached_idle", "active/run_start", "PreToolUse/bash", "PostToolUse/bash", "PreToolUse/write", "PostToolUse/write", "Stop/run_end",
+    ]);
+  });
+
   it("a snapshot with a run in flight is busy, posts attached_busy once, and a repeat posts nothing", async () => {
     const { rig, stream } = await attached({}, snapshotEvent({ run: [1] }));
     expect(rig.sidecar().busy).toBe(true);
@@ -1549,7 +1567,7 @@ describe("pda-runner against the real wire shapes (M1-M8)", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(pane.split("what is in the repo?").length - 1).toBe(1); // only the 'you ▸' echo at submit time, never 'other ▸' too
     expect(pane).not.toContain("other ▸");
-    expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual(["Stop/attached_idle", "active/run_start", "PreToolUse/bash", "Stop/run_end"]);
+    expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual(["Stop/attached_idle", "active/run_start", "PreToolUse/bash", "PostToolUse/bash", "Stop/run_end"]);
   });
 });
 

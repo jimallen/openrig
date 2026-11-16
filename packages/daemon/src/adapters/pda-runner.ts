@@ -843,6 +843,8 @@ export class PdaRunner {
     const view = event.entry !== undefined ? entryView(event.entry) : null;
     const callId = typeof event.toolCallId === "string" ? event.toolCallId : view?.toolCallId ?? null;
     if (callId !== null && !this.remember(`tool:${callId}`)) return;
+    // workspaces-o9o.4: the end of the call (faulted ones too), so a newest PreToolUse means a call that is still open (seat-posture.ts).
+    this.postActivity("PostToolUse", name);
     if (!view) {
       this.pane.line(`  ✗ ${name}: no result (the tool task faulted or the run ended)`);
       return;

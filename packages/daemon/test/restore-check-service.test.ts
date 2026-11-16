@@ -4,11 +4,13 @@ import os from "node:os";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { getNodeInventory } from "../src/domain/node-inventory.js";
+import { relayEventNames } from "../src/domain/claude-activity-hooks.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import {
   RestoreCheckService,
   type RestoreCheckDeps,
   type NodeInventoryEntry,
+  type StartupContextProbeResult,
 } from "../src/domain/restore-check-service.js";
 
 const RELAY_PATH = "/custom-instance/state/claude-activity-hooks/activity-relay.cjs";
@@ -1061,6 +1063,37 @@ describe("RestoreCheckService", () => {
     const hook = service.check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
     expect(hook?.status).toBe("yellow");
     expect(hook?.evidence).toContain("UserPromptSubmit");
+  });
+
+  // workspaces-o9o.4: the shipped manifest now relays PreToolUse. A seat whose settings were projected before (every relay event but
+  // PreToolUse) reads yellow, naming PreToolUse, until it is relaunched; the relaunched seat's settings carry it and read green.
+  it.each([
+    ["projected before workspaces-o9o.4", (e: string) => e !== "PreToolUse", "yellow"],
+    ["relaunched after it", () => true, "green"],
+  ] as const)("a seat %s, against the shipped manifest", (_label, projected, status) => {
+    const manifest = path.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json");
+    const shipped = relayEventNames({ exists: fs.existsSync, readFile: (f) => fs.readFileSync(f, "utf-8") }, manifest);
+    expect(shipped).toContain("PreToolUse");
+    const cwd = path.join(os.tmpdir(), "restore-check-activity-seat-pretooluse");
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const settings = JSON.stringify({ hooks: Object.fromEntries(shipped.filter(projected).map((event) => [event, [{ hooks: [{ type: "command", command: `node '${RELAY_PATH}'` }] }]])) });
+    const probe: StartupContextProbeResult = { status: "ok", runtime: "claude-code", resolvedStartupFiles: [], projectionEntries: [{
+      absolutePath: "/source/openrig-core", effectiveId: "shared:openrig-core", category: "runtime_resource", resourceType: "claude_activity_hooks",
+    }] };
+    const service = new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ cwd })],
+      getStartupContext: () => probe,
+      getClaudeActivityHookEvents: () => shipped,
+      exists: (candidate) => candidate === settingsPath || candidate === RELAY_PATH || candidate.endsWith("host-infra.json"),
+      readFile: (candidate) => candidate === settingsPath ? settings : VALID_HOST_INFRA_DECLARATION,
+    }));
+    const hook = service.check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hook?.status).toBe(status);
+    if (status === "yellow") {
+      expect(hook?.evidence).toContain("missing relay entries for: PreToolUse");
+      expect(hook?.evidence).not.toMatch(/missing relay entries for: .*,/); // PreToolUse alone
+      expect(hook?.remediation).toBe("Relaunch the seat to project its selected Claude activity hooks");
+    }
   });
 
   it("does not count stale project-local commands as delivered instance hooks", () => {

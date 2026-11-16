@@ -35,8 +35,8 @@ async function capture(fn: () => Promise<void>): Promise<string[]> {
 }
 
 const POSTURE = {
-  busy: { kind: "busy", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "busy: last tool started 16:04Z (bash)" },
-  open: { kind: "unknown-open-turn", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "unknown: last hook PreToolUse bash 16:04Z (66 min ago), no Stop since" },
+  busy: { kind: "busy", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "busy: running bash for 2 min (since 16:04Z)" },
+  open: { kind: "unknown-open-turn", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "unknown: bash started 16:04Z, 66 min ago, no end recorded" },
   hc: { kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.000Z", tool: null, line: "busy: working since 16:04Z (hc status)" },
   idle: { kind: "idle", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: null, line: "idle: last hook Stop 16:04Z" },
 };

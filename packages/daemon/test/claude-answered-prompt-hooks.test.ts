@@ -18,12 +18,23 @@ describe("the shipped Claude hooks manifest relays the events that follow an ans
   it("derives PostToolUse and PostToolUseFailure as relay events, beside the existing ones", () => {
     const events = deriveRelayEvents(realFs, MANIFEST).map((e) => e.event);
     // OF-278 adds PermissionRequest (scoped to AskUserQuestion): the relay's entry and the question-wait hook's, in the one group.
-    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionRequest", "Notification"]);
+    // workspaces-o9o.4 adds PreToolUse, so a tool call's start is recorded too.
+    expect(events).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionRequest", "Notification"]);
   });
 
-  it("only the two new events run in the background (async), so a tool call never waits on the relay", () => {
+  it("only the tool-call events run in the background (async), so a tool call never waits on the relay", () => {
     const events = deriveRelayEvents(realFs, MANIFEST);
-    expect(events.filter((e) => e.async).map((e) => e.event)).toEqual(["PostToolUse", "PostToolUseFailure"]);
+    expect(events.filter((e) => e.async).map((e) => e.event)).toEqual(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+  });
+
+  // workspaces-o9o.4. Measured on Claude Code 2.1.325 (bead note): an async PreToolUse hook does not hold the tool (a 4 s hook, the tool
+  // ran 0.69 s after the hook began), and the real relay costs a median 26 ms vs 21 ms with no hook (73 ms when synchronous).
+  it("PreToolUse: one unscoped relay group, async, with the relay's 5 s timeout, beside the rig-body guard's Bash group", () => {
+    const hooks = (JSON.parse(readFileSync(MANIFEST, "utf-8")) as { hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; async?: boolean }> }>> }).hooks;
+    const relayGroups = hooks["PreToolUse"]!.filter((g) => g.hooks.some((h) => h.command.includes("activity-relay.cjs")));
+    expect(relayGroups).toEqual([{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/activity-relay.cjs"', timeout: 5, async: true }] }]);
+    expect(hooks["PreToolUse"]!.find((g) => g.matcher === "Bash")!.hooks.map((h) => h.command)).toEqual(['node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/rig-body-guard.cjs"']);
+    expect(deriveRelayEvents(realFs, MANIFEST).filter((e) => e.event === "PreToolUse")).toEqual([{ event: "PreToolUse", timeout: 5, async: true }]);
   });
 
   it("each new event runs only the activity relay, async, with the relay's 5 s timeout", () => {
@@ -66,6 +77,11 @@ describe("pickLatestByOrdering: the latest hook when async events can arrive lat
     ["a synchronous newest row stays newest whatever its time", [row("Stop", "T00:00:20Z"), row("PostToolUse", "T00:00:50Z")], "Stop"],
     ["the newest of several late async rows that beat the base wins", [row("PostToolUse", "T00:00:35Z"), row("PostToolUseFailure", "T00:00:45Z"), row("Notification", "T00:00:30Z")], "PostToolUseFailure"],
     ["only async rows: the newest eventAt", [row("PostToolUse", "T00:00:35Z"), row("PostToolUse", "T00:00:45Z")], "PostToolUse@45"],
+    // workspaces-o9o.4: PreToolUse is relayed async too.
+    ["an async PreToolUse that happened BEFORE the newer prompt loses", [row("PreToolUse", "T00:00:26Z"), row("Notification", "T00:00:30Z")], "Notification"],
+    ["an async PreToolUse that happened AFTER the prompt wins", [row("PreToolUse", "T00:00:40Z"), row("Notification", "T00:00:30Z")], "PreToolUse"],
+    ["a tool's start then its end: the end is newest", [row("PostToolUse", "T00:00:41Z"), row("PreToolUse", "T00:00:40Z"), row("UserPromptSubmit", "T00:00:30Z")], "PostToolUse"],
+    ["the next call's start, dated after the previous end that arrived later: the start is newest by its time", [row("PostToolUse", "T00:00:41Z"), row("PreToolUse", "T00:00:42Z"), row("UserPromptSubmit", "T00:00:30Z")], "PreToolUse"],
   ])("%s", (_label, rows, expected) => {
     const iso = (r: { activity: { rawEvent: string; eventAt: string } }) => ({ activity: { ...r.activity, eventAt: `2026-10-26${r.activity.eventAt}` } });
     const got = pickLatestByOrdering(rows.map(iso));

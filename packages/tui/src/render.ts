@@ -37,7 +37,7 @@ import type { ColorMode, Token } from "./theme.js";
 import { terminalLines } from "./terminals/terminal-model.js";
 import { detailPage, fieldLine, sectionRule, listItem, alignedRow, LABEL_W, wrapDetailLines } from "./detail.js";
 import { healthAgentLines, healthDetailLines, healthListLines, healthSummaryLine } from "./health/health-model.js";
-import type { Action, FleetSnapshot, LoadState, NeedsItem, RecentTransitionSnap, RowFlash, Screen, ViewState } from "./types.js";
+import type { Action, AgentRow, FleetSnapshot, LoadState, NeedsItem, RecentTransitionSnap, RowFlash, Screen, ViewState } from "./types.js";
 
 interface ContentLine {
   text: string;
@@ -254,9 +254,18 @@ function agentDetailLines(
   found: NonNullable<ReturnType<typeof findAgent>>,
   contentWidth: number,
   timeZone = DEFAULT_TIME_ZONE,
+  nowMs = 0,
 ): ContentLine[] {
   const { agent, rig, pod } = found;
   const session = agent.session;
+  // workspaces-o9o.4: the open tool call, aged on the render clock; unconfirmed past the hook freshness window.
+  const tool = agent.runningTool ?? null;
+  const toolAgeText = tool ? toolAge(tool.since, nowMs) : null;
+  const toolValue = tool
+    ? tool.confirmed
+      ? `${tool.name} · running${toolAgeText ? ` ${toolAgeText}` : ""} · since ${displayTime(tool.since, timeZone)}`
+      : `${tool.name} · started ${displayTime(tool.since, timeZone)}${toolAgeText ? `, ${toolAgeText} ago` : ""} · no end recorded`
+    : null;
   const specInLibrary = !!agent.spec && !!findSpec(snap, agent.spec, "agent");
   const currentRows = session ? rowsForAgent(snap, session, [snap.attention, snap.blocked, snap.inProgress]) : [];
   const pendingRows = session ? rowsForAgent(snap, session, [snap.pending]) : [];
@@ -307,6 +316,8 @@ function agentDetailLines(
         title: "CURRENT ACTIVITY",
         fields: [
           { label: "activity", value: agent.activity?.activity ?? agent.status },
+          ...(toolValue ? [{ label: "tool", value: toolValue }] : []),
+          ...(agent.postureLine ? [{ label: "posture", value: agent.postureLine }] : []),
           ...(activityReason ? [{ label: "reason", value: activityReason }] : []),
           ...(agent.activity?.decidedBy ? [{ label: "decided by", value: agent.activity.decidedBy }] : []),
           ...(agent.activity?.signalSource || agent.activity?.signalReason ? [{ label: "signal", value: `${agent.activity.signalSource ?? "unknown"} · ${agent.activity.signalReason ?? "no reason"}` }] : []),
@@ -591,6 +602,29 @@ interface MotionCtx {
   reduced: boolean;
   used: boolean;
   loading: boolean;
+  /** The render clock (epoch ms; 0 when the caller gave none): ages an open tool call. */
+  nowMs: number;
+}
+
+/** workspaces-o9o.4: how long an open tool call has run, compact ("45s", "20m", "2h 5m"). Null without a clock or a readable start. */
+function toolAge(since: string, nowMs: number): string | null {
+  const start = Date.parse(since);
+  if (!nowMs || !Number.isFinite(start)) return null;
+  const sec = Math.max(0, Math.floor((nowMs - start) / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 120) return `${min}m`;
+  return min % 60 === 0 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+/** The table's NOW cell: the open tool call first ("⚙ Bash 20m"; a trailing "?" when no hook has confirmed it within the freshness
+ *  window), then what the queue says the seat is on. */
+function nowCell(agent: Pick<AgentRow, "runningTool">, queueNow: string, nowMs: number): string {
+  const tool = agent.runningTool;
+  if (!tool) return queueNow;
+  const age = toolAge(tool.since, nowMs);
+  const cell = `⚙ ${tool.name}${age ? ` ${age}` : ""}${tool.confirmed ? "" : "?"}`;
+  return queueNow === "—" ? cell : `${cell} · ${queueNow}`;
 }
 
 function instanceContentLines(
@@ -704,7 +738,7 @@ function instanceContentLines(
           status: stateCell.word,
           queue: queueCount(snap, queue.count),
           work: queue.work,
-          now: queue.now,
+          now: nowCell(agent, queue.now, motion.nowMs),
         }),
         action: { type: "drill", resource: "agent", name: agent.name, target: { host: host.name, rig: rig.name, pod } },
         zones: [{ start: 0, end: columns[0]![2], action: rigAction }],
@@ -763,7 +797,7 @@ function contentLines(state: ViewState, snap: FleetSnapshot, contentWidth: numbe
       const podName = state.drill.find((part) => part.kind === "pod")?.name;
       const found = hostName ? findAgent(snap, leaf.name, { host: hostName, rig: rigName, pod: podName }) : findAgent(snap, leaf.name);
       if (!found) return [{ text: `agent "${leaf.name}" not in the current snapshot` }];
-      return agentDetailLines(snap, found, contentWidth, state.timeZone);
+      return agentDetailLines(snap, found, contentWidth, state.timeZone, motion.nowMs);
     }
     const hostName = state.drill.find((d) => d.kind === "host")?.name;
     const host = (hostName ? snap.hosts.find((candidate) => candidate.name === hostName) : snap.hosts[0]);
@@ -931,7 +965,7 @@ function contentLines(state: ViewState, snap: FleetSnapshot, contentWidth: numbe
           status: stateCell.word,
           queue: queueCount(snap, queue.count),
           work: queue.work,
-          now: queue.now,
+          now: nowCell(a, queue.now, motion.nowMs),
           actions: actionsCell,
         }),
         action: { type: "drill", resource: "agent", name: a.name, target: { host: host.name, rig: rig.name, pod: a.pod } },
@@ -1722,6 +1756,7 @@ function renderBody(state: ViewState, snap: FleetSnapshot, options: RenderOption
     reduced,
     used: false,
     loading: load.inFlight || !load.settled,
+    nowMs,
   };
   const lines: string[] = [];
   const hitMap: Screen["hitMap"] = [];

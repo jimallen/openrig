@@ -11,12 +11,21 @@ const relay = require("../assets/plugins/openrig-core/hooks/scripts/activity-rel
 const ENV = { OPENRIG_SESSION_NAME: "dev-impl@my-rig", OPENRIG_RUNTIME: "claude-code" };
 
 describe("the relay ignores a subagent's tool completions", () => {
-  it.each(["PostToolUse", "PostToolUseFailure"])("a subagent's %s (agent_id set) is not relayed", (event) => {
+  it.each(["PreToolUse", "PostToolUse", "PostToolUseFailure"])("a subagent's %s (agent_id set) is not relayed", (event) => {
     expect(relay.buildOpenRigPayload({ hook_event_name: event, tool_name: "Bash", agent_id: "a96a08682698934f9", agent_type: "general-purpose" }, ENV)).toBeNull();
   });
 
-  it.each(["PostToolUse", "PostToolUseFailure"])("the main agent's %s (no agent_id) is relayed", (event) => {
+  it.each(["PreToolUse", "PostToolUse", "PostToolUseFailure"])("the main agent's %s (no agent_id) is relayed", (event) => {
     expect(relay.buildOpenRigPayload({ hook_event_name: event, tool_name: "Bash" }, ENV)?.hookEvent).toBe(event);
+  });
+
+  // workspaces-o9o.4 / OF-278: the AskUserQuestion dialog is reported by its synchronous PermissionRequest; an async start of the same call,
+  // stamped by its own relay, could land newer and read the seat as running a tool. The relay drops that one start.
+  it("the main agent's PreToolUse of AskUserQuestion is not relayed; its PermissionRequest and PostToolUse are", () => {
+    expect(relay.buildOpenRigPayload({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion" }, ENV)).toBeNull();
+    expect(relay.buildOpenRigPayload({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion" }, ENV)?.hookEvent).toBe("PermissionRequest");
+    expect(relay.buildOpenRigPayload({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" }, ENV)?.hookEvent).toBe("PostToolUse");
+    expect(relay.buildOpenRigPayload({ hook_event_name: "PreToolUse", tool_name: "Bash" }, ENV)?.hookEvent).toBe("PreToolUse");
   });
 
   it("control: other events from a subagent context are relayed as before", () => {

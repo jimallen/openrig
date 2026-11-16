@@ -76,6 +76,8 @@ interface NodeInventoryRead {
     needsInput?: { count?: number; reason?: string | null } | null;
     decidedBy?: string | null;
   } | null;
+  /** The daemon's seat posture (daemon domain/seat-posture.ts): `tool` is set only for an open tool call, and `at` is then its start. */
+  seatPosture?: { kind?: string; tool?: string | null; at?: string | null; line?: string } | null;
   identityVerdict?: { verdict?: string; reason?: string | null } | null;
   canonicalSessionName: string | null;
   tmuxAttachCommand?: string | null;
@@ -249,6 +251,11 @@ function toAgentRow(node: NodeInventoryRead): AgentRow {
       signalSource: node.agentActivity?.evidenceSource ?? null,
       eventAt: node.agentActivity?.eventAt ?? null,
     },
+    // workspaces-o9o.4: the open tool call the daemon's posture names, served verbatim; the renderer ages it on its own clock.
+    runningTool: node.seatPosture?.tool && node.seatPosture.at
+      ? { name: node.seatPosture.tool, since: node.seatPosture.at, confirmed: node.seatPosture.kind === "busy" }
+      : null,
+    postureLine: node.seatPosture?.line ?? null,
     // Mirror the maintained web projection: lifecycle truth drives actions,
     // while session/terminal activity drives the visible status label.
     status: node.identityVerdict?.reason === "session_missing" && node.sessionStatus === "detached" && node.lifecycleState !== "attention_required"

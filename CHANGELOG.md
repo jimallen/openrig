@@ -32,6 +32,15 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - `rig up`, restore, `rig seat launch --fresh`, a handover's successor and `rig seat set-claude-home` now warn when the seat (`claude-code`, or its `stub` stand-in) has a home of its own, no model of its own, and the home's `settings.json` sets no model (missing, unparseable or empty). The warning names Claude's other model sources in Claude Code's documented order (`ANTHROPIC_MODEL`, a `model` setting in managed, project or local settings, the organization's default, `ANTHROPIC_DEFAULT_MODEL`), then the account default, links https://code.claude.com/docs/en/model-config, and gives `rig seat set-model <seat> --model <model> --reason <why>`. A warning only: the launch goes on.
 - Visible change: `rig seat handover` now prints the successor launch's warnings (`Warning: …`), and the handover result's JSON carries them as `warnings`. Before, the handover dropped them, including the codex seat-home and tmux-default warnings a fresh launch already printed.
 
+### Seat status names the running tool and how long it has run
+
+- Symptom: `rig ps`, `rig send` and the TUI said a seat was working through a 20-minute tool call, with nothing to tell a hung tool from a long one (2026-11-16).
+- Claude seats now relay `PreToolUse` too (async, so a tool call never waits on it: measured on Claude Code 2.1.325, median 26 ms per call against 21 ms with no hook). The Pi and pda runners now post a `PostToolUse` at the end of each top-level call. So a seat's newest hook being a tool start means that call is still open.
+- The posture line (the REASON cell of `rig ps`, and `rig send`'s hand-off note) reads `busy: running Bash for 3 min (since 16:05Z)`. Past the 5-minute hook freshness window it reads `unknown: Bash started 16:05Z, 20 min ago, no end recorded`: the call may be long or hung, and the line says which tool and for how long. A Pi seat whose hc status shows its run working keeps the tool: `busy: running bash for 66 min (since 16:04Z, hc status)`.
+- The TUI's seat table shows `⚙ Bash 20m` in the NOW column (with a trailing `?` past the freshness window), and the agent detail adds `tool` and `posture` lines.
+- Not relayed: a subagent's tool start (it would never close on the main turn), and the start of `AskUserQuestion` (its dialog is reported by its `PermissionRequest`, OF-278). Codex seats relay no tool events and keep the turn line.
+- Upgrading: a Claude seat launched before this change has no `PreToolUse` relay entry until it is relaunched; `rig restore-check` shows its hooks yellow, `missing relay entries for: PreToolUse`, with "Relaunch the seat" as the remedy. Until then its posture is unchanged.
+
 ### Claude seats can't start an untracked shell background job
 
 - Symptom: a Claude seat ran a long job as `( swift test …; echo rc=$? ) > log 2>&1 &` (or `nohup x &`) inside a normal Bash call. The call returned at once, nothing woke the seat when the job ended, and it sat idle (about 40 minutes on 2026-11-15).

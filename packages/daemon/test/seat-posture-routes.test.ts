@@ -41,7 +41,10 @@ describe("a Pi seat silent in a tool call, through the node routes", () => {
   it("GET /nodes: with the core's status the posture is busy, from hc status; ACTIVITY still reads the stale hook", async () => {
     const { app, rig, db } = piSeat(working);
     const seat = ((await (await app.request(`/api/rigs/${rig.id}/nodes`)).json()) as Array<Record<string, any>>).find((n) => n.canonicalSessionName === SESSION);
-    expect(seat?.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", at: new Date(sinceMs).toISOString() });
+    // workspaces-o9o.4: the newest hook is an open tool start, so busy names that tool and times it from its start, not the run's.
+    expect(seat?.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", tool: "bash" });
+    expect(seat?.seatPosture.at).not.toBe(new Date(sinceMs).toISOString());
+    expect(seat?.seatPosture.line).toMatch(/^busy: running bash for 66 min \(since .*Z, hc status\)$/);
     expect(seat?.agentActivity).toMatchObject({ state: "unknown", reason: "stale_runtime_hook" });
     db.close();
   });
@@ -50,7 +53,7 @@ describe("a Pi seat silent in a tool call, through the node routes", () => {
     const { app, rig, db } = piSeat(undefined);
     const seat = ((await (await app.request(`/api/rigs/${rig.id}/nodes`)).json()) as Array<Record<string, any>>).find((n) => n.canonicalSessionName === SESSION);
     expect(seat?.seatPosture).toMatchObject({ kind: "unknown-open-turn", source: "runtime_hook", tool: "bash" });
-    expect(seat?.seatPosture.line).toMatch(/^unknown: last hook PreToolUse bash .*\(66 min ago\), no Stop since$/);
+    expect(seat?.seatPosture.line).toMatch(/^unknown: bash started .*Z, 66 min ago, no end recorded$/);
     db.close();
   });
 

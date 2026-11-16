@@ -371,14 +371,15 @@ export class AgentActivityStore {
   }
 }
 
-/** Hook events Claude Code delivers in the background (`async: true`, native comms step 2): they can arrive after a newer
- *  synchronous hook, so arrival order (seq) does not order them. */
-const ASYNC_RELAYED_EVENTS = new Set(["PostToolUse", "PostToolUseFailure"]);
+/** Hook events Claude Code delivers in the background (`async: true`, native comms step 2; PreToolUse since workspaces-o9o.4):
+ *  they can arrive after a newer synchronous hook, so arrival order (seq) does not order them. A tool start relayed late must not
+ *  displace the permission prompt that followed it. The runners post these events with their own eventAt too, so the rule holds for them. */
+const ASYNC_RELAYED_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
 /** How many of a node's newest activity rows the latest-hook read looks through to order async events by eventAt. */
 const LATEST_SCAN_ROWS = 20;
 
 /** The latest activity among a node's newest rows (newest first by seq). Synchronous hooks keep arrival order. An async
- *  event (PostToolUse/PostToolUseFailure) is the latest only when its own eventAt is strictly newer than the newest
+ *  event (PreToolUse/PostToolUse/PostToolUseFailure) is the latest only when its own eventAt is strictly newer than the newest
  *  synchronous event's: an async PostToolUse that arrives after a newer permission_prompt must not clear it (step-2
  *  review F1). With no synchronous row in the window, the async row with the newest eventAt is the latest. */
 export function pickLatestByOrdering<T extends { activity?: Pick<AgentActivity, "rawEvent" | "eventAt"> } | null>(newestFirst: T[]): T | null {

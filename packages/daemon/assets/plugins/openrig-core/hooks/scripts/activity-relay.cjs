@@ -63,8 +63,12 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   if ((!sessionName && !nodeId) || !runtime || !hookEvent) return null;
   // Native comms step 2 (review F1): a subagent's tool call says nothing about the main turn, which may be waiting on a
   // prompt while the subagent works (measured on Claude Code 2.1.314: subagent PreToolUse/PostToolUse carry agent_id and
-  // agent_type; the main agent's carry neither). Its PostToolUse must not tell the daemon the seat moved on.
-  if ((hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") && firstString(providerPayload.agent_id)) return null;
+  // agent_type; the main agent's carry neither). Its PostToolUse must not tell the daemon the seat moved on. Its PreToolUse
+  // (relayed since workspaces-o9o.4) would name a call the main turn never closes: the main agent's own Agent call is the open one.
+  if ((hookEvent === "PreToolUse" || hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") && firstString(providerPayload.agent_id)) return null;
+  // OF-278: an AskUserQuestion dialog is reported by its PermissionRequest, relayed synchronously milliseconds after this async start; each
+  // relay stamps its own time, so the start could land newer and read the seat as running a tool instead of waiting on a question.
+  if (hookEvent === "PreToolUse" && firstString(providerPayload.tool_name) === "AskUserQuestion") return null;
 
   const subtype = firstString(
     providerPayload.subtype,

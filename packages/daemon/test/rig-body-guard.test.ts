@@ -639,11 +639,18 @@ describe("wiring", () => {
     expect(h.timeout).toBeLessThanOrEqual(10);
   });
 
-  it("the guard is not an activity-relay event (the relay derivation reads only activity-relay.cjs groups)", () => {
-    const relayEvents = Object.entries(claudeHooks.hooks)
-      .filter(([, groups]) => groups.some((g) => g.hooks.some((h) => h.command.includes("activity-relay.cjs"))))
-      .map(([event]) => event);
-    expect(relayEvents).not.toContain("PreToolUse");
+  // workspaces-o9o.4 relays PreToolUse (the running tool), so PreToolUse is now a relay event. The rule this pins is that the guard's group
+  // is not a relay group: the relay derivation reads only activity-relay.cjs groups, so the blocking guard never rides in, or as, the relay.
+  it("the guard's group is not an activity-relay group; PreToolUse's relay is its own unscoped async group", () => {
+    const groups = claudeHooks.hooks["PreToolUse"]!;
+    const isRelay = (g: (typeof groups)[number]) => g.hooks.some((h) => h.command.includes("activity-relay.cjs"));
+    const isGuard = (g: (typeof groups)[number]) => g.hooks.some((h) => h.command.includes("rig-body-guard.cjs"));
+    expect(groups.filter(isGuard).filter(isRelay)).toEqual([]);
+    const relay = groups.filter(isRelay);
+    expect(relay).toHaveLength(1);
+    expect(isGuard(relay[0]!)).toBe(false);
+    expect(relay[0]!.matcher).toBeUndefined();
+    expect(relay[0]!.hooks.every((h) => h.async === true)).toBe(true);
   });
 
   it("the hook script exists where the manifest says", () => {

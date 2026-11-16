@@ -15,7 +15,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { attachAgentActivity } from "../src/domain/node-inventory.js";
-import { deriveSeatPosture, refineSeatPosture, withTerminalStatus, type SeatPosture, type SeatTerminalStatus } from "../src/domain/seat-posture.js";
+import { deriveSeatPosture, formatToolAge, refineSeatPosture, withTerminalStatus, type SeatPosture, type SeatTerminalStatus } from "../src/domain/seat-posture.js";
 import type { AgentActivity } from "../src/domain/types.js";
 
 const T0 = Date.parse("2031-03-04T16:04:41.008Z");
@@ -29,13 +29,13 @@ function hook(over: Partial<AgentActivity>): AgentActivity {
 }
 
 describe("deriveSeatPosture", () => {
-  it("a fresh running hook is busy and names the last tool started, not a running call", () => {
+  it("a fresh tool start is busy and names the running call and how long it has run (workspaces-o9o.4)", () => {
     const p = deriveSeatPosture(hook({}), "pi", at(2));
     expect(p).toMatchObject({ kind: "busy", source: "runtime_hook", tool: "bash", at: "2031-03-04T16:04:41.008Z" });
-    expect(p.line).toBe("busy: last tool started 16:04Z (bash)");
+    expect(p.line).toBe("busy: running bash for 2 min (since 16:04Z)");
   });
 
-  it("a fresh Claude PostToolUse is busy with no tool name (Claude records the end of a call, never the start)", () => {
+  it("a fresh PostToolUse (the call ended) is busy with no tool: nothing is open", () => {
     const p = deriveSeatPosture(hook({ rawEvent: "PostToolUse", rawSubtype: "Bash", runtime: "claude-code" }), "claude-code", at(1));
     expect(p).toMatchObject({ kind: "busy", tool: null });
     expect(p.line).toBe("busy: turn running, last hook PostToolUse 16:04Z");
@@ -45,13 +45,13 @@ describe("deriveSeatPosture", () => {
     const stale = hook({ state: "unknown", reason: "stale_runtime_hook", stale: true });
     const p = deriveSeatPosture(stale, "pi", at(66));
     expect(p.kind).toBe("unknown-open-turn");
-    expect(p.line).toBe("unknown: last hook PreToolUse bash 16:04Z (66 min ago), no Stop since");
+    expect(p.line).toBe("unknown: bash started 16:04Z, 66 min ago, no end recorded");
     expect(JSON.stringify(p)).not.toMatch(/busy/);
   });
 
   it("an event on an earlier UTC day carries its date", () => {
     const stale = hook({ state: "unknown", reason: "stale_runtime_hook", stale: true });
-    expect(deriveSeatPosture(stale, "pi", at(24 * 60 + 5)).line).toBe("unknown: last hook PreToolUse bash 03-04 16:04Z (24 h 5 min ago), no Stop since");
+    expect(deriveSeatPosture(stale, "pi", at(24 * 60 + 5)).line).toBe("unknown: bash started 03-04 16:04Z, 24 h 5 min ago, no end recorded");
   });
 
   it("a stale Stop is still idle, and a stale unanswered prompt still waits on a person", () => {
@@ -103,7 +103,7 @@ describe("the measured case replayed through the real store", () => {
     const read = (minutes: number) => deriveSeatPosture(store.getLatestForNode({ sessionName: SEAT, now: at(minutes) }), "pi", at(minutes));
     expect(read(4).kind).toBe("busy");
     expect(read(7).kind).toBe("unknown-open-turn");
-    expect(read(66).line).toBe("unknown: last hook PreToolUse bash 16:04Z (66 min ago), no Stop since");
+    expect(read(66).line).toBe("unknown: bash started 16:04Z, 66 min ago, no end recorded");
     fire(store, "PreToolUse", "bash", 75);
     expect(read(76).kind).toBe("busy");
     fire(store, "Stop", "agent_end", 80);
@@ -138,16 +138,23 @@ describe("the measured case replayed through the real store", () => {
 describe("refineSeatPosture: a Pi seat's hc terminal status settles an open turn", () => {
   const stale = hook({ state: "unknown", reason: "stale_runtime_hook", stale: true });
   const open = (): SeatPosture => deriveSeatPosture(stale, "pi", at(66));
+  // An open turn with no open tool call (the run started, no tool yet): what hc can add is only when the run began.
+  const openNoTool = (): SeatPosture => deriveSeatPosture(hook({ state: "unknown", reason: "stale_runtime_hook", stale: true, rawEvent: "active", rawSubtype: "agent_start" }), "pi", at(66));
   const SINCE = T0 - 1_000; // the run began a second before the recorded tool start
   const working: SeatTerminalStatus = { live: true, status: "working", sinceMs: SINCE };
 
-  it("working: busy since the status began, sourced to hc status, not to the hook", async () => {
-    const p = await refineSeatPosture(open(), "pi", "build-arch@eztrack", async () => working, at(66));
+  it("working, with no open tool call: busy since the status began, sourced to hc status, not to the hook", async () => {
+    const p = await refineSeatPosture(openNoTool(), "pi", "build-arch@eztrack", async () => working, at(66));
     expect(p).toEqual({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.008Z", tool: null, line: "busy: working since 16:04Z (hc status)" });
   });
 
+  it("working, with an open tool call: busy on that tool, timed from its own start (workspaces-o9o.4)", async () => {
+    const p = await refineSeatPosture(open(), "pi", "build-arch@eztrack", async () => working, at(66));
+    expect(p).toEqual({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "busy: running bash for 66 min (since 16:04Z, hc status)" });
+  });
+
   it("names a date when the run began on an earlier UTC day", async () => {
-    const p = await refineSeatPosture(open(), "pi", "s", async () => ({ ...working, sinceMs: T0 - 26 * 3_600_000 }), at(66));
+    const p = await refineSeatPosture(openNoTool(), "pi", "s", async () => ({ ...working, sinceMs: T0 - 26 * 3_600_000 }), at(66));
     expect(p.line).toBe("busy: working since 03-03 14:04Z (hc status)");
   });
 
@@ -223,7 +230,7 @@ describe("refineSeatPosture: a Pi seat's hc terminal status settles an open turn
       tmuxAdapter: {} as never, activityStore: store, now: at(66),
       seatTerminalStatus: async (seat) => { asked.push(seat); return working; },
     });
-    expect(rows[0]!.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.008Z" });
+    expect(rows[0]!.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", tool: "bash", at: "2031-03-04T16:04:41.008Z" });
     expect(rows[1]!.seatPosture).toMatchObject({ kind: "idle", source: "runtime_hook" });
     expect(asked).toEqual(["build-arch@eztrack"]);
     expect(rows[0]!.agentActivity).toMatchObject({ state: "unknown", reason: "stale_runtime_hook" }); // ACTIVITY is untouched
@@ -301,9 +308,9 @@ describe("the freshness edge", () => {
 
   it("the age prints in minutes up to 119 min and in hours from 2 h", () => {
     const stale = hook({ state: "unknown", reason: "stale_runtime_hook", stale: true });
-    expect(deriveSeatPosture(stale, "pi", at(119)).line).toContain("(119 min ago)");
-    expect(deriveSeatPosture(stale, "pi", at(120)).line).toContain("(2 h ago)");
-    expect(deriveSeatPosture(stale, "pi", at(121)).line).toContain("(2 h 1 min ago)");
+    expect(deriveSeatPosture(stale, "pi", at(119)).line).toContain(", 119 min ago,");
+    expect(deriveSeatPosture(stale, "pi", at(120)).line).toContain(", 2 h ago,");
+    expect(deriveSeatPosture(stale, "pi", at(121)).line).toContain(", 2 h 1 min ago,");
   });
 });
 
@@ -333,5 +340,78 @@ describe("a seat that is not running gets no posture", () => {
 
   it.each(["exited", "detached", "stopped", null, undefined])("%s gets none", async (status) => {
     expect((await rowFor(status)).seatPosture).toBeUndefined();
+  });
+});
+
+// workspaces-o9o.4 — the reported symptom (verify-sec@eztrack diagnosis, 2026-11-16): status said "working" through a 20-minute tool call,
+// with nothing to tell a hung tool from a long one. Replayed through the real store on the 2031 clock: a seat ends a Read, then starts a
+// Bash call that runs for 20 minutes. Claude relays PreToolUse (async) since this unit; the Pi and pda runners post a PostToolUse at each end.
+describe("the running tool and how long it has run (workspaces-o9o.4)", () => {
+  const SEAT = "verify-sec@eztrack";
+  function seat(runtime: string) {
+    const d = createDb();
+    migrate(d, ALL_MIGRATIONS);
+    const repo = new RigRepository(d);
+    const sessions = new SessionRegistry(d);
+    const rig = repo.createRig("eztrack");
+    const node = repo.addNode(rig.id, "sec", { role: "worker", runtime });
+    sessions.updateStatus(sessions.registerSession(node.id, SEAT).id, "running");
+    const store = new AgentActivityStore({ db: d, eventBus: new EventBus(d) });
+    const fire = (hookEvent: string, subtype: string | null, ms: number) =>
+      store.recordHookEvent({ sessionName: SEAT, runtime, hookEvent, subtype, occurredAt: new Date(T0 + ms).toISOString() });
+    const read = (ms: number) => {
+      const now = new Date(T0 + ms);
+      return deriveSeatPosture(store.getLatestForNode({ sessionName: SEAT, now }), runtime, now);
+    };
+    return { fire, read };
+  }
+  const MIN = 60_000;
+
+  it("a Claude seat 20 minutes into a Bash call: the status names Bash and 20 min, not a bare working", () => {
+    const { fire, read } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    fire("PostToolUse", "Read", 30_000);
+    fire("PreToolUse", "Bash", MIN);
+    expect(read(MIN + 45_000)).toMatchObject({ kind: "busy", source: "runtime_hook", tool: "Bash", line: "busy: running Bash for 45 s (since 16:05Z)" });
+    expect(read(4 * MIN).line).toBe("busy: running Bash for 3 min (since 16:05Z)");
+    const twenty = read(21 * MIN);
+    expect(twenty).toMatchObject({ kind: "unknown-open-turn", tool: "Bash", at: new Date(T0 + MIN).toISOString() });
+    expect(twenty.line).toBe("unknown: Bash started 16:05Z, 20 min ago, no end recorded");
+  });
+
+  it("when the call ends the tool is gone: a PostToolUse after the start names no tool (the Pi runner's new end post)", () => {
+    const { fire, read } = seat("pi");
+    fire("active", "agent_start", 0);
+    fire("PreToolUse", "bash", 10_000);
+    fire("PostToolUse", "bash", MIN);
+    expect(read(MIN + 30_000)).toMatchObject({ kind: "busy", tool: null, line: "busy: turn running, last hook PostToolUse 16:05Z" });
+    fire("PreToolUse", "read", 2 * MIN);
+    expect(read(2 * MIN + 5_000)).toMatchObject({ kind: "busy", tool: "read", line: "busy: running read for 5 s (since 16:06Z)" });
+  });
+
+  it("a tool start relayed late does not displace the permission prompt that followed it", () => {
+    const { fire, read } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    fire("Notification", "permission_prompt", 2_000); // synchronous, arrives first
+    fire("PreToolUse", "Bash", 1_000);                // async, dated before the prompt, arrives after it
+    expect(read(5_000)).toMatchObject({ kind: "needs_input", tool: null });
+  });
+
+  it("control: a tool start dated after the prompt is the newer event and names its tool", () => {
+    const { fire, read } = seat("claude-code");
+    fire("UserPromptSubmit", null, 0);
+    fire("Notification", "permission_prompt", 2_000);
+    fire("PreToolUse", "Bash", 3_000);
+    expect(read(5_000)).toMatchObject({ kind: "busy", tool: "Bash" });
+  });
+
+  it("a Codex seat records no tool events: the turn line is unchanged", () => {
+    const { fire, read } = seat("codex");
+    fire("UserPromptSubmit", null, 0);
+    expect(read(2 * MIN)).toMatchObject({ kind: "busy", tool: null, line: "busy: turn running, last hook UserPromptSubmit 16:04Z" });
+  });
+
+  it("formatToolAge: seconds under a minute, then minutes and hours as the posture age", () => {
+    expect([0, 999, 59_999, 60_000, 119 * MIN, 120 * MIN, -5_000].map(formatToolAge)).toEqual(["0 s", "0 s", "59 s", "1 min", "119 min", "2 h", "0 s"]);
   });
 });

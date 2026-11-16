@@ -35,7 +35,7 @@ async function capture(fn: () => Promise<void>): Promise<string[]> {
 }
 
 const HELD = { count: 7, oldestAt: "2031-03-04T10:00:00.000Z", line: "7 held, oldest 6h21m" };
-const BUSY = { kind: "busy", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "busy: last tool started 16:04Z (bash)" };
+const BUSY = { kind: "busy", source: "runtime_hook", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "busy: running bash for 2 min (since 16:04Z)" };
 
 function node(logicalId: string, extra: Record<string, unknown> = {}) {
   return {

@@ -113,12 +113,15 @@ describe("the shipped manifest", () => {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const fsRead = { exists: () => true, readFile: () => readFileSync(manifestPath, "utf8") };
 
-  it("relays PermissionRequest for AskUserQuestion only, with the question-wait hook beside it, and not PreToolUse", () => {
+  it("relays PermissionRequest for AskUserQuestion only, with the question-wait hook beside it; a PreToolUse never reports the question", () => {
     const groups = manifest.hooks.PermissionRequest as Array<{ matcher?: string; hooks: Array<{ command: string; timeout: number }> }>;
     expect(groups).toHaveLength(1);
     expect(groups[0]!.matcher).toBe("AskUserQuestion");
     expect(groups[0]!.hooks.map((h) => h.command.match(/scripts\/([a-z-]+\.cjs)/)![1])).toEqual(["activity-relay.cjs", "question-wait.cjs"]);
-    expect(JSON.stringify(manifest.hooks.PreToolUse)).not.toContain("activity-relay");
+    // workspaces-o9o.4 relays PreToolUse (async, unscoped) for the running tool; the relay itself drops it for AskUserQuestion, so the
+    // question is still reported by its PermissionRequest alone (claude-relay-subagent-filter.test.ts pins the drop).
+    const preRelay = (manifest.hooks.PreToolUse as Array<{ matcher?: string; hooks: Array<{ command: string; async?: boolean }> }>).filter((g) => g.hooks.some((h) => h.command.includes("activity-relay")));
+    expect(preRelay.map((g) => [g.matcher ?? null, g.hooks.map((h) => h.async === true)])).toEqual([[null, [true]]]);
   });
 
   it("gives the question-wait hook a timeout that outlives the longest wait, the same number the script and the policy hold", () => {
@@ -137,7 +140,7 @@ describe("the shipped manifest", () => {
       { event: "PermissionRequest", matcher: "AskUserQuestion", timeout: 5 },
       { event: "PermissionRequest", script: "question-wait.cjs", matcher: "AskUserQuestion", timeout: QUESTION_HOOK_TIMEOUT_SECONDS },
     ]);
-    expect(events.filter((e) => e.matcher === undefined).map((e) => e.event)).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "Notification"]);
+    expect(events.filter((e) => e.matcher === undefined).map((e) => e.event)).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification"]);
   });
 });
 

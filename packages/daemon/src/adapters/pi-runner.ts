@@ -182,7 +182,8 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
       if (runtime === "pi" && isNestedToolCall(event)) return { mirrorLines: [] };
       const tool = typeof event.toolName === "string" ? event.toolName : (typeof event.name === "string" ? event.name : "tool");
       const failed = event.isError === true || event.error != null;
-      return { mirrorLines: [`  ⚙ ${tool} ${failed ? "FAILED" : "done"}`] };
+      // workspaces-o9o.4: the end of the call, so a newest PreToolUse means a call that is still open (seat-posture.ts).
+      return { mirrorLines: [`  ⚙ ${tool} ${failed ? "FAILED" : "done"}`], activity: { hookEvent: "PostToolUse", subtype: tool } };
     }
     case "queue_update":
       return { mirrorLines: [] };
