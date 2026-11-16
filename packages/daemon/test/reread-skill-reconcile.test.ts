@@ -280,7 +280,9 @@ describe("OF-32 N6: a seat that re-reads its spec reconciles the re-read release
     const result = await freshLaunch("stored");
 
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(reconciler).toHaveBeenCalledTimes(1);
+    // workspaces-o9o.30: the only call after first launch is the skill-drift check's dry run (apply: false), which
+    // writes nothing; nothing is applied.
+    expect(reconciler.mock.calls.slice(1).map(([input]) => input.apply)).toEqual([false]);
     expect(onDisk()).toEqual(["gamma:gamma A"]);
   });
 
