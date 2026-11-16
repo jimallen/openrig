@@ -15,7 +15,7 @@ export type AgentRefSource = "builtin" | "user_file" | "fork";
  * everything before it is the source qualifier. `shipped:` and `builtin:` refs ship with OpenRig; `fork:` is a fork;
  * anything else is the user's own file.
  */
-export function describeAgentRef(agentRef: string): { specName: string; source: AgentRefSource } {
+export function parseAgentRef(agentRef: string): { specName: string; source: AgentRefSource } {
   if (agentRef.startsWith("shipped:")) {
     const rel = agentRef.slice("shipped:".length).replace(/\/+$/, "");
     const segments = rel.split("/");

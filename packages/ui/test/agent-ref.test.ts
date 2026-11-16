@@ -1,7 +1,7 @@
 // workspaces-o9o.1: the UI's reading of `shipped:<rel>` agent refs (src/lib/agent-ref.ts). The rendered paths are pinned in
 // rig-spec-display-agent-ref, library-review and live-node-details tests; these pin the edge cases they do not reach.
 import { describe, it, expect } from "vitest";
-import { describeAgentRef, findShippedAgentEntry, shippedAgentManifestPath } from "../src/lib/agent-ref.js";
+import { parseAgentRef, findShippedAgentEntry, shippedAgentManifestPath } from "../src/lib/agent-ref.js";
 
 describe("shippedAgentManifestPath", () => {
   it("is <rel>/agent.yaml for a shipped: ref, normalised (./, //, an inner .., a trailing slash)", () => {
@@ -43,19 +43,19 @@ describe("findShippedAgentEntry", () => {
   });
 });
 
-describe("describeAgentRef", () => {
+describe("parseAgentRef", () => {
   it("a shipped: ref with two agents/ segments is named after the LAST one (the persona's own folder)", () => {
-    expect(describeAgentRef("shipped:agents/teams/agents/lead")).toEqual({ specName: "lead", source: "builtin" });
+    expect(parseAgentRef("shipped:agents/teams/agents/lead")).toEqual({ specName: "lead", source: "builtin" });
   });
 
   it("a shipped: ref with no agents/ segment is named by its whole path, still builtin", () => {
-    expect(describeAgentRef("shipped:personas/x")).toEqual({ specName: "personas/x", source: "builtin" });
+    expect(parseAgentRef("shipped:personas/x")).toEqual({ specName: "personas/x", source: "builtin" });
   });
 
   it("CONTROL: the other schemes read as before", () => {
-    expect(describeAgentRef("local:agents/apps/vault-specialist")).toEqual({ specName: "apps/vault-specialist", source: "user_file" });
-    expect(describeAgentRef("fork:agents/qa@0.2.0")).toEqual({ specName: "qa", source: "fork" });
-    expect(describeAgentRef("builtin:agents/driver")).toEqual({ specName: "driver", source: "builtin" });
-    expect(describeAgentRef("path:/x/agents/y")).toEqual({ specName: "path:/x/agents/y", source: "user_file" });
+    expect(parseAgentRef("local:agents/apps/vault-specialist")).toEqual({ specName: "apps/vault-specialist", source: "user_file" });
+    expect(parseAgentRef("fork:agents/qa@0.2.0")).toEqual({ specName: "qa", source: "fork" });
+    expect(parseAgentRef("builtin:agents/driver")).toEqual({ specName: "driver", source: "builtin" });
+    expect(parseAgentRef("path:/x/agents/y")).toEqual({ specName: "path:/x/agents/y", source: "user_file" });
   });
 });

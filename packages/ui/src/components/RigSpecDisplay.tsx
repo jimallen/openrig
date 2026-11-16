@@ -10,7 +10,7 @@ import { RuntimeBadge } from "./graphics/RuntimeMark.js";
 import { SubSpecTrigger } from "./drawer-triggers/SubSpecTrigger.js";
 // agentRef shape examples: "local:agents/impl", "shipped:agents/development/implementer", "fork:agents/qa@0.2.0",
 // "builtin:agents/driver" (lib/agent-ref.ts).
-import { describeAgentRef } from "../lib/agent-ref.js";
+import { parseAgentRef } from "../lib/agent-ref.js";
 
 type Tab = "topology" | "configuration" | "environment" | "yaml";
 
@@ -101,7 +101,7 @@ export function RigSpecDisplay({ review, yaml, testIdPrefix = "", yamlTestId, sh
                       </td>
                       <td className="py-1 text-on-surface-variant">
                         {(() => {
-                          const parsed = describeAgentRef(m.agentRef);
+                          const parsed = parseAgentRef(m.agentRef);
                           return (
                             <SubSpecTrigger
                               data={{

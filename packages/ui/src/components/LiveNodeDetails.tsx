@@ -50,7 +50,7 @@ import {
 import { getRestoreStatusColorClass } from "../lib/restore-status-colors.js";
 import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
-import { describeAgentRef, findShippedAgentEntry, shippedAgentManifestPath } from "../lib/agent-ref.js";
+import { parseAgentRef, findShippedAgentEntry, shippedAgentManifestPath } from "../lib/agent-ref.js";
 
 type Tab = "overview" | "details";
 
@@ -97,7 +97,7 @@ function InfoRow({ label, value }: { label: string; value: string | number | nul
 function AgentSpecSection({ data }: { data: NodeDetailData }) {
   // A shipped: ref names a persona in the running install's specs folder: its builtin entry, matched by path, not name.
   const shippedManifest = shippedAgentManifestPath(data.agentRef);
-  const agentName = shippedManifest ? describeAgentRef(data.agentRef ?? "").specName : resolveAgentName(data.agentRef);
+  const agentName = shippedManifest ? parseAgentRef(data.agentRef ?? "").specName : resolveAgentName(data.agentRef);
   const { data: agentEntries = [], isLoading: entriesLoading } = useSpecLibrary("agent");
 
   const shippedEntry = shippedManifest ? findShippedAgentEntry(data.agentRef, agentEntries) : null;
