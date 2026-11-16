@@ -15,7 +15,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
-import { QUESTION_WAIT_MAX_BODY_BYTES, SeatQuestionRefusal } from "../domain/seat-question-policy.js";
+import { QUESTION_KEY_PATTERN, QUESTION_WAIT_MAX_BODY_BYTES, SeatQuestionRefusal } from "../domain/seat-question-policy.js";
 import { ACTIVITY_HOOK_MAX_BODY_BYTES, USAGE_MAX_BODY_BYTES, USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
 import { pdaSeatCosts } from "../domain/usage-series.js";
@@ -580,6 +580,8 @@ activityRoutes.post("/hooks", async (c) => {
     hookEvent: typeof body.hookEvent === "string" ? body.hookEvent : "",
     subtype: stringOrNull(body.subtype),
     toolCallId: stringOrNull(body.toolCallId), // workspaces-o9o.4: the call a tool event belongs to
+    // OF-278 / workspaces-o9o.56: which question an AskUserQuestion end ended (a digest of its questions); anything else is no key.
+    questionKey: typeof body.questionKey === "string" && QUESTION_KEY_PATTERN.test(body.questionKey) ? body.questionKey : null,
     occurredAt: stringOrNull(body.occurredAt),
     // W2a-1 — source-bound emitting generation, carried by managed launch/fresh-handover producers.
     // Legacy, excluded, or no-tenure emitting paths may omit it ⇒ stamped null ⇒ unresolved at read

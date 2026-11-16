@@ -649,6 +649,9 @@ export interface AgentActivity {
   /** OF-278: this wait is a question put to the human (Claude's AskUserQuestion dialog), whatever the hook that reported it was called. Survives
    *  the stale and generation transforms, which replace `reason`: a question open for hours must still read as one. */
   dialog?: "question";
+  /** OF-278 / workspaces-o9o.56: on the end of an AskUserQuestion call, which question it ended (a digest of its questions, never their
+   *  text), so the seat's question record settles that question only. Absent when the producer names none (a relay copy from before). */
+  questionKey?: string;
 }
 
 export interface NodeRecoveryGuidance {

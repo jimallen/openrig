@@ -13,6 +13,8 @@ export interface HookActivityInput {
   nodeId?: string | null;
   hookEvent: string;
   subtype?: string | null;
+  /** OF-278 / workspaces-o9o.56: on an AskUserQuestion end, the digest of the questions it ended (seat-question-policy questionKeyOf). */
+  questionKey?: string | null;
   occurredAt?: string | null;
   /** W2a-1 — the EMITTING occupant's generation, CARRIED source-bound on the hook (the producer/relay
    *  supplies it at fire time; the route ingests it). NOT inferred from record-time state — that
@@ -127,6 +129,7 @@ export class AgentActivityStore {
       eventAt,
       generation,
       toolCallId: input.toolCallId ?? null,
+      questionKey: input.questionKey ?? null,
     });
 
     // OF-278: Claude's Notification/permission_prompt for an AskUserQuestion dialog arrives ~6.5 s after the PermissionRequest that
@@ -602,6 +605,7 @@ function normalizeHookActivity(input: {
   eventAt: string;
   generation?: string | null;
   toolCallId?: string | null;
+  questionKey?: string | null;
 }): AgentActivity {
   const rawEvent = input.hookEvent;
   const rawSubtype = input.subtype;
@@ -637,6 +641,8 @@ function normalizeHookActivity(input: {
     stale: false,
     generation: input.generation ?? null,
     ...(input.toolCallId && TOOL_CALL_EVENTS.has(rawEvent) ? { toolCallId: input.toolCallId } : {}),
+    ...(input.questionKey && (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure") && rawSubtype === QUESTION_DIALOG_TOOL
+      ? { questionKey: input.questionKey } : {}),
   };
 }
 

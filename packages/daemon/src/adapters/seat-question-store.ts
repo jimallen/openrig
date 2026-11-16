@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { SeatQuestionRepository, SeatQuestionRow, SeatQuestionState } from "../domain/seat-question-policy.js";
+import { questionKeyOf, type SeatQuestionRepository, type SeatQuestionRow, type SeatQuestionState } from "../domain/seat-question-policy.js";
 
 // OF-278 — the SQLite side of the record of questions seats put to the human (migration 128). Every move is a compare-and-set on `state`.
 
@@ -44,16 +44,20 @@ export class SqliteSeatQuestionStore implements SeatQuestionRepository {
       .run(to, atIso, note ?? null, id, ...from).changes === 1;
   }
 
-  /** The seat moved on: its open questions settle by what happened. PostToolUse of AskUserQuestion is an answer (a human's unless the
-   *  daemon sent one); any other end of the turn abandons what waited. SELECT then CAS per row. */
-  settleFromActivity(nodeId: string, rawEvent: string | null, rawSubtype: string | null, atIso: string): number {
-    const open = this.db.prepare("SELECT id, state FROM seat_questions WHERE node_id = ? AND state IN ('waiting', 'held', 'answered_auto')").all(nodeId) as Array<{ id: string; state: SeatQuestionState }>;
-    if (open.length === 0) return 0;
+  /** The seat moved on: its open questions settle by what happened. The end of an AskUserQuestion call answers its own question (a human's
+   *  answer unless the daemon sent one): with a `questionKey`, only the oldest open question whose questions have that digest, so a late end
+   *  of an earlier question never settles a newer one (workspaces-o9o.56); without one (a relay copy from before), every open question.
+   *  Any other end of the turn abandons what waited. SELECT then CAS per row. */
+  settleFromActivity(nodeId: string, rawEvent: string | null, rawSubtype: string | null, atIso: string, questionKey: string | null = null): number {
     const answered = (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure") && rawSubtype === "AskUserQuestion";
     const ended = rawEvent === "Stop" || rawEvent === "SessionEnd" || rawEvent === "SessionStart" || rawEvent === "UserPromptSubmit";
     if (!answered && !ended) return 0;
+    const open = this.db.prepare("SELECT id, state, tool_input FROM seat_questions WHERE node_id = ? AND state IN ('waiting', 'held', 'answered_auto') ORDER BY asked_at, rowid")
+      .all(nodeId) as Array<{ id: string; state: SeatQuestionState; tool_input: string }>;
+    const own = (q: { tool_input: string }): boolean => { try { return questionKeyOf(JSON.parse(q.tool_input)) === questionKey; } catch { return false; } };
+    const settling = answered && questionKey !== null ? open.filter(own).slice(0, 1) : open;
     let moved = 0;
-    for (const q of open) {
+    for (const q of settling) {
       const to: SeatQuestionState = q.state === "answered_auto" ? "confirmed_auto" : answered ? "answered_human" : "abandoned";
       if (this.settle(q.id, [q.state], to, atIso)) moved += 1;
     }

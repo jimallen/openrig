@@ -59,6 +59,19 @@ export function planAnswer(toolInput: unknown): AnswerPlan {
   return { kind: "answer", answers, chosen };
 }
 
+/** OF-278 / workspaces-o9o.56: the digest that ties a recorded question to the end of its own AskUserQuestion call: sha256 of the JSON of
+ *  tool_input.questions, first 32 hex. Measured on Claude Code 2.1.325: the PermissionRequest that opens the dialog carries no tool_use_id,
+ *  and tool_input.questions is the same on PreToolUse, PermissionRequest and PostToolUse. Twin of questionKeyOf in the seat's relay
+ *  (assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs; a test holds them equal). Null when the input has no questions. */
+export function questionKeyOf(toolInput: unknown): string | null {
+  const questions = toolInput !== null && typeof toolInput === "object" ? (toolInput as { questions?: unknown }).questions : undefined;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  return createHash("sha256").update(JSON.stringify(questions)).digest("hex").slice(0, 32);
+}
+
+/** What a questionKey looks like on the wire; anything else is taken as no key. */
+export const QUESTION_KEY_PATTERN = /^[0-9a-f]{32}$/;
+
 export interface SeatQuestionRow {
   id: string;
   rigId: string;
@@ -88,9 +101,10 @@ export interface SeatQuestionRepository {
   claimAutoAnswer(id: string, atIso: string, answers: Record<string, string>): boolean;
   /** Moves a question that is still in one of `from` to `to`. Returns whether it moved. */
   settle(id: string, from: SeatQuestionState[], to: SeatQuestionState, atIso: string, note?: string): boolean;
-  /** The seat moved on: its open questions settle by what happened. PostToolUse of AskUserQuestion is an answer (a human's unless the daemon
-   *  sent one); any other end of the turn abandons what waited. Returns how many moved. */
-  settleFromActivity(nodeId: string, rawEvent: string | null, rawSubtype: string | null, atIso: string): number;
+  /** The seat moved on: its open questions settle by what happened. The end of an AskUserQuestion call is an answer (a human's unless the
+   *  daemon sent one) to its own question: with a `questionKey`, the oldest open question with those questions, and no other (workspaces-o9o.56);
+   *  without one (a relay copy from before), every open question. The end of the turn abandons what waited. Returns how many moved. */
+  settleFromActivity(nodeId: string, rawEvent: string | null, rawSubtype: string | null, atIso: string, questionKey?: string | null): number;
   /** Open questions with no answer from anyone: held ones, and waiting ones. */
   openUnanswered(): SeatQuestionRow[];
   /** Records that an auto-answer's event and note are written. */
@@ -284,6 +298,13 @@ export class SeatQuestionService {
       this.deps.store.markLogged(row.id, this.deps.now().toISOString());
     }
   }
+}
+
+/** The daemon's listener on recorded activity: the seat's open questions settle from it. One definition, used by startup and by the tests. */
+export function settleQuestionsOnActivity(store: Pick<SeatQuestionRepository, "settleFromActivity">): (activity: import("./types.js").AgentActivity, seat: { nodeId: string }) => void {
+  return (activity, seat) => {
+    store.settleFromActivity(seat.nodeId, activity.rawEvent ?? null, activity.rawSubtype ?? null, activity.eventAt ?? new Date().toISOString(), activity.questionKey ?? null);
+  };
 }
 
 /** The two reads the service makes of the seat's activity, over the real store: is the newest word still this open dialog, and put the dialog on

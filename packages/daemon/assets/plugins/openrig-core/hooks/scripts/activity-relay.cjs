@@ -86,6 +86,14 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     ? firstString(providerPayload.tool_use_id, providerPayload.toolUseId)
     : null;
 
+  // OF-278 / workspaces-o9o.56: the end of an AskUserQuestion call names the questions it ended, so the daemon settles that question and not
+  // a newer one still open (this end runs in the background and can land after a follow-up question opened). Measured on Claude Code
+  // 2.1.325: the PermissionRequest that opens the dialog carries no tool_use_id, and tool_input.questions is the same on PreToolUse,
+  // PermissionRequest and PostToolUse (PostToolUse adds `answers`). Only a digest is sent, never the question text.
+  const questionKey = (hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") && subtype === "AskUserQuestion"
+    ? questionKeyOf(providerPayload.tool_input)
+    : null;
+
   return {
     sessionName,
     nodeId,
@@ -94,8 +102,18 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     hookEvent,
     subtype,
     ...(toolCallId ? { toolCallId } : {}),
+    ...(questionKey ? { questionKey } : {}),
     occurredAt: now().toISOString(),
   };
+}
+
+/** OF-278 / workspaces-o9o.56: the digest that ties an AskUserQuestion call to the question the daemon recorded for it: sha256 of the
+ *  JSON of tool_input.questions, first 32 hex. Twin of questionKeyOf in daemon src/domain/seat-question-policy.ts (a test holds them equal).
+ *  Null when the input has no questions to name. */
+function questionKeyOf(toolInput) {
+  const questions = toolInput && typeof toolInput === "object" ? toolInput.questions : undefined;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  return crypto.createHash("sha256").update(JSON.stringify(questions)).digest("hex").slice(0, 32);
 }
 
 // OPR.0.4.3.28 B1+B3 — resolve the ingest base URL + token without depending on
@@ -500,6 +518,7 @@ module.exports = {
   buildSessionIdentityPayload,
   parseJson,
   postHookPayload,
+  questionKeyOf,
   runSeatGate,
   seatGateDir,
   resolveEndpoint,

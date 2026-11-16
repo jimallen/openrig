@@ -1422,7 +1422,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // rendered live). No tmux exec — a better-sqlite3 read on the hot path.
   // OF-278: the questions seats put to the human. The store settles them from the seat's own activity (an AskUserQuestion
   // PostToolUse is an answer; the end of the turn abandons what waited).
-  const { SeatQuestionService, activityBackedPorts, queueTeller } = await import("./domain/seat-question-policy.js");
+  const { SeatQuestionService, activityBackedPorts, queueTeller, settleQuestionsOnActivity } = await import("./domain/seat-question-policy.js");
   const agentActivityStore = new AgentActivityStore({
     db,
     eventBus,
@@ -1432,7 +1432,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     heldMessages: (sessionName, now) => describeHeld(seatMessages.openFor(sessionName), now.getTime()),
     // OF-286: the model-error flag a Pi or OMP seat's runner publishes (its sidecar), for the `rig ps` marker. Each runtime reads its own state root.
     modelErrorLoop: (sessionName, runtime) => (runtime === "omp" ? ompAdapter : piAdapter).modelErrorLoop(sessionName),
-    onActivityRecorded: (activity, session) => { seatQuestionStore.settleFromActivity(session.nodeId, activity.rawEvent ?? null, activity.rawSubtype ?? null, activity.eventAt ?? new Date().toISOString()); },
+    onActivityRecorded: settleQuestionsOnActivity(seatQuestionStore),
   });
   const seatQuestions = new SeatQuestionService({
     store: seatQuestionStore,
