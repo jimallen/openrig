@@ -374,7 +374,12 @@ Besides the TTL, every unscoped list or detail read first compares a basis
 built from each mission's `mission.yaml` text and `slices/` listing and drops
 the caches when it changes. When the indexer is ready, startup also watches the
 workspace and invalidates the indexer when proof sources change, emitting
-`proof.sources_changed`.
+`proof.sources_changed`. It reports `watching` only while the kernel shows a
+live watch on every path under the watched tree (on Linux, the inotify watches
+this process holds, read from `/proc/self/fdinfo`; no file is written). It checks
+after arming, after each burst of changes and every 30 s. A gap (watch limit
+reached, a directory or file that got no watch) turns it to `unavailable` with a
+`cause` and a log line, and only full evidence turns it back (workspaces-o9o.38).
 `isReady()` is true when any configured slice root exists on disk. A set
 `OPENRIG_SLICES_ROOT` still takes precedence over `workspace.slices_root`.
 
@@ -397,7 +402,8 @@ historical rows are not attributed to a selected project.
 > membership; project filter `:870`, `:942`); `domain/workspace/project-catalog.ts:132–138`
 > (`belongsToProject`); startup `startup.ts:1705`, `:1718` (`OPENRIG_SLICES_ROOT`
 > first), `:1725–1730`, `:1743–1748`, proof-source watch `:1762–1765`
-> (`domain/proof/source-watch.ts:16`); default
+> (`domain/proof/source-watch.ts:41`, its port's adapter
+`adapters/proof-source-watcher.ts:62`); default
 > `domain/user-settings/settings-store.ts:486`.
 
 ### 4.2 SliceDetailProjector — 0.3.0

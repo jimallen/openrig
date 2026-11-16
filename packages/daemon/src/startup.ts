@@ -2120,7 +2120,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     deps.sliceIndexer = sliceIndexer;
     if (sliceIndexer.isReady()) {
       const { watchProofSources } = await import("./domain/proof/source-watch.js");
-      deps.proofSourceWatch = watchProofSources(sliceIndexer.slicesRoot, () => sliceIndexer.invalidate(), eventBus);
+      const { nodeSourceTreeWatcher } = await import("./adapters/proof-source-watcher.js");
+      deps.proofSourceWatch = watchProofSources(sliceIndexer.slicesRoot, () => sliceIndexer.invalidate(), eventBus, {
+        watcher: nodeSourceTreeWatcher(),
+        log: (message) => console.error("[openrig]", message),
+      });
     }
     deps.sliceDetailProjector = sliceDetailProjector;
     // Living Notes Packet 2 (OPR.0.4.4.20): the composed-review gatherer.

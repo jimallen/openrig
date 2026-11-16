@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { expect, it } from "vitest";
 import { watchProofSources } from "../src/domain/proof/source-watch.js";
+import { nodeSourceTreeWatcher } from "../src/adapters/proof-source-watcher.js";
 import { readSliceReadiness, recordJudgment } from "../src/domain/proof/judgments.js";
 import type { EventBus } from "../src/domain/event-bus.js";
 
@@ -27,7 +28,7 @@ it("watches the owning project policy above a nested missions root", async () =>
   let invalidated = 0;
   const watch = watchProofSources(missions, () => invalidated++, {
     emit: (event: unknown) => events.push(event),
-  } as unknown as EventBus);
+  } as unknown as EventBus, { watcher: nodeSourceTreeWatcher() });
   try {
     await new Promise(resolve => setTimeout(resolve, 250));
     expect(events).toHaveLength(0);
@@ -47,7 +48,7 @@ it("retains the existing watch boundary for roots without project.yaml", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "proof-legacy-root-"));
   const missions = path.join(root, "missions");
   fs.mkdirSync(missions);
-  const watch = watchProofSources(missions, () => {}, { emit() {} } as unknown as EventBus);
+  const watch = watchProofSources(missions, () => {}, { emit() {} } as unknown as EventBus, { watcher: nodeSourceTreeWatcher() });
   try { expect(watch.observation().state).toBe("watching"); }
   finally { watch.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });

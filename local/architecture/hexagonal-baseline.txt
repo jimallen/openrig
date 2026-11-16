@@ -196,7 +196,6 @@ src/domain/project-rig.ts node:fs value fork
 src/domain/projection-manifest-store.ts better-sqlite3 type upstream
 src/domain/projection-planner.ts node:os value upstream
 src/domain/proof/judgments.ts node:fs value upstream
-src/domain/proof/source-watch.ts node:fs value upstream
 src/domain/provider/claude-auth-status-reader.ts node:child_process value upstream
 src/domain/provider/claude-auth-status-reader.ts node:fs value upstream
 src/domain/provider/claude-usage-reader.ts node:fs value upstream

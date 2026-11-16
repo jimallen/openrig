@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { evidenceAt } from "../src/domain/proof/judgments.js";
 import { watchProofSources } from "../src/domain/proof/source-watch.js";
+import { nodeSourceTreeWatcher } from "../src/adapters/proof-source-watcher.js";
 import type { EventBus } from "../src/domain/event-bus.js";
 import { Hono } from "hono";
 import { proofRoutes } from "../src/routes/proof.js";
@@ -255,7 +256,7 @@ describe("retained authority negative controls", () => {
     let invalidated = 0;
     const watch = watchProofSources(f.missions, () => { invalidated++; }, {
       emit: (event: { type: string; revision: string }) => events.push(event),
-    } as unknown as EventBus);
+    } as unknown as EventBus, { watcher: nodeSourceTreeWatcher() });
     try {
       f.write(manifest, original.replace("status: active", "status: draft"));
       const after = readMissionReadiness(f.mission);
@@ -284,7 +285,7 @@ describe("retained authority negative controls", () => {
   it("pushes changed source truth, keeps sibling basis, and ignores unchanged source bytes", async () => {
     const f = fixture(); f.judge(); const sibling = readSliceReadiness(f.beta).revision;
     const events: Array<{ type: string; revision: string }> = []; let invalidated = 0;
-    const watch = watchProofSources(f.missions, () => { invalidated++; }, { emit: (e: { type: string; revision: string }) => events.push(e) } as unknown as EventBus);
+    const watch = watchProofSources(f.missions, () => { invalidated++; }, { emit: (e: { type: string; revision: string }) => events.push(e) } as unknown as EventBus, { watcher: nodeSourceTreeWatcher() });
     try {
       const file = join(f.alpha, "proof/evidence.md"); fs.writeFileSync(file, fs.readFileSync(file));
       await new Promise(r => setTimeout(r, 100)); expect(events).toEqual([]);
