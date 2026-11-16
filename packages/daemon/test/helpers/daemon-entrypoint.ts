@@ -41,10 +41,13 @@ export interface EntrypointDaemon {
 }
 
 export interface SpawnDaemonEntrypointOptions {
-  /** The daemon's private OPENRIG_HOME (its database defaults to <home>/openrig.sqlite unless env.OPENRIG_DB says otherwise). */
+  /** The daemon's private OPENRIG_HOME. Its database is <home>/openrig.sqlite, and every other location it uses is under it. */
   home: string;
-  /** Extra child env (PATH stubs, ...). Spread after the inherited env, before the pinned names. */
+  /** Extra child env (PATH stubs, ...). It may not name where state lives or which server to join (stateRoutingName: HOME, XDG_*,
+   *  TMUX*, HC_*, OPENRIG_*, RIGGED_*, CODEX_HOME, CLAUDE_CONFIG_DIR): those are refused, and the helper's own values win anyway. */
   env?: Record<string, string | undefined>;
+  /** A private hc core for this daemon (its socket, which must lie under `home`): the one way to give a test daemon an hc core. */
+  privateHcSocket?: string;
   /** Extra node arguments before the entrypoint (after `--import tsx`). */
   nodeArgs?: string[];
   /** Upper bound on one attempt becoming healthy. */
@@ -67,14 +70,34 @@ const INHERITED_ENV_PREFIX = "LC_";
 
 /** The whole env of a test daemon: the allow-listed names from `parent`, then every location under `opts.home` (a caller's
  *  `opts.env` may name another on purpose, e.g. a private hc core's HC_SOCKET), then the pinned bind and home names. */
+/** A name that says where a process keeps state or which server it joins: the hc core (HC_*, XDG_RUNTIME_DIR, XDG_STATE_HOME,
+ *  HOME), tmux (TMUX, TMUX_TMPDIR), the daemon and its files (OPENRIG_*, RIGGED_*), a harness's home (CODEX_HOME,
+ *  CLAUDE_CONFIG_DIR) and the other XDG locations. A test daemon gets these only from the helper (review of f56e9f131: an opts.env
+ *  spread after the private values put the live ones back). */
+export function stateRoutingName(name: string): boolean {
+  return name === "HOME" || name === "TMUX" || name === "TMUX_TMPDIR" || name === "CODEX_HOME" || name === "CLAUDE_CONFIG_DIR"
+    || ["XDG_", "HC_", "OPENRIG_", "RIGGED_"].some((prefix) => name.startsWith(prefix));
+}
+
 export function testDaemonEnv(
-  opts: Pick<SpawnDaemonEntrypointOptions, "home" | "env">, port: number, parent: NodeJS.ProcessEnv = process.env,
+  opts: Pick<SpawnDaemonEntrypointOptions, "home" | "env" | "privateHcSocket">, port: number, parent: NodeJS.ProcessEnv = process.env,
 ): Record<string, string | undefined> {
+  const routed = Object.keys(opts.env ?? {}).filter(stateRoutingName).sort();
+  if (routed.length > 0) {
+    throw new Error(`spawnDaemonEntrypoint: opts.env may not name ${routed.join(", ")}: a test daemon's state and servers are the `
+      + "helper's (under its home). For a private hc core pass privateHcSocket.");
+  }
+  const home = path.resolve(opts.home);
+  if (opts.privateHcSocket !== undefined && !path.resolve(opts.privateHcSocket).startsWith(home + path.sep)) {
+    throw new Error(`spawnDaemonEntrypoint: privateHcSocket ${opts.privateHcSocket} is not under the test home ${home}`);
+  }
   const inherited = Object.fromEntries(Object.entries(parent).filter(([name]) =>
     TEST_DAEMON_INHERITED_ENV.includes(name) || name.startsWith(INHERITED_ENV_PREFIX)));
   const userHome = path.join(opts.home, "user-home");
   return {
     ...inherited,
+    ...opts.env,
+    // Pinned after opts.env, so nothing a caller passes can route the daemon (the refusal above already names any attempt).
     HOME: userHome,
     XDG_CONFIG_HOME: path.join(userHome, ".config"),
     XDG_STATE_HOME: path.join(userHome, ".local", "state"),
@@ -87,10 +110,10 @@ export function testDaemonEnv(
     // A test daemon never starts an hc core under its scratch HOME and leaves it behind (as test/hermetic-env.setup.ts sets for
     // in-process daemons).
     OPENRIG_HC_NO_START_CORE: "1",
-    ...opts.env,
+    ...(opts.privateHcSocket !== undefined ? { HC_SOCKET: opts.privateHcSocket } : {}),
     OPENRIG_NO_KERNEL: "1",
     OPENRIG_HOME: opts.home,
-    OPENRIG_DB: opts.env?.["OPENRIG_DB"] ?? path.join(opts.home, "openrig.sqlite"),
+    OPENRIG_DB: path.join(opts.home, "openrig.sqlite"),
     OPENRIG_PORT: String(port),
     OPENRIG_URL: "",
     OPENRIG_BIND_HOST: TEST_DAEMON_BIND_HOST,

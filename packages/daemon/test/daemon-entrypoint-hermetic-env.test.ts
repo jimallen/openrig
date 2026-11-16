@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { killIfRunning, spawnDaemonEntrypoint, type EntrypointDaemon } from "./helpers/daemon-entrypoint.js";
+import { killIfRunning, spawnDaemonEntrypoint, testDaemonEnv, type EntrypointDaemon } from "./helpers/daemon-entrypoint.js";
 
 // workspaces-o9o.61. spawnDaemonEntrypoint spread process.env into the test daemon. Inside vitest that env has already been
 // scrubbed (test/hermetic-env.setup.ts), but a standalone tsx caller (incident 2026-11-16 ~20:50Z, build-impl4) handed the
@@ -111,19 +111,20 @@ describe("o9o.61: a test daemon started outside vitest gets none of the caller's
   it.each([
     { route: "XDG_RUNTIME_DIR (the incident's env)", drop: ["HC_SOCKET"], core: (root: string) => path.join(root, "run", "herdr-core", "default.sock") },
     { route: "HC_SOCKET", drop: [] as string[], core: (root: string) => path.join(root, "hc.sock") },
-  ])("the caller's hc core named by $route is never contacted, while a core passed in opts.env is (positive control)", async ({ drop, core }) => {
+  ])("the caller's hc core named by $route is never contacted, while a private core passed as privateHcSocket is (positive control)", async ({ drop, core }) => {
     const root = tempDir("o9o61-");
     const ambient = await fakeCore(core(root));
-    const explicit = await fakeCore(path.join(root, "own.sock"));
+    const toldHome = tempDir("o9o61-told-");
+    const explicit = await fakeCore(path.join(toldHome, "own.sock"));
     const seat = seatEnv(root);
     for (const name of drop) delete seat[name];
     withCallerEnv(seat);
 
-    // The same daemon, told about a core through the helper's own env option, connects to it: so the observation is reachable,
-    // and a core it was not told about stays untouched only because the helper withheld it.
-    const told = await spawnDaemonEntrypoint({ home: tempDir("o9o61-told-"), env: { HC_SOCKET: path.join(root, "own.sock") }, readyTimeoutMs: READY_MS });
+    // The same daemon, given a private core through the helper's seam, connects to it: so the observation is reachable, and a
+    // core it was not told about stays untouched only because the helper withheld it.
+    const told = await spawnDaemonEntrypoint({ home: toldHome, privateHcSocket: path.join(toldHome, "own.sock"), readyTimeoutMs: READY_MS });
     daemons.push(told);
-    expect(await waitFor(() => explicit.connections() > 0, 20_000), "control: a core passed in opts.env is used").toBe(true);
+    expect(await waitFor(() => explicit.connections() > 0, 20_000), "control: a privateHcSocket core is used").toBe(true);
     killIfRunning(told.child);
     const before = ambient.connections();
 
@@ -159,4 +160,60 @@ describe("o9o.61: a test daemon started outside vitest gets none of the caller's
     expect(childEnv["OPENRIG_HOME"]).toBe(home);
     expect(childEnv["OPENRIG_HC_NO_START_CORE"]).toBe("1");
   }, 240_000);
+});
+
+// Review of f56e9f131 (verify-qa2): opts.env was spread AFTER the private values, so a caller could put the live routing back
+// ({ env: { XDG_RUNTIME_DIR: <live> } }). The helper now refuses any state-routing name in opts.env, and pins its own values last.
+describe("o9o.61: opts.env cannot route a test daemon to live state", () => {
+  /** Spawn with `opts`; "refused" when the helper refuses, else the fake core's connection count after a wait. */
+  async function outcome(opts: Parameters<typeof spawnDaemonEntrypoint>[0], core: { connections: () => number }): Promise<"refused" | number> {
+    try {
+      const d = await spawnDaemonEntrypoint(opts);
+      daemons.push(d);
+      await waitFor(() => core.connections() > 0, 20_000);
+      return core.connections();
+    } catch (error) {
+      if (/may not name/.test(String(error))) return "refused";
+      throw error;
+    }
+  }
+
+  it.each([
+    { name: "XDG_RUNTIME_DIR", value: (root: string) => path.join(root, "run"), core: (root: string) => path.join(root, "run", "herdr-core", "default.sock") },
+    { name: "XDG_STATE_HOME", value: (root: string) => path.join(root, "state"), core: (root: string) => path.join(root, "state", "herdr-core", "default", "default.sock") },
+    { name: "HC_SOCKET", value: (root: string) => path.join(root, "hc.sock"), core: (root: string) => path.join(root, "hc.sock") },
+  ])("an opts.env naming a live-looking $name is refused, and its fake core is never contacted", async ({ name, value, core }) => {
+    const root = tempDir("o9o61-");
+    const fake = await fakeCore(core(root));
+    expect(await outcome({ home: tempDir("o9o61-home-"), env: { [name]: value(root) }, readyTimeoutMs: READY_MS }, fake)).toBe("refused");
+    expect(fake.connections()).toBe(0);
+  }, 240_000);
+
+  it("an opts.env naming HOME is refused (it would have become the daemon's own HOME)", async () => {
+    const root = tempDir("o9o61-");
+    const seatHome = path.join(root, "seat-home");
+    fs.mkdirSync(seatHome, { recursive: true });
+    const home = tempDir("o9o61-home-");
+    let childHome: string | null = null;
+    try {
+      const d = await spawnDaemonEntrypoint({ home, env: { HOME: seatHome }, nodeArgs: ["--import", pathToFileURL(envDumpPreload(root)).href], readyTimeoutMs: READY_MS });
+      daemons.push(d);
+      childHome = (JSON.parse(fs.readFileSync(path.join(home, "child-env.json"), "utf8")) as Record<string, string>)["HOME"] ?? null;
+    } catch (error) {
+      expect(String(error)).toMatch(/may not name HOME/);
+    }
+    expect(childHome, "the daemon was started with a HOME from opts.env").toBeNull();
+  }, 240_000);
+
+  it.each(["HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "TMUX", "TMUX_TMPDIR", "HC_SESSION", "OPENRIG_TRANSCRIPTS_PATH", "OPENRIG_DB", "RIGGED_HOME",
+    "CODEX_HOME", "CLAUDE_CONFIG_DIR"])("testDaemonEnv refuses %s in opts.env", (name) => {
+    expect(() => testDaemonEnv({ home: "/tmp/h", env: { [name]: "/elsewhere" } }, 1)).toThrow(new RegExp(`may not name ${name}`));
+  });
+
+  it("testDaemonEnv keeps a PATH stub (the simulator's), and a privateHcSocket outside the test home is refused", () => {
+    expect(testDaemonEnv({ home: "/tmp/h", env: { PATH: "/stub:/usr/bin" } }, 1)["PATH"]).toBe("/stub:/usr/bin");
+    expect(testDaemonEnv({ home: "/tmp/h", privateHcSocket: "/tmp/h/core.sock" }, 1)["HC_SOCKET"]).toBe("/tmp/h/core.sock");
+    expect(() => testDaemonEnv({ home: "/tmp/h", privateHcSocket: "/run/user/1000/herdr-core/default.sock" }, 1)).toThrow(/not under the test home/);
+    expect(() => testDaemonEnv({ home: "/tmp/h", privateHcSocket: "/tmp/h-other/core.sock" }, 1)).toThrow(/not under the test home/);
+  });
 });
