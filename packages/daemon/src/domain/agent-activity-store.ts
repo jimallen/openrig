@@ -23,7 +23,13 @@ export interface HookActivityInput {
   generation?: string | null;
   /** workspaces-o9o.4: the tool call a tool event belongs to; kept only on PreToolUse/PostToolUse/PostToolUseFailure. */
   toolCallId?: string | null;
+  /** workspaces-o9o.59: set only by the OF-278 question-wait hold when it puts a question on record itself (the relay's PermissionRequest had not
+   *  arrived). Never taken from a hook body. Kept only on an AskUserQuestion PermissionRequest. */
+  recordedBy?: QuestionAskRecorder | null;
 }
+
+/** workspaces-o9o.59: who recorded a question's PermissionRequest other than the relay: the question-wait hold (seat-question-policy recordAsking). */
+export type QuestionAskRecorder = NonNullable<AgentActivity["recordedBy"]>;
 
 export type RecordHookActivityResult =
   | { ok: true; activity: AgentActivity; event: PersistedEvent }
@@ -130,6 +136,7 @@ export class AgentActivityStore {
       generation,
       toolCallId: input.toolCallId ?? null,
       questionKey: input.questionKey ?? null,
+      recordedBy: input.recordedBy ?? null,
     });
 
     // OF-278: Claude's Notification/permission_prompt for an AskUserQuestion dialog arrives ~6.5 s after the PermissionRequest that
@@ -411,12 +418,19 @@ const LATEST_SCAN_ROWS = 20;
  *  is unmeasured: such an end would clear the prompt early. A question to the human never uses this window (promptClearedBy). */
 export const ASYNC_PROMPT_CLEAR_SLACK_MS = 2_000;
 
-type OrderingActivity = Pick<AgentActivity, "rawEvent" | "eventAt"> & Partial<Pick<AgentActivity, "state" | "rawSubtype" | "dialog" | "toolCallId" | "generation">>;
+type OrderingActivity = Pick<AgentActivity, "rawEvent" | "eventAt"> & Partial<Pick<AgentActivity, "state" | "rawSubtype" | "dialog" | "toolCallId" | "generation" | "recordedBy">>;
 
-/** workspaces-o9o.4 F3: the AskUserQuestion calls of the current turn, by call id: those started, and those of them still open. */
+/** workspaces-o9o.4 F3: the AskUserQuestion calls of the current turn, by call id: those started, and those of them still open.
+ *  workspaces-o9o.59: and how many questions the turn asked and how many of them ended, which needs no call id. */
 export interface QuestionCalls {
   started: ReadonlySet<string>;
   open: ReadonlySet<string>;
+  /** The turn's question dialogs: AskUserQuestion PermissionRequests. The relay's and the question-wait hold's records of one question are
+   *  one ask, so this is the larger of the two counts: it can undercount (a question only the hold recorded, beside one only the relay
+   *  did), never overcount. */
+  asks: number;
+  /** The turn's AskUserQuestion ends (PostToolUse/PostToolUseFailure), one per call id; an end with no call id counts on its own. */
+  ends: number;
 }
 
 /** workspaces-o9o.4 F3: whether an async tool event may displace a waiting prompt. A tool start never can (a call starting answers
@@ -424,12 +438,16 @@ export interface QuestionCalls {
  *  the end of one of the current turn's own AskUserQuestion calls, and only once none of them is left open: an end relayed late from an
  *  earlier turn's question names a call this turn never started. An end with no call id (a seat still on the relay from before
  *  workspaces-o9o.4, until it is relaunched) keeps the old rule: any AskUserQuestion end. Stop and UserPromptSubmit are synchronous and
- *  clear a question by arrival. A plain permission prompt, which names no call, is cleared by a tool end stamped more than
+ *  clear a question by arrival. Whatever the call ids say, a question stays while the turn has asked more questions than have ended
+ *  (workspaces-o9o.59). A plain permission prompt, which names no call, is cleared by a tool end stamped more than
  *  ASYNC_PROMPT_CLEAR_SLACK_MS after it. */
 function promptClearedBy(prompt: OrderingActivity, candidate: OrderingActivity, candidateMs: number, promptMs: number, questions: QuestionCalls): boolean {
   if (candidate.rawEvent === "PreToolUse") return false;
   if (prompt.dialog === "question" || (prompt.rawEvent === "PermissionRequest" && prompt.rawSubtype === QUESTION_DIALOG_TOOL)) {
     if (candidate.rawSubtype !== QUESTION_DIALOG_TOOL) return false;
+    // workspaces-o9o.59: a question the turn asked and nothing has ended yet is still waiting, whatever the call ids say: a follow-up question's
+    // PermissionRequest can arrive before its own (async) start, and the earlier question's late end must not answer it.
+    if (questions.asks > questions.ends) return false;
     const id = candidate.toolCallId;
     if (!id) return true;
     return questions.started.has(id) && questions.open.size === 0;
@@ -499,16 +517,25 @@ export function openToolCallsIn(newestFirst: Array<{ activity?: AgentActivity } 
 
 /** workspaces-o9o.4 F3: the AskUserQuestion calls of the current turn (the same turn the open-call read uses), by call id. */
 export function questionCallsIn(newestFirst: Array<{ activity?: OrderingActivity } | null>): QuestionCalls {
-  const { started, open } = turnCalls(newestFirst);
+  const { turn, started, open } = turnCalls(newestFirst);
   const ids = (rows: OrderingActivity[]) => new Set(rows.filter((a) => a.rawSubtype === QUESTION_DIALOG_TOOL).map((a) => a.toolCallId!));
-  return { started: ids(started), open: ids(open) };
+  const asked = turn.filter((a) => a.rawEvent === "PermissionRequest" && a.rawSubtype === QUESTION_DIALOG_TOOL);
+  const byHold = asked.filter((a) => a.recordedBy === "question_hold").length;
+  const ended = turn.filter((a) => (a.rawEvent === "PostToolUse" || a.rawEvent === "PostToolUseFailure") && a.rawSubtype === QUESTION_DIALOG_TOOL);
+  const endIds = new Set(ended.filter((a) => a.toolCallId).map((a) => a.toolCallId!));
+  return {
+    started: ids(started),
+    open: ids(open),
+    asks: Math.max(asked.length - byHold, byHold),
+    ends: endIds.size + ended.filter((a) => !a.toolCallId).length,
+  };
 }
 
 /** The tool starts with a call id in the current turn (rows newer than the last turn boundary, in the newest generation, read whole,
  *  because an async start can arrive after its own end; a start stamped before the boundary is not counted), and those not yet ended. */
-function turnCalls<A extends OrderingActivity>(newestFirst: Array<{ activity?: A } | null>): { started: A[]; open: A[] } {
+function turnCalls<A extends OrderingActivity>(newestFirst: Array<{ activity?: A } | null>): { turn: A[]; started: A[]; open: A[] } {
   const rows = newestFirst.map((r) => r?.activity).filter((a): a is A => !!a);
-  if (rows.length === 0) return { started: [], open: [] };
+  if (rows.length === 0) return { turn: [], started: [], open: [] };
   const generation = rows[0]!.generation ?? null;
   const turn: A[] = [];
   let boundaryMs = Number.NEGATIVE_INFINITY;
@@ -519,7 +546,7 @@ function turnCalls<A extends OrderingActivity>(newestFirst: Array<{ activity?: A
   }
   const ended = new Set(turn.filter((a) => (a.rawEvent === "PostToolUse" || a.rawEvent === "PostToolUseFailure") && a.toolCallId).map((a) => a.toolCallId!));
   const started = turn.filter((a) => a.rawEvent === "PreToolUse" && a.toolCallId && a.eventAt && !(Date.parse(a.eventAt) < boundaryMs));
-  return { started, open: started.filter((a) => !ended.has(a.toolCallId!)) };
+  return { turn, started, open: started.filter((a) => !ended.has(a.toolCallId!)) };
 }
 
 /** The activity a runtime hook event means, before freshness or generation checks. The one mapping behind
@@ -606,6 +633,7 @@ function normalizeHookActivity(input: {
   generation?: string | null;
   toolCallId?: string | null;
   questionKey?: string | null;
+  recordedBy?: QuestionAskRecorder | null;
 }): AgentActivity {
   const rawEvent = input.hookEvent;
   const rawSubtype = input.subtype;
@@ -643,6 +671,7 @@ function normalizeHookActivity(input: {
     ...(input.toolCallId && TOOL_CALL_EVENTS.has(rawEvent) ? { toolCallId: input.toolCallId } : {}),
     ...(input.questionKey && (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure") && rawSubtype === QUESTION_DIALOG_TOOL
       ? { questionKey: input.questionKey } : {}),
+    ...(input.recordedBy && rawEvent === "PermissionRequest" && rawSubtype === QUESTION_DIALOG_TOOL ? { recordedBy: input.recordedBy } : {}),
   };
 }
 

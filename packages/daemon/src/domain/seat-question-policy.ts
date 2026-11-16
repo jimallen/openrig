@@ -327,7 +327,7 @@ export function activityBackedPorts(store: AgentActivityStore): Pick<SeatQuestio
       return !!latest && latest.state === "needs_input" && latest.dialog === "question" && (latest.generation ?? null) === (generation ?? null);
     },
     recordAsking: (seat, generation, atIso) => {
-      store.recordHookEvent({ runtime: seat.runtime, sessionName: seat.sessionName, nodeId: seat.nodeId, hookEvent: "PermissionRequest", subtype: QUESTION_DIALOG_TOOL, occurredAt: atIso, generation });
+      store.recordHookEvent({ runtime: seat.runtime, sessionName: seat.sessionName, nodeId: seat.nodeId, hookEvent: "PermissionRequest", subtype: QUESTION_DIALOG_TOOL, occurredAt: atIso, generation, recordedBy: "question_hold" });
     },
   };
 }

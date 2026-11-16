@@ -652,6 +652,9 @@ export interface AgentActivity {
   /** OF-278 / workspaces-o9o.56: on the end of an AskUserQuestion call, which question it ended (a digest of its questions, never their
    *  text), so the seat's question record settles that question only. Absent when the producer names none (a relay copy from before). */
   questionKey?: string;
+  /** workspaces-o9o.59: "question_hold" when the OF-278 question-wait hold, not the relay, recorded this question's PermissionRequest; it tells the
+   *  two records of one question apart when the turn's questions are counted. */
+  recordedBy?: "question_hold";
 }
 
 export interface NodeRecoveryGuidance {
