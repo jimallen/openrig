@@ -705,9 +705,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     sessionEnv: launchSessionEnv,
     runtimeSessionEnv,
     tmuxOptionDefaults,
-    codexConfigWritePolicy,
     // workspaces-o9o.10: read-only, for the warning when a seat's own Claude home sets no model.
     claudeHomeRead: { exists: (p) => fs.existsSync(p), isDirectory: (p) => fs.statSync(p).isDirectory(), readFile: (p) => fs.readFileSync(p, "utf8") },
+    codexConfigWritePolicy,
   });
 
   const snapshotRepo = new SnapshotRepository(db);

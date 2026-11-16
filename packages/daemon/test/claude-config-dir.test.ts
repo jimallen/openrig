@@ -197,6 +197,15 @@ describe("persistence and the fresh launch env", () => {
       ]);
     });
 
+    // The production launcher gets its reader only from startup.ts; without it nothing is read and no seat is warned.
+    // Instrument: a text scan of the one `new NodeLauncher({` in packages/daemon/src/startup.ts (as the OF-183 census does).
+    it("the daemon's node launcher is wired with a Claude-home reader", () => {
+      const startup = fs.readFileSync(path.resolve(import.meta.dirname, "../src/startup.ts"), "utf-8");
+      const constructions = startup.match(/new NodeLauncher\(\{[\s\S]*?\n  \}\);/g) ?? [];
+      expect(constructions).toHaveLength(1);
+      expect(constructions[0]).toMatch(/\n    claudeHomeRead: \{ exists: /);
+    });
+
     it("warns for the stub stand-in too, as set-claude-home accepts it", async () => {
       const rig = rigRepo.createRig("r");
       rigRepo.addNode(rig.id, "dev.stub", { runtime: "stub", claudeConfigDir: home() });
