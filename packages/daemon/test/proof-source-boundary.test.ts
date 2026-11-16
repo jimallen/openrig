@@ -165,3 +165,22 @@ it("o9o.38: close stops the re-check", () => {
   expect(unwatched).toHaveBeenCalledTimes(armed);
   expect(instance.observation().state).toBe("unavailable");
 });
+
+it("o9o.38 review: evidence that cannot be read is unavailable with its cause, and arming does not throw", () => {
+  vi.useFakeTimers();
+  const missions = legacyRoot();
+  const gaps = { current: [] as string[] | null };
+  const port: SourceTreeWatcher = {
+    watch: () => ({ close() {} }),
+    unwatched: () => { if (gaps.current === null) throw new Error("could not read this process's inotify watches from /proc/self: EACCES"); return gaps.current; },
+  };
+  gaps.current = null;
+  const { bus, pushed } = realBus();
+  const instance = watchProofSources(missions, vi.fn(), bus, { watcher: port, recheckMs: 1000 });
+  expect(instance.observation()).toEqual({ state: "unavailable", revision: "unavailable", cause: "the watch evidence could not be read: could not read this process's inotify watches from /proc/self: EACCES" });
+  expect(pushed()).toEqual(["unavailable"]);
+  gaps.current = [];
+  vi.advanceTimersByTime(1000);
+  expect(instance.observation().state).toBe("watching");
+  instance.close();
+});

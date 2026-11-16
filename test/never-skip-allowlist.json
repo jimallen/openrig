@@ -804,6 +804,18 @@
   "when": "process.platform === \"win32\""
  },
  {
+  "file": "packages/daemon/test/proof-source-watch-liveness.test.ts",
+  "kind": "skipIf",
+  "task": "o9o.38: source watch liveness under inotify exhaustion (needs Linux and cc)",
+  "when": "!runnable"
+ },
+ {
+  "file": "packages/daemon/test/proof-source-watcher-evidence.test.ts",
+  "kind": "skipIf",
+  "task": "o9o.38 review: evidence the adapter cannot read fails closed (needs Linux, not root)",
+  "when": "process.platform !== \"linux\" || process.getuid?.() === 0"
+ },
+ {
   "file": "packages/daemon/test/provider-seat-accounts.test.ts",
   "kind": "skipIf",
   "task": "seatAccounts on the production path (samples, registry reads, config dir) > F3: an unreadable registry: each Codex seat without a parsed row is unknown, with the error code",

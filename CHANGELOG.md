@@ -14,7 +14,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 - Symptom: when the inotify watch limit was reached (Sparky hit 65,364 of 65,536 on 2026-11-16), proof readiness stopped pushing changes, yet the daemon still reported its source watch as `watching`.
 - Cause, measured on Node v22.23.4: a recursive `fs.watch` on Linux that cannot add a single inotify watch is silently dead (no throw, no `error`, no events). One that misses some paths reports it only when a change arrives, and a file's own watch is what delivers that file's edits. So every gap went unseen.
-- Now the watch is `watching` only while the kernel shows a live watch on every path under the watched tree. It checks after arming, after each burst of changes and every 30 s, and writes nothing into the workspace. A gap gives `unavailable` with a `cause` (in `observation()` and the daemon log), and only full evidence returns it to `watching`. On platforms without inotify the behaviour is unchanged.
+- Now the watch is `watching` only while the kernel shows a live watch on every path under the watched tree. It checks after arming, after each burst of changes and every 30 s, and writes nothing into the workspace. A gap gives `unavailable` with a `cause` (in `observation()` and the daemon log), and only full evidence returns it to `watching`. Evidence it cannot read fails closed the same way: a path it cannot check (for example a symlink to a file behind a directory it may not search) or an unreadable `/proc` gives `unavailable` with the error. A path that is gone (a dangling symlink) is skipped. On platforms without inotify the behaviour is unchanged.
 
 ### A Claude seat with its own home and no model is warned; a handover prints its successor's warnings
 

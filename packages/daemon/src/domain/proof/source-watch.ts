@@ -18,7 +18,10 @@ export interface SourceTreeWatch { close(): void }
 export interface SourceTreeWatcher {
   /** Arm a watch on `dir`; throws when it cannot be armed at all. */
   watch(dir: string, options: { recursive: boolean }, onChange: (filename: string | null) => void, onError: (err: Error) => void): SourceTreeWatch;
-  /** The paths (dir and, when recursive, every entry under it) that hold no live watch; null when this platform gives no evidence. */
+  /**
+   * The paths (dir and, when recursive, every entry under it) that hold no live watch; null when this platform gives no
+   * evidence. Throws when the evidence cannot be read in full; the claim is then "unavailable" with that cause.
+   */
   unwatched(dir: string, recursive: boolean): string[] | null;
 }
 
@@ -78,7 +81,10 @@ export function watchProofSources(missionsRoot: string, invalidate: () => void, 
   const evidenceFault = (): string | null | undefined => {
     let any = false;
     for (const root of roots) {
-      const missing = watcher.unwatched(root.dir, root.recursive);
+      let missing: string[] | null;
+      try { missing = watcher.unwatched(root.dir, root.recursive); } catch (err) {
+        return `the watch evidence could not be read: ${err instanceof Error ? err.message : String(err)}`;
+      }
       if (missing === null) continue;
       any = true;
       if (missing.length > 0) {
