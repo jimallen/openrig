@@ -555,6 +555,9 @@ export interface RestoreNodeResult {
   startupSource?: RestoreStartupSource;
   /** Pane evidence captured when status is `attention_required` (L3, optional). */
   attentionEvidence?: string | null;
+  /** workspaces-o9o.3: a failed startup's pane tail (redacted), TRANSIENT: the restore response carries it, and both
+   *  persisting emits (restore.completed, restore.subset_completed) strip it. */
+  paneTail?: string;
   /** Managed guidance block ids the seat's guidance file still lacks after restore. The seat keeps
    *  its own status (a resumed session is still running); this only discloses the gap. */
   guidanceGaps?: string[];
@@ -1434,7 +1437,9 @@ export type InstantiateOutcome =
   | { ok: true; result: InstantiateResult }
   | { ok: false; code: "validation_failed"; errors: string[] }
   | { ok: false; code: "preflight_failed"; errors: string[]; warnings: string[] }
-  | { ok: false; code: "instantiate_error"; message: string }
+  // workspaces-o9o.3: `paneTails` holds the failed seats' pane tails, TRANSIENT: bootstrap persists `message`
+  // (bootstrap.failed), so the tails never go into it; they reach the caller in the import_rig stage detail.
+  | { ok: false; code: "instantiate_error"; message: string; paneTails?: { logicalId: string; paneTail: string }[] }
   | { ok: false; code: "cycle_error"; message: string }
   | { ok: false; code: "service_boot_failed"; message: string }
   | { ok: false; code: "compose_project_conflict"; message: string }
@@ -1491,6 +1496,8 @@ export interface InstantiateResult {
     error?: string;
     sessionName?: string;
     evidence?: string;
+    /** workspaces-o9o.3: a failed startup's pane tail (redacted), TRANSIENT: responses only, never `error`. */
+    paneTail?: string;
   }[];
   warnings?: string[];
 }

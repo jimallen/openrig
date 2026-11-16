@@ -1507,7 +1507,7 @@ export class PodRigInstantiator {
     }
 
     // 5. Create pods + nodes + edges, then launch in topological order
-    const nodeResults: { logicalId: string; status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string }[] = [];
+    const nodeResults: { logicalId: string; status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; paneTail?: string }[] = [];
     const nodeIdMap: Record<string, string> = {}; // "pod.member" -> node DB id
     const launchedSessionNames: string[] = []; // Track for orphan cleanup on total failure
     const podInstantiateWarnings = preflight.warnings;
@@ -1708,6 +1708,8 @@ export class PodRigInstantiator {
           error: launched.error,
           evidence: launched.evidence,
           sessionName: launched.sessionName,
+          // workspaces-o9o.3: transient, beside the error; responses only.
+          ...(launched.paneTail ? { paneTail: launched.paneTail } : {}),
         });
       }
 
@@ -1785,7 +1787,10 @@ export class PodRigInstantiator {
       if (guard) await guard.lifecycle(Object.values(nodeIdMap), cleanup);
       else await cleanup();
       const details = nodeResults.map((n) => `${n.logicalId}: ${n.error ?? "unknown"}`).join("; ");
-      return { ok: false, code: "instantiate_error", message: `all node launches/startups failed — ${details}${serviceCleanupError ? `; ${serviceCleanupError}` : ""}${restoreNote}` };
+      // workspaces-o9o.3: bootstrap persists `message` (bootstrap.failed), so the failed seats' pane tails ride beside it.
+      const paneTails = nodeResults.flatMap((n) => n.paneTail ? [{ logicalId: n.logicalId, paneTail: n.paneTail }] : []);
+      return { ok: false, code: "instantiate_error", message: `all node launches/startups failed — ${details}${serviceCleanupError ? `; ${serviceCleanupError}` : ""}${restoreNote}`,
+        ...(paneTails.length > 0 ? { paneTails } : {}) };
     }
 
     // OF-107: the rig now records a spec source that a later fresh launch will refuse. Said here, while the operator is
@@ -1851,6 +1856,7 @@ export class PodRigInstantiator {
       error: n.error,
       sessionName: n.sessionName,
       evidence: n.evidence,
+      ...(n.paneTail ? { paneTail: n.paneTail } : {}),
     }));
 
     return {
@@ -2064,7 +2070,7 @@ export class PodRigInstantiator {
     qualifiedId: string;
     nodeId: string;
     cwdOverride?: string;
-  }): Promise<{ status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; warnings?: string[] }> {
+  }): Promise<{ status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; warnings?: string[]; paneTail?: string }> {
     return input.member.agentRef === "builtin:terminal"
       ? this.launchExistingTerminalMember(input)
       : this.launchExistingAgentMember(input);
@@ -2170,7 +2176,7 @@ export class PodRigInstantiator {
     force?: boolean;
     resolveResult?: ReturnType<typeof resolveAgentRef> extends infer T ? T : never;
     configResult?: ReturnType<typeof resolveNodeConfig> extends infer T ? T : never;
-  }): Promise<{ status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; warnings?: string[] }> {
+  }): Promise<{ status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; warnings?: string[]; paneTail?: string }> {
     const guard = this.deps.tmuxAdapter?.deliveryGuard;
     if (guard && !guard.ownsLifecycle(input.nodeId)) {
       return guard.lifecycle([input.nodeId], () => this.launchExistingAgentMember(input));
@@ -2458,6 +2464,7 @@ export class PodRigInstantiator {
       status: startupResult.startupStatus === "attention_required" ? "attention_required" : "failed",
       error: startupResult.errors.join("; "),
       evidence: startupResult.evidence,
+      ...(startupResult.paneTail ? { paneTail: startupResult.paneTail } : {}),
       sessionName: canonicalSessionName,
       warnings: startupResult.warnings?.length ? [...(launchResult.warnings ?? []), ...startupResult.warnings] : launchResult.warnings,
     };

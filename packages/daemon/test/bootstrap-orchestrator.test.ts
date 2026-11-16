@@ -251,6 +251,21 @@ describe("BootstrapOrchestrator", () => {
     expect(instantiate).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ nonInterruptive: expected }));
   });
 
+  // workspaces-o9o.3 review: when every seat fails, the pane tails ride the import_rig stage detail (response only) and
+  // never `errors`, whose first entry routes/bootstrap.ts and routes/up.ts persist as bootstrap.failed.
+  it("carries an all-failed instantiate's pane tails in the stage detail, not in errors (workspaces-o9o.3)", async () => {
+    const tail = "PANE-TAIL-SENTINEL [oh-my-zsh] Would you like to update? [Y/n]";
+    const instantiate = vi.fn(async () => ({ ok: false as const, code: "instantiate_error" as const,
+      message: "all node launches/startups failed — dev.shell: Readiness timeout after 30s — harness did not become interactive: x — pane tail not stored",
+      paneTails: [{ logicalId: "dev.shell", paneTail: tail }] }));
+    const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+    const yaml = `version: "0.2"\nname: tails\npods: [{id: dev, label: Dev, members: [{id: shell, agent_ref: "builtin:terminal", runtime: terminal, profile: none, cwd: .}], edges: []}]\nedges: []\n`;
+    const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(yaml) });
+    expect(result.status).toBe("failed");
+    expect(result.stages.find((s) => s.stage === "import_rig")?.detail).toMatchObject({ code: "instantiate_error", paneTails: [{ logicalId: "dev.shell", paneTail: tail }] });
+    expect(JSON.stringify(result.errors)).not.toContain("PANE-TAIL-SENTINEL");
+  });
+
   describe("project_rig", () => {
     const ownRig = (name: string, project: string) => {
       const repo = new RigRepository(db);

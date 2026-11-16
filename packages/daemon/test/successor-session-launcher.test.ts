@@ -457,6 +457,16 @@ describe("SuccessorSessionLauncher", () => {
     expect(res.message).not.toContain(token);
   });
 
+  it("reads the successor pane with wrapped lines joined, so a soft-wrapped token is redacted whole (workspaces-o9o.3 review)", async () => {
+    checkReady.mockResolvedValue({ ready: false, reason: "harness not interactive" });
+    capturePaneContent.mockImplementation(async (_s: string, _n?: number, opts?: { joinWrappedLines?: boolean }) =>
+      opts?.joinWrappedLines ? "KEY sk-abcdefghijklmnopqrstuvwxyz0123\n" : "KEY sk-abcdefghijklm\nnopqrstuvwxyz0123\n");
+    const res = await launcher().createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "a@r" });
+    if (res.ok) throw new Error("unreachable");
+    expect(res.message).toContain("pane: KEY [REDACTED]");
+    expect(res.message).not.toContain("nopqrstuvwxyz0123");
+  });
+
   it("an attention gate keeps its own reason and quotes no pane (workspaces-o9o.3)", async () => {
     checkReady.mockResolvedValue({ ready: false, reason: "Codex is waiting for workspace trust approval.", code: "trust_gate" });
     capturePaneContent.mockResolvedValue("Do you trust the files in this folder? [Y/n]\n");

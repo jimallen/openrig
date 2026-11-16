@@ -1517,6 +1517,55 @@ state: 2-named
     db.close();
   });
 
+  // workspaces-o9o.3 review: a failed startup's pane tail reaches the rig up caller beside the error (paneTail on a
+  // surviving rig's node results; paneTails on instantiate_error, whose message bootstrap persists), never inside it.
+  describe("pane tails of failed startups (workspaces-o9o.3)", () => {
+    const tail = "PANE-TAIL-SENTINEL [oh-my-zsh] Would you like to update? [Y/n]";
+    function instantiator(fail: (logicalNodeId: string) => boolean) {
+      const ctx = setup({ [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"), [`${RIG_ROOT}/agents/qa/agent.yaml`]: agentYaml("qa") });
+      const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: ctx.tmux });
+      const startupOrch = new StartupOrchestrator({ db: ctx.db, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: ctx.tmux });
+      startupOrch.startNode = async (input) => {
+        const logicalId = ctx.rigRepo.getRig(input.rigId)!.nodes.find((n) => n.id === input.nodeId)!.logicalId;
+        if (!fail(logicalId)) { ctx.sessionRegistry.updateStartupStatus(input.sessionId, "ready"); return { ok: true, startupStatus: "ready", continuityOutcome: "fresh" }; }
+        ctx.sessionRegistry.updateStartupStatus(input.sessionId, "failed");
+        return { ok: false, startupStatus: "failed", errors: ["Readiness timeout after 30s — harness did not become interactive: x — pane tail not stored"], paneTail: tail };
+      };
+      const inst = new PodRigInstantiator({
+        db: ctx.db, rigRepo: ctx.rigRepo, podRepo: ctx.podRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, nodeLauncher,
+        startupOrchestrator: startupOrch,
+        fsOps: mockFs({ [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"), [`${RIG_ROOT}/agents/qa/agent.yaml`]: agentYaml("qa") }),
+        adapters: { "claude-code": ctx.adapter, "codex": ctx.codexAdapter, "terminal": mockAdapter("terminal") }, tmuxAdapter: ctx.tmux,
+      });
+      const yaml = RigSpecCodec.serialize(makeRigSpec({ pods: [{ id: "dev", label: "Dev", members: [
+        { id: "impl", agentRef: "local:agents/impl", profile: "default", runtime: "claude-code", cwd: "." },
+        { id: "qa", agentRef: "local:agents/qa", profile: "default", runtime: "claude-code", cwd: "." },
+      ], edges: [] }] }));
+      return { ctx, run: () => inst.instantiate(yaml, RIG_ROOT) };
+    }
+
+    it("every seat failed: the tails ride paneTails, never the message", async () => {
+      const { ctx, run } = instantiator(() => true);
+      const result = await run();
+      if (result.ok || result.code !== "instantiate_error") throw new Error(JSON.stringify(result));
+      expect(result.message).not.toContain("PANE-TAIL-SENTINEL");
+      expect(result.message).toContain("pane tail not stored");
+      expect(result.paneTails).toEqual([{ logicalId: "dev.impl", paneTail: tail }, { logicalId: "dev.qa", paneTail: tail }]);
+      ctx.db.close();
+    });
+
+    it("one seat failed: its node result carries paneTail beside an error that does not", async () => {
+      const { ctx, run } = instantiator((id) => id === "dev.qa");
+      const result = await run();
+      if (!result.ok) throw new Error(JSON.stringify(result));
+      const qa = result.result.nodes.find((n) => n.logicalId === "dev.qa");
+      expect(qa).toMatchObject({ status: "failed", paneTail: tail });
+      expect(qa?.error).not.toContain("PANE-TAIL-SENTINEL");
+      expect(result.result.nodes.find((n) => n.logicalId === "dev.impl")?.paneTail).toBeUndefined();
+      ctx.db.close();
+    });
+  });
+
   it("HG-3 attention_required result carries the attentionNodes list (operator approve→resume path)", async () => {
     const { db, rigRepo, sessionRegistry, eventBus, podRepo, adapter, codexAdapter, tmux } = setup({
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"),

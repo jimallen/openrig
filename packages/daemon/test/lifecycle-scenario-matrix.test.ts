@@ -366,18 +366,19 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
           ok: false,
           code: "attention_required",
           message: "Claude is at a resume-selection prompt; an operator must choose the conversation to continue.",
-          evidence: `ANTHROPIC_API_KEY=${token}\nChoose a conversation to resume:\n  1. project-foo`,
+          evidence: `ANTHROPIC_API_KEY=${token}\nslack ${"xox"}b-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx\nChoose a conversation to resume:\n  1. project-foo`,
         },
       });
 
       const outcome = await ctx.orchestrator.restore(ctx.snapshotId);
       if (!outcome.ok) throw new Error(`restore failed: ${outcome.code}`);
       const workerNode = outcome.result.nodes.find((n) => n.nodeId === ctx.node.id);
-      expect(workerNode?.attentionEvidence).toBe("ANTHROPIC_API_KEY=[REDACTED]\nChoose a conversation to resume:\n  1. project-foo");
+      expect(workerNode?.attentionEvidence).toBe("ANTHROPIC_API_KEY=[REDACTED]\nslack [REDACTED]\nChoose a conversation to resume:\n  1. project-foo");
       const payloads = (ctx.db.prepare("SELECT payload FROM events WHERE type = 'restore.completed'").all() as { payload: string }[]).map((r) => r.payload);
       expect(payloads).toHaveLength(1);
       expect(payloads[0]).toContain("[REDACTED]");
       expect(payloads[0]).not.toContain(token);
+      expect(payloads[0]).not.toContain("xox" + "b-");
 
       ctx.db.close();
     });

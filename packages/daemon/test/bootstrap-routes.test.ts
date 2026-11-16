@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -324,6 +324,27 @@ describe("Bootstrap API routes", () => {
 
     // Restore
     (setup.bootstrapOrchestrator as unknown as { bootstrap: unknown }).bootstrap = origBootstrap;
+  });
+
+  // workspaces-o9o.3 review: a failed apply's pane tails reach the caller in the stage detail and never the persisted
+  // bootstrap.failed event, which carries errors[0] only.
+  it("POST /api/bootstrap/apply returns pane tails in the response and keeps them out of bootstrap.failed (workspaces-o9o.3)", async () => {
+    const tail = "PANE-TAIL-SENTINEL [oh-my-zsh] Would you like to update? [Y/n]";
+    const spy = vi.spyOn(setup.bootstrapOrchestrator, "bootstrap").mockResolvedValue({
+      runId: "run-tails", status: "failed", warnings: [],
+      errors: ["all node launches/startups failed — dev.shell: Readiness timeout after 30s — harness did not become interactive: x — pane tail not stored"],
+      stages: [{ stage: "import_rig", status: "failed", detail: { code: "instantiate_error", paneTails: [{ logicalId: "dev.shell", paneTail: tail }] } }],
+    });
+    try {
+      const res = await app.request("/api/bootstrap/apply", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: writeSpec(SIMPLE_SPEC_YAML), autoApprove: true }),
+      });
+      expect(JSON.stringify(await res.json())).toContain("PANE-TAIL-SENTINEL");
+      const failed = getEvents(db).filter((e) => e.type === "bootstrap.failed");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]!.payload).not.toContain("PANE-TAIL-SENTINEL");
+    } finally { spy.mockRestore(); }
   });
 
   // T15: Concurrency lock — second apply returns 409 with no run/started (R1-F4.6)

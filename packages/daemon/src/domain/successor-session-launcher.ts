@@ -495,7 +495,8 @@ export class SuccessorSessionLauncher {
   private async successorPaneContent(session: string | null | undefined): Promise<string> {
     if (!session) return "";
     try {
-      return (await this.tmuxAdapter.capturePaneContent(session, 40)) ?? "";
+      // Soft-wrapped lines joined (workspaces-o9o.3 review): a token wider than the pane must reach redaction whole.
+      return (await this.tmuxAdapter.capturePaneContent(session, 40, { joinWrappedLines: true })) ?? "";
     } catch { return ""; }
   }
 

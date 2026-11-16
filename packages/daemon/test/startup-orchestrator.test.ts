@@ -1296,18 +1296,19 @@ describe("StartupOrchestrator", () => {
   it("redacts a launch's attention evidence on the StartupResult (workspaces-o9o.3)", async () => {
     const seed = seedSession();
     const token = "git" + "hub_pat_0123456789abcdefghijKLMN";
+    const gitlab = "gl" + "pat-AbCdEfGhIjKlMnOpQrSt";
     const launchHarness = vi.fn().mockResolvedValueOnce({
       ok: false as const,
       error: "Codex auth-refusal: please sign in again",
       recovery: "attention_required",
-      evidence: `$ export GH_TOKEN=${token}\nError: Please sign in again.`,
+      evidence: `$ export GH_TOKEN=${token}\n$ git push ${gitlab}\nError: Please sign in again.`,
     });
     const result = await createOrchestrator().startNode(makeInput(seed, {
       adapter: mockAdapter({ runtime: "codex", launchHarness }), isRestore: true, resumeToken: "stale-token", resumeType: "codex_id",
     }));
     if (result.ok) throw new Error("expected attention");
     expect(result.startupStatus).toBe("attention_required");
-    expect(result.evidence).toBe("$ export GH_TOKEN=[REDACTED]\nError: Please sign in again.");
+    expect(result.evidence).toBe("$ export GH_TOKEN=[REDACTED]\n$ git push [REDACTED]\nError: Please sign in again.");
   });
 
   // Pod-aware Codex auth-refusal: when launchHarness reports
@@ -1521,25 +1522,30 @@ describe("StartupOrchestrator", () => {
   });
 
   // workspaces-o9o.3: on Sparky an oh-my-zsh "update? [Y/n]" prompt swallowed a seat's launch command and the person saw only
-  // "Readiness timeout after 30s". The pane's last lines (and a runner's own ERROR line) must be in the surfaced error, for
-  // every runtime that reaches this branch, and pane text must be redacted before it reaches the durable events table.
+  // "Readiness timeout after 30s". Review (verify-sec FAIL): pane text must not newly reach a durable store, and a pattern
+  // list cannot promise that. So the pane tail rides StartupResult.paneTail (responses only) and the error, which
+  // node.startup_failed persists, carries the runner's own ERROR line when it printed one, else a fixed marker.
   describe("a launch that never becomes ready says what the pane showed (workspaces-o9o.3)", () => {
     const OMZ_PANE = "Last login: Mon Nov 16 09:00:00\n[oh-my-zsh] Would you like to update? [Y/n] claude --permission-mode auto\n\n\n";
+    const MARKER = " — pane tail not stored";
     const failedEventPayloads = (nodeId: string): string[] =>
       (db.prepare("SELECT payload FROM events WHERE type = 'node.startup_failed' AND node_id = ?").all(nodeId) as { payload: string }[]).map((r) => r.payload);
 
-    it.each(["claude-code", "codex", "pi"] as const)("%s: the readiness-timeout error quotes the pane's last lines (the swallowing prompt)", async (runtime) => {
+    it.each(["claude-code", "codex", "pi"] as const)("%s: the result quotes the pane's last lines; the persisted error carries only the marker", async (runtime) => {
       const seed = seedSession();
       const t = mockTmux({ capturePaneContent: vi.fn(async () => OMZ_PANE), getPaneCommand: vi.fn(async () => "zsh") });
       const adapter = mockAdapter({ runtime, checkReady: vi.fn(async () => ({ ready: false, reason: "harness not interactive" })) });
       const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
       if (result.ok) throw new Error("expected a failure");
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]).toContain("Readiness timeout after 0.1s");
-      expect(result.errors[0]).toContain("[oh-my-zsh] Would you like to update? [Y/n] claude --permission-mode auto");
+      expect(result.errors).toEqual([`Readiness timeout after 0.1s — harness did not become interactive: harness not interactive${MARKER}`]);
+      expect(result.paneTail).toBe("Last login: Mon Nov 16 09:00:00 | [oh-my-zsh] Would you like to update? [Y/n] claude --permission-mode auto");
+      const payloads = failedEventPayloads(seed.nodeId);
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).not.toContain("oh-my-zsh");
+      expect(payloads[0]).not.toContain("paneTail");
     });
 
-    it("pi: a runner ERROR line in the pane is quoted as what the runner said", async () => {
+    it("pi: a runner ERROR line in the pane is quoted as what the runner said, in the durable error", async () => {
       const seed = seedSession();
       const pane = "[pi-runner] starting\n[pi-runner] ERROR launch: No Pi credential for provider ollama in this managed seat; set pi.operator_login_dir\n$ \n";
       const t = mockTmux({ capturePaneContent: vi.fn(async () => pane), getPaneCommand: vi.fn(async () => "zsh") });
@@ -1547,23 +1553,33 @@ describe("StartupOrchestrator", () => {
       const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
       if (result.ok) throw new Error("expected a failure");
       expect(result.errors[0]).toContain("runner said: [pi-runner] ERROR launch: No Pi credential for provider ollama in this managed seat; set pi.operator_login_dir");
+      expect(failedEventPayloads(seed.nodeId)[0]).toContain("No Pi credential for provider ollama");
     });
 
-    it("a secret-shaped token in the pane is redacted in the error and in the persisted node.startup_failed event", async () => {
+    it("a secret-shaped token in the pane never reaches the persisted event, and is redacted in the response's tail", async () => {
       const seed = seedSession();
-      const token = "sk-live0123456789abcdefABCDEF";
-      const t = mockTmux({ capturePaneContent: vi.fn(async () => `export OPENAI_API_KEY=${token}\n[Y/n] \n`), getPaneCommand: vi.fn(async () => "zsh") });
+      const token = "xox" + "b-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx";
+      const t = mockTmux({ capturePaneContent: vi.fn(async () => `slack ${token}\n[Y/n] \n`), getPaneCommand: vi.fn(async () => "zsh") });
       const adapter = mockAdapter({ checkReady: vi.fn(async () => ({ ready: false, reason: "harness not interactive" })) });
       const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
       if (result.ok) throw new Error("expected a failure");
-      expect(result.errors[0]).toContain("export OPENAI_API_KEY=[REDACTED]");
+      expect(result.paneTail).toBe("slack [REDACTED] | [Y/n]");
       const payloads = failedEventPayloads(seed.nodeId);
       expect(payloads).toHaveLength(1);
-      expect(payloads[0]).toContain("[REDACTED]");
-      expect(payloads[0]).not.toContain(token);
+      expect(payloads[0]).not.toContain("xox" + "b-");
+      expect(payloads[0]).not.toContain("slack");
     });
 
-    it("control: an empty or unreadable pane leaves the readiness-timeout error as it was", async () => {
+    it("reads the pane with wrapped lines joined", async () => {
+      const seed = seedSession();
+      const capturePaneContent = vi.fn(async () => OMZ_PANE);
+      const t = mockTmux({ capturePaneContent, getPaneCommand: vi.fn(async () => "zsh") });
+      const adapter = mockAdapter({ checkReady: vi.fn(async () => ({ ready: false, reason: "harness not interactive" })) });
+      await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
+      expect(capturePaneContent).toHaveBeenCalledWith("r01-impl", 40, { joinWrappedLines: true });
+    });
+
+    it("control: an empty or unreadable pane leaves the readiness-timeout error as it was, with no tail", async () => {
       for (const capturePaneContent of [vi.fn(async () => ""), vi.fn(async () => { throw new Error("tmux gone"); })]) {
         const seed = seedSession();
         const t = mockTmux({ capturePaneContent, getPaneCommand: vi.fn(async () => "zsh") });
@@ -1571,7 +1587,18 @@ describe("StartupOrchestrator", () => {
         const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, readinessTimeoutMs: 100 }));
         if (result.ok) throw new Error("expected a failure");
         expect(result.errors).toEqual(["Readiness timeout after 0.1s — harness did not become interactive: harness not interactive"]);
+        expect(result.paneTail).toBeUndefined();
       }
+    });
+
+    it("a launch failure's transient pane tail (pi runner timeout) passes to the result and never into the event", async () => {
+      const seed = seedSession();
+      const launchHarness = vi.fn(async () => ({ ok: false as const, error: `pi launch: timed out waiting for the runner to report ready${MARKER}`,
+        recovery: "attention_required" as const, paneTail: "[oh-my-zsh] Would you like to update? [Y/n] node pi-runner.js" }));
+      const result = await createOrchestrator().startNode(makeInput(seed, { adapter: mockAdapter({ runtime: "pi", launchHarness }) }));
+      if (result.ok) throw new Error("expected a failure");
+      expect(result.paneTail).toBe("[oh-my-zsh] Would you like to update? [Y/n] node pi-runner.js");
+      expect(failedEventPayloads(seed.nodeId)[0]).not.toContain("oh-my-zsh");
     });
   });
 
@@ -1728,6 +1755,26 @@ describe("StartupOrchestrator", () => {
 
     // workspaces-o9o.3: the resume-failure pane quote reaches the persisted node.startup_failed event and the result's
     // evidence; at d0303ca8 it carried a secret-shaped token there verbatim.
+    // workspaces-o9o.3 review (verify-sec 2): the resume quote stays durable (it predates C; redacted, not removed), so the
+    // pane must be read with soft-wrapped lines joined, or a token wider than the pane is split and slips past every pattern.
+    it("hc: a soft-wrapped token in a resume-failure pane is joined before it is quoted, so it is redacted (workspaces-o9o.3)", async () => {
+      const seed = seedSession();
+      let elapsed = 0;
+      const ended = () => elapsed >= 1000;
+      const capture = vi.fn(async (_s: string, _n?: number, opts?: { joinWrappedLines?: boolean }) => !ended() ? ""
+        : opts?.joinWrappedLines ? "KEY sk-abcdefghijklmnopqrstuvwxyz0123\nclaude: command crashed\n" : "KEY sk-abcdefghijklm\nnopqrstuvwxyz0123\nclaude: command crashed\n");
+      const t = Object.assign(mockTmux({ capturePaneContent: capture, getPaneCommand: vi.fn(async () => (ended() ? null : "claude")) }),
+        { hostKind: "hc" as const, probeSession: vi.fn(async () => (ended() ? { state: "absent" as const } : { state: "present" as const })) });
+      const adapter = mockAdapter({ checkReady: vi.fn(async () => (ended() ? { ready: false, reason: "tmux session not responsive" } : { ready: true })) });
+      const orch = createOrchestrator({ tmux: t, sleep: async (ms) => { elapsed += ms; }, listProcesses: async () => PANE_WITHOUT_CLAUDE });
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("KEY [REDACTED] | claude: command crashed");
+      const payloads = (db.prepare("SELECT payload FROM events WHERE type = 'node.startup_failed' AND node_id = ?").all(seed.nodeId) as { payload: string }[]).map((r) => r.payload);
+      expect(payloads[0]).not.toContain("abcdefghijklm");
+      expect(payloads[0]).not.toContain("nopqrstuvwxyz0123");
+    });
+
     it("hc: a resume-failure pane quote is redacted in the error, the evidence and the persisted event (workspaces-o9o.3)", async () => {
       const seed = seedSession();
       const token = "gh" + "p_0123456789abcdefghijABCDEFGHIJ";

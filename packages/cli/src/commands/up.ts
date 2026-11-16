@@ -631,6 +631,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         for (const s of stages) {
           console.log(`  ${s.stage}: ${s.status}`);
         }
+        for (const line of paneTailLines(res.data)) console.error(line);
         process.exitCode = res.status === 409 ? 1 : 2;
         return;
       }
@@ -689,7 +690,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         }
         console.log(`Rig "${rigName ?? rigId}" restored (ID: ${rigId})`);
         if (rigResult) console.log(`Result: ${rigResult}`);
-        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; requestedFresh?: boolean; guidanceGaps?: string[]; startupSource?: RestoreStartupSourceReport; reattached?: { sessionName: string } }>) ?? [];
+        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; requestedFresh?: boolean; guidanceGaps?: string[]; startupSource?: RestoreStartupSourceReport; reattached?: { sessionName: string }; paneTail?: string }>) ?? [];
         for (const n of nodes) {
           // OPR.0.3.4.2 — the five-term vocabulary renders distinctly; the
           // awaiting-decision reason is part of the line (not a dead end).
@@ -707,6 +708,8 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           }
           // OF-32 stage 3: a seat this restore started fresh says where its startup files came from.
           if (n.startupSource) console.log(`    ${describeRestoreStartupSource(n.startupSource)}`);
+          // workspaces-o9o.3: a seat that never became ready shows its pane's last lines (the daemon never stores them).
+          if (n.paneTail) console.log(`    pane: ${n.paneTail}`);
         }
         const warnings = (res.data["warnings"] as string[]) ?? [];
         for (const w of warnings) {
@@ -775,6 +778,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         for (const s of stages) {
           console.log(`  ${s.stage}: ${s.status}`);
         }
+        for (const line of paneTailLines(res.data)) console.log(line);
 
         const rigId = res.data["rigId"] as string | undefined;
         if (rigId) {
@@ -903,4 +907,22 @@ function printRestoreNotAttempted(data: RestoreNotAttemptedData): void {
     if (blocker.path) console.error(`    path: ${blocker.path}`);
     console.error(`    remediation: ${blocker.remediation}`);
   }
+}
+
+/** workspaces-o9o.3: the pane tails a failed launch returns beside its errors (the daemon never stores them): the
+ *  import_rig stage detail's `paneTails` when every seat failed, or its `nodes[].paneTail` when the rig came up. */
+export function paneTailLines(data: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  const stages = Array.isArray(data["stages"]) ? data["stages"] : [];
+  for (const stage of stages) {
+    const detail = stage !== null && typeof stage === "object" ? (stage as { detail?: unknown }).detail : undefined;
+    if (detail === null || typeof detail !== "object") continue;
+    const { paneTails, nodes } = detail as { paneTails?: unknown; nodes?: unknown };
+    for (const entry of [...(Array.isArray(paneTails) ? paneTails : []), ...(Array.isArray(nodes) ? nodes : [])]) {
+      if (entry === null || typeof entry !== "object") continue;
+      const { logicalId, paneTail } = entry as { logicalId?: unknown; paneTail?: unknown };
+      if (typeof logicalId === "string" && typeof paneTail === "string" && paneTail) lines.push(`  ${logicalId} pane: ${paneTail}`);
+    }
+  }
+  return lines;
 }

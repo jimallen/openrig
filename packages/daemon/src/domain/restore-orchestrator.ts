@@ -95,7 +95,7 @@ export type ReconcileNodeResult =
 import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, freshSeatLaunchCommand } from "./active-occupant.js";
 import { rigAdviceHandle, rigAdviceHandleIn } from "./rig-ref.js";
 import { registeredPaneOf } from "./binding-pane.js";
-import { redactTranscriptContent } from "./transcript-redaction.js";
+import { redactPaneText } from "./launch-failure-report.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -512,7 +512,8 @@ export class RestoreOrchestrator {
       };
 
       // 7. Emit restore.completed
-      this.eventBus.emit({ type: "restore.completed", rigId, snapshotId, result: restoreResult });
+      // workspaces-o9o.3: the response carries each failed startup's pane tail; the stored event never does.
+      this.eventBus.emit({ type: "restore.completed", rigId, snapshotId, result: withoutPaneTails(restoreResult) });
 
       return { ok: true, result: restoreResult };
     } catch (err) {
@@ -730,7 +731,7 @@ export class RestoreOrchestrator {
         warnings: subsetWarnings,
         snapshotSelection,
       };
-      this.eventBus.emit({ type: "restore.subset_completed", rigId, snapshotId: snapshot.id, result: subsetResult });
+      this.eventBus.emit({ type: "restore.subset_completed", rigId, snapshotId: snapshot.id, result: withoutPaneTails(subsetResult) });
     }
 
     // Emit node.held for non-running held non-targets (tri-state: running/unknown/held)
@@ -1454,6 +1455,8 @@ export class RestoreOrchestrator {
     // (policy- or --fresh-driven): named `fresh-primed`, the old conflated
     // `fresh` no longer flows from this pipeline.
     let baseStatus: RestoreNodeResult["status"] = "fresh-primed";
+    // workspaces-o9o.3: a failed startup's pane tail for the response (stripped before any restore event is stored).
+    let startupPaneTail: string | undefined;
 
     // Pod-aware nodes: resume via launchHarness (handled in startup orchestrator with skipHarnessLaunch: false)
     // Legacy nodes: resume via old claude-resume/codex-resume helpers
@@ -1576,7 +1579,7 @@ export class RestoreOrchestrator {
             status: "attention_required",
             error: resumeOutcome.message,
             // workspaces-o9o.3: the resume adapters capture this raw from the pane, and restore.completed persists it.
-            attentionEvidence: resumeOutcome.evidence === undefined ? null : redactTranscriptContent(resumeOutcome.evidence),
+            attentionEvidence: resumeOutcome.evidence === undefined ? null : redactPaneText(resumeOutcome.evidence),
           };
         } else {
           // OPR.0.3.4.2 (B): resume CONCLUDED failed — the launched session is
@@ -1778,6 +1781,8 @@ export class RestoreOrchestrator {
               deferStartupContextWrite: !replayContained,
             });
             warnings?.push(...(startupResult.warnings ?? []));
+            if (!startupResult.ok && startupResult.paneTail) startupPaneTail = startupResult.paneTail;
+            const tailField = startupPaneTail ? { paneTail: startupPaneTail } : {};
             if (!replayContained && (startupResult.ok || startupResult.startupStatus === "attention_required")) {
               try {
                 writeStartupContext(this.db, {
@@ -1833,6 +1838,7 @@ export class RestoreOrchestrator {
                 status: "attention_required",
                 error: `Restore startup requires attention: ${startupResult.errors.join("; ")}`,
                 attentionEvidence: startupResult.evidence ?? null,
+                ...tailField,
               };
             }
             if (isPodAware && resumeRequested) {
@@ -1846,6 +1852,7 @@ export class RestoreOrchestrator {
                   logicalId: node.logicalId,
                   status: "awaiting-decision",
                   error: `Original session unresumable: ${startupResult.errors.join("; ")}. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
+                  ...tailField,
                 };
               }
               return {
@@ -1853,6 +1860,7 @@ export class RestoreOrchestrator {
                 logicalId: node.logicalId,
                 status: "failed",
                 error: startupResult.errors.join("; "),
+                ...tailField,
               };
             }
             if (isPodAware) {
@@ -1864,6 +1872,7 @@ export class RestoreOrchestrator {
                 logicalId: node.logicalId,
                 status: "failed",
                 error: `${prefix}: ${startupResult.errors.join("; ")}`,
+                ...tailField,
               };
             }
             warnings?.push(`Restore startup failed for ${node.logicalId}: ${startupResult.errors.join("; ")}`);
@@ -1893,7 +1902,7 @@ export class RestoreOrchestrator {
     if (baseStatus === "resumed") {
       return this.finishJoinedResume(node, sessionName, resumeToken, launchResult?.session.id);
     }
-    return { nodeId: node.id, logicalId: node.logicalId, status: baseStatus };
+    return { nodeId: node.id, logicalId: node.logicalId, status: baseStatus, ...(startupPaneTail ? { paneTail: startupPaneTail } : {}) };
   }
 
   /** A native resume is only a full success after the restored terminal is
@@ -2455,4 +2464,9 @@ function withLiveSeatSettings(snapshotNode: NodeWithBinding, live: NodeWithBindi
     ...(live.remoteControl ? { remoteControl: true } : {}),
     ...(live.askInModal ? { askInModal: true } : {}),
   };
+}
+
+/** workspaces-o9o.3: a restore result as it may be stored: every node's transient paneTail removed. */
+function withoutPaneTails(result: RestoreResult): RestoreResult {
+  return { ...result, nodes: result.nodes.map(({ paneTail: _paneTail, ...node }) => node) };
 }

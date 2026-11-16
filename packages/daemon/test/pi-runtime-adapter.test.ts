@@ -451,13 +451,34 @@ describe("PiRuntimeAdapter.launchHarness", () => {
     expect(result.evidence).not.toContain(token);
   });
 
-  it("quotes the pane when the runner never reports ready (workspaces-o9o.3)", async () => {
+  // workspaces-o9o.3 review: the error is persisted (node.startup_failed), so it carries only a marker; the tail rides
+  // the transient paneTail, and the pane is read with soft-wrapped lines joined.
+  it("quotes the pane in the transient tail, not the durable error, when the runner never reports ready (workspaces-o9o.3)", async () => {
     const capturePaneContent = vi.fn(async () => "[oh-my-zsh] Would you like to update? [Y/n] node /daemon-dist/adapters/pi-runner.js\n");
     const adapter = adapterWith(memFs(), mockTmux({ capturePaneContent }));
     const result = await adapter.launchHarness(binding, { name: SESSION });
     if (result.ok) throw new Error("expected a failure");
-    expect(result.error).toBe("pi launch: timed out waiting for the runner to report ready — pane: [oh-my-zsh] Would you like to update? [Y/n] node /daemon-dist/adapters/pi-runner.js");
+    expect(result.error).toBe("pi launch: timed out waiting for the runner to report ready — pane tail not stored");
+    expect(result.paneTail).toBe("[oh-my-zsh] Would you like to update? [Y/n] node /daemon-dist/adapters/pi-runner.js");
     expect(result.recovery).toBe("attention_required");
+    expect(capturePaneContent).toHaveBeenCalledWith(SESSION, 40, { joinWrappedLines: true });
+  });
+
+  it("redacts the shapes the transcript patterns miss in a runner exit's evidence, and reads the pane joined (workspaces-o9o.3)", async () => {
+    const fs = memFs();
+    const gitlab = "gl" + "pat-AbCdEfGhIjKlMnOpQrSt";
+    const sendShellCommand = vi.fn(async (_t: string, text: string) => {
+      fs.files[piSeatPaths(STATE_ROOT, SESSION).runnerStatePath] = JSON.stringify({
+        ready: false, launchId: launchIdFrom(text), updatedAt: "t", exited: { code: 1, at: "t" },
+      });
+      return { ok: true as const };
+    });
+    const capturePaneContent = vi.fn(async () => `git push ${gitlab}\n[pi-runner] ERROR launch: refused\n$ `);
+    const adapter = adapterWith(fs, mockTmux({ sendShellCommand, capturePaneContent }));
+    const result = await adapter.launchHarness(binding, { name: SESSION });
+    if (result.ok) throw new Error("expected a failure");
+    expect(result.evidence).toBe("git push [REDACTED]\n[pi-runner] ERROR launch: refused\n$ ");
+    expect(capturePaneContent).toHaveBeenCalledWith(SESSION, 40, { joinWrappedLines: true });
   });
 });
 

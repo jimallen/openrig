@@ -124,7 +124,10 @@ export type HarnessLaunchResult =
   // conversation doesn't exist; other `retry_fresh` failures (such as a pane back at its shell)
   // leave it unset.
   | { ok: false; error: string; recovery?: HarnessLaunchRecovery; evidence?: string; missingConversation?: true;
-    launchedProcess?: import("./native-process-lineage.js").ClaudeLaunchedProcess };
+    launchedProcess?: import("./native-process-lineage.js").ClaudeLaunchedProcess;
+    /** workspaces-o9o.3: the pane's last lines (redacted), TRANSIENT: carried to responses only, never into `error` or any
+     *  stored record. */
+    paneTail?: string };
 
 // -- Shared concrete-hint resolver --
 

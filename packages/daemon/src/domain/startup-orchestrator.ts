@@ -32,8 +32,7 @@ import { isResumeGoneCode, paneForegroundState, RESUME_SETTLE_MS, type PaneForeg
 import { readStoredJsonObject } from "./stored-json.js";
 import { registeredPaneOf } from "./binding-pane.js";
 import { runnerTerminalEnded } from "../adapters/runner-terminal-ended.js";
-import { launchFailureSuffix, paneTailQuote } from "./launch-failure-report.js";
-import { redactTranscriptContent } from "./transcript-redaction.js";
+import { durableLaunchFailureSuffix, paneTailQuote, redactPaneText } from "./launch-failure-report.js";
 import { startupTextId } from "./seat-messaging/long-message.js";
 import { messageId, type MessageId } from "./seat-messaging/ports.js";
 
@@ -206,7 +205,10 @@ export type StartupResult = { warnings?: string[] } & (
   // outcomes so restore-orchestrator's per-node mapping can populate
   // `attentionEvidence` on the RestoreNodeResult. Internal type only;
   // not persisted on the failure event.
-  | { ok: false; startupStatus: "attention_required" | "failed"; errors: string[]; evidence?: string; recovery?: string; missingConversation?: true });
+  | { ok: false; startupStatus: "attention_required" | "failed"; errors: string[]; evidence?: string; recovery?: string; missingConversation?: true;
+      /** workspaces-o9o.3: the pane's last lines (redacted), TRANSIENT: callers show it and never store it. `errors` (which
+       *  node.startup_failed persists) carries only the runner's ERROR line or the PANE_TAIL_NOT_STORED marker. */
+      paneTail?: string });
 
 interface StartupOrchestratorDeps {
   db: Database.Database;
@@ -516,11 +518,11 @@ export class StartupOrchestrator {
             errors.push(`Harness launch requires attention: ${launchResult.error}`);
             // isRestore selects context, not native continuity: pod-aware exact
             // resume also uses false. Only an actual fresh launch may re-prime.
-            return this.fail(input, "attention_required", errors, launchResult.evidence, continuityOutcome === "fresh");
+            return this.fail(input, "attention_required", errors, launchResult.evidence, continuityOutcome === "fresh", undefined, false, launchResult.paneTail);
           }
 
           errors.push(`Harness launch failed: ${launchResult.error}`);
-          return this.fail(input, "failed", errors, undefined, false, launchResult.recovery, launchResult.missingConversation === true);
+          return this.fail(input, "failed", errors, undefined, false, launchResult.recovery, launchResult.missingConversation === true, launchResult.paneTail);
         }
       } catch (err) {
         errors.push(`Harness launch error: ${(err as Error).message}`);
@@ -549,11 +551,12 @@ export class StartupOrchestrator {
           errors.push(`Startup requires attention: ${readiness.reason ?? "unknown"}`);
           return this.fail(input, "attention_required", errors, undefined, isFreshLaunch);
         }
-        // workspaces-o9o.3: say what the pane showed (a prompt that swallowed the launch, a runner's own ERROR line), redacted:
-        // this error is persisted in the node.startup_failed event.
-        const shown = launchFailureSuffix(await this.paneContent(input.binding.tmuxSession));
-        errors.push(`Readiness timeout after ${readinessTimeoutMs / 1000}s — harness did not become interactive: ${readiness.reason ?? "unknown"}${shown}`);
-        return this.fail(input, "failed", errors);
+        // workspaces-o9o.3: say what the pane showed (a prompt that swallowed the launch, a runner's own ERROR line). This
+        // error is persisted (node.startup_failed), so it names only the runner's ERROR line, else says the tail is not
+        // stored; the tail itself rides the transient paneTail.
+        const content = await this.paneContent(input.binding.tmuxSession);
+        errors.push(`Readiness timeout after ${readinessTimeoutMs / 1000}s — harness did not become interactive: ${readiness.reason ?? "unknown"}${durableLaunchFailureSuffix(content)}`);
+        return this.fail(input, "failed", errors, undefined, false, undefined, false, paneTailQuote(content) || undefined);
       }
     } catch (err) {
       errors.push(`Readiness check error: ${(err as Error).message}`);
@@ -834,7 +837,8 @@ export class StartupOrchestrator {
   private async paneContent(session: string | null | undefined): Promise<string> {
     if (!session) return "";
     try {
-      return (await this.tmuxAdapter.capturePaneContent(session, 40)) ?? "";
+      // Soft-wrapped lines joined (workspaces-o9o.3 review): a token wider than the pane must reach redaction whole.
+      return (await this.tmuxAdapter.capturePaneContent(session, 40, { joinWrappedLines: true })) ?? "";
     } catch { return ""; }
   }
 
@@ -846,6 +850,7 @@ export class StartupOrchestrator {
     freshContextPending = false,
     recovery?: string,
     missingConversation = false,
+    paneTail?: string,
   ): StartupResult {
     const stopped = this.guardAttention.get(input.sessionId);
     if (stopped) {
@@ -868,7 +873,8 @@ export class StartupOrchestrator {
     });
     // workspaces-o9o.3: every StartupResult failure passes here. Its evidence is pane text the adapters captured raw, and restore
     // persists it (attentionEvidence in restore.completed), so it is redacted once, here.
-    return { ok: false, startupStatus: status, errors, evidence: evidence === undefined ? undefined : redactTranscriptContent(evidence), ...(recovery ? { recovery } : {}),
+    return { ok: false, startupStatus: status, errors, evidence: evidence === undefined ? undefined : redactPaneText(evidence), ...(recovery ? { recovery } : {}),
+      ...(paneTail ? { paneTail } : {}),
       ...(missingConversation ? { missingConversation: true as const } : {}) };
   }
 

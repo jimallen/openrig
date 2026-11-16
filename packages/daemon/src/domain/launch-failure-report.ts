@@ -3,13 +3,44 @@
 // A launch that never becomes ready used to report only "Readiness timeout after 30s"; the cause (a shell prompt that
 // swallowed the launch command, a runner's own refusal) was visible only by reading the dead pane. These pure functions
 // turn captured pane text into the short quote a failure carries. Pure: no tmux, no I/O; callers read the pane through
-// their TmuxAdapter and pass the text in.
+// their TmuxAdapter (with soft-wrapped lines joined) and pass the text in.
 //
-// Where the quote goes: into StartupResult.errors / evidence and the successor launcher's message, so into the persisted
-// node.startup_failed event (the SQLite events table) and the CLI's rig up / restore / handover output. That store is
-// durable, so every quote is redacted with the transcript redaction policy before it leaves this module.
+// Two rules, from the security review of this unit:
+// - Deny by default for text this unit added. The pane tail is never put in a durable store: a failure's durable text
+//   (StartupResult.errors, persisted in node.startup_failed and folded into restore and bootstrap records) carries only
+//   the runner's own ERROR line, else the fixed PANE_TAIL_NOT_STORED marker. The tail itself rides a transient field
+//   (paneTail) that responses carry and persisting code strips or never reads.
+// - Redact what is stored anyway. Pane evidence that was durable before this unit (restore attention evidence, the
+//   resume-failure quote) and the runner ERROR line go through redactPaneText: the v0 transcript patterns plus shapes
+//   they miss. A pattern list is never complete; that is why the first rule exists.
 
 import { redactTranscriptContent } from "./transcript-redaction.js";
+
+/** The durable suffix when the pane showed something but no runner ERROR line: the tail is withheld from every store. */
+export const PANE_TAIL_NOT_STORED = " — pane tail not stored";
+
+/** Shapes the v0 transcript patterns (transcript-redaction.ts, a twin of the CLI's restore-packet list, so not widened
+ *  here) miss. Pane text only. Order matters: token shapes first, then secret-named assignments. */
+const PANE_TOKEN_PATTERNS: readonly RegExp[] = [
+  /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,                                   // Slack
+  /\bglpat-[A-Za-z0-9_-]{20,}/g,                                        // GitLab personal access token
+  /\bnpm_[A-Za-z0-9]{36}\b/g,                                           // npm
+  /\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g,    // JWT
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,                                      // AWS access key id
+  /\bAIza[0-9A-Za-z_-]{35}/g,                                           // Google API key
+];
+/** user:password@ in a URL: the password is redacted, the user and host kept. */
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@/]+@/gi;
+/** NAME=value or NAME: value where NAME ends in a secret word: the value is redacted. */
+const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|KEY))(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"']+)/gi;
+
+/** Pane text with the v0 transcript patterns and the pane-only shapes above replaced by `[REDACTED]`. */
+export function redactPaneText(text: string): string {
+  let out = redactTranscriptContent(text);
+  for (const pattern of PANE_TOKEN_PATTERNS) out = out.replace(pattern, "[REDACTED]");
+  out = out.replace(URL_PASSWORD, "$1[REDACTED]@");
+  return out.replace(SECRET_ASSIGNMENT, "$1$2[REDACTED]");
+}
 
 /** Non-empty pane lines a tail quotes. */
 export const PANE_TAIL_LINES = 4;
@@ -34,7 +65,7 @@ function cleanLines(content: string): string[] {
 }
 
 function fit(text: string): string {
-  const redacted = redactTranscriptContent(text);
+  const redacted = redactPaneText(text);
   return redacted.length > PANE_QUOTE_MAX_CHARS ? `${redacted.slice(0, PANE_QUOTE_MAX_CHARS - 1)}…` : redacted;
 }
 
@@ -51,7 +82,16 @@ export function runnerErrorQuote(content: string | null | undefined): string | n
   return line ? fit(line) : null;
 }
 
-/** The suffix a launch failure appends: the runner's own ERROR line when it printed one, else the pane's last lines. */
+/** The suffix a failure's DURABLE text appends: the runner's own ERROR line when it printed one (OpenRig-authored, and
+ *  redacted), else PANE_TAIL_NOT_STORED when the pane showed anything, else nothing. Never the tail itself. */
+export function durableLaunchFailureSuffix(content: string | null | undefined): string {
+  const said = runnerErrorQuote(content);
+  if (said) return ` — runner said: ${said}`;
+  return paneTailQuote(content) ? PANE_TAIL_NOT_STORED : "";
+}
+
+/** The suffix a RESPONSE-ONLY failure message appends (the handover successor's, never persisted): the runner's own ERROR
+ *  line when it printed one, else the pane's last lines. */
 export function launchFailureSuffix(content: string | null | undefined): string {
   const said = runnerErrorQuote(content);
   if (said) return ` — runner said: ${said}`;

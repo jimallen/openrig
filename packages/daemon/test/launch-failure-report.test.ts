@@ -16,6 +16,33 @@ describe("paneTailQuote", () => {
     expect(paneTailQuote("key sk-abcdefghijklmnop0123 here")).toBe("key [REDACTED] here");
   });
 
+  // workspaces-o9o.3 review (verify-sec 1): shapes the v0 transcript patterns miss. Synthetic values only.
+  it.each([
+    ["Slack bot token", "xox" + "b-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx", "xox" + "b-"],
+    ["Slack user token", "xox" + "p-1234567890-1234567890-1234567890123-abcdef0123456789abcdef0123456789", "xox" + "p-"],
+    ["GitLab token", "gl" + "pat-AbCdEfGhIjKlMnOpQrSt", "glpat-"],
+    ["npm token", "np" + "m_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "npm_"],
+    ["JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk", "eyJ"],
+    ["AWS access key id", "AK" + "IAIOSFODNN7EXAMPLE", "AKIA"],
+    ["Google API key", "AI" + "zaSyA1234567890abcdefghijklmnopqrstuv", "AIza"],
+  ])("redacts a %s", (_label, secret, prefix) => {
+    const quote = paneTailQuote(`before ${secret} after`);
+    expect(quote).toBe("before [REDACTED] after");
+    expect(quote).not.toContain(prefix);
+  });
+
+  it.each([
+    ["a URL's password", "git clone https://jim:hunter2pass@example.com/repo.git", "git clone https://jim:[REDACTED]@example.com/repo.git"],
+    ["NAME=value for a secret-named variable", "export DB_PASSWORD=hunter2 MY_API_KEY=abc123 SESSION_TOKEN=t0k", "export DB_PASSWORD=[REDACTED] MY_API_KEY=[REDACTED] SESSION_TOKEN=[REDACTED]"],
+    ["NAME: value for a secret-named key", "client_secret: s3cr3t-v4lue", "client_secret: [REDACTED]"],
+  ])("redacts %s", (_label, input, expected) => {
+    expect(paneTailQuote(input)).toBe(expected);
+  });
+
+  it("control: leaves ordinary text, a variable that is not secret-named and a URL with no password alone", () => {
+    expect(paneTailQuote("export EDITOR=vim LANG=en_US.UTF-8 https://example.com/a?b=c [Y/n]")).toBe("export EDITOR=vim LANG=en_US.UTF-8 https://example.com/a?b=c [Y/n]");
+  });
+
   it("caps the quote at 400 characters with an ellipsis", () => {
     // Space-separated filler: an unbroken run of 40+ word characters is itself a redaction match.
     const quote = paneTailQuote("ab ".repeat(400));

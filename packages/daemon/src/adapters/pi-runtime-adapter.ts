@@ -26,8 +26,7 @@ import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-plann
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
-import { launchFailureSuffix } from "../domain/launch-failure-report.js";
-import { redactTranscriptContent } from "../domain/transcript-redaction.js";
+import { durableLaunchFailureSuffix, paneTailQuote, redactPaneText } from "../domain/launch-failure-report.js";
 import { runnerTerminalEnded } from "./runner-terminal-ended.js";
 import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
@@ -485,16 +484,19 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       // record immediately at startup and exited on death).
       if (state?.launchId === launchId) {
         if (state.exited) {
-          const paneContent = (await this.tmux.capturePaneContent(sessionName, 40)) ?? "";
-          // workspaces-o9o.3: the runner's own refusal (its ERROR line) goes in the error, not only in the pane; the error and
-          // the evidence reach the persisted node.startup_failed event and restore results, so both are redacted.
+          const paneContent = await this.joinedPane(sessionName);
+          // workspaces-o9o.3: the runner's own refusal (its ERROR line) goes in the error; the error is persisted
+          // (node.startup_failed), so it never carries the pane tail, which rides the transient paneTail. The evidence was
+          // stored before this unit (restore attention evidence), so it stays and is redacted.
+          const tail = paneTailQuote(paneContent);
           return {
             ok: false,
             failure: {
               ok: false,
-              error: `${this.runtime} launch failed: the runner exited (code ${state.exited.code ?? "unknown"})${launchFailureSuffix(paneContent)}`,
+              error: `${this.runtime} launch failed: the runner exited (code ${state.exited.code ?? "unknown"})${durableLaunchFailureSuffix(paneContent)}`,
               recovery: "attention_required",
-              evidence: redactTranscriptContent(paneContent.split("\n").slice(-12).join("\n")),
+              evidence: redactPaneText(paneContent.split("\n").slice(-12).join("\n")),
+              ...(tail ? { paneTail: tail } : {}),
             },
           };
         }
@@ -502,15 +504,23 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       }
       if (attempt < attempts - 1) await this.sleep(pollMs);
     }
-    const paneContent = (await this.tmux.capturePaneContent(sessionName, 40)) ?? "";
+    const paneContent = await this.joinedPane(sessionName);
+    const tail = paneTailQuote(paneContent);
     return {
       ok: false,
       failure: {
         ok: false,
-        error: `${this.runtime} launch: timed out waiting for the runner to report ready${launchFailureSuffix(paneContent)}`,
+        error: `${this.runtime} launch: timed out waiting for the runner to report ready${durableLaunchFailureSuffix(paneContent)}`,
         recovery: "attention_required",
+        ...(tail ? { paneTail: tail } : {}),
       },
     };
+  }
+
+  /** The pane's recent text with soft-wrapped lines joined (workspaces-o9o.3 review), so a token wider than the pane
+   *  reaches redaction whole. */
+  private async joinedPane(sessionName: string): Promise<string> {
+    return (await this.tmux.capturePaneContent(sessionName, 40, { joinWrappedLines: true })) ?? "";
   }
 
   private projectEntry(entry: ProjectionEntry, binding: NodeBinding, warnings: string[]): boolean {

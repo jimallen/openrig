@@ -910,7 +910,10 @@ export class BootstrapOrchestrator {
         ? (outcome as { errors: string[] }).errors
         : [(outcome as { message: string }).message];
       const outWarnings = (outcome as { warnings?: string[] }).warnings ?? [];
-      stages.push({ stage: "import_rig", status: "failed", detail: { code: outcome.code } });
+      // workspaces-o9o.3: the failed seats' pane tails reach the caller in the stage detail (a response, never stored);
+      // `errors` stays tail-free because the routes persist errors[0] as bootstrap.failed.
+      const paneTails = outcome.code === "instantiate_error" ? outcome.paneTails : undefined;
+      stages.push({ stage: "import_rig", status: "failed", detail: { code: outcome.code, ...(paneTails?.length ? { paneTails } : {}) } });
       this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
       return withRouting({ runId: run.id, status: "failed", stages, errors: outErrors, warnings: [...warnings, ...outWarnings] });
     }
