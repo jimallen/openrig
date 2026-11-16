@@ -429,3 +429,156 @@ describe.each([["claude-code", ".claude"], ["codex", ".agents"]] as const)("work
     expect(driftEvents()).toEqual([]);
   });
 });
+
+// verify-qa nit (o9o.30 review): a restore of SEVERAL seats records each seat's own drift, and each stays shown after
+// restore.completed. Two seats share one folder (cwdOverride), so this also proves the comparison is per owner: each
+// seat's drift names only its own skills, never the other seat's.
+describe("workspaces-o9o.30: a multi-seat restore records and keeps each seat's own drift", () => {
+  const TWO_SEATS = `version: "0.2"
+name: team
+pods:
+  - id: dev
+    label: Dev
+    members:
+      - id: impl
+        agent_ref: "local:agents/impl"
+        profile: default
+        runtime: claude-code
+        cwd: .
+      - id: qa
+        agent_ref: "local:agents/qa"
+        profile: default
+        runtime: claude-code
+        cwd: .
+    edges: []
+edges: []
+`;
+  const writeAgent = (dir: string, id: string, version: string, skills: Record<string, string>) => {
+    const agent = path.join(dir, "agents", id);
+    fs.mkdirSync(path.join(agent, "guidance"), { recursive: true });
+    fs.writeFileSync(path.join(agent, "agent.yaml"), AGENT(version).replace("name: impl", `name: ${id}`));
+    fs.writeFileSync(path.join(agent, "guidance", "role.md"), `# ${id} ${version}\n`);
+    const plugin = path.join(agent, "plugins", "core");
+    fs.mkdirSync(path.join(plugin, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "core", version }));
+    for (const [skill, body] of Object.entries(skills)) {
+      fs.mkdirSync(path.join(plugin, "skills", skill), { recursive: true });
+      fs.writeFileSync(path.join(plugin, "skills", skill, "SKILL.md"), SKILL(skill, body));
+    }
+  };
+
+  let root: string;
+  let db: Database.Database;
+  afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  it("rig up --existing --fresh impl,qa --startup-from stored: two drift events, one per seat, both shown after restore.completed", async () => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "o9o30-multi-")));
+    // A: impl {alpha, gamma}, qa {delta}. B: impl {alpha, beta}, qa {delta, epsilon}.
+    for (const [sha, impl, qa] of [["aaaaaaa", { alpha: "a", gamma: "g" }, { delta: "d" }], ["bbbbbbb", { alpha: "a", beta: "b" }, { delta: "d", epsilon: "e" }]] as const) {
+      const dir = path.join(root, "releases", sha, "rigs", "team");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "rig.yaml"), TWO_SEATS);
+      writeAgent(dir, "impl", sha === "aaaaaaa" ? "1.0.0" : "2.0.0", impl);
+      writeAgent(dir, "qa", sha === "aaaaaaa" ? "1.0.0" : "2.0.0", qa);
+    }
+    const current = path.join(root, "releases", "current");
+    fs.symlinkSync(path.join(root, "releases", "aaaaaaa"), current);
+    fs.mkdirSync(path.join(root, "library"));
+    fs.symlinkSync(path.join(current, "rigs", "team"), path.join(root, "library", "team"));
+    const linkSpec = path.join(root, "library", "team", "rig.yaml");
+    const workdir = path.join(root, "work");
+    fs.mkdirSync(workdir);
+    const catalog = path.join(root, "catalog");
+    fs.mkdirSync(catalog);
+    fs.writeFileSync(path.join(catalog, "catalog.yaml"), "schema: openrig.skill-catalog/v1\nsystem: []\n");
+    execFileSync("git", ["init", "-q", catalog]);
+    execFileSync("git", ["-C", catalog, "add", "."]);
+    execFileSync("git", ["-C", catalog, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "catalog"]);
+
+    db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const sessionRegistry = new SessionRegistry(db);
+    const eventBus = new EventBus(db);
+    const snapshotRepo = new SnapshotRepository(db);
+    const checkpointStore = new CheckpointStore(db);
+    const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
+    const alive = new Set<string>();
+    const tmux = {
+      createSession: vi.fn(async (name: string) => { if (alive.has(name)) return { ok: false as const, code: "duplicate_session", message: "duplicate" }; alive.add(name); return { ok: true as const }; }),
+      killSession: vi.fn(async (name: string): Promise<TmuxResult> => { alive.delete(name); return { ok: true }; }),
+      probeSession: vi.fn(async (name: string) => alive.has(name) ? { state: "present" as const } : { state: "absent" as const }),
+      hasSession: vi.fn(async (name: string) => alive.has(name)),
+      startServer: vi.fn(async (): Promise<TmuxResult> => ({ ok: true })),
+      listSessions: vi.fn(async () => [...alive].map((name) => ({ name, windows: 1, created: "", attached: false }))),
+      listWindows: vi.fn(async () => []),
+      listPanes: vi.fn(async (name: string) => alive.has(name) ? [{ id: `%${name}`, index: 0, cwd: workdir, width: 80, height: 24, active: true }] : []),
+      getPanePid: vi.fn(async () => 4242),
+      getPaneCommand: vi.fn(async () => "claude"),
+      capturePaneContent: vi.fn(async () => ""),
+      sendText: vi.fn(async () => ({ ok: true as const })),
+      sendKeys: vi.fn(async () => ({ ok: true as const })),
+      setSessionOption: vi.fn(async () => ({ ok: true as const })),
+    } as never;
+    const adapter: RuntimeAdapter = {
+      runtime: "claude-code",
+      listInstalled: async () => [],
+      project: async () => ({ projected: [], skipped: [], failed: [] }),
+      deliverStartup: async (files) => ({ delivered: files.length, failed: [] }),
+      launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
+      checkReady: async () => ({ ready: true }),
+    };
+    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
+    const inst = new PodRigInstantiator({
+      specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,
+      db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
+      fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
+      adapters: { "claude-code": adapter },
+      tmuxAdapter: tmux,
+      onboardingEnabledResolver: () => false,
+      skillsRootResolver: () => catalog,
+      skillReconciler: reconcileSkillLoadout,
+    } as never);
+    const restore = new RestoreOrchestrator({
+      db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore, nodeLauncher, tmuxAdapter: tmux,
+      claudeResume: { canResume: () => false, resume: vi.fn() } as never,
+      codexResume: { canResume: () => false, resume: vi.fn() } as never,
+      listProcesses: async () => [],
+      seatStartupSource: inst,
+    } as never);
+
+    const realSpec = fs.realpathSync(linkSpec);
+    const launched = await inst.instantiate(fs.readFileSync(realSpec, "utf-8"), path.dirname(realSpec), { cwdOverride: workdir, specSourcePath: linkSpec });
+    expect(launched.ok, JSON.stringify(launched)).toBe(true);
+    if (!launched.ok) return;
+    const rigId = launched.result.rigId;
+    const nodeOf = (logicalId: string) => rigRepo.getRig(rigId)!.nodes.find((n) => n.logicalId === logicalId)!.id;
+    const nodes = { impl: nodeOf("dev.impl"), qa: nodeOf("dev.qa") };
+    const down = await new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus: new EventBus(db) }).teardown(rigId);
+    expect(down.snapshotId, JSON.stringify(down)).toBeTruthy();
+    fs.unlinkSync(current);
+    fs.symlinkSync(path.join(root, "releases", "bbbbbbb"), current);
+
+    const outcome = await restore.restore(down.snapshotId!, {
+      adapters: { "claude-code": adapter }, fsOps: { exists: (p: string) => fs.existsSync(p) }, freshLogicalIds: ["dev.impl", "dev.qa"], startupFrom: "stored",
+    } as never);
+
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    const rows = db.prepare("SELECT seq, type, payload FROM events WHERE type IN ('seat.skills_drift_observed', 'restore.completed') ORDER BY seq").all() as Array<{ seq: number; type: string; payload: string }>;
+    const drifts = rows.filter((r) => r.type === "seat.skills_drift_observed").map((r) => JSON.parse(r.payload) as Record<string, unknown>);
+    expect(drifts.map((d) => [d["logicalId"], d["nodeId"], d["extra"], d["missing"]]).sort()).toEqual([
+      ["dev.impl", nodes.impl, ["gamma"], ["beta"]],
+      ["dev.qa", nodes.qa, [], ["epsilon"]],
+    ]);
+    // restore.completed lands after both drift events, and neither seat's drift is lost to it.
+    const completedSeq = rows.filter((r) => r.type === "restore.completed").at(-1)!.seq;
+    expect(rows.filter((r) => r.type === "seat.skills_drift_observed").every((r) => r.seq < completedSeq)).toBe(true);
+    const statusOf = (seat: string) => {
+      const result = new SeatStatusService({ rigRepo }).getStatus(seat);
+      if (!result.ok) throw new Error(JSON.stringify(result));
+      return result.status.skills_drift;
+    };
+    expect(statusOf("dev-impl@team")).toMatchObject({ extra: ["gamma"], missing: ["beta"], startupSource: "stored" });
+    expect(statusOf("dev-qa@team")).toMatchObject({ extra: [], missing: ["epsilon"], startupSource: "stored" });
+  });
+});
