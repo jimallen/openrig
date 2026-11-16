@@ -15,6 +15,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { resolveSharedDocsRoot } from "../src/openrig-compat.js";
 
 // 0.5.2-07 — THE MONEY PROOF (the EFFECT leg, PM gate). Boot a codex seat PINNED to a CHEAP model,
 // HAND IT OVER through the REAL SeatHandoverService + the REAL CodexRuntimeAdapter, then read the
@@ -89,7 +90,9 @@ describe("seat-handover model-fidelity money-proof (real codex, private hc core)
       // directory does not exist, codex silently degrades its -m to a fallback tier (a real quirk worth
       // its own note — a missing queue dir drops the pin). Production ensures it; create it here so -m
       // takes effect and the successor renders the EXACT pinned model.
-      const queueRoot = nodePath.join(os.homedir(), ".openrig", "shared-docs", "rigs", "mf-rig", "state", "dev");
+      // workspaces-o9o.46: the adapter's --add-dir is this instance's tree (<OPENRIG_HOME>/shared-docs), never the account's
+      // ~/.openrig, which in a real-Codex run is the operator's real home.
+      const queueRoot = nodePath.join(resolveSharedDocsRoot(), "rigs", "mf-rig", "state", "dev");
       fs.mkdirSync(queueRoot, { recursive: true });
 
       expect(await host.createSession(SEAT, cwd), "the seat's terminal is created").toEqual({ ok: true });

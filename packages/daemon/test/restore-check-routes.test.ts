@@ -207,11 +207,13 @@ describe("Restore check routes", () => {
     }
   });
 
-  it.each(["configured", "legacy"])("resolves the spec root and probes the SQLite queue store for %s shared-docs", async (layout) => {
+  // workspaces-o9o.46: with no OPENRIG_SHARED_DOCS_ROOT the tree is <OPENRIG_HOME>/shared-docs (this test's home, read when the
+  // route resolves it), no longer the account's ~/.openrig/shared-docs.
+  it.each(["configured", "default"])("resolves the spec root and probes the SQLite queue store for %s shared-docs", async (layout) => {
     const home = path.join(openRigHome, "isolated-home");
     const sharedDocs = layout === "configured"
       ? path.join(openRigHome, "custom shared-docs")
-      : path.join(home, ".openrig", "shared-docs");
+      : path.join(openRigHome, "shared-docs");
     vi.stubEnv("HOME", home);
     vi.stubEnv("USERPROFILE", home);
     vi.stubEnv("OPENRIG_SHARED_DOCS_ROOT", layout === "configured" ? `  ${sharedDocs}  ` : "");
@@ -234,6 +236,7 @@ describe("Restore check routes", () => {
       ]));
     } finally {
       vi.unstubAllEnvs();
+      if (layout === "default") fs.rmSync(path.join(sharedDocs, "rigs", "test-rig"), { recursive: true, force: true });
     }
   });
 

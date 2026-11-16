@@ -31,6 +31,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { resolveSharedDocsRoot } from "../src/openrig-compat.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
@@ -82,7 +83,9 @@ describe("S5 F4: set-model then a REAL managed successor runs the canonical mode
       const SEAT = "dev-impl@s5f4-rig";
       const cwd = fs.mkdtempSync(nodePath.join(os.tmpdir(), "s5f4-e2e-"));
       execFileSync("sh", ["-c", `cd ${q(cwd)} && git init -q`], { env: cleanEnv });
-      const queueRoot = nodePath.join(os.homedir(), ".openrig", "shared-docs", "rigs", "s5f4-rig", "state", "dev");
+      // workspaces-o9o.46: the adapter's --add-dir is this instance's tree (<OPENRIG_HOME>/shared-docs), never the account's
+      // ~/.openrig, which in a real-Codex run is the operator's real home.
+      const queueRoot = nodePath.join(resolveSharedDocsRoot(), "rigs", "s5f4-rig", "state", "dev");
       fs.mkdirSync(queueRoot, { recursive: true });
 
       expect(await realTmux.createSession(SEAT, cwd), "the seat's terminal is created").toEqual({ ok: true });
