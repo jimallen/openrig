@@ -11,7 +11,7 @@ import { codexDaemonSupportProbe } from "../src/domain/codex-daemon-support.js";
 
 const exec = promisify(execFile), roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function fixture(cliOverride?: string) {
+function fixture(cliOverride?: string, foregroundWait = { timeoutMs: 300, pollMs: 20 }) {
   const root = mkdtempSync(path.join(tmpdir(), "seat-env-regression-")); roots.push(root);
   const shared = path.join(root, "shared bin's"), user = path.join(root, "user"), runtime = path.join(root, "runtime"), cwd = path.join(root, "workspace");
   for (const dir of [shared, user, runtime, cwd]) mkdirSync(dir);
@@ -27,7 +27,7 @@ function fixture(cliOverride?: string) {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   // Fourth argument injects only a fake installed CLI path; production derives its paired CLI.
   // A short foreground wait keeps the unknown-foreground rows fast; production waits up to 3 s.
-  const launch = new (SeatLaunchEnvironment as any)(tmux, env, root, cliOverride ?? cli, undefined, { timeoutMs: 300, pollMs: 20 }) as SeatLaunchEnvironment;
+  const launch = new (SeatLaunchEnvironment as any)(tmux, env, root, cliOverride ?? cli, undefined, foregroundWait) as SeatLaunchEnvironment;
   const run = (command: string) => exec("/bin/bash", ["--noprofile", "--norc", "-c", command], { cwd, env: { ...env, PATH: `${user}:/usr/bin:/bin` }, timeout: 5000 });
   return { root, shared, user, runtime, cwd, cli, env, identity, tmux, warn, launch, run, exe };
 }
@@ -229,4 +229,58 @@ it("H: a known non-POSIX foreground is refused at once, without waiting", async 
   const f = fixture(); f.tmux.getPaneCommand.mockResolvedValue("fish");
   expect(await f.launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" })).toBe("node '/runner.js'");
   expect(f.tmux.getPaneCommand).toHaveBeenCalledTimes(1);
+});
+
+// Review of 33b8736b7 (verify-qa, FAIL 1): the deadline was checked only after a read settled, so a pane read that never answers (tmux
+// execAsync has no timeout; an hc read waits up to ~20 s, a hello then the request at 10 s each) held the launch past the advertised bound. Each read is now bounded by what is left.
+it("I: a pane read that never answers is abandoned at the deadline, the launch falls back naming no foreground, and no timer is left behind", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture();
+    f.tmux.getPaneCommand.mockReturnValue(new Promise<string | null>(() => {}));
+    let settled: string | undefined;
+    void f.launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" }).then(c => { settled = c; });
+    await vi.advanceTimersByTimeAsync(299);
+    expect(settled).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2);
+    expect(settled).toBe("node '/runner.js'");
+    expect(String(f.warn.mock.calls[0]![0])).toContain("(pi_pane_shell: none)");
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
+it("I: a pane read that answers in time clears its deadline timer", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture(); f.tmux.getPaneCommand.mockResolvedValue("zsh");
+    let settled = false;
+    void f.launch.command("seat@rig", "/bin/true", { runtime: "pi" }).then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(f.warn).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+it("I: the last poll sleeps only the time left, so the wait ends at the deadline and not one poll interval later", async () => {
+  vi.useFakeTimers();
+  try {
+    // Reads at 0, 100 and 200 ms; 50 ms are left after the third, so the last read is at 250 ms, not 300.
+    const f = fixture(undefined, { timeoutMs: 250, pollMs: 100 }); f.tmux.getPaneCommand.mockResolvedValue("");
+    let settled = false;
+    void f.launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" }).then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(251);
+    expect(settled).toBe(true);
+    expect(f.tmux.getPaneCommand).toHaveBeenCalledTimes(4);
+  } finally { vi.useRealTimers(); }
+});
+it("I: a read that hangs after earlier polls is bounded by the time LEFT, not by a fresh full wait", async () => {
+  vi.useFakeTimers();
+  try {
+    // First read answers "" at 0 ms; the second, at 20 ms, never answers. It must be abandoned at the 300 ms deadline, not at 320 ms.
+    const f = fixture(); f.tmux.getPaneCommand.mockResolvedValueOnce("").mockReturnValue(new Promise<string | null>(() => {}));
+    let settled = false;
+    void f.launch.command("seat@rig", "node '/runner.js'", { runtime: "pi" }).then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(301);
+    expect(settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
 });

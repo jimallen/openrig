@@ -90,13 +90,28 @@ export class SeatLaunchEnvironment {
 
   /** The pane's foreground process name. A fresh hc terminal reports none for its first ~0.5 s, while its login shell starts (measured on
    *  Sparky: null, then zsh), and a launch typed at once read that gap as "no shell" and fell back. Waits, bounded, until a name is known;
-   *  a known name is returned at once, whatever it is, so the gate below judges it unchanged. */
+   *  a known name is returned at once, whatever it is, so the gate below judges it unchanged. Each read is bounded by the time left: a
+   *  read that does not answer (tmux exec has no timeout; an hc read waits up to ~20 s: a hello, then the request, 10 s each) is abandoned at the deadline and reads as no name. */
   private async foreground(session: string): Promise<string> {
     const deadline = Date.now() + this.foregroundWait.timeoutMs;
     for (;;) {
-      const name = path.basename(await this.tmux.getPaneCommand(session) ?? "").replace(/^-/, "");
+      const read = await this.boundedPaneCommand(session, deadline - Date.now());
+      const name = path.basename(read ?? "").replace(/^-/, "");
       if (name !== "" || Date.now() >= deadline) return name;
-      await new Promise(resolve => setTimeout(resolve, this.foregroundWait.pollMs));
+      await new Promise(resolve => setTimeout(resolve, Math.min(this.foregroundWait.pollMs, Math.max(0, deadline - Date.now()))));
+    }
+  }
+
+  /** One pane read, or null once `withinMs` passes first. The timer is cleared when the read settles, and an abandoned read's later
+   *  failure is absorbed; a read that fails in time still throws, so the caller's fallback names it. */
+  private async boundedPaneCommand(session: string, withinMs: number): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = this.tmux.getPaneCommand(session);
+    try {
+      return await Promise.race([read, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.max(0, withinMs)); })]);
+    } finally {
+      clearTimeout(timer);
+      read.catch(() => { /* abandoned at the deadline: its outcome no longer matters */ });
     }
   }
 
