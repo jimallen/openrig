@@ -237,14 +237,15 @@ describe.each(["pi", "omp"] as const)("OF-286 the %s runner flags 3 failed model
 });
 
 /** Pi: a turn that fails once and is not retried (a 400 such as `{"detail":"Bad Request"}`): the failed message, a final agent_end, agent_settled. */
-const piFailOnce = (text = '{"detail":"Bad Request"}') => [
+const piFailOnce = (text = "terminated") => [
   { type: "agent_start" }, { type: "message_start", message: { role: "assistant" } }, { type: "message_end", message: err(text) },
   { type: "agent_end", messages: [] }, { type: "agent_settled" },
 ];
-const FAIL_ONCE = { pi: piFailOnce, omp: (text = '{"detail":"Bad Request"}') => ompGiveUp(text) } as const;
+const FAIL_ONCE = { pi: piFailOnce, omp: (text = "terminated") => ompGiveUp(text) } as const;
 
 // verify-sec@cel-identity, 2026-11-13/14: after a WebSocket failure Pi's Codex provider stayed on HTTP and every turn ended on one
 // `{"detail":"Bad Request"}`, 14-15 minutes or hours apart. Never 3 failures in 15 minutes, so the window rule never flagged it for 19 hours.
+// A 400 now flags on its first turn (the provider-rejection rule below); this rule is exercised with an error that is not a 4xx.
 describe.each(["pi", "omp"] as const)("the %s runner flags 2 turns in a row that end on a model error, whatever their spacing", (runtime) => {
   const s = SHAPES[runtime];
   const failOnce = FAIL_ONCE[runtime];
@@ -254,13 +255,13 @@ describe.each(["pi", "omp"] as const)("the %s runner flags 2 turns in a row that
     r.at(0, ...failOnce());
     expect(r.anyFlag()).toBe(false);
     r.at(14, ...failOnce());
-    expect(r.loop()).toEqual({ count: 2, total: 2, since: iso(T0), lastAt: iso(T0 + 14 * MIN), lastError: '{"detail":"Bad Request"}', gaveUpAt: iso(T0 + 14 * MIN) });
+    expect(r.loop()).toEqual({ count: 2, total: 2, since: iso(T0), lastAt: iso(T0 + 14 * MIN), lastError: "terminated", gaveUpAt: iso(T0 + 14 * MIN) });
   });
 
   it("hours apart is still two in a row", () => {
     const r = runner(runtime);
-    r.at(0, ...failOnce()); r.at(300, ...failOnce("terminated"));
-    expect(r.loop()).toEqual({ count: 1, total: 2, since: iso(T0), lastAt: iso(T0 + 300 * MIN), lastError: "terminated", gaveUpAt: iso(T0 + 300 * MIN) });
+    r.at(0, ...failOnce()); r.at(300, ...failOnce("socket hang up"));
+    expect(r.loop()).toEqual({ count: 1, total: 2, since: iso(T0), lastAt: iso(T0 + 300 * MIN), lastError: "socket hang up", gaveUpAt: iso(T0 + 300 * MIN) });
   });
 
   it("a clean turn between them breaks the run", () => {
@@ -294,6 +295,109 @@ describe.each(["pi", "omp"] as const)("the %s runner flags 2 turns in a row that
     expect(r.loop()).toBeUndefined();
     r.at(300, ...failOnce());
     expect(r.loop()).toBeUndefined();
+  });
+});
+
+// verify-sec@eztrack, 2026-11-16: after pi-ai switched to its HTTP fallback every turn ended on `{"detail":"Bad Request"}` (a 400 Pi does not retry),
+// 16 minutes apart, until a relaunch. A refusal of the request is not a cut: the next prompt sends the same history, so one such turn flags the seat.
+describe.each(["pi", "omp"] as const)("the %s runner flags one turn that ends on a non-retryable provider 4xx", (runtime) => {
+  const s = SHAPES[runtime];
+  const failOnce = FAIL_ONCE[runtime];
+
+  it("one turn that ends on 400 Bad Request flags the seat at once, given up, with the provider-rejected reason", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce('{"detail":"Bad Request"}'));
+    expect(r.loop()).toEqual({ count: 1, total: 1, since: iso(T0), lastAt: iso(T0), lastError: '{"detail":"Bad Request"}', gaveUpAt: iso(T0), reason: "provider-rejected" });
+  });
+
+  it.each([
+    ["an SDK-style status and body", '400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: bad"}}'],
+    ["a normalized status and body", '400: {"error":{"message":"Invalid input"}}'],
+    ["413", "413 Request Entity Too Large"],
+    ["422", "Unprocessable Entity"],
+  ])("so does %s", (_name, text) => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce(text));
+    expect(r.loop()).toMatchObject({ total: 1, reason: "provider-rejected" });
+  });
+
+  it.each([
+    ["a cut", "terminated"],
+    ["a credential refusal", "401 Unauthorized"],
+    ["a status code inside a longer number", "request req_4001234 failed: socket hang up"],
+    ["a duration", "timed out after 400ms"],
+  ])("a single turn that ends on %s is not a flag", (_name, text) => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce(text));
+    expect(r.anyFlag()).toBe(false);
+  });
+
+  it("a 400 that a retry got past (the turn ended on an answer) is not a flag", () => {
+    const r = runner(runtime);
+    r.at(0, ...s.cut("400 Bad Request"), ...s.done);
+    expect(r.anyFlag()).toBe(false);
+  });
+
+  it("the reason follows the turn that gave up last: a later give-up on another error drops it, a 400 sets it again", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce("400 Bad Request"));
+    expect(r.loop()?.reason).toBe("provider-rejected");
+    r.at(10, ...failOnce("terminated"));
+    expect(r.loop()).toBeDefined();
+    expect(r.loop()?.reason).toBeUndefined();
+    r.at(20, ...failOnce("400 Bad Request"));
+    expect(r.loop()).toMatchObject({ total: 3, reason: "provider-rejected" });
+  });
+
+  it("is cleared, like every flag, by a turn that completes with no model error", () => {
+    const r = runner(runtime);
+    r.at(0, ...failOnce("400 Bad Request"));
+    r.at(30, ...s.done);
+    expect(r.loop()).toBeUndefined();
+  });
+});
+
+describe("OF-286 a provider-rejected flag says what is wrong and what clears it", () => {
+  const NOW = T0 + 3_600_000;
+  const rejected: PublishedModelErrorLoop = { count: 1, total: 1, since: iso(NOW - 60_000), lastAt: iso(NOW - 60_000), lastError: '{"detail":"Bad Request"}', gaveUpAt: iso(NOW - 60_000), reason: "provider-rejected" };
+
+  it("the rig ps line names the history refusal and the fresh relaunch for that seat", () => {
+    const line = describeModelErrorLoop(rejected, NOW, "verify-sec@eztrack").line;
+    expect(line).toContain("the provider is rejecting this conversation's history");
+    expect(line).toContain('rig seat launch verify-sec@eztrack --fresh --stop --reason "provider rejects the conversation history"');
+    expect(describeModelErrorLoop(rejected, NOW).line).toContain("rig seat launch <seat> --fresh --stop");
+    const { reason: _r, ...plain } = rejected;
+    expect(describeModelErrorLoop(plain, NOW, "verify-sec@eztrack").line).not.toContain("rejecting");
+  });
+
+  it("the notice to the Chief of Staff gives the relaunch, shell-quoted, instead of 're-send a smaller step'", async () => {
+    const { modelLoopStartBody } = await import("../src/domain/seat-model-error-loop-notice.js");
+    const body = modelLoopStartBody("verify.sec@eztrack", "odd name@eztrack", rejected);
+    expect(body).toContain("the provider is rejecting this conversation's history");
+    expect(body).toContain("rig seat launch 'odd name@eztrack' --fresh --stop");
+    expect(body).not.toContain("smaller step");
+  });
+
+  it("the rig health finding gives the same reason and command", () => {
+    const entry = { rigId: "rig-1", rigName: "eztrack", nodeId: "node-1", logicalId: "verify.sec", canonicalSessionName: "verify-sec@eztrack", runtime: "pi", storedSessionStatus: "running" } as NodeInventoryEntry;
+    const source = new SeatModelErrorLoopHealthSource({ inventory: () => [entry], modelErrorLoop: () => rejected, now: () => new Date(NOW) });
+    const policy = { version: "t", policy: { ...DEFAULT_HEALTH_POLICY }, contextPressure: { warningPercent: 95, criticalPercent: 99 } };
+    const found = new HealthProjectionService([source], () => policy).records();
+    expect(found).toHaveLength(1);
+    expect(found[0]!.summary).toContain("the provider is rejecting this conversation's history");
+    expect(found[0]!.explanation).toContain("rig seat launch verify-sec@eztrack --fresh --stop");
+    expect(found[0]!.explanation).not.toContain("not the first remedy");
+  });
+
+  it("the adapter carries the reason from a live sidecar and drops one it does not know", () => {
+    const live = { ready: true, updatedAt: iso(NOW - 1000), aliveAt: iso(NOW - 1000), busy: false };
+    const adapterFor = (sidecar: Record<string, unknown>) => new PiRuntimeAdapter({
+      tmux: {} as TmuxAdapter, stateRoot: "/state", runnerEntryPath: "/x/pi-runner.js", now: () => new Date(NOW),
+      fsOps: { readFile: () => JSON.stringify(sidecar), exists: () => true, writeFile: () => undefined, mkdirp: () => undefined },
+    });
+    expect(adapterFor({ ...live, modelErrorLoop: rejected }).modelErrorLoop("s@r")).toEqual(rejected);
+    const { reason: _r, ...plain } = rejected;
+    expect(adapterFor({ ...live, modelErrorLoop: { ...rejected, reason: "something-new" } }).modelErrorLoop("s@r")).toEqual(plain);
   });
 });
 
@@ -434,7 +538,7 @@ describe("OF-286 SeatModelErrorLoopHealthSource: one finding per looping seat", 
     expect(found[0]!.summary).toContain("terminated");
     expect(found[0]!.summary).toContain(loop.since);
     expect(found[0]!.suggestedInspection).toContain("rig capture verify-qa@eztrack");
-    expect(found[0]!.threshold).toBe("3 failed model requests within 15 minutes, whatever succeeded in between, or 2 turns in a row that end on a model error, however far apart; kept when the runtime gives up; cleared when a turn completes with no model error");
+    expect(found[0]!.threshold).toBe("3 failed model requests within 15 minutes, whatever succeeded in between, 2 turns in a row that end on a model error, however far apart, or one turn that ends on a non-retryable provider 4xx; kept when the runtime gives up; cleared when a turn completes with no model error");
   });
   it("a flag whose last failure is old is still an active finding: the flag is read from a live sidecar, so its freshness is the read's, not the failure's", () => {
     const old = { ...loop, lastAt: iso(NOW.getTime() - 2 * 3_600_000), since: iso(NOW.getTime() - 3 * 3_600_000) };
@@ -640,7 +744,7 @@ describe("OF-286 the Chief of Staff is told every time a seat starts looping, an
   it("states both rules, so a seat flagged by 2 failed turns hours apart is not described as 3 in 15 minutes", async () => {
     const { modelLoopStartBody } = await import("../src/domain/seat-model-error-loop-notice.js");
     const body = modelLoopStartBody("x@y", "x@y", { count: 1, total: 2, since: iso(T0), lastAt: iso(T0 + 300 * MIN), lastError: "e", gaveUpAt: iso(T0 + 300 * MIN) });
-    expect(body).toContain("(flagged at 3 within 15 minutes, or at 2 turns in a row that end on a model error)");
+    expect(body).toContain("(flagged at 3 within 15 minutes, at 2 turns in a row that end on a model error, or at one turn that ends on the provider rejecting the request (a 4xx))");
     expect(body).not.toContain("at least 3 within");
   });
 

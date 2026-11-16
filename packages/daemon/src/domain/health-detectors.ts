@@ -22,7 +22,7 @@ import { queryUsageSeries } from "./usage-series.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { RSI_FINDING_CATEGORY, RSI_FINDING_SEVERITY } from "./rsi/detector-ids.js";
 import { freshSeatLaunchCommand, shellWord } from "./active-occupant.js";
-import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS, MODEL_ERROR_FAILED_TURNS_THRESHOLD, MODEL_ERROR_LOOP_RULE_TEXT } from "./model-error-loop-rule.js";
+import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS, MODEL_ERROR_FAILED_TURNS_THRESHOLD, MODEL_ERROR_LOOP_RULE_TEXT, providerRejectedText } from "./model-error-loop-rule.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -108,6 +108,8 @@ export type HealthDetectorObservation =
       failedRequests: number;
       lastError: string;
       gaveUpAt: string | null;
+      /** True when the turn that last gave up ended on a non-retryable provider 4xx (the flag's reason "provider-rejected"). */
+      providerRejected?: boolean;
     })
   /** One counted telemetry finding. Counts and class live in the `telemetry-span` evidence;
    * `fingerprint` is the finding's stable identity (rsi/fingerprint.ts). */
@@ -453,12 +455,28 @@ function evaluateSeatLost(observation: Extract<HealthDetectorObservation, { kind
 function evaluateSeatModelErrorLoop(observation: Extract<HealthDetectorObservation, { kind: "seat-model-error-loop" }>): HealthRecord[] {
   const seat = `${observation.logicalId}@${observation.rigName}`;
   const gaveUp = observation.gaveUpAt ? ` The runtime gave up at ${observation.gaveUpAt}: the turn ended on the error and the seat is idle with its task undone.` : "";
+  const threshold = `${MODEL_ERROR_LOOP_THRESHOLD} failed model requests within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes, whatever succeeded in between, ${MODEL_ERROR_FAILED_TURNS_THRESHOLD} turns in a row that end on a model error, however far apart, or one turn that ends on a non-retryable provider 4xx; kept when the runtime gives up; cleared when a turn completes with no model error`;
+  if (observation.providerRejected) {
+    // A refusal of the request, not a cut: the next prompt sends the same history, so the relaunch is the remedy, not the last resort.
+    const why = providerRejectedText(shellWord(observation.sessionName));
+    return [record(observation, {
+      detector: "seat.model-error-loop",
+      category: "process",
+      severity: "warning",
+      summary: `Seat ${seat} (${observation.runtime}) is looping on model errors: ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt}; last error: ${observation.lastError}. Why: ${why}.`,
+      threshold,
+      explanation: `${seat} (session ${observation.sessionName}) has had ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt} (latest ${observation.lastObservedAt}), ${MODEL_ERROR_LOOP_RULE_TEXT}. `
+        + `The latest error was: ${observation.lastError}.${gaveUp} Why: ${why}. The relaunch loses the seat's context; re-send its task after it.`,
+      suggestedInspection: `Look at the seat's pane and its latest errors (run this):\n  rig capture ${shellWord(observation.sessionName)}\n`
+        + `Then relaunch it fresh with the command above (a person decides; nothing here does it).`,
+    })];
+  }
   return [record(observation, {
     detector: "seat.model-error-loop",
     category: "process",
     severity: "warning",
     summary: `Seat ${seat} (${observation.runtime}) is looping on model errors: ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt}; last error: ${observation.lastError}.${observation.gaveUpAt ? ` The runtime gave up at ${observation.gaveUpAt}.` : ""}`,
-    threshold: `${MODEL_ERROR_LOOP_THRESHOLD} failed model requests within ${MODEL_ERROR_LOOP_WINDOW_MS / 60_000} minutes, whatever succeeded in between, or ${MODEL_ERROR_FAILED_TURNS_THRESHOLD} turns in a row that end on a model error, however far apart; kept when the runtime gives up; cleared when a turn completes with no model error`,
+    threshold,
     explanation: `${seat} (session ${observation.sessionName}) has had ${observation.failedRequests} failed model requests since ${observation.episodeStartedAt} (latest ${observation.lastObservedAt}), ${MODEL_ERROR_LOOP_RULE_TEXT}. `
       + `The latest error was: ${observation.lastError}. It still reads busy while its runtime retries, and steps may succeed between the failures. The cut is between the runtime and the model provider, not in OpenRig.${gaveUp} `
       + `A fresh relaunch loses the seat's context and starts the same request again, so it is not the first remedy.`,

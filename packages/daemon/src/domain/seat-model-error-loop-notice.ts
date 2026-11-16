@@ -16,7 +16,7 @@
 // recovery that happens while the daemon is down is not sent.
 import { createHash } from "node:crypto";
 import { shellWord, setOff } from "./active-occupant.js";
-import { MODEL_ERROR_LOOP_RULE_TEXT } from "./model-error-loop-rule.js";
+import { MODEL_ERROR_LOOP_RULE_TEXT, PROVIDER_REJECTED_REASON, providerRejectedText } from "./model-error-loop-rule.js";
 import { rigChiefOfStaff, type TopologyDb } from "./rig-chief-of-staff.js";
 import type { QueueCreateInput } from "./queue-repository.js";
 import type { PublishedModelErrorLoop } from "./seat-model-error-loop.js";
@@ -45,6 +45,16 @@ export function modelLoopNoticeId(kind: "looping" | "recovered", sessionName: st
 }
 
 export function modelLoopStartBody(seat: string, sessionName: string, loop: PublishedModelErrorLoop): string {
+  if (loop.reason === PROVIDER_REJECTED_REASON) {
+    // A refusal of the request is not a cut: a smaller step sends the same history and fails the same way, so the advice is the relaunch.
+    return [
+      `${seat} is looping on model errors: ${loop.total} failed model request${loop.total === 1 ? "" : "s"} since ${loop.since} (${MODEL_ERROR_LOOP_RULE_TEXT}), the latest at ${loop.lastAt}: "${loop.lastError}".`,
+      `Its last turn ended on that error${loop.gaveUpAt ? ` at ${loop.gaveUpAt}` : ""} and the seat is idle with its task undone.`,
+      `Why: ${providerRejectedText(shellWord(sessionName))}.`,
+      `Look first: ${setOff(`rig capture ${shellWord(sessionName)}`)}   (${setOff("rig ps --nodes")} shows the seat in ATTN with this reason; ${setOff("rig health")} names it too).`,
+      "A fresh relaunch loses the seat's context: re-send its task after it. OpenRig sends one more item when the seat's flag clears after a clean turn; a relaunch sends none.",
+    ].join("\n");
+  }
   return [
     `${seat} is looping on model errors: ${loop.total} failed model requests since ${loop.since} (${MODEL_ERROR_LOOP_RULE_TEXT}), the latest at ${loop.lastAt}: "${loop.lastError}".`,
     loop.gaveUpAt ? `Its runtime gave up at ${loop.gaveUpAt}: the turn ended on the error and the seat is idle with its task undone.` : "It reads busy while its runtime retries, and steps may succeed between the failures.",

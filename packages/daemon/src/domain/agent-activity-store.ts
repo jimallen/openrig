@@ -155,7 +155,7 @@ export class AgentActivityStore {
     if (runtime !== "pi" && runtime !== "omp") return null;
     try {
       const loop = this.modelErrorLoop?.(sessionName, runtime) ?? null;
-      return loop ? describeModelErrorLoop(loop, now.getTime()) : null;
+      return loop ? describeModelErrorLoop(loop, now.getTime(), sessionName) : null;
     } catch { return null; }
   }
 

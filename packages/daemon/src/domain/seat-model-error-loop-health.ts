@@ -47,6 +47,7 @@ export class SeatModelErrorLoopHealthSource implements HealthObservationSource {
         lastObservedAt: loop.lastAt,
         rigId: entry.rigId, rigName: entry.rigName, logicalId: entry.logicalId, sessionName: entry.canonicalSessionName,
         runtime: entry.runtime, failedRequests: loop.total, lastError: loop.lastError, gaveUpAt: loop.gaveUpAt ?? null,
+        ...(loop.reason === "provider-rejected" ? { providerRejected: true } : {}),
         source: boundHealthEvidence([evidence], { source: "topology-activity", startedAt: windowStart, endedAt: evaluatedAt, limit: 1, retentionSeconds: RETENTION_SECONDS },
           // The flag outlives the failures (it is kept until a clean turn), so its freshness is the runner's own tick, not the last failure.
           deriveHealthSourceFreshness({ evaluatedAt, newestSourceAt: evaluatedAt, maxAgeSeconds: FRESH_SECONDS, available: true })),

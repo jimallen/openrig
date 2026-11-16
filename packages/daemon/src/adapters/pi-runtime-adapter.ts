@@ -446,7 +446,9 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1;
     if (!l || !isCount(l.count) || !isCount(l.total) || !isTime(l.since) || !isTime(l.lastAt) || typeof l.lastError !== "string"
       || (l.gaveUpAt !== undefined && !isTime(l.gaveUpAt))) return { observed: true, loop: null, ...launchId };
-    return { observed: true, loop: { count: l.count, total: l.total, since: l.since, lastAt: l.lastAt, lastError: l.lastError, ...(l.gaveUpAt !== undefined ? { gaveUpAt: l.gaveUpAt } : {}) }, ...launchId };
+    // An unknown reason is dropped rather than refusing the whole flag: the seat is still flagged, only the reason is not understood.
+    return { observed: true, loop: { count: l.count, total: l.total, since: l.since, lastAt: l.lastAt, lastError: l.lastError, ...(l.gaveUpAt !== undefined ? { gaveUpAt: l.gaveUpAt } : {}),
+      ...(l.reason === "provider-rejected" ? { reason: l.reason } : {}) }, ...launchId };
   }
 
   /** OF-286: the flag, or null. */

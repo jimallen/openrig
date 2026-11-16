@@ -90,7 +90,8 @@ export interface PiRunnerState {
   pasteLeftover?: boolean;
   /** OF-286: present while the seat is flagged as looping on model errors: PI_MODEL_ERROR_LOOP_THRESHOLD failed model requests
    *  within PI_MODEL_ERROR_LOOP_WINDOW_MS, whatever succeeded in between, or MODEL_ERROR_FAILED_TURNS_THRESHOLD turns in a row that
-   *  ended on a model error, however far apart (that flag is raised with `gaveUpAt` already set). Kept when Pi gives up (`gaveUpAt`), dropped only when a
+   *  ended on a model error, however far apart, or one turn that ended on a non-retryable provider 4xx (`reason`); those two are raised with
+   *  `gaveUpAt` already set. Kept when Pi gives up (`gaveUpAt`), dropped only when a
    *  turn completes with no model error in it. `rig ps` and `rig health` read it (PiRuntimeAdapter.modelErrorLoop) only alongside a
    *  live `aliveAt`. Absent from an older runner (no flag) and from a sidecar rewritten by a relaunch. Never read for send gating. */
   modelErrorLoop?: PiModelErrorLoop;
@@ -101,7 +102,10 @@ export interface PiRunnerState {
 /** OF-286: a flagged seat. `count` is the failed requests inside the window at `lastAt`; `total` the failed requests since the flag
  *  was raised (`since` = the first failure of that window); `lastError` the latest error text (one line, bounded); `gaveUpAt` is when
  *  the runtime ended a turn on a model error after the flag (its retries ran out), dropped by the next failure. */
-export interface PiModelErrorLoop { count: number; total: number; since: string; lastAt: string; lastError: string; gaveUpAt?: string }
+export interface PiModelErrorLoop { count: number; total: number; since: string; lastAt: string; lastError: string; gaveUpAt?: string;
+  /** "provider-rejected" (PROVIDER_REJECTED_REASON) when the latest turn that gave up ended on a non-retryable 4xx: the provider refuses this
+   *  conversation's history and only a fresh relaunch clears it. Absent otherwise, and from an older runner. */
+  reason?: "provider-rejected" }
 
 /** OF-286: N failed model requests within the window flag a seat (the numbers and their measurement: domain/model-error-loop-rule.ts). */
 export const PI_MODEL_ERROR_LOOP_THRESHOLD = MODEL_ERROR_LOOP_THRESHOLD;

@@ -4,7 +4,8 @@
 //
 //   flag    N failed model requests within the window (a failure is an assistant message that ended with stopReason "error"),
 //           whether or not something succeeded in between; or T turns in a row that ended on a model error, however far apart
-//           (the run is broken by a turn that ends on an answer; a turn with no assistant message neither counts nor breaks it);
+//           (the run is broken by a turn that ends on an answer; a turn with no assistant message neither counts nor breaks it); or ONE turn
+//           that ended on the provider refusing the request (a non-retryable 4xx such as 400 Bad Request), with reason "provider-rejected";
 //   keep    when the runtime gives up (a turn ends on a model error), the flag stays, with `gaveUpAt`;
 //   clear   only when a turn completes with no model error in it (a retry that got through is not a clean turn).
 //
@@ -15,7 +16,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { RunnerRuntime, PiModelErrorLoop } from "./pi-runner-protocol.js";
 import { PI_MODEL_ERROR_LOOP_THRESHOLD, PI_MODEL_ERROR_LOOP_WINDOW_MS } from "./pi-runner-protocol.js";
-import { MODEL_ERROR_FAILED_TURNS_THRESHOLD } from "../domain/model-error-loop-rule.js";
+import { MODEL_ERROR_FAILED_TURNS_THRESHOLD, PROVIDER_REJECTED_REASON, isProviderRejection } from "../domain/model-error-loop-rule.js";
 
 /** OMP marks a non-final agent_end with isTerminal:false; Pi with willRetry:true (its retry's own agent_start/agent_end follow). */
 export function isFinalAgentEnd(event: Record<string, unknown>, runtime: RunnerRuntime): boolean {
@@ -117,14 +118,20 @@ export class ModelErrorLoopTracker {
     this.counted = false;
     if (gaveUp && hadErrors) this.failedTurns++;
     else if (!this.lastWasError && this.turnAnswers > 0) this.resetRun(); // the turn ended on an answer
-    if (!this.loop) return this.raiseForFailedTurns();
+    // The turn ended on the provider refusing the request (a non-retryable 4xx): the next prompt sends the same history and fails the same way.
+    const rejected = gaveUp && hadErrors && this.lastFailure !== null && isProviderRejection(this.lastFailure.error);
+    if (!this.loop) return this.raiseForFailedTurns(rejected);
     if (clean) {
       this.loop = null;
       this.failures = []; // the run of failed turns was reset above: a clean turn ended on an answer
       return true;
     }
-    if (gaveUp && this.loop.gaveUpAt === undefined) {
-      this.loop = { ...this.loop, gaveUpAt: this.now() };
+    if (gaveUp) {
+      // The reason follows the turn that gave up last: a refusal sets it, a give-up on any other error drops it.
+      const { reason: _was, ...rest } = this.loop;
+      const next: PiModelErrorLoop = { ...rest, gaveUpAt: this.loop.gaveUpAt ?? this.now(), ...(rejected ? { reason: PROVIDER_REJECTED_REASON } : {}) };
+      if (next.gaveUpAt === this.loop.gaveUpAt && next.reason === this.loop.reason) return false;
+      this.loop = next;
       return true;
     }
     return false;
@@ -136,14 +143,15 @@ export class ModelErrorLoopTracker {
     this.runSince = null;
   }
 
-  /** T turns in a row ended on a model error: the flag goes up already given up (the seat is idle with its task undone). */
-  private raiseForFailedTurns(): boolean {
-    if (this.failedTurns < MODEL_ERROR_FAILED_TURNS_THRESHOLD || !this.lastFailure || !this.runSince) return false;
+  /** T turns in a row ended on a model error, or one ended on a provider refusal (`rejected`): the flag goes up already given up (the seat is
+   *  idle with its task undone). */
+  private raiseForFailedTurns(rejected: boolean): boolean {
+    if ((!rejected && this.failedTurns < MODEL_ERROR_FAILED_TURNS_THRESHOLD) || !this.lastFailure || !this.runSince) return false;
     const nowIso = this.now();
     const nowMs = Date.parse(nowIso);
     this.failures = this.failures.filter((t) => nowMs - t < PI_MODEL_ERROR_LOOP_WINDOW_MS);
     this.loop = { count: Math.max(1, this.failures.length), total: this.runFailures, since: this.runSince, lastAt: this.lastFailure.at,
-      lastError: this.lastFailure.error, gaveUpAt: nowIso };
+      lastError: this.lastFailure.error, gaveUpAt: nowIso, ...(rejected ? { reason: PROVIDER_REJECTED_REASON } : {}) };
     return true;
   }
 }
