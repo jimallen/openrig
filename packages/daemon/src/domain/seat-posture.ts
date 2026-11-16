@@ -1,5 +1,5 @@
 import type { AgentActivity } from "./types.js";
-import { latestHookState } from "./agent-activity-store.js";
+import { AGENT_ACTIVITY_FRESHNESS_MS, latestHookState, type OpenToolCall } from "./agent-activity-store.js";
 
 // OF-267 — what a sender may be told about a seat that has not yet received its message.
 //
@@ -13,10 +13,12 @@ import { latestHookState } from "./agent-activity-store.js";
 //   idle / needs_input as the store's own helpers read them (a stale Stop still means idle; a stale unanswered prompt still waits).
 //   unknown            everything else: no hook, generation-mismatched or unresolvable evidence, an unmapped event.
 // workspaces-o9o.4 — the running tool. Claude (an async PreToolUse relay beside its PostToolUse one) and the Pi and pda runners (a
-// PostToolUse at each top-level tool end beside the PreToolUse at its start) now record both ends of a tool call. So a newest hook that
-// is a tool START names a call that is still open: its tool, and how long it has run. A seat launched before its relay or runner
-// carried the end has no PostToolUse to close the call; relaunch it (restore-check names the missing relay entry for Claude). Codex
-// records neither end, and keeps the turn line.
+// PostToolUse at each top-level tool end) record both ends of a tool call, each with its call id (Claude's tool_use_id, measured on
+// 2.1.325: one per call, the same on its start and end). The store's open-call read (openToolCalls) is the set of this turn's calls
+// that started and have not ended; the posture names the oldest, and "+N more". A call counts as running (toolConfirmed) only while its
+// OWN start is inside the hook freshness window: neither hc's run-level status nor a fresher hook for another call says that this call
+// is still going after a lost end. Past it the line says "<tool> started <T>, <age> ago, no end recorded" and claims no more. Rows with
+// no call id (an older relay or runner) keep the old rule: only a newest tool start names a tool. Codex records neither end.
 
 /** A timestamp more than this ahead of the reader's clock is not believed (clock skew, not evidence): a hook dated so, or an hc status begun so. */
 const FUTURE_SLACK_MS = 60_000;
@@ -30,8 +32,14 @@ export interface SeatPosture {
   source: SeatPostureSource | null;
   /** When the evidence was observed: the newest hook's eventAt, or for hc_status the time the status began. Null when none. */
   at: string | null;
-  /** The open tool call's tool: set only when the newest hook is a tool start (PreToolUse) with a name. `at` is then when it started. */
+  /** The oldest open tool call's tool (workspaces-o9o.4): from the open-call set, or, with no call ids, from a newest tool start. */
   tool: string | null;
+  /** When that call started (its start's eventAt). Null with no tool. */
+  toolStartedAt: string | null;
+  /** True only while the call's own start is inside the hook freshness window: then it is running, not merely unended. */
+  toolConfirmed: boolean;
+  /** How many other calls of the turn are open too. */
+  otherOpenCalls: number;
   /** One human line, already worded for `rig send` and `rig ps`. */
   line: string;
 }
@@ -58,34 +66,60 @@ export function formatToolAge(ms: number): string {
   return safe < 60_000 ? `${Math.floor(safe / 1000)} s` : formatPostureAge(safe);
 }
 
-function runningToolLine(tool: string, at: string | null, nowMs: number, source: string | null): string {
-  const atMs = at ? Date.parse(at) : Number.NaN;
-  const since = formatPostureTime(at, nowMs);
-  const sinceClause = since ? ` (since ${since}${source ? `, ${source}` : ""})` : source ? ` (${source})` : "";
-  return Number.isFinite(atMs) ? `busy: running ${tool} for ${formatToolAge(nowMs - atMs)}${sinceClause}` : `busy: running ${tool}${sinceClause}`;
+interface ToolFacts { tool: string | null; toolStartedAt: string | null; toolConfirmed: boolean; otherOpenCalls: number }
+const NO_TOOL: ToolFacts = { tool: null, toolStartedAt: null, toolConfirmed: false, otherOpenCalls: 0 };
+
+/** The call the posture names: the oldest open call; with no call ids, a newest tool start (the old rule). */
+function toolFacts(activity: AgentActivity, openCalls: readonly OpenToolCall[], nowMs: number): ToolFacts {
+  const oldest = openCalls[0];
+  const named = oldest
+    ? { tool: oldest.tool, startedAt: oldest.startedAt, others: openCalls.length - 1 }
+    : activity.rawEvent === "PreToolUse" && activity.rawSubtype ? { tool: activity.rawSubtype, startedAt: activity.eventAt ?? null, others: 0 } : null;
+  if (!named) return NO_TOOL;
+  const startMs = named.startedAt ? Date.parse(named.startedAt) : Number.NaN;
+  const confirmed = Number.isFinite(startMs) && startMs <= nowMs + FUTURE_SLACK_MS && nowMs - startMs <= AGENT_ACTIVITY_FRESHNESS_MS;
+  return { tool: named.tool, toolStartedAt: named.startedAt, toolConfirmed: confirmed, otherOpenCalls: named.others };
+}
+
+const moreClause = (facts: ToolFacts): string => (facts.otherOpenCalls > 0 ? ` +${facts.otherOpenCalls} more` : "");
+
+/** "running Bash for 3 min (since 16:05Z)": only for a confirmed call. */
+function runningClause(facts: ToolFacts, nowMs: number): string {
+  const startMs = facts.toolStartedAt ? Date.parse(facts.toolStartedAt) : Number.NaN;
+  const since = formatPostureTime(facts.toolStartedAt, nowMs);
+  return `running ${facts.tool}${Number.isFinite(startMs) ? ` for ${formatToolAge(nowMs - startMs)}` : ""}${since ? ` (since ${since})` : ""}${moreClause(facts)}`;
+}
+
+/** "Bash started 16:05Z, 20 min ago, no end recorded": an open call no hook confirms is still running. */
+function unendedClause(facts: ToolFacts, nowMs: number): string {
+  const startMs = facts.toolStartedAt ? Date.parse(facts.toolStartedAt) : Number.NaN;
+  const ago = Number.isFinite(startMs) ? `, ${formatToolAge(nowMs - startMs)} ago` : "";
+  return `${facts.tool} started ${formatPostureTime(facts.toolStartedAt, nowMs) ?? "at an unknown time"}${ago}, no end recorded${moreClause(facts)}`;
 }
 
 function hookLabel(activity: AgentActivity): string {
   return activity.rawEvent === "PreToolUse" && activity.rawSubtype ? `PreToolUse ${activity.rawSubtype}` : (activity.rawEvent ?? "hook");
 }
 
-export function deriveSeatPosture(activity: AgentActivity | null | undefined, seatRuntime: string | null, now: Date): SeatPosture {
+/** `openCalls`: the store's open-call read for the seat (oldest first). Omitted, the old newest-tool-start rule applies. */
+export function deriveSeatPosture(
+  activity: AgentActivity | null | undefined, seatRuntime: string | null, now: Date, openCalls: readonly OpenToolCall[] = [],
+): SeatPosture {
   if (!activity || activity.evidenceSource !== "runtime_hook" || !activity.rawEvent) {
-    return { kind: "unknown", source: null, at: null, tool: null, line: "unknown: no runtime hook recorded" };
+    return { kind: "unknown", source: null, at: null, ...NO_TOOL, line: "unknown: no runtime hook recorded" };
   }
   const nowMs = now.getTime();
   const at = activity.eventAt ?? null;
   const when = formatPostureTime(at, nowMs);
-  const tool = activity.rawEvent === "PreToolUse" ? (activity.rawSubtype ?? null) : null;
   // The store reads a hook dated ahead of its clock as fresh (a negative age is never past the window), which would make a skewed hook busy
   // for hours. For the posture only, such a hook is not trusted at all (OF-275 tracks the store's own rule).
   const atMs = at ? Date.parse(at) : Number.NaN;
   if (Number.isFinite(atMs) && atMs > nowMs + FUTURE_SLACK_MS) {
-    return { source: "runtime_hook", at, tool, kind: "unknown", line: `unknown: last hook ${hookLabel(activity)} is dated ${when ?? "in the future"}, ahead of the clock` };
+    return { source: "runtime_hook", at, ...NO_TOOL, kind: "unknown", line: `unknown: last hook ${hookLabel(activity)} is dated ${when ?? "in the future"}, ahead of the clock` };
   }
   const state = latestHookState(activity, seatRuntime);
   const fresh = activity.stale !== true;
-  const base = { source: "runtime_hook" as const, at, tool };
+  const base = { source: "runtime_hook" as const, at, ...NO_TOOL };
   if (state === "needs_input") {
     // OF-278: an AskUserQuestion dialog is a question to the human, not a permission prompt (Claude reports both as permission_prompt).
     const what = activity.dialog === "question" ? "waiting on a question to the human" : `needs input: ${activity.rawSubtype ?? activity.rawEvent}`;
@@ -95,18 +129,17 @@ export function deriveSeatPosture(activity: AgentActivity | null | undefined, se
     return { ...base, kind: "idle", line: `idle: last hook ${hookLabel(activity)}${when ? ` ${when}` : ""}` };
   }
   if (state === "running") {
+    const facts = toolFacts(activity, openCalls, nowMs);
+    const withTool = { ...base, ...facts };
     if (fresh) {
-      return { ...base, kind: "busy", line: tool
-        ? runningToolLine(tool, at, nowMs, null)
-        : `busy: turn running, last hook ${hookLabel(activity)}${when ? ` ${when}` : ""}` };
+      if (facts.tool && facts.toolConfirmed) return { ...withTool, kind: "busy", line: `busy: ${runningClause(facts, nowMs)}` };
+      if (facts.tool) return { ...withTool, kind: "busy", line: `busy: turn running; ${unendedClause(facts, nowMs)}` };
+      return { ...withTool, kind: "busy", line: `busy: turn running, last hook ${hookLabel(activity)}${when ? ` ${when}` : ""}` };
     }
     const atMs = at ? Date.parse(at) : NaN;
     // Past the freshness window the call may have hung, or the agent may have been interrupted with no hook: the line gives the tool
     // and its age and claims no more.
-    if (tool) {
-      const ago = Number.isFinite(atMs) ? `, ${formatToolAge(nowMs - atMs)} ago` : "";
-      return { ...base, kind: "unknown-open-turn", line: `unknown: ${tool} started ${when ?? "at an unknown time"}${ago}, no end recorded` };
-    }
+    if (facts.tool) return { ...withTool, kind: "unknown-open-turn", line: `unknown: ${unendedClause(facts, nowMs)}` };
     const age = Number.isFinite(atMs) ? ` (${formatPostureAge(nowMs - atMs)} ago)` : "";
     return { ...base, kind: "unknown-open-turn", line: `unknown: last hook ${hookLabel(activity)}${when ? ` ${when}` : ""}${age}, no Stop since` };
   }
@@ -138,10 +171,11 @@ export function withTerminalStatus(posture: SeatPosture, status: SeatTerminalSta
   if (posture.kind !== "unknown-open-turn" || !status || !status.live || status.status !== "working") return posture;
   const since = status.sinceMs;
   if (since === null || !Number.isFinite(since) || since > now.getTime() + FUTURE_SLACK_MS) return posture;
-  // A run is open (hc) and its newest hook is a tool start with no end: that tool is what the run is doing, timed from its own start.
-  if (posture.tool) return { kind: "busy", source: "hc_status", at: posture.at, tool: posture.tool, line: runningToolLine(posture.tool, posture.at, now.getTime(), "hc status") };
   const at = new Date(since).toISOString();
-  return { kind: "busy", source: "hc_status", at, tool: null, line: `busy: working since ${formatPostureTime(at, now.getTime())} (hc status)` };
+  const runLine = `busy: working since ${formatPostureTime(at, now.getTime())} (hc status)`;
+  // hc says a RUN is open, not which call (status_ms is the run's start). An open call is named as unended, never as running (verify-qa F1).
+  const facts: ToolFacts = { tool: posture.tool, toolStartedAt: posture.toolStartedAt, toolConfirmed: posture.toolConfirmed, otherOpenCalls: posture.otherOpenCalls };
+  return { kind: "busy", source: "hc_status", at, ...facts, line: facts.tool ? `${runLine}; ${unendedClause(facts, now.getTime())}` : runLine };
 }
 
 /** `posture`, refined by the seat's terminal status when the hooks left an open turn and the runtime's status is OpenRig's own.

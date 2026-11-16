@@ -76,8 +76,9 @@ interface NodeInventoryRead {
     needsInput?: { count?: number; reason?: string | null } | null;
     decidedBy?: string | null;
   } | null;
-  /** The daemon's seat posture (daemon domain/seat-posture.ts): `tool` is set only for an open tool call, and `at` is then its start. */
-  seatPosture?: { kind?: string; tool?: string | null; at?: string | null; line?: string } | null;
+  /** The daemon's seat posture (daemon domain/seat-posture.ts): `tool` names the oldest open tool call, `toolStartedAt` its start,
+   *  `toolConfirmed` whether its own start is inside the hook freshness window, `otherOpenCalls` the rest of the turn's open calls. */
+  seatPosture?: { kind?: string; tool?: string | null; toolStartedAt?: string | null; toolConfirmed?: boolean; otherOpenCalls?: number; line?: string } | null;
   identityVerdict?: { verdict?: string; reason?: string | null } | null;
   canonicalSessionName: string | null;
   tmuxAttachCommand?: string | null;
@@ -252,8 +253,9 @@ function toAgentRow(node: NodeInventoryRead): AgentRow {
       eventAt: node.agentActivity?.eventAt ?? null,
     },
     // workspaces-o9o.4: the open tool call the daemon's posture names, served verbatim; the renderer ages it on its own clock.
-    runningTool: node.seatPosture?.tool && node.seatPosture.at
-      ? { name: node.seatPosture.tool, since: node.seatPosture.at, confirmed: node.seatPosture.kind === "busy" }
+    // Confirmed only as the daemon says (the call's own start is fresh), never from the posture's kind: hc's busy is run-level (verify-qa F1).
+    runningTool: node.seatPosture?.tool && node.seatPosture.toolStartedAt
+      ? { name: node.seatPosture.tool, since: node.seatPosture.toolStartedAt, confirmed: node.seatPosture.toolConfirmed === true, more: node.seatPosture.otherOpenCalls ?? 0 }
       : null,
     postureLine: node.seatPosture?.line ?? null,
     // Mirror the maintained web projection: lifecycle truth drives actions,

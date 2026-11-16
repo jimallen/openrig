@@ -423,6 +423,13 @@ describe("mapPiEvent", () => {
     expect(mapPiEvent({ type: "tool_execution_end", toolName: "bash", parentToolCallId: "call_1" })).toEqual({ mirrorLines: [] });
   });
 
+  // workspaces-o9o.4 (verify-qa F2): both ends carry the call id, so parallel calls are told apart.
+  it("a tool start and its end carry the call's toolCallId; an event without one carries none", () => {
+    expect(mapPiEvent({ type: "tool_execution_start", toolName: "bash", toolCallId: "call_7" }).activity).toEqual({ hookEvent: "PreToolUse", subtype: "bash", toolCallId: "call_7" });
+    expect(mapPiEvent({ type: "tool_execution_end", toolName: "bash", toolCallId: "call_7" }).activity).toEqual({ hookEvent: "PostToolUse", subtype: "bash", toolCallId: "call_7" });
+    expect(mapPiEvent({ type: "tool_execution_end", toolName: "bash", toolCallId: "" }).activity).toEqual({ hookEvent: "PostToolUse", subtype: "bash" });
+  });
+
   it("compaction and retry map to their honest states", () => {
     expect(mapPiEvent({ type: "compaction_start" }).activity).toEqual({ hookEvent: "active", subtype: "compaction" });
     expect(mapPiEvent({ type: "auto_retry_start" }).activity).toEqual({ hookEvent: "active", subtype: "auto_retry" });
@@ -640,6 +647,8 @@ describe("Pi 1.3.0 RPC stdout transcript through RunnerCore (one tool turn, one 
     ]);
     // agent_settled is the quiet tail: it adds no second Stop and no activity of its own.
     expect(r.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(1);
+    // workspaces-o9o.4: the real transcript's call id rides both ends, so the daemon closes exactly this call.
+    expect(r.activity.filter(a => a.hookEvent === "PreToolUse" || a.hookEvent === "PostToolUse").map(a => a.toolCallId)).toEqual(["call_fixture_11|fc_fixture_11", "call_fixture_11|fc_fixture_11"]);
   });
 
   it("no event in the stream moves the cursor; only the get_entries refresh after agent_end does", () => {

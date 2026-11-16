@@ -579,6 +579,7 @@ activityRoutes.post("/hooks", async (c) => {
     nodeId: stringOrNull(body.nodeId),
     hookEvent: typeof body.hookEvent === "string" ? body.hookEvent : "",
     subtype: stringOrNull(body.subtype),
+    toolCallId: stringOrNull(body.toolCallId), // workspaces-o9o.4: the call a tool event belongs to
     occurredAt: stringOrNull(body.occurredAt),
     // W2a-1 — source-bound emitting generation, carried by managed launch/fresh-handover producers.
     // Legacy, excluded, or no-tenure emitting paths may omit it ⇒ stamped null ⇒ unresolved at read

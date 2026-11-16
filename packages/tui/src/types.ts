@@ -36,9 +36,10 @@ export interface AgentRow {
     signalSource: string | null;
     eventAt: string | null;
   };
-  /** The open tool call the daemon's seat posture names (workspaces-o9o.4): its tool and start. `confirmed` is false past the hook
-   *  freshness window, when the call may have hung or ended without a hook. Null when no call is open or the runtime records none. */
-  runningTool?: { name: string; since: string; confirmed: boolean } | null;
+  /** The oldest open tool call the daemon's seat posture names (workspaces-o9o.4): its tool and start. `confirmed` is false once the call's
+   *  own start is past the hook freshness window (it may have hung, or ended with no hook). `more`: the turn's other open calls. Null when
+   *  no call is open or the runtime records none. */
+  runningTool?: { name: string; since: string; confirmed: boolean; more?: number } | null;
   /** The daemon's one posture line, verbatim. */
   postureLine?: string | null;
   status: string;

@@ -263,8 +263,8 @@ function agentDetailLines(
   const toolAgeText = tool ? toolAge(tool.since, nowMs) : null;
   const toolValue = tool
     ? tool.confirmed
-      ? `${tool.name} · running${toolAgeText ? ` ${toolAgeText}` : ""} · since ${displayTime(tool.since, timeZone)}`
-      : `${tool.name} · started ${displayTime(tool.since, timeZone)}${toolAgeText ? `, ${toolAgeText} ago` : ""} · no end recorded`
+      ? `${tool.name} · running${toolAgeText ? ` ${toolAgeText}` : ""} · since ${displayTime(tool.since, timeZone)}${tool.more ? ` · +${tool.more} more` : ""}`
+      : `${tool.name} · started ${displayTime(tool.since, timeZone)}${toolAgeText ? `, ${toolAgeText} ago` : ""} · no end recorded${tool.more ? ` · +${tool.more} more` : ""}`
     : null;
   const specInLibrary = !!agent.spec && !!findSpec(snap, agent.spec, "agent");
   const currentRows = session ? rowsForAgent(snap, session, [snap.attention, snap.blocked, snap.inProgress]) : [];
@@ -617,13 +617,13 @@ function toolAge(since: string, nowMs: number): string | null {
   return min % 60 === 0 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
-/** The table's NOW cell: the open tool call first ("⚙ Bash 20m"; a trailing "?" when no hook has confirmed it within the freshness
- *  window), then what the queue says the seat is on. */
+/** The table's NOW cell: the oldest open tool call first ("⚙ Bash 20m"; "?" when its own start is past the freshness window; "+1" for
+ *  other open calls), then what the queue says the seat is on. */
 function nowCell(agent: Pick<AgentRow, "runningTool">, queueNow: string, nowMs: number): string {
   const tool = agent.runningTool;
   if (!tool) return queueNow;
   const age = toolAge(tool.since, nowMs);
-  const cell = `⚙ ${tool.name}${age ? ` ${age}` : ""}${tool.confirmed ? "" : "?"}`;
+  const cell = `⚙ ${tool.name}${age ? ` ${age}` : ""}${tool.confirmed ? "" : "?"}${tool.more ? ` +${tool.more}` : ""}`;
   return queueNow === "—" ? cell : `${cell} · ${queueNow}`;
 }
 

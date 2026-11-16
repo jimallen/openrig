@@ -42,9 +42,9 @@ describe("a Pi seat silent in a tool call, through the node routes", () => {
     const { app, rig, db } = piSeat(working);
     const seat = ((await (await app.request(`/api/rigs/${rig.id}/nodes`)).json()) as Array<Record<string, any>>).find((n) => n.canonicalSessionName === SESSION);
     // workspaces-o9o.4: the newest hook is an open tool start, so busy names that tool and times it from its start, not the run's.
-    expect(seat?.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", tool: "bash" });
-    expect(seat?.seatPosture.at).not.toBe(new Date(sinceMs).toISOString());
-    expect(seat?.seatPosture.line).toMatch(/^busy: running bash for 66 min \(since .*Z, hc status\)$/);
+    // workspaces-o9o.4: busy for the run (hc), the open call named as unended, never as running (verify-qa F1).
+    expect(seat?.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", tool: "bash", toolConfirmed: false, at: new Date(sinceMs).toISOString() });
+    expect(seat?.seatPosture.line).toMatch(/^busy: working since .*Z \(hc status\); bash started .*Z, 66 min ago, no end recorded$/);
     expect(seat?.agentActivity).toMatchObject({ state: "unknown", reason: "stale_runtime_hook" });
     db.close();
   });

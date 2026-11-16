@@ -25,7 +25,7 @@ const SEAT = "verify.sec";
 const START = Date.parse("2031-03-04T16:05:41.008Z");
 const MIN = 60_000;
 
-type Posture = { kind: string; source: string | null; at: string | null; tool: string | null; line: string };
+type Posture = { kind: string; source: string | null; at: string | null; tool: string | null; toolStartedAt: string | null; toolConfirmed: boolean; otherOpenCalls: number; line: string };
 
 function fixture(seatPosture: Posture | undefined) {
   const db = createDb(); databases.push(db); migrate(db, ALL_MIGRATIONS);
@@ -61,9 +61,14 @@ function fixture(seatPosture: Posture | undefined) {
   return { read, render };
 }
 
-const busy: Posture = { kind: "busy", source: "runtime_hook", at: new Date(START).toISOString(), tool: "Bash", line: "busy: running Bash for 3 min (since 16:05Z)" };
-const open: Posture = { kind: "unknown-open-turn", source: "runtime_hook", at: new Date(START).toISOString(), tool: "Bash", line: "unknown: Bash started 16:05Z, 20 min ago, no end recorded" };
-const turn: Posture = { kind: "busy", source: "runtime_hook", at: new Date(START).toISOString(), tool: null, line: "busy: turn running, last hook PostToolUse 16:05Z" };
+const S = new Date(START).toISOString();
+const busy: Posture = { kind: "busy", source: "runtime_hook", at: S, tool: "Bash", toolStartedAt: S, toolConfirmed: true, otherOpenCalls: 0, line: "busy: running Bash for 3 min (since 16:05Z)" };
+const open: Posture = { kind: "unknown-open-turn", source: "runtime_hook", at: S, tool: "Bash", toolStartedAt: S, toolConfirmed: false, otherOpenCalls: 0, line: "unknown: Bash started 16:05Z, 20 min ago, no end recorded" };
+const turn: Posture = { kind: "busy", source: "runtime_hook", at: S, tool: null, toolStartedAt: null, toolConfirmed: false, otherOpenCalls: 0, line: "busy: turn running, last hook PostToolUse 16:05Z" };
+// verify-qa F1: busy from hc status (run-level) with an open call no hook confirms; the daemon serves toolConfirmed false.
+const hcBusy: Posture = { kind: "busy", source: "hc_status", at: new Date(START - 1_000).toISOString(), tool: "Bash", toolStartedAt: S, toolConfirmed: false, otherOpenCalls: 0,
+  line: "busy: working since 16:05Z (hc status); Bash started 16:05Z, 66 min ago, no end recorded" };
+const twoOpen: Posture = { ...busy, otherOpenCalls: 1, line: "busy: running Bash for 3 min (since 16:05Z) +1 more" };
 
 const seatRow = (lines: string[]) => lines.filter((l) => l.includes("sec") && l.includes("working"));
 
@@ -82,6 +87,17 @@ describe("the seat table names the running tool and how long it has run (workspa
     expect(seatRow(f.render(snap, "rig", START + 3 * MIN))[0]).toContain("⚙ Bash 3m");
     expect(seatRow(f.render(snap, "rig", START + 3 * MIN))[0]).not.toContain("3m?");
     expect(seatRow(f.render(snap, "rig", START + 125 * MIN))[0]).toContain("⚙ Bash 2h 5m");
+  });
+
+  it("verify-qa F1: busy from hc status does not confirm the call: the question mark stays", async () => {
+    const f = fixture(hcBusy);
+    const row = seatRow(f.render(await f.read("rig"), "rig", START + 66 * MIN))[0]!;
+    expect(row).toContain("⚙ Bash 66m?");
+  });
+
+  it("two calls open: the oldest, then +1", async () => {
+    const f = fixture(twoOpen);
+    expect(seatRow(f.render(await f.read("rig"), "rig", START + 3 * MIN))[0]).toContain("⚙ Bash 3m +1");
   });
 
   it("no open call (a turn running between tools) and no posture at all: no tool cell", async () => {
@@ -119,6 +135,19 @@ describe("the agent detail says it in words (workspaces-o9o.4)", () => {
     const text = f.render(await f.read("agent"), "agent", START + 20 * MIN).join("\n").replace(/\s+/g, " ");
     expect(text).toMatch(/tool: Bash · started \S.*, 20m ago · no end recorded/);
     expect(text).toContain("posture: unknown: Bash started 16:05Z, 20 min ago, no end recorded");
+  });
+
+  it("verify-qa F1: hc busy with an unconfirmed call reads started and no end recorded, not running", async () => {
+    const f = fixture(hcBusy);
+    const text = f.render(await f.read("agent"), "agent", START + 66 * MIN).join("\n").replace(/\s+/g, " ");
+    expect(text).toMatch(/tool: Bash · started \S.*, 66m ago · no end recorded/);
+    expect(text).not.toMatch(/tool: Bash · running/);
+  });
+
+  it("two calls open: the detail says +1 more", async () => {
+    const f = fixture(twoOpen);
+    const text = f.render(await f.read("agent"), "agent", START + 3 * MIN).join("\n").replace(/\s+/g, " ");
+    expect(text).toMatch(/tool: Bash · running 3m · since \S.* · \+1 more/);
   });
 
   it("no open call: no tool field, the posture line still shown", async () => {

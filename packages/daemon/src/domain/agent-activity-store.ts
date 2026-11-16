@@ -19,6 +19,8 @@ export interface HookActivityInput {
    *  inference mis-attributes a delayed prior-occupant hook to the live occupant. Absent on a legacy,
    *  excluded, or no-tenure emitting path ⇒ stamped null ⇒ unresolved at read (never false-fresh). */
   generation?: string | null;
+  /** workspaces-o9o.4: the tool call a tool event belongs to; kept only on PreToolUse/PostToolUse/PostToolUseFailure. */
+  toolCallId?: string | null;
 }
 
 export type RecordHookActivityResult =
@@ -124,6 +126,7 @@ export class AgentActivityStore {
       sampledAt,
       eventAt,
       generation,
+      toolCallId: input.toolCallId ?? null,
     });
 
     // OF-278: Claude's Notification/permission_prompt for an AskUserQuestion dialog arrives ~6.5 s after the PermissionRequest that
@@ -169,6 +172,22 @@ export class AgentActivityStore {
   getLatestRecorded(nodeId: string): AgentActivity | null {
     const rows = this.db.prepare(`SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${LATEST_SCAN_ROWS}`).all(nodeId) as EventPayloadRow[];
     return pickLatestByOrdering(rows.map((r) => parseActivityPayload(r.payload)))?.activity ?? null;
+  }
+
+  /** workspaces-o9o.4 F2: the seat's tool calls still open in its current turn, oldest first (openToolCallsIn). Never throws. */
+  openToolCalls(input: { nodeId?: string | null; sessionName?: string | null }): OpenToolCall[] {
+    try {
+      const nodeId = input.nodeId ?? (input.sessionName ? this._resolveSession({ sessionName: input.sessionName })?.node_id : null);
+      if (!nodeId) return [];
+      const rows = this.db.prepare(
+        `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${OPEN_CALL_SCAN_ROWS}`
+      ).all(nodeId) as EventPayloadRow[];
+      const parsed = rows.map((r) => parseActivityPayload(r.payload));
+      if (input.sessionName && parsed[0]?.sessionName !== undefined && parsed[0]?.sessionName !== input.sessionName) return [];
+      return openToolCallsIn(parsed);
+    } catch {
+      return [];
+    }
   }
 
   getLatestForNode(input: {
@@ -371,31 +390,99 @@ export class AgentActivityStore {
   }
 }
 
-/** Hook events Claude Code delivers in the background (`async: true`, native comms step 2; PreToolUse since workspaces-o9o.4):
- *  they can arrive after a newer synchronous hook, so arrival order (seq) does not order them. A tool start relayed late must not
- *  displace the permission prompt that followed it. The runners post these events with their own eventAt too, so the rule holds for them. */
-const ASYNC_RELAYED_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+/** Hook events Claude Code delivers in the background (`async: true`, native comms step 2; PreToolUse since workspaces-o9o.4): the
+ *  relay stamps them when it RUNS, not when the hook fired, so arrival order (seq) does not order them. The runners post the same events
+ *  with their own eventAt, and the same rule holds for them. They are also the events that carry a tool call id. */
+const TOOL_CALL_EVENTS: ReadonlySet<string> = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+const ASYNC_RELAYED_EVENTS = TOOL_CALL_EVENTS;
 /** How many of a node's newest activity rows the latest-hook read looks through to order async events by eventAt. */
 const LATEST_SCAN_ROWS = 20;
+/** workspaces-o9o.4 F3: a plain permission prompt (Notification/permission_prompt) names no tool and carries no call id (Claude Code
+ *  2.1.319 and 2.1.325, measured), so an async tool end clears it only when stamped more than this after it. Measured relay stamp lag:
+ *  13-27 ms idle (n=20) and 13-28 ms during a full suite under heavy.lock (n=30, load 5.5 on 20 cores). Lag above this under heavier load
+ *  is unmeasured: such an end would clear the prompt early. A question to the human never uses this window (promptClearedBy). */
+export const ASYNC_PROMPT_CLEAR_SLACK_MS = 2_000;
 
-/** The latest activity among a node's newest rows (newest first by seq). Synchronous hooks keep arrival order. An async
- *  event (PreToolUse/PostToolUse/PostToolUseFailure) is the latest only when its own eventAt is strictly newer than the newest
- *  synchronous event's: an async PostToolUse that arrives after a newer permission_prompt must not clear it (step-2
- *  review F1). With no synchronous row in the window, the async row with the newest eventAt is the latest. */
-export function pickLatestByOrdering<T extends { activity?: Pick<AgentActivity, "rawEvent" | "eventAt"> } | null>(newestFirst: T[]): T | null {
+type OrderingActivity = Pick<AgentActivity, "rawEvent" | "eventAt"> & Partial<Pick<AgentActivity, "state" | "rawSubtype" | "dialog">>;
+
+/** workspaces-o9o.4 F3: whether an async tool event may displace a waiting prompt. A tool start never can (a call starting answers
+ *  nothing, and its start can be stamped after a prompt it preceded). A question to the human (OF-278: AskUserQuestion, one at a time) is
+ *  cleared only by its own tool's end; Stop and UserPromptSubmit are synchronous and clear it by arrival. A plain permission prompt, which
+ *  names no call, is cleared by a tool end stamped more than ASYNC_PROMPT_CLEAR_SLACK_MS after it. */
+function promptClearedBy(prompt: OrderingActivity, candidate: OrderingActivity, candidateMs: number, promptMs: number): boolean {
+  if (candidate.rawEvent === "PreToolUse") return false;
+  if (prompt.dialog === "question" || (prompt.rawEvent === "PermissionRequest" && prompt.rawSubtype === QUESTION_DIALOG_TOOL)) {
+    return candidate.rawSubtype === QUESTION_DIALOG_TOOL;
+  }
+  return Number.isFinite(promptMs) ? candidateMs > promptMs + ASYNC_PROMPT_CLEAR_SLACK_MS : true;
+}
+
+/** The latest activity among a node's newest rows (newest first by seq). Synchronous hooks keep arrival order. An async event
+ *  (PreToolUse/PostToolUse/PostToolUseFailure) is the latest only when its own eventAt is strictly newer than the current latest's
+ *  (step-2 review F1), and, against a prompt that waits on a person, only when promptClearedBy allows it (workspaces-o9o.4 F3). Async
+ *  rows are taken oldest first, so one that clears a prompt is then compared with the async rows after it. With no synchronous row in
+ *  the window, the async row with the newest eventAt is the latest. */
+export function pickLatestByOrdering<T extends { activity?: OrderingActivity } | null>(newestFirst: T[]): T | null {
   const time = (p: T) => (p?.activity?.eventAt ? Date.parse(p.activity.eventAt) : NaN);
   const isAsync = (p: T) => ASYNC_RELAYED_EVENTS.has(p?.activity?.rawEvent ?? "");
   const baseIndex = newestFirst.findIndex((p) => p?.activity && !isAsync(p));
-  const asyncCandidates = (baseIndex === -1 ? newestFirst : newestFirst.slice(0, baseIndex)).filter((p) => p?.activity && isAsync(p));
+  const asyncCandidates = (baseIndex === -1 ? newestFirst : newestFirst.slice(0, baseIndex))
+    .filter((p) => p?.activity && isAsync(p) && Number.isFinite(time(p)))
+    .reverse() // oldest arrival first: a stable sort below keeps arrival order among equal times
+    .sort((x, y) => time(x) - time(y));
   const base = baseIndex === -1 ? null : newestFirst[baseIndex]!;
   let best: T | null = base;
   for (const candidate of asyncCandidates) {
     const t = time(candidate);
-    if (!Number.isFinite(t)) continue;
     const bestTime = best ? time(best) : -Infinity;
-    if (best === null || t > (Number.isFinite(bestTime) ? bestTime : Infinity)) best = candidate;
+    if (best !== null && !(t > (Number.isFinite(bestTime) ? bestTime : Infinity))) continue;
+    if (best?.activity?.state === "needs_input" && !promptClearedBy(best.activity, candidate!.activity!, t, bestTime)) continue;
+    best = candidate;
   }
   return best ?? newestFirst[0] ?? null;
+}
+
+/** workspaces-o9o.4 F2: a tool call that started and has not ended, as the open-call read reports it. */
+export interface OpenToolCall {
+  tool: string;
+  callId: string;
+  /** The start's eventAt: the relay's stamp, a few tens of ms after the hook fired (measured). */
+  startedAt: string;
+}
+
+/** Events that end a turn: what is still open at one of them never ends with a hook (an interrupted call fires none). Pi and pda runs
+ *  begin with `active` (agent_start / run_start). */
+function isTurnBoundary(activity: Pick<AgentActivity, "rawEvent" | "rawSubtype">): boolean {
+  const e = activity.rawEvent;
+  return e === "UserPromptSubmit" || e === "Stop" || e === "SessionStart" || e === "SessionEnd"
+    || (e === "active" && (activity.rawSubtype === "agent_start" || activity.rawSubtype === "run_start"));
+}
+
+/** How many of a node's newest rows the open-call read looks through for the current turn. */
+const OPEN_CALL_SCAN_ROWS = 200;
+
+/** workspaces-o9o.4 F2: the calls of the current turn that started and have not ended, oldest first, from the rows that carry a call id
+ *  (rows without one are left to the newest-event rule). The rows newer than the last turn boundary in the newest generation are read
+ *  whole before deciding, because an async start can arrive after its own end. A start stamped before the boundary is not counted. */
+export function openToolCallsIn(newestFirst: Array<{ activity?: AgentActivity } | null>): OpenToolCall[] {
+  const rows = newestFirst.map((r) => r?.activity).filter((a): a is AgentActivity => !!a);
+  if (rows.length === 0) return [];
+  const generation = rows[0]!.generation ?? null;
+  const turn: AgentActivity[] = [];
+  let boundaryMs = Number.NEGATIVE_INFINITY;
+  for (const a of rows) {
+    if ((a.generation ?? null) !== generation) break;
+    if (isTurnBoundary(a)) { boundaryMs = a.eventAt ? Date.parse(a.eventAt) : boundaryMs; break; }
+    turn.push(a);
+  }
+  const ended = new Set(turn.filter((a) => (a.rawEvent === "PostToolUse" || a.rawEvent === "PostToolUseFailure") && a.toolCallId).map((a) => a.toolCallId!));
+  const open = turn.filter((a) => a.rawEvent === "PreToolUse" && a.toolCallId && !ended.has(a.toolCallId) && a.eventAt
+    && !(Date.parse(a.eventAt) < boundaryMs));
+  const seen = new Set<string>();
+  return open
+    .filter((a) => (seen.has(a.toolCallId!) ? false : (seen.add(a.toolCallId!), true)))
+    .map((a) => ({ tool: a.rawSubtype ?? "tool", callId: a.toolCallId!, startedAt: a.eventAt! }))
+    .sort((x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt));
 }
 
 /** The activity a runtime hook event means, before freshness or generation checks. The one mapping behind
@@ -480,6 +567,7 @@ function normalizeHookActivity(input: {
   sampledAt: string;
   eventAt: string;
   generation?: string | null;
+  toolCallId?: string | null;
 }): AgentActivity {
   const rawEvent = input.hookEvent;
   const rawSubtype = input.subtype;
@@ -514,6 +602,7 @@ function normalizeHookActivity(input: {
     fallback: false,
     stale: false,
     generation: input.generation ?? null,
+    ...(input.toolCallId && TOOL_CALL_EVENTS.has(rawEvent) ? { toolCallId: input.toolCallId } : {}),
   };
 }
 

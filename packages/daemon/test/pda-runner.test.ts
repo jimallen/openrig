@@ -263,6 +263,10 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
     expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual([
       "Stop/attached_idle", "active/run_start", "PreToolUse/bash", "PostToolUse/bash", "PreToolUse/write", "PostToolUse/write", "Stop/run_end",
     ]);
+    // workspaces-o9o.4 (verify-qa F2): each end carries its start's call id.
+    expect(rig.activity.filter((a) => /ToolUse$/.test(String(a.hookEvent))).map((a) => `${a.hookEvent}/${a.toolCallId}`)).toEqual([
+      "PreToolUse/e1", "PostToolUse/e1", "PreToolUse/e2", "PostToolUse/e2",
+    ]);
   });
 
   it("a snapshot with a run in flight is busy, posts attached_busy once, and a repeat posts nothing", async () => {

@@ -1775,7 +1775,7 @@ export class SessionTransport {
       const status = resolved ? (this.db.prepare("SELECT status FROM sessions WHERE id = ?").get(resolved.sessionId) as { status: string } | undefined)?.status : undefined;
       if (status !== "running") return undefined;
       const runtime = resolved?.runtime ?? null;
-      const fromHooks = deriveSeatPosture(store.getLatestForNode({ sessionName, now }), runtime, now);
+      const fromHooks = deriveSeatPosture(store.getLatestForNode({ sessionName, now }), runtime, now, store.openToolCalls({ sessionName }));
       return await refineSeatPosture(fromHooks, runtime, sessionName, this.seatTerminalStatus, now);
     } catch {
       return undefined;

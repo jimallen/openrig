@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deriveRelayEvents } from "../src/domain/claude-activity-hooks.js";
-import { hookEventState, latestHookMovedOn, pickLatestByOrdering } from "../src/domain/agent-activity-store.js";
+import { ASYNC_PROMPT_CLEAR_SLACK_MS, hookEventState, latestHookMovedOn, pickLatestByOrdering } from "../src/domain/agent-activity-store.js";
 import type { AgentActivity } from "../src/domain/types.js";
 
 const MANIFEST = resolve(fileURLToPath(new URL(".", import.meta.url)), "../assets/plugins/openrig-core/hooks/claude.json");
@@ -64,6 +64,32 @@ describe("PostToolUse and PostToolUseFailure mean the agent is running", () => {
     expect(latestHookMovedOn(post, promptAt, "claude-code")).toBe(true);
     // the same event dated before the prompt says nothing about the prompt
     expect(latestHookMovedOn({ ...post, eventAt: "2026-10-26T23:38:00.000Z" }, promptAt, "claude-code")).toBe(false);
+  });
+});
+
+// workspaces-o9o.4, verify-qa F3: against a prompt that waits on a person, an async tool event must also be allowed to clear it.
+describe("pickLatestByOrdering: what may clear a waiting prompt (workspaces-o9o.4 F3)", () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 26, 0, 0, 0) + s).toISOString();
+  const prompt = { activity: { rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input" as const, eventAt: at(30_000) } };
+  const question = { activity: { rawEvent: "PermissionRequest", rawSubtype: "AskUserQuestion", state: "needs_input" as const, dialog: "question" as const, eventAt: at(30_000) } };
+  const tool = (rawEvent: string, rawSubtype: string, ms: number) => ({ activity: { rawEvent, rawSubtype, state: "running" as const, eventAt: at(ms) } });
+  const pick = (...rows: Array<{ activity: Record<string, unknown> }>) => pickLatestByOrdering(rows as never) as { activity: { rawEvent: string; rawSubtype: string } } | null;
+
+  it.each([
+    ["a tool start stamped after a permission prompt never clears it", [tool("PreToolUse", "Bash", 90_000), prompt], "Notification"],
+    ["a tool start stamped after a question never clears it", [tool("PreToolUse", "Bash", 90_000), question], "PermissionRequest"],
+    ["another call's end, however late, never clears a question", [tool("PostToolUse", "Read", 600_000), question], "PermissionRequest"],
+    ["the question's own end clears it", [tool("PostToolUse", "AskUserQuestion", 60_000), question], "PostToolUse"],
+    ["a failed end of the question's own tool clears it", [tool("PostToolUseFailure", "AskUserQuestion", 60_000), question], "PostToolUseFailure"],
+    ["a tool end stamped exactly 2 s after a permission prompt does not clear it", [tool("PostToolUse", "Read", 32_000), prompt], "Notification"],
+    ["a tool end stamped 2 s + 1 ms after it does", [tool("PostToolUse", "Read", 32_001), prompt], "PostToolUse"],
+    ["once the question is answered, a later start is the latest", [tool("PreToolUse", "Bash", 70_000), tool("PostToolUse", "AskUserQuestion", 60_000), question], "PreToolUse"],
+  ])("%s", (_label, rows, expected) => {
+    expect(pick(...(rows as Array<{ activity: Record<string, unknown> }>))?.activity.rawEvent).toBe(expected);
+  });
+
+  it("the window is the measured-bound constant", () => {
+    expect(ASYNC_PROMPT_CLEAR_SLACK_MS).toBe(2_000);
   });
 });
 

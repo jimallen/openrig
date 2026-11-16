@@ -57,7 +57,7 @@ export interface MirrorAndActivity {
   /** Raw text to append to the current mirror line (streamed deltas). */
   mirrorAppend?: string;
   /** Activity POST payload (hookEvent/subtype), when the event maps to one. */
-  activity?: { hookEvent: string; subtype: string | null };
+  activity?: { hookEvent: string; subtype: string | null; toolCallId?: string };
   /** Streaming-state transition, when the event carries one. */
   streaming?: boolean;
   /** A typed terminal failure; the core coalesces its exhausted-retry notice. */
@@ -129,6 +129,11 @@ function modelErrorNotice(event: Record<string, unknown>, runtime: RunnerRuntime
 
 /** A tool call made inside another tool call (a sub-agent's, say) names its parent. The pda runner hides these, and
  *  so does the Pi runner: the parent's line and activity already stand for the work. */
+/** workspaces-o9o.4: a tool event's call id (Pi's and OMP's toolCallId), when it has one. */
+function toolCallIdOf(event: Record<string, unknown>): { toolCallId?: string } {
+  return typeof event.toolCallId === "string" && event.toolCallId.length > 0 ? { toolCallId: event.toolCallId } : {};
+}
+
 function isNestedToolCall(event: Record<string, unknown>): boolean {
   return event.parentToolCallId !== undefined && event.parentToolCallId !== null;
 }
@@ -176,14 +181,14 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
     case "tool_execution_start": {
       if (runtime === "pi" && isNestedToolCall(event)) return { mirrorLines: [] };
       const tool = typeof event.toolName === "string" ? event.toolName : (typeof event.name === "string" ? event.name : "tool");
-      return { mirrorLines: [`  ⚙ ${tool} …`], activity: { hookEvent: "PreToolUse", subtype: tool } };
+      return { mirrorLines: [`  ⚙ ${tool} …`], activity: { hookEvent: "PreToolUse", subtype: tool, ...toolCallIdOf(event) } };
     }
     case "tool_execution_end": {
       if (runtime === "pi" && isNestedToolCall(event)) return { mirrorLines: [] };
       const tool = typeof event.toolName === "string" ? event.toolName : (typeof event.name === "string" ? event.name : "tool");
       const failed = event.isError === true || event.error != null;
-      // workspaces-o9o.4: the end of the call, so a newest PreToolUse means a call that is still open (seat-posture.ts).
-      return { mirrorLines: [`  ⚙ ${tool} ${failed ? "FAILED" : "done"}`], activity: { hookEvent: "PostToolUse", subtype: tool } };
+      // workspaces-o9o.4: the end of the call, with its id, so the daemon can tell which calls are still open (seat-posture.ts).
+      return { mirrorLines: [`  ⚙ ${tool} ${failed ? "FAILED" : "done"}`], activity: { hookEvent: "PostToolUse", subtype: tool, ...toolCallIdOf(event) } };
     }
     case "queue_update":
       return { mirrorLines: [] };
@@ -886,7 +891,7 @@ export class RunnerCore {
       if (!this.attentionIsLatest) this.raiseAttention(this.attention);
     } else {
       this.attentionIsLatest = false;
-      this.io.postActivity(this.activityPayload(mapped.activity.hookEvent, mapped.activity.subtype));
+      this.io.postActivity(this.activityPayload(mapped.activity.hookEvent, mapped.activity.subtype, mapped.activity.toolCallId));
     }
   }
 
@@ -919,7 +924,7 @@ export class RunnerCore {
     ).finally(() => { this.identityInFlight = false; });
   }
 
-  private activityPayload(hookEvent: string, subtype: string | null): Record<string, unknown> {
+  private activityPayload(hookEvent: string, subtype: string | null, toolCallId?: string): Record<string, unknown> {
     return {
       sessionName: this.identity.sessionName,
       nodeId: this.identity.nodeId ?? null,
@@ -927,6 +932,7 @@ export class RunnerCore {
       runtime: this.runtime,
       hookEvent,
       subtype,
+      ...(toolCallId ? { toolCallId } : {}),
       occurredAt: this.io.now(),
     };
   }

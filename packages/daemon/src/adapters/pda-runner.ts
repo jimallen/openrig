@@ -597,7 +597,7 @@ export class PdaRunner {
         if (event.parentToolCallId !== undefined && event.parentToolCallId !== null) return; // nested calls are not shown
         const name = typeof event.toolName === "string" && event.toolName.length > 0 ? event.toolName : "tool";
         this.pane.line(`  ⚙ ${name}: ${argsFirstLine(event.args)}`);
-        this.postActivity("PreToolUse", name);
+        this.postActivity("PreToolUse", name, typeof event.toolCallId === "string" ? event.toolCallId : null);
         return;
       }
       case "tool_execution_end": return this.onToolEnd(event);
@@ -844,7 +844,7 @@ export class PdaRunner {
     const callId = typeof event.toolCallId === "string" ? event.toolCallId : view?.toolCallId ?? null;
     if (callId !== null && !this.remember(`tool:${callId}`)) return;
     // workspaces-o9o.4: the end of the call (faulted ones too), so a newest PreToolUse means a call that is still open (seat-posture.ts).
-    this.postActivity("PostToolUse", name);
+    this.postActivity("PostToolUse", name, callId);
     if (!view) {
       this.pane.line(`  ✗ ${name}: no result (the tool task faulted or the run ended)`);
       return;
@@ -1033,7 +1033,7 @@ export class PdaRunner {
     this.postActivity(this.busy ? "active" : "Stop", "held_cleared");
   }
 
-  private postActivity(hookEvent: string, subtype: string | null): void {
+  private postActivity(hookEvent: string, subtype: string | null, toolCallId: string | null = null): void {
     if (this.heldReported !== null && subtype !== this.heldReported.code) this.heldReportOverwritten = true;
     const safeSubtype = subtype === null ? null : sanitizeForPane(subtype).slice(0, 64);
     const hcState = hcStateForActivity(hookEvent);
@@ -1046,6 +1046,7 @@ export class PdaRunner {
         runtime: PDA_RUNTIME,
         hookEvent,
         subtype: safeSubtype,
+        ...(toolCallId ? { toolCallId: sanitizeForPane(toolCallId).slice(0, 128) } : {}), // workspaces-o9o.4: the call a tool event belongs to
         occurredAt: this.stamp(),
       });
     } catch { /* best-effort */ }

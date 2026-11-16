@@ -80,6 +80,12 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     providerPayload.matcher
   );
 
+  // workspaces-o9o.4: the call a tool event belongs to (measured on Claude Code 2.1.325: the same tool_use_id on a call's start and end, one
+  // per parallel call), so the daemon can tell which calls are still open.
+  const toolCallId = hookEvent === "PreToolUse" || hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure"
+    ? firstString(providerPayload.tool_use_id, providerPayload.toolUseId)
+    : null;
+
   return {
     sessionName,
     nodeId,
@@ -87,6 +93,7 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     generation,
     hookEvent,
     subtype,
+    ...(toolCallId ? { toolCallId } : {}),
     occurredAt: now().toISOString(),
   };
 }

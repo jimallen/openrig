@@ -270,7 +270,12 @@ export interface SeatPostureView {
   kind: "busy" | "unknown-open-turn" | "idle" | "needs_input" | "unknown";
   source: "runtime_hook" | "hc_status" | null;
   at: string | null;
+  /** workspaces-o9o.4: the oldest open tool call, its start, whether its own start is inside the hook freshness window, and the other
+   *  open calls of the turn. Absent from an older daemon. */
   tool: string | null;
+  toolStartedAt?: string | null;
+  toolConfirmed?: boolean;
+  otherOpenCalls?: number;
   line: string;
 }
 

@@ -1600,7 +1600,9 @@ export async function attachAgentActivity(
     if (entry.sessionStatus !== "running") return attached;
     const hook = deps.activityStore?.getLatestForNode({ sessionName: entry.canonicalSessionName, now: sampledAt });
     const runtime = entry.runtime ?? null;
-    const seatPosture = await refineSeatPosture(deriveSeatPosture(hook, runtime, sampledAt), runtime, entry.canonicalSessionName ?? "", deps.seatTerminalStatus, sampledAt);
+    // Capability-checked like heldMessagesFor below: an injected store double without the open-call read keeps the old rule.
+    const openCalls = deps.activityStore?.openToolCalls?.({ sessionName: entry.canonicalSessionName }) ?? [];
+    const seatPosture = await refineSeatPosture(deriveSeatPosture(hook, runtime, sampledAt, openCalls), runtime, entry.canonicalSessionName ?? "", deps.seatTerminalStatus, sampledAt);
     const heldMessages = deps.activityStore?.heldMessagesFor?.(entry.canonicalSessionName ?? "", sampledAt) ?? undefined;
     const modelErrorLoop = deps.activityStore?.modelErrorLoopFor?.(entry.canonicalSessionName ?? "", runtime, sampledAt) ?? undefined;
     return { ...attached, seatPosture, ...(heldMessages ? { heldMessages } : {}), ...(modelErrorLoop ? { modelErrorLoop } : {}) };

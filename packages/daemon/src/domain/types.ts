@@ -622,6 +622,9 @@ export interface AgentActivity {
   eventAt?: string | null;
   rawEvent?: string | null;
   rawSubtype?: string | null;
+  /** workspaces-o9o.4: the tool call a PreToolUse/PostToolUse/PostToolUseFailure belongs to (Claude's tool_use_id, a runner's toolCallId), so
+   *  the calls still open can be told apart when several run at once. Null when the producer carries none (an older relay or runner). */
+  toolCallId?: string | null;
   runtime?: string | null;
   fallback?: boolean;
   stale?: boolean;

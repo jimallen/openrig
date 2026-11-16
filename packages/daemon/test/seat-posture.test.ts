@@ -145,12 +145,15 @@ describe("refineSeatPosture: a Pi seat's hc terminal status settles an open turn
 
   it("working, with no open tool call: busy since the status began, sourced to hc status, not to the hook", async () => {
     const p = await refineSeatPosture(openNoTool(), "pi", "build-arch@eztrack", async () => working, at(66));
-    expect(p).toEqual({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.008Z", tool: null, line: "busy: working since 16:04Z (hc status)" });
+    expect(p).toEqual({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.008Z", tool: null, toolStartedAt: null, toolConfirmed: false, otherOpenCalls: 0, line: "busy: working since 16:04Z (hc status)" });
   });
 
-  it("working, with an open tool call: busy on that tool, timed from its own start (workspaces-o9o.4)", async () => {
+  // workspaces-o9o.4, verify-qa F1: hc status is run-level (status_ms is the run's start), so it confirms the run, never that this call is
+  // still going after a lost end: the call is named as unended.
+  it("working, with an open tool call: busy for the run, the call named as started and unended, never as running", async () => {
     const p = await refineSeatPosture(open(), "pi", "build-arch@eztrack", async () => working, at(66));
-    expect(p).toEqual({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:41.008Z", tool: "bash", line: "busy: running bash for 66 min (since 16:04Z, hc status)" });
+    expect(p).toEqual({ kind: "busy", source: "hc_status", at: "2031-03-04T16:04:40.008Z", tool: "bash", toolStartedAt: "2031-03-04T16:04:41.008Z", toolConfirmed: false, otherOpenCalls: 0,
+      line: "busy: working since 16:04Z (hc status); bash started 16:04Z, 66 min ago, no end recorded" });
   });
 
   it("names a date when the run began on an earlier UTC day", async () => {
@@ -230,7 +233,7 @@ describe("refineSeatPosture: a Pi seat's hc terminal status settles an open turn
       tmuxAdapter: {} as never, activityStore: store, now: at(66),
       seatTerminalStatus: async (seat) => { asked.push(seat); return working; },
     });
-    expect(rows[0]!.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", tool: "bash", at: "2031-03-04T16:04:41.008Z" });
+    expect(rows[0]!.seatPosture).toMatchObject({ kind: "busy", source: "hc_status", tool: "bash", toolConfirmed: false, at: "2031-03-04T16:04:40.008Z", toolStartedAt: "2031-03-04T16:04:41.008Z" });
     expect(rows[1]!.seatPosture).toMatchObject({ kind: "idle", source: "runtime_hook" });
     expect(asked).toEqual(["build-arch@eztrack"]);
     expect(rows[0]!.agentActivity).toMatchObject({ state: "unknown", reason: "stale_runtime_hook" }); // ACTIVITY is untouched
@@ -397,12 +400,13 @@ describe("the running tool and how long it has run (workspaces-o9o.4)", () => {
     expect(read(5_000)).toMatchObject({ kind: "needs_input", tool: null });
   });
 
-  it("control: a tool start dated after the prompt is the newer event and names its tool", () => {
+  // verify-qa F3: a tool start answers no prompt, and the async relay can stamp it after a prompt it preceded, so it never displaces one.
+  it("a tool start never displaces a waiting prompt, even one stamped after it", () => {
     const { fire, read } = seat("claude-code");
     fire("UserPromptSubmit", null, 0);
     fire("Notification", "permission_prompt", 2_000);
-    fire("PreToolUse", "Bash", 3_000);
-    expect(read(5_000)).toMatchObject({ kind: "busy", tool: "Bash" });
+    fire("PreToolUse", "Bash", 12_000); // 10 s after it: past the 2 s window, so only the never-displaces rule keeps the prompt
+    expect(read(15_000)).toMatchObject({ kind: "needs_input" });
   });
 
   it("a Codex seat records no tool events: the turn line is unchanged", () => {
