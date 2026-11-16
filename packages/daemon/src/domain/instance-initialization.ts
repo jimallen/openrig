@@ -9,7 +9,13 @@ import {
   DEFAULT_SYSTEM_WORLD_MANIFEST,
   DEFAULT_SYSTEM_WORLD_RELATIVE_PATH,
 } from "./system-world.js";
-import { secureInstanceHome, type InstancePrivacyPort, type InstancePrivacyResult } from "./instance-privacy.js";
+import {
+  openPrivateRoot,
+  privateRootRefusal,
+  securePrivateRoot,
+  type InstancePrivacyPort,
+  type InstancePrivacyResult,
+} from "./instance-privacy.js";
 
 export interface OpenRigInstanceInitializationOptions {
   home: string;
@@ -19,7 +25,8 @@ export interface OpenRigInstanceInitializationOptions {
   topologyRoot?: string;
   dryRun?: boolean;
   fs?: InitializationFsOps;
-  /** When given, the instance is kept private to its owner after the layout is reconciled (workspaces-o9o.36). */
+  /** When given, a home that is the user's home or above it is refused before anything is written, and the
+   * instance is kept private to its owner (workspaces-o9o.36). */
   privacy?: InstancePrivacyPort;
 }
 
@@ -46,6 +53,16 @@ export function ensureOpenRigInstance(
 ): OpenRigInstanceInitializationResult {
   const fs = options.fs ?? nodeInitializationFs();
   const dryRun = options.dryRun ?? false;
+  // workspaces-o9o.36: the refusal comes first, so a refused home is never written to.
+  if (options.privacy && privateRootRefusal(options.home, options.privacy)) {
+    return {
+      ok: false,
+      home: options.home,
+      createdPaths: [],
+      conflicts: [{ path: options.home, expected: "instance-home", actual: "user-home" }],
+      dryRun,
+    };
+  }
   const workspaceRoot = options.workspaceRoot ?? join(options.home, "workspace");
   const contextRoot = options.contextRoot ?? join(options.home, "context");
   const skillsRoot = options.skillsRoot ?? join(options.home, "skills");
@@ -102,12 +119,14 @@ export function ensureOpenRigInstance(
   ];
 
   if (!dryRun) {
+    // A home its owner cannot enter (0600) could not be written into: open it to 0700 first.
+    if (options.privacy) openPrivateRoot(options.home, options.privacy);
     for (const path of missingDirectories) fs.mkdirp(path);
     if (configKind === "missing") fs.writeFile(configPath, "{}\n");
     if (systemWorldKind === "missing") fs.writeFile(systemWorldPath, DEFAULT_SYSTEM_WORLD_MANIFEST);
     ensureDefaultWorkspace({ root: workspaceRoot, fs });
   }
-  const privacy = !dryRun && options.privacy ? secureInstanceHome(options.home, options.privacy) : undefined;
+  const privacy = !dryRun && options.privacy ? securePrivateRoot(options.home, options.privacy) : undefined;
 
   return { ok: true, home: options.home, createdPaths, conflicts: [], dryRun, ...(privacy ? { privacy } : {}) };
 }

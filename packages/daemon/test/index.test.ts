@@ -140,6 +140,34 @@ describe("daemon startServer", () => {
       .toEqual({ home: 0o700, session: 0o600 });
   });
 
+  it("workspaces-o9o.36: daemon start makes a transcripts root configured outside the instance private (dirs 0700, files 0600)", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-external-transcripts-"));
+    try {
+      const transcripts = path.join(base, "transcripts");
+      const rigDir = path.join(transcripts, "openrig");
+      fs.mkdirSync(rigDir, { recursive: true });
+      const transcript = path.join(rigDir, "verify-ops@openrig.log");
+      fs.writeFileSync(transcript, "pane text\n");
+      fs.chmodSync(transcript, 0o664);
+      fs.chmodSync(rigDir, 0o775);
+      fs.chmodSync(transcripts, 0o775);
+      vi.stubEnv("OPENRIG_TRANSCRIPTS_PATH", transcripts);
+      const { startServer } = await import("../src/index.js");
+
+      await startServer(7441);
+
+      const modeOf = (p: string) => fs.statSync(p).mode & 0o777;
+      expect({ root: modeOf(transcripts), rigDir: modeOf(rigDir), transcript: modeOf(transcript) })
+        .toEqual({ root: 0o700, rigDir: 0o700, transcript: 0o600 });
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("does not require a terminal bearer token for the default loopback bind", async () => {
     const { startServer } = await import("../src/index.js");
 

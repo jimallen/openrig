@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureOpenRigInstance } from "../src/domain/instance-initialization.js";
 import { nodeInstancePrivacy } from "../src/adapters/instance-privacy-fs.js";
+import { securePrivateRoot } from "../src/domain/instance-privacy.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
 import { mockTmuxAdapter } from "./helpers/test-app.js";
@@ -80,7 +81,7 @@ describe("an OpenRig instance is private to its owner (workspaces-o9o.36)", () =
     const home = join(root, ".openrig");
     // The shape measured on Sparky: a Pi session file, a pane transcript and a Codex rollout 0664 under 0775 dirs.
     const sessions = join(home, "state", "pi", "verify-ops@openrig", "sessions");
-    const session = writeWithMode(join(sessions, "2026-11-16T11-00-00.jsonl"), "{\"tool_output\":\"password=not-a-real-secret\"}\n", 0o664);
+    const session = writeWithMode(join(sessions, "2026-11-16T11-00-00.jsonl"), "{\"tool_output\":\"a seat's tool output\"}\n", 0o664);
     const transcriptDir = join(home, "transcripts", "openrig");
     const transcript = writeWithMode(join(transcriptDir, "verify-ops@openrig.log"), "pane text\n", 0o664);
     const codexSession = writeWithMode(join(home, "codex-seats", "queue-worker@kernel", "sessions", "rollout.jsonl"), "{}\n", 0o664);
@@ -146,7 +147,7 @@ describe("an OpenRig instance is private to its owner (workspaces-o9o.36)", () =
       .toEqual({ root: "0775", sibling: "0664", workspace: "0775", workspaceFile: "0664", home: "0700" });
   });
 
-  it("refuses a home that is the user's own home directory or above it, and changes nothing there", () => {
+  it("refuses a home that is the user's own home directory or above it before writing anything, and changes nothing", () => {
     const root = freshRoot();
     const userHome = join(root, "users", "jim");
     const project = writeWithMode(join(userHome, "project", "README.md"), "readme\n", 0o664);
@@ -154,10 +155,40 @@ describe("an OpenRig instance is private to its owner (workspaces-o9o.36)", () =
 
     for (const home of [userHome, join(root, "users")]) {
       const result = start(home, join(home, "workspace"), userHome);
-      expect(result.ok).toBe(true);
-      expect(result.privacy?.status).toBe("refused");
+      expect({ ok: result.ok, conflict: result.conflicts.map((c) => c.path), created: result.createdPaths })
+        .toEqual({ ok: false, conflict: [home], created: [] });
+      expect({ config: existsSync(join(home, "config.json")), state: existsSync(join(home, "state")) })
+        .toEqual({ config: false, state: false });
     }
     expect({ userHome: mode(userHome), project: mode(project) }).toEqual({ userHome: "0755", project: "0664" });
+  });
+
+  it("refuses the user's home reached through a symlink: an aliased parent and an aliased home", () => {
+    const root = freshRoot();
+    const userHome = join(root, "users", "jim");
+    const project = writeWithMode(join(userHome, "project", "README.md"), "readme\n", 0o664);
+    chmodSync(userHome, 0o755);
+    symlinkSync(join(root, "users"), join(root, "alias"));
+    symlinkSync(userHome, join(root, "home-link"));
+
+    for (const home of [join(root, "alias", "jim"), join(root, "home-link"), join(root, "alias")]) {
+      const result = start(home, join(home, "workspace"), userHome);
+      expect({ home, ok: result.ok, conflict: result.conflicts.map((c) => c.path) }).toEqual({ home, ok: false, conflict: [home] });
+    }
+    expect({ userHome: mode(userHome), project: mode(project), config: existsSync(join(userHome, "config.json")) })
+      .toEqual({ userHome: "0755", project: "0664", config: false });
+  });
+
+  it("a home its owner cannot enter (0600) is opened to 0700 for its owner, and its contents made private", () => {
+    const root = freshRoot();
+    const home = join(root, ".openrig");
+    const session = writeWithMode(join(home, "state", "pi", "s@r", "sessions", "a.jsonl"), "{}\n", 0o664);
+    chmodSync(home, 0o600);
+
+    expect(start(home, join(home, "workspace"), join(root, "user-home")).ok).toBe(true);
+
+    expect({ home: mode(home), session: mode(session), config: mode(join(home, "config.json")) })
+      .toEqual({ home: "0700", session: "0600", config: "0600" });
   });
 
   it("a dry run changes no modes", () => {
@@ -171,10 +202,8 @@ describe("an OpenRig instance is private to its owner (workspaces-o9o.36)", () =
 });
 
 describe("a pane transcript is private to its owner under a loose umask (workspaces-o9o.36)", () => {
-  it("a transcript root configured outside the instance is made 0700 and its boundary-marked transcript 0600", () => {
+  it("a transcript root configured outside the instance is created 0700 with its rig directory, and the boundary-marked transcript 0600", () => {
     const root = join(freshRoot(), "elsewhere", "transcripts");
-    mkdirSync(root, { recursive: true });
-    chmodSync(root, 0o775);
     const store = new TranscriptStore({ transcriptsRoot: root, enabled: true });
     expect(store.ensureTranscriptDir("openrig")).toBe(true);
     expect(store.writeBoundaryMarker("openrig", "verify-ops@openrig", "launch")).toBe(true);
@@ -185,9 +214,24 @@ describe("a pane transcript is private to its owner under a loose umask (workspa
     }).toEqual({ root: "0700", rigDir: "0700", transcript: "0600" });
   });
 
+  it("an existing transcript root outside the instance is made private at start: dirs 0700, files 0600, symlinks not followed", () => {
+    const base = freshRoot();
+    const transcripts = join(base, "elsewhere", "transcripts");
+    const transcript = writeWithMode(join(transcripts, "openrig", "verify-ops@openrig.log"), "pane text\n", 0o664);
+    const outside = writeWithMode(join(base, "outside.txt"), "x\n", 0o644);
+    symlinkSync(outside, join(transcripts, "openrig", "link.log"));
+    chmodSync(join(transcripts, "openrig"), 0o775);
+    chmodSync(transcripts, 0o775);
+
+    const result = securePrivateRoot(transcripts, nodeInstancePrivacy({ userHome: join(base, "user-home") }));
+
+    expect({ status: result.status, root: mode(transcripts), rigDir: mode(join(transcripts, "openrig")), transcript: mode(transcript), outside: mode(outside) })
+      .toEqual({ status: "secured", root: "0700", rigDir: "0700", transcript: "0600", outside: "0644" });
+  });
+
   it("the captured pane text the rotation writes is 0600 in a 0700 directory", async () => {
     const outputPath = join(freshRoot(), "rig", "verify-ops@openrig.log");
-    const tmux = Object.assign(mockTmuxAdapter(), { capturePaneContent: async () => "password=not-a-real-secret\n" });
+    const tmux = Object.assign(mockTmuxAdapter(), { capturePaneContent: async () => "captured pane text\n" });
     startTranscriptRotation(tmux, "verify-ops@openrig", outputPath, { lines: 100, pollIntervalMs: 60_000 });
     for (let i = 0; i < 50 && !existsSync(outputPath); i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));

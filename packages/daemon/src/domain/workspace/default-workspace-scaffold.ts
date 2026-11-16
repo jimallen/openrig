@@ -63,8 +63,9 @@ export interface InitializationFsOps {
 
 export interface InitializationConflict {
   path: string;
-  expected: "file" | "directory";
-  actual: Exclude<ManagedPathKind, "missing">;
+  /** "instance-home" / "user-home": an OpenRig home that is the user's home or above it (workspaces-o9o.36). */
+  expected: "file" | "directory" | "instance-home";
+  actual: Exclude<ManagedPathKind, "missing"> | "user-home";
 }
 
 export interface InitWorkspaceResult {

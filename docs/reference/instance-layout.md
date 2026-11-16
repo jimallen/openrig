@@ -52,13 +52,24 @@ everything below the home, keeping the owner's bits, so an executable such as
 
 The pass never follows a symlink and never walks outside the home: a workspace,
 context, skills or topology root configured elsewhere keeps its modes, and so
-does the target of a link such as `state/pi/<seat>/agent/auth.json`. It refuses a
-home that is the user's own home directory or one above it, and changes nothing
-there. A file it cannot change is named in the daemon log; start goes on.
+does the target of a link such as `state/pi/<seat>/agent/auth.json`. A file it
+cannot change is named in the daemon log; start goes on.
 
-Transcripts can live outside the home (`transcripts.path`), so the transcript
-writer keeps its root and each rig folder at `0700` and writes transcripts `0600`
-wherever that root is.
+The daemon will not start on a home that is the user's own home directory or one
+above it. It refuses before it writes anything, and it compares real paths as
+well as the path given, so a symlinked alias of the home directory or of one of
+its ancestors is refused too.
+
+Transcripts can live outside the home (`transcripts.path`). At every start the
+daemon gives that root the same pass (folders `0700`, files `0600`, symlinks not
+followed), and the transcript writer creates new folders `0700` and new
+transcripts `0600`.
+
+One window stays open: a file or folder swapped for a symlink between the check
+and the mode change. Closing it needs `openat`-style calls that Node does not
+have. It needs a concurrent process running as the same user, which can already
+read and change those files, so Jim accepted it on 2026-11-16 under the same
+threat model as o9o.17.
 
 ## Context library setting
 

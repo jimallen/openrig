@@ -1,5 +1,5 @@
 import { redactTranscriptContent } from "./transcript-redaction.js";
-import { mkdirSync, appendFileSync, chmodSync, existsSync, openSync, readSync, closeSync, statSync, fstatSync, readFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, openSync, readSync, closeSync, statSync, fstatSync, readFileSync } from "node:fs";
 import { join, dirname, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getCompatibleOpenRigPath } from "../openrig-compat.js";
@@ -214,13 +214,10 @@ export class TranscriptStore {
     return this._enabled;
   }
 
-  /** A transcript holds the seat's conversation, so the root and the rig directory are private to their owner
-   * whatever the umask, and wherever transcripts.path points (workspaces-o9o.36). */
+  /** A transcript holds the seat's conversation, so a directory the store creates is private to its owner whatever
+   * the umask (workspaces-o9o.36). An existing root is made private at daemon start (index.ts, securePrivateRoot). */
   private ensurePrivateDir(dir: string): void {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    for (const path of new Set([this.root, dir])) {
-      if ((statSync(path).mode & 0o077) !== 0) chmodSync(path, 0o700);
-    }
   }
 
   getTranscriptPath(rigName: string, sessionName: string): string {

@@ -39,6 +39,7 @@ import type { SlowOperationInstrumentation } from "./domain/slow-op-recorder.js"
 import type { ProviderService } from "./domain/provider/provider-service.js";
 import { SettingsStore } from "./domain/user-settings/settings-store.js";
 import { nodeInstancePrivacy } from "./adapters/instance-privacy-fs.js";
+import { securePrivateRoot } from "./domain/instance-privacy.js";
 import {
   ensureOpenRigInstance,
   formatInstanceInitializationConflicts,
@@ -256,23 +257,27 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   // filename (which could open the shared fleet db). Explicit OPENRIG_DB wins.
   const dbPath = resolveDaemonDbPath(readOpenRigEnv("OPENRIG_DB", "RIGGED_DB"), OPENRIG_HOME);
   const instanceConfig = new SettingsStore().resolveConfig();
+  const instancePrivacy = nodeInstancePrivacy();
   const initialization = ensureOpenRigInstance({
     home: OPENRIG_HOME,
     workspaceRoot: instanceConfig.workspaceRoot,
     contextRoot: instanceConfig.contextRoot,
     skillsRoot: instanceConfig.skillsRoot,
     topologyRoot: instanceConfig.topologyRoot,
-    privacy: nodeInstancePrivacy(),
+    privacy: instancePrivacy,
   });
   if (!initialization.ok) {
     throw new Error(`OpenRig instance initialization blocked: ${formatInstanceInitializationConflicts(initialization)}`);
   }
-  // workspaces-o9o.36: the instance is private to its owner. Say so when that could not be kept, never block start.
-  const privacy = initialization.privacy;
-  if (privacy?.status === "refused") {
-    console.error(`[instance-privacy] OPENRIG_HOME ${OPENRIG_HOME} is the user's home or above it; its modes were left alone`);
+  // workspaces-o9o.36: the instance, and a transcripts root configured outside it, are private to their owner.
+  // A home that is the user's home or above it was refused above; here, say when privacy could not be kept, and
+  // never block start for it.
+  const transcriptsRoot = readOpenRigEnv("OPENRIG_TRANSCRIPTS_PATH", "RIGGED_TRANSCRIPTS_PATH") || undefined;
+  const transcriptsPrivacy = transcriptsRoot ? securePrivateRoot(transcriptsRoot, instancePrivacy) : undefined;
+  if (transcriptsPrivacy?.status === "refused") {
+    console.error(`[instance-privacy] transcripts path ${transcriptsRoot} is the user's home or above it; its modes were left alone`);
   }
-  for (const failure of privacy?.failures ?? []) {
+  for (const failure of [...(initialization.privacy?.failures ?? []), ...(transcriptsPrivacy?.failures ?? [])]) {
     console.error(`[instance-privacy] could not remove group/other access from ${failure.path}: ${failure.error}`);
   }
 
