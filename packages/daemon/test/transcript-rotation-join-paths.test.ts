@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { PaneCapture } from "../src/adapters/tmux.js";
-import { clearAllTranscriptRotationsForTest, startTranscriptRotation, stopTranscriptRotation, type TranscriptHost } from "../src/domain/transcript-rotation.js";
+import { clearAllTranscriptRotationsForTest, startTranscriptRotation, type TranscriptHost } from "../src/domain/transcript-rotation.js";
 
 const waitFor = async (cond: () => boolean) => {
   for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
@@ -29,21 +29,20 @@ describe("transcript rotation: the unlisted per-target read joins wrapped rows t
       },
     };
     try {
-      const opts = { lines: 50, pollIntervalMs: 60_000 };
+      // A short cadence and no stop: stopping a rotation clears its unlisted mark (stopTranscriptRotation), so only the
+      // NEXT tick of a rotation still running takes the unlisted path.
+      const opts = { lines: 50, pollIntervalMs: 20 };
       // Two sessions in one tick share a batch, which marks both missing.
       startTranscriptRotation(host, "o9o28-x", path.join(dir, "x.log"), opts);
       startTranscriptRotation(host, "o9o28-y", path.join(dir, "y.log"), opts);
-      await waitFor(() => batched.length === 1);
-      stopTranscriptRotation("o9o28-x");
-      stopTranscriptRotation("o9o28-y");
+      await waitFor(() => batched.length >= 1);
       expect(single).toEqual([]);
 
-      // Restarted, x is read on its own: the unlisted path, not a batch.
-      startTranscriptRotation(host, "o9o28-x", path.join(dir, "x.log"), opts);
-      await waitFor(() => single.length === 1);
-      expect(batched).toHaveLength(1);
+      // Their next ticks read each one alone: the unlisted path, not the batch's own per-target read.
+      await waitFor(() => new Set(single.map((c) => c.name)).size === 2);
       expect(batched[0]).toEqual({ joinWrappedLines: true });
-      expect(single).toEqual([{ name: "o9o28-x", opts: { joinWrappedLines: true } }]);
+      expect(new Set(single.map((c) => c.name))).toEqual(new Set(["o9o28-x", "o9o28-y"]));
+      for (const call of single) expect(call.opts, call.name).toEqual({ joinWrappedLines: true });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
