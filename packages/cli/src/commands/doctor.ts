@@ -4,7 +4,7 @@ import path from "node:path";
 import net from "node:net";
 import { execSync } from "node:child_process";
 import { resolveDaemonPath } from "../daemon-lifecycle.js";
-import { formatDaemonHostForUrl } from "../client.js";
+import { formatDaemonHostForUrl, terminalAuthHeaders } from "../client.js";
 import { ConfigStore } from "../config-store.js";
 import { buildWritableHomeCheck } from "../system-preflight.js";
 import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, readHcHello, type HcHelloOutcome } from "../tmux-health.js";
@@ -17,6 +17,7 @@ import { checkProviderReadiness } from "../provider-auth.js";
 import {
   SEAT_SHELL_NOTE,
   daemonHostRows,
+  fetchDaemonHostRows,
   gitTemplateCheck,
   inotifyHeadroomCheck,
   piOperatorLoginCheck,
@@ -357,19 +358,9 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         // Returns null on ANY failure to read the live side. The conformance check treats null as
         // "unknown" and skips — an unreachable daemon must never read as a matching topology.
         fetchHostRows: async (input) => {
-          try {
-            const cfg = new ConfigStore().resolve();
-            const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
-            const res = await fetch(`${base}/api/doctor/host`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ seatShell: input.seatShell, ...(input.runtimes ? { runtimes: input.runtimes } : {}) }),
-            });
-            const body = res.ok ? (await res.json()) as { rows?: DoctorCheck[] } : null;
-            return { status: res.status, rows: Array.isArray(body?.rows) ? body!.rows : null };
-          } catch {
-            return null;
-          }
+          const cfg = new ConfigStore().resolve();
+          const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
+          return fetchDaemonHostRows(fetch, base, terminalAuthHeaders(), input);
         },
         fetchLiveLogicalIds: async (rigName: string): Promise<string[] | null> => {
           try {

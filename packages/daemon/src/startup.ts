@@ -214,7 +214,7 @@ import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-refer
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { guardedAgentRefFsOps } from "./domain/agent-ref-guard.js";
 import { readSeatMcpServers } from "./domain/seat-mcp-servers.js";
-import { codexConfigLayerFiles, codexConfigServerNames, mcpSpecRoots } from "./domain/codex-mcp-servers.js";
+import { DEFAULT_PATH_JUDGE_IO, codexConfigLayerFiles, codexConfigServerNames, mcpSpecRoots } from "./domain/codex-mcp-servers.js";
 import { piRetainedFieldLookups } from "./adapters/pi-retained-field-lookups.js";
 import { specSourceTrustOf } from "./domain/recorded-spec-source-judge.js";
 import { redactPaneText } from "./domain/launch-failure-report.js";
@@ -1509,6 +1509,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const hostReadiness = new HostReadinessService({
     terminal: tmuxAdapter,
     specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots() }),
+    pathJudgeIo: DEFAULT_PATH_JUDGE_IO,
     homeDir: daemonHome,
     seatRuntimeProbeOn: (path: string) => seatRuntimeProbe({ seatPath: async () => path }),
     daemonRuntimeProbe: daemonRuntimeProbe(),

@@ -12,6 +12,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { HostReadinessService, type HostReadinessIo } from "../src/domain/host-readiness.js";
 import { daemonRuntimeProbe, seatRuntimeProbe } from "../src/adapters/seat-runtime-probe.js";
 import { redactPaneText } from "../src/domain/launch-failure-report.js";
+import { DEFAULT_PATH_JUDGE_IO } from "../src/domain/codex-mcp-servers.js";
 
 const HAS_TMUX = (() => { try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); return true; } catch { return false; } })();
 
@@ -57,7 +58,7 @@ describe.skipIf(!HAS_TMUX || process.platform === "win32")("rig doctor's seat-sh
     // (without the folder the seat's .profile adds).
     const daemonEnv = { PATH: process.env.PATH, HOME: base! };
     return new HostReadinessService({
-      terminal: tmuxAdapter, io, specSourceTrust: { roots: () => [] }, homeDir: base!, startMs: 3000, finishMs: 15000,
+      terminal: tmuxAdapter, io, specSourceTrust: { roots: () => [] }, pathJudgeIo: DEFAULT_PATH_JUDGE_IO, homeDir: base!, startMs: 3000, finishMs: 15000,
       seatRuntimeProbeOn: (path) => seatRuntimeProbe({ seatPath: async () => path, daemonEnv }),
       daemonRuntimeProbe: daemonRuntimeProbe({ daemonEnv }),
     });
@@ -154,7 +155,7 @@ describe.skipIf(!HAS_TMUX || !HAS_ZSH || process.platform === "win32")("the seat
     };
     const daemonEnv = { PATH: process.env.PATH, HOME: root };
     const service = new HostReadinessService({
-      terminal: adapter, io, specSourceTrust: { roots: () => [] }, homeDir: root, startMs: 5000, finishMs: 15000,
+      terminal: adapter, io, specSourceTrust: { roots: () => [] }, pathJudgeIo: DEFAULT_PATH_JUDGE_IO, homeDir: root, startMs: 5000, finishMs: 15000,
       seatRuntimeProbeOn: (path) => seatRuntimeProbe({ seatPath: async () => path, daemonEnv }),
       daemonRuntimeProbe: daemonRuntimeProbe({ daemonEnv }),
     });

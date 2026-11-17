@@ -36,9 +36,10 @@ export const SEAT_SHELL_NOTE =
  *  stored sign-in is refused at launch. Only presence and type are read, never the file's contents. */
 export function piOperatorLoginCheck(operatorLoginDir: string | undefined, piUsed: boolean | null, facts: LocalHostFacts): HostCheck {
   const name = "pi_operator_login";
+  // With a spec, only a spec with Pi seats needs the setting, however it is set.
+  if (piUsed === false) return { name, status: "skipped", message: "The spec has no Pi seats." };
   const dir = operatorLoginDir?.trim() ?? "";
   if (dir === "") {
-    if (piUsed === false) return { name, status: "skipped", message: "The spec has no Pi seats." };
     return {
       name,
       status: piUsed ? "warn" : "skipped",
@@ -81,16 +82,39 @@ export function inotifyHeadroomCheck(facts: LocalHostFacts): HostCheck {
   }
   let watches = 0;
   let instances = 0;
-  for (const pid of facts.readdir("/proc") ?? []) {
+  // A read that fails for a process that still exists makes the count unknown (it could hide any number of watches);
+  // a process that ended between the listing and the read holds nothing now, so it is simply not counted.
+  const unreadable: string[] = [];
+  const stillThere = (pid: string) => facts.stat(`/proc/${pid}`) !== null;
+  const processes = facts.readdir("/proc");
+  if (processes === null) return { name, status: "skipped", message: "/proc could not be listed, so inotify use is unknown." };
+  for (const pid of processes) {
     if (!/^\d+$/.test(pid)) continue;
     const owner = facts.stat(`/proc/${pid}`);
     if (!owner || (facts.uid !== null && owner.uid !== facts.uid)) continue;
-    for (const fd of facts.readdir(`/proc/${pid}/fd`) ?? []) {
+    const fds = facts.readdir(`/proc/${pid}/fd`);
+    if (fds === null) {
+      if (stillThere(pid)) unreadable.push(`/proc/${pid}/fd`);
+      continue;
+    }
+    for (const fd of fds) {
       if (facts.readlink(`/proc/${pid}/fd/${fd}`) !== "anon_inode:inotify") continue;
+      const info = facts.readFile(`/proc/${pid}/fdinfo/${fd}`);
+      if (info === null) {
+        if (stillThere(pid)) unreadable.push(`/proc/${pid}/fdinfo/${fd}`);
+        continue;
+      }
       instances += 1;
-      const info = facts.readFile(`/proc/${pid}/fdinfo/${fd}`) ?? "";
       watches += info.split("\n").filter((line) => line.startsWith("inotify wd:")).length;
     }
+  }
+  if (unreadable.length > 0) {
+    return {
+      name,
+      status: "skipped",
+      message: `inotify use is unknown: ${unreadable.length} of this user's process entries could not be read.`,
+      reason: unreadable.slice(0, 10).join(", ") + (unreadable.length > 10 ? `, and ${unreadable.length - 10} more` : ""),
+    };
   }
   const used = `${watches} of ${maxWatches} watches and ${instances} of ${maxInstances} instances in use by this user`;
   if (watches >= 0.8 * maxWatches || instances >= 0.8 * maxInstances) {
@@ -151,6 +175,27 @@ export function runtimesInSpec(spec: unknown): string[] | null {
   return [...runtimes].sort();
 }
 
+/** Ask the daemon for its host rows. It sends the terminal token (`headers`, from terminalAuthHeaders), since the
+ *  route runs a login shell and sits behind the terminal guard. Null when the daemon cannot be reached. */
+export async function fetchDaemonHostRows(
+  fetchFn: (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>,
+  base: string,
+  headers: Record<string, string>,
+  input: { seatShell: boolean; runtimes: string[] | null },
+): Promise<{ status: number; rows: HostCheck[] | null } | null> {
+  try {
+    const res = await fetchFn(`${base}/api/doctor/host`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ seatShell: input.seatShell, ...(input.runtimes ? { runtimes: input.runtimes } : {}) }),
+    });
+    const body = res.ok ? (await res.json()) as { rows?: unknown } : null;
+    return { status: res.status, rows: Array.isArray(body?.rows) ? (body!.rows as HostCheck[]) : null };
+  } catch {
+    return null;
+  }
+}
+
 /** The daemon's rows. Null input means the daemon could not be asked; the rows then say so instead of passing. */
 export function daemonHostRows(response: { status: number; rows: HostCheck[] | null } | null, seatShell: boolean): HostCheck[] {
   const needs = seatShell ? "a seat's login shell, runtime paths and spec folders" : "spec folders";
@@ -159,6 +204,9 @@ export function daemonHostRows(response: { status: number; rows: HostCheck[] | n
   }
   if (response.status === 404) {
     return [{ name: "host_daemon_checks", status: "skipped", message: `This daemon has no host check (an older version), so ${needs} were not checked.`, fix: "Upgrade OpenRig, then have the operator restart the daemon." }];
+  }
+  if (response.status === 401) {
+    return [{ name: "host_daemon_checks", status: "fail", message: `The daemon refused the host check without its terminal token, so ${needs} were not checked.`, fix: "Run rig doctor where the CLI can read the daemon's terminal token (OPENRIG_TERMINAL_BEARER_TOKEN, or <OPENRIG_HOME>/terminal-token)." }];
   }
   if (response.status >= 400 || response.rows === null) {
     return [{ name: "host_daemon_checks", status: "fail", message: `The daemon's host check failed (HTTP ${response.status}), so ${needs} were not checked.` }];

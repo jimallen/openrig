@@ -7,7 +7,7 @@
 // judges a launch applies. This module is the domain core: what a probe found becomes rows, with no I/O. The probe
 // runs through `SeatShellProbeTerminal` and the daemon-side reads through `HostReadinessIo`, both ports declared here.
 import nodePath from "node:path";
-import { DEFAULT_PATH_JUDGE_IO, untrustedPathProblem, type PathJudgeIo } from "./codex-mcp-servers.js";
+import { untrustedPathProblem, type PathJudgeIo } from "./codex-mcp-servers.js";
 import type { SpecSourceTrust } from "./recorded-spec-source-judge.js";
 import type { SeatRuntimeProbe } from "./rigspec-preflight.js";
 
@@ -230,7 +230,7 @@ export async function sightRuntimes(probe: SeatRuntimeProbe, shell: RuntimeSight
  * Every folder a spec source may live in, judged by the rule a launch applies when it reads one (ownership, and no
  * component writable by group or others). A root that does not exist yet is not a problem.
  */
-export function judgeSpecRoots(trust: SpecSourceTrust, io: PathJudgeIo = trust.io ?? DEFAULT_PATH_JUDGE_IO): HostReadinessRow {
+export function judgeSpecRoots(trust: SpecSourceTrust, io: PathJudgeIo): HostReadinessRow {
   const name = "spec_source_folders";
   const roots = [...new Set([...trust.roots(), ...(trust.exactDepthRoot ? [trust.exactDepthRoot()] : [])])];
   const problems: string[] = [];
@@ -288,7 +288,8 @@ export class HostReadinessService {
       terminal: SeatShellProbeTerminal;
       io: HostReadinessIo;
       specSourceTrust: SpecSourceTrust;
-      pathJudgeIo?: PathJudgeIo;
+      /** The path judge's filesystem reads (the startup adapter passes the real ones). */
+      pathJudgeIo: PathJudgeIo;
       homeDir: string;
       /** The one runtime probe (adapters/seat-runtime-probe.ts) on a given seat PATH, and on the daemon's own PATH. */
       seatRuntimeProbeOn: (path: string) => SeatRuntimeProbe;
@@ -331,9 +332,10 @@ export class HostReadinessService {
     const { terminal, io } = this.deps;
     const startMs = this.deps.startMs ?? SEAT_SHELL_START_MS;
     const finishMs = this.deps.finishMs ?? SEAT_SHELL_FINISH_MS;
-    const name = `rigged-doctor-${io.now().toString(36)}`;
-    const dir = io.makeResultDir();
     const nonce = io.nonce();
+    // The per-run nonce names the terminal, so concurrent doctor runs never collide on a name (a clock can repeat).
+    const name = `rigged-doctor-${nonce}`;
+    const dir = io.makeResultDir();
     const shell = io.shell();
     try {
       const created = await terminal.createProbeSession(name, this.deps.homeDir);

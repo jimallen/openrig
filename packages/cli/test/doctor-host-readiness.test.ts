@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import {
+  daemonHostRows,
+  fetchDaemonHostRows,
   gitTemplateCheck,
   inotifyHeadroomCheck,
   piOperatorLoginCheck,
@@ -119,6 +121,17 @@ describe("rig doctor's host section", () => {
     expect(row?.fix).toContain("rig config set pi.operator_login_dir");
   });
 
+  it("FIX 1: the host check sends the terminal token, and a 401 reads as a failure naming it, never a pass", async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchFn = async (url: string, init: { headers: Record<string, string> }) => {
+      calls.push({ url, headers: init.headers });
+      return { ok: false, status: 401, json: async () => ({}) };
+    };
+    const response = await fetchDaemonHostRows(fetchFn, "http://127.0.0.1:7433", { Authorization: "Bearer from-terminal-auth" }, { seatShell: true, runtimes: null });
+    expect(calls).toEqual([{ url: "http://127.0.0.1:7433/api/doctor/host", headers: { Authorization: "Bearer from-terminal-auth", "content-type": "application/json" } }]);
+    expect(daemonHostRows(response, true)).toEqual([expect.objectContaining({ name: "host_daemon_checks", status: "fail", fix: expect.stringContaining("OPENRIG_TERMINAL_BEARER_TOKEN") })]);
+  });
+
   it("rig setup's checks never start a probe shell", () => {
     const fetchHostRows = vi.fn();
     const { checks, asyncChecks } = runDoctorChecks(makeDeps({ fetchHostRows }));
@@ -132,6 +145,11 @@ describe("the Pi operator login row", () => {
   const dirs = (paths: Record<string, "dir" | "file">) => localFacts({
     stat: (p) => (paths[p] ? { isFile: paths[p] === "file", isDirectory: paths[p] === "dir", uid: 1000 } : null),
   });
+  it("SCOPE: a spec with no Pi seat skips the row even when the setting is set and wrong", () => {
+    expect(piOperatorLoginCheck("/does/not/exist", false, dirs({}))).toMatchObject({ status: "skipped", message: "The spec has no Pi seats." });
+    expect(piOperatorLoginCheck("/does/not/exist", null, dirs({})).status).toBe("fail");
+  });
+
   it("is skipped for a spec with no Pi seat, and when unset with no spec", () => {
     expect(piOperatorLoginCheck(undefined, false, localFacts()).status).toBe("skipped");
     expect(piOperatorLoginCheck("", null, localFacts()).status).toBe("skipped");
@@ -173,6 +191,25 @@ describe("the inotify row", () => {
     expect(row).toMatchObject({ status: "pass", message: "inotify headroom: 20 of 1000 watches and 2 of 128 instances in use by this user." });
     expect(opened.filter((p) => /\/fd\/\d+$/.test(p))).toEqual([]);
   });
+  it("FIX 2: a process of this user whose fd list or fdinfo cannot be read makes the count unknown, never a pass", () => {
+    const base = proc(1000, 1).facts;
+    const noFdList = { ...base, readdir: (p: string) => (p === "/proc/2/fd" ? null : base.readdir(p)) };
+    expect(inotifyHeadroomCheck(noFdList)).toMatchObject({ status: "skipped" });
+    expect(inotifyHeadroomCheck(noFdList).reason).toContain("/proc/2/fd");
+    const noFdinfo = { ...base, readFile: (p: string) => (p === "/proc/1/fdinfo/5" ? null : base.readFile(p)) };
+    expect(inotifyHeadroomCheck(noFdinfo)).toMatchObject({ status: "skipped" });
+    // A process that ended between the listing and the read is not unknown: it holds nothing now.
+    // The race as it happens: pid 2 is there when listed, then gone by the time its fd list is read.
+    let pid2Stats = 0;
+    const ended = {
+      ...base,
+      readdir: (p: string) => (p === "/proc/2/fd" ? null : base.readdir(p)),
+      stat: (p: string) => (p === "/proc/2" ? (++pid2Stats === 1 ? base.stat(p) : null) : base.stat(p)),
+    };
+    expect(inotifyHeadroomCheck(ended).status).toBe("pass");
+    expect(pid2Stats).toBe(2);
+  });
+
   it("warns at 80% of either limit", () => {
     expect(inotifyHeadroomCheck(proc(25, 10).facts).status).toBe("warn");
     expect(inotifyHeadroomCheck(proc(26, 10).facts).status).toBe("pass");

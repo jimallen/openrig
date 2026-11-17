@@ -1,5 +1,5 @@
 // workspaces-o9o.11: the domain core of `rig doctor`'s host rows, through in-memory fakes of its ports.
-import { statSync, type Stats } from "node:fs";
+import { readFileSync, statSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
@@ -174,6 +174,14 @@ function judgeIo(over: Record<string, { mode?: number; uid?: number } | "missing
   };
 }
 
+describe("FIX 4: the domain core reads the filesystem only through its ports", () => {
+  it("imports no filesystem default: the path judge's reads come from the caller", () => {
+    const source = readFileSync(new URL("../src/domain/host-readiness.ts", import.meta.url), "utf8");
+    expect(source).not.toMatch(/DEFAULT_PATH_JUDGE_IO/);
+    expect(source).not.toMatch(/from "node:fs"/);
+  });
+});
+
 describe("spec folders: judged by the rule a launch applies to a spec source", () => {
   const trust = { roots: () => ["/h/.agents-release", "/h/.openrig/specs"], exactDepthRoot: () => "/h/.openrig/shared-docs/rigs" };
 
@@ -230,6 +238,7 @@ function fakeTerminal(onSend?: () => void, create: { ok: true } | { ok: false; c
 /** The one runtime probe, faked: the seat finds /seat/pi, the daemon /daemon/pi, both 1.0. */
 function probes() {
   return {
+    pathJudgeIo: judgeIo({ "/nowhere": "missing" }),
     seatRuntimeProbeOn: vi.fn((_path: string) => async (name: string) => {
       if (name !== "pi") throw Object.assign(new Error("no"), { code: "ENOENT" });
       return { path: "/seat/pi", output: "pi 1.0\n" };
@@ -303,6 +312,18 @@ describe("the probe service", () => {
     await expect(stuck.seatPath()).rejects.toThrow(/did not run a typed command/);
   });
 
+  it("FIX 3: two probes started in the same millisecond use different terminal names", async () => {
+    const names: string[] = [];
+    let n = 0;
+    const terminal = { ...fakeTerminal(), createProbeSession: async (name: string) => { names.push(name); return { ok: true as const }; } };
+    // One shared fake clock: both probes start at the same instant (the sleeps advance it, so each times out).
+    const io = { ...fakeIo(new Map()), nonce: () => (++n).toString(16).padStart(32, "0") };
+    const service = new HostReadinessService({ terminal, io, specSourceTrust: trustAllMissing, homeDir: "/h", startMs: 1, ...probes() });
+    await Promise.all([service.probeSeatShell(), service.probeSeatShell()]);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+  });
+
   it("is unavailable, and types nothing, when no probe terminal can be made", async () => {
     const terminal = fakeTerminal(undefined, { ok: false, code: "guard_target_managed", message: "no" });
     const service = new HostReadinessService({ terminal, io: fakeIo(new Map()), specSourceTrust: trustAllMissing, homeDir: "/h", ...probes() });
@@ -342,6 +363,21 @@ describe("POST /api/doctor/host", () => {
     expect((await a.request("/api/doctor/host", { method: "POST", body: "{" })).status).toBe(400);
     expect((await a.request("/api/doctor/host", { method: "POST", body: JSON.stringify({ seatShell: "yes" }) })).status).toBe(400);
     expect((await a.request("/api/doctor/host", { method: "POST", body: JSON.stringify({ runtimes: [1] }) })).status).toBe(400);
+  });
+
+  it("FIX 1: with a terminal token configured, a request without it is refused before anything runs; with it, it runs", async () => {
+    const report = vi.fn(async () => ({ rows: [] }));
+    const a = new Hono();
+    a.use("*", async (c, next) => { c.set("hostReadiness" as never, { report } as never); c.set("terminalBearerToken" as never, "t0k3n-for-the-test" as never); await next(); });
+    a.route("/api/doctor/host", hostReadinessRoutes());
+    const refused = await a.request("/api/doctor/host", { method: "POST", body: "{}" });
+    expect(refused.status).toBe(401);
+    expect(report).not.toHaveBeenCalled();
+    const wrong = await a.request("/api/doctor/host", { method: "POST", body: "{}", headers: { Authorization: "Bearer nope" } });
+    expect(wrong.status).toBe(401);
+    const ok = await a.request("/api/doctor/host", { method: "POST", body: "{}", headers: { Authorization: "Bearer t0k3n-for-the-test" } });
+    expect(ok.status).toBe(200);
+    expect(report).toHaveBeenCalledTimes(1);
   });
 
   it("answers 503 when the daemon has no host readiness service", async () => {
