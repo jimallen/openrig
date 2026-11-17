@@ -21,8 +21,14 @@ export interface PluginCopyClaims {
   claimants(targetPath: string): string[];
   /** Make `owner`'s claims inside `dir` exactly `targets`. */
   setClaims(dir: string, owner: string, targets: ReadonlySet<string>, at: string): void;
-  /** Drop every claim on a file that was removed. */
-  forgetTarget(targetPath: string): void;
+  /** Drop `owner`'s claim on a file, never another seat's (o9o.25 review r2). */
+  forgetClaim(targetPath: string, owner: string): void;
+  /**
+   * Run `fn` holding the lock for one plugin target, so a projection's copy, its claims, the check and the unlink are one
+   * unit against any other projection of the same target (o9o.25 review r2). The SQLite adapter takes the database's
+   * write lock (BEGIN IMMEDIATE), which also serializes another process using the same database.
+   */
+  withTargetLock<T>(dir: string, fn: () => T): T;
 }
 
 /** The filesystem the prune needs. Without lstat or removeFile nothing is removed. */
@@ -80,7 +86,7 @@ export function pruneDroppedPluginFiles(input: {
       const last = index === parts.length - 1;
       if (last ? kind !== "file" : kind !== "directory") { verdict = `${current} is not a ${last ? "regular file" : "directory"}`; break; }
     }
-    if (verdict === "gone") { ledger.forget(targetPath); claims.forgetTarget(targetPath); continue; }
+    if (verdict === "gone") { ledger.forget(targetPath); claims.forgetClaim(targetPath, owner); continue; }
     if (verdict !== "file") {
       warnings.push(`plugin_copy_prune_skipped: ${targetPath}: ${verdict}; nothing was removed through it`);
       continue;
@@ -89,9 +95,11 @@ export function pruneDroppedPluginFiles(input: {
       warnings.push(`plugin_copy_prune_kept: ${targetPath} is no longer in the plugin's source but was changed since OpenRig wrote it, so it was kept`);
       continue;
     }
+    // Re-check right before the unlink: a claim made since the first check keeps the file (o9o.25 review r2).
+    if (claims.claimants(targetPath).length > 0) continue;
     fs.removeFile(targetPath);
     ledger.forget(targetPath);
-    claims.forgetTarget(targetPath);
+    claims.forgetClaim(targetPath, owner);
   }
   return warnings;
 }

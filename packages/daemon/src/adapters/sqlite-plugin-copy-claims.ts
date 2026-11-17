@@ -32,7 +32,13 @@ export class SqlitePluginCopyClaims implements PluginCopyClaims {
     })();
   }
 
-  forgetTarget(targetPath: string): void {
-    this.db.prepare(`DELETE FROM plugin_copy_claims WHERE target_path = ?`).run(targetPath);
+  forgetClaim(targetPath: string, owner: string): void {
+    this.db.prepare(`DELETE FROM plugin_copy_claims WHERE target_path = ? AND owner_node_id = ?`).run(targetPath, owner);
+  }
+
+  /** BEGIN IMMEDIATE: the database's write lock for the whole unit, so no other projection (in this daemon or in another
+   *  process using the same database) can claim, write or prune in between. Nested calls become savepoints. */
+  withTargetLock<T>(_dir: string, fn: () => T): T {
+    return this.db.transaction(fn).immediate();
   }
 }

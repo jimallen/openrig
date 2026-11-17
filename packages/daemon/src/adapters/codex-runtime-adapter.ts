@@ -781,8 +781,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     try {
       if (isDir && this.fs.listFiles) {
         const plugin = entry.category === "plugin";
+        const fsListFiles = this.fs.listFiles.bind(this.fs);
+        const listFiles = (dir: string): string[] => fsListFiles(dir);
+        const copy = () => {
         const wanted = new Set<string>();
-        for (const file of this.fs.listFiles(entry.absolutePath)) {
+        for (const file of listFiles(entry.absolutePath)) {
           const src = nodePath.join(entry.absolutePath, file);
           const dest = nodePath.join(targetDir, file);
           const content = this.fs.readFile(src);
@@ -803,6 +806,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         }
         // workspaces-o9o.25: drop from the seat copy what the source dropped, only what OpenRig wrote and still unchanged.
         if (plugin) warnings.push(...pruneDroppedPluginFiles({ cwd, targetDir, wanted, owner, ledger: this.projectionLedger, claims: this.pluginCopyClaims, fs: this.fs }));
+        };
+        // The copy, its claims and the prune of a plugin target run as one unit under that target's lock (o9o.25 review r2).
+        if (plugin && this.pluginCopyClaims) this.pluginCopyClaims.withTargetLock(targetDir, copy); else copy();
       } else {
         const content = this.fs.readFile(entry.absolutePath);
         const destFile = nodePath.join(targetDir, nodePath.basename(entry.absolutePath));
