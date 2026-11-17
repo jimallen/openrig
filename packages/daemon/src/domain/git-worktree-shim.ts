@@ -214,7 +214,9 @@ const sha256 = (body: string | Uint8Array) => createHash("sha256").update(body).
  * Never through a symlink: rig-bin or rig-bin/git being a symlink (or not a directory / not a regular file) refuses the
  * refresh and nothing is written. The current file is read without following a link, and a write is atomic
  * (ShimFiles.writeAtomically), so a seat mid-exec never sees a torn script. OPENRIG_HOME itself is not checked, the same
- * anchor rule as the openrig-core refresh. Residual, accepted by Jim on 2026-11-16 for that refresh (o9o.17): rig-bin
+ * anchor rule as the openrig-core refresh. Residual, the one o9o.17 accepted on 2026-11-16 by OpenRig's 15-minute
+ * auto-answer (the question to Jim went unanswered, so OpenRig took its Recommended option, "Accept the residual", at
+ * 18:21Z; queue record qa-f5c084b1679e94516e44aff1e88a8361), which counts as Jim's go under his 2026-11-08 rule: rig-bin
  * swapped for a symlink between the check and the mkdir, open or rename that follows; Node has no openat or renameat on
  * a folder handle, and it takes a concurrent process of the same user that could write the shim directly.
  */
