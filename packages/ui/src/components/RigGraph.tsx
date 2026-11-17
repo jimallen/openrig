@@ -327,7 +327,7 @@ export function RigGraph({
       {reconnecting && (
         <div className="absolute top-spacing-4 right-spacing-4 z-20">
           <Alert>
-            <AlertDescription className="text-warning">Live updates disconnected from daemon - reconnecting...</AlertDescription>
+            <AlertDescription className="text-warning-ink">Live updates disconnected from daemon - reconnecting...</AlertDescription>
           </Alert>
         </div>
       )}

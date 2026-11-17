@@ -138,6 +138,22 @@ describe("RigStatusControl — compact modal-launch button (no inline card)", ()
     expect(screen.getByTestId("seats-r9").textContent).toBe("5/7");
   });
 
+  // workspaces-o9o.113: the control's box was a hard-coded white, so in the dark theme its seat count and button read
+  // light-on-light. It takes the theme's surface and text colours, in every state.
+  it("the control's box follows the theme (surface token, never a hard-coded white), loading and loaded", async () => {
+    let answer: (value: unknown) => void = () => {};
+    mockFetch.mockImplementation((url: unknown) =>
+      String(url).includes("/status") ? new Promise((resolve) => { answer = resolve; }) : jsonResponse({}));
+    renderWithClient(<RigStatusControl rigId="r9" rigName="demo" />);
+    const classesOf = () => screen.getByTestId("rig-status-control-r9").className.split(/\s+/);
+    expect(classesOf()).toContain("bg-surface-lowest");
+    expect(classesOf().filter((c) => c.startsWith("bg-white"))).toEqual([]);
+    await act(async () => { answer({ ok: true, status: 200, json: async () => ({ ...RIG_STATUS_UP, status: "partial", seatsRunning: 5 }) }); });
+    await waitFor(() => expect(screen.getByTestId("rig-primary-action-r9")).toBeTruthy());
+    expect(classesOf()).toContain("bg-surface-lowest");
+    expect(classesOf().filter((c) => c.startsWith("bg-white"))).toEqual([]);
+  });
+
   it("clicking the primary action opens LaunchRecoveryModal (plan-before-mutation fetch fires)", async () => {
     routeFetch({ ...RIG_STATUS_UP, status: "down", seatsRunning: 0, recoverable: true });
     renderWithClient(<RigStatusControl rigId="r9" rigName="demo" />);

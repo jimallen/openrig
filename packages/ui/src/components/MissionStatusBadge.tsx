@@ -36,7 +36,7 @@ const toneClass: Record<MissionStatus, string> = {
   active: "border-success text-success",
   paused: "border-outline text-on-surface-variant",
   shipped: "border-secondary text-secondary",
-  blocked: "border-warning text-warning",
+  blocked: "border-warning text-warning-ink",
   idle: "border-outline-variant text-on-surface-variant",
   empty: "border-outline-variant text-on-surface-variant",
   draft: "border-outline text-on-surface-variant",

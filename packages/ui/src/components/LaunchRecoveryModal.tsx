@@ -44,8 +44,8 @@ const verdictPip: Record<SeatIntendedAction, StatusPipStatus> = {
 const tokenTone: Record<SeatTokenState, string> = {
   present: "text-success",
   missing: "text-tertiary font-bold",
-  stale: "text-warning font-bold",
-  unverified: "text-warning",
+  stale: "text-warning-ink font-bold",
+  unverified: "text-warning-ink",
 };
 
 export interface LaunchRecoveryModalProps {
@@ -205,7 +205,7 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
         ) : null}
 
         {failingSeats.length > 0 && policy === "restore-original" && !refusal ? (
-          <p data-testid="launch-will-fail-note" className="font-mono text-[9px] leading-relaxed text-warning">
+          <p data-testid="launch-will-fail-note" className="font-mono text-[9px] leading-relaxed text-warning-ink">
             {failingSeats.length} seat(s) will fail and be reported as failed ({failingSeats.map((n) => n.logicalId).join(", ")}); the
             other seats are restored.
           </p>

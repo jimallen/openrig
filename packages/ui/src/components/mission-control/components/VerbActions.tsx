@@ -87,7 +87,7 @@ const verbToneClass: Record<MissionControlVerb, { idle: string; active: string }
     active: "border-on-surface bg-inverse-surface text-background",
   },
   hold: {
-    idle: "border-warning text-warning hover:bg-warning hover:text-white",
+    idle: "border-warning text-warning-ink hover:bg-warning hover:text-white",
     active: "border-warning bg-warning text-white",
   },
   drop: {

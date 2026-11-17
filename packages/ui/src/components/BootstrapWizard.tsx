@@ -165,7 +165,7 @@ export function BootstrapWizard() {
           <div className="space-y-spacing-1 mb-spacing-6" data-testid="stage-list">
             {planResult.stages.map((s) => (
               <div key={s.stage} className="flex items-center gap-spacing-3 text-label-sm font-mono" data-testid="stage-row">
-                <span className={s.status === "ok" ? "text-success" : s.status === "blocked" ? "text-warning" : "text-foreground-muted"}>
+                <span className={s.status === "ok" ? "text-success" : s.status === "blocked" ? "text-warning-ink" : "text-foreground-muted"}>
                   {s.status.toUpperCase()}
                 </span>
                 <span>{s.stage}</span>
@@ -201,7 +201,7 @@ export function BootstrapWizard() {
                         setSelectedKeys(next);
                       }}
                     />
-                    <span className={a.classification === "manual_only" ? "text-warning" : ""}>{a.requirementName}</span>
+                    <span className={a.classification === "manual_only" ? "text-warning-ink" : ""}>{a.requirementName}</span>
                     {a.commandPreview && <span className="text-foreground-muted">{a.commandPreview}</span>}
                   </label>
                 ))}
@@ -215,7 +215,7 @@ export function BootstrapWizard() {
 
           {/* Blocked warning */}
           {isPlanBlocked && (
-            <div className="text-warning text-label-sm mb-spacing-4" data-testid="blocked-warning">
+            <div className="text-warning-ink text-label-sm mb-spacing-4" data-testid="blocked-warning">
               Manual requirements must be resolved before bootstrap can proceed.
             </div>
           )}
@@ -224,7 +224,7 @@ export function BootstrapWizard() {
           {planResult.warnings.length > 0 && (
             <div className="mb-spacing-4">
               {planResult.warnings.map((w, i) => (
-                <div key={i} className="text-warning text-label-sm">{w}</div>
+                <div key={i} className="text-warning-ink text-label-sm">{w}</div>
               ))}
             </div>
           )}
@@ -286,7 +286,7 @@ export function BootstrapWizard() {
             {planResult.status === "completed" ? "BOOTSTRAP COMPLETE" : "BOOTSTRAP PARTIAL"}
           </h3>
           <div className="text-label-sm font-mono space-y-spacing-1 mb-spacing-4">
-            <div>Status: <span className={planResult.status === "completed" ? "text-success" : "text-warning"}>{planResult.status.toUpperCase()}</span></div>
+            <div>Status: <span className={planResult.status === "completed" ? "text-success" : "text-warning-ink"}>{planResult.status.toUpperCase()}</span></div>
             {(planResult as { rigId?: string }).rigId && (
               <div data-testid="result-rig-id">Rig: {(planResult as { rigId?: string }).rigId}</div>
             )}

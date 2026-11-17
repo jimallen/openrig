@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Amber text is readable on the light theme (workspaces-o9o.113)
+
+- Symptom: amber text used the brand amber (`--warning`, hsl(40 90% 50%)), which measures 2.05:1 on white, below WCAG AA's 4.5:1 at any size. That covered the "partial" status badge, the restore modal's "will fail" note and stale/unverified token tones, the launcher's notes, and alert and inline warning text: 22 uses in 11 files. In the dark theme, the rig page's status control was a hard-coded white box, so its badge read 1.68:1.
+- Now amber text uses its own ink, `--warning-ink` (`text-warning-ink`): hsl(40 90% 27%) on light, which clears 4.5:1 on every light surface (worst 4.54:1, on surface-container-highest), and the brand amber on dark (10.4:1). Borders and fills keep the brand amber (Jim, 2026-11-17). The status control takes the theme's surface colour in every state.
+- A test reads the tokens from `globals.css` and fails if the ink drops below 4.5:1 on any surface of either theme, and a guard fails if any source file uses `text-warning` as a text colour again.
+
 ### A rig page says when its status cannot be read, and offers a retry (workspaces-o9o.114)
 
 - Symptom: when `GET /api/rigs/:id/status` failed (a 404 or 500), or answered something that is not a rig status, the rig page's status control said "Loading rig status…" for good, so a failure read as a slow load.

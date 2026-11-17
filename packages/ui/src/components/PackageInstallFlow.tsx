@@ -112,7 +112,7 @@ function StepIndicator({ currentStep, errorAtStep }: { currentStep: Step; errorA
 function policyStatusColor(status: string): string {
   switch (status) {
     case "approved": return "text-success";
-    case "rejected": return "text-warning";
+    case "rejected": return "text-warning-ink";
     case "deferred": return "text-foreground-muted";
     case "conflict": return "text-destructive";
     case "noop": return "text-foreground-muted/50";
@@ -412,7 +412,7 @@ export function PackageInstallFlow() {
             <span>Conflicts: <span className="font-mono text-destructive" data-testid="plan-conflicts">{planResult.conflicts}</span></span>
             <span>No-ops: <span className="font-mono" data-testid="plan-noops">{planResult.noOps}</span></span>
             {planResult.rejected > 0 && (
-              <span>Rejected: <span className="font-mono text-warning" data-testid="plan-rejected">{planResult.rejected}</span></span>
+              <span>Rejected: <span className="font-mono text-warning-ink" data-testid="plan-rejected">{planResult.rejected}</span></span>
             )}
           </div>
 

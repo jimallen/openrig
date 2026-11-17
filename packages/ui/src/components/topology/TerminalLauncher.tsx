@@ -411,7 +411,7 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                                 <>
                                   <span className="block font-mono text-[10px] text-on-surface">{vlive} live</span>
                                   {vabsent > 0 ? (
-                                    <span className="block font-mono text-[8px] text-warning">{vabsent} absent</span>
+                                    <span className="block font-mono text-[8px] text-warning-ink">{vabsent} absent</span>
                                   ) : null}
                                 </>
                               )}
@@ -453,7 +453,7 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                   Auto grid · {layout.cols}×{layout.rows} · {layout.shown} pane{layout.shown === 1 ? "" : "s"}
                 </div>
                 {layout.paged > 0 ? (
-                  <div className="font-mono text-[9px] text-warning mt-0.5">{layout.paged} more paged · raise the show-limit in settings</div>
+                  <div className="font-mono text-[9px] text-warning-ink mt-0.5">{layout.paged} more paged · raise the show-limit in settings</div>
                 ) : (
                   <div className="font-mono text-[9px] text-on-surface-variant mt-0.5">Fits the show-limit ({PANE_CAP}) · no paging</div>
                 )}
@@ -474,7 +474,7 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                   {absent.length > 0 ? (
                     <>
                       {" · "}
-                      <span className="text-warning" data-testid="launcher-honest-partial">
+                      <span className="text-warning-ink" data-testid="launcher-honest-partial">
                         {absent.length} absent ({absent.map((s) => `${s.session.split("@")[0]}: ${s.reason}`).join(", ")})
                       </span>
                     </>
@@ -493,7 +493,7 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                           data-testid={d.ok ? "launcher-open-result" : "launcher-open-zero"}
                         >
                           {d.headline}
-                          {d.disclosure ? <span className="block text-warning">{d.disclosure}</span> : null}
+                          {d.disclosure ? <span className="block text-warning-ink">{d.disclosure}</span> : null}
                         </div>
                       );
                     })()

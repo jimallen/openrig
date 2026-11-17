@@ -46,7 +46,9 @@ describe("StatusPip (Phase 1 primitive)", () => {
     );
     const root = container.querySelector("[data-testid='sp-w-pill']") as HTMLElement;
     expect(root.className).toContain("border-warning");
-    expect(root.className).toContain("text-warning");
+    // workspaces-o9o.113: amber text uses the readable ink; the border keeps the brand amber.
+    expect(root.className.split(/\s+/)).toContain("text-warning-ink");
+    expect(root.className.split(/\s+/)).not.toContain("text-warning");
   });
 
   it("renders label in dot variant when provided", () => {

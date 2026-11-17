@@ -244,7 +244,7 @@ export function ImportFlow({ onBack }: ImportFlowProps = {}) {
         <WorkflowSection title="Preflight Results" description="Review warnings before you instantiate the rig into live runtime sessions.">
           {warnings.length > 0 && (
             <Alert className="mb-spacing-4" data-testid="preflight-warnings">
-              <AlertDescription className="text-warning">
+              <AlertDescription className="text-warning-ink">
                 <div className="text-label-md uppercase mb-spacing-1">WARNINGS</div>
                 {warnings.map((w, i) => <div key={i}>— {w}</div>)}
               </AlertDescription>
@@ -317,7 +317,7 @@ export function ImportFlow({ onBack }: ImportFlowProps = {}) {
         <div data-testid="import-errors">
           {warnings.length > 0 && (
             <Alert className="mb-spacing-2" data-testid="error-warnings">
-              <AlertDescription className="text-warning">
+              <AlertDescription className="text-warning-ink">
                 <div className="text-label-md uppercase mb-spacing-1">WARNINGS</div>
                 {warnings.map((w, i) => <div key={i}>— {w}</div>)}
               </AlertDescription>

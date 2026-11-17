@@ -124,8 +124,8 @@ describe("ImportFlow", () => {
       const warningsEl = screen.getByTestId("preflight-warnings");
       expect(warningsEl.textContent).toContain("layout hint ignored");
       expect(warningsEl.textContent).toContain("cwd not found");
-      // Warnings should use text-warning class
-      expect(warningsEl.querySelector(".text-warning")).toBeDefined();
+      // Warnings use the amber text ink (workspaces-o9o.113). toBeDefined() passed for a null match, so this checks the element.
+      expect(warningsEl.querySelector(".text-warning-ink")).not.toBeNull();
     });
   });
 
@@ -359,9 +359,9 @@ describe("ImportFlow", () => {
     fireEvent.click(screen.getByTestId("preflight-btn"));
 
     await waitFor(() => {
-      // Warnings in text-warning
+      // Warnings in the amber text ink (workspaces-o9o.113); not.toBeNull, since toBeDefined() passed for a null match.
       const warnEl = screen.getByTestId("error-warnings");
-      expect(warnEl.querySelector(".text-warning")).toBeDefined();
+      expect(warnEl.querySelector(".text-warning-ink")).not.toBeNull();
       expect(warnEl.textContent).toContain("stale sessions");
       // Errors in text-destructive
       const errEl = screen.getByTestId("import-errors");

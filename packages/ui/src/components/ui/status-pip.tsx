@@ -38,7 +38,7 @@ const tonePill: Record<StatusPipStatus, string> = {
   active: "border-success text-success",
   running: "border-success text-success",
   stopped: "border-outline text-on-surface-variant",
-  warning: "border-warning text-warning",
+  warning: "border-warning text-warning-ink",
   error: "border-tertiary text-tertiary",
   info: "border-secondary text-secondary",
 };

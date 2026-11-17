@@ -335,9 +335,12 @@ export const launchPlanByRig: Record<string, LaunchPlan> = {
     snapshot: { id: "snap_b_087", kind: "auto-pre-down", createdAt: "2025-09-01T00:55:00.000Z" },
     wouldCaptureCurrentState: true,
     mutated: false,
+    // workspaces-o9o.113: a stale and an unverified token, and a seat restore reports failed, so the modal's amber text
+    // (the token tones and the "will fail" note) renders in the twin.
     nodes: [
-      { logicalId: "comms.lead", intendedAction: "resume-original", tokenState: "present", freshRequired: false },
-      { logicalId: "comms.relay", intendedAction: "resume-original", tokenState: "present", freshRequired: false },
+      { logicalId: "comms.lead", intendedAction: "resume-original", tokenState: "unverified", freshRequired: false },
+      { logicalId: "comms.relay", intendedAction: "resume-original", tokenState: "stale", freshRequired: false },
+      { logicalId: "comms.archive", intendedAction: "awaiting-decision", restoreStatus: "failed", tokenState: "present", freshRequired: false, reason: "Node comms.archive not found in rig" },
       { logicalId: "comms.drafter", intendedAction: "fresh-primed", tokenState: "missing", freshRequired: true, reason: "no token recorded", warning: BRAVO_LEASE_WARNING },
     ],
   },

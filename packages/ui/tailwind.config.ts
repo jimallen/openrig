@@ -66,7 +66,8 @@ const config: Config = {
 
         /* Status */
         success: "hsl(var(--success))",
-        warning: "hsl(var(--warning))",
+        // workspaces-o9o.113: text-warning-ink for amber TEXT (readable on every surface); border/bg-warning keep the brand amber.
+        warning: { DEFAULT: "hsl(var(--warning))", ink: "hsl(var(--warning-ink))" },
         accent: "hsl(var(--secondary))",
 
         /* shadcn compat */

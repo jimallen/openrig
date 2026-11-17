@@ -27,7 +27,7 @@ export const statusToPip: Record<RigAggStatus, StatusPipStatus> = {
 
 export const statusBadgeTone: Record<RigAggStatus, string> = {
   up: "border-success text-success",
-  partial: "border-warning text-warning",
+  partial: "border-warning text-warning-ink",
   down: "border-stone-400 text-stone-500",
   blocked: "border-tertiary text-tertiary",
   unknown: "border-stone-300 text-stone-400",
