@@ -211,9 +211,37 @@ describe("o9o.61: opts.env cannot route a test daemon to live state", () => {
   });
 
   it("testDaemonEnv keeps a PATH stub (the simulator's), and a privateHcSocket outside the test home is refused", () => {
-    expect(testDaemonEnv({ home: "/tmp/h", env: { PATH: "/stub:/usr/bin" } }, 1)["PATH"]).toBe("/stub:/usr/bin");
-    expect(testDaemonEnv({ home: "/tmp/h", privateHcSocket: "/tmp/h/core.sock" }, 1)["HC_SOCKET"]).toBe("/tmp/h/core.sock");
-    expect(() => testDaemonEnv({ home: "/tmp/h", privateHcSocket: "/run/user/1000/herdr-core/default.sock" }, 1)).toThrow(/not under the test home/);
-    expect(() => testDaemonEnv({ home: "/tmp/h", privateHcSocket: "/tmp/h-other/core.sock" }, 1)).toThrow(/not under the test home/);
+    const home = tempDir("o9o61-h-");
+    expect(testDaemonEnv({ home, env: { PATH: "/stub:/usr/bin" } }, 1)["PATH"]).toBe("/stub:/usr/bin");
+    expect(testDaemonEnv({ home, privateHcSocket: path.join(home, "core.sock") }, 1)["HC_SOCKET"]).toBe(path.join(home, "core.sock"));
+    expect(() => testDaemonEnv({ home, privateHcSocket: "/run/user/1000/herdr-core/default.sock" }, 1)).toThrow(/not under the test home/);
+    expect(() => testDaemonEnv({ home, privateHcSocket: `${home}-other/core.sock` }, 1)).toThrow(/not under the test home/);
   });
+
+  // Review of 2529eac37 (verify-qa2): the containment was lexical, so a folder inside the home that is a symlink to an outside one
+  // carried the socket out. Containment is now judged on real paths, for the socket itself when it exists, else its folder.
+  it.each([
+    { via: "a symlinked folder inside the home", place: (home: string, outside: string) => {
+      fs.symlinkSync(outside, path.join(home, "linked"));
+      return path.join(home, "linked", "fake-core.sock");
+    } },
+    { via: "a socket inside the home that is a symlink to an outside one", place: (home: string, outside: string) => {
+      fs.symlinkSync(path.join(outside, "fake-core.sock"), path.join(home, "core.sock"));
+      return path.join(home, "core.sock");
+    } },
+  ])("a privateHcSocket that reaches an outside core through $via is refused, and that core is never contacted", async ({ place }) => {
+    const outside = tempDir("o9o61-outside-");
+    const sentinel = await fakeCore(path.join(outside, "fake-core.sock"));
+    const home = tempDir("o9o61-home-");
+    let refused = false;
+    try {
+      const d = await spawnDaemonEntrypoint({ home, privateHcSocket: place(home, outside), readyTimeoutMs: READY_MS });
+      daemons.push(d);
+      await waitFor(() => sentinel.connections() > 0, 20_000);
+    } catch (error) {
+      expect(String(error)).toMatch(/not under the test home/);
+      refused = true;
+    }
+    expect({ refused, outsideConnections: sentinel.connections() }).toEqual({ refused: true, outsideConnections: 0 });
+  }, 240_000);
 });
