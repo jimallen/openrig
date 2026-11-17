@@ -1,5 +1,5 @@
 import { answerDialogKeys } from "./hc-dialog-input.js";
-import { pruneDroppedPluginFiles, type ProjectionLedger } from "../domain/plugin-copy-prune.js";
+import { pruneDroppedPluginFiles, type PluginCopyClaims, type ProjectionLedger } from "../domain/plugin-copy-prune.js";
 import { claudeForkHomeRefusal } from "../domain/claude-config-dir.js";
 import { findClaudeTranscriptByToken } from "../domain/continuity-policy-materializer.js";
 import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
@@ -88,6 +88,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
    *  records what we last wrote (→ operator-vs-stale discrimination). No-op by default. */
   private recordProjection: (targetPath: string, content: string) => void;
   private projectionLedger?: ProjectionLedger;
+  private pluginCopyClaims?: PluginCopyClaims;
 
   constructor(deps: {
     tmux: TmuxAdapter;
@@ -115,6 +116,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     /** workspaces-o9o.25: what OpenRig recorded writing, so a seat's plugin copy can drop what its source dropped.
      *  Absent: nothing is removed. */
     projectionLedger?: ProjectionLedger;
+    /** workspaces-o9o.25 (verify-sec review): which seats still project each plugin file. Absent: nothing is removed. */
+    pluginCopyClaims?: PluginCopyClaims;
   }) {
     this.tmux = deps.tmux;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
@@ -132,6 +135,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     this.rigBodyGuardScript = deps.rigBodyGuardScript ?? claudeRigBodyGuardScriptPath();
     this.recordProjection = deps.recordProjection ?? (() => {});
     this.projectionLedger = deps.projectionLedger;
+    this.pluginCopyClaims = deps.pluginCopyClaims;
   }
 
   async listInstalled(binding: NodeBinding): Promise<InstalledResource[]> {
@@ -158,7 +162,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
 
       try {
-        const didProject = this.projectEntry(entry, binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, warnings);
+        const didProject = this.projectEntry(entry, binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, warnings, binding.nodeId);
         if (didProject) {
           projected.push(entry.effectiveId);
         } else {
@@ -560,7 +564,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return { ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" };
   }
 
-  private projectEntry(entry: ProjectionEntry, cwd: string, managedBlockFile: ClaudeManagedBlockFile, warnings: string[]): boolean {
+  private projectEntry(entry: ProjectionEntry, cwd: string, managedBlockFile: ClaudeManagedBlockFile, warnings: string[], owner?: string): boolean {
     if (entry.category === "runtime_resource" && this.applyRuntimeResource(entry, cwd)) {
       return true;
     }
@@ -616,7 +620,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         if (plugin) this.recordProjection(dest, content);
       }
       // workspaces-o9o.25: drop from the seat copy what the source dropped, only what OpenRig wrote and still unchanged.
-      if (plugin) warnings.push(...pruneDroppedPluginFiles({ cwd, targetDir, wanted, ledger: this.projectionLedger, fs: this.fs }));
+      if (plugin) warnings.push(...pruneDroppedPluginFiles({ cwd, targetDir, wanted, owner, ledger: this.projectionLedger, claims: this.pluginCopyClaims, fs: this.fs }));
     } else {
       // File-shaped: single file copy (subagents, hooks as YAML files)
       const content = this.fs.readFile(entry.absolutePath);

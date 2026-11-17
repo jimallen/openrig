@@ -21,7 +21,8 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 - Symptom: a seat's copy of a plugin (`.claude/plugins/<id>`, `.codex/plugins/<id>`) kept every file the plugin's source no longer has, so a removed helper lingered in seat folders even after o9o.17 made the source copy exact.
 - Now projection removes such a file, narrowly, because a delete in a seat folder cannot be undone: only a file OpenRig's projection manifest (`projection_manifest`) records writing there, only while it still holds exactly the bytes OpenRig wrote (an operator's edit is kept, and a warning names it), and never through a link (every folder below the seat folder must be a real directory and the file a regular file). Files OpenRig never wrote are never touched.
-- Every plugin file a projection writes or confirms is now recorded, so a seat copy made before this change is adopted at its next projection; a file that was already stale before then is not known to be OpenRig's and stays.
+- Seats can share a working folder, and so a plugin copy: each seat's projection now records which files it projects (a new table, `plugin_copy_claims`, migration 132), and a file is removed only by a seat that projected it before and no longer does, and only when no other seat still projects it. A file stays while any seat sharing the folder still wants it (verify-sec review).
+- Every plugin file a projection writes or confirms is recorded, so a seat copy made before this change is adopted at its next projection; a file that was already stale before then has no claim and stays.
 
 ### The plugin refresh replaces the whole tree, so a full disk cannot leave a mixed copy (workspaces-o9o.55)
 

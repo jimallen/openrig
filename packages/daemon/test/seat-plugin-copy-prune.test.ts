@@ -12,6 +12,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { ProjectionManifestStore } from "../src/domain/projection-manifest-store.js";
+import { SqlitePluginCopyClaims } from "../src/adapters/sqlite-plugin-copy-claims.js";
 import { hashContent } from "../src/domain/conflict-detector.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { ProjectionEntry } from "../src/domain/projection-planner.js";
@@ -60,14 +61,14 @@ function world(runtime: Runtime) {
   const deps = {
     fsOps, tmux: {} as TmuxAdapter,
     recordProjection: (targetPath: string, content: string) => store.record({ targetPath, lastHash: hashContent(content), writtenAt: "2026-11-17T06:00:00Z", category: "plugin" }),
-    projectionLedger: store,
+    projectionLedger: store, pluginCopyClaims: new SqlitePluginCopyClaims(db),
   };
   const adapter = runtime === "claude" ? new ClaudeCodeAdapter(deps) : new CodexRuntimeAdapter(deps);
   const entry: ProjectionEntry = { category: "plugin", effectiveId: "openrig-core", sourceSpec: "base", sourcePath: root, resourcePath: "source",
     absolutePath: source, classification: "safe_projection", pluginType: runtime };
   const project = async () => {
     const result = await adapter.project({ entries: [entry], runtime: adapter.runtime, cwd, startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
-      { cwd } as NodeBinding);
+      { cwd, nodeId: "node-A" } as NodeBinding);
     expect(result.failed).toEqual([]);
     return result;
   };
@@ -129,5 +130,46 @@ describe.each(["claude", "codex"] as const)("o9o.25 (%s): the seat's plugin copy
     w.drop("hooks/scripts/dropped.cjs");
     await w.project();
     expect(fs.readFileSync(path.join(outside, "scripts/dropped.cjs"), "utf8")).toBe("dropped\n");
+  });
+});
+
+describe.each(["claude", "codex"] as const)("o9o.25 review (%s): seats sharing a cwd never delete a file another seat still projects", (runtime) => {
+  it("seat B's source drops a file seat A still has: B's projection leaves it; once A drops it too, it goes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "o9o25-shared-"));
+    roots.push(root);
+    const cwd = path.join(root, "shared-cwd");
+    fs.mkdirSync(cwd, { recursive: true });
+    const sourceFor = (seat: string) => {
+      const source = path.join(root, `source-${seat}`);
+      const put = (rel: string, content: string) => { const f = path.join(source, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, content); };
+      put(MANIFEST[runtime], '{"name":"openrig-core"}');
+      put("hooks/scripts/kept.cjs", "kept\n");
+      put("hooks/scripts/shared.cjs", "shared\n");
+      return source;
+    };
+    const sources = { A: sourceFor("A"), B: sourceFor("B") };
+    const db = createFullTestDb(); dbs.push(db);
+    const store = new ProjectionManifestStore(db);
+    const deps = { fsOps, tmux: {} as TmuxAdapter,
+      recordProjection: (targetPath: string, content: string) => store.record({ targetPath, lastHash: hashContent(content), writtenAt: "2026-11-17T09:00:00Z", category: "plugin" }),
+      projectionLedger: store, pluginCopyClaims: new SqlitePluginCopyClaims(db) };
+    const adapter = runtime === "claude" ? new ClaudeCodeAdapter(deps) : new CodexRuntimeAdapter(deps);
+    const project = async (seat: "A" | "B") => {
+      const entry: ProjectionEntry = { category: "plugin", effectiveId: "openrig-core", sourceSpec: "base", sourcePath: root, resourcePath: `source-${seat}`,
+        absolutePath: sources[seat], classification: "safe_projection", pluginType: runtime };
+      const result = await adapter.project({ entries: [entry], runtime: adapter.runtime, cwd, startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
+        { cwd, nodeId: `node-${seat}` } as NodeBinding);
+      expect(result.failed).toEqual([]);
+    };
+    const shared = path.join(cwd, SEAT_DIR[runtime], "hooks/scripts/shared.cjs");
+    await project("A");
+    await project("B");
+    fs.rmSync(path.join(sources.B, "hooks/scripts/shared.cjs"));
+    await project("B");
+    expect(fs.readFileSync(shared, "utf8")).toBe("shared\n");
+    // Control: once the last seat that projects it drops it too, it goes.
+    fs.rmSync(path.join(sources.A, "hooks/scripts/shared.cjs"));
+    await project("A");
+    expect(fs.existsSync(shared)).toBe(false);
   });
 });

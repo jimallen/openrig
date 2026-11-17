@@ -1,5 +1,5 @@
 import { answerDialogKeys } from "./hc-dialog-input.js";
-import { pruneDroppedPluginFiles, type ProjectionLedger } from "../domain/plugin-copy-prune.js";
+import { pruneDroppedPluginFiles, type PluginCopyClaims, type ProjectionLedger } from "../domain/plugin-copy-prune.js";
 import { operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import nodePath from "node:path";
@@ -109,6 +109,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   /** workspaces-o9o.25: record what a plugin projection wrote, so a later projection can drop what the source dropped. */
   private recordProjection: (targetPath: string, content: string) => void;
   private projectionLedger?: ProjectionLedger;
+  private pluginCopyClaims?: PluginCopyClaims;
   private readThreadIdByPid: (pid: number) => Promise<string | undefined> | string | undefined;
   private sleep: (ms: number) => Promise<void>;
   private resolveHomeDirByPid: ResolveHomeDirByPid;
@@ -160,6 +161,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     recordProjection?: (targetPath: string, content: string) => void;
     /** workspaces-o9o.25: what OpenRig recorded writing. Absent: nothing is removed. */
     projectionLedger?: ProjectionLedger;
+    /** workspaces-o9o.25 (verify-sec review): which seats still project each plugin file. Absent: nothing is removed. */
+    pluginCopyClaims?: PluginCopyClaims;
     readThreadIdByPid?: (pid: number) => Promise<string | undefined> | string | undefined;
     resolveHomeDirByPid?: ResolveHomeDirByPid;
     sleep?: (ms: number) => Promise<void>;
@@ -200,6 +203,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
     this.recordProjection = deps.recordProjection ?? (() => {});
     this.projectionLedger = deps.projectionLedger;
+    this.pluginCopyClaims = deps.pluginCopyClaims;
     this.readThreadIdByPid = deps.readThreadIdByPid ?? ((pid) => this.readThreadIdFromLogs(pid));
     this.resolveHomeDirByPid = deps.resolveHomeDirByPid ?? defaultResolveHomeDirByPid;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -353,7 +357,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
 
       try {
-        const didProject = this.projectEntry(entry, binding.cwd, warnings);
+        const didProject = this.projectEntry(entry, binding.cwd, warnings, binding.nodeId);
         if (didProject) {
           projected.push(entry.effectiveId);
         } else {
@@ -737,7 +741,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.provisionWorkspaceTrust(binding.cwd ?? null);
   }
 
-  private projectEntry(entry: ProjectionEntry, cwd: string, warnings: string[]): boolean {
+  private projectEntry(entry: ProjectionEntry, cwd: string, warnings: string[], owner?: string): boolean {
     if (entry.category === "runtime_resource") {
       const applied = this.applyRuntimeResource(entry, warnings);
       if (applied === "applied") return true;
@@ -798,7 +802,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           if (plugin) this.recordProjection(dest, content);
         }
         // workspaces-o9o.25: drop from the seat copy what the source dropped, only what OpenRig wrote and still unchanged.
-        if (plugin) warnings.push(...pruneDroppedPluginFiles({ cwd, targetDir, wanted, ledger: this.projectionLedger, fs: this.fs }));
+        if (plugin) warnings.push(...pruneDroppedPluginFiles({ cwd, targetDir, wanted, owner, ledger: this.projectionLedger, claims: this.pluginCopyClaims, fs: this.fs }));
       } else {
         const content = this.fs.readFile(entry.absolutePath);
         const destFile = nodePath.join(targetDir, nodePath.basename(entry.absolutePath));
