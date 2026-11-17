@@ -1,7 +1,7 @@
 // Must stay first: pins the daemon cwd before any module evaluates a path.
+import "./daemon-cwd-anchor.js";
 import { decideTerminalToken, listenerTokenProblem } from "./domain/terminal-token-policy.js";
 import { readOrCreateTerminalToken } from "./adapters/terminal-token-file.js";
-import "./daemon-cwd-anchor.js";
 import { serve, type ServerType } from "@hono/node-server";
 import os from "node:os";
 import path from "node:path";

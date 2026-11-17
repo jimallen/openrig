@@ -19,6 +19,14 @@ vi.mock("../src/startup.js", () => ({
   createDaemon: createDaemonMock,
 }));
 
+// workspaces-o9o.78: whether the default bind reaches the tailnet decides whether a terminal token is required, so the tailnet
+// detection is controlled here instead of read from the host running the suite (sparky has a tailnet address; a CI box does not).
+const tailnetIp = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock("../src/middleware/auth-bearer-token.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/middleware/auth-bearer-token.js")>();
+  return { ...actual, detectTailscaleInterface: vi.fn(() => tailnetIp.value) };
+});
+
 describe("daemon startServer", () => {
   beforeEach(() => {
     signalListenersBefore = {
@@ -40,6 +48,7 @@ describe("daemon startServer", () => {
     delete process.env.OPENRIG_BIND_HOST;
     delete process.env.OPENRIG_AUTH_BEARER_TOKEN;
     delete process.env.OPENRIG_TERMINAL_BEARER_TOKEN;
+    tailnetIp.value = null;
   });
 
   afterEach(() => {
@@ -234,6 +243,19 @@ describe("daemon startServer", () => {
     expect(createDaemonMock).toHaveBeenCalledWith(
       expect.objectContaining({ terminalBearerToken: null }),
     );
+  });
+
+  it("requires the instance's terminal token when the default bind reaches the tailnet (o9o.78: token when non-loopback)", async () => {
+    tailnetIp.value = "100.64.7.8";
+    const { startServer } = await import("../src/index.js");
+    const { OPENRIG_HOME } = await import("../src/openrig-compat.js");
+
+    await startServer(7441);
+
+    const fs = await import("node:fs");
+    const fileToken = fs.readFileSync(`${OPENRIG_HOME}/terminal-token`, "utf8").trim();
+    expect(fileToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(createDaemonMock).toHaveBeenCalledWith(expect.objectContaining({ terminalBearerToken: fileToken }));
   });
 
   it("uses the daemon bearer token for terminal routes on explicit public binds", async () => {
