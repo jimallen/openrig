@@ -34,6 +34,7 @@ export const startupRoutes = new Hono();
 startupRoutes.use("*", async (c, next) => {
   const response = await authBearerTokenMiddleware({
     expectedToken: dep<string | null>(c, "terminalBearerToken") ?? null,
+    credential: "terminal",
   })(c, next);
   if (response?.status === 401) return c.json({ ok: false, code: "terminal_auth_unavailable", freshAllowed: false,
     message: "This TUI cannot authenticate to the selected daemon. Check the instance and its terminal-token access, then refresh. No seat was started." }, 401);

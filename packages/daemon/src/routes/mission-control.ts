@@ -78,7 +78,7 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
   // yet — the bearer is for write integrity, not view confidentiality.
   // (Operator may extend gating to reads by mounting on read paths in
   // a future revision; v0 default per planner brief is gate-writes-only.)
-  const requireAuth = authBearerTokenMiddleware({ expectedToken: bearerToken });
+  const requireAuth = authBearerTokenMiddleware({ expectedToken: bearerToken , credential: "operator" });
 
   function getReadLayer(c: { get: (key: string) => unknown }): MissionControlReadLayer {
     return c.get("missionControlReadLayer" as never) as MissionControlReadLayer;

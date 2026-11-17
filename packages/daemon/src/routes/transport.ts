@@ -55,7 +55,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null; hosts?: Ho
   const router = new Hono();
 
   const terminalToken = opts?.bearerToken ?? null;
-  router.use("*", authBearerTokenMiddleware({ expectedToken: terminalToken }));
+  router.use("*", authBearerTokenMiddleware({ expectedToken: terminalToken , credential: "terminal" }));
 
   router.post("/send", async (c) => {
     const transport = c.get("sessionTransport" as never) as SessionTransport;

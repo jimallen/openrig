@@ -86,7 +86,7 @@ export function hostsRoutes(opts?: { bearerToken?: string | null; humanRegistry?
 
   // Writes are gated exactly like mission-control writes: enforced when a
   // bearer is configured, pass-through on loopback/tailnet-trust daemons.
-  const requireAuth = authBearerTokenMiddleware({ expectedToken: bearerToken });
+  const requireAuth = authBearerTokenMiddleware({ expectedToken: bearerToken , credential: "operator" });
   router.use("/add", requireAuth);
   router.use("/pair", requireAuth);
   router.use("/pair/:pairId", requireAuth);

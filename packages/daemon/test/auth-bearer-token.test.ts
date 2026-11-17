@@ -295,7 +295,7 @@ describe("auth-bearer-token middleware (PL-005 Phase B)", () => {
   describe("middleware integration", () => {
     function appWithMiddleware(token: string | null): Hono {
       const app = new Hono();
-      app.use("*", authBearerTokenMiddleware({ expectedToken: token }));
+      app.use("*", authBearerTokenMiddleware({ expectedToken: token, credential: "operator" }));
       app.get("/", (c) => c.json({ ok: true }));
       return app;
     }

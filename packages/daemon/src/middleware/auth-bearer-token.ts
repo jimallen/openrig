@@ -51,24 +51,42 @@ export function constantTimeEqual(a: string, b: string): boolean {
 }
 
 /**
+ * Which token a guarded route checks (workspaces-o9o.85): the operator token (Mission Control, hosts, rig mode, spec
+ * source) or the terminal token (every route that acts on a seat or its terminal). The 401 names that token only.
+ */
+export type BearerCredential = "operator" | "terminal";
+
+const UNAUTHORIZED_COPY: Record<BearerCredential, { prefix: string; why: string; todo: string }> = {
+  operator: {
+    prefix: "Mission Control auth failed",
+    why: "Mission Control write verbs require a bearer token because the daemon may be bound on a non-loopback interface (tailnet) where unauthenticated mutation would be unsafe.",
+    todo: "Set the auth.bearerToken field in daemon config (or OPENRIG_AUTH_BEARER_TOKEN env), have the operator restart the daemon, and resend the request with `Authorization: Bearer <token>`.",
+  },
+  terminal: {
+    prefix: "Terminal auth failed",
+    why: "Routes that act on a seat or its terminal (put text in front of an agent, read its screen, run a shell) require the daemon's terminal bearer token.",
+    todo: "Resend the request with `Authorization: Bearer <token>`, using the terminal token the daemon was started with in OPENRIG_TERMINAL_BEARER_TOKEN. The rig CLI sends OPENRIG_TERMINAL_BEARER_TOKEN, or the contents of <OPENRIG_HOME>/terminal-token when that variable is unset. A daemon on a public bind with no OPENRIG_TERMINAL_BEARER_TOKEN uses its operator token (OPENRIG_AUTH_BEARER_TOKEN) here instead.",
+  },
+};
+
+/**
  * Three-part error body shape per OpenRig honest-error-reporting
  * convention. Renders inside the route's c.json call.
  */
-function unauthorizedBody(reason: string): {
+function unauthorizedBody(reason: string, credential: BearerCredential): {
   error: "unauthorized";
   message: string;
   what_failed: string;
   why_it_matters: string;
   what_to_do: string;
 } {
+  const copy = UNAUTHORIZED_COPY[credential];
   return {
     error: "unauthorized",
-    message: `Mission Control auth failed: ${reason}`,
+    message: `${copy.prefix}: ${reason}`,
     what_failed: reason,
-    why_it_matters:
-      "Mission Control write verbs require a bearer token because the daemon may be bound on a non-loopback interface (tailnet) where unauthenticated mutation would be unsafe.",
-    what_to_do:
-      "Set the auth.bearerToken field in daemon config (or OPENRIG_AUTH_BEARER_TOKEN env), have the operator restart the daemon, and resend the request with `Authorization: Bearer <token>`.",
+    why_it_matters: copy.why,
+    what_to_do: copy.todo,
   };
 }
 
@@ -79,6 +97,8 @@ export interface AuthBearerTokenOpts {
    * elsewhere ensures this only happens when bound on loopback).
    */
   expectedToken: string | null;
+  /** Which token this is, so a 401 names it (required: a route states the token it checks). */
+  credential: BearerCredential;
 }
 
 /**
@@ -93,7 +113,7 @@ export interface AuthBearerTokenOpts {
 export function authBearerTokenMiddleware(
   opts: AuthBearerTokenOpts,
 ): MiddlewareHandler {
-  const { expectedToken } = opts;
+  const { expectedToken, credential } = opts;
   return async (c, next) => {
     if (expectedToken === null) {
       // Loopback-only mode (no bearer configured). Pass through.
@@ -102,18 +122,18 @@ export function authBearerTokenMiddleware(
     }
     const header = c.req.header("Authorization") ?? c.req.header("authorization");
     if (!header) {
-      return c.json(unauthorizedBody("missing Authorization header"), 401);
+      return c.json(unauthorizedBody("missing Authorization header", credential), 401);
     }
     const match = /^Bearer\s+(.+)$/i.exec(header);
     if (!match) {
       return c.json(
-        unauthorizedBody("Authorization header must be 'Bearer <token>'"),
+        unauthorizedBody("Authorization header must be 'Bearer <token>'", credential),
         401,
       );
     }
     const provided = match[1]!.trim();
     if (!constantTimeEqual(provided, expectedToken)) {
-      return c.json(unauthorizedBody("bearer token does not match"), 401);
+      return c.json(unauthorizedBody("bearer token does not match", credential), 401);
     }
     await next();
   };

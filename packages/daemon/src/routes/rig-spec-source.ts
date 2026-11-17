@@ -38,7 +38,7 @@ function statusOf(code: SpecSourceRefusalCode): 400 | 404 | 409 {
 
 export function rigSpecSourceRoutes(opts?: RigSpecSourceRoutesOpts): Hono {
   const router = new Hono();
-  const requireOperator = authBearerTokenMiddleware({ expectedToken: opts?.bearerToken ?? null });
+  const requireOperator = authBearerTokenMiddleware({ expectedToken: opts?.bearerToken ?? null , credential: "operator" });
   const sharedDocsRigsRoot = () => opts?.sharedDocsRigsRoot ?? resolveSharedDocsRigsRoot();
 
   const service = (c: { get: (key: string) => unknown }) => {

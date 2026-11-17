@@ -6,7 +6,7 @@ import { authBearerTokenMiddleware } from "./auth-bearer-token.js";
 export function terminalAuthGuard(): MiddlewareHandler {
   return async (c, next) => {
     const token = (c.get("terminalBearerToken" as never) as string | null | undefined) ?? null;
-    const mw = authBearerTokenMiddleware({ expectedToken: token });
+    const mw = authBearerTokenMiddleware({ expectedToken: token , credential: "terminal" });
     return mw(c, next);
   };
 }

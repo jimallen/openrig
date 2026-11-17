@@ -54,7 +54,7 @@ function refusedAccept(body: AcceptBody): string | null {
  *  (workspaces-o9o.16). `hosts` is this host's registry; without one, an arrival rides exactly as the sender wrote it. */
 export function messageRoutes(opts?: { bearerToken?: string | null; far?: FarDaemons; hosts?: HostDirectory }): Hono {
   const router = new Hono();
-  router.use("*", authBearerTokenMiddleware({ expectedToken: opts?.bearerToken ?? null }));
+  router.use("*", authBearerTokenMiddleware({ expectedToken: opts?.bearerToken ?? null , credential: "terminal" }));
 
   /** Whether this daemon's pump would carry a message to `seat`, under the name it knows it by. */
   router.get("/takes", async (c) => {

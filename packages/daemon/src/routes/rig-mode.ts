@@ -116,7 +116,7 @@ function getStore(c: { get: (key: string) => unknown }): RigModeStore | null {
 export function rigModeRoutes(opts?: RigModeRoutesOpts): Hono {
   const router = new Hono();
   const bearer = opts?.bearerToken ?? null;
-  const requireOperator = authBearerTokenMiddleware({ expectedToken: bearer });
+  const requireOperator = authBearerTokenMiddleware({ expectedToken: bearer , credential: "operator" });
 
   // -- read: defaults --------------------------------------------------
   router.get("/defaults", (c) => {
