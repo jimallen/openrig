@@ -11,7 +11,7 @@
 // The rows run the REAL scripts as separate processes, the way Claude Code runs a hook: stdin payload, env, a daemon endpoint (a fake that
 // counts what arrives). The env is built from nothing, so this seat's own OpenRig env never leaks in.
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -161,6 +161,50 @@ describe("workspaces-o9o.33: the activity relay runs once per hook when the open
   it("a copy outside the plugin's root never steps aside, even with CLAUDE_PLUGIN_ROOT in its environment", async () => {
     writeManagedSettings(EVENTS.map(([e]) => e));
     await runHook(managed("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
+    expect(posts("/api/activity/hooks", "Stop")).toHaveLength(1);
+  });
+
+  // verify-qa FAIL of 711e9a16e: a settings command that merely MENTIONS the managed path, or names a managed file that is not there, made
+  // the plugin copy step aside, and the event was lost. Claude Code runs the configured command; only a real invocation of a real file counts.
+  /** Settings whose every event runs `command` (the managed relay's place, for PermissionRequest the question-wait's too). */
+  const writeCommands = (relay: string, wait: string = relay) => {
+    const hooks: Record<string, unknown[]> = {};
+    for (const [event] of EVENTS) hooks[event] = event === "PermissionRequest"
+      ? [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: relay }] }, { matcher: "AskUserQuestion", hooks: [{ type: "command", command: wait }] }]
+      : [{ hooks: [{ type: "command", command: relay }] }];
+    writeFileSync(join(project, ".claude", "settings.local.json"), JSON.stringify({ hooks }, null, 2));
+  };
+
+  it("RED (review): the managed file named in settings is missing: the plugin copy runs (the event is not lost)", async () => {
+    writeManagedSettings(EVENTS.map(([e]) => e));
+    unlinkSync(managed("activity-relay.cjs"));     // Claude Code runs `node '<managed>'`, which fails: only the plugin copy can relay
+    await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
+    expect(posts("/api/activity/hooks", "Stop")).toHaveLength(1);
+  });
+
+  it("RED (review): a settings command that only mentions the managed path (a decoy echo) does not make the plugin copy step aside", async () => {
+    writeCommands(`echo 'path mention only: ${managed("activity-relay.cjs")}'`, `echo 'path mention only: ${managed("question-wait.cjs")}'`);
+    await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
+    await runHook(plugin("question-wait.cjs"), { hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions: QUESTIONS } }, true);
+    expect(posts("/api/activity/hooks", "Stop")).toHaveLength(1);
+    expect(posts("/api/activity/question-wait")).toHaveLength(1);
+  });
+
+  it("another program given the managed path (it reads the file, it does not run the relay) does not count", async () => {
+    writeCommands(`cat '${managed("activity-relay.cjs")}'`);
+    await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
+    expect(posts("/api/activity/hooks", "Stop")).toHaveLength(1);
+  });
+
+  it("the managed script run directly (no node in front) counts: the plugin copy steps aside", async () => {
+    writeCommands(`'${managed("activity-relay.cjs")}'`);
+    await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
+    expect(posts("/api/activity/hooks", "Stop")).toHaveLength(0);
+  });
+
+  it("node chained with another command (shell operators) is not a plain invocation: the plugin copy runs", async () => {
+    writeCommands(`node '${managed("activity-relay.cjs")}' ; true`);
+    await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
     expect(posts("/api/activity/hooks", "Stop")).toHaveLength(1);
   });
 

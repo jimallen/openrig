@@ -507,9 +507,53 @@ function defersToManagedCopy(env, hookEvent, script, selfPath) {
   let settings;
   try { settings = JSON.parse(fs.readFileSync(path.join(projectDir, ".claude", "settings.local.json"), "utf8")); } catch { return false; }
   const groups = settings && typeof settings === "object" && settings.hooks && Array.isArray(settings.hooks[hookEvent]) ? settings.hooks[hookEvent] : [];
-  const managed = path.join(MANAGED_HOOK_DIR, script);
   return groups.some((group) => group && Array.isArray(group.hooks)
-    && group.hooks.some((hook) => hook && typeof hook.command === "string" && hook.command.includes(managed)));
+    && group.hooks.some((hook) => hook && typeof hook.command === "string" && runsManagedScript(hook.command, script)));
+}
+
+// The words of a shell command as a POSIX shell splits them, for the plain forms the adapter writes (`node '<path>'`, an apostrophe in the
+// path written '"'"'): single quotes, double quotes with backslash escapes, bare words. Null when the command uses anything a plain
+// invocation does not (an unquoted ; | & < > $ ` ( ) or a newline), so a chained or redirected command never counts as running the script.
+function shellWords(command) {
+  const words = [];
+  let word = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const c = command[i];
+    if (c === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) return null;
+      word = (word ?? "") + command.slice(i + 1, end); i = end;
+    } else if (c === '"') {
+      let j = i + 1; let text = "";
+      for (; j < command.length && command[j] !== '"'; j += 1) {
+        if (command[j] === "\\" && j + 1 < command.length) { j += 1; }
+        else if (command[j] === "$" || command[j] === "`") return null;
+        text += command[j];
+      }
+      if (j >= command.length) return null;
+      word = (word ?? "") + text; i = j;
+    } else if (c === " " || c === "\t") {
+      if (word !== null) { words.push(word); word = null; }
+    } else if (";|&<>$`()\n\\".includes(c)) {
+      return null;
+    } else {
+      word = (word ?? "") + c;
+    }
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+// workspaces-o9o.33 (verify-qa review): a settings command counts as the managed copy only when it RUNS the managed script, either the
+// script itself or `node <script>`, and that script is a readable file. A command that only mentions the path, names a missing file, or
+// hands it to another program leaves the plugin copy running: an event is never lost to a copy that cannot run.
+function runsManagedScript(command, script) {
+  const words = shellWords(command);
+  if (!words || words.length === 0 || words.length > 2) return false;
+  if (words.length === 2 && words[0] !== "node" && path.basename(words[0]) !== "node") return false;
+  const target = words[words.length - 1];
+  if (!path.isAbsolute(target) || !target.endsWith(path.sep + path.join(MANAGED_HOOK_DIR, script))) return false;
+  try { fs.accessSync(target, fs.constants.R_OK); return fs.statSync(target).isFile(); } catch { return false; }
 }
 
 async function main() {
