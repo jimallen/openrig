@@ -148,6 +148,25 @@ describe("OF-278 a question is settled only by the end of its own AskUserQuestio
     });
   }
 
+  // verify-qa2 review of b285a5a5d, through the real service: B's question-wait hook fires, A's late end lands, and only then does B's poll reach
+  // the daemon, with B's relayed PermissionRequest lost. The hold finds the seat not asking and records B itself (stamped when B's hook fired,
+  // before A's end). Counted by source that was one ask beside A's relay record, and A's end masked B; counted by question it is two.
+  it("the hold records B itself after A's late end (B's relay report lost): B is still on record as asking and is auto-answered", async () => {
+    await relayed(provider("UserPromptSubmit", null));
+    const a = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
+    clock += MIN;
+    const bAskedAtMs = clock;                              // B's dialog opens; its relayed PermissionRequest never arrives
+    clock += 2_000;
+    await ends(COLOUR, "toolu_colour_0001", { "Pick a colour": "Blue" });   // A's late end
+    expect((await poll("req-size-00001", SIZE, bAskedAtMs)).action).toBe("wait");   // the hold records B, stamped at bAskedAtMs
+    const b = SeatQuestionService.rowId(nodeId, "req-size-00001");
+    expect([state(a.rowId), state(b)]).toEqual(["answered_human", "waiting"]);
+    clock = bAskedAtMs + 15 * MIN;
+    const reply = await poll("req-size-00001", SIZE, bAskedAtMs);
+    expect(reply.action, `B auto-answered (${reply.why ?? ""})`).toBe("answer");
+    expect(state(b)).toBe("answered_auto");
+  });
+
   it("a question's own end still settles it: answered_human, and the hook gets none", async () => {
     await relayed(provider("UserPromptSubmit", null));
     const b = await opens("req-size-00001", SIZE, "toolu_size_00001");
