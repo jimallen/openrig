@@ -12,6 +12,7 @@
 // What it cannot stop: a process that does not use this helper (an in-process server's own listen(0), anything outside the suites)
 // taking the number in the window. It closes the case that was measured: one test process against another.
 import { spawnSync } from "node:child_process";
+import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,8 @@ export const TEST_PORT_HOST = "127.0.0.1";
 /** Resolved once: a test that stubs TMPDIR later must not move the claims of this process. */
 export const TEST_PORT_CLAIMS_DIR = join(tmpdir(), "openrig-test-ports");
 
+const mine = new Set<number>();
+let exitHook = false;
 
 /** The OS's choice of a free loopback port, released at once. */
 export function probeFreePort(): Promise<number> {
@@ -35,14 +38,49 @@ export function probeFreePort(): Promise<number> {
   });
 }
 
+function alive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+}
 
+function ownerOf(file: string): number {
+  try { return Number(readFileSync(file, "utf8").trim()); } catch { return Number.NaN; }
+}
 
+function create(file: string): boolean {
+  try { writeFileSync(file, String(process.pid), { flag: "wx" }); return true; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "EEXIST") return false; throw e; }
+}
 
-/** RED commit of workspaces-o9o.81: no claims yet. Every caller is handed what the OS offered, as before the change. */
-export function claimPort(_port: number): boolean { return true; }
+/** Claims `port` for this process; false when another live test process holds it. */
+export function claimPort(port: number): boolean {
+  mkdirSync(TEST_PORT_CLAIMS_DIR, { recursive: true });
+  const file = join(TEST_PORT_CLAIMS_DIR, String(port));
+  if (create(file)) { remember(port); return true; }
+  const owner = ownerOf(file);
+  if (owner === process.pid || alive(owner)) return false;
+  // A dead claimant's file: move it aside first. Only one reclaimer's rename succeeds; a claim made live meanwhile is put back.
+  const aside = `${file}.stale-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try { renameSync(file, aside); } catch { return false; }
+  if (alive(ownerOf(aside))) { try { linkSync(aside, file); } catch { /* a newer claim is already there */ } unlinkSync(aside); return false; }
+  unlinkSync(aside);
+  if (create(file)) { remember(port); return true; }
+  return false;
+}
 
-/** RED commit: nothing to release. */
-export function releasePort(_port: number): void { /* no claims yet */ }
+function remember(port: number): void {
+  mine.add(port);
+  if (exitHook) return;
+  exitHook = true;
+  process.once("exit", () => { for (const p of mine) releasePort(p); });
+}
+
+/** Drops this process's claim on `port` (never another process's). */
+export function releasePort(port: number): void {
+  const file = join(TEST_PORT_CLAIMS_DIR, String(port));
+  if (ownerOf(file) === process.pid) { try { unlinkSync(file); } catch { /* already gone */ } }
+  mine.delete(port);
+}
 
 export interface ClaimOptions {
   /** Where candidate numbers come from: the OS by default (a test seam). */
