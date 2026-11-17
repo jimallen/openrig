@@ -643,6 +643,23 @@ profiles:
     db.close();
   });
 
+  // workspaces-o9o.52: a culture_file may name a file in the RUNNING install's specs folder (shipped:), so one kernel spec serves every
+  // host whatever its install prefix. Before this, "shipped:..." was taken as a folder named "shipped:rigs" under the rig root.
+  it("resolves a shipped: culture_file inside the running install's specs folder", async () => {
+    const { db, inst } = setup();
+    const spec = makeRigSpec({ cultureFile: "shipped:rigs/launch/kernel/culture/CULTURE.md" });
+    const result = await inst.instantiate(RigSpecCodec.serialize(spec), RIG_ROOT);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const files = (db.prepare("SELECT resolved_files_json FROM node_startup_context").all() as Array<{ resolved_files_json: string }>)
+      .flatMap((row) => JSON.parse(row.resolved_files_json) as Array<{ path: string; absolutePath: string; ownerRoot: string }>);
+    const shipped = require("node:path").resolve(import.meta.dirname, "../specs/rigs/launch/kernel/culture/CULTURE.md");
+    expect(files.map((f) => f.absolutePath)).toContain(shipped);
+    // Owned by the install's specs folder, so re-anchoring follows a moved or upgraded install (builtin-startup-files.ts).
+    expect(files.find((f) => f.absolutePath === shipped)?.ownerRoot).toBe(require("node:path").resolve(import.meta.dirname, "../specs"));
+    expect(files.map((f) => f.absolutePath).some((p) => p.includes("shipped:"))).toBe(false);
+    db.close();
+  });
+
   it("CULTURE-default.md ships the lightweight operating-model floor", () => {
     const { existsSync, readFileSync } = require("node:fs");
     const { resolve } = require("node:path");

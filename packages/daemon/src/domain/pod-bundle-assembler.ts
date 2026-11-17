@@ -1,3 +1,4 @@
+import { SHIPPED_CULTURE_PREFIX } from "./culture-file-guard.js";
 import nodePath from "node:path";
 import { createHash } from "node:crypto";
 import { RigSpecCodec } from "./rigspec-codec.js";
@@ -113,7 +114,9 @@ export class PodBundleAssembler {
     const refRewrites = new Map<string, string>();
 
     // 2b. Culture file
-    if (rigSpec.cultureFile) {
+    // A shipped: culture_file (workspaces-o9o.52) names the installing host's own OpenRig specs: it is portable as written, so the
+    // bundle keeps the reference and vendors nothing.
+    if (rigSpec.cultureFile && !rigSpec.cultureFile.startsWith(SHIPPED_CULTURE_PREFIX)) {
       this.collectRigFile(rigSpec.cultureFile, opts.rigRoot, opts.outputDir, collectedFiles, true);
     }
 

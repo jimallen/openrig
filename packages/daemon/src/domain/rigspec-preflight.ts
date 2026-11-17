@@ -136,7 +136,7 @@ import { resolveAgentRef, type GuardedAgentResolverFsOps } from "./agent-resolve
 import { resolveNodeConfig, type ResolutionContext } from "./profile-resolver.js";
 import { getOpenRigInstallCwdError, getSeatCwdPresenceError, resolveAuthoredCwd, resolveLaunchCwd } from "./cwd-resolution.js";
 import nodePath from "node:path";
-import { checkCultureFile } from "./culture-file-guard.js";
+import { checkCultureFile, resolveCultureFile } from "./culture-file-guard.js";
 import { mcpServerPlacementProblem } from "./codex-mcp-servers.js";
 import { validateClaudeActivityHookDelivery, CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE } from "./claude-activity-hooks.js";
 import {
@@ -362,9 +362,13 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
   // installed package, e.g. the kernel overlay). A file that does not exist is left to the existing
   // required-startup-file failure (unchanged behaviour); only an existing file is judged.
   if (rigSpec.cultureFile) {
-    const resolvedCulture = nodePath.resolve(preflightCtx.rigRoot, rigSpec.cultureFile);
-    const checked = checkCultureFile(rigSpec.cultureFile, resolvedCulture);
-    if (!checked.ok && checked.reason !== "not_found") errors.push(checked.message);
+    // workspaces-o9o.52: a shipped: culture_file resolves in the running install's specs folder and must stay inside it.
+    const target = resolveCultureFile(rigSpec.cultureFile, preflightCtx.rigRoot);
+    if (!target.ok) errors.push(target.message);
+    else {
+      const checked = checkCultureFile(rigSpec.cultureFile, target.absolutePath);
+      if (!checked.ok && checked.reason !== "not_found") errors.push(checked.message);
+    }
   }
 
   // 3. For each pod member: resolve agent_ref + profile, check runtime, check cwd

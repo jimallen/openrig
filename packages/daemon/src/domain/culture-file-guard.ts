@@ -1,5 +1,6 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import nodePath from "node:path";
+import { runningShippedSpecsRoot } from "./builtin-startup-files.js";
 
 /**
  * TRUST BOUNDARY (read this before changing anything here).
@@ -168,6 +169,65 @@ export function checkCultureFile(
  */
 export function persistedCulturePath(resolvedPath: string): string {
   try { return realpathSync(resolvedPath); } catch { return nodePath.resolve(resolvedPath); }
+}
+
+/** A culture_file that names a file in the RUNNING OpenRig install's own specs folder (workspaces-o9o.52). */
+export const SHIPPED_CULTURE_PREFIX = "shipped:";
+
+/** Where a culture_file points, and how it is recorded as a startup file. */
+export type CultureFileTarget =
+  | { ok: true; absolutePath: string; ownerRoot: string; shipped: boolean }
+  | { ok: false; message: string };
+
+function isInside(root: string, p: string): boolean {
+  return p === root || p.startsWith(root.endsWith(nodePath.sep) ? root : root + nodePath.sep);
+}
+function realOrSame(p: string): string {
+  try { return realpathSync(p); } catch { return p; }
+}
+
+/**
+ * The shape of a `shipped:` culture_file, with no filesystem: a non-empty relative path that does not climb out (`..`).
+ * Null when it is well formed (the rig spec validator's half of resolveCultureFile).
+ */
+export function shippedCultureShapeProblem(cultureFile: string): string | null {
+  const rel = cultureFile.slice(SHIPPED_CULTURE_PREFIX.length);
+  if (!rel) return `culture_file: a shipped: culture_file must name a file (got "${cultureFile}")`;
+  const normalized = rel.replace(/\\/g, "/");
+  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) {
+    return `culture_file: a shipped: culture_file must be a path relative to the installed OpenRig's specs folder (got "${cultureFile}")`;
+  }
+  if (normalized.split("/").some((seg) => seg === "..")) {
+    return `culture_file: a shipped: culture_file must stay inside the installed OpenRig's specs folder (got "${cultureFile}")`;
+  }
+  return null;
+}
+
+/**
+ * Where a rig's culture_file points (workspaces-o9o.52).
+ * - `shipped:<relative>`: a file in the RUNNING install's specs folder (runningShippedSpecsRoot: the daemon module's own location, never
+ *   caller input), so one kernel spec serves every host whatever its install prefix. Confined like a shipped: agent_ref
+ *   (agent-ref-guard.ts): the lexical AND the real target must lie inside that folder (no `..` and no symlink out). Recorded AS TYPED under
+ *   the install root, with the install's specs folder as its owner, so a moved or upgraded install is followed by the existing re-anchoring
+ *   (builtin-startup-files.ts), never a version-specific real path that an upgrade removes.
+ * - anything else: relative to the rig root (or absolute, for `rig add --culture`), recorded by its real path, as before.
+ * Existence and the file itself are judged later by the guarded reader (checkCultureFile), at add and at every delivery.
+ */
+export function resolveCultureFile(cultureFile: string, rigRoot: string, specsRoot: string = runningShippedSpecsRoot()): CultureFileTarget {
+  if (!cultureFile.startsWith(SHIPPED_CULTURE_PREFIX)) {
+    return { ok: true, absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, cultureFile)), ownerRoot: rigRoot, shipped: false };
+  }
+  const shape = shippedCultureShapeProblem(cultureFile);
+  if (shape) return { ok: false, message: shape };
+  const rel = cultureFile.slice(SHIPPED_CULTURE_PREFIX.length);
+  const typedRoot = nodePath.resolve(specsRoot);
+  const root = realOrSame(typedRoot);
+  const lexical = nodePath.resolve(root, rel);
+  const target = realOrSame(lexical);
+  if (!isInside(root, lexical) || !isInside(root, target)) {
+    return { ok: false, message: `culture_file "${cultureFile}" resolves to ${target}, outside ${root}, the installed OpenRig's specs folder; a shipped: culture_file must stay inside it` };
+  }
+  return { ok: true, absolutePath: nodePath.resolve(typedRoot, rel), ownerRoot: typedRoot, shipped: true };
 }
 
 /**

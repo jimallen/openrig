@@ -1,3 +1,4 @@
+import { SHIPPED_CULTURE_PREFIX, shippedCultureShapeProblem } from "./culture-file-guard.js";
 import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX, piModelOverridesErrors, normalizePiModelOverrides } from "../adapters/pi-runner-protocol.js";
 import { claudeConfigDirShapeError } from "./claude-config-dir.js";
 import type {
@@ -170,7 +171,10 @@ export class RigSpecSchema {
       if (typeof obj["culture_file"] !== "string") {
         errors.push("culture_file: must be a string");
       } else {
-        const pathErr = validateSafePath(obj["culture_file"] as string, "culture_file");
+        // workspaces-o9o.52: `shipped:<relative>` names a file in the running install's specs folder; its shape is checked here and
+        // where it points at resolve time (resolveCultureFile). Anything else is a safe path relative to the rig root, as before.
+        const value = obj["culture_file"] as string;
+        const pathErr = value.startsWith(SHIPPED_CULTURE_PREFIX) ? shippedCultureShapeProblem(value) : validateSafePath(value, "culture_file");
         if (pathErr) errors.push(pathErr);
       }
     }

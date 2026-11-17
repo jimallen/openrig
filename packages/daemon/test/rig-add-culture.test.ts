@@ -138,6 +138,25 @@ describe("rig add: the rig's own culture reaches a seat added to a running rig",
     f.db.close();
   });
 
+  // workspaces-o9o.52: `rig add --culture shipped:<relative>` takes the culture from the running install's own specs folder.
+  it("a shipped: culture resolves in the running install's specs folder and is delivered", async () => {
+    const f = await runningRig();
+    const out = await f.inst.addMemberToPod(f.rigId, "dev", f.member(), f.rigRoot, { cultureFile: "shipped:rigs/launch/kernel/culture/CULTURE.md" });
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    const shipped = fs.readFileSync(nodePath.resolve(import.meta.dirname, "../specs/rigs/launch/kernel/culture/CULTURE.md"), "utf8");
+    const firstLine = shipped.split("\n").find((l) => l.trim().length > 0)!;
+    expect(f.read("CLAUDE.md")).toContain(firstLine);
+    f.db.close();
+  });
+
+  it("a shipped: culture that climbs out of the install's specs folder is refused before any seat exists", async () => {
+    const f = await runningRig();
+    const out = await f.inst.addMemberToPod(f.rigId, "dev", f.member(), f.rigRoot, { cultureFile: "shipped:../../package.json" });
+    expect(out.ok).toBe(false);
+    expect(JSON.stringify(out)).toContain("must stay inside the installed OpenRig's specs folder");
+    f.db.close();
+  });
+
   it("an absolute culture path resolves as a launch does (path.resolve(rigRoot, p)) and is delivered", async () => {
     const f = await runningRig();
     const abs = nodePath.join(f.root, "elsewhere-culture.md");

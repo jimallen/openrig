@@ -1,7 +1,7 @@
 import { projectRigWorkspaceRecreatable, unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
-import { checkCultureFile, persistedCulturePath, readGuardedStartupFile } from "./culture-file-guard.js";
+import { checkCultureFile, persistedCulturePath, resolveCultureFile, readGuardedStartupFile } from "./culture-file-guard.js";
 import type Database from "better-sqlite3";
 import {
   resolvePermissionPolicyAttachment,
@@ -1050,7 +1050,10 @@ export class PodRigInstantiator {
         return { ok: false, code: "validation_failed", errors: ["cultureFile: must be a non-empty string (a path to the rig's culture file)"] };
       }
       cultureFile = opts.cultureFile;
-      const resolvedCulture = nodePath.resolve(rigRoot, cultureFile);
+      // workspaces-o9o.52: `shipped:<relative>` resolves in the running install's specs folder and must stay inside it.
+      const cultureTarget = resolveCultureFile(cultureFile, rigRoot);
+      if (!cultureTarget.ok) return { ok: false, code: "validation_failed", errors: [cultureTarget.message] };
+      const resolvedCulture = cultureTarget.shipped ? cultureTarget.absolutePath : nodePath.resolve(rigRoot, cultureFile);
       if (!this.deps.fsOps.exists(resolvedCulture)) {
         return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" not found (looked at ${resolvedCulture}); pass a path relative to the rig root (--rig-root) or an absolute path`] };
       }
@@ -2631,12 +2634,15 @@ export class PodRigInstantiator {
     // Layer 3: OpenRig culture floor, then the rig-specific overlay.
     files.push(defaultCultureStartupFile());
     if (rigSpec.cultureFile) {
+      // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through the shared guarded
+      // reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through. A shipped: culture (workspaces-o9o.52) is
+      // recorded as typed under the running install's specs folder, its owner, so re-anchoring follows a moved install.
+      const culture = resolveCultureFile(rigSpec.cultureFile, rigRoot);
+      if (!culture.ok) throw new Error(culture.message);
       files.push({
         path: rigSpec.cultureFile,
-        // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through
-        // the shared guarded reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through.
-        absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, rigSpec.cultureFile)),
-        ownerRoot: rigRoot,
+        absolutePath: culture.absolutePath,
+        ownerRoot: culture.ownerRoot,
         deliveryHint: "auto",
         required: true,
         appliesOn: ["fresh_start", "restore"],
@@ -3051,12 +3057,15 @@ export class PodRigInstantiator {
     // 3. OpenRig culture floor, then the rig-specific overlay.
     files.push(defaultCultureStartupFile());
     if (rigSpec.cultureFile) {
+      // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through the shared guarded
+      // reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through. A shipped: culture (workspaces-o9o.52) is
+      // recorded as typed under the running install's specs folder, its owner, so re-anchoring follows a moved install.
+      const culture = resolveCultureFile(rigSpec.cultureFile, rigRoot);
+      if (!culture.ok) throw new Error(culture.message);
       files.push({
         path: rigSpec.cultureFile,
-        // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through
-        // the shared guarded reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through.
-        absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, rigSpec.cultureFile)),
-        ownerRoot: rigRoot,
+        absolutePath: culture.absolutePath,
+        ownerRoot: culture.ownerRoot,
         deliveryHint: "auto",
         required: true,
         appliesOn: ["fresh_start", "restore"],
