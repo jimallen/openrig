@@ -103,6 +103,9 @@ export interface CodexAdapterFsOps {
  *  plugin's relay steps aside for an event only when that block's stanza runs exactly this path (activity-relay.cjs codexConfigRunsManagedCopy). */
 export const CODEX_MANAGED_RELAY_RECORD = ["state", "codex-activity-hooks", "relay-path"] as const;
 
+/** workspaces-o9o.88: what the record of the relay path says: the exact path, no record at all, or a record that cannot be read. */
+export type RecordedCodexRelay = { state: "path"; path: string } | { state: "absent" } | { state: "unreadable" };
+
 /**
  * Codex runtime adapter. Projects resources to .agents/ targets (preserving
  * existing Codex filesystem contract) and delivers startup files.
@@ -300,17 +303,19 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.recordManagedRelay(relay);
   }
 
-  /** workspaces-o9o.88: the relay path OpenRig last recorded writing into the managed block (workspaces-o9o.76), or null when there is no
-   *  readable record. With the current relay path, it is how OpenRig tells its own stanzas from a person's: by the exact path, never by name. */
-  private recordedManagedRelay(): string | null {
-    if (!this.stateDir) return null;
+  /** workspaces-o9o.88: the relay path OpenRig last recorded writing into the managed block (workspaces-o9o.76). With the current relay
+   *  path, it is how OpenRig tells its own stanzas from a person's: by the exact path, never by name. `absent` (no record, or no state dir to
+   *  hold one) means a daemon older than the record wrote the block; `unreadable` (the record exists but cannot be read, or is empty) is
+   *  unknown, and unknown never widens what OpenRig claims. */
+  private recordedManagedRelay(): RecordedCodexRelay {
+    if (!this.stateDir) return { state: "absent" };
     const record = nodePath.join(this.stateDir, ...CODEX_MANAGED_RELAY_RECORD);
     try {
-      if (!this.fs.exists(record)) return null;
+      if (!this.fs.exists(record)) return { state: "absent" };
       const recorded = this.fs.readFile(record).trim();
-      return recorded.length > 0 ? recorded : null;
+      return recorded.length > 0 ? { state: "path", path: recorded } : { state: "unreadable" };
     } catch {
-      return null;
+      return { state: "unreadable" };
     }
   }
 
@@ -1517,7 +1522,7 @@ const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"
  * runs the hook under. No matcher (verified on 0.139: no-matcher fires for every
  * turn-scope event).
  */
-export function upsertCodexActivityHooks(content: string, relayPath: string, recordedRelayPath: string | null = null): string {
+export function upsertCodexActivityHooks(content: string, relayPath: string, recorded: RecordedCodexRelay = { state: "absent" }): string {
   const command = `'node "${relayPath}"'`;
   const stanzas = OPENRIG_ACTIVITY_HOOK_EVENTS
     .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5`)
@@ -1533,7 +1538,7 @@ export function upsertCodexActivityHooks(content: string, relayPath: string, rec
   const existing = pattern.exec(next);
   if (existing) {
     // workspaces-o9o.88: what Codex (or a person) put inside the sentinels that is not OpenRig's goes on, just after the block.
-    const { before, after } = foreignTablesInManagedBlock(existing[0], relayPath, recordedRelayPath);
+    const { before, after } = foreignTablesInManagedBlock(existing[0], relayPath, recorded);
     return next.replace(pattern, () => `${before ? `${before}\n` : ""}${block}${after ? `\n${after}` : ""}`); // literal: no `$` expansion
   }
   const prefix = next.replace(/\n*$/, "");
@@ -1546,14 +1551,14 @@ export function upsertCodexActivityHooks(content: string, relayPath: string, rec
  * leaves all other content — user-owned hooks, [features], project trust — untouched. Returns the
  * input unchanged when the block is absent.
  */
-function stripCodexActivityHooks(content: string, relayPath: string | null, recordedRelayPath: string | null): string {
+function stripCodexActivityHooks(content: string, relayPath: string | null, recorded: RecordedCodexRelay): string {
   const pattern = new RegExp(
     `\\n*${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_BEGIN)}[\\s\\S]*?${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_END)}[ \\t]*\\n?`,
     "m"
   );
   const existing = pattern.exec(content);
   if (!existing) return content;
-  const { before, after } = foreignTablesInManagedBlock(existing[0], relayPath, recordedRelayPath);
+  const { before, after } = foreignTablesInManagedBlock(existing[0], relayPath, recorded);
   const kept = [before, after].filter((part) => part.length > 0).join("\n");
   return content.replace(pattern, () => (kept ? `\n${kept}` : "\n"));
 }
@@ -1570,17 +1575,29 @@ function stripCodexActivityHooks(content: string, relayPath: string | null, reco
  * verify-qa's review of 2492700bd: OpenRig's stanzas are those whose command is exactly `node "<path>"` for the current relay or the one
  * OpenRig recorded writing (workspaces-o9o.76), never any script that shares the name activity-relay.cjs; and a line counts as a header, or
  * as a command, only at the top level outside any string (lineStartsAtDocumentLevel), so a header-looking line inside a multiline string
- * stays in its string. With no record (a daemon older than workspaces-o9o.76 wrote the block), the path the block's FIRST group runs also
- * counts when that group is a SessionStart stanza: OpenRig writes its own SessionStart stanza first, directly after BEGIN, and before this
- * change it rewrote the whole block, so that position is its own; Codex appends only at the end. That keeps a relay-path change from
- * duplicating OpenRig's hooks on such a file (codex-activity-hooks.test.ts).
+ * stays in its string.
+ *
+ * With NO record (a daemon older than workspaces-o9o.76 wrote the block), a stanza is also OpenRig's when its command runs a relay at the
+ * one path shape OpenRig has ever written: `<daemon package>/assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs`, the daemon's own
+ * asset resolved from its dist folder (startup.ts; the same expression in every version since the Codex hooks were added in 0.4.1). An
+ * installed CLI carries the daemon at `@openrig/cli/daemon/` and a checkout at `packages/daemon/`, so both end in OPENRIG_LEGACY_RELAY_SUFFIX.
+ * Position never counts, and neither does the file name alone. With a record that cannot be read, the shape is not used: unknown keeps.
  */
 const CODEX_TABLE_HEADER = /^\s*\[/;
 const CODEX_HOOK_GROUP_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/;
 const CODEX_HOOK_MEMBER_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\.hooks\]\]\s*$/;
 
-function foreignTablesInManagedBlock(blockText: string, relayPath: string | null, recordedRelayPath: string | null): { before: string; after: string } {
-  const ownCommands = new Set([relayPath, recordedRelayPath].filter((p): p is string => p !== null).map((p) => `command = 'node "${p}"'`));
+const OPENRIG_LEGACY_RELAY_SUFFIX = "/daemon/assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs";
+const CODEX_NODE_COMMAND = /^command = 'node "([^"]*)"'$/;
+
+function foreignTablesInManagedBlock(blockText: string, relayPath: string | null, recorded: RecordedCodexRelay): { before: string; after: string } {
+  const exact = new Set([relayPath, recorded.state === "path" ? recorded.path : null].filter((p): p is string => p !== null));
+  const runsOpenRigRelay = (line: string) => {
+    const path = CODEX_NODE_COMMAND.exec(line)?.[1];
+    if (path === undefined) return false;
+    if (exact.has(path)) return true;
+    return recorded.state === "absent" && path.startsWith("/") && path.endsWith(OPENRIG_LEGACY_RELAY_SUFFIX);
+  };
   const topLevel = lineStartsAtDocumentLevel(blockText);
   const body = blockText.split("\n")
     .map((text, index) => ({ text, top: topLevel[index] === true }))
@@ -1595,15 +1612,10 @@ function foreignTablesInManagedBlock(blockText: string, relayPath: string | null
     if (line.top && CODEX_TABLE_HEADER.test(line.text) && !joinsGroup) groups.push([line]);
     else if (current !== undefined) current.push(line);
   }
-  const first = groups[0];
-  if (recordedRelayPath === null && first !== undefined && CODEX_HOOK_GROUP_HEADER.exec(first[0]!.text)?.[1] === OPENRIG_ACTIVITY_HOOK_EVENTS[0]) {
-    const legacy = first.find((line) => line.top && /^command = 'node "[^"]*"'$/.test(line.text.trim()));
-    if (legacy !== undefined) ownCommands.add(legacy.text.trim());
-  }
   const isOpenRigStanza = (group: Line[]) => {
     const event = CODEX_HOOK_GROUP_HEADER.exec(group[0]!.text)?.[1];
     return event !== undefined && (OPENRIG_ACTIVITY_HOOK_EVENTS as readonly string[]).includes(event)
-      && group.some((line) => line.top && ownCommands.has(line.text.trim()));
+      && group.some((line) => line.top && runsOpenRigRelay(line.text.trim()));
   };
   const firstOpenRig = groups.findIndex(isOpenRigStanza);
   const text = (part: Line[][]) => {
