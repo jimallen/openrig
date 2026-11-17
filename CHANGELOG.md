@@ -10,6 +10,17 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### `rig seat launch --fresh --stop` checks the seat's unfinished work before it stops anything (workspaces-o9o.8)
+
+- Symptom: operators checked by hand before a relaunch. They looked for a UI test host lease the seat held, for builds or test runs still running under the seat's agent, and for the seat's handover file. A launch that stopped a seat mid-test left the shared host's lease held for every other seat. A build left running under the agent kept writing into the worktree.
+- Now the launch refuses with `relaunch_check_held`, naming each holder or process, while a check is held:
+  - a lease registered with the new `rig seat lease <seat> --holder <name> --pid <pid> [--reason] | --release` is held by its live process (the same pid and the same start time, so a reused pid does not count);
+  - the seat's agent is still running anything other than MCP servers, language servers and caffeinate. These are recognised by what runs, never by an argument; the agent is recognised per runtime, including OpenRig's Pi/OMP runner and the `pi` or `omp` it starts.
+- `--despite lease` and `--despite children` launch anyway, one check each; the launch event records them. A check that cannot be read only warns, so a broken seat can still be recovered. `--plan` shows every verdict.
+- The seat's newest `HANDOVER*.md` (in its folder) moves the hand-over time back to when it was written, and the fresh occupant is sent its path. This applies only when the file was written during the retiring occupant's tenure. A file from an earlier tenure, one whose tenure is not recorded, or a folder that cannot be read is named in a warning and not used.
+- The patterns are fixed defaults for now (`RELAUNCH_CHECK_DEFAULTS`); a per-seat override is workspaces-o9o.64.
+- Known limit: the TUI's explicit fresh action starts a seat whose pane it observed stopped, and does not check that seat for a live lease. Only `rig seat launch --stop` does.
+
 ### A Pi seat recovers from a failed model connection on its own (workspaces-o9o.13)
 
 - Symptom: after a model connection failure a Pi seat stopped with its task undone and stayed stopped until it was relaunched. Two causes were observed. On 2026-11-13..16 (verify-sec@eztrack and verify-sec@cel-identity) every turn ended on `{"detail":"Bad Request"}` after one WebSocket failure. On 2026-11-16 (verify-qa@openrig) a turn ended on `Responses websocket connection limit reached (60 minutes)`.
