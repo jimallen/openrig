@@ -66,8 +66,9 @@ export OPENRIG_GIT_SHIM_DEPTH=\$((depth + 1))
 # -C and -c take only the next word; the others that take a value also take '=value'. Each -C
 # moves from the one before ('' does nothing), so a relative path resolves from base, as in git.
 # --git-dir, --work-tree and --bare move what git calls the toplevel, and an option not listed
-# here is never guessed at: either one stops the scan and the call goes through unchanged,
-# saying so only when it goes on to 'worktree add'.
+# here is never guessed at: either one stops the scan. A call that goes on to 'worktree add' is
+# then refused, since where its tree would go cannot be judged (workspaces-o9o.102, verify-sec:
+# fail closed); any other call goes through unchanged.
 words=("\$@"); n=\$#; s=0; base=""; held=""; heldword=""
 while [ "\$s" -lt "\$n" ]; do
   a="\${words[\$s]}"
@@ -99,18 +100,33 @@ if [ -n "\$held" ]; then
   while [ \$((j+1)) -lt "\$n" ]; do
     if [ "\${words[\$j]}" = "worktree" ] && [ "\${words[\$((j+1))]}" = "add" ]; then
       # %q: a newline or a control character in the word stays on this one line, quoted.
-      printf 'openrig git shim: worktree path not checked (%s %q)\\n' "\$held" "\$heldword" >&2
-      break
+      if [ "\$held" = "global option" ]; then
+        printf 'openrig git shim: refusing worktree add with option %q: it moves the repository; run worktree add without it\\n' "\$heldword" >&2
+      else
+        printf 'openrig git shim: refusing worktree add with option %q: spell the option in full\\n' "\$heldword" >&2
+      fi
+      exit 128
     fi
     j=\$((j+1))
   done
   exec "\$real" "\$@"
 fi
 if [ \$((s+2)) -le "\$n" ] && [ "\${words[\$s]}" = "worktree" ] && [ "\${words[\$((s+1))]}" = "add" ]; then
+  # GIT_DIR and GIT_WORK_TREE move the repository as --git-dir and --work-tree do, so the place a tree would go cannot be
+  # judged either: refused, whatever their value (workspaces-o9o.102). The shim sees only its own environment; a value
+  # set in a config file (core.worktree) or passed as -c is not seen.
+  moved=""
+  if [ -n "\${GIT_DIR+x}" ]; then moved=GIT_DIR; elif [ -n "\${GIT_WORK_TREE+x}" ]; then moved=GIT_WORK_TREE; fi
+  if [ -n "\$moved" ]; then
+    printf 'openrig git shim: refusing worktree add with %s set: it moves the repository; run worktree add without it\\n' "\$moved" >&2
+    exit 128
+  fi
   # Find the <path> word by git 2.43.0's grammar ('git worktree add -h'); every other
   # word reaches git unchanged. -b, -B and --reason take the next word as a value.
-  # An option not listed here (an abbreviation, a cluster, a newer git's option) is
-  # never guessed at: the call goes through unredirected, with one line saying so.
+  # An option not listed here is never guessed at: git reads a unique prefix of a long
+  # option as that option ('--det' is --detach), and a cluster ('-fd') or a newer git's
+  # option may take a value, so the path cannot be found and the call is refused
+  # (workspaces-o9o.102, verify-sec: fail closed), inside path or outside.
   i=\$((s+2)); pathi=""; unknown=""
   while [ "\$i" -lt "\$n" ]; do
     a="\${words[\$i]}"
@@ -127,8 +143,8 @@ if [ \$((s+2)) -le "\$n" ] && [ "\${words[\$s]}" = "worktree" ] && [ "\${words[\
   done
   if [ -n "\$unknown" ]; then
     # %q: a newline or a control character in the word stays on this one line, quoted.
-    printf 'openrig git shim: worktree path not checked (unrecognised option %q)\\n' "\$unknown" >&2
-    exec "\$real" "\$@"
+    printf 'openrig git shim: refusing worktree add with option %q: spell the option in full\\n' "\$unknown" >&2
+    exit 128
   fi
   target="\${pathi:+\${words[\$pathi]}}"
   # rev-parse ends its line with a newline and the toplevel's own name may end in one: a '/' sentinel keeps
@@ -138,12 +154,19 @@ if [ \$((s+2)) -le "\$n" ] && [ "\${words[\$s]}" = "worktree" ] && [ "\${words[\
   if [ -n "\$target" ] && [ -n "\$toplevel" ]; then
     # Inside is judged on the PHYSICAL path, not its text: the deepest ancestor that exists is
     # resolved with cd -P, the rest is taken by name. A '..' in the part that does not exist yet
-    # counts as outside. (A dangling symlink there is no way out: git fails to create through it,
-    # measured on 2.43.0.) The target never goes through \$(...),
-    # which strips a trailing newline; the resolved ancestor is printed with a '/' sentinel.
-    case "\$target" in /*) p="\$target" ;; *) p="\${base:-\$(pwd -P)}/\$target" ;; esac
+    # counts as outside, and so does a symlink there (dangling, or to a file): git follows a
+    # dangling one and makes the tree at its target (verify-sec, review of 28dacd923). The target
+    # never goes through \$(...), which strips a trailing newline; the working folder and the
+    # resolved ancestor are printed with a '/' sentinel.
+    case "\$target" in
+      /*) p="\$target" ;;
+      *)
+        if [ -n "\$base" ]; then cwd="\$base"; else cwd="\$(pwd -P && printf /)"; cwd="\${cwd%/}"; cwd="\${cwd%\$'\\n'}"; fi
+        p="\$cwd/\$target" ;;
+    esac
     rest=""; inside=yes
     while [ -n "\$p" ] && [ ! -d "\$p" ]; do
+      if [ -L "\$p" ]; then inside=no; break; fi
       c="\${p##*/}"
       case "\$c" in
         ..) inside=no; break ;;
