@@ -36,7 +36,17 @@ function statusBadgeColor(status: string): string {
  *  an inner span, not through cn(): tailwind-merge does not know the custom text-label-sm size, so it drops it when a text
  *  colour follows it in the same cn() call (measured: the badge fell to 16px). */
 function statusBadgeText(status: string): string {
-  return status === "rolled_back" ? "text-on-warning" : "";
+  // workspaces-o9o.117: APPLIED and FAILED sit on solid success and destructive (= tertiary) fills and take their inks too.
+  switch (status) {
+    case "rolled_back":
+      return "text-on-warning";
+    case "applied":
+      return "text-on-success";
+    case "failed":
+      return "text-on-tertiary";
+    default:
+      return "";
+  }
 }
 
 function statusLabel(status: string): string {

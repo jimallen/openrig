@@ -11,7 +11,7 @@ const buttonVariants = cva(
       variant: {
         default: "bg-inverse-surface text-background font-headline font-bold uppercase tracking-widest hover:bg-inverse-surface",
         destructive:
-          "bg-tertiary text-white font-bold hover:bg-tertiary/90",
+          "bg-tertiary text-on-tertiary font-bold hover:bg-tertiary/90",
         outline:
           "border border-outline bg-transparent hover:bg-surface-low text-on-surface",
         secondary:

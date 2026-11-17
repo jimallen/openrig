@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Text on green and red fills is readable in both themes (workspaces-o9o.117)
+
+- Symptom: text on a solid success or destructive fill was below 4.5:1. Measured in a rendered browser on the package page: APPLIED 3.19:1 (light) and 1.80:1 (dark), FAILED 1.94:1 and 2.65:1, because those badges inherited the surface text; white on the success fill was 4.01:1 (light) and 2.23:1 (dark), and on the dark destructive fill 3.28:1.
+- Now, as for amber (workspaces-o9o.115), each fill has its own text ink: `--on-success` (dark on both themes: 4.66:1 light, 8.40:1 dark) and `--on-tertiary` for the tertiary (= destructive) fill (white on light, 6.59:1; dark on dark, 5.70:1); `--destructive-foreground` follows it in dark. The install badges, the success and stop verbs, the destructive button, the rig card's hover action and the approval card's hover action use them. There is no info fill: the "info" tone is only ever a dot.
+
 ### Text on an amber fill is readable (workspaces-o9o.115)
 
 - Symptom: text set on the amber fill (`bg-warning`) was white or inherited: the "hold" verb button (white on amber when active, and on hover) at 2.05:1 on light and 1.68:1 on dark, and a package's "ROLLED BACK" install badge at 1.36:1 on dark.

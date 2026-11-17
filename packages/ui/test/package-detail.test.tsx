@@ -176,6 +176,9 @@ describe("PackageDetail", () => {
     expect(labels[0]!.className.split(/\s+/)).not.toContain("text-on-warning");
     for (const badge of badges) expect(badge.className.split(/\s+/)).toContain("text-label-sm");
     expect(badges[2]!.className).toContain("bg-destructive");
+    // workspaces-o9o.117: APPLIED and FAILED sit on solid success and destructive fills and take their on-tone inks.
+    expect(labels[0]!.className.split(/\s+/)).toContain("text-on-success");
+    expect(labels[2]!.className.split(/\s+/)).toContain("text-on-tertiary");
   });
 
   // Test 4: Expand install shows journal entries

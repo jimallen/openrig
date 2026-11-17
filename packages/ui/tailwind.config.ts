@@ -70,6 +70,9 @@ const config: Config = {
         warning: { DEFAULT: "hsl(var(--warning))", ink: "hsl(var(--warning-ink))" },
         // workspaces-o9o.115: text on an amber fill (bg-warning).
         "on-warning": "hsl(var(--on-warning))",
+        // workspaces-o9o.117: text on a solid success fill, and on a tertiary (= destructive) fill.
+        "on-success": "hsl(var(--on-success))",
+        "on-tertiary": "hsl(var(--on-tertiary))",
         accent: "hsl(var(--secondary))",
 
         /* shadcn compat */

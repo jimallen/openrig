@@ -71,12 +71,12 @@ function extractMutationErrorMessage(err: unknown): string {
 // utilities.
 const verbToneClass: Record<MissionControlVerb, { idle: string; active: string }> = {
   approve: {
-    idle: "border-success text-success hover:bg-success hover:text-white",
-    active: "border-success bg-success text-white",
+    idle: "border-success text-success hover:bg-success hover:text-on-success",
+    active: "border-success bg-success text-on-success",
   },
   deny: {
-    idle: "border-tertiary text-tertiary hover:bg-tertiary hover:text-white",
-    active: "border-tertiary bg-tertiary text-white",
+    idle: "border-tertiary text-tertiary hover:bg-tertiary hover:text-on-tertiary",
+    active: "border-tertiary bg-tertiary text-on-tertiary",
   },
   route: {
     idle: "border-on-surface text-on-surface hover:bg-inverse-surface hover:text-background",

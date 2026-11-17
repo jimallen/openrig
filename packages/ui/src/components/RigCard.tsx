@@ -109,7 +109,7 @@ export function RigCard({ rig, psEntry, onSelect, onSnapshot, onExport, onDown }
           </button>
           {isRunning && (
             <button
-              className="px-2 py-0.5 border border-tertiary/30 font-mono text-[9px] text-tertiary hover:bg-tertiary hover:text-white transition-colors"
+              className="px-2 py-0.5 border border-tertiary/30 font-mono text-[9px] text-tertiary hover:bg-tertiary hover:text-on-tertiary transition-colors"
               onClick={(e) => { e.stopPropagation(); onDown(); }}
             >
               DOWN
