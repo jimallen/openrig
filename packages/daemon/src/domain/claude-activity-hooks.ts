@@ -36,7 +36,7 @@ export interface ActivityRelayEvent {
   event: string;
   /** Which managed script this entry runs. Absent: the relay. */
   script?: ClaudeManagedHookScript;
-  /** The hook group's tool matcher (OF-278: PermissionRequest is relayed for AskUserQuestion only). Absent: unscoped, as before. */
+  /** The hook group's tool matcher (OF-278: question-wait runs for AskUserQuestion only; workspaces-o9o.37: the relay is unscoped). Absent: unscoped. */
   matcher?: string;
   timeout?: number;
   /** Claude Code's documented `async: true`: the hook "runs in the background without blocking". Set for events that
@@ -94,14 +94,19 @@ export function deriveRelayEvents(fs: ActivityHookFsRead, manifestPath: string |
         const background = isPlainObject(relay) && relay["async"] === true;
         const matcher = typeof group["matcher"] === "string" && group["matcher"] !== "" ? group["matcher"] : undefined;
         out.push({ event, ...(matcher ? { matcher } : {}), timeout: typeof t === "number" ? t : undefined, ...(background ? { async: true } : {}) });
-        // OF-278: a managed companion in the same group (question-wait.cjs) is delivered with the same matcher.
-        const companion = (group["hooks"] as unknown[]).find((h) => {
-          const c = isPlainObject(h) && typeof h["command"] === "string" ? (h["command"] as string) : "";
-          return c.includes("question-wait.cjs");
-        });
-        if (companion) {
+        // OF-278: the managed companion (question-wait.cjs) is delivered with ITS OWN group's matcher, whichever group of this event holds
+        // it. workspaces-o9o.37: the relay runs unscoped (every tool's PermissionRequest names its tool), while question-wait, the one script
+        // that answers a prompt (`allow`), stays on AskUserQuestion's group: an unscoped matcher must never reach it.
+        for (const companionGroup of groups as unknown[]) {
+          if (!isPlainObject(companionGroup) || !Array.isArray(companionGroup["hooks"])) continue;
+          const companion = (companionGroup["hooks"] as unknown[]).find((h) => {
+            const c = isPlainObject(h) && typeof h["command"] === "string" ? (h["command"] as string) : "";
+            return c.includes("question-wait.cjs");
+          });
+          if (!companion) continue;
           const ct = isPlainObject(companion) ? companion["timeout"] : undefined;
-          out.push({ event, script: "question-wait.cjs", ...(matcher ? { matcher } : {}), timeout: typeof ct === "number" ? ct : undefined });
+          const cm = typeof companionGroup["matcher"] === "string" && companionGroup["matcher"] !== "" ? companionGroup["matcher"] : undefined;
+          out.push({ event, script: "question-wait.cjs", ...(cm ? { matcher: cm } : {}), timeout: typeof ct === "number" ? ct : undefined });
         }
         seen.add(event);
         break;

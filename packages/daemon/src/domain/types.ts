@@ -656,6 +656,10 @@ export interface AgentActivity {
   /** workspaces-o9o.59: "question_hold" when the OF-278 question-wait hold, not the relay, recorded this question's PermissionRequest; it tells the
    *  two records of one question apart when the turn's questions are counted. */
   recordedBy?: "question_hold";
+  /** workspaces-o9o.37: on a Notification/permission_prompt, the tool its PermissionRequest named (every tool's PermissionRequest is relayed and
+   *  names it; the Notification names none). The prompt is then cleared by that tool's own end, with no time window. Absent on a seat whose
+   *  relay predates it (PermissionRequest for AskUserQuestion only): such a prompt keeps the window rule. */
+  promptTool?: string;
 }
 
 export interface NodeRecoveryGuidance {

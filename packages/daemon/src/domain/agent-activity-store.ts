@@ -151,6 +151,16 @@ export class AgentActivityStore {
       if (before?.dialog === "question" && before.state === "needs_input" && (before.generation ?? null) === (activity.generation ?? null)) {
         activity.reason = QUESTION_DIALOG_REASON;
         activity.dialog = "question";
+      } else {
+        // workspaces-o9o.37: a plain prompt's PermissionRequest (relayed for every tool, synchronously, before this Notification) named its
+        // tool; the Notification names none. When the seat's latest word is that PermissionRequest, the Notification carries its tool, so the
+        // prompt is cleared by that tool's end with no time window. A seat on the older relay sends no such PermissionRequest: no promptTool.
+        const latest = this._latestActivity(session.node_id);
+        if (latest?.rawEvent === "PermissionRequest" && latest.state === "needs_input" && latest.dialog !== "question"
+          && typeof latest.rawSubtype === "string" && latest.rawSubtype !== QUESTION_DIALOG_TOOL
+          && (latest.generation ?? null) === (activity.generation ?? null)) {
+          activity.promptTool = latest.rawSubtype;
+        }
       }
     }
 
@@ -201,6 +211,15 @@ export class AgentActivityStore {
   /** The seat's latest word when it is a question to the human still open: the turn has asked more questions than have ended, and it has not
    *  gone on past the dialog (no tool other than AskUserQuestion has started, by its own eventAt, since). Null otherwise. Used to tell a question's own delayed Notification from another
    *  tool's permission prompt (workspaces-o9o.57). */
+  /** The seat's latest word, as the posture reads it (pickLatestByOrdering over ACTIVITY_SCAN_ROWS rows). */
+  private _latestActivity(nodeId: string): AgentActivity | null {
+    const rows = this.db.prepare(
+      `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${ACTIVITY_SCAN_ROWS}`
+    ).all(nodeId) as EventPayloadRow[];
+    const parsed = rows.map((r) => parseActivityPayload(r.payload));
+    return pickLatestByOrdering(parsed, questionCallsIn(parsed))?.activity ?? null;
+  }
+
   private _questionStillOpen(nodeId: string): AgentActivity | null {
     const rows = this.db.prepare(
       `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${ACTIVITY_SCAN_ROWS}`
@@ -440,7 +459,7 @@ const ASYNC_RELAYED_EVENTS = TOOL_CALL_EVENTS;
  *  is unmeasured: such an end would clear the prompt early. A question to the human never uses this window (promptClearedBy). */
 export const ASYNC_PROMPT_CLEAR_SLACK_MS = 2_000;
 
-type OrderingActivity = Pick<AgentActivity, "rawEvent" | "eventAt"> & Partial<Pick<AgentActivity, "state" | "rawSubtype" | "dialog" | "toolCallId" | "generation" | "recordedBy" | "questionKey">>;
+type OrderingActivity = Pick<AgentActivity, "rawEvent" | "eventAt"> & Partial<Pick<AgentActivity, "state" | "rawSubtype" | "dialog" | "toolCallId" | "generation" | "recordedBy" | "questionKey" | "promptTool">>;
 
 /** workspaces-o9o.4 F3: the AskUserQuestion calls of the current turn, by call id: those started, and those of them still open.
  *  workspaces-o9o.59: and how many questions the turn asked and how many of them ended, which needs no call id. */
@@ -459,8 +478,10 @@ export interface QuestionCalls {
  *  earlier turn's question names a call this turn never started. An end with no call id (a seat still on the relay from before
  *  workspaces-o9o.4, until it is relaunched) keeps the old rule: any AskUserQuestion end. Stop and UserPromptSubmit are synchronous and
  *  clear a question by arrival. Whatever the call ids say, a question stays while the turn has asked more questions than have ended
- *  (workspaces-o9o.59). A plain permission prompt, which names no call, is cleared by a tool end stamped more than
- *  ASYNC_PROMPT_CLEAR_SLACK_MS after it. */
+ *  (workspaces-o9o.59). A plain permission prompt that names its tool (workspaces-o9o.37: its PermissionRequest, or the Notification that
+ *  carries that tool as promptTool) is cleared only by an end of that same tool, with no time window. A plain prompt that names none (a seat
+ *  on the relay from before workspaces-o9o.37, until it is relaunched) is cleared by a tool end stamped more than ASYNC_PROMPT_CLEAR_SLACK_MS
+ *  after it. */
 function promptClearedBy(prompt: OrderingActivity, candidate: OrderingActivity, candidateMs: number, promptMs: number, questions: QuestionCalls): boolean {
   if (candidate.rawEvent === "PreToolUse") return false;
   if (prompt.dialog === "question" || (prompt.rawEvent === "PermissionRequest" && prompt.rawSubtype === QUESTION_DIALOG_TOOL)) {
@@ -472,6 +493,8 @@ function promptClearedBy(prompt: OrderingActivity, candidate: OrderingActivity, 
     if (!id) return true;
     return questions.started.has(id) && questions.open.size === 0;
   }
+  const tool = prompt.promptTool ?? (prompt.rawEvent === "PermissionRequest" ? prompt.rawSubtype ?? undefined : undefined);
+  if (tool) return (candidate.rawEvent === "PostToolUse" || candidate.rawEvent === "PostToolUseFailure") && candidate.rawSubtype === tool;
   return Number.isFinite(promptMs) ? candidateMs > promptMs + ASYNC_PROMPT_CLEAR_SLACK_MS : true;
 }
 
