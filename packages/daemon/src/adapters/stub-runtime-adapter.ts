@@ -32,6 +32,7 @@ import {
   type StubRunnerState,
 } from "./stub-runner-protocol.js";
 import { durableLaunchFailureSuffix, paneTailQuote, redactPaneText } from "../domain/launch-failure-report.js";
+import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
 
@@ -282,7 +283,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
               ok: false,
               error: `stub launch failed: the runner exited (code ${state.exited.code ?? "unknown"})${durableLaunchFailureSuffix(paneContent)}`,
               recovery: "attention_required",
-              evidence: redactPaneText(paneContent.split("\n").slice(-12).join("\n")),
+              evidence: redactPaneText(await joinedPaneEvidence(this.tmux, binding.tmuxSession ?? "")),
               ...(tail ? { paneTail: tail } : {}),
             },
           };

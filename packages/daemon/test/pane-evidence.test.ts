@@ -50,6 +50,8 @@ describe("pane evidence is read with soft wraps joined (workspaces-o9o.3)", () =
       "adapters/codex-runtime-adapter.ts", "adapters/codex-runtime-adapter.ts", "adapters/codex-runtime-adapter.ts",
       "adapters/pda-runtime-adapter.ts",
       "adapters/pi-resume.ts",
+      // a stub runner that exits before ready (workspaces-o9o.29)
+      "adapters/stub-runtime-adapter.ts",
       "domain/resume-settle.ts",
     ]);
   });
