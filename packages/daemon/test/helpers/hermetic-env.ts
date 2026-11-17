@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { startHcScratch, type HcScratch } from "./hc-scratch.js";
-import { inheritedTestEnv } from "./daemon-entrypoint.js";
+import { inheritedTestEnv, stateRoutingName } from "./daemon-entrypoint.js";
 import { hasProcFs, reapWhenOwnerDies, stopOwnedTmuxServerSync } from "./orphan-reaper.js";
 
 /**
@@ -311,11 +311,15 @@ export interface PrepareHermeticEnvOptions {
   /**
    * workspaces-o9o.66: names handed to the scenario's daemon, CLI, TUI and seats ON PURPOSE (a configuration a test checks reaches
    * a seat, the real-Codex opt-in's CODEX_HOME). The base env gives only its allow-listed names; these are added after them, and
-   * the scaffold's own scratch paths still win. Refused like the base env when they name a daemon target, a tmux attachment or a
-   * clock.
+   * the scaffold's own scratch paths still win. A name that routes state or picks a server (daemon-entrypoint.ts stateRoutingName:
+   * HOME, XDG_*, TMUX*, HC_*, OPENRIG_*, RIGGED_*) is refused; CODEX_HOME and CLAUDE_CONFIG_DIR are allowed.
    */
   childEnv?: Record<string, string | undefined>;
 }
+
+/** The routing names childEnv may still carry: a harness's configuration home, which a test or the real-Codex opt-in supplies on
+ *  purpose (CODEX_HOME holds its auth). */
+const CHILD_ENV_CONFIG_HOMES: readonly string[] = ["CODEX_HOME", "CLAUDE_CONFIG_DIR"];
 
 /**
  * Build a per-run hermetic scaffold. FAILS CLOSED FIRST: if the base env points at
@@ -342,10 +346,11 @@ export function prepareHermeticEnv(opts: PrepareHermeticEnvOptions = {}): Hermet
   // D5: an inherited tmux ATTACHMENT would put real scenario seats on the
   // operator's server. Refuse before any filesystem effect, like the others.
   assertNoAmbientTmux(baseEnv);
-  if (opts.childEnv) {
-    assertNoForeignDaemon(opts.childEnv);
-    assertNoAmbientClock(opts.childEnv);
-    assertNoAmbientTmux(opts.childEnv);
+  // childEnv may carry a harness's configuration home on purpose, never a name that routes state or picks a server (the same rule
+  // daemon-entrypoint.ts applies to its opts.env): the scaffold's own paths, private core and tmux socket are its only ones.
+  const routedChildEnv = Object.keys(opts.childEnv ?? {}).filter((name) => stateRoutingName(name) && !CHILD_ENV_CONFIG_HOMES.includes(name)).sort();
+  if (routedChildEnv.length > 0) {
+    throw new Error(`hermetic env refused: childEnv may not name ${routedChildEnv.join(", ")} (it routes state or picks a server; the scaffold's own are used)`);
   }
 
   const root = mkdtempSync(join(tmpdir(), "openrig-scenario-"));

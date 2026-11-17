@@ -73,13 +73,13 @@ describe("o9o.66: the scenario scaffold's env is an allow-list", () => {
     expect(leaks(scaffold.tmuxEnv, seat, root)).toEqual([]);
   });
 
-  it("childEnv hands names to the children on purpose, after the allow-list, and the scaffold's own paths still win", () => {
+  it("childEnv hands configuration to the children on purpose, after the allow-list, under the scaffold's own home", () => {
     const scaffold = prepareHermeticEnv({
       baseEnv: { PATH: process.env["PATH"] },
-      childEnv: { CODEX_HOME: "/configured/codex", ANTHROPIC_BASE_URL: "https://anthropic.example.test", HOME: "/not/the/scaffold", OPENRIG_HOME: "/not/it/either" },
+      childEnv: { CODEX_HOME: "/configured/codex", CLAUDE_CONFIG_DIR: "/configured/claude", ANTHROPIC_BASE_URL: "https://anthropic.example.test" },
     });
     scaffolds.push(scaffold);
-    expect(scaffold.env).toMatchObject({ CODEX_HOME: "/configured/codex", ANTHROPIC_BASE_URL: "https://anthropic.example.test" });
+    expect(scaffold.env).toMatchObject({ CODEX_HOME: "/configured/codex", CLAUDE_CONFIG_DIR: "/configured/claude", ANTHROPIC_BASE_URL: "https://anthropic.example.test" });
     expect(scaffold.env["HOME"]).toBe(scaffold.home);
     expect(scaffold.env["OPENRIG_HOME"]).toBe(scaffold.openrigHome);
   });
@@ -87,6 +87,11 @@ describe("o9o.66: the scenario scaffold's env is an allow-list", () => {
   it.each([
     ["a daemon target", { OPENRIG_URL: "http://127.0.0.1:1" }],
     ["a tmux attachment", { TMUX: "/tmp/x,1,0" }],
+    ["a live-looking hc runtime dir", { XDG_RUNTIME_DIR: "/run/user/1000" }],
+    ["an hc socket", { HC_SOCKET: "/run/user/1000/herdr-core/default.sock" }],
+    ["the account's HOME", { HOME: "/home/operator" }],
+    ["a database", { OPENRIG_DB: "/home/operator/.openrig/openrig.sqlite" }],
+    ["a transcripts path", { OPENRIG_TRANSCRIPTS_PATH: "/home/operator/.openrig/transcripts" }],
   ])("childEnv naming %s is refused, like the base env (the refusals run before the scaffold makes anything)", (_what, childEnv) => {
     expect(() => prepareHermeticEnv({ baseEnv: { PATH: process.env["PATH"] }, childEnv })).toThrow(/refus|hazard|foreign|attach/i);
   });
