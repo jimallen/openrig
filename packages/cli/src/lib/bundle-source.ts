@@ -127,8 +127,11 @@ function checkGitHubBundleSymlinks(checkoutDir: string): void {
 }
 
 /** A `shipped:` ref in a GitHub bundle (workspaces-o9o.21): it would name an agent from whatever OpenRig the reader has installed,
- *  not from the fetched checkout, so it is refused with its own message rather than the generic "outside the repository" one. */
-class ShippedRefInGitHubBundle extends Error {}
+ *  not from the fetched checkout, so it is refused with its own message rather than the generic "outside the repository" one.
+ *  An `agents-release:` ref (workspaces-o9o.53) would name one from the reader's own deployed agents release: refused the same way. */
+class HostAnchoredRefInGitHubBundle extends Error {
+  constructor(readonly scheme: "shipped:" | "agents-release:", ref: string) { super(ref); }
+}
 
 /** Match create: member/package refs use the rig directory; imports use their agent directory. */
 function checkGitHubBundleRefs(folder: string, checkoutDir: string, retainedCheckoutDir?: string, includePackages: readonly string[] = []): void {
@@ -144,7 +147,8 @@ function checkGitHubBundleRefs(folder: string, checkoutDir: string, retainedChec
   const agent = (ref: unknown, from: string, ancestors = new Set<string>()): void => {
     if (ref === "builtin:terminal") return;
     if (typeof ref !== "string") throw new Error();
-    if (ref.startsWith("shipped:")) throw new ShippedRefInGitHubBundle(ref);
+    if (ref.startsWith("shipped:")) throw new HostAnchoredRefInGitHubBundle("shipped:", ref);
+    if (ref.startsWith("agents-release:")) throw new HostAnchoredRefInGitHubBundle("agents-release:", ref);
     const dir = ref.startsWith("local:") && ref.length > 6 ? path.resolve(from, ref.slice(6))
       : ref.startsWith("path:") && path.isAbsolute(ref.slice(5)) ? ref.slice(5) : undefined;
     if (!dir) throw new Error();
@@ -175,7 +179,7 @@ function checkGitHubBundleRefs(folder: string, checkoutDir: string, retainedChec
   } catch (error) {
     // A persona file the guard refused says why (size, link count, not a regular file); anything else is a ref outside the repository.
     if (error instanceof PersonaFileRefused) throw new Error(`GitHub bundle persona file refused: ${error.message}; no bundle was built.`);
-    if (error instanceof ShippedRefInGitHubBundle) throw new Error(`GitHub bundles take local: or path: refs; shipped: is not allowed (${JSON.stringify(error.message)}); no bundle was built.`);
+    if (error instanceof HostAnchoredRefInGitHubBundle) throw new Error(`GitHub bundles take local: or path: refs; ${error.scheme} is not allowed (${JSON.stringify(error.message)}); no bundle was built.`);
     throw new Error("GitHub bundle refs must resolve inside the fetched repository; no bundle was built.");
   }
 }

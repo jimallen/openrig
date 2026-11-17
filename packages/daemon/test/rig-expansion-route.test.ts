@@ -860,7 +860,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     ["codex_config_profile", "", "codex"],
     ["agent_ref", 5, "claude-code"],
     ["agent_ref", null, "claude-code"],
-    // claude-code "" additionally earns the 'must start with "local:", "path:" or "shipped:"' error; a truthiness gate drops it
+    // claude-code "" additionally earns the 'must start with "local:", "path:", "shipped:" or "agents-release:"' error; a truthiness gate drops it
     ["agent_ref", "", "claude-code"],
     // terminal seats echo the value in their error ('(got "5")'), so erasing it to absent changes the text
     ["agent_ref", 5, "terminal"],

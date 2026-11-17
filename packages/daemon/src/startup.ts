@@ -32,6 +32,7 @@ import { NodeLauncher } from "./domain/node-launcher.js";
 import { seatRestartEnv } from "./domain/seat-restart-env.js";
 import { describeShimRefresh, refreshGitWorktreeShim } from "./domain/git-worktree-shim.js";
 import { nodeShimFiles } from "./adapters/node-shim-files.js";
+import { deployedAgentsReleaseRoot } from "./adapters/agents-release-root.js";
 import { nodeTranscriptFiles } from "./adapters/node-transcript-files.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
@@ -969,6 +970,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const packageInstallService = new PackageInstallService({ packageRepo, installRepo, installEngine, installVerifier });
   const resolverFsOps = {
     ...guardedAgentRefFsOps,
+    agentsReleaseRoot: deployedAgentsReleaseRoot(),
     readFile: (p: string) => fs.readFileSync(p, "utf-8"),
     exists: (p: string) => fs.existsSync(p),
     listFiles: (dirPath: string) => {
@@ -1211,7 +1213,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // the spec library roots are captured further down, before the library initializer runs).
     specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots() }),
     sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
-    fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
+    fsOps: { ...guardedAgentRefFsOps, agentsReleaseRoot: deployedAgentsReleaseRoot(), readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
     adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
     tmuxAdapter,
     agentImageLibrary,

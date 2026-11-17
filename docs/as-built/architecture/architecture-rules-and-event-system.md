@@ -119,8 +119,9 @@ system-level invariants.
 
 ### Remote import constraints
 
-The reboot supports `local:...`, `path:/abs/...` and `shipped:...` (relative
-to the running install's specs folder) agent refs. Remote `agent_ref` sources
+The reboot supports `local:...`, `path:/abs/...`, `shipped:...` (relative
+to the running install's specs folder) and `agents-release:...` (relative to the
+deployed agents release, ~/.agents-release/current) agent refs. Remote `agent_ref` sources
 remain unsupported and fail in preflight (schema validation through
 `parseAgentRef`, `rigspec-schema.ts:716`; restated in compat note 1).
 

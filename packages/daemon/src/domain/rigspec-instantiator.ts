@@ -2822,8 +2822,8 @@ export class PodRigInstantiator {
   }
 
   /**
-   * OF-122: the agent provenance of the persona a seat's `path:` or `shipped:` agent_ref reaches now (through the guarded
-   * reader, as at first launch). A `local:` ref is relative to a rig root a stored-context launch does not have, so it is
+   * OF-122: the agent provenance of the persona a seat's `path:`, `shipped:` or `agents-release:` agent_ref reaches now
+   * (through the guarded reader, as at first launch). A `local:` ref is relative to a rig root a stored-context launch does not have, so it is
    * not re-read here. Reads only.
    */
   readSeatAgentProvenance(input: { nodeId: string }): { name: string; version: string; hash: string } | null {
@@ -2836,8 +2836,9 @@ export class PodRigInstantiator {
     let typed: string;
     let shipped: ReturnType<typeof resolveAgentRef> | undefined;
     if (ref.startsWith("path:")) typed = nodePath.resolve(ref.slice("path:".length));
-    else if (ref.startsWith("shipped:")) {
-      // A shipped: ref needs no rig root: it names a folder in the running install, recorded as at first launch.
+    else if (ref.startsWith("shipped:") || ref.startsWith("agents-release:")) {
+      // A shipped: or agents-release: ref needs no rig root: it names a folder under a fixed root (the running install, the
+      // deployed agents release), recorded as at first launch.
       shipped = resolveAgentRef(ref, nodePath.sep, this.deps.fsOps);
       if (!shipped.ok) return null;
       typed = shipped.resolved.sourcePath;

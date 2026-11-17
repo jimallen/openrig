@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { deployedAgentsReleaseRoot } from "../adapters/agents-release-root.js";
 import os from "node:os";
 import nodePath from "node:path";
 import { Hono } from "hono";
@@ -363,6 +364,7 @@ function podAssemblerFsOps(): PodAssemblerFsOps {
   return {
     ...assemblerFsOps(),
     ...guardedAgentRefFsOps,
+    agentsReleaseRoot: deployedAgentsReleaseRoot(),
     realpath: (p) => fs.realpathSync(p),
     readFile: (p) => fs.readFileSync(p, "utf-8"),
     readFileBuffer: (p) => fs.readFileSync(p),

@@ -3,6 +3,7 @@ import nodePath from "node:path";
 import { checkGuardedFile, type GuardedFileKind } from "./culture-file-guard.js";
 import { runningShippedSpecsRoot } from "./builtin-startup-files.js";
 import { confineUnderRoot, isInside, realOrSame } from "./confined-ref.js";
+import { DEFAULT_PATH_JUDGE_IO, untrustedPathProblem, type PathJudgeIo } from "./codex-mcp-servers.js";
 
 /**
  * TRUST BOUNDARY (read this before changing anything here). Same decision as culture-file-guard.ts.
@@ -35,6 +36,16 @@ import { confineUnderRoot, isInside, realOrSame } from "./confined-ref.js";
  * (`..` or a symlink out is refused), and so are the persona's own `local:` imports. Recorded as typed under the root as
  * given (OF-99). Node already reports the module's real path, so in production the root is the install's real folder;
  * the stored files then follow a moved install through the existing re-anchoring (builtin-startup-files.ts).
+ *
+ * `agents-release:` refs (workspaces-o9o.53). Relative to the DEPLOYED AGENTS RELEASE, `<home>/.agents-release/current`
+ * (handed in as `agentsReleaseRoot` by the adapter, adapters/agents-release-root.ts: home is the daemon's own), so a spec names a reviewed persona of that release on every
+ * host. Confined to it exactly as a `shipped:` ref is to the install (confineUnderRoot: the lexical and the real target),
+ * and so are the persona's own `local:` imports; recorded as typed under the root as given, so a restore or a fresh
+ * launch follows `current` to the next release (OF-99). Unlike the install, the release lives in the user's home, so it
+ * is not trusted by identity: the persona folder must also pass the path rule spec and MCP files already use
+ * (untrustedPathProblem: owned by you or root with no group/other-writable component, as written and as resolved, and
+ * not in a git work tree, a `.workspaces` folder or a temp root). A deployed release (a read-only `git archive`
+ * export) passes; `current` pointed into a checkout does not.
  *
  * Persona file. The resolver reads exactly one file per persona folder, `agent.yaml`. It must be, after
  * realpath, a regular file with a single link, at most PERSONA_FILE_MAX_BYTES, read through ONE descriptor
@@ -93,7 +104,13 @@ export interface AgentRefFs {
   realpath?(path: string): string;
   /** The specs folder a `shipped:` ref is relative to; the running install's when unset (tests point it elsewhere). */
   shippedSpecsRoot?: string;
+  /** The folder an `agents-release:` ref is relative to: production hands it `<home>/.agents-release/current`
+   *  (adapters/agents-release-root.ts). Unset, an `agents-release:` ref is refused rather than guessed. */
+  agentsReleaseRoot?: string;
+  /** How an `agents-release:` persona folder is judged; the production judge when unset (tests judge a temp fixture). */
+  pathJudgeIo?: PathJudgeIo;
 }
+
 
 export type AgentRefDir =
   | { ok: true; dir: string; /** The root this persona's own `local:` imports are confined to (set for a `local:` ref only). */ importRoot?: string }
@@ -169,6 +186,29 @@ export function resolveAgentRefDir(ref: string, baseDir: string, fs: AgentRefFs,
         message: `agent_ref "${ref}" resolves to ${confined.real}, outside ${confined.root}, the installed OpenRig's specs folder; a shipped: ref must stay inside it`,
       };
     }
+    return { ok: true, dir: asTyped(fs, confined.typed, confined.real), importRoot: confined.root };
+  }
+  if (ref.startsWith("agents-release:")) {
+    const rel = ref.slice("agents-release:".length);
+    if (!rel) return { ok: false, kind: "malformed", message: `Cannot resolve agent_ref "${ref}"` };
+    if (nodePath.isAbsolute(rel)) {
+      return { ok: false, kind: "refused", message: `agent_ref "${ref}": an agents-release: ref must be a path relative to the deployed agents release (~/.agents-release/current)` };
+    }
+    if (!fs.agentsReleaseRoot) {
+      return { ok: false, kind: "refused", message: `agent_ref "${ref}": this resolver has no deployed agents release to resolve an agents-release: ref against` };
+    }
+    const confined = confineUnderRoot(fs.agentsReleaseRoot, rel, fs);
+    if (!confined.ok) {
+      return {
+        ok: false,
+        kind: "refused",
+        message: `agent_ref "${ref}" resolves to ${confined.real}, outside ${confined.root}, the deployed agents release; an agents-release: ref must stay inside it`,
+      };
+    }
+    // A missing folder is left to the resolver's own "not found"; one that exists must be the user's, unshared and outside
+    // any checkout or temp folder.
+    const judged = untrustedPathProblem(confined.typed, "the persona folder", {}, fs.pathJudgeIo ?? DEFAULT_PATH_JUDGE_IO);
+    if (judged?.kind === "untrusted") return { ok: false, kind: "refused", message: `agent_ref "${ref}": ${judged.why}` };
     return { ok: true, dir: asTyped(fs, confined.typed, confined.real), importRoot: confined.root };
   }
   return { ok: false, kind: "malformed", message: `Cannot resolve agent_ref "${ref}"` };

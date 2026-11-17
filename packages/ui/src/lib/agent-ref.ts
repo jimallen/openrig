@@ -6,6 +6,10 @@
 // library indexes that same folder as its builtin root, so the builtin agent entry whose relativePath is `<rel>/agent.yaml`
 // is exactly the persona the ref names. It is matched by that path, never by name: an agent's `name` need not be its folder
 // (the kernel's `rigs/launch/kernel/agents/operator/agent` is named `operator.agent`), and a user spec may share a name.
+//
+// `agents-release:<rel>` (workspaces-o9o.53) names a persona folder in the user's DEPLOYED AGENTS RELEASE
+// (`~/.agents-release/current`). It is named the way a shipped: ref is, but it is the user's own file, and the spec library
+// does not index that release, so no library entry is ever matched to it (shippedAgentManifestPath is null for it).
 
 export type AgentRefSource = "builtin" | "user_file" | "fork";
 
@@ -13,15 +17,16 @@ export type AgentRefSource = "builtin" | "user_file" | "fork";
  * The spec name and source the rig spec display shows for a member's agent_ref. The name is the part after `agents/`
  * (for `shipped:`, after the LAST `agents/` segment, so a persona nested in a shipped rig is named by its own folder);
  * everything before it is the source qualifier. `shipped:` and `builtin:` refs ship with OpenRig; `fork:` is a fork;
- * anything else is the user's own file.
+ * anything else is the user's own file. An `agents-release:` ref is named like a `shipped:` one (after its LAST `agents/`).
  */
 export function parseAgentRef(agentRef: string): { specName: string; source: AgentRefSource } {
-  if (agentRef.startsWith("shipped:")) {
-    const rel = agentRef.slice("shipped:".length).replace(/\/+$/, "");
+  for (const [scheme, source] of [["shipped:", "builtin"], ["agents-release:", "user_file"]] as const) {
+    if (!agentRef.startsWith(scheme)) continue;
+    const rel = agentRef.slice(scheme.length).replace(/\/+$/, "");
     const segments = rel.split("/");
     const agents = segments.lastIndexOf("agents");
     const name = agents >= 0 && agents < segments.length - 1 ? segments.slice(agents + 1).join("/") : rel;
-    return { specName: name, source: "builtin" };
+    return { specName: name, source };
   }
   const trimmed = agentRef.startsWith("local:") ? agentRef.slice("local:".length) : agentRef;
   const stripQual = trimmed.replace(/^(builtin|user|fork):/, "");

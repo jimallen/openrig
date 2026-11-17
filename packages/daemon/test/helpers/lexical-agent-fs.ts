@@ -10,7 +10,9 @@ import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../../src/do
  *  - `realpath` returns the path unchanged, as the resolver does when `realpath` is absent (agent-resolver.ts
  *    `realpath ? realpath(p) : p`, agent-ref-guard.ts `realOrSame`);
  *  - `readPersonaFile` calls the returned object's own `readFile` at call time, as the resolver does when
- *    `readPersonaFile` is absent, so a test that later replaces `readFile` (or spies on it) sees the same calls.
+ *    `readPersonaFile` is absent, so a test that later replaces `readFile` (or spies on it) sees the same calls;
+ *  - `agentsReleaseRoot` (workspaces-o9o.53, required in production) names a folder that cannot exist, so an
+ *    `agents-release:` ref in such a test reads as not found; no test that predates the scheme can observe it.
  * Members the filesystem already has are kept.
  */
 export function lexicalAgentFs<T extends AgentResolverFsOps>(fs: T): T & GuardedAgentResolverFsOps {
@@ -18,6 +20,7 @@ export function lexicalAgentFs<T extends AgentResolverFsOps>(fs: T): T & Guarded
     ...fs,
     realpath: fs.realpath ?? ((path: string): string => path),
     readPersonaFile: fs.readPersonaFile ?? ((path: string): string => out.readFile(path)),
+    agentsReleaseRoot: fs.agentsReleaseRoot ?? "/nonexistent-openrig-test-agents-release/current",
   };
   return out;
 }

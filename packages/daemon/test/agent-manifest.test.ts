@@ -121,7 +121,7 @@ imports:
 `);
     const result = validateAgentSpec(raw);
     expect(result.valid).toBe(false);
-    expect(result.errors[0]).toMatch(/must start with "local:", "path:" or "shipped:"/);
+    expect(result.errors[0]).toMatch(/must start with "local:", "path:", "shipped:" or "agents-release:"/);
   });
 
   // T3b: local:/abs/path rejected
@@ -176,6 +176,21 @@ imports:
 
   it("shipped: with no path is rejected", () => {
     expect(importRef("shipped:").errors).toEqual(["imports[0].ref: shipped: ref must have a path"]);
+  });
+
+  // workspaces-o9o.53: agents-release:<rel> names the deployed agents release, with the same shape rule.
+  it("agents-release: with a relative path is accepted (an rsi persona of the deployed release)", () => {
+    expect(importRef("agents-release:agents/rsi-steward").errors).toEqual([]);
+    expect(importRef("agents-release:agents/x/../rsi-steward").valid).toBe(true);
+  });
+
+  it("agents-release: that is absolute, climbs out, or is empty is rejected with the grammar's reason", () => {
+    expect(importRef("agents-release:/home/u/.agents-release/current/agents/x").errors)
+      .toEqual(['imports[0].ref: agents-release: ref must be a path relative to the deployed agents release, ~/.agents-release/current (got "agents-release:/home/u/.agents-release/current/agents/x")']);
+    for (const ref of ["agents-release:..", "agents-release:../x", "agents-release:agents/../../x"]) {
+      expect(importRef(ref).errors, ref).toEqual([`imports[0].ref: agents-release: ref must stay inside the deployed agents release, ~/.agents-release/current (got "${ref}")`]);
+    }
+    expect(importRef("agents-release:").errors).toEqual(["imports[0].ref: agents-release: ref must have a path"]);
   });
 
   // T4: version range rejected

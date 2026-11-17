@@ -11,13 +11,17 @@ import nodePath from "node:path";
  * - `shipped:<relative>` relative to the RUNNING OpenRig install's own specs folder (`<install>/daemon/specs`, or
  *   `packages/daemon/specs` in a checkout), so one spec works on every install prefix (Homebrew, ~/.local, a
  *   checkout). It may not leave that folder: no absolute path and no `..` that climbs out of it.
+ * - `agents-release:<relative>` (workspaces-o9o.53) relative to the DEPLOYED AGENTS RELEASE in the user's home,
+ *   `<home>/.agents-release/current`, so a spec names a reviewed persona of that release on every host (a Mac home and a
+ *   Linux home alike). The same shape rule as `shipped:`; where it points and whether that folder may be trusted is
+ *   decided by agent-ref-guard.ts.
  *
  * `builtin:terminal` is not a scheme: it is the terminal-node sentinel, handled by the rig spec validator.
  */
-export const AGENT_REF_SCHEMES = ["local:", "path:", "shipped:"] as const;
+export const AGENT_REF_SCHEMES = ["local:", "path:", "shipped:", "agents-release:"] as const;
 
 export type ParsedAgentRef =
-  | { ok: true; scheme: "local" | "shipped"; relative: string }
+  | { ok: true; scheme: "local" | "shipped" | "agents-release"; relative: string }
   | { ok: true; scheme: "path"; absolute: string }
   | { ok: false; reason: string };
 
@@ -54,7 +58,18 @@ export function parseAgentRef(ref: string): ParsedAgentRef {
     }
     return { ok: true, scheme: "shipped", relative };
   }
-  return { ok: false, reason: `must start with "local:", "path:" or "shipped:" (got "${ref}")` };
+  if (ref.startsWith("agents-release:")) {
+    const relative = ref.slice("agents-release:".length);
+    if (!relative) return { ok: false, reason: "agents-release: ref must have a path" };
+    if (relative.startsWith("/")) {
+      return { ok: false, reason: `agents-release: ref must be a path relative to the deployed agents release, ~/.agents-release/current (got "${ref}")` };
+    }
+    if (climbsOut(relative)) {
+      return { ok: false, reason: `agents-release: ref must stay inside the deployed agents release, ~/.agents-release/current (got "${ref}")` };
+    }
+    return { ok: true, scheme: "agents-release", relative };
+  }
+  return { ok: false, reason: `must start with "local:", "path:", "shipped:" or "agents-release:" (got "${ref}")` };
 }
 
 /** A relative path whose normal form leaves the folder it is relative to (`..`, `../x`, `a/../../x`). */

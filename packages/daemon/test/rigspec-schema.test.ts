@@ -414,7 +414,20 @@ describe("RigSpec schema (pod-aware)", () => {
     (rig.pods[0]!.members[0] as Record<string, unknown>)["agent_ref"] = "github:foo/bar";
     const result = RigSpecSchema.validate(rig);
     expect(result.valid).toBe(false);
-    expect(result.errors[0]).toMatch(/agent_ref.*must start with "local:", "path:" or "shipped:"/);
+    expect(result.errors[0]).toMatch(/agent_ref.*must start with "local:", "path:", "shipped:" or "agents-release:"/);
+  });
+
+  // workspaces-o9o.53: a member may name a persona of the deployed agents release (the kernel's improve pod).
+  it("member agent_ref agents-release:<relative> is accepted; absolute, climbing or empty is rejected with the grammar's reason", () => {
+    const check = (ref: string) => {
+      const rig = structuredClone(VALID_RIG);
+      (rig.pods[0]!.members[0] as Record<string, unknown>)["agent_ref"] = ref;
+      return RigSpecSchema.validate(rig);
+    };
+    expect(check("agents-release:agents/rsi-steward").errors).toEqual([]);
+    expect(check("agents-release:/abs/agents/x").errors).toEqual([expect.stringMatching(/agent_ref: agents-release: ref must be a path relative to the deployed agents release/)]);
+    expect(check("agents-release:../x").errors).toEqual([expect.stringMatching(/agent_ref: agents-release: ref must stay inside the deployed agents release/)]);
+    expect(check("agents-release:").errors).toEqual([expect.stringMatching(/agent_ref: agents-release: ref must have a path$/)]);
   });
 
   // workspaces-o9o.1: a member may name a persona in the running install's specs folder (the kernel rig's members).

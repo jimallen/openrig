@@ -201,7 +201,7 @@ imports:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ref` | string | yes | Reference to another AgentSpec directory. Must start with `local:` (relative), `path:` (absolute) or `shipped:` (relative to the installed OpenRig's specs folder). The referenced directory must contain an `agent.yaml`. |
+| `ref` | string | yes | Reference to another AgentSpec directory. Must start with `local:` (relative), `path:` (absolute), `shipped:` (relative to the installed OpenRig's specs folder) or `agents-release:` (relative to the deployed agents release, `~/.agents-release/current`). The referenced directory must contain an `agent.yaml`. |
 | `version` | string | no | Optional version constraint. Must be an exact version — no ranges (`~`, `^`, `>=`, etc.). When set, the imported spec's `version` must equal it, or resolution fails with `version_mismatch`. |
 
 ### Import Resolution
@@ -213,6 +213,12 @@ imports:
   is the shared builtin spec under Homebrew, under `~/.local` and in a checkout alike. The path must be relative and may
   not leave that folder: an absolute path, a `..` that climbs out of it, or a symlink inside it that points outside is
   refused
+- `agents-release:` paths resolve relative to the deployed agents release in the user's home,
+  `~/.agents-release/current` (the daemon's own home), so a spec names a persona of that release on every host:
+  `agents-release:agents/rsi-steward`. The same shape rule as `shipped:`, and the folder must also be the user's own: owned
+  by you or root, not writable by group or others (as written and as resolved), and not inside a git checkout, a
+  `.workspaces` folder or a temp folder. It is recorded through `current`, so a restore or a fresh launch follows
+  `current` to the next release
 - Imported resources become available for `uses` references in profiles
 - A qualified reference `namespace:id` (e.g., `shared:openrig-core`) names the imported spec by its `name` field
 - An unqualified reference (just `id`) resolves against the spec's own resources first, then against the one import that
@@ -512,8 +518,9 @@ restore behavior, and the distinction between readiness and verified proof.
 
 1. `name` and `version` are required non-empty strings.
 2. `imports` must be an array of objects with `ref` field.
-3. Import `ref` must start with `local:` (relative), `path:` (absolute) or `shipped:` (relative to the installed
-   OpenRig's specs folder, and not leaving it).
+3. Import `ref` must start with `local:` (relative), `path:` (absolute), `shipped:` (relative to the installed
+   OpenRig's specs folder, and not leaving it) or `agents-release:` (relative to `~/.agents-release/current`, and not
+   leaving it).
 4. Import `version` must be an exact version (no ranges).
 5. `profiles` must be a map (object), not an array.
 6. Profile `uses` references other than skills must resolve to declared resources (local or imported). Skill

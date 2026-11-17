@@ -26,6 +26,7 @@ import { readStoredStartupContext } from "../src/domain/seat-startup-source.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { guardedAgentRefFsOps } from "../src/domain/agent-ref-guard.js";
+import { DEFAULT_PATH_JUDGE_IO, type PathJudgeIo } from "../src/domain/codex-mcp-servers.js";
 import { mergeManagedBlock } from "../src/domain/managed-blocks.js";
 
 const blockFs = {
@@ -85,6 +86,18 @@ function writeRelease(dir: string, version: string) {
 
 describe("OF-99: startup files are recorded under the agent_ref path as typed", () => {
   let root: string;
+  /** Remove group/other write from the release tree, so an agents-release: row holds under umask 0002 (o9o.53). */
+  const sealTree = (dir: string): void => {
+    const st = fs.lstatSync(dir);
+    if (st.isSymbolicLink()) return;
+    fs.chmodSync(dir, st.mode & 0o755);
+    if (st.isDirectory()) for (const e of fs.readdirSync(dir)) sealTree(path.join(dir, e));
+  };
+  /** The production path judge, with the fixture as the top of the ownership walk and no temp root (o9o.53). */
+  const fixtureJudge = (): PathJudgeIo => {
+    const above = (p: string) => { const rel = path.relative(root, path.resolve(p)); return rel.startsWith("..") || path.isAbsolute(rel); };
+    return { ...DEFAULT_PATH_JUDGE_IO, tempRoots: () => [], lstat: (p) => (above(p) ? fs.statSync(root) : fs.lstatSync(p)), stat: (p) => (above(p) ? fs.statSync(root) : fs.statSync(p)) };
+  };
   let current: string;
   let linkSpec: string;
   let workdir: string;
@@ -109,6 +122,7 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     }
     current = path.join(root, "releases", "current");
     fs.symlinkSync(path.join(root, "releases", "aaaaaaa"), current);
+    sealTree(path.join(root, "releases"));
     // The rig spec itself is a plain file; only the persona folder is reached through the `current` link.
     fs.mkdirSync(path.join(root, "rig"));
     linkSpec = path.join(root, "rig", "rig.yaml");
@@ -176,7 +190,10 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
       fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p),
         // The install's specs folder for shipped: refs is the `current` link, as an install reached through a link is.
-        shippedSpecsRoot: current },
+        shippedSpecsRoot: current,
+        // workspaces-o9o.53: the deployed agents release is the same `current` link; its trust rule is judged inside the
+        // fixture (ancestors above it read as the fixture's own folder; no temp root, since the fixture is in one).
+        agentsReleaseRoot: current, pathJudgeIo: fixtureJudge() },
       adapters: { "claude-code": adapter },
       tmuxAdapter: tmux,
       onboardingEnabledResolver: () => false,
@@ -320,6 +337,21 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     retarget("bbbbbbb");
 
     const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "shipped ref" });
+
+    expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
+    expectRoleFrom("2.0.0");
+    expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
+    expect(nodeHash(seat.nodeId)).toBe(sha256Of(path.join(root, "releases", "bbbbbbb", "agents", "impl", "agent.yaml")));
+  });
+
+  it("workspaces-o9o.53: a seat whose agent_ref is agents-release: gets the version and hash of the release current names after a retarget", async () => {
+    fs.writeFileSync(linkSpec, RIG("agents-release:agents/impl"));
+    const seat = await launchRig();
+    expect(storedFiles(seat.nodeId).find((f) => f.path === "guidance/role.md")!.ownerRoot).toBe(path.join(current, "agents", "impl"));
+    expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
+    retarget("bbbbbbb");
+
+    const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "agents-release ref" });
 
     expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
     expectRoleFrom("2.0.0");

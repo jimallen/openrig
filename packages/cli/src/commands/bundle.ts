@@ -76,8 +76,9 @@ export function bundleCommand(depsOverride?: StatusDeps): Command {
   cmd.command("create <spec>")
     .description("Create a .rigbundle from a rig spec or GitHub folder link")
     .addHelpText("after", `
-A GitHub folder link takes local: and path: agent refs that resolve inside the fetched repository; a shipped: ref is
-refused, since it would name an agent from the reader's installed OpenRig rather than from the repository.
+A GitHub folder link takes local: and path: agent refs that resolve inside the fetched repository; a shipped: or
+agents-release: ref is refused, since it would name an agent from the reader's installed OpenRig or deployed agents
+release rather than from the repository.
 `)
     .requiredOption("-o, --output <path>", "Output path for .rigbundle")
     .option("--name <name>", "Bundle name (default: the rig's name in rig.yaml)")

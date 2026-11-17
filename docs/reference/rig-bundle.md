@@ -28,9 +28,9 @@ upload files to remote daemons. For a remote target, run the link command on tha
 it with its sibling digest, and use the existing path command there. Existing local path/name commands keep their
 dispatch. Importing does not install dependencies or execute repository scripts. Before packaging a link, it checks
 the checkout's symlinks (excluding Git metadata), member agent refs, agent imports and legacy package refs (including
-additional `--include-packages` entries): every target must resolve inside the fetched checkout. A `shipped:` agent
-ref is refused ("GitHub bundles take local: or path: refs; shipped: is not allowed"): it would name an agent from the
-reader's installed OpenRig, not from the repository. Shared agents and
+additional `--include-packages` entries): every target must resolve inside the fetched checkout. A `shipped:` or `agents-release:` agent
+ref is refused ("GitHub bundles take local: or path: refs; shipped: is not allowed", and the same for agents-release:): it
+would name an agent from the reader's installed OpenRig or deployed agents release, not from the repository. Shared agents and
 legacy packages outside the selected folder are allowed within that repository. Preset staging
 preserves that directory layout. Unresolved or escaping references stop the import and remove its temporary source.
 
@@ -128,8 +128,9 @@ skills/<name>/                 — a shared skill the author's bundle.yaml decla
 - `bundle.yaml` is the manifest — always present, always at the root
 - `rig.yaml` is the rig spec — rewritten during assembly with vendored `agent_ref` paths
 - Agent directories are vendored copies of the original agent specs with all their resources
-- Import refs are rewritten from the original `local:`, `path:` or `shipped:` refs to bundle-relative `local:` paths (a
-  `shipped:` persona is vendored from the specs folder of the OpenRig install that builds the bundle)
+- Import refs are rewritten from the original `local:`, `path:`, `shipped:` or `agents-release:` refs to bundle-relative
+  `local:` paths (a `shipped:` persona is vendored from the specs folder of the OpenRig install that builds the bundle, an
+  `agents-release:` persona from the builder's deployed agents release)
 - All file paths within the archive are safe relative paths (no `..`, no absolute, no symlinks)
 
 ---

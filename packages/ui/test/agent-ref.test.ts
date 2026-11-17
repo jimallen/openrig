@@ -52,6 +52,17 @@ describe("parseAgentRef", () => {
     expect(parseAgentRef("shipped:personas/x")).toEqual({ specName: "personas/x", source: "builtin" });
   });
 
+  // workspaces-o9o.53: agents-release:<rel> names a persona of the user's deployed agents release (~/.agents-release/current).
+  it("an agents-release: ref is named after its LAST agents/ segment and is the user's own file, not builtin", () => {
+    expect(parseAgentRef("agents-release:agents/rsi-steward")).toEqual({ specName: "rsi-steward", source: "user_file" });
+    expect(parseAgentRef("agents-release:rigs/kernel/agents/lead/")).toEqual({ specName: "lead", source: "user_file" });
+    expect(parseAgentRef("agents-release:personas/x")).toEqual({ specName: "personas/x", source: "user_file" });
+  });
+
+  it("an agents-release: ref never names a shipped manifest (it is not the install's specs folder)", () => {
+    expect(shippedAgentManifestPath("agents-release:agents/shared")).toBeNull();
+  });
+
   it("CONTROL: the other schemes read as before", () => {
     expect(parseAgentRef("local:agents/apps/vault-specialist")).toEqual({ specName: "apps/vault-specialist", source: "user_file" });
     expect(parseAgentRef("fork:agents/qa@0.2.0")).toEqual({ specName: "qa", source: "fork" });

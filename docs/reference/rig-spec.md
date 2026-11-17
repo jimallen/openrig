@@ -393,7 +393,7 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `id` | string | yes | — | Member identifier. Must not contain dots or `@`. Must be unique within the pod. |
-| `agent_ref` | string | yes | — | Reference to an AgentSpec. Must start with `local:` (relative to the rig spec's folder), `path:` (absolute) or `shipped:` (relative to the specs folder of the running OpenRig install, for example `shipped:rigs/launch/kernel/agents/operator/agent`; it may not leave that folder). Exception: `builtin:terminal` for infrastructure nodes. A seat records its `agent_ref` and `profile` when it is created; a fresh launch from the spec (`rig seat launch --fresh`) refuses a seat whose recorded values differ from its member's. A seat added with `rig add` records whatever ref it was given (often an absolute `path:`), so to bring it back in line run `rig seat apply-spec <seat>` (a dry run showing `retained -> spec` unless `--yes`; nothing is relaunched). A surge seat `<member><N>` (N from 2, no leading zero) in the member's pod is read as declared by `<member>`: a fresh launch gives it that member's persona under its own seat id, session name and folder, and `apply-spec` takes only its `agent_ref` and `profile` from that member. |
+| `agent_ref` | string | yes | — | Reference to an AgentSpec. Must start with `local:` (relative to the rig spec's folder), `path:` (absolute) `shipped:` (relative to the specs folder of the running OpenRig install, for example `shipped:rigs/launch/kernel/agents/operator/agent`; it may not leave that folder) or `agents-release:` (relative to the deployed agents release, `~/.agents-release/current`, for example `agents-release:agents/rsi-steward`; it may not leave that folder, which must be the user's own). Exception: `builtin:terminal` for infrastructure nodes. A seat records its `agent_ref` and `profile` when it is created; a fresh launch from the spec (`rig seat launch --fresh`) refuses a seat whose recorded values differ from its member's. A seat added with `rig add` records whatever ref it was given (often an absolute `path:`), so to bring it back in line run `rig seat apply-spec <seat>` (a dry run showing `retained -> spec` unless `--yes`; nothing is relaunched). A surge seat `<member><N>` (N from 2, no leading zero) in the member's pod is read as declared by `<member>`: a fresh launch gives it that member's persona under its own seat id, session name and folder, and `apply-spec` takes only its `agent_ref` and `profile` from that member. |
 | `profile` | string | yes | — | Profile name from the referenced AgentSpec. Use `default` for the default profile. Exception: `none` for terminal nodes. |
 | `codex_config_profile` | string | no | — | Codex-only native profile passed as `-p <name>`; letters, numbers, `_`, `.`, `-`. Separate from the AgentSpec `profile`. With the normal launch mode, this replaces OpenRig's explicit workspace-write sandbox flag. A full-bypass policy instead emits danger-full-access and omits this profile argument. |
 | `runtime` | string | yes | — | Agent runtime. Current supported values: `claude-code`, `codex`, `pi`, `omp`, `terminal`, `stub`. `stub` is a deterministic test harness, not an agent: a Node runner in the seat's hc terminal goes through the normal launch, skill projection, startup-file and readiness path, follows `<cwd>/.openrig/stub/script.json` when present, and calls no model. See "What a stub can and cannot prove" in `docs/as-built/test-layers.md`. |
@@ -518,12 +518,18 @@ All three must be present together. Any partial combination is a validation erro
 
 ### agent_ref Rules
 
-- Must start with `local:`, `path:` or `shipped:` (or be `builtin:terminal`, for a terminal node)
+- Must start with `local:`, `path:`, `shipped:` or `agents-release:` (or be `builtin:terminal`, for a terminal node)
 - `local:` paths are relative to the rig spec file's directory (the rig root)
 - `path:` paths are absolute filesystem paths
 - `shipped:` paths are relative to the specs folder of the running OpenRig install (`<install>/daemon/specs`, or
   `packages/daemon/specs` in a checkout), for example `shipped:rigs/launch/kernel/agents/operator/agent`. They may not
   leave that folder: an absolute path, a `..` that climbs out, or a symlink inside it that points outside is refused
+- `agents-release:` paths resolve relative to the deployed agents release in the user's home,
+  `~/.agents-release/current` (the daemon's own home), so a spec names a persona of that release on every host:
+  `agents-release:agents/rsi-steward`. The same shape rule as `shipped:`, and the folder must also be the user's own: owned
+  by you or root, not writable by group or others (as written and as resolved), and not inside a git checkout, a
+  `.workspaces` folder or a temp folder. It is recorded through `current`, so a restore or a fresh launch follows
+  `current` to the next release
 - The referenced path must contain an `agent.yaml` file
 - Exception: `builtin:terminal` for terminal nodes
 
@@ -801,10 +807,11 @@ spec can pass `rig spec validate` and then fail at preflight or import. Run
 5. Member IDs must not contain dots and must be unique within their pod.
 6. `agent_ref`, `profile`, `runtime`, and `cwd` are required for every member.
 7. Terminal nodes require the exact triple: `runtime: terminal`, `agent_ref: builtin:terminal`, `profile: none`.
-8. `agent_ref` must start with `local:` (relative), `path:` (absolute) or `shipped:` (relative to the installed OpenRig's
-   specs folder), except `builtin:terminal`.
+8. `agent_ref` must start with `local:` (relative), `path:` (absolute), `shipped:` (relative to the installed OpenRig's
+   specs folder) or `agents-release:` (relative to `~/.agents-release/current`), except `builtin:terminal`.
 9. `local:` refs must be relative paths. `path:` refs must be absolute paths. `shipped:` refs must be relative paths that
-   do not climb out of the specs folder.
+   do not climb out of the specs folder; `agents-release:` refs must be relative paths that do not climb out of the
+   deployed agents release.
 10. `restore_policy` must be one of: `resume_if_possible`, `relaunch_fresh`, `checkpoint_only`.
 11. Pod-local edges use unqualified member IDs. Cross-pod edges use `pod.member` format.
 12. Cross-pod edges must reference different pods.

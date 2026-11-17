@@ -16,6 +16,15 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now Claude seats relay `PermissionRequest` for every tool (synchronously; it names the tool), and the prompt is cleared only by an end of that same tool, with no time window. `question-wait` (the hook that answers a question with its recommended option) stays on `AskUserQuestion`; the every-tool hook group runs the relay only and never answers a prompt.
 - A Claude seat picks this up at its next launch. Until then it keeps the 2 s rule. Seats in bypass mode (`builtin:yolo`) see no plain permission prompts, so nothing changes for them.
 
+### `agents-release:` agent refs name a persona of the deployed agents release on any host (workspaces-o9o.53)
+
+- Symptom: a spec that names a persona of the user's deployed agents release had to spell the home folder (`path:/Users/<user>/.agents-release/current/agents/rsi-steward`), so the kernel's improve pod worked on one Mac and nowhere else. `shipped:` cannot express it (that is the running OpenRig install, not the user's release), and `local:` cannot either, because `rig-here` boots the kernel from a generated copy of its spec outside the release.
+- New scheme `agents-release:<relative>`, for a member's `agent_ref` and an AgentSpec import, relative to `<home>/.agents-release/current` (the daemon's own home): `agents-release:agents/rsi-steward`. The shape rule is `shipped:`'s: relative, and no `..` that climbs out.
+- Confined like `shipped:`, by the same function (`confineUnderRoot`, now shared): the target as written and as resolved must lie inside the release, and so must the persona's own `local:` imports. Because the release lives in the user's home and is not trusted by identity, the persona folder must also pass the rule spec and MCP files already use: owned by you or root, no group- or other-writable folder on the way, and not inside a git checkout, a `.workspaces` folder or a temp folder. A deployed release (a read-only export) passes; `current` pointed into a checkout is refused.
+- Recorded through `current`, so a restore or a fresh launch follows `current` to the next release, and a fresh launch refreshes the seat's recorded persona version and hash as it does for `path:` and `shipped:`.
+- A GitHub bundle refuses an `agents-release:` ref as it refuses `shipped:` ("GitHub bundles take local: or path: refs; agents-release: is not allowed"). The web UI names such a persona after its folder and never matches it to a library entry by name.
+- Deploy order: a spec using `agents-release:` must not reach a host before that host runs a fork build with this change.
+
 ### The running tool stays visible at every width, and the agent detail's two lines name the same start (workspaces-o9o.32)
 
 - Symptom: at 120 columns the seat table's NOW cell cut a long tool name and lost its age and the `?` that marks an unconfirmed call (`⚙ WebSearc…`); at 84 and 100 columns the table has no NOW column, so the running tool showed only in the agent detail.

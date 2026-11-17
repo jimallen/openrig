@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { deployedAgentsReleaseRoot } from "../adapters/agents-release-root.js";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { RigSpecExporter } from "../domain/rigspec-exporter.js";
@@ -258,7 +259,7 @@ rigspecImportRoutes.post("/preflight", async (c) => {
     const unprojected = unprojectedProjectRigError(raw);
     if (unprojected) return c.json({ ready: false, errors: [unprojected], warnings: [] });
     const cwdOverride = c.req.header("X-Cwd-Override") ?? undefined;
-    const fsOps = { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) };
+    const fsOps = { ...guardedAgentRefFsOps, agentsReleaseRoot: deployedAgentsReleaseRoot(), readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) };
     const { execSync } = await import("node:child_process");
     const exec = async (cmd: string) => runSyncSite("rigspec.import.preflight", () =>
       execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, cwd: runtimeVersionProbeCwd(cmd) })

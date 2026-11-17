@@ -612,6 +612,16 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
     await waitFor(() => { expect(screen.getByTestId("agent-spec-unavailable")).toBeDefined(); });
   });
 
+  // workspaces-o9o.53: the spec library does not index the deployed agents release, so a persona there is never matched to a
+  // library entry by name (a same-named entry may be a different persona): the details say unavailable.
+  it("an agents-release: agentRef is not matched to a same-named library entry", async () => {
+    mockShipped("agents-release:agents/rsi-steward", [{ ...OP_ENTRY, name: "rsi-steward", sourceType: "user_file" }]);
+    renderDetails();
+    fireEvent.click(await screen.findByTestId("live-tab-details"));
+    await waitFor(() => { expect(screen.getByTestId("agent-spec-unavailable")).toBeDefined(); });
+    expect(screen.queryByTestId("live-agent-plugins-section")).toBeNull();
+  });
+
   // Startup files surface inside Details > Startup section.
   it("Details tab: Startup section shows startup files", async () => {
     mockNodeDetail(NODE_DETAIL);

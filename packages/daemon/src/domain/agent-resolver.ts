@@ -5,6 +5,7 @@ import { parseAgentSpec, validateAgentSpec, normalizeAgentSpec } from "./agent-m
 import type { AgentSpec, AgentResources } from "./types.js";
 import { PersonaFileRefused, resolveAgentRefDir } from "./agent-ref-guard.js";
 import { hasAgentRefScheme } from "./agent-ref-grammar.js";
+import type { PathJudgeIo } from "./codex-mcp-servers.js";
 
 // -- Types --
 
@@ -20,11 +21,17 @@ export interface AgentResolverFsOps {
   realpath?(path: string): string;
   /** The specs folder a `shipped:` ref is relative to. Unset in production: the running install's own (agent-ref-guard.ts). */
   shippedSpecsRoot?: string;
+  /** The deployed agents release an `agents-release:` ref is relative to (`<home>/.agents-release/current` in production,
+   *  from adapters/agents-release-root.ts). Unset, such a ref is refused. */
+  agentsReleaseRoot?: string;
+  /** The judge of an `agents-release:` persona folder. Unset in production: the real filesystem (agent-ref-guard.ts). */
+  pathJudgeIo?: PathJudgeIo;
   readPersonaFile?(path: string): string;
 }
 
 /**
- * The filesystem every PRODUCTION construction must hand the resolver: the guard's two members are required, so
+ * The filesystem every PRODUCTION construction must hand the resolver: the guard's two members (and the deployed agents
+ * release, o9o.53) are required, so
  * a new construction that forgets `...guardedAgentRefFsOps` fails to compile instead of silently resolving
  * unguarded. (`AgentResolverFsOps` keeps them optional only so in-memory test filesystems stay small; the
  * test tree is not type-checked.)
@@ -32,6 +39,8 @@ export interface AgentResolverFsOps {
 export type GuardedAgentResolverFsOps = AgentResolverFsOps & {
   realpath(path: string): string;
   readPersonaFile(path: string): string;
+  /** workspaces-o9o.53: required here so a production construction cannot leave agents-release: refs unresolvable. */
+  agentsReleaseRoot: string;
 };
 
 export interface ResolvedAgentSpec {

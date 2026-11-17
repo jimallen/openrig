@@ -6,6 +6,8 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { resolveAgentRef, type AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { agentPreflight } from "../src/domain/agent-preflight.js";
 import { PERSONA_FILE_MAX_BYTES, guardedAgentRefFsOps } from "../src/domain/agent-ref-guard.js";
+import { DEFAULT_PATH_JUDGE_IO, type PathJudgeIo } from "../src/domain/codex-mcp-servers.js";
+import { deployedAgentsReleaseRoot } from "../src/adapters/agents-release-root.js";
 
 // The cap is pinned as a LITERAL: a test that reads the constant from the module it tests moves with a mutant.
 const CAP = 65536;
@@ -445,6 +447,148 @@ describe("shipped: refs resolve inside the running install's specs folder", () =
   });
 });
 
+describe("agents-release: refs resolve inside the deployed agents release (workspaces-o9o.53)", () => {
+  // Layout of a deployed release: <home>/.agents-release/<sha>/{agents,rigs}, `current` -> <sha>.
+  let home: string;
+  let releases: string;
+  /** Remove group/other write from a fixture tree, so the rows hold under any umask (the release stage runs umask 0002). */
+  function seal(dir: string): void {
+    const st = fs.lstatSync(dir);
+    if (st.isSymbolicLink()) return;
+    fs.chmodSync(dir, st.mode & 0o755);
+    if (st.isDirectory()) for (const e of fs.readdirSync(dir)) seal(nodePath.join(dir, e));
+  }
+  function release(sha: string, version = "1.0"): string {
+    const dir = nodePath.join(releases, sha);
+    persona(nodePath.join(dir, "agents", "rsi-steward"), "rsi-steward", ["local:../shared"]);
+    fs.writeFileSync(nodePath.join(dir, "agents", "rsi-steward", "agent.yaml"),
+      AGENT("rsi-steward", ["local:../shared"]).replace('version: "1.0"', `version: "${version}"`));
+    persona(nodePath.join(dir, "agents", "shared"), "shared");
+    fs.mkdirSync(nodePath.join(dir, "rigs", "kernel"), { recursive: true });
+    seal(home);
+    return dir;
+  }
+  function point(sha: string): void {
+    const link = nodePath.join(releases, "current");
+    fs.rmSync(link, { force: true });
+    fs.symlinkSync(nodePath.join(releases, sha), link);
+  }
+  // The trust rule judged inside the fixture: ancestors above it read as the fixture's own (private) folder, and no temp
+  // root, since the fixture lives under the system temp folder.
+  function judgeIo(over: Record<string, Partial<fs.Stats>> = {}): PathJudgeIo {
+    const above = (p: string) => { const rel = nodePath.relative(root, nodePath.resolve(p)); return rel.startsWith("..") || nodePath.isAbsolute(rel); };
+    const patch = (p: string, st: fs.Stats) => (over[nodePath.resolve(p)] ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, over[nodePath.resolve(p)]) as fs.Stats : st);
+    return {
+      ...DEFAULT_PATH_JUDGE_IO,
+      tempRoots: () => [],
+      lstat: (p) => patch(p, above(p) ? fs.statSync(root) : fs.lstatSync(p)),
+      stat: (p) => patch(p, above(p) ? fs.statSync(root) : fs.statSync(p)),
+    };
+  }
+  const at = (io: PathJudgeIo = judgeIo()): AgentResolverFsOps =>
+    ({ ...realFs, agentsReleaseRoot: nodePath.join(releases, "current"), pathJudgeIo: io } as AgentResolverFsOps);
+  beforeEach(() => {
+    home = nodePath.join(root, "home");
+    releases = nodePath.join(home, ".agents-release");
+    fs.mkdirSync(releases, { recursive: true, mode: 0o755 });
+    release("aaaa111");
+    point("aaaa111");
+  });
+
+  it("SYMPTOM: the improve pod's agents-release:agents/rsi-steward resolves through current, recorded as typed", () => {
+    const r = resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "instance", "kernel"), at());
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (!r.ok) return;
+    expect(r.resolved.sourcePath).toBe(nodePath.join(releases, "current", "agents", "rsi-steward"));
+    expect(fs.realpathSync(r.resolved.sourcePath)).toBe(nodePath.join(releases, "aaaa111", "agents", "rsi-steward"));
+    // its own local: import resolves inside the release, through current too
+    expect(r.imports.map((i) => i.sourcePath)).toEqual([nodePath.join(releases, "current", "agents", "shared")]);
+  });
+
+  it("AR1: after current is retargeted the same ref reaches the new release", () => {
+    release("bbbb222", "2.0");
+    point("bbbb222");
+    const r = resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), at());
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (r.ok) expect(r.resolved.spec.version).toBe("2.0");
+  });
+
+  it("AR2: production's root is <home>/.agents-release/current, home from the daemon's own os.homedir() (the adapter)", () => {
+    expect(deployedAgentsReleaseRoot("/h/u")).toBe("/h/u/.agents-release/current");
+    const before = process.env["HOME"];
+    process.env["HOME"] = home;
+    try {
+      expect(deployedAgentsReleaseRoot()).toBe(nodePath.join(home, ".agents-release", "current"));
+      const r = resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"),
+        { ...realFs, agentsReleaseRoot: deployedAgentsReleaseRoot(), pathJudgeIo: judgeIo() } as AgentResolverFsOps);
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(home, ".agents-release", "current", "agents", "rsi-steward"));
+    } finally {
+      if (before === undefined) delete process.env["HOME"]; else process.env["HOME"] = before;
+    }
+  });
+
+  it("AR2b: a resolver given no deployed agents release refuses the ref instead of guessing a home", () => {
+    refusedWith(resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), { ...realFs, pathJudgeIo: judgeIo() } as AgentResolverFsOps),
+      "ref_refused", /no deployed agents release/);
+  });
+
+  it("AR3: a .. that climbs out of the release is refused, even when the target does not exist", () => {
+    persona(nodePath.join(releases, "outside"), "outside");
+    refusedWith(resolveAgentRef("agents-release:../outside", nodePath.join(root, "rig"), at()), "ref_refused", /outside .*deployed agents release/);
+    refusedWith(resolveAgentRef("agents-release:agents/../../nowhere", nodePath.join(root, "rig"), at()), "ref_refused", /deployed agents release/);
+  });
+
+  it("AR4: a symlink inside the release that resolves outside it is refused after realpath", () => {
+    persona(nodePath.join(root, "elsewhere"), "elsewhere");
+    fs.symlinkSync(nodePath.join(root, "elsewhere"), nodePath.join(releases, "aaaa111", "agents", "escape"));
+    refusedWith(resolveAgentRef("agents-release:agents/escape", nodePath.join(root, "rig"), at()), "ref_refused", /resolves to .*elsewhere, outside /);
+  });
+
+  it("AR5: an absolute agents-release: path is refused; an empty one cannot be resolved", () => {
+    refusedWith(resolveAgentRef(`agents-release:${nodePath.join(releases, "current", "agents", "rsi-steward")}`, nodePath.join(root, "rig"), at()), "ref_refused", /relative to the deployed agents release/);
+    refusedWith(resolveAgentRef("agents-release:", nodePath.join(root, "rig"), at()), "not_found", /Cannot resolve agent_ref "agents-release:"/);
+  });
+
+  it("AR6: the persona's own local: import may not climb out of the release", () => {
+    fs.writeFileSync(nodePath.join(releases, "aaaa111", "agents", "rsi-steward", "agent.yaml"), AGENT("rsi-steward", ["local:../../../outside"]));
+    persona(nodePath.join(releases, "outside"), "outside");
+    refusedWith(resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), at()), "import_error", /refused: .*outside /);
+  });
+
+  it("AR6b: in a release with no rigs/ folder (no spec-tree marker), a persona's local: import of a sibling still resolves, confined to the release", () => {
+    fs.rmSync(nodePath.join(releases, "aaaa111", "rigs"), { recursive: true });
+    const r = resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), at());
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (r.ok) expect(r.imports.map((i) => i.sourcePath)).toEqual([nodePath.join(releases, "current", "agents", "shared")]);
+  });
+
+  it("AR7: a persona folder writable by group or others is refused (the release is the user's own, judged by ownership)", () => {
+    fs.chmodSync(nodePath.join(releases, "aaaa111", "agents", "rsi-steward"), 0o775);
+    refusedWith(resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), at()), "ref_refused", /writable by group or others/);
+  });
+
+  it("AR8: a release folder owned by another user is refused", () => {
+    const io = judgeIo({ [nodePath.join(releases, "aaaa111")]: { uid: 4242 } });
+    refusedWith(resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), at(io)), "ref_refused", /owned by uid 4242/);
+  });
+
+  it("AR9: a current pointed into a git work tree (a checkout, not a reviewed release) is refused", () => {
+    fs.mkdirSync(nodePath.join(releases, "aaaa111", ".git"));
+    refusedWith(resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), at()), "ref_refused", /git work tree/);
+  });
+
+  it("AR10: with the production judge, a release under a temp folder is refused (the rule is wired to the real io)", () => {
+    refusedWith(resolveAgentRef("agents-release:agents/rsi-steward", nodePath.join(root, "rig"), at(DEFAULT_PATH_JUDGE_IO)), "ref_refused", /persona folder/);
+  });
+
+  it("AR11: a scheme that only looks like agents-release: is not one", () => {
+    for (const ref of ["Agents-release:agents/rsi-steward", "agents-release-x:agents/rsi-steward", "agents_release:agents/rsi-steward"]) {
+      refusedWith(resolveAgentRef(ref, nodePath.join(root, "rig"), at()), "not_found", /Cannot resolve agent_ref/);
+    }
+  });
+});
+
 describe("census pins: every production filesystem the resolver is given carries the guard", () => {
   const src = (rel: string) => fs.readFileSync(nodePath.join(import.meta.dirname, "..", "src", rel), "utf-8");
 
@@ -474,5 +618,12 @@ describe("census pins: every production filesystem the resolver is given carries
     expect(src("startup.ts")).toMatch(/new PodRigInstantiator\(\{[\s\S]*?fsOps: \{ \.\.\.guardedAgentRefFsOps,/);
     expect(src("routes/rigspec.ts")).toMatch(/const fsOps = \{ \.\.\.guardedAgentRefFsOps,/);
     expect(src("routes/bundles.ts")).toMatch(/function podAssemblerFsOps\(\)[\s\S]*?\.\.\.guardedAgentRefFsOps,/);
+  });
+
+  it("workspaces-o9o.53: each of the four hands the resolver the deployed agents release, from the adapter", () => {
+    expect(src("startup.ts")).toMatch(/const resolverFsOps = \{\s*\.\.\.guardedAgentRefFsOps,\s*agentsReleaseRoot: deployedAgentsReleaseRoot\(\),/);
+    expect(src("startup.ts")).toMatch(/new PodRigInstantiator\(\{[\s\S]*?fsOps: \{ \.\.\.guardedAgentRefFsOps, agentsReleaseRoot: deployedAgentsReleaseRoot\(\),/);
+    expect(src("routes/rigspec.ts")).toMatch(/const fsOps = \{ \.\.\.guardedAgentRefFsOps, agentsReleaseRoot: deployedAgentsReleaseRoot\(\),/);
+    expect(src("routes/bundles.ts")).toMatch(/function podAssemblerFsOps\(\)[\s\S]*?\.\.\.guardedAgentRefFsOps,\s*agentsReleaseRoot: deployedAgentsReleaseRoot\(\),/);
   });
 });

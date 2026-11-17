@@ -158,6 +158,21 @@ describe("GitHub bundle source", () => {
     expect(fs.readdirSync(imports)).toEqual([]);
   });
 
+  // workspaces-o9o.53: an agents-release: ref names a persona of the READER's deployed agents release, not the checkout's.
+  it.each(["member", "import"])("refuses an agents-release: agent ref (%s) with the same message shape", async kind => {
+    const imports = path.join(root, "imports");
+    const git = checkoutWith((checkout, folder) => {
+      if (kind === "member") rigWithAgent(folder, "agents-release:agents/rsi-steward");
+      else {
+        rigWithAgent(folder, "local:../../agents/helper");
+        writeAgent(path.join(checkout, "agents/helper"), "helper", ["agents-release:agents/rsi-steward"]);
+      }
+    });
+    const failure = await prepareGitHubBundle(URL, git, imports).then(() => "accepted", (e: Error) => e.message);
+    expect(failure).toBe(`GitHub bundles take local: or path: refs; agents-release: is not allowed ("agents-release:agents/rsi-steward"); no bundle was built.`);
+    expect(fs.readdirSync(imports)).toEqual([]);
+  });
+
   it.each(["member-local", "member-path", "import-local", "import-path"])("rejects outside agent references: %s", async kind => {
     const outside = path.join(root, "host-agent");
     writeAgent(outside, "host-fixture");

@@ -231,12 +231,13 @@ non-idempotent actions on restore (`startup-orchestrator.ts:634`,
 re-runs a first start that failed at projection, before any harness launch.
 
 **Remote import constraints**: `agent_ref` and AgentSpec imports accept
-`local:<relative path>`, `path:<absolute path>` and `shipped:<path relative to the
-running install's specs folder>` only, through one grammar (`parseAgentRef`,
-`agent-ref-grammar.ts:33`, called at `rigspec-schema.ts:716` and
+`local:<relative path>`, `path:<absolute path>`, `shipped:<path relative to the
+running install's specs folder>` and `agents-release:<path relative to
+~/.agents-release/current>` only, through one grammar (`parseAgentRef`,
+`agent-ref-grammar.ts:37`, called at `rigspec-schema.ts:716` and
 `agent-manifest.ts:48`); a terminal member uses the `builtin:terminal` sentinel
 (`rigspec-schema.ts:688`). A GitHub bundle link takes `local:` and `path:` refs
-inside the fetched repository only, and refuses `shipped:`
+inside the fetched repository only, and refuses `shipped:` and `agents-release:`
 (`packages/cli/src/lib/bundle-source.ts`, `checkGitHubBundleRefs`). Remote
 `agent_ref` sources remain unsupported: the grammar rejects any other scheme, so
 RigSpec validation rejects them (`rigspec-schema.ts:716`), `rigPreflight` runs

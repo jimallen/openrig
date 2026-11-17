@@ -44,6 +44,13 @@ describe("RigSpecDisplay: the member sub-spec trigger for each agent_ref scheme"
     });
   });
 
+  // workspaces-o9o.53: the kernel's improve pod names its personas through the deployed agents release.
+  it("agents-release:agents/<name> names the persona after agents/ and says it is the user's own file", () => {
+    expect(selectionFor("agents-release:agents/rsi-steward")).toEqual({
+      type: "sub-spec", data: { specKind: "agent", specName: "rsi-steward", source: "user_file" },
+    });
+  });
+
   it("CONTROL: local:agents/<name> is unchanged (name after agents/, user_file)", () => {
     expect(selectionFor("local:agents/impl")).toEqual({
       type: "sub-spec", data: { specKind: "agent", specName: "impl", source: "user_file" },
