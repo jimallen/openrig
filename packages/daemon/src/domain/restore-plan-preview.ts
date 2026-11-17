@@ -298,7 +298,8 @@ export function buildRestorePlanPreview(
     }
     // workspaces-o9o.71: a seat restore would start fresh (not resume, not skip) is judged for a held lease by restore's own function:
     // restore reports it failed (relaunch_check_held) and starts nothing for it, so the plan says so too.
-    if (leaseJudge && intendedAction === "fresh-primed" && outcome.kind !== "skip_restoring" && outcome.kind !== "resume") {
+    // "fresh-primed" is exactly the seats restore starts fresh (a resumed seat is "resume-original"), except a skipped one, which starts nothing.
+    if (leaseJudge && intendedAction === "fresh-primed" && outcome.kind !== "skip_restoring") {
       const judged = leaseJudge(logicalId);
       if (judged && "refusal" in judged) {
         intendedAction = "awaiting-decision";

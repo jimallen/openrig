@@ -24,6 +24,18 @@ describe("o9o.71: rig up --existing --fresh judges each fresh seat's leases", ()
   });
   afterEach(() => { vi.restoreAllMocks(); db.close(); fs.rmSync(leaseRoot, { recursive: true, force: true }); });
 
+  /** The restore's own row for one seat, wherever the route puts it in its answer. */
+  function seatRow(answer: unknown, logicalId: string): Record<string, unknown> | undefined {
+    if (Array.isArray(answer)) {
+      for (const item of answer) { const found = seatRow(item, logicalId); if (found) return found; }
+    } else if (answer && typeof answer === "object") {
+      const record = answer as Record<string, unknown>;
+      if (record["logicalId"] === logicalId && typeof record["status"] === "string") return record;
+      for (const value of Object.values(record)) { const found = seatRow(value, logicalId); if (found) return found; }
+    }
+    return undefined;
+  }
+
   /** Two stopped seats with saved startup context, as `rig down` leaves them. */
   function seed(name: string) {
     const rig = setup.rigRepo.createRig(name);
@@ -47,13 +59,14 @@ describe("o9o.71: rig up --existing --fresh judges each fresh seat's leases", ()
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sourceRef: rig.name, freshLogicalIds: ["dev.impl", "dev.qa"] }),
     });
-    const body = JSON.stringify(await res.json());
+    const answer: unknown = await res.json();
 
     const started = createSession.mock.calls.map((call) => String(call[0]));
     expect(started).not.toContain("dev-impl@lease-rig");
     expect(started).toContain("dev-qa@lease-rig");
-    expect(body).toContain("relaunch_check_held");
-    expect(body).toContain("ui-test-host");
+    // The leased seat's own row says why: the restore's refusal, not some other failure carrying the same words.
+    expect(seatRow(answer, "dev.impl")).toMatchObject({ status: "failed", errorCode: "relaunch_check_held" });
+    expect(String(seatRow(answer, "dev.impl")?.["error"])).toContain("ui-test-host");
   });
 
   it("leases that cannot be read warn, and the seat is started", async () => {
@@ -114,10 +127,10 @@ describe("o9o.71: rig up --existing --fresh judges each fresh seat's leases", ()
     expect(forecast["dev.impl"]!.reason).toContain("ui-test-host");
     expect(forecast["dev.qa"]).toMatchObject({ intendedAction: "fresh-primed" });
 
-    const applied = JSON.stringify(await (await up(rig, { freshLogicalIds: ["dev.impl", "dev.qa"] })).json());
+    const applied: unknown = await (await up(rig, { freshLogicalIds: ["dev.impl", "dev.qa"] })).json();
     const started = createSession.mock.calls.map((call) => String(call[0]));
     expect(started).not.toContain(leased);
     expect(started).toContain(`dev-qa@${rig.name}`);
-    expect(applied).toContain("relaunch_check_held");
+    expect(seatRow(applied, "dev.impl")).toMatchObject({ status: "failed", errorCode: "relaunch_check_held" });
   });
 });
