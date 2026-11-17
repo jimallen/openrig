@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureOpenRigInstance } from "../src/domain/instance-initialization.js";
 import { nodeInstancePrivacy } from "../src/adapters/instance-privacy-fs.js";
-import { securePrivateRoot } from "../src/domain/instance-privacy.js";
+import { securePrivateDb, securePrivateRoot } from "../src/domain/instance-privacy.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
 import { mockTmuxAdapter } from "./helpers/test-app.js";
@@ -238,5 +238,73 @@ describe("a pane transcript is private to its owner under a loose umask (workspa
     }
     stopTranscriptRotation("verify-ops@openrig");
     expect({ dir: mode(join(outputPath, "..")), transcript: mode(outputPath) }).toEqual({ dir: "0700", transcript: "0600" });
+  });
+});
+
+// workspaces-o9o.74: a db configured outside the OpenRig home (db.path, exported as OPENRIG_DB) is private to its owner: the db and its
+// SQLite sidecars are 0600, and its folder is 0700 only when it is OpenRig's own (it holds nothing but the db files). A shared folder
+// (db.path = ~/Documents/openrig.sqlite) is left as it is and named; nothing below the folder is walked.
+describe("o9o.74: an external db", () => {
+  const port = (base: string) => nodeInstancePrivacy({ userHome: join(base, "user-home") });
+
+  it("D1 a folder holding only the db and its sidecars is made 0700 and the db files 0600", () => {
+    const base = freshRoot();
+    const dir = join(base, "db");
+    const db = writeWithMode(join(dir, "openrig.sqlite"), "db", 0o664);
+    const wal = writeWithMode(join(dir, "openrig.sqlite-wal"), "wal", 0o664);
+    const shm = writeWithMode(join(dir, "openrig.sqlite-shm"), "shm", 0o644);
+    chmodSync(dir, 0o775);
+    const result = securePrivateDb(db, port(base));
+    expect(result).toMatchObject({ status: "secured", folder: "secured" });
+    expect({ dir: mode(dir), db: mode(db), wal: mode(wal), shm: mode(shm) }).toEqual({ dir: "0700", db: "0600", wal: "0600", shm: "0600" });
+  });
+
+  it("D2 an empty folder the preflight created (no db yet) is OpenRig's own and is made 0700", () => {
+    const base = freshRoot();
+    const dir = join(base, "db");
+    mkdirSync(dir);
+    chmodSync(dir, 0o775);
+    expect(securePrivateDb(join(dir, "openrig.sqlite"), port(base))).toMatchObject({ folder: "secured" });
+    expect(mode(dir)).toBe("0700");
+  });
+
+  it("D3 a shared folder is left as it is and named; only the db files are made 0600", () => {
+    const base = freshRoot();
+    const dir = join(base, "Documents");
+    const db = writeWithMode(join(dir, "openrig.sqlite"), "db", 0o664);
+    const other = writeWithMode(join(dir, "taxes.pdf"), "x", 0o664);
+    const sub = join(dir, "photos");
+    mkdirSync(sub);
+    const inner = writeWithMode(join(sub, "a.jpg"), "x", 0o644);
+    chmodSync(sub, 0o775);
+    chmodSync(dir, 0o775);
+    const result = securePrivateDb(db, port(base));
+    expect(result).toMatchObject({ status: "secured", folder: "shared" });
+    expect({ dir: mode(dir), db: mode(db), other: mode(other), sub: mode(sub), inner: mode(inner) })
+      .toEqual({ dir: "0775", db: "0600", other: "0664", sub: "0775", inner: "0644" });
+  });
+
+  it("D4 a db that is a symlink is never followed: its target keeps its mode", () => {
+    const base = freshRoot();
+    const target = writeWithMode(join(base, "elsewhere", "real.sqlite"), "db", 0o644);
+    const dir = join(base, "db");
+    mkdirSync(dir);
+    symlinkSync(target, join(dir, "openrig.sqlite"));
+    securePrivateDb(join(dir, "openrig.sqlite"), port(base));
+    expect(mode(target)).toBe("0644");
+  });
+
+  it("D5 a db folder that is the user's home is refused: the folder keeps its mode, the db is made 0600", () => {
+    const base = freshRoot();
+    const home = join(base, "user-home");
+    const db = writeWithMode(join(home, "openrig.sqlite"), "db", 0o664);
+    chmodSync(home, 0o755);
+    expect(securePrivateDb(db, port(base))).toMatchObject({ folder: "refused" });
+    expect({ home: mode(home), db: mode(db) }).toEqual({ home: "0755", db: "0600" });
+  });
+
+  it("D6 a db folder that does not exist changes nothing", () => {
+    const base = freshRoot();
+    expect(securePrivateDb(join(base, "nowhere", "openrig.sqlite"), port(base))).toMatchObject({ status: "missing", tightened: 0 });
   });
 });

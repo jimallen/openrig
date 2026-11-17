@@ -39,7 +39,7 @@ import type { SlowOperationInstrumentation } from "./domain/slow-op-recorder.js"
 import type { ProviderService } from "./domain/provider/provider-service.js";
 import { SettingsStore } from "./domain/user-settings/settings-store.js";
 import { nodeInstancePrivacy } from "./adapters/instance-privacy-fs.js";
-import { securePrivateRoot } from "./domain/instance-privacy.js";
+import { securePrivateDb, securePrivateRoot } from "./domain/instance-privacy.js";
 import {
   ensureOpenRigInstance,
   formatInstanceInitializationConflicts,
@@ -337,6 +337,19 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
     // listeners from BINDING EVIDENCE (probe each host) instead of config echo.
     bindPlan,
   });
+
+  // workspaces-o9o.74: a db configured outside the home (db.path -> OPENRIG_DB) is private to its owner too. After createDaemon, so the
+  // files SQLite just created are included. Its folder is secured only when it is OpenRig's own; a shared one is named, never changed.
+  const homeRelativeDb = path.relative(path.resolve(OPENRIG_HOME), path.resolve(dbPath));
+  if (homeRelativeDb.startsWith("..") || path.isAbsolute(homeRelativeDb)) {
+    const dbPrivacy = securePrivateDb(dbPath, instancePrivacy);
+    if (dbPrivacy.folder === "shared") {
+      console.error(`[instance-privacy] the db folder ${path.dirname(path.resolve(dbPath))} also holds ${dbPrivacy.others?.length ? dbPrivacy.others.join(", ") : "entries it could not list"}; its mode was left alone (the db files are 0600)`);
+    } else if (dbPrivacy.folder === "refused") {
+      console.error(`[instance-privacy] the db folder ${path.dirname(path.resolve(dbPath))} is the user's home or above it; its mode was left alone (the db files are 0600)`);
+    }
+    for (const failure of dbPrivacy.failures) console.error(`[instance-privacy] could not remove group/other access from ${failure.path}: ${failure.error}`);
+  }
 
   // OF-208 — real `xcrun simctl` is off unless this is the production entrypoint (direct run) AND the daemon of the user's own
   // default state directory, never under a test runner. A createDaemon child, a scenario daemon (private OPENRIG_HOME) and an

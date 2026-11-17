@@ -168,6 +168,34 @@ describe("daemon startServer", () => {
     }
   });
 
+  // workspaces-o9o.74: a db configured outside the home (db.path -> OPENRIG_DB), in a folder of its own, is made private at start.
+  it("startServer makes an external db's own folder 0700 and its db files 0600", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "o9o74-db-"));
+    try {
+      const dir = path.join(base, "db");
+      fs.mkdirSync(dir);
+      const db = path.join(dir, "openrig.sqlite");
+      fs.writeFileSync(db, "db");
+      fs.writeFileSync(`${db}-wal`, "wal");
+      fs.chmodSync(db, 0o664);
+      fs.chmodSync(`${db}-wal`, 0o664);
+      fs.chmodSync(dir, 0o775);
+      vi.stubEnv("OPENRIG_DB", db);
+      const { startServer } = await import("../src/index.js");
+
+      await startServer(7441);
+
+      const modeOf = (p: string) => fs.statSync(p).mode & 0o777;
+      expect({ dir: modeOf(dir), db: modeOf(db), wal: modeOf(`${db}-wal`) }).toEqual({ dir: 0o700, db: 0o600, wal: 0o600 });
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("does not require a terminal bearer token for the default loopback bind", async () => {
     const { startServer } = await import("../src/index.js");
 

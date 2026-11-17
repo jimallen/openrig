@@ -65,6 +65,15 @@ daemon gives that root the same pass (folders `0700`, files `0600`, symlinks not
 followed), and the transcript writer creates new folders `0700` and new
 transcripts `0600`.
 
+The database can live outside the home too (`db.path`). At every start, once the
+database is open, the daemon makes it and its SQLite sidecars (`-wal`, `-shm`,
+`-journal`) `0600`, without following a symlink. It makes their folder `0700`
+only when that folder is OpenRig's own, holding nothing but those files (an
+empty folder included). A folder that holds anything else, such as
+`~/Documents`, is left as it is, nothing below it is changed, and the daemon log
+names what else it holds. A folder that is the user's home or above it is
+refused the same way.
+
 One window stays open: a file or folder swapped for a symlink between the check
 and the mode change. Closing it needs `openat`-style calls that Node does not
 have. It needs a concurrent process running as the same user, which can already

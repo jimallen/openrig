@@ -1,4 +1,4 @@
-import { join, relative, resolve, isAbsolute, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 
 /**
  * Instance privacy (workspaces-o9o.36). Invariant, owned by the OpenRig instance:
@@ -142,5 +142,57 @@ export function securePrivateRoot(root: string, port: InstancePrivacyPort): Inst
 
   setRootPrivate(root, rootEntry.mode, port, result);
   walk(root);
+  return result;
+}
+
+/** The files SQLite keeps beside a database. */
+const DB_SIDECARS = ["-wal", "-shm", "-journal"];
+
+export interface PrivateDbResult extends InstancePrivacyResult {
+  /** `secured`: the folder is OpenRig's own and is 0700. `shared`: it holds other things and was left as it is (`others` names them).
+   *  `refused`: it is the user's home or above it. `missing`: it does not exist. */
+  folder: "secured" | "shared" | "refused" | "missing";
+  others?: string[];
+}
+
+/**
+ * Keep a database configured outside the OpenRig home private to its owner (workspaces-o9o.74). Unlike a transcripts root, the db's
+ * folder is not necessarily OpenRig's: db.path may name a file in a shared folder (~/Documents/openrig.sqlite). So:
+ * - the db and its SQLite sidecars are made 0600 (lstat; a symlink is never followed; a missing file is skipped);
+ * - the folder is made exactly 0700 only when it is OpenRig's own: it holds nothing but those files (an empty folder, as the preflight
+ *   leaves it before the first start, counts). A folder holding anything else is left as it is and its other entries are named;
+ * - a folder that is the user's home or above it is refused;
+ * - nothing below the folder is walked.
+ */
+export function securePrivateDb(dbPath: string, port: InstancePrivacyPort): PrivateDbResult {
+  const result: PrivateDbResult = { status: "secured", folder: "secured", tightened: 0, failures: [] };
+  const dir = dirname(resolve(dbPath));
+  const dirEntry = port.entry(dir);
+  if (!dirEntry || dirEntry.kind !== "directory") return { ...result, status: "missing", folder: "missing" };
+
+  const dbFiles = new Set([basename(dbPath), ...DB_SIDECARS.map((suffix) => `${basename(dbPath)}${suffix}`)]);
+  for (const name of dbFiles) {
+    const path = join(dir, name);
+    const entry = port.entry(path);
+    if (!entry || entry.kind !== "file" || (entry.mode & SHARED_BITS) === 0) continue;
+    try {
+      port.chmod(path, entry.mode & 0o700);
+      result.tightened += 1;
+    } catch (err) {
+      result.failures.push({ path, error: (err as Error).message });
+    }
+  }
+
+  if (privateRootRefusal(dir, port)) return { ...result, folder: "refused" };
+  let names: string[];
+  try {
+    names = port.list(dir);
+  } catch (err) {
+    result.failures.push({ path: dir, error: (err as Error).message });
+    return { ...result, folder: "shared", others: [] };
+  }
+  const others = names.filter((name) => !dbFiles.has(name));
+  if (others.length > 0) return { ...result, folder: "shared", others };
+  setRootPrivate(dir, dirEntry.mode, port, result);
   return result;
 }
