@@ -12,6 +12,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { activityRoutes } from "../src/routes/activity.js";
+import { mockTmuxAdapter } from "./helpers/test-app.js";
 import { deriveResumeToken } from "../src/domain/resume-token-capture.js";
 import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
 import { observeClaudePaneStartedAt } from "../src/domain/native-process-lineage.js";
@@ -26,14 +27,12 @@ const readableWithoutClaude: NativeProcessLister = async () => [
 
 describe("o9o.72 A: claude resume never says retry_fresh on an unreadable process table", () => {
   function resumeWith(listProcesses: NativeProcessLister) {
-    const tmux = {
-      sendShellCommand: vi.fn(async () => ({ ok: true })),
+    const tmux: TmuxAdapter = Object.assign(mockTmuxAdapter(), {
       // Only Claude's prompt glyph under a shell foreground: the screen says returned_to_shell, so the process proof decides.
       capturePaneContent: vi.fn(async () => "❯ "),
       getPaneCommand: vi.fn(async () => "zsh"),
       getPanePid: vi.fn(async () => 4242),
-      listPanes: vi.fn(async () => [{ id: "%1" }]),
-    } as unknown as TmuxAdapter;
+    });
     return new ClaudeResumeAdapter(tmux, { listProcesses, maxWaitMs: 0, pollMs: 1, sleep: async () => {} })
       .resume("worker@rig", "claude_id", "conv-1", "/tmp");
   }
@@ -102,7 +101,7 @@ describe("o9o.72 E: a Claude sidecar is not captured as current while the proces
   const unknownStart = async (): Promise<string | null> => null;
 
   it("observeClaudePaneStartedAt rejects as unavailable on an unreadable table, and answers null when the table lacks Claude", async () => {
-    const tmux = { getPanePid: async () => 4242, listPanes: async () => [{ id: "%1" }] } as unknown as TmuxAdapter;
+    const tmux = { getPanePid: async () => 4242 };
     await expect(observeClaudePaneStartedAt({ target: "%1", tmux, listProcesses: unreadable })).rejects.toBeInstanceOf(ProcessTableUnavailableError);
     expect(await observeClaudePaneStartedAt({ target: "%1", tmux, listProcesses: readableWithoutClaude })).toBeNull();
   });
