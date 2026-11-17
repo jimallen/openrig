@@ -6,7 +6,10 @@ import os from "node:os";
 import nodePath from "node:path";
 import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
 import { blockingChecks, judgeChildren, judgeLeases, newestHandoverFile, type RelaunchCheckPort } from "../src/domain/relaunch-checks.js";
-import { nodeRelaunchChecks, SeatLeaseStore } from "../src/adapters/seat-lease-store.js";
+import { nodeRelaunchChecks, SeatLeaseStore, type LeaseProcessProbe } from "../src/adapters/seat-lease-store.js";
+
+/** A process table the store reads: pid -> the start time the OS reports, or null when it cannot be read. */
+const probeOf = (table: Map<number, string | null>): LeaseProcessProbe => ({ exists: (pid) => table.has(pid), startedAt: (pid) => table.get(pid) ?? null });
 
 const row = (pid: number, ppid: number, executableName: string, command: string): NativeProcessRow => ({ pid, ppid, executableName, command });
 
@@ -27,6 +30,30 @@ describe("o9o.8 core: the agent's children", () => {
 
   it("an empty process table (the lister failed) cannot be judged", () => {
     expect(judgeChildren([], 400, [])).toMatchObject({ verdict: "unknown" });
+  });
+
+  it("finding 1: MCP servers and language servers are known by what they run, never by an argument", () => {
+    const rows = [row(600, 1, "claude", "claude"),
+      row(601, 600, "node", "node ./scripts/build --suite mcp-smoke"),
+      row(602, 600, "npx", "npx -y @upstash/context7-mcp"),
+      row(603, 600, "node", "node /home/u/.npm/_npx/x/node_modules/typescript-language-server/lib/cli.mjs --stdio"),
+      row(604, 600, "zsh", "zsh -c npm run lint -- --lsp")];
+    expect(judgeChildren(rows, 600, [])).toMatchObject({ verdict: "held",
+      held: [{ pid: 601 }, { pid: 604 }], ignored: [{ pid: 602, kind: "mcp_server" }, { pid: 603, kind: "language_server" }] });
+  });
+
+  it("finding 2: on a Pi seat the runner and pi are the agent; what pi runs, a node build included, is its work", () => {
+    const rows = [row(700, 1, "node", "node /opt/openrig/daemon/dist/adapters/pi-runner.js --session-name s"), row(701, 700, "pi", "pi"),
+      row(702, 701, "node", "node ./scripts/build"), row(703, 701, "bash", "bash -c make")];
+    expect(judgeChildren(rows, 700, [], "pi")).toMatchObject({ verdict: "held", held: [{ pid: 702 }, { pid: 703 }] });
+    expect(judgeChildren(rows.slice(0, 2), 700, [], "pi")).toEqual({ verdict: "clear", ignored: [] });
+    // Without the runtime the runner's pi is taken for work: the case the finding measured.
+    expect(judgeChildren(rows.slice(0, 2), 700, [])).toMatchObject({ verdict: "held", held: [{ pid: 701 }] });
+  });
+
+  it("finding 3: a lease whose holder cannot be matched by start time is unknown, never held", () => {
+    expect(judgeLeases(() => [{ holder: "h", pid: 9, liveness: "unknown" }], [])).toMatchObject({ verdict: "unknown" });
+    expect(judgeLeases(() => [{ holder: "h", pid: 9, liveness: "unknown" }, { holder: "g", pid: 8, liveness: "alive" }], [])).toMatchObject({ verdict: "held", held: [{ holder: "g" }] });
   });
 
   it("--despite lease does not override held children", () => {
@@ -59,16 +86,38 @@ describe("o9o.8 adapter: the seat lease store", () => {
   afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
   it("a lease is a private file (0600 in a 0700 folder), counted while its holder is alive and reported stale once it is gone", () => {
-    const alive = new Set([4242]);
-    const store = new SeatLeaseStore(root, (pid) => alive.has(pid));
+    const table = new Map<number, string | null>([[4242, "Mon Nov 16 09:00:00 2026"]]);
+    const store = new SeatLeaseStore(root, probeOf(table));
     expect(store.acquire("dev-impl@rig", { holder: "ui-test-host", pid: 4242 })).toMatchObject({ ok: true });
     const dir = nodePath.join(root, encodeURIComponent("dev-impl@rig"));
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
     expect(fs.statSync(nodePath.join(dir, "ui-test-host.json")).mode & 0o777).toBe(0o600);
     expect(fs.readdirSync(dir)).toEqual(["ui-test-host.json"]);
-    expect(store.leases("dev-impl@rig")).toEqual([{ holder: "ui-test-host", pid: 4242, alive: true }]);
-    alive.delete(4242);
-    expect(store.leases("dev-impl@rig")).toEqual([{ holder: "ui-test-host", pid: 4242, alive: false }]);
+    expect(store.leases("dev-impl@rig")).toEqual([{ holder: "ui-test-host", pid: 4242, liveness: "alive" }]);
+    table.delete(4242);
+    expect(store.leases("dev-impl@rig")).toEqual([{ holder: "ui-test-host", pid: 4242, liveness: "gone" }]);
+  });
+
+  it("finding 3: a reused pid is another process: the lease is gone; a start time that cannot be read leaves it unknown", () => {
+    const table = new Map<number, string | null>([[4242, "Mon Nov 16 09:00:00 2026"]]);
+    const store = new SeatLeaseStore(root, probeOf(table));
+    store.acquire("dev-impl@rig", { holder: "ui-test-host", pid: 4242 });
+    table.set(4242, "Tue Nov 17 01:00:00 2026");
+    expect(store.leases("dev-impl@rig")).toEqual([{ holder: "ui-test-host", pid: 4242, liveness: "gone" }]);
+    table.set(4242, null);
+    expect(store.leases("dev-impl@rig")).toEqual([{ holder: "ui-test-host", pid: 4242, liveness: "unknown" }]);
+    // A lease registered when the start time could not be read is never alive.
+    store.acquire("dev-impl@rig", { holder: "late", pid: 4242 });
+    table.set(4242, "Tue Nov 17 01:00:00 2026");
+    expect(store.leases("dev-impl@rig").find((l) => l.holder === "late")).toMatchObject({ liveness: "unknown" });
+  });
+
+  it("finding 3: the OS probe reads this process's own start time, and the same again", async () => {
+    const { osLeaseProcessProbe } = await import("../src/adapters/seat-lease-store.js");
+    const first = osLeaseProcessProbe.startedAt(process.pid);
+    expect(first).toMatch(/\d{2}:\d{2}:\d{2} \d{4}$/);
+    expect(osLeaseProcessProbe.startedAt(process.pid)).toBe(first);
+    expect(osLeaseProcessProbe.exists(process.pid)).toBe(true);
   });
 
   it("a seat with no leases has none; a folder that cannot be read, or a file that is not a lease, throws (the check then warns)", () => {

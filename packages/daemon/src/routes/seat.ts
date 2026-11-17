@@ -23,6 +23,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import { listQueued } from "../domain/seat-messaging/queued-messages.js";
 import { SqliteQueuedMessages } from "../adapters/sqlite-queued-messages.js";
 import { nodeRelaunchChecks, type SeatLeaseStore } from "../adapters/seat-lease-store.js";
+import { listNativeProcesses } from "../domain/native-process-lineage.js";
 import { RELAUNCH_CHECK_NAMES, type RelaunchCheckName } from "../domain/relaunch-checks.js";
 
 export const seatRoutes = new Hono();
@@ -278,6 +279,9 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
     claudeHomeRead: { exists: (p) => existsSync(p), isDirectory: (p) => statSync(p).isDirectory(), readFile: (p) => readFileSync(p, "utf8") },
     // workspaces-o9o.8: the seat's leases and folder, read before a fresh launch stops a live occupant.
     ...(seatLeases ? { seatLeases, relaunchChecks: nodeRelaunchChecks(seatLeases) } : {}),
+    // The process table the relaunch checks read, through the service's process-lister port (o9o.8 finding 6). Every other reader of
+    // the port already defaulted to this lister, so their behaviour is unchanged.
+    listProcesses: listNativeProcesses,
   });
 }
 

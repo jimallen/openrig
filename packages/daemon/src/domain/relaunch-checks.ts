@@ -26,18 +26,40 @@ export const RELAUNCH_CHECK_NAMES: readonly RelaunchCheckName[] = ["lease", "chi
 export const RELAUNCH_CHECK_DEFAULTS = {
   /** A seat writes its handover into its own folder, often in dated variants (HANDOVER.md, HANDOVER-2026-11-15-1910.md); the newest wins. */
   handoverFile: { prefix: "HANDOVER", suffix: ".md" },
-  /** Processes an agent keeps running for its whole life: not unfinished work. Matched on the executable name or the argv. */
+  /**
+   * Processes an agent keeps running for its whole life: not unfinished work. Matched on the process's identity only, never on any
+   * argument: its executable's name, or the path of the program an interpreter runs (`node <entry>`, `npx <package>`), one path part at a
+   * time. `node ./scripts/build --suite mcp-smoke` is a build, whatever its arguments say (verify-qa, o9o.8 finding 1).
+   */
   expectedChildren: [
-    { kind: "caffeinate", executable: /^caffeinate$/, argv: null },
-    { kind: "mcp_server", executable: null, argv: /mcp/i },
-    { kind: "language_server", executable: /^(gopls|rust-analyzer|clangd|sourcekit-lsp|pyright|pylsp|jdtls)$/, argv: /language-?server|langserver|\blsp\b|pyright|gopls|rust-analyzer|clangd|sourcekit-lsp/i },
+    { kind: "caffeinate", identity: /^caffeinate$/ },
+    { kind: "mcp_server", identity: /^(mcp|mcp-server(-[\w.-]+)?|[\w.-]+-mcp(-server)?|@modelcontextprotocol)$/i },
+    { kind: "language_server", identity: /^(gopls|rust-analyzer|clangd|sourcekit-lsp|pyright(-langserver)?|pylsp|jdtls|[\w.-]+-language-server|[\w.-]+-langserver|[\w.-]+-lsp)$/i },
   ],
-  /** What runs between a pane and its agent: shells and the launch scripts OpenRig stages. */
+  /** Programs that run another program named by their first non-option argument. */
+  interpreters: /^(node|nodejs|bun|deno|python3?|uv|uvx|npx|pnpx|tsx)$/,
+  /** What runs between a pane and its agent: shells. */
   shells: /^-?(sh|bash|dash|zsh|fish)$/,
+  /**
+   * The seat's agent, by runtime (o9o.8 finding 2): the processes that are the agent itself rather than its work. Pi and OMP seats run
+   * OpenRig's runner in the pane (`node .../pi-runner.js`), which spawns the runtime (measured on sparky: a child named `pi`).
+   */
+  agentProcesses: {
+    "claude-code": /^(claude|\.claude-unwrapped|\.claude-wrapped)$/,
+    codex: /^codex([-.][\w.-]+)?$/,
+    pi: /^pi$/,
+    omp: /^omp$/,
+  } as Record<string, RegExp>,
+  /** OpenRig's Pi/OMP runner, the program its node runs. */
+  runnerEntry: /^pi-runner\.(js|ts)$/,
 } as const;
 
-/** A lease a seat's own work registered (rig seat lease), as observed: whether its holder process is still alive. */
-export interface SeatLeaseObservation { holder: string; pid: number; reason?: string; alive: boolean }
+/**
+ * A lease a seat's own work registered (rig seat lease), as observed. `alive`: its holder is the process that registered it (same pid and
+ * same start time). `gone`: no such process, or another process now has its pid. `unknown`: the pid is in use, but whether it is the same
+ * process cannot be told (no start time was recorded, or none can be read now); never counted as alive (o9o.8 finding 3).
+ */
+export interface SeatLeaseObservation { holder: string; pid: number; reason?: string; liveness: "alive" | "gone" | "unknown" }
 
 /** Outbound port: what the checks read from the world, other than the process table. */
 export interface RelaunchCheckPort {
@@ -61,7 +83,7 @@ export interface ProcessSummary { pid: number; name: string; command: string }
 export type LeaseCheck =
   | { verdict: "clear"; stale: Array<{ holder: string; pid: number }> }
   | { verdict: "held"; held: Array<{ holder: string; pid: number; reason?: string }>; stale: Array<{ holder: string; pid: number }>; overridden: boolean }
-  | { verdict: "unknown"; cause: string };
+  | { verdict: "unknown"; cause: string; stale?: Array<{ holder: string; pid: number }> };
 
 export type ChildrenCheck =
   | { verdict: "clear"; ignored: Array<ProcessSummary & { kind: string }> }
@@ -77,9 +99,15 @@ export function judgeLeases(read: () => SeatLeaseObservation[], despite: readonl
   } catch (err) {
     return { verdict: "unknown", cause: `the seat's leases could not be read: ${(err as Error).message}` };
   }
-  const stale = leases.filter((lease) => !lease.alive).map(({ holder, pid }) => ({ holder, pid }));
-  const held = leases.filter((lease) => lease.alive).map(({ holder, pid, reason }) => ({ holder, pid, ...(reason ? { reason } : {}) }));
-  return held.length === 0 ? { verdict: "clear", stale } : { verdict: "held", held, stale, overridden: despite.includes("lease") };
+  const stale = leases.filter((lease) => lease.liveness === "gone").map(({ holder, pid }) => ({ holder, pid }));
+  const held = leases.filter((lease) => lease.liveness === "alive").map(({ holder, pid, reason }) => ({ holder, pid, ...(reason ? { reason } : {}) }));
+  if (held.length > 0) return { verdict: "held", held, stale, overridden: despite.includes("lease") };
+  const unsure = leases.filter((lease) => lease.liveness === "unknown");
+  if (unsure.length > 0) {
+    return { verdict: "unknown", stale,
+      cause: `whether ${unsure.map((l) => `${l.holder} (pid ${l.pid})`).join(", ")} still holds its lease cannot be told: the pid is in use, but its process's start time cannot be matched to the one recorded` };
+  }
+  return { verdict: "clear", stale };
 }
 
 function executableOf(row: NativeProcessRow): string {
@@ -91,20 +119,45 @@ function summary(row: NativeProcessRow): ProcessSummary {
   return { pid: row.pid, name: executableOf(row), command: row.command };
 }
 
+/** The names a process is known by: its executable, its argv[0], and for an interpreter, each part of the path of the program it runs. */
+function identityNames(row: NativeProcessRow): string[] {
+  const argv = row.command.trim().split(/\s+/);
+  const base = (path: string) => path.split("/").pop() ?? path;
+  const names = [executableOf(row), base(argv[0] ?? "")];
+  if (RELAUNCH_CHECK_DEFAULTS.interpreters.test(names[0]!) || RELAUNCH_CHECK_DEFAULTS.interpreters.test(names[1]!)) {
+    let i = 1;
+    // Skip options and an option's value where the interpreter's own syntax gives it one (node --import tsx, uv run, npx -y).
+    while (i < argv.length && (argv[i]!.startsWith("-") || argv[i] === "run" || argv[i - 1] === "--import" || argv[i - 1] === "-r")) i += 1;
+    const program = argv[i];
+    if (program) names.push(...program.split("/").filter((part) => part !== "" && part !== "." && part !== ".."));
+  }
+  return names.filter((name) => name !== "");
+}
+
 function expectedKind(row: NativeProcessRow): string | null {
-  const executable = executableOf(row);
+  const names = identityNames(row);
   for (const expected of RELAUNCH_CHECK_DEFAULTS.expectedChildren) {
-    if ((expected.executable && expected.executable.test(executable)) || (expected.argv && expected.argv.test(row.command))) return expected.kind;
+    if (names.some((name) => expected.identity.test(name))) return expected.kind;
   }
   return null;
 }
 
+/** Whether a process is the seat's agent itself: the runtime's own executable, or OpenRig's Pi/OMP runner. */
+function isAgentProcess(row: NativeProcessRow, runtime: string | null): boolean {
+  const names = identityNames(row);
+  const own = runtime ? RELAUNCH_CHECK_DEFAULTS.agentProcesses[runtime] : undefined;
+  if (own && names.some((name) => own.test(name))) return true;
+  return (runtime === "pi" || runtime === "omp") && names.some((name) => RELAUNCH_CHECK_DEFAULTS.runnerEntry.test(name));
+}
+
 /**
  * The agent's children: every process beneath the seat's agent. The agent is the first process at or below the pane's own process that is
- * not a shell (a shell wrapping the agent is not the agent's work). Processes running the agent's own executable beneath it (a launcher
- * re-executing the runtime) are the agent itself. `panePid` null, or a process table without the pane's process, cannot be judged.
+ * not a shell (a shell wrapping the agent is not the agent's work). Beneath it, these are the agent itself, not its work: a process that is
+ * the seat's runtime (`runtime`: Claude, Codex, Pi or OMP, or OpenRig's Pi/OMP runner), and one re-running the agent's own executable
+ * unless that executable is an interpreter such as node (a Pi seat's runner is node; a node build beneath it is work). `panePid` null, or a
+ * process table without the pane's process, cannot be judged.
  */
-export function judgeChildren(processes: NativeProcessRow[] | null, panePid: number | null, despite: readonly RelaunchCheckName[]): ChildrenCheck {
+export function judgeChildren(processes: NativeProcessRow[] | null, panePid: number | null, despite: readonly RelaunchCheckName[], runtime: string | null = null): ChildrenCheck {
   if (panePid === null) return { verdict: "unknown", cause: "the seat's pane process could not be read" };
   if (!processes || !processes.some((row) => row.pid === panePid)) return { verdict: "unknown", cause: "the process table does not show the seat's pane process" };
   const byParent = new Map<number, NativeProcessRow[]>();
@@ -125,7 +178,7 @@ export function judgeChildren(processes: NativeProcessRow[] | null, panePid: num
     else agent = next;
   }
   if (!agent) return { verdict: "clear", ignored: [] };
-  const agentExecutable = executableOf(agent);
+  const agentExecutable = RELAUNCH_CHECK_DEFAULTS.interpreters.test(executableOf(agent)) ? null : executableOf(agent);
   const held: ProcessSummary[] = [];
   const ignored: Array<ProcessSummary & { kind: string }> = [];
   const below = [...(byParent.get(agent.pid) ?? [])];
@@ -134,7 +187,7 @@ export function judgeChildren(processes: NativeProcessRow[] | null, panePid: num
     const row = below.shift()!;
     if (visited.has(row.pid)) continue;
     visited.add(row.pid);
-    if (executableOf(row) === agentExecutable) {
+    if (executableOf(row) === agentExecutable || isAgentProcess(row, runtime)) {
       below.push(...(byParent.get(row.pid) ?? []));
       continue;
     }
@@ -158,6 +211,24 @@ export function newestHandoverFile(dir: string, port: RelaunchCheckPort): { path
     if (!newest || file.modifiedAt > newest.modifiedAt) newest = { path: join(dir, file.name), modifiedAt: file.modifiedAt };
   }
   return newest;
+}
+
+/**
+ * The handover the retiring occupant wrote: the seat's newest handover file, used only when it was written during that occupant's
+ * tenure (o9o.8 finding 4). A file from an earlier tenure, or one whose tenure cannot be placed, is named in a warning and not used, so
+ * messages from before this tenure are never re-delivered. Throws as the port does (the caller warns, o9o.8 finding 5).
+ */
+export function retiringOccupantHandover(dir: string, port: RelaunchCheckPort, tenureStartedAt: string | null):
+  { file: { path: string; modifiedAt: string } | null; warning?: string } {
+  const newest = newestHandoverFile(dir, port);
+  if (!newest) return { file: null };
+  if (tenureStartedAt === null) {
+    return { file: null, warning: `${newest.path} was not used: when the retiring occupant's tenure began is not recorded, so the file cannot be shown to be its own.` };
+  }
+  if (newest.modifiedAt < tenureStartedAt) {
+    return { file: null, warning: `${newest.path} was not used: it was last written at ${newest.modifiedAt}, before the retiring occupant's tenure began (${tenureStartedAt}).` };
+  }
+  return { file: newest };
 }
 
 /** A held check the operator did not override. */

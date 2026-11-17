@@ -47,6 +47,9 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
   let processes: NativeProcessRow[];
   let leases: SeatLeaseObservation[] | Error;
   let accepted: MessageAcceptInput[];
+  let folderError: Error | null;
+  let nodeId: string;
+  let deps: ConstructorParameters<typeof SeatLifecycleService>[0];
 
   beforeEach(() => {
     db = createDb();
@@ -59,6 +62,7 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     processes = [AGENT];
     leases = [];
     accepted = [];
+    folderError = null;
     tmux = Object.assign(mockTmuxAdapter(), {
       createSession: vi.fn(async (name: string) => { alive.add(name); return { ok: true as const }; }),
       killSession: vi.fn(async (name: string): Promise<TmuxResult> => { alive.delete(name); return { ok: true }; }),
@@ -91,16 +95,17 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     };
     const relaunchChecks: RelaunchCheckPort = {
       leases: () => { if (leases instanceof Error) throw leases; return leases; },
-      folderFiles: (dir: string) => fs.readdirSync(dir).map((name) => ({ name, modifiedAt: fs.statSync(nodePath.join(dir, name)).mtime.toISOString() })),
+      folderFiles: (dir: string) => { if (folderError) throw folderError; return fs.readdirSync(dir).map((name) => ({ name, modifiedAt: fs.statSync(nodePath.join(dir, name)).mtime.toISOString() })); },
     };
-    service = new SeatLifecycleService({
+    deps = {
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
       listProcesses: async () => processes,
       nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       startupOrchestrator: new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined }),
-      runtimeAdapters: { "claude-code": adapter },
+      runtimeAdapters: { "claude-code": adapter, pi: { ...adapter, runtime: "pi" } },
       relaunchChecks,
-    });
+    };
+    service = new SeatLifecycleService(deps);
 
     const rig = rigRepo.createRig("checks-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: seatDir, model: "claude-current" });
@@ -108,6 +113,10 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     sessionRegistry.updateStatus(session.id, "running");
     sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: "%1" });
     alive.add(SEAT);
+    // The retiring occupant's tenure began at 08:30Z on the 16th; a handover written before that is an earlier tenure's.
+    const tenure = sessionRegistry.mintOccupantTenure(node.id, "fresh");
+    db.prepare("UPDATE occupant_tenures SET boot_at = '2026-11-16 08:30:00' WHERE id = ?").run(tenure.id);
+    nodeId = node.id;
     db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'claude-code')").run(node.id);
   });
   afterEach(() => { db.close(); fs.rmSync(seatDir, { recursive: true, force: true }); });
@@ -123,7 +132,7 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
 
   // (a) leases
   it("lease: a live lease on the seat refuses the launch before the old occupant is stopped, naming holder and pid", async () => {
-    leases = [{ holder: "ui-test-host", pid: 9001, reason: "UI tests on the shared host", alive: true }];
+    leases = [{ holder: "ui-test-host", pid: 9001, reason: "UI tests on the shared host", liveness: "alive" }];
     const result = await relaunch();
     expect(result).toMatchObject({ ok: false, code: "relaunch_check_held" });
     expect(result.ok ? "" : result.message).toContain("ui-test-host");
@@ -133,14 +142,14 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
   });
 
   it("lease: a lease whose holder process is gone is stale; the launch goes ahead and names it", async () => {
-    leases = [{ holder: "ui-test-host", pid: 9001, alive: false }];
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "gone" }];
     const result = await relaunch();
     expect(result.ok).toBe(true);
     expect(result.ok && result.relaunchChecks?.lease).toMatchObject({ verdict: "clear", stale: [{ holder: "ui-test-host", pid: 9001 }] });
   });
 
   it("lease: --despite lease goes ahead with the lease held, and the launch event records it", async () => {
-    leases = [{ holder: "ui-test-host", pid: 9001, alive: true }];
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
     const result = await relaunch({ despite: ["lease"] });
     expect(result.ok).toBe(true);
     expect(result.ok && result.relaunchChecks?.lease).toMatchObject({ verdict: "held", overridden: true });
@@ -149,7 +158,7 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
   });
 
   it("lease: --despite children does not cover a held lease", async () => {
-    leases = [{ holder: "ui-test-host", pid: 9001, alive: true }];
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
     const result = await relaunch({ despite: ["children"] });
     expect(result).toMatchObject({ ok: false, code: "relaunch_check_held" });
     expect(tmux.killSession).not.toHaveBeenCalled();
@@ -236,8 +245,68 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     expect(accepted.filter((message) => message.body.includes("handover"))).toEqual([]);
   });
 
+  // verify-qa FAIL attempt 1 (o9o.8), one row per finding.
+  it("finding 1: a build whose arguments mention mcp is the agent's work, not an MCP server", async () => {
+    processes = [AGENT, row(5001, PANE_PID, "node", "node ./scripts/build --suite mcp-smoke")];
+    const result = await relaunch();
+    expect(result).toMatchObject({ ok: false, code: "relaunch_check_held" });
+    expect(result.ok ? "" : result.message).toContain("5001");
+  });
+
+  it("finding 2: on a Pi seat, OpenRig's runner and the pi it spawns are the agent, not its work", async () => {
+    db.prepare("UPDATE nodes SET runtime = 'pi' WHERE id = ?").run(nodeId);
+    db.prepare("UPDATE node_startup_context SET runtime = 'pi' WHERE node_id = ?").run(nodeId);
+    processes = [row(PANE_PID, 1, "node", "node /usr/lib/node_modules/@openrig/cli/daemon/dist/adapters/pi-runner.js --session-name dev-impl@checks-rig"),
+      row(5001, PANE_PID, "pi", "pi")];
+    const plan = await service.planFresh({ seatRef: SEAT, fresh: true, stop: true });
+    expect(plan).toMatchObject({ ok: true, relaunchChecks: { children: { verdict: "clear" } } });
+  });
+
+  it("finding 3: a lease whose holder cannot be told apart from a reused pid warns and does not refuse", async () => {
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "unknown" }];
+    const result = await relaunch();
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.relaunchChecks?.lease).toMatchObject({ verdict: "unknown" });
+    expect(result.ok && result.warnings?.join("\n")).toContain("ui-test-host (pid 9001)");
+  });
+
+  it("finding 4: a handover written before the retiring occupant's tenure began is an earlier tenure's: not used, named in a warning", async () => {
+    const old = writeHandover("HANDOVER.md", "2026-11-16T08:00:00.000Z");
+    const result = await relaunch();
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.handOver).toMatchObject({ sinceSource: "launch_began" });
+    expect(result.ok && result.handOver?.handoverFile).toBeUndefined();
+    expect(accepted.filter((message) => message.body.includes(old))).toEqual([]);
+    expect(result.ok && result.warnings?.join("\n")).toContain(`${old} was not used`);
+  });
+
+  it("finding 4: with no recorded tenure the handover cannot be shown to be the retiring occupant's: not used, named in a warning", async () => {
+    db.prepare("DELETE FROM occupant_tenures WHERE node_id = ?").run(nodeId);
+    const file = writeHandover("HANDOVER.md", "2026-11-16T09:00:00.000Z");
+    const result = await relaunch();
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.handOver).toMatchObject({ sinceSource: "launch_began" });
+    expect(result.ok && result.warnings?.join("\n")).toContain(`${file} was not used`);
+  });
+
+  it("finding 5: a seat folder that cannot be read warns, and the launch goes on without a handover", async () => {
+    folderError = Object.assign(new Error("EACCES: permission denied, scandir"), { code: "EACCES" });
+    const result = await relaunch();
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.handOver).toMatchObject({ sinceSource: "launch_began" });
+    expect(result.ok && result.warnings?.join("\n")).toContain("could not be looked for");
+  });
+
+  it("finding 6: the process table is read only through the service's process-lister port", async () => {
+    const { listProcesses: _unused, ...withoutLister } = deps;
+    void _unused;
+    const unwired = new SeatLifecycleService(withoutLister);
+    const plan = await unwired.planFresh({ seatRef: SEAT, fresh: true, stop: true });
+    expect(plan).toMatchObject({ ok: true, relaunchChecks: { children: { verdict: "unknown", cause: "this daemon has no process lister wired" } } });
+  });
+
   it("plan: --plan shows every check's verdict and a held check as a blocker", async () => {
-    leases = [{ holder: "ui-test-host", pid: 9001, alive: true }];
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
     processes = [AGENT, row(5001, PANE_PID, "zsh", "/bin/zsh -c npm test")];
     const plan = await service.planFresh({ seatRef: SEAT, fresh: true, stop: true });
     expect(plan).toMatchObject({ ok: true, launchable: false, relaunchChecks: { lease: { verdict: "held" }, children: { verdict: "held" } } });

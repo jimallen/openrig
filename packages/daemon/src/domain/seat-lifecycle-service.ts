@@ -3,8 +3,8 @@ import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeHomeNoMode
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedClaudeFields, diffRetainedPiFields, diffSeatIdentity, envNameChanges, specClaudeFields, specRetainedFields, type IdentityFieldDiff, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
-import { listNativeProcesses, type NativeProcessLister, type NativeProcessRow } from "./native-process-lineage.js";
-import { blockingChecks, checkWarnings, describeHeld, judgeChildren, judgeLeases, newestHandoverFile, RELAUNCH_CHECK_NAMES, type RelaunchCheckName, type RelaunchCheckPort, type RelaunchChecks, type SeatLeaseRegistry } from "./relaunch-checks.js";
+import type { NativeProcessLister, NativeProcessRow } from "./native-process-lineage.js";
+import { blockingChecks, checkWarnings, describeHeld, judgeChildren, judgeLeases, retiringOccupantHandover, RELAUNCH_CHECK_NAMES, type RelaunchCheckName, type RelaunchCheckPort, type RelaunchChecks, type SeatLeaseRegistry } from "./relaunch-checks.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { rigAdviceHandle, seatRefRigs } from "./rig-ref.js";
@@ -25,6 +25,7 @@ import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { messageId } from "./seat-messaging/ports.js";
+import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { observeSolePane } from "./pane-binding-observation.js";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { validateNativePermissionSelection, unresolvedClaudePermissionModes } from "./native-permission-selection.js";
@@ -1460,7 +1461,7 @@ export class SeatLifecycleService {
         if (!input.stop) blockers.push({ code: "session_live", message: "A live managed occupant requires --stop." });
         // workspaces-o9o.8: what a launch would judge before it stopped this occupant.
         if (this.relaunchCheckPort) {
-          relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)));
+          relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)));
           if (blockingChecks(relaunchChecks).length > 0) {
             blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
               guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
@@ -1557,7 +1558,8 @@ export class SeatLifecycleService {
     const supersededSessionIds = (this.db.prepare(
       "SELECT id FROM sessions WHERE node_id = ? AND status NOT IN ('superseded', 'exited')",
     ).all(node.id) as Array<{ id: string }>).map((row) => row.id);
-    const retiringGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
+    const retiringTenure = this.sessionRegistry.currentOccupantTenure(node.id);
+    const retiringGeneration = retiringTenure?.generationUuid ?? null;
 
     let canonicalProbe = await this.probeLiveness(
       canonicalSessionName,
@@ -1601,7 +1603,7 @@ export class SeatLifecycleService {
       const currentSession = await this.validateFreshCollision(resolved, canonicalSessionName, input.stop === true);
       if ("code" in currentSession) return currentSession;
       // workspaces-o9o.8: the seat's own unfinished work is judged BEFORE its occupant is stopped (when the daemon wires the checks).
-      relaunchChecks = this.relaunchCheckPort ? await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, despite) : undefined;
+      relaunchChecks = this.relaunchCheckPort ? await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite) : undefined;
       if (relaunchChecks && blockingChecks(relaunchChecks).length > 0) {
         return {
           ok: false, code: "relaunch_check_held", relaunchChecks,
@@ -1653,11 +1655,12 @@ export class SeatLifecycleService {
     }
 
     // workspaces-o9o.7: the old session is gone, so nothing more can reach it or be recorded by it, and the new one has not started.
-    const handoverFile = stoppedOccupant || input.handOverSince !== undefined ? this.seatHandoverFile(node.cwd) : null;
+    const seatHandover = stoppedOccupant || input.handOverSince !== undefined ? this.retiringOccupantHandover(node.cwd, retiringTenure?.bootAt ?? null) : { file: null };
+    const handoverFile = seatHandover.file;
     const handOver = stoppedOccupant || input.handOverSince !== undefined
       ? this.handOverFromRetiringOccupant(canonicalSessionName, input.handOverSince, launchBeganAt, retiringGeneration, handoverFile)
       : undefined;
-    const checkWarningList = relaunchChecks ? checkWarnings(relaunchChecks) : [];
+    const checkWarningList = [...(relaunchChecks ? checkWarnings(relaunchChecks) : []), ...(seatHandover.warning ? [seatHandover.warning] : [])];
     const withChecks = relaunchChecks ? { relaunchChecks } : {};
     const withHandOver = handOver ? { handOver } : {};
 
@@ -1907,26 +1910,32 @@ export class SeatLifecycleService {
   }
 
   /** workspaces-o9o.8: the leases and agent children of the seat whose live occupant is about to be stopped. */
-  private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, despite: readonly RelaunchCheckName[]): Promise<RelaunchChecks> {
+  private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, runtime: string | null, despite: readonly RelaunchCheckName[]): Promise<RelaunchChecks> {
     const lease = judgeLeases(() => port.leases(sessionName), despite);
+    // The process table comes through the daemon's process-lister port, wired at the edge (o9o.8 finding 6).
+    const lister = this.listProcesses;
+    if (!lister) return { lease, children: { verdict: "unknown", cause: "this daemon has no process lister wired" } };
     let panePid: number | null = null;
     let processes: NativeProcessRow[] | null = null;
     try {
       panePid = await this.tmuxAdapter.getPanePid(sessionName);
-      if (panePid !== null) processes = await (this.listProcesses ?? listNativeProcesses)();
+      if (panePid !== null) processes = await lister();
     } catch {
       processes = null;
     }
-    return { lease, children: judgeChildren(processes, panePid, despite) };
+    return { lease, children: judgeChildren(processes, panePid, despite, runtime) };
   }
 
-  /** workspaces-o9o.8: the seat's newest handover file; null when there is none or its folder cannot be read. */
-  private seatHandoverFile(cwd: string | null): { path: string; modifiedAt: string } | null {
-    if (!cwd || !this.relaunchCheckPort) return null;
+  /** workspaces-o9o.8: the retiring occupant's own handover file, if it wrote one during its tenure. A folder that cannot be read warns and
+   *  the launch goes on without it (o9o.8 finding 5). */
+  private retiringOccupantHandover(cwd: string | null, tenureBootAt: string | null): { file: { path: string; modifiedAt: string } | null; warning?: string } {
+    if (!cwd || !this.relaunchCheckPort) return { file: null };
+    const tenureStartedAt = tenureBootAt === null ? null : parseSqliteUtcMs(tenureBootAt);
     try {
-      return newestHandoverFile(cwd, this.relaunchCheckPort);
-    } catch {
-      return null;
+      return retiringOccupantHandover(cwd, this.relaunchCheckPort,
+        tenureStartedAt === null || !Number.isFinite(tenureStartedAt) ? null : new Date(tenureStartedAt).toISOString());
+    } catch (err) {
+      return { file: null, warning: `The seat's handover file could not be looked for in ${cwd}: ${(err as Error).message}. No handover was used; check it by hand.` };
     }
   }
 

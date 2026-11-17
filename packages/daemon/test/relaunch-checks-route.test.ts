@@ -43,7 +43,7 @@ describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
     const res = await post("lease", "dev.impl", { holder: "ui-test-host", pid: process.pid, reason: "UI tests" });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, seat: "dev-impl@seat-rig", lease: { holder: "ui-test-host", pid: process.pid, reason: "UI tests" } });
-    expect(leases.leases("dev-impl@seat-rig")).toEqual([{ holder: "ui-test-host", pid: process.pid, reason: "UI tests", alive: true }]);
+    expect(leases.leases("dev-impl@seat-rig")).toEqual([{ holder: "ui-test-host", pid: process.pid, reason: "UI tests", liveness: "alive" }]);
 
     const released = await post("lease", "dev-impl@seat-rig", { holder: "ui-test-host", release: true });
     expect(await released.json()).toMatchObject({ ok: true, released: true });
@@ -66,7 +66,8 @@ describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
     expect(fs.readdirSync(leaseRoot)).toEqual([]);
   });
 
-  it("the launch's checks read the same store: a real launch through the route refuses under the lease the route registered, before anything is stopped", async () => {
+  /** A live managed seat the route's real service can judge: its pane pid is `panePid`. */
+  function liveSeat(panePid: number | null) {
     const seatDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "o9o8-seat-"));
     const rig = setup.rigRepo.createRig("live-rig");
     const node = setup.rigRepo.addNode(rig.id, "dev.live", { runtime: "claude-code", model: "fable", cwd: seatDir });
@@ -80,11 +81,16 @@ describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
       probeSession: vi.fn(async () => ({ state: "present" as const })),
       hasSession: vi.fn(async () => true),
       killSession,
-      getPanePid: vi.fn(async () => null),
+      getPanePid: vi.fn(async () => panePid),
       listSessions: vi.fn(async () => [{ name: "dev-live@live-rig", windows: 1, created: "", attached: false }]),
       listWindows: vi.fn(async () => []),
       listPanes: vi.fn(async () => [{ id: "%1", index: 0, cwd: seatDir, width: 80, height: 24, active: true }]),
     });
+    return { seatDir, killSession };
+  }
+
+  it("the launch's checks read the same store: a real launch through the route refuses under the lease the route registered, before anything is stopped", async () => {
+    const { seatDir, killSession } = liveSeat(null);
     await post("lease", "dev.live", { holder: "ui-test-host", pid: process.pid });
 
     const res = await post("launch", "dev.live", { fresh: true, reason: "r", stop: true, startupFrom: "stored" });
@@ -92,6 +98,16 @@ describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
     expect(body).toMatchObject({ ok: false, code: "relaunch_check_held" });
     expect(body.message).toContain("ui-test-host");
     expect(killSession).not.toHaveBeenCalled();
+    fs.rmSync(seatDir, { recursive: true, force: true });
+  });
+
+  // o9o.8 finding 6: the route wires the daemon's process lister into the service's port, so the children check reads the real process
+  // table: a pane pid no process has is reported as missing from that table, not as an unwired lister.
+  it("the route wires the process lister: the children check reads the real process table", async () => {
+    const { seatDir } = liveSeat(2 ** 22 + 12345);
+    const res = await post("launch-plan", "dev.live", { fresh: true, stop: true, startupFrom: "stored" });
+    const plan: { relaunchChecks?: { children?: { verdict?: string; cause?: string } } } = await res.json();
+    expect(plan.relaunchChecks?.children).toEqual({ verdict: "unknown", cause: "the process table does not show the seat's pane process" });
     fs.rmSync(seatDir, { recursive: true, force: true });
   });
 
