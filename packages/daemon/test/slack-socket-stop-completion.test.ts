@@ -8,6 +8,7 @@ import { expect, it } from "vitest";
 import { InboundRouter, type SlackEvent } from "../src/domain/gateway/slack/inbound.js";
 import { SeenStore, DeadLetterStore } from "../src/domain/gateway/slack/state-store.js";
 import { startSocketInbound, type SocketInboundHandle } from "../src/domain/gateway/slack/socket-inbound.js";
+import { claimTestPort } from "./helpers/test-ports.js";
 
 async function completion(handle: SocketInboundHandle): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -162,12 +163,7 @@ it("abandons a native WebSocket whose upgrade never answers and opens a new one"
 it("retries when a native WebSocket handshake is refused, though Node fires no close for it", async () => {
   const home = mkdtempSync(join(tmpdir(), "openrig-socket-refused-"));
   // A port with nothing listening: the handshake is refused at once.
-  const vacant = createServer();
-  vacant.listen(0, "127.0.0.1");
-  await once(vacant, "listening");
-  const vacantAddress = vacant.address();
-  if (!vacantAddress || typeof vacantAddress === "string") throw new Error("missing fixture address");
-  await new Promise<void>((resolve) => vacant.close(() => resolve()));
+  const vacantAddress = { port: await claimTestPort() };   // claimed, so no other test process binds it (workspaces-o9o.81)
   const server = createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: true, url: `ws://127.0.0.1:${vacantAddress.port}/socket` }));

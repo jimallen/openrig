@@ -25,6 +25,7 @@ import {
   type LifecycleDeps,
   type DaemonState,
 } from "../src/daemon-lifecycle.js";
+import { claimTestPort } from "../../daemon/test/helpers/test-ports.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -401,12 +402,7 @@ describe("Daemon Lifecycle", () => {
   it("exclusive bind releases a free port and treats other bind failures as indeterminate", async () => {
     const deps = realDeps();
     const listener = createServer();
-    await new Promise<void>((resolve, reject) => {
-      listener.once("error", reject);
-      listener.listen(0, "127.0.0.1", resolve);
-    });
-    const port = (listener.address() as { port: number }).port;
-    await new Promise<void>((resolve) => listener.close(() => resolve()));
+    const port = await claimTestPort();   // free, and claimed so no other test process binds it meanwhile (workspaces-o9o.81)
     expect(await deps.isPortOccupied!("127.0.0.1", port)).toBe(false);
     await new Promise<void>((resolve, reject) => {
       listener.once("error", reject);

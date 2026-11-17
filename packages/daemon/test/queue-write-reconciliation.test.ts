@@ -13,6 +13,7 @@ import { queueRoutes } from "../src/routes/queue.js";
 import { DaemonClient } from "../../cli/src/client.js";
 import { queueCommand } from "../../cli/src/commands/queue.js";
 import { runProgram } from "../../cli/src/cli-error.js";
+import { claimTestPort } from "./helpers/test-ports.js";
 
 vi.mock("../../cli/src/daemon-lifecycle.js", () => ({
   getDaemonStatus: async () => ({ state: "running", healthy: true, port: 12345 }),
@@ -338,13 +339,8 @@ describe("queue unknown-write reconciliation", () => {
   });
 
   it.each([true, false])("keeps daemon-down create actionable and reconcilable (json=%s)", async (json) => {
-    const server = createServer();
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("missing fixture address");
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    h.networkEndpoint(`http://127.0.0.1:${address.port}`);
+    const port = await claimTestPort();   // a daemon that is down: nobody binds it, claimed meanwhile (workspaces-o9o.81)
+    h.networkEndpoint(`http://127.0.0.1:${port}`);
     const first = await h.run([...createArgs, "--no-nudge"], json);
     expect(first.code).toBe(1);
     expect(h.rows()).toEqual([]);

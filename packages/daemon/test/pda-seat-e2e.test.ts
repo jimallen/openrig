@@ -43,6 +43,7 @@ import { hcTerminalName } from "../src/adapters/hc-host.js";
 import { startFakePda, nonAllowlisted, type FakePda } from "./helpers/fake-pda.js";
 import { assistantEntry, assistantMessage, deltaEvent, messageEnd, messageStart, runEnd, runStart } from "./helpers/pda-real-shapes.js";
 import { parsePdaRunnerState, pdaSeatPaths, type PdaRunnerState } from "../src/adapters/pda-runner-protocol.js";
+import { claimTestPort } from "./helpers/test-ports.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
@@ -80,10 +81,7 @@ class Gate {
   readonly port: number;
   private constructor(port: number, private readonly target: number) { this.port = port; }
   static async open(target: number): Promise<Gate> {
-    const probe = net.createServer();
-    await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
-    const port = (probe.address() as net.AddressInfo).port;
-    await new Promise<void>((r) => probe.close(() => r()));
+    const port = await claimTestPort();   // the gate binds it below (workspaces-o9o.81: claimed, not probed and released)
     const gate = new Gate(port, target);
     await gate.up();
     return gate;

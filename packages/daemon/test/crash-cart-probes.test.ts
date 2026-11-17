@@ -1,20 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { createServer } from "node:net";
 import { classifyProbeError, probeHealthz } from "../src/domain/crash-cart-probes.js";
+import { claimTestPort } from "./helpers/test-ports.js";
 
 // A GUARANTEED-refused local port: bind an ephemeral port, capture it, close → connecting now refuses
 // (real RST). This is a REAL socket refusal — not a hand-built error — so the test buys the actual Node
 // rejection shape (guard round-6 / r1: a stubbed error shape is a claim about Node; buy it with a socket).
 async function refusedPort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const srv = createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      srv.close(() => resolve(port));
-    });
-  });
+  // Never bound by anyone: claimed for this test process, so no other test process's daemon takes it meanwhile (workspaces-o9o.81).
+  return await claimTestPort();
 }
 
 // Crash-cart C3 — the REAL /healthz probe classification (feeds resolveDaemonState). A connection

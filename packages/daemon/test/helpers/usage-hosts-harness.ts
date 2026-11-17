@@ -22,6 +22,7 @@ import type { CodexUsageReadOutcome } from "../../src/domain/provider/codex-usag
 import type { UsageReadOutcome } from "../../src/domain/provider/usage-windows.js";
 import type { ClaudeAuthAnswer } from "../../src/domain/provider/claude-auth-status-reader.js";
 import { createFullTestDb } from "./test-app.js";
+import { claimTestPort } from "./test-ports.js";
 
 export interface CodexPlan {
   accountId?: string | null;
@@ -253,12 +254,9 @@ export async function redirectingRelay(target: string): Promise<{ url: string; h
   };
 }
 
-/** A loopback port that refuses connections (bound, then closed). */
+/** A loopback port that refuses connections: never bound, and claimed so no other test process's server takes it (workspaces-o9o.81). */
 export async function closedPortUrl(): Promise<string> {
-  const host = await UsageHost.start("closed");
-  const url = host.url;
-  await host.close();
-  return url;
+  return `http://127.0.0.1:${await claimTestPort()}`;
 }
 
 /** The served facts a person must see, in the CLI and the TUI alike: identities, hosts, times, levels and freshness with reasons, notes, failures. */

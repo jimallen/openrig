@@ -16,22 +16,16 @@ import { withoutSeatPath } from "../../../../scripts/seat-path.mjs";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+import { claimTestPort } from "./test-ports.js";
 
 export const TEST_DAEMON_BIND_HOST = "127.0.0.1";
 
 export const DAEMON_ENTRYPOINT = path.resolve(import.meta.dirname, "../../src/index.ts");
 
-/** Reserve a free port on loopback (the only interface a test daemon binds). Released at once: the spawn retries on a lost race. */
+/** A free loopback port (the only interface a test daemon binds), claimed for this test process so no other test process is handed it
+ *  before the daemon binds it (workspaces-o9o.81). The spawn still retries on a lost race with anything outside the suites. */
 export function getFreeLoopbackPort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.on("error", reject);
-    srv.listen(0, TEST_DAEMON_BIND_HOST, () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      srv.close(() => (port ? resolve(port) : reject(new Error("could not reserve a free port"))));
-    });
-  });
+  return claimTestPort();
 }
 
 export interface EntrypointDaemon {

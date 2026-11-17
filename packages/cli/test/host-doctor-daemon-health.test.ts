@@ -6,6 +6,7 @@ import { daemonCommand } from "../src/commands/daemon.js";
 import { doctorLegs, type DoctorDeps } from "../src/commands/host.js";
 import type { LifecycleDeps } from "../src/daemon-lifecycle.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
+import { claimTestPort } from "../../daemon/test/helpers/test-ports.js";
 
 it.each(["healthy", "unhealthy", "unverified", "stopped"] as const)(
   "preserves the actual daemon status command's %s verdict in SSH doctor",
@@ -16,10 +17,10 @@ it.each(["healthy", "unhealthy", "unverified", "stopped"] as const)(
       res.setHeader("content-type", "application/json");
       res.end("{}");
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address() as AddressInfo;
-    vi.stubEnv("OPENRIG_URL", `http://127.0.0.1:${address.port}`);
-    if (mode === "stopped") await new Promise<void>((resolve) => server.close(() => resolve()));
+    // A stopped daemon is a port nobody binds: claimed, so no other test process takes it (workspaces-o9o.81).
+    if (mode !== "stopped") await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = mode === "stopped" ? await claimTestPort() : (server.address() as AddressInfo).port;
+    vi.stubEnv("OPENRIG_URL", `http://127.0.0.1:${port}`);
     const calls: string[][] = [];
     const run: DoctorDeps["run"] = async (_host, argv) => {
       calls.push([...argv]);

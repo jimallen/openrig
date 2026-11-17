@@ -22,6 +22,7 @@ import {
   hasEnvEntry, hasProcFs, identityOf, listenerPids, pidsWithEnv, reapWhenOwnerDies, startedWithin, stopOwnedTmuxServer, terminateIdentified,
   waitNotSame, type ProcessIdentity,
 } from "./orphan-reaper.js";
+import { claimTestPort } from "./test-ports.js";
 
 export interface RigResult {
   stdout: string;
@@ -76,17 +77,11 @@ export interface SpawnScenarioDaemonOptions {
   stopGraceMs?: number;
 }
 
-/** Reserve an ephemeral free port on 127.0.0.1 (closed immediately; best-effort). */
+/** A free port on 127.0.0.1 for a scenario daemon to bind, claimed for this test process (test-ports.ts, workspaces-o9o.81). */
 export function findFreePort(): Promise<number> {
-  return new Promise((res, rej) => {
-    const srv = net.createServer();
-    srv.once("error", rej);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      srv.close(() => (port ? res(port) : rej(new Error("could not reserve a free port"))));
-    });
-  });
+  // workspaces-o9o.81: claimed for this test process, so another test process probing at the same moment is not handed it before the
+  // scenario daemon binds it (o9o.33's suite: EADDRINUSE on such a port).
+  return claimTestPort();
 }
 
 /** Invoke `node <rigBin> <args...>` with the given env. Never rejects — returns the exit code. */

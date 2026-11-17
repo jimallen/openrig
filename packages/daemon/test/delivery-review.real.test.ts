@@ -22,6 +22,7 @@ import { fakePi } from "./helpers/fake-pi.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
 import { HC_SOCKET_PATH_LIMIT, hcCountedSocketBytes } from "./helpers/hc-scratch.js";
 import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
+import { claimTestPortSync } from "./helpers/test-ports.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CHILD = resolve(here, "helpers/delivery-daemon.ts");
@@ -34,8 +35,9 @@ const RELAY_OF229 = resolve(here, "helpers/relay-of229.cjs");
 const RUNNER = resolve(here, "../src/adapters/pi-runner.ts");
 const TOKEN = "delivery-token";
 let serial = 0;
-/** A port the OS says is free. A number derived from the pid collides with another run on the same host, and the child then dies of EADDRINUSE. */
-const freePort = (): number => Number(spawnSync(process.execPath, ["-e", "const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"], { encoding: "utf8" }).stdout.trim());
+/** A port the OS says is free, claimed for this test process (workspaces-o9o.81): another test process probing at the same moment could be
+ *  handed the same number before this file's daemon binds it, as two copies of this file once were. */
+const freePort = (): number => claimTestPortSync();
 
 describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   const core = new PrivateCore("dr");

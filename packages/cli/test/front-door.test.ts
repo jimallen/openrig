@@ -14,19 +14,13 @@ import { findHc, startHcScratch } from "../../daemon/test/helpers/hc-scratch.js"
 import type { HcTerminal } from "../../daemon/src/adapters/hc-client.js";
 import { runFrontDoor, resolveTuiPath, probeFrontDoor, type FrontDoorIo } from "../src/front-door.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
+import { claimTestPort } from "../../daemon/test/helpers/test-ports.js";
 
 // A GUARANTEED-refused local port (bind an ephemeral port, capture it, close → connecting refuses).
 // A REAL socket refusal, not a hand-built error — buys the actual Node/undici rejection shape.
 async function refusedPort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const srv = createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      srv.close(() => resolve(port));
-    });
-  });
+  // Never bound by anyone: claimed for this test process, so no other test process's daemon takes it meanwhile (workspaces-o9o.81).
+  return await claimTestPort();
 }
 
 function io(overrides: Partial<FrontDoorIo> = {}): FrontDoorIo & {
