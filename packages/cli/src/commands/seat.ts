@@ -923,7 +923,7 @@ resume/successor launch reads it at call time. Examples:
     .option("--reason <text>", "Audit reason (required when executing, optional with --plan)")
     .option("--plan", "Preview this fresh launch without changing any seat or starting tmux")
     .option("--stop", "Stop the current live managed occupant before launching fresh")
-    .option("--hand-over-since <time>", "Messages the stopped occupant took from this time on (ISO 8601, e.g. 2026-11-15T23:06:06Z) are re-delivered to the fresh one. Default: the moment this launch began, which misses anything taken between your own pre-relaunch check and the launch: pass your check's time")
+    .option("--hand-over-since <time>", "Messages the stopped occupant took from this time on (ISO 8601, e.g. 2026-11-15T23:06:06Z) are re-delivered to the fresh one. Used as given, even when the seat's handover file is older. Default: the moment this launch began, or the seat's HANDOVER*.md time when that is earlier; either misses anything taken between your own pre-relaunch check and the launch: pass your check's time")
     .option("--despite <check>", "Launch even though this relaunch check is held: lease (the seat's work holds a lease, see rig seat lease) or children (the seat's agent is still running processes other than MCP servers, language servers and caffeinate). Repeat for both; the --reason is recorded", (value: string, previous: string[]) => [...previous, value], [] as string[])
     .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; snapshot:<snapshot-id>: replay that snapshot's copy of the seat's startup files (checked before anything is stopped); stored: replay the startup files saved by the seat's last successful launch")
     .option("--operator <address>", "Operator recorded on the audit event")
@@ -956,8 +956,10 @@ under the seat's agent other than MCP servers, language servers and caffeinate. 
 refuses the launch, naming each holder or process, until it finishes or you pass
 --despite lease / --despite children. A check that cannot be read only warns.
 The seat's newest HANDOVER*.md (in its folder) is when its old occupant last wrote down
-what it knew: when it is earlier than the since-time, messages taken from then on are
-handed over too, and the fresh occupant is told the file's path.
+what it knew. Without --hand-over-since, when it is earlier than the launch, messages
+taken from then on are handed over too. With --hand-over-since, that time is used as
+given and the output names the file it did not use. Either way the fresh occupant is
+told the file's path.
 Preview is a read-only snapshot, not a reservation or a native readiness check.
 A successful preview exits 0; inspect launchable to decide whether launch is allowed.
 Unreadable tmux produces complete:false and unknown eligibility unless already blocked.
@@ -1013,9 +1015,12 @@ Examples:
         console.log(`Startup policy: ${String(data["startupPolicyHash"])}; superseded sessions: ${superseded?.length ?? 0}.`);
         const source = data["startupSource"] as StartupSourceReport | undefined;
         if (source) console.log(describeStartupSource(source));
-        const handOver = data["handOver"] as { since: string; sinceSource: string; handoverFile?: string; carried: unknown[]; reissued: unknown[]; notHandedOver: string[]; skipped?: string } | undefined;
+        const handOver = data["handOver"] as { since: string; sinceSource: string; handoverFile?: string; handoverFileWrittenAt?: string; carried: unknown[]; reissued: unknown[]; notHandedOver: string[]; skipped?: string } | undefined;
         if (handOver) {
-          const sinceFrom = handOver.sinceSource === "hand_over_since" ? "--hand-over-since"
+          // workspaces-o9o.94: an explicit --hand-over-since wins; an older handover file it overrode is named, so the operator sees it was not used.
+          const overridden = handOver.sinceSource === "hand_over_since" && handOver.handoverFile && handOver.handoverFileWrittenAt && handOver.handoverFileWrittenAt < handOver.since
+            ? `; ${handOver.handoverFile}, last written at ${handOver.handoverFileWrittenAt}, was not used` : "";
+          const sinceFrom = handOver.sinceSource === "hand_over_since" ? `--hand-over-since${overridden}`
             : handOver.sinceSource === "handover_file" ? `when ${handOver.handoverFile ?? "the seat's handover file"} was last written`
             : "when this launch began; pass --hand-over-since <your check's time> to reach further back";
           console.log(`Messages handed to the fresh occupant (taken since ${handOver.since}, ${sinceFrom}): ${handOver.carried.length} re-delivered, ${handOver.reissued.length} sent again.`);

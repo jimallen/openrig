@@ -135,6 +135,19 @@ describe("workspaces-o9o.8: seat launch --despite, the handover file, and seat l
     expect(out).toContain("taken since 2026-11-16T09:00:00.000Z, when /seat/HANDOVER.md was last written)");
     expect(out).toContain("The fresh occupant was told its predecessor's handover is at /seat/HANDOVER.md.");
   });
+  // workspaces-o9o.94: the explicit time wins over an older handover file, and the CLI says which since it used and which file it did not.
+  it("prints the --hand-over-since it used and names the older handover file it did not use", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: ready({
+      handOver: { since: "2026-11-17T13:30:00.000Z", sinceSource: "hand_over_since", handoverFile: "/seat/HANDOVER.md", handoverFileWrittenAt: "2026-11-15T21:00:45.000Z",
+        carried: [], reissued: [], notHandedOver: [] },
+    }) }, calls);
+    const { logs } = await captureLogs(() => makeCommand(deps).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--stop", "--hand-over-since", "2026-11-17T13:30:00Z", "--reason", "relaunch",
+    ]));
+    const out = logs.join("\n");
+    expect(out).toContain("taken since 2026-11-17T13:30:00.000Z, --hand-over-since; /seat/HANDOVER.md, last written at 2026-11-15T21:00:45.000Z, was not used)");
+  });
   it("a refused launch exits 1 and prints what holds the seat and how to launch anyway", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const data = { ok: false, code: "relaunch_check_held", message: "Fresh launch refused before anything was stopped: dev@fixture holds a lease: ui-test-host (pid 9001).",

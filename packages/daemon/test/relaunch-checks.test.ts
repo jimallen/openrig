@@ -229,6 +229,22 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     expect(result.ok && result.handOver).toMatchObject({ since: "2026-11-16T08:00:00.000Z", sinceSource: "hand_over_since" });
   });
 
+  // workspaces-o9o.94 (release 5 on stu): an operator's --hand-over-since LATER than the seat's handover file lost to the file,
+  // which re-delivered 144 two-day-old messages to a fresh seat. An explicit time wins in both directions; the file only sets
+  // the default, and the result names it and its time so the CLI can say it was not used.
+  it("handover: an operator's --hand-over-since LATER than the handover file wins, and the file and its time are named", async () => {
+    const path = writeHandover("HANDOVER.md", "2026-11-16T09:00:00.000Z");
+    const asked: string[] = [];
+    const handOff = tmux.messageHandOff as MessageHandOff;
+    handOff.handOverFromRetiringOccupant = ((_seat: string, since: string) => { asked.push(since); return { carried: [], reissued: [], notHandedOver: [] }; }) as MessageHandOff["handOverFromRetiringOccupant"];
+    const result = await relaunch({ handOverSince: "2026-11-16T09:30:00Z" });
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.handOver).toMatchObject({
+      since: "2026-11-16T09:30:00.000Z", sinceSource: "hand_over_since", handoverFile: path, handoverFileWrittenAt: "2026-11-16T09:00:00.000Z",
+    });
+    expect(asked).toEqual(["2026-11-16T09:30:00.000Z"]);
+  });
+
   // (d) the fresh occupant is handed its predecessor's handover path
   it("handover: the fresh occupant is told where its predecessor's handover is, bound to its own generation", async () => {
     const path = writeHandover("HANDOVER.md", "2026-11-16T09:00:00.000Z");

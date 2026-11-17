@@ -336,10 +336,13 @@ export type SeatLeaseResult =
  *  handed over only when the check's time is passed. */
 export interface LaunchHandOver {
   since: string;
-  /** workspaces-o9o.8: `handover_file` when the seat's newest handover file was written before the other two times. */
+  /** workspaces-o9o.8/o9o.94: `hand_over_since` whenever the operator passed one; with none, `handover_file` when the seat's newest
+   *  handover file was written before the launch began, else `launch_began`. */
   sinceSource: "hand_over_since" | "launch_began" | "handover_file";
   /** workspaces-o9o.8: the seat's newest handover file, when there is one. */
   handoverFile?: string;
+  /** workspaces-o9o.94: when that handover file was last written, so the CLI can name it when an explicit --hand-over-since won. */
+  handoverFileWrittenAt?: string;
   /** Re-deliveries: new rows for messages the old occupant took from `since` on. */
   carried: Array<{ id: string; original: string; gateRecordedAt: string }>;
   /** Open messages already attempted on the old occupant, going again under a new nonce. */
@@ -1964,15 +1967,19 @@ export class SeatLifecycleService {
   /** workspaces-o9o.7: hands what the stopped occupant took, or may have taken, to the fresh one (MessageHandOff.handOverFromRetiringOccupant). */
   private handOverFromRetiringOccupant(seat: string, handOverSince: string | undefined, launchBeganAt: string, retiringGeneration: string | null,
     handoverFile: { path: string; modifiedAt: string } | null): LaunchHandOver {
-    // workspaces-o9o.8: the earliest of the operator's time, the seat's handover file and the launch start. What the old occupant took
-    // after it last wrote its handover is not in that handover, so it goes to the fresh occupant.
-    const candidates: Array<{ at: string; source: LaunchHandOver["sinceSource"] }> = [
-      handOverSince === undefined ? { at: launchBeganAt, source: "launch_began" } : { at: handOverSinceInstant(handOverSince)!, source: "hand_over_since" },
+    // workspaces-o9o.94: an operator's --hand-over-since wins, earlier or later than anything else: it is the operator's own check
+    // time (release 5 on stu: an older HANDOVER.md beat a later --hand-over-since and re-delivered 144 two-day-old messages).
+    // With none, the default is the earlier of the seat's handover file and the launch start (workspaces-o9o.8: what the old occupant
+    // took after it last wrote its handover is not in that handover, so it goes to the fresh occupant).
+    const defaults: Array<{ at: string; source: LaunchHandOver["sinceSource"] }> = [
+      { at: launchBeganAt, source: "launch_began" },
       ...(handoverFile ? [{ at: handoverFile.modifiedAt, source: "handover_file" as const }] : []),
     ];
-    const earliest = candidates.reduce((a, b) => (b.at < a.at ? b : a));
-    const since = earliest.at;
-    const base = { since, sinceSource: earliest.source, ...(handoverFile ? { handoverFile: handoverFile.path } : {}) };
+    const chosen = handOverSince !== undefined
+      ? { at: handOverSinceInstant(handOverSince)!, source: "hand_over_since" as const }
+      : defaults.reduce((a, b) => (b.at < a.at ? b : a));
+    const since = chosen.at;
+    const base = { since, sinceSource: chosen.source, ...(handoverFile ? { handoverFile: handoverFile.path, handoverFileWrittenAt: handoverFile.modifiedAt } : {}) };
     const handOff = this.tmuxAdapter.messageHandOff;
     if (!handOff) return { ...base, carried: [], reissued: [], notHandedOver: [], skipped: "the message pump is off (transport.message_pump), so nothing here tracks what the old occupant took" };
     const handed = handOff.handOverFromRetiringOccupant(seat, since, (retiringGeneration ?? "unknown").slice(0, 8));

@@ -251,10 +251,12 @@ refuses with `relaunch_check_held` (naming each holder or process; nothing is st
 `--reason`. A check that cannot be read (no pane process, an unreadable lease folder) only warns, so a broken seat can
 still be recovered. `--plan` shows every check's verdict.
 
-The seat's newest `HANDOVER*.md` in its own folder is when its old occupant last wrote down what it knew. When it was
-written during the retiring occupant's tenure and is earlier than `--hand-over-since` (or the launch's own start),
-messages the old occupant took from then on are handed to the fresh one as well. The result names the file
-(`handOver.sinceSource: handover_file`), and the fresh occupant is sent its path. A file from an earlier tenure, one
+The seat's newest `HANDOVER*.md` in its own folder is when its old occupant last wrote down what it knew. Without
+`--hand-over-since`, when it was written during the retiring occupant's tenure and is earlier than the launch's own
+start, messages the old occupant took from then on are handed to the fresh one as well, and the result names the file
+(`handOver.sinceSource: handover_file`). An explicit `--hand-over-since` is used as given, earlier or later than the
+file (`handOver.sinceSource: hand_over_since`); the result still names the file and when it was written
+(`handOver.handoverFileWrittenAt`), and the CLI says it was not used. Either way the fresh occupant is sent its path. A file from an earlier tenure, one
 whose tenure is not recorded, or a folder that cannot be read is named in a warning and not used. The pattern and the expected children are fixed defaults for now (`RELAUNCH_CHECK_DEFAULTS`).
 
 **Where a fresh seat's startup files come from.** A fresh conversation has no continuity, so `rig seat launch --fresh`
