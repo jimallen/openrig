@@ -17,6 +17,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - The shell check runs the login profile once, as any seat launch does, and says so; `--no-seat-shell` skips it. The probe terminal is always removed. Doctor changes nothing: each problem row names the command that fixes it. `rig setup`'s checks are unchanged and start no probe shell.
 - The daemon answers the shell, runtime and spec-folder rows at `POST /api/doctor/host`. Because it runs a login shell, the route sits behind the terminal guard, like every route that acts on a terminal; the CLI sends the terminal token (`OPENRIG_TERMINAL_BEARER_TOKEN`, or `<OPENRIG_HOME>/terminal-token`), and a refusal (401) is a failure that says so. A daemon that cannot be reached, or an older one without the route, makes those rows read `skipped`, never `pass`. An inotify count with an unreadable entry for a live process reads `skipped` (unknown), never a pass.
 
+### A seat's plugin copy drops the files its source dropped (workspaces-o9o.25)
+
+- Symptom: a seat's copy of a plugin (`.claude/plugins/<id>`, `.codex/plugins/<id>`) kept every file the plugin's source no longer has, so a removed helper lingered in seat folders even after o9o.17 made the source copy exact.
+- Now projection removes such a file, narrowly, because a delete in a seat folder cannot be undone: only a file OpenRig's projection manifest (`projection_manifest`) records writing there, only while it still holds exactly the bytes OpenRig wrote (an operator's edit is kept, and a warning names it), and never through a link (every folder below the seat folder must be a real directory and the file a regular file). Files OpenRig never wrote are never touched.
+- Every plugin file a projection writes or confirms is now recorded, so a seat copy made before this change is adopted at its next projection; a file that was already stale before then is not known to be OpenRig's and stays.
+
 ### The plugin refresh replaces the whole tree, so a full disk cannot leave a mixed copy (workspaces-o9o.55)
 
 - Symptom: the daemon-start refresh of `OPENRIG_HOME/plugins/openrig-core` replaced it file by file. Each file was atomic, the tree was not: a full disk (ENOSPC) partway through left the copy mixed, some files new, some old, files the package dropped still present, for that whole boot. The same failure also skipped the global skill seed refreshes, which shared its try block.

@@ -1,4 +1,5 @@
 import { answerDialogKeys } from "./hc-dialog-input.js";
+import { pruneDroppedPluginFiles, type ProjectionLedger } from "../domain/plugin-copy-prune.js";
 import { claudeForkHomeRefusal } from "../domain/claude-config-dir.js";
 import { findClaudeTranscriptByToken } from "../domain/continuity-policy-materializer.js";
 import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
@@ -48,6 +49,10 @@ export interface ClaudeAdapterFsOps {
   readdir?(dirPath: string): string[];
   /** User home directory (for session file lookup). */
   homedir?: string;
+  /** What a path is without following it (workspaces-o9o.25: the plugin-copy prune). Absent: nothing is removed. */
+  lstat?(path: string): "file" | "directory" | "symlink" | "other" | null;
+  /** Remove one file (the plugin-copy prune). Absent: nothing is removed. */
+  removeFile?(path: string): void;
 }
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
@@ -82,6 +87,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   /** P20 — called after a projected file is written to a target, so the manifest
    *  records what we last wrote (→ operator-vs-stale discrimination). No-op by default. */
   private recordProjection: (targetPath: string, content: string) => void;
+  private projectionLedger?: ProjectionLedger;
 
   constructor(deps: {
     tmux: TmuxAdapter;
@@ -106,6 +112,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     /** P20 — record-at-apply hook (startup wires it to the projection manifest store).
      *  Absent → no-op (the manifest stays empty → discrimination safe-degrades to P17). */
     recordProjection?: (targetPath: string, content: string) => void;
+    /** workspaces-o9o.25: what OpenRig recorded writing, so a seat's plugin copy can drop what its source dropped.
+     *  Absent: nothing is removed. */
+    projectionLedger?: ProjectionLedger;
   }) {
     this.tmux = deps.tmux;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
@@ -122,6 +131,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     this.claudeHooksManifestPath = deps.claudeHooksManifestPath ?? null;
     this.rigBodyGuardScript = deps.rigBodyGuardScript ?? claudeRigBodyGuardScriptPath();
     this.recordProjection = deps.recordProjection ?? (() => {});
+    this.projectionLedger = deps.projectionLedger;
   }
 
   async listInstalled(binding: NodeBinding): Promise<InstalledResource[]> {
@@ -586,20 +596,27 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     if (isDir && this.fs.listFiles) {
       // Directory-shaped: recursive copy
+      const plugin = entry.category === "plugin";
+      const wanted = new Set<string>();
       for (const file of this.fs.listFiles(entry.absolutePath)) {
         const src = nodePath.join(entry.absolutePath, file);
         const dest = nodePath.join(targetDir, file);
         const content = this.fs.readFile(src);
+        wanted.add(dest);
         // Reconcile mode even when the content write is skipped: a byte-identical dest
         // projected earlier may still carry the wrong (default) mode.
         if (this.fs.exists(dest) && hashContent(content) === hashContent(this.fs.readFile(dest))) {
           this.preserveMode(src, dest);
+          if (plugin) this.recordProjection(dest, content);
           continue;
         }
         this.fs.mkdirp(nodePath.dirname(dest));
         this.fs.writeFile(dest, content);
         this.preserveMode(src, dest);
+        if (plugin) this.recordProjection(dest, content);
       }
+      // workspaces-o9o.25: drop from the seat copy what the source dropped, only what OpenRig wrote and still unchanged.
+      if (plugin) warnings.push(...pruneDroppedPluginFiles({ cwd, targetDir, wanted, ledger: this.projectionLedger, fs: this.fs }));
     } else {
       // File-shaped: single file copy (subagents, hooks as YAML files)
       const content = this.fs.readFile(entry.absolutePath);

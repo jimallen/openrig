@@ -60,6 +60,21 @@ export class ProjectionManifestStore {
     };
   }
 
+  /** Every recorded target strictly inside `dir` (workspaces-o9o.25: what OpenRig wrote into a seat's plugin copy).
+   *  A prefix compare, not LIKE, so `%` or `_` in a path is literal. */
+  listUnder(dir: string): Array<{ targetPath: string; lastHash: string }> {
+    const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+    return (this.db
+      .prepare(`SELECT target_path, last_hash FROM projection_manifest WHERE substr(target_path, 1, ?) = ? ORDER BY target_path`)
+      .all(prefix.length, prefix) as Array<{ target_path: string; last_hash: string }>)
+      .map((row) => ({ targetPath: row.target_path, lastHash: row.last_hash }));
+  }
+
+  /** Drop the record for a target OpenRig removed (or that is gone). */
+  forget(targetPath: string): void {
+    this.db.prepare(`DELETE FROM projection_manifest WHERE target_path = ?`).run(targetPath);
+  }
+
   /** Convenience for the discrimination rule: the last-written hash, or null. */
   lastHash(targetPath: string): string | null {
     return this.get(targetPath)?.lastHash ?? null;

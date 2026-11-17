@@ -1,4 +1,5 @@
 import { answerDialogKeys } from "./hc-dialog-input.js";
+import { pruneDroppedPluginFiles, type ProjectionLedger } from "../domain/plugin-copy-prune.js";
 import { operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import nodePath from "node:path";
@@ -89,6 +90,10 @@ export interface CodexAdapterFsOps {
   /** Apply permission bits to a file (for mode-preserving projection). Optional: no-op if absent. */
   chmod?(path: string, mode: number): void;
   homedir?: string;
+  /** What a path is without following it (workspaces-o9o.25: the plugin-copy prune). Absent: nothing is removed. */
+  lstat?(path: string): "file" | "directory" | "symlink" | "other" | null;
+  /** Remove one file (the plugin-copy prune). Absent: nothing is removed. */
+  removeFile?(path: string): void;
 }
 
 /**
@@ -101,6 +106,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private seatLaunchEnvironment?: SeatLaunchEnvironment;
   private fs: CodexAdapterFsOps;
   private listProcesses: () => CodexProcess[] | Promise<CodexProcess[]>;
+  /** workspaces-o9o.25: record what a plugin projection wrote, so a later projection can drop what the source dropped. */
+  private recordProjection: (targetPath: string, content: string) => void;
+  private projectionLedger?: ProjectionLedger;
   private readThreadIdByPid: (pid: number) => Promise<string | undefined> | string | undefined;
   private sleep: (ms: number) => Promise<void>;
   private resolveHomeDirByPid: ResolveHomeDirByPid;
@@ -148,6 +156,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     seatLaunchEnvironment?: SeatLaunchEnvironment;
     fsOps: CodexAdapterFsOps;
     listProcesses?: () => CodexProcess[] | Promise<CodexProcess[]>;
+    /** workspaces-o9o.25: record-at-apply for plugin files (startup wires the projection manifest). Absent: no-op. */
+    recordProjection?: (targetPath: string, content: string) => void;
+    /** workspaces-o9o.25: what OpenRig recorded writing. Absent: nothing is removed. */
+    projectionLedger?: ProjectionLedger;
     readThreadIdByPid?: (pid: number) => Promise<string | undefined> | string | undefined;
     resolveHomeDirByPid?: ResolveHomeDirByPid;
     sleep?: (ms: number) => Promise<void>;
@@ -186,6 +198,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.activityRelayPath = deps.activityRelayPath;
     this.reconcileSeatGate = deps.reconcileSeatGate;
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
+    this.recordProjection = deps.recordProjection ?? (() => {});
+    this.projectionLedger = deps.projectionLedger;
     this.readThreadIdByPid = deps.readThreadIdByPid ?? ((pid) => this.readThreadIdFromLogs(pid));
     this.resolveHomeDirByPid = deps.resolveHomeDirByPid ?? defaultResolveHomeDirByPid;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -762,14 +776,18 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const createdFiles: string[] = [];
     try {
       if (isDir && this.fs.listFiles) {
+        const plugin = entry.category === "plugin";
+        const wanted = new Set<string>();
         for (const file of this.fs.listFiles(entry.absolutePath)) {
           const src = nodePath.join(entry.absolutePath, file);
           const dest = nodePath.join(targetDir, file);
           const content = this.fs.readFile(src);
+          wanted.add(dest);
           // Reconcile mode even when the content write is skipped: a byte-identical dest
           // projected earlier may still carry the wrong (default) mode.
           if (this.fs.exists(dest) && hashContent(content) === hashContent(this.fs.readFile(dest))) {
             this.preserveMode(src, dest);
+            if (plugin) this.recordProjection(dest, content);
             continue;
           }
           const existed = this.fs.exists(dest);
@@ -777,7 +795,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           this.fs.writeFile(dest, content);
           if (!existed) createdFiles.push(dest);
           this.preserveMode(src, dest);
+          if (plugin) this.recordProjection(dest, content);
         }
+        // workspaces-o9o.25: drop from the seat copy what the source dropped, only what OpenRig wrote and still unchanged.
+        if (plugin) warnings.push(...pruneDroppedPluginFiles({ cwd, targetDir, wanted, ledger: this.projectionLedger, fs: this.fs }));
       } else {
         const content = this.fs.readFile(entry.absolutePath);
         const destFile = nodePath.join(targetDir, nodePath.basename(entry.absolutePath));
