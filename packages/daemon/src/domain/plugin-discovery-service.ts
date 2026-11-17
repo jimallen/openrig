@@ -760,9 +760,10 @@ export function selectIgnoredVendoredPlugins(folders: readonly VendoredPluginFol
 }
 
 /** Throws unless every component below `anchor` (OPENRIG_HOME) down to `target` is a real, non-symlink entry: the
- *  o9o.17 walk (PluginVendorService.unsafe), which likewise trusts the anchor itself. Residual, as there (accepted by
- *  Jim, 2026-11-16): a component swapped for a link between this walk and the write that follows; that needs a
- *  concurrent same-user writer inside the tree. */
+ *  o9o.17 walk (PluginVendorService.unsafe), which likewise trusts the anchor itself. Residual, as there: accepted on
+ *  2026-11-16 by OpenRig's 15-minute auto-answer (its Recommended option, queue record qa-f5c084b1679e94516e44aff1e88a8361;
+ *  under Jim's 2026-11-08 rule that is his go): a component swapped for a link between this walk and the write that
+ *  follows; that needs a concurrent same-user writer inside the tree. */
 function refuseSymlinkOnPath(anchor: string, target: string): void {
   const rel = relative(anchor, target);
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${target} is outside ${anchor}; not written`);
