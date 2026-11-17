@@ -141,10 +141,13 @@ export class AgentActivityStore {
     });
 
     // OF-278: Claude's Notification/permission_prompt for an AskUserQuestion dialog arrives ~6.5 s after the PermissionRequest that
-    // already named it (measured, 2.1.319). It carries no tool, so it keeps the reason the dialog already has.
+    // already named it (measured, 2.1.319). It carries no tool, so it keeps the reason the dialog already has. The dialog is judged by the
+    // seat's latest word before this Notification, read as the posture reads it (_pickLatest: ACTIVITY_SCAN_ROWS rows, the turn's question
+    // calls), not by the one row before it: late async rows can land between the PermissionRequest and its Notification (workspaces-o9o.57,
+    // verify-qa review). A tool other than the question started after the dialog opened means the model went on past it (its end is still
+    // in flight), so a Notification then is that tool's own prompt.
     if (activity.rawEvent === "Notification" && activity.rawSubtype === "permission_prompt" && activity.state === "needs_input") {
-      const previous = this.db.prepare("SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT 1").get(session.node_id) as EventPayloadRow | undefined;
-      const before = previous ? parseActivityPayload(previous.payload)?.activity : null;
+      const before = this._questionStillOpen(session.node_id);
       if (before?.dialog === "question" && before.state === "needs_input" && (before.generation ?? null) === (activity.generation ?? null)) {
         activity.reason = QUESTION_DIALOG_REASON;
         activity.dialog = "question";
@@ -193,6 +196,22 @@ export class AgentActivityStore {
     if (rows.length === 0) return null;
     const parsed = rows.map((r) => parseActivityPayload(r.payload));
     return pickLatestByOrdering(parsed, questionCallsIn(parsed));
+  }
+
+  /** The seat's latest word when it is a question to the human that the turn has not gone on past: no tool other than AskUserQuestion has
+   *  started (by its own eventAt) since the question's dialog. Null otherwise. Used to tell a question's own delayed Notification from another
+   *  tool's permission prompt (workspaces-o9o.57). */
+  private _questionStillOpen(nodeId: string): AgentActivity | null {
+    const rows = this.db.prepare(
+      `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${ACTIVITY_SCAN_ROWS}`
+    ).all(nodeId) as EventPayloadRow[];
+    const parsed = rows.map((r) => parseActivityPayload(r.payload));
+    const latest = pickLatestByOrdering(parsed, questionCallsIn(parsed))?.activity ?? null;
+    if (!latest || latest.dialog !== "question" || latest.state !== "needs_input") return null;
+    const askedMs = latest.eventAt ? Date.parse(latest.eventAt) : Number.NaN;
+    const wentOn = turnCalls(parsed).turn.some((a) => a.rawEvent === "PreToolUse" && a.rawSubtype !== QUESTION_DIALOG_TOOL
+      && !!a.eventAt && Number.isFinite(askedMs) && Date.parse(a.eventAt) > askedMs);
+    return wentOn ? null : latest;
   }
 
   /** workspaces-o9o.4 F2: the seat's tool calls still open in its current turn, oldest first (openToolCallsIn). Never throws. */

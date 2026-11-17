@@ -90,6 +90,49 @@ describe("workspaces-o9o.57: a prompt followed by 20+ async rows is still the la
     expect(seatInputPoint(s.db, s.nodeId, T0 + 2_500)).toBe("passed");
   });
 
+  // verify-qa FAIL of e68d2c94a: the question's own Notification/permission_prompt lands ~6.5 s after its PermissionRequest (measured, 2.1.319).
+  // It was taken as part of the question only when the row just before it was the question; 26 late rows between made it a plain permission
+  // prompt, so the auto-answer's read said the seat was not asking, and a later unrelated tool end cleared it.
+  it("RED (review): the question's delayed Notification, 26 late rows after its PermissionRequest, is still the question", async () => {
+    const s = seat();
+    s.hook({ hook_event_name: "UserPromptSubmit" }, 0);
+    s.hook({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask", tool_input: { questions: QUESTION } }, 900);
+    s.hook({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions: QUESTION } }, 2_000);
+    s.lateReads(13, 1_000);
+    s.hook({ hook_event_name: "Notification", notification_type: "permission_prompt" }, 8_500);   // the dialog's own notification
+    expect(s.store.getLatestRecorded(s.nodeId)).toMatchObject({ rawEvent: "Notification", dialog: "question" });
+    expect(s.ports.stillAsking(s.nodeId, null)).toBe(true);
+    s.hook({ hook_event_name: "PostToolUse", tool_name: "Read", tool_use_id: "toolu_read_late" }, 20_000);   // an unrelated end, > 2 s later
+    expect((await s.posture(21_000)).line).toMatch(/^waiting on a question to the human/);
+    expect(s.ports.stillAsking(s.nodeId, null)).toBe(true);
+  });
+
+  it("a Notification after the question was answered is a plain permission prompt, not the question", async () => {
+    const s = seat();
+    s.hook({ hook_event_name: "UserPromptSubmit" }, 0);
+    s.hook({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask", tool_input: { questions: QUESTION } }, 900);
+    s.hook({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions: QUESTION } }, 2_000);
+    s.lateReads(13, 1_000);
+    s.hook({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask", tool_input: { questions: QUESTION } }, 5_000);   // answered
+    s.hook({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "toolu_bash" }, 6_000);
+    s.hook({ hook_event_name: "Notification", notification_type: "permission_prompt" }, 8_500);   // Bash's own approval prompt
+    expect(s.store.getLatestRecorded(s.nodeId)).toMatchObject({ rawEvent: "Notification", state: "needs_input" });
+    expect(s.store.getLatestRecorded(s.nodeId)!.dialog).toBeUndefined();
+    expect(s.ports.stillAsking(s.nodeId, null)).toBe(false);
+  });
+
+  it("a tool started after the question's dialog (the question's end still in flight): the Notification is that tool's prompt", async () => {
+    const s = seat();
+    s.hook({ hook_event_name: "UserPromptSubmit" }, 0);
+    s.hook({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask", tool_input: { questions: QUESTION } }, 900);
+    s.hook({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions: QUESTION } }, 2_000);
+    s.lateReads(13, 1_000);
+    s.hook({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "toolu_bash" }, 30_000);   // answered; the model went on
+    s.hook({ hook_event_name: "Notification", notification_type: "permission_prompt" }, 31_000);       // Bash needs approval
+    expect(s.store.getLatestRecorded(s.nodeId)!.dialog).toBeUndefined();
+    expect(s.ports.stillAsking(s.nodeId, null)).toBe(false);
+  });
+
   it("the window still applies the clearing rules: the question's own end, 26 rows on, clears it", async () => {
     const s = seat();
     s.hook({ hook_event_name: "UserPromptSubmit" }, 0);
