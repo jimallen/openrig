@@ -27,8 +27,10 @@ const LINT_OFF = ["eslint", "disable", "next", "line"].join("-");
 const TS_OFF = ["@ts", "ignore"].join("-");
 const FAKE_SLACK = ["xox", "b-"].join("") + "1234567890-abcdefghijkl";
 
+// Hooks are off for every fixture git call, and init takes no template (o9o.105): a template configured in the real HOME
+// (init.templateDir) would otherwise be copied into each fixture, and its hooks run by the checkout below.
 function git(repo, ...args) {
-  return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: repo, encoding: "utf8" }).trim();
 }
 
 function write(repo, path, text) {
@@ -49,7 +51,7 @@ async function withRepo(body) {
   const receipts = join(root, "receipts");
   try {
     mkdirSync(repo);
-    git(repo, "init", "-q", "-b", "main");
+    git(repo, "init", "-q", "--template=", "-b", "main");
     write(repo, "packages/daemon/src/queue-store.ts", "export const store = 1;\n");
     write(repo, "packages/daemon/src/unrelated.ts", "export const other = 1;\n");
     write(repo, "packages/daemon/test/queue-store.test.ts", "import '../src/queue-store';\n");
@@ -93,6 +95,48 @@ async function passTiers(repo, receipts, upTo, ports) {
     assert.equal(result.exitCode, EXIT.pass, ports.lines.join("\n"));
   }
 }
+
+// workspaces-o9o.105: these fixtures run under plain node --test with the real HOME, so a git template configured there
+// (init.templateDir; on Sparky it holds a post-checkout hook that pulls a repo and installs a Claude plugin) was copied into
+// every fixture and run by its checkout. GIT_TEMPLATE_DIR stands in for that template here: it outranks init.templateDir.
+test("a fixture repo neither copies nor runs a git template's hook", async () => {
+  const template = mkdtempSync(join(tmpdir(), "gate-tiers-template-"));
+  const marker = join(template, "hook-ran");
+  mkdirSync(join(template, "hooks"));
+  writeFileSync(join(template, "hooks", "post-checkout"), `#!/bin/sh\n: > '${marker}'\n`, { mode: 0o755 });
+  const before = process.env.GIT_TEMPLATE_DIR;
+  process.env.GIT_TEMPLATE_DIR = template;
+  try {
+    await withRepo(async ({ repo }) => {
+      assert.equal(existsSync(join(repo, ".git", "hooks", "post-checkout")), false, "the template's hook was copied in");
+    });
+    assert.equal(existsSync(marker), false, "the template's post-checkout hook ran");
+  } finally {
+    if (before === undefined) delete process.env.GIT_TEMPLATE_DIR;
+    else process.env.GIT_TEMPLATE_DIR = before;
+    rmSync(template, { recursive: true, force: true });
+  }
+});
+
+test("a fixture checkout runs no hook from a configured core.hooksPath either", async () => {
+  // The other route a hook takes: core.hooksPath set outside any template (here through git's environment config, which a
+  // command-line -c outranks).
+  const hooks = mkdtempSync(join(tmpdir(), "gate-tiers-hookspath-"));
+  const marker = join(hooks, "hook-ran");
+  writeFileSync(join(hooks, "post-checkout"), `#!/bin/sh\n: > '${marker}'\n`, { mode: 0o755 });
+  const saved = { count: process.env.GIT_CONFIG_COUNT, key: process.env.GIT_CONFIG_KEY_0, value: process.env.GIT_CONFIG_VALUE_0 };
+  Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: hooks });
+  try {
+    await withRepo(async () => {});
+    assert.equal(existsSync(marker), false, "a configured post-checkout hook ran");
+  } finally {
+    for (const [name, value] of [["GIT_CONFIG_COUNT", saved.count], ["GIT_CONFIG_KEY_0", saved.key], ["GIT_CONFIG_VALUE_0", saved.value]]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(hooks, { recursive: true, force: true });
+  }
+});
 
 test("tier 0 passes a clean diff and writes a receipt naming HEAD and the merge base", async () => {
   await withRepo(async ({ repo, receipts }) => {
