@@ -14,7 +14,6 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 - Symptom: at 120 columns the seat table's NOW cell cut a long tool name and lost its age and the `?` that marks an unconfirmed call (`⚙ WebSearc…`); at 84 and 100 columns the table has no NOW column, so the running tool showed only in the agent detail.
 - Now, decided by Jim: a table with no NOW column shows the running tool in STATE (12 cells wide there, in place of the state word the seat's mark already gives). Wherever a tool cell is short, one rule applies: the space after `⚙` goes first, then the tool's name shortens; the age, the `?` and `+N` never do (`⚙WebS… 18m?`). This applies in the rig table and in the instance table's narrower layouts.
-
 - Symptom: the TUI's agent detail showed a running tool's start in the TUI's time zone (`since 2031-03-04 08:05:41 PST`) right above the daemon's posture line, which is UTC (`(since 16:05Z)`), so the same instant read as two different times.
 - Now the tool line also gives the start in the posture line's own UTC form: `since 2031-03-04 08:05:41 PST (16:05Z)`, with the date added once the start is on an earlier UTC day (`(03-04 16:05Z)`). The posture line stays the daemon's text, word for word.
 
@@ -22,7 +21,6 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 - After o9o.3, a failed launch's pane tail reached `rig up` and restore output but not `rig seat launch --fresh` or `rig seat continue`. Both now print `pane: <last lines>` after the error, and their `--json` carries `paneTail`. The fresh start an operator accepts at `rig up` or `rig start` prints it too (`<seat> pane: ...`).
 - The tail stays transient, as in o9o.3: it rides the response only, already redacted by the shared redaction list, and no stored row gains it.
-
 
 ### A shell's send over ssh is labelled with the shell's own name and host, not the far host's operator (workspaces-o9o.34)
 
@@ -51,6 +49,17 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now the daemon reads the end (256 KiB) of a Codex seat's rollout, the current thread's file it already finds by the seat's resume token, and takes the calls of the current turn that have no output yet. The line is the same as for Claude: `busy: running exec for 12 s (since 16:05Z)`, with `+N more` for parallel calls. The tool shows under Codex's own name for it (`exec`); its command is never shown.
 - The rollout shape is measured (structure only) on this host's Codex 0.137 to 0.158 rollouts and one 0.166.0 turn: a call is a `custom_tool_call` with a `call_id`, closed by a `custom_tool_call_output` with the same `call_id`, inside `task_started` … `task_complete`. The Responses API spelling (`function_call`, `function_call_output`) counts the same. That the call is written when it starts is argued from 0.158 rollouts, where a call's record comes before its output by the run time; on 0.166.0 it is not measured.
 - A call older than the window, or a rollout the daemon cannot read, shows today's `turn running` line, never a wrong tool.
+
+### A 401 names the token its route checks (workspaces-o9o.85)
+
+- Symptom: a route that checks the daemon's terminal token (sending to a seat, reading its screen, running a shell, transport, messages, compaction) answered a bad or missing token with "Mission Control auth failed" and told the caller to set `OPENRIG_AUTH_BEARER_TOKEN`, the operator token, which that route does not check.
+- Now each route states which token it checks, and its 401 names that one. Terminal routes say "Terminal auth failed" and point to the terminal token the daemon was started with (`OPENRIG_TERMINAL_BEARER_TOKEN`; the rig CLI sends that, or the contents of `<OPENRIG_HOME>/terminal-token`). Mission Control, hosts, rig mode and spec-source routes keep the operator wording. The check itself is unchanged: copy only.
+
+### Internal changes with no change in behaviour (workspaces-o9o.58, workspaces-o9o.69, workspaces-o9o.83)
+
+- o9o.58: two code comments about accepted residuals (o9o.25's plugin-copy prune, o9o.44's lab migration) now say the answer was OpenRig's 15-minute auto-answer under Jim's 2026-11-08 rule, not a choice Jim made live.
+- o9o.69: transcript storage and rotation reach the filesystem through a `TranscriptFiles` port (hexagonal boundary), with the same modes, redaction and atomic replace as before; a store or rotation built without the port is refused instead of silently doing nothing.
+- o9o.83: the change-based test selection (`scripts/gate-tiers.mjs`, tier 2) also picks census tests that scan source for a method call the diff newly adds, including the ones that parse source as an AST, and treats a changed `.test.mjs` or `.test.js` as a test.
 
 ### Restore packets name the redaction list they were written with: `openrig-v1` (workspaces-o9o.51)
 
@@ -417,7 +426,6 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   starting with a guarded rig command given to any other runner (`docker exec c "rig send s $(x)"`) are read as shell text. The `xargs` table entry is gone: the runner rule judges
   `xargs rig send ...` the same way (it was redundant). Still not modelled: a command assembled at run time (`rig${IFS}send`, `R=rig; $R send ...`, ANSI-C quoting of the name, a shell function or
   positional parameter that carries the text), `tmux send-keys` (types into another pane), and a script string that does not start with the rig command.
-
 - OF-252: the launch-time merge fails closed on off-shape settings. A `PreToolUse` that is not an array, or `hooks` that is not an object, refuses the launch (it used to be
   replaced, dropping a caller's hook). `--settings=<json>` is recognised as a settings flag, counts toward exactly one, and is merged in its own form. A flag with no value, a value
   that is not a JSON object (a file path is not read) or malformed JSON refuses the launch with a clear error. No launch builder in the repo emits any of these today. The launch census
