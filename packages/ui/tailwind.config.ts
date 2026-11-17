@@ -65,7 +65,8 @@ const config: Config = {
         },
 
         /* Status */
-        success: "hsl(var(--success))",
+        // workspaces-o9o.120: text-success-ink for green TEXT (readable on every surface); bg/border-success keep the brand green.
+        success: { DEFAULT: "hsl(var(--success))", ink: "hsl(var(--success-ink))" },
         // workspaces-o9o.113: text-warning-ink for amber TEXT (readable on every surface); border/bg-warning keep the brand amber.
         warning: { DEFAULT: "hsl(var(--warning))", ink: "hsl(var(--warning-ink))" },
         // workspaces-o9o.115: text on an amber fill (bg-warning).

@@ -5,16 +5,16 @@
 export function getRestoreStatusColorClass(status: string): string {
   switch (status) {
     case "resumed":
-      return "text-success";
+      return "text-success-ink";
     case "rebuilt":
-      return "text-success";
+      return "text-success-ink";
     case "fresh":
       return "text-foreground-muted";
     case "failed":
       return "text-destructive";
     // Compat: old persisted values
     case "checkpoint_written":
-      return "text-success";
+      return "text-success-ink";
     case "fresh_no_checkpoint":
       return "text-foreground-muted";
     default:

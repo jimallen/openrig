@@ -75,6 +75,9 @@
     /* workspaces-o9o.117: text ON a solid success or tertiary/destructive fill. White on success was 4.01:1; this is 4.66:1.
        White stays on the light tertiary fill (6.59:1). Measured in test/on-tone-ink-contrast.test.ts. */
     --on-success: 120 8% 7%;
+    /* workspaces-o9o.120: green TEXT (Jim's o9o.113 rule: a separate text ink, fills keep the brand colour). --success was
+       3.03:1 on surface-container-highest and 3.78:1 on the page; this clears 4.5:1 on every light surface (worst 4.88:1). */
+    --success-ink: 145 63% 26%;
     --on-tertiary: 0 0% 100%;
     --accent: var(--secondary);
   }
@@ -648,6 +651,7 @@
   --warning: 42 92% 60%;                   /* #f6b13a */
   --on-warning: 120 8% 7%;                 /* o9o.115: text on the amber fill, dark on both themes (11.1:1) */
   --on-success: 120 8% 7%;                 /* o9o.117: text on the success fill (8.40:1; white was 2.23:1) */
+  --success-ink: 145 52% 52%;              /* o9o.120: green text on dark = the brand green (7.88:1 or more on surfaces) */
   --on-tertiary: 120 8% 7%;                /* o9o.117: text on the tertiary/destructive fill (5.70:1; white was 3.28:1) */
   --warning-ink: 42 92% 60%;               /* o9o.113: amber text on dark = the brand amber (10.4:1 on surfaces) */
 

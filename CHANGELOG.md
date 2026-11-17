@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Green text is readable on every light surface (workspaces-o9o.120)
+
+- Symptom: green text (approved plan entries, running seats, success marks) used the brand green, 3.78:1 on the light page and 3.03:1 on the darkest light surface; measured 3.78:1 rendered in the install plan and the topology table.
+- Now, by Jim's o9o.113 rule (text gets its own ink, fills keep the brand colour), green text uses `--success-ink`: on light a darker green that clears 4.5:1 on every surface (worst 4.88:1; rendered 6.09:1 on the page), on dark the brand green (7.88:1 or more). Green dots, rails and fills are unchanged.
+- The other tones used as text already clear 4.5:1 on every surface of both themes (red/destructive at least 4.98:1, secondary 4.70:1, primary 4.94:1, amber through its own ink); tests now pin that, and a guard refuses a bare `text-success`.
+
 ### An install plan's no-op entries are readable (workspaces-o9o.119)
 
 - Symptom: in the install plan table a `noop` entry's status was drawn at 50% of the muted ink: measured in a rendered browser, 2.16:1 on the light page and 2.94:1 on the dark one.

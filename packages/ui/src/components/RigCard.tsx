@@ -89,7 +89,7 @@ export function RigCard({ rig, psEntry, onSelect, onSnapshot, onExport, onDown }
         {isRunning && (
           <div className="bg-success/10 border border-success/20 px-2 py-1 flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-success" />
-            <span className="font-mono text-[9px] text-success font-bold">ACTIVE</span>
+            <span className="font-mono text-[9px] text-success-ink font-bold">ACTIVE</span>
           </div>
         )}
 

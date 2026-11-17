@@ -76,10 +76,10 @@ export function TopLayerContent({
             </span>
             <span className="uppercase tracking-[0.12em] text-[10px]">agents</span>
             <span className="ml-1 text-on-surface-variant">(</span>
-            <span className="text-success font-bold tabular-nums">
+            <span className="text-success-ink font-bold tabular-nums">
               {String(activeAgents).padStart(2, "0")}
             </span>
-            <span className="uppercase tracking-[0.12em] text-[10px] text-success">active</span>
+            <span className="uppercase tracking-[0.12em] text-[10px] text-success-ink">active</span>
             <span className="text-on-surface-variant">)</span>
           </span>
         </div>

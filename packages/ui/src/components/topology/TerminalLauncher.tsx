@@ -345,7 +345,7 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                     <span
                       className={cn(
                         "px-1 py-0.5 text-[8px] tracking-[0.12em] border",
-                        p.id === "herdr" ? "border-success/60 text-success" : "border-outline text-on-surface-variant",
+                        p.id === "herdr" ? "border-success/60 text-success-ink" : "border-outline text-on-surface-variant",
                       )}
                     >
                       {p.badge}
@@ -489,7 +489,7 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                       const d = describeOpenResult(openMut.data);
                       return (
                         <div
-                          className={cn("mt-1 font-mono text-[9px]", d.ok ? "text-success" : "text-error")}
+                          className={cn("mt-1 font-mono text-[9px]", d.ok ? "text-success-ink" : "text-error")}
                           data-testid={d.ok ? "launcher-open-result" : "launcher-open-zero"}
                         >
                           {d.headline}

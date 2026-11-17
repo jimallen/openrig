@@ -42,7 +42,7 @@ const verdictPip: Record<SeatIntendedAction, StatusPipStatus> = {
 // Token state → tone. stale / unverified are DISTINCT from missing (FR-6): a
 // stale/unverified token is visible for re-verify, not silently collapsed to missing.
 const tokenTone: Record<SeatTokenState, string> = {
-  present: "text-success",
+  present: "text-success-ink",
   missing: "text-tertiary font-bold",
   stale: "text-warning-ink font-bold",
   unverified: "text-warning-ink",

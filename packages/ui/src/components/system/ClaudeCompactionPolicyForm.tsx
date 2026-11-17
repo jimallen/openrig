@@ -304,7 +304,7 @@ function PolicyFormBody({ data, setSetting }: PolicyFormBodyProps) {
             {setSetting.isPending ? "Saving…" : "Save policy"}
           </button>
           {submitOk && (
-            <span className="text-sm text-success" data-testid="claude-compaction-policy-saved">
+            <span className="text-sm text-success-ink" data-testid="claude-compaction-policy-saved">
               Saved.
             </span>
           )}

@@ -54,10 +54,10 @@ export function BundleInspector() {
             <div className="text-label-sm font-mono text-foreground-muted-on-dark">v{result.manifest.version}</div>
             <div className="text-label-sm font-mono text-foreground-muted-on-dark">Spec: {result.manifest.rigSpec}</div>
             <div className="mt-spacing-2 flex gap-spacing-3">
-              <span className={cn("text-label-sm", result.digestValid ? "text-success" : "text-destructive")}>
+              <span className={cn("text-label-sm", result.digestValid ? "text-success-ink" : "text-destructive")}>
                 DIGEST: {result.digestValid ? "VALID" : "INVALID"}
               </span>
-              <span className={cn("text-label-sm", result.integrityResult.passed ? "text-success" : "text-destructive")} data-testid="integrity-status">
+              <span className={cn("text-label-sm", result.integrityResult.passed ? "text-success-ink" : "text-destructive")} data-testid="integrity-status">
                 INTEGRITY: {result.integrityResult.passed ? "PASS" : "FAIL"}
               </span>
             </div>

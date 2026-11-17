@@ -384,7 +384,7 @@ export function ApprovalCard({ source }: { source: ApprovalCardSource }) {
               type="button"
               data-testid={`feed-card-approval-${source.qitemId}-approve`}
               onClick={source.onApprove}
-              className="min-h-[44px] border border-success px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-success hover:bg-success hover:text-on-success transition-colors"
+              className="min-h-[44px] border border-success px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-success-ink hover:bg-success hover:text-on-success transition-colors"
             >
               Approve
             </button>

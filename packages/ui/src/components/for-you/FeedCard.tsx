@@ -77,7 +77,7 @@ const KIND_TOKEN: Record<FeedCardKind, ProjectToken> = {
 const TONE_TEXT: Record<ProjectMetaTone, string> = {
   neutral: "text-on-surface-variant",
   info: "text-secondary",
-  success: "text-success",
+  success: "text-success-ink",
   warning: "text-warning-ink",
   danger: "text-tertiary",
 };

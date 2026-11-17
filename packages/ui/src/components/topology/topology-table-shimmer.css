@@ -8,7 +8,7 @@
  *
  * Accessibility: animation is suppressed under
  * `prefers-reduced-motion: reduce` per DESIGN.md §Motion. The
- * fallback static color matches the underlying `text-success` tone
+ * fallback static color matches the underlying `text-success-ink` tone
  * so the label stays legible at the same visual weight.
  */
 

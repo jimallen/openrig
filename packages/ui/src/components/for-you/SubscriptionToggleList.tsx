@@ -115,7 +115,7 @@ export function SubscriptionToggleList() {
                   className={
                     "shrink-0 px-2 py-0.5 border font-mono text-[9px] uppercase tracking-wide " +
                     (value
-                      ? "border-success text-success"
+                      ? "border-success text-success-ink"
                       : "border-outline-variant text-on-surface-variant") +
                     (interactive
                       ? " hover:bg-surface-low/60"
@@ -176,7 +176,7 @@ export function SubscriptionToggleList() {
                     className={
                       "shrink-0 px-2 py-0.5 border font-mono text-[9px] uppercase tracking-wide " +
                       (enabled
-                        ? "border-success text-success"
+                        ? "border-success text-success-ink"
                         : "border-outline-variant text-on-surface-variant") +
                       (interactive
                         ? " hover:bg-surface-low/60"

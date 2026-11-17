@@ -33,7 +33,7 @@ export interface MissionStatusBadgeProps {
 }
 
 const toneClass: Record<MissionStatus, string> = {
-  active: "border-success text-success",
+  active: "border-success text-success-ink",
   paused: "border-outline text-on-surface-variant",
   shipped: "border-secondary text-secondary",
   blocked: "border-warning text-warning-ink",

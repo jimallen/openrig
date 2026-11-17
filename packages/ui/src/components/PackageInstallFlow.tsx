@@ -115,7 +115,7 @@ function policyStatusColor(status: string): string {
   // workspaces-o9o.119: noop is a step dimmer than deferred and readable: /50 was 2.16:1 (light) and 2.94:1 (dark) on the page;
   // /90 clears 4.5:1 in both (test/install-plan-noop-contrast.test.ts).
   switch (status) {
-    case "approved": return "text-success";
+    case "approved": return "text-success-ink";
     case "rejected": return "text-warning-ink";
     case "deferred": return "text-foreground-muted";
     case "conflict": return "text-destructive";
@@ -411,7 +411,7 @@ export function PackageInstallFlow() {
       {step === "planned" && planResult && (
         <div data-testid="plan-preview">
           <div className="flex flex-wrap gap-spacing-4 mb-spacing-4 text-label-sm">
-            <span>Approved: <span className="font-mono text-success" data-testid="plan-actionable">{planResult.actionable}</span></span>
+            <span>Approved: <span className="font-mono text-success-ink" data-testid="plan-actionable">{planResult.actionable}</span></span>
             <span>Deferred: <span className="font-mono text-foreground-muted" data-testid="plan-deferred">{planResult.deferred}</span></span>
             <span>Conflicts: <span className="font-mono text-destructive" data-testid="plan-conflicts">{planResult.conflicts}</span></span>
             <span>No-ops: <span className="font-mono" data-testid="plan-noops">{planResult.noOps}</span></span>
@@ -486,9 +486,9 @@ export function PackageInstallFlow() {
           </Alert>
 
           <div className="flex gap-spacing-4 text-label-sm mb-spacing-4">
-            <span>Applied: <span className="font-mono text-success" data-testid="result-applied">{installResult.applied.length}</span></span>
+            <span>Applied: <span className="font-mono text-success-ink" data-testid="result-applied">{installResult.applied.length}</span></span>
             <span>Deferred: <span className="font-mono text-foreground-muted" data-testid="result-deferred">{installResult.deferred.length}</span></span>
-            <span>Verified: <span className={cn("font-mono", installResult.verification.passed ? "text-success" : "text-destructive")} data-testid="result-verified">{installResult.verification.passed ? "PASS" : "FAIL"}</span></span>
+            <span>Verified: <span className={cn("font-mono", installResult.verification.passed ? "text-success-ink" : "text-destructive")} data-testid="result-verified">{installResult.verification.passed ? "PASS" : "FAIL"}</span></span>
           </div>
 
           <div className="flex gap-spacing-3">

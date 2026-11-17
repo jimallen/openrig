@@ -77,7 +77,7 @@ export function BundleInstallFlow() {
           <div className="space-y-spacing-1 mb-spacing-4">
             {planResult.stages.map((s) => (
               <div key={s.stage} className="text-label-sm font-mono">
-                <span className={s.status === "ok" ? "text-success" : "text-foreground-muted"}>{s.status.toUpperCase()}</span> {s.stage}
+                <span className={s.status === "ok" ? "text-success-ink" : "text-foreground-muted"}>{s.status.toUpperCase()}</span> {s.stage}
               </div>
             ))}
           </div>
@@ -91,7 +91,7 @@ export function BundleInstallFlow() {
         <div data-testid="step-done">
           <h3 className="text-headline-md uppercase mb-spacing-3">COMPLETE</h3>
           <div className="text-label-sm font-mono">
-            Status: <span className="text-success">{planResult.status.toUpperCase()}</span>
+            Status: <span className="text-success-ink">{planResult.status.toUpperCase()}</span>
             {planResult.stages.some((s) => s.detail?.source === "pod_bundle") ? (
               <span className="ml-spacing-2 text-primary" data-testid="bundle-type-label">Pod-aware bundle</span>
             ) : (

@@ -165,7 +165,7 @@ export function BootstrapWizard() {
           <div className="space-y-spacing-1 mb-spacing-6" data-testid="stage-list">
             {planResult.stages.map((s) => (
               <div key={s.stage} className="flex items-center gap-spacing-3 text-label-sm font-mono" data-testid="stage-row">
-                <span className={s.status === "ok" ? "text-success" : s.status === "blocked" ? "text-warning-ink" : "text-foreground-muted"}>
+                <span className={s.status === "ok" ? "text-success-ink" : s.status === "blocked" ? "text-warning-ink" : "text-foreground-muted"}>
                   {s.status.toUpperCase()}
                 </span>
                 <span>{s.stage}</span>
@@ -286,7 +286,7 @@ export function BootstrapWizard() {
             {planResult.status === "completed" ? "BOOTSTRAP COMPLETE" : "BOOTSTRAP PARTIAL"}
           </h3>
           <div className="text-label-sm font-mono space-y-spacing-1 mb-spacing-4">
-            <div>Status: <span className={planResult.status === "completed" ? "text-success" : "text-warning-ink"}>{planResult.status.toUpperCase()}</span></div>
+            <div>Status: <span className={planResult.status === "completed" ? "text-success-ink" : "text-warning-ink"}>{planResult.status.toUpperCase()}</span></div>
             {(planResult as { rigId?: string }).rigId && (
               <div data-testid="result-rig-id">Rig: {(planResult as { rigId?: string }).rigId}</div>
             )}
