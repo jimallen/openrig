@@ -240,6 +240,12 @@
   "when": "!hasBash"
  },
  {
+  "file": "packages/daemon/test/codex-gate-current-session.real.test.ts",
+  "kind": "skipIf",
+  "task": "a Codex seat's message gate reads its current session's rollout, through the real createDaemon",
+  "when": "!HC"
+ },
+ {
   "file": "packages/daemon/test/codex-mcp-servers-launch.test.ts",
   "kind": "runIf",
   "task": "placement: temporary directories are refused for the binary > darwin: a not-yet-installed binary under /var/folders is refused (real reads)",

@@ -34,6 +34,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - A GitHub bundle refuses an `agents-release:` ref as it refuses `shipped:` ("GitHub bundles take local: or path: refs; agents-release: is not allowed"). The web UI names such a persona after its folder and never matches it to a library entry by name.
 - Deploy order: a spec using `agents-release:` must not reach a host before that host runs a fork build with this change.
 
+### A Codex seat's message gate reads its current session's rollout (workspaces-o9o.87)
+
+- Symptom: after a Codex seat was relaunched fresh, and before its new session's thread was known, the seat's message gate read the previous session's rollout. A message the seat had received read as not received, so the message pump would deliver it again.
+- Cause: the gate found a Codex seat's rollout by the newest session row that had a resume token, which is the previous session's while the current one has none yet.
+- Now one lookup, used by both the gate and the running-tool read (workspaces-o9o.31), takes only the seat's current session row. With no token yet there is no rollout from it, and the gate reads the file the seat's current Codex process declared at its start (the gate's existing fallback).
+- Census of every lookup of a resume token by seat: this was the only one that fell back to an earlier session. The pda binding lookups keep "the most recent session that has a token" on purpose, because that is the row a restore resumes from.
+
 ### The running tool stays visible at every width, and the agent detail's two lines name the same start (workspaces-o9o.32)
 
 - Symptom: at 120 columns the seat table's NOW cell cut a long tool name and lost its age and the `?` that marks an unconfirmed call (`⚙ WebSearc…`); at 84 and 100 columns the table has no NOW column, so the running tool showed only in the agent detail.
