@@ -121,6 +121,16 @@ describe("workspaces-o9o.57: a prompt followed by 20+ async rows is still the la
     expect(s.ports.stillAsking(s.nodeId, null)).toBe(false);
   });
 
+  it("the question's own start, relayed async and stamped just after its dialog, is not the turn going on", async () => {
+    const s = seat();
+    s.hook({ hook_event_name: "UserPromptSubmit" }, 0);
+    s.hook({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions: QUESTION } }, 2_000);
+    s.hook({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask", tool_input: { questions: QUESTION } }, 2_020);
+    s.lateReads(13, 1_000);
+    s.hook({ hook_event_name: "Notification", notification_type: "permission_prompt" }, 8_500);
+    expect(s.store.getLatestRecorded(s.nodeId)).toMatchObject({ rawEvent: "Notification", dialog: "question" });
+  });
+
   it("a tool started after the question's dialog (the question's end still in flight): the Notification is that tool's prompt", async () => {
     const s = seat();
     s.hook({ hook_event_name: "UserPromptSubmit" }, 0);
