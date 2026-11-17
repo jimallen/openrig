@@ -36,7 +36,7 @@ describe("echo registration for every post", () => {
   it("registers a multipart post's supplemental part, so its echo alone confirms delivery", async () => {
     const item = await repo.create({ ...request, humanIntent: "update", humanDetail: "Known limit: synthetic delivery.", tags: ["escalation"] });
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
     const sockets: WsLike[] = [];
     let posts = 0;

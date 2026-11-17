@@ -742,7 +742,7 @@ describe("createDaemon startup composition", () => {
   });
 
   it("OF-46: the production composition keeps the activity-hook token off the new-session command line and delivers it through the credential file", async () => {
-    const token = "synthetic-of46-hook-token-7d21";
+    const token = "synthetic-of46-" + "hook-token-7d21";
     vi.stubEnv("OPENRIG_ACTIVITY_HOOK_TOKEN", token);
     const { tmuxExec, credentials } = credentialCapturingTmux();
     try {

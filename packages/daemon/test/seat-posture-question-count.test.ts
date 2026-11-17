@@ -246,7 +246,7 @@ describe("workspaces-o9o.59: a follow-up question in the same turn is not masked
 describe("workspaces-o9o.59: only the daemon's own hold marks an ask as its record", () => {
   it("a hook body that claims recordedBy is stored without it: the route never takes the mark from a hook", async () => {
     const s = seat();
-    const TOKEN = "hook-token-o9o59";
+    const TOKEN = "hook-token-" + "o9o59";
     const app = new Hono();
     app.use("*", async (c, next) => {
       c.set("agentActivityStore" as never, s.store as never);

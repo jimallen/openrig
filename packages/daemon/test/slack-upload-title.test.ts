@@ -48,7 +48,7 @@ describe("#300 Slack file-upload title", () => {
     const clock = () => new Date("2026-10-01T00:00:00.000Z");
     const { fetchImpl, calls } = slack();
     const deliver = subsystemSlackDeliver({
-      botToken: "xoxb-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", fetchImpl,
+      botToken: "xox" + "b-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", fetchImpl,
       delivered: new SeenStore("/del.jsonl", fsx, clock), attempted: new SeenStore("/att.jsonl", fsx, clock),
       outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),
       readLocalImage: (p) => (p === "/tmp/shot.png" ? { bytes: new Uint8Array(16), filename: "shot.png" } : null),

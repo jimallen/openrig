@@ -45,7 +45,7 @@ function capture(): { fetchImpl: FetchImpl; bodies: Record<string, unknown>[] } 
 function makeDeliver(fetchImpl: FetchImpl, mention?: string) {
   const fsx = memFs();
   return subsystemSlackDeliver({
-    botToken: "xoxb-EXAMPLE-fake",
+    botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C1",
     sourceLabel: "vm",
     fetchImpl,

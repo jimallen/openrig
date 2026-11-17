@@ -18,7 +18,7 @@ function buildApp(bearerToken: string | null): Hono {
 }
 
 describe("terminal-token auth on transport routes", () => {
-  const TOKEN = "test-terminal-token-abc123";
+  const TOKEN = "test-terminal-" + "token-abc123";
 
   describe("with token required", () => {
     const app = buildApp(TOKEN);

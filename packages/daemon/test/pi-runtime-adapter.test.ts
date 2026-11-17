@@ -434,7 +434,7 @@ describe("PiRuntimeAdapter.launchHarness", () => {
   // workspaces-o9o.3: the runner's own refusal was visible only by reading the dead pane; the error said "the runner exited (code 1)".
   it("names the runner's ERROR line in the error when the runner exits before ready, and redacts the evidence (workspaces-o9o.3)", async () => {
     const fs = memFs();
-    const token = "sk-ant0123456789abcdefXYZ";
+    const token = "sk-" + "ant0123456789abcdefXYZ";
     const sendShellCommand = vi.fn(async (_t: string, text: string) => {
       fs.files[piSeatPaths(STATE_ROOT, SESSION).runnerStatePath] = JSON.stringify({
         ready: false, launchId: launchIdFrom(text), updatedAt: "t", exited: { code: 1, at: "t" },

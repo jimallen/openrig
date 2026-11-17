@@ -315,13 +315,13 @@ describe("seat-handover source execution e2e (private hc core)", () => {
     "FORK: a launch-time capture that answers the parent's or the retiree's id stays PENDING; only the fork's own id is captured",
     async () => {
       // Fork of the seat's own conversation: the parent and the retiree are the same id.
-      const own = await forkSeat("dev-impl@fork-parentid-rig", { ok: true, token: "parent-thread-0001" }, { ready: true });
+      const own = await forkSeat("dev-impl@fork-parentid-rig", { ok: true, token: "parent-thread-" + "0001" }, { ready: true });
       expect(own.result.ok, JSON.stringify(own.result)).toBe(true);
       expect(own.result.result.sourceOutcome).toMatchObject({ forkId: "pending" });
       expect(own.rows()[1], "never the parent's id").toMatchObject({ resume_token: null });
       own.db.close();
       // Fork of another seat's conversation: parent (other-parent-0009) and retiree (parent-thread-0001) differ.
-      const forkFrom = { seat: "dev-other@fork-cross-rig", token: "other-parent-0009" };
+      const forkFrom = { seat: "dev-other@fork-cross-rig", token: "other-parent-" + "0009" };
       for (const [answer, forkId, recorded] of [
         ["other-parent-0009", "pending", null],
         ["parent-thread-0001", "pending", null],

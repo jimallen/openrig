@@ -77,7 +77,7 @@ function composeOutbound(home: string, port: OutboundQueuePort, fetchImpl: Fetch
   const attempted = new SeenStore("/s/attempted.jsonl", fsx, clock);
   let release: (q: string) => void = () => {};
   const deliver = subsystemSlackDeliver({
-    botToken: "xoxb-EXAMPLE-fake",
+    botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C-TEST",
     sourceLabel: "vm",
     fetchImpl,

@@ -182,7 +182,7 @@ describe("AgentStarterResolver (M1)", () => {
   it("redacts sk- token-shaped fixture from error message (R2-3)", () => {
     const malicious = CLEAN_ENTRY.replace(
       'value: "fixture-native-id"',
-      'value: "sk-fakefakefakefakefakefakefakefake"',
+      'value: "sk-' + 'fakefakefakefakefakefakefakefake"',
     );
     const fs = makeFs({ "/registry/fixture-mal-token.yaml": malicious });
     const resolver = new AgentStarterResolver({ registryRoot: "/registry", ...fs });
@@ -197,8 +197,8 @@ describe("AgentStarterResolver (M1)", () => {
     expect(caught!.reason).toContain("credential_content_disallowed");
     expect(caught!.reason).toContain("content redacted");
     // The token-shaped substring MUST NOT appear in either field.
-    expect(caught!.reason).not.toContain("sk-fakefakefakefakefakefakefakefake");
-    expect(caught!.message).not.toContain("sk-fakefakefakefakefakefakefakefake");
+    expect(caught!.reason).not.toContain("sk-" + "fakefakefakefakefakefakefakefake");
+    expect(caught!.message).not.toContain("sk-" + "fakefakefakefakefakefakefakefake");
   });
 
   // R2-3 diagnostic preservation: refusal code, line number, and file

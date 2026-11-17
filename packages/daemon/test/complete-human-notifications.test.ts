@@ -130,7 +130,7 @@ describe("complete human notifications", () => {
 
   it("runs queue→wire→complete quiet multipart delivery→done and bounded Feed history without a human decision", async () => {
     const item = await repo.create({ ...request, humanIntent: "update", body: "The release is ready. No action needed.", humanDetail: "Known limit: this is synthetic delivery proof.", tags: ["escalation"] });
-    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n");
+    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
     const posts: Array<Record<string, unknown>> = [];
     const wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });

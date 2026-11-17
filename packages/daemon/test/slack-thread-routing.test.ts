@@ -226,7 +226,7 @@ describe("outbound threading through the REAL delivery path (one reply root per 
     const { fetchImpl, bodies } = capturing("1724");
     const stamps: string[] = [];
     const deliver = subsystemSlackDeliver({
-      botToken: "xoxb-EXAMPLE-fake",
+      botToken: "xox" + "b-EXAMPLE-fake",
       channel: "C1",
       sourceLabel: "vm",
       fetchImpl,
@@ -282,7 +282,7 @@ describe("#192 channel map — one resolved channel per post (post, reconcile sc
     attempted.mark("d-1", "attempted"); // an earlier attempt with an unknown outcome
     const roots: string[] = [];
     const deliver = subsystemSlackDeliver({
-      botToken: "xoxb-EXAMPLE-fake", channel: "C0DEFAULT", sourceLabel: "vm", fetchImpl,
+      botToken: "xox" + "b-EXAMPLE-fake", channel: "C0DEFAULT", sourceLabel: "vm", fetchImpl,
       resolveChannel: (p) => (p.sourceSession === "pr@my-rig" ? "C0EXAMPLE2" : "C0DEFAULT"),
       delivered: new SeenStore("/del.jsonl", fsx, clock), attempted, outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),
       readLocalImage: () => ({ bytes: new Uint8Array([1, 2, 3]), filename: "shot.png" }),

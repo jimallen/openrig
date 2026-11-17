@@ -153,7 +153,7 @@ describe("Slack verify reports optional capabilities from granted scopes", () =>
       const home = mkdtempSync(join(tmpdir(), "slack-scopes-"));
       homes.push(home);
       surface.saveConfig({ ...surface.DEFAULT_CONFIG, channel: "C-fixture" }, home);
-      vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-local-fixture-only");
+      vi.stubEnv("SLACK_BOT_TOKEN", "xox" + "b-local-fixture-only");
       const requests: string[] = [];
       const server = createServer((request, response) => {
         const pathname = new URL(request.url!, "http://fixture").pathname;

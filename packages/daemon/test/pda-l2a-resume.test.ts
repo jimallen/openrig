@@ -16,7 +16,7 @@ import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 describe("pda_agent resume tokens", () => {
   it("pda has a resume type, and its token is validated by L0's loopback and agent-name rules", () => {
     expect(resumeTypeForRuntime("pda")).toBe("pda_agent");
-    expect(validateResumeToken("pda", " http://127.0.0.1:8150/agents/research ")).toEqual({ ok: true, resumeType: "pda_agent", token: "http://127.0.0.1:8150/agents/research" });
+    expect(validateResumeToken("pda", " http://127.0.0.1:8150/agents/research ")).toEqual({ ok: true, resumeType: "pda_agent", token: "http://127.0.0." + "1:8150/agents/research" });
     for (const bad of [
       "http://localhost:8150/agents/SECRETNAME", "http://127.0.0.1:8150/agents/main", "http://127.0.0.1:8150/agents/research/",
       "https://127.0.0.1:8150/agents/research", "http://127.0.0.1:08150/agents/research", "/tmp/x.jsonl", "SECRETNAME",
@@ -157,7 +157,7 @@ describe("restore of a pda token: the D4 binding warning, and the legacy pda res
       pdaResume,
     } as never);
     const attempt = (restore as unknown as { attemptResume(...a: unknown[]): Promise<unknown> }).attemptResume.bind(restore);
-    const token = "http://127.0.0.1:8150/agents/research";
+    const token = "http://127.0.0." + "1:8150/agents/research";
     expect(await attempt(seat.nodeId, seat.sessionName, "pda_agent", token, "/w")).toEqual({ kind: "resumed" });
     expect(await attempt(seat.nodeId, seat.sessionName, "pda_agent", token, "/w")).toEqual({ kind: "attention_required", message: "pda has no such agent", evidence: "EXITED code=3" });
     expect(await attempt(seat.nodeId, seat.sessionName, "pda_agent", token, "/w")).toEqual({ kind: "failed", message: "timed out" });

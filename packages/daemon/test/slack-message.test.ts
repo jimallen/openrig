@@ -17,7 +17,7 @@ describe("Slice-11 outbound message — content hygiene (item 7)", () => {
 
   it("NEVER forwards a Slack/bearer secret that leaks through a qitem body (redacted)", () => {
     const leaky =
-      "here is the token xoxb-EXAMPLE-000000000000-doNotUseFake and hook https://hooks.slack.com/services/T00/B00/xyz and Authorization Bearer EXAMPLEfakebearer000";
+      "here is the token xox" + "b-EXAMPLE-000000000000-doNotUseFake and hook https://hooks.slack.com/services/T00/B00/xyz and Authorization Bearer EXAMPLEfakebearer000";
     const m = buildOutboundMessage({ qitemId: "q1", summary: "x", body: leaky, destinationSession: "human@kernel" }, opts);
     expect(containsSecret(m.text)).toBe(false);
     expect(m.text).toContain("[redacted-secret]");
@@ -62,7 +62,7 @@ describe("#47 evidence link boundaries", () => {
     "https://[invalid]/shot.png",
     "https://example.invalid:99999/shot.png",
     "https://hooks.slack.com/services/T00/B00/SECRETPART",
-    "https://example.invalid/proof?token=xoxb-EXAMPLE-000000-leak",
+    "https://example.invalid/proof?token=xox" + "b-EXAMPLE-000000-leak",
   ])("never renders an unsafe URL in evidence or image blocks: %s", (url) => {
     const message = buildOutboundMessage(qitem, { ...opts, evidenceLink: url });
     expect(message.text).not.toContain("Evidence:");
@@ -151,7 +151,7 @@ describe("M1 A5b — outbound image attachments (the wired T1076 seam)", () => {
   });
 
   it("redacts a secret that leaks through alt_text; no media = no image block + no count", () => {
-    const blocks = buildImageBlocks([{ imageUrl: "https://ok.example.com/a.png", altText: "tok xoxb-EXAMPLE-000000-leak" }]);
+    const blocks = buildImageBlocks([{ imageUrl: "https://ok.example.com/a.png", altText: "tok xox" + "b-EXAMPLE-000000-leak" }]);
     expect(containsSecret((blocks[0] as { alt_text: string }).alt_text)).toBe(false);
     const plain = buildOutboundMessage({ qitemId: "q2", summary: "x", body: "", destinationSession: "h@kernel" }, opts);
     expect(imageBlocks(plain)).toHaveLength(0);

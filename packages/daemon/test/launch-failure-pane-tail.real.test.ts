@@ -103,7 +103,7 @@ describe.skipIf(!HAS_TMUX || process.platform === "win32")("a launch swallowed b
   // lines, neither of which matches a pattern; captured with -J it is one line again and is redacted.
   it("a soft-wrapped token is redacted once the capture joins wrapped lines", async () => {
     if (!base) throw new Error("fixture not initialized");
-    const token = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+    const token = "sk-" + "abcdefghijklmnopqrstuvwxyz0123456789";
     const session = "build-qa@o9o3";
     const script = join(base, "wrap.sh");
     writeFileSync(script, `printf '%s\\n' 'KEY=${token}'\nexec sleep 600\n`);

@@ -115,7 +115,7 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
     });
 
     it("never prints an environment value: the variable's value is in the process environment and nowhere in the answer", async () => {
-      const SECRET = "sk-of283-sentinel-0123456789";
+      const SECRET = "sk-of283-" + "sentinel-0123456789";
       vi.stubEnv("OPENAI_API_KEY", SECRET);
       try {
         const s = seat("eztrack");

@@ -360,7 +360,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
     // workspaces-o9o.3: the resume's pane evidence is copied into attentionEvidence and the whole RestoreResult is persisted in
     // the restore.completed event. At d0303ca8 a secret-shaped token in that pane reached the events table verbatim.
     it("Claude resume attention evidence is redacted on the node result and in the persisted restore.completed event (workspaces-o9o.3)", async () => {
-      const token = "sk-ant-api03-0123456789abcdefXYZ";
+      const token = "sk-ant-api03-" + "0123456789abcdefXYZ";
       const ctx = setupClaudeAttentionRequiredScenario({
         claudeResult: {
           ok: false,

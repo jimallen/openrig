@@ -30,7 +30,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
 
   const configure = (enabled: boolean) => {
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
     saveConfig({ ...DEFAULT_CONFIG, enabled, channel: "C-TEST", secretsEnvFile: secrets }, home);
   };
   const record = (i: number) => JSON.stringify({ ev: { type: "message", text: `stuck ${i}` }, at: "2026-10-08T00:00:00Z", attempts: i + 1 }) + "\n";

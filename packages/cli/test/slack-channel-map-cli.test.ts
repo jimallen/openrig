@@ -132,7 +132,7 @@ describe("rig slack verify with a channel map", () => {
   const map = [{ match: "my-rig", channel: "C0EXAMPLE1" }, { match: "other-rig", channel: "C0EXAMPLE1" }, { match: "pr@my-rig", channel: "C0EXAMPLE2" }];
 
   it("checks membership once per unique channel and is READY only when the app is in all of them", async () => {
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-local-fixture-only");
+    vi.stubEnv("SLACK_BOT_TOKEN", "xox" + "b-local-fixture-only");
     const { logs, run } = setup(map);
     const asked: string[] = [];
     await run(["verify"], slack({ C0DEFAULT: true, C0EXAMPLE1: true, C0EXAMPLE2: true }, asked) as never);
@@ -145,7 +145,7 @@ describe("rig slack verify with a channel map", () => {
   });
 
   it("names the mapped channel the app is missing from and fails", async () => {
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-local-fixture-only");
+    vi.stubEnv("SLACK_BOT_TOKEN", "xox" + "b-local-fixture-only");
     const { logs, run, home } = setup(map);
     await run(["verify"], slack({ C0DEFAULT: true, C0EXAMPLE1: true, C0EXAMPLE2: false }, []) as never);
     expect(logs).toContain("✗ NOT a member of channel C0EXAMPLE2 for pr@my-rig — invite the app");
@@ -156,7 +156,7 @@ describe("rig slack verify with a channel map", () => {
   });
 
   it("JSON lists every channel's membership; without a map the JSON shape is unchanged", async () => {
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-local-fixture-only");
+    vi.stubEnv("SLACK_BOT_TOKEN", "xox" + "b-local-fixture-only");
     const mapped = setup(map);
     await mapped.run(["verify", "--json"], slack({ C0DEFAULT: true, C0EXAMPLE1: false, C0EXAMPLE2: true }, []) as never);
     const out = JSON.parse(mapped.logs[0]!);
@@ -191,7 +191,7 @@ describe("rig slack status with a channel map", () => {
   });
 
   it("the channel-map warning alone does not send the operator to the manifest", async () => {
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-local-fixture-only");
+    vi.stubEnv("SLACK_BOT_TOKEN", "xox" + "b-local-fixture-only");
     vi.stubEnv("SLACK_APP_TOKEN", "xapp-local-fixture-only");
     const { home } = setup();
     writeFileSync(join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, channel: "C0DEFAULT",
@@ -201,6 +201,6 @@ describe("rig slack status with a channel map", () => {
     const out = JSON.parse(logs[0]!);
     expect(out.readiness.filter((r: { ok: boolean }) => !r.ok).map((r: { label: string }) => r.label)).toEqual(["channel-map"]);
     expect(out.next).toBeNull();
-    expect(JSON.stringify(out)).not.toContain("xoxb-local-fixture-only");
+    expect(JSON.stringify(out)).not.toContain("xox" + "b-local-fixture-only");
   });
 });

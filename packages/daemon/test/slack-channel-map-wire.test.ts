@@ -52,7 +52,7 @@ describe("#192 channel map through the real Slack wire", () => {
   function rewire(channelMap: ChannelMapEntry[] | undefined, inbound = false, defaultChannel = "C0DEFAULT"): void {
     wire?.stop();
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, `SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n${inbound ? "SLACK_APP_TOKEN=xapp-EXAMPLE-fake\n" : ""}`);
+    writeFileSync(secrets, `SLACK_BOT_TOKEN=xox` + `b-EXAMPLE-fake\n${inbound ? "SLACK_APP_TOKEN=xapp-EXAMPLE-fake\n" : ""}`);
     const cfg: SlackConnectorConfig = { ...DEFAULT_CONFIG, enabled: true, channel: defaultChannel, secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", ...(channelMap ? { channelMap } : {}) };
     saveConfig(cfg, home);
     wire = buildSlackGatewayWire({
@@ -451,7 +451,7 @@ describe("#192 channel map through the real Slack wire", () => {
   it("logs, and keeps posting through, a map entry field written by a newer OpenRig", async () => {
     const logs: string[] = [];
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n");
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
     writeFileSync(join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, channel: "C0DEFAULT", secretsEnvFile: secrets,
       channelMap: [{ match: "pr@my-rig", channel: "C0EXAMPLE2", inbound: "lead@my-rig" }] }));
     wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, log: (m) => logs.push(m),

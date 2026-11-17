@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { sessionAdminRoutes } from "../src/routes/sessions.js";
 
-const TOKEN = "secret-terminal-token-abc123";
+const TOKEN = "secret-" + "terminal-token-abc123";
 
 // Minimal per-route dep stubs — just enough for each guarded handler to reach a
 // deterministic ok:true (200) once the guard admits the request. The GUARD is

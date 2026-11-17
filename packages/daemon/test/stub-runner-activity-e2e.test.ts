@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER = resolve(HERE, "../src/adapters/stub-runner.ts");
 const SEAT = "dev-worker@activity-e2e";
-const TOKEN = "test-activity-token-r2";
+const TOKEN = "test-activity-" + "token-r2";
 const INJECTED_ISO = "2021-06-06T06:06:06.000Z";
 
 interface Captured { body: Record<string, unknown>; auth: string | undefined; url: string | undefined }

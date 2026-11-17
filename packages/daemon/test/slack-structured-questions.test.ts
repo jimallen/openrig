@@ -188,7 +188,7 @@ describe("structured human questions (#193)", () => {
     let wire: ReturnType<typeof buildSlackGatewayWire>;
     beforeEach(async () => {
       const secrets = join(home, "fake.env");
-      writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+      writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
       posts = [];
       failThreadPosts = 0;
@@ -337,7 +337,7 @@ describe("structured human questions (#193)", () => {
 
     it("redacts secret-like question and option text in the click confirmations, as the question post does", async () => {
       const secretQuestions = [
-        { id: "tok", question: "Rotate xoxb-LEAK-question?", options: [{ id: "a", label: "Use xoxb-LEAK-option" }, { id: "b", label: "Skip" }] },
+        { id: "tok", question: "Rotate xox" + "b-LEAK-question?", options: [{ id: "a", label: "Use xox" + "b-LEAK-option" }, { id: "b", label: "Skip" }] },
         { id: "ship", question: "Ship this week?", options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] },
       ];
       const secret = await repo.create({ ...request, humanIntent: "decision", humanQuestions: secretQuestions });

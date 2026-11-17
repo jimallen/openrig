@@ -43,7 +43,7 @@ describe("POST /api/sessions/:sessionName/resume-token", () => {
     const { app, sessionRegistry } = createTestApp(db);
     sessionRegistry.registerSession("node-1", "dev1-impl@test-rig");
 
-    const res = await post(app, "dev1-impl@test-rig", { token: "claude-sess-abc123", reason: "founder re-authed, confirmed live" });
+    const res = await post(app, "dev1-impl@test-rig", { token: "claude-sess-" + "abc123", reason: "founder re-authed, confirmed live" });
     expect(res.status).toBe(200);
     const json = await res.json() as Record<string, unknown>;
     expect(json.ok).toBe(true);

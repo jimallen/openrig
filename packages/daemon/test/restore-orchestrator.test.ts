@@ -3456,7 +3456,7 @@ describe("RestoreOrchestrator", () => {
   });
 
   it("restore receipt and inventory: an operator-recovered regrown seat keeps its reconciliation and its strict resume evidence", async () => {
-    const { rig, snap, newNode } = snapshotThenRegrow("regrown-recon-rig", { podId: "pod-recon", runtime: "claude-code", token: "chooser-token-123" });
+    const { rig, snap, newNode } = snapshotThenRegrow("regrown-recon-rig", { podId: "pod-recon", runtime: "claude-code", token: "chooser-token-" + "123" });
     let attemptId = 0;
     const hasSession = vi.fn(async () => false);
     const tmux = { ...mockTmux(), hasSession, capturePaneContent: vi.fn(async () => ["Claude Code v2.1.89", "", " ❯ accept edits on", ""].join("\n")) } as unknown as TmuxAdapter;

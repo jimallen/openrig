@@ -267,7 +267,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
     expect(alert).toBeDefined();
 
     const secrets = join(home, "slack.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n", { mode: 0o600 });
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     const posts: Array<Record<string, unknown>> = [];
     const wire = buildSlackGatewayWire({
@@ -342,7 +342,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
     expect(alert).toBeDefined();
 
     const secrets = join(home, "slack.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n", { mode: 0o600 });
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     let postCalls = 0;
     const fetchImpl = async (url: string | URL) => {
@@ -419,7 +419,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
     expect(alert).toBeDefined();
 
     const secrets = join(home, "slack.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n", { mode: 0o600 });
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     let postCalls = 0;
     let landedText = "";

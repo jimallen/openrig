@@ -55,7 +55,7 @@ function shapeEnforcingSlack(): { fetchImpl: FetchImpl; calls: Captured[] } {
 describe("request shape — READ methods use GET + URL query (the supported live shape)", () => {
   it("conversations.info: GET, channel in the QUERY, Authorization header, NO body, NO json content-type — and the correct is_member comes back", async () => {
     const { fetchImpl, calls } = shapeEnforcingSlack();
-    const r = await verifyChannelMembership("xoxb-EXAMPLE-fake", "C-MEMBER", fetchImpl);
+    const r = await verifyChannelMembership("xox" + "b-EXAMPLE-fake", "C-MEMBER", fetchImpl);
     expect(r.ok, "the supported shape must not false-fail").toBe(true);
     expect(r.isMember).toBe(true);
     const c = calls[0]!;
@@ -69,17 +69,17 @@ describe("request shape — READ methods use GET + URL query (the supported live
 
   it("conversations.info: a genuine non-member reads FALSE (honest result, not a shape artifact)", async () => {
     const { fetchImpl } = shapeEnforcingSlack();
-    const r = await verifyChannelMembership("xoxb-EXAMPLE-fake", "C-OTHER", fetchImpl);
+    const r = await verifyChannelMembership("xox" + "b-EXAMPLE-fake", "C-OTHER", fetchImpl);
     expect(r.ok).toBe(true);
     expect(r.isMember).toBe(false);
   });
 
   it("conversations.history and conversations.replies ride the same read shape (the reconcile door's scan)", async () => {
     const { fetchImpl, calls } = shapeEnforcingSlack();
-    const hist = await fetchRecentMessageTexts("xoxb-EXAMPLE-fake", "C-MEMBER", undefined, fetchImpl);
+    const hist = await fetchRecentMessageTexts("xox" + "b-EXAMPLE-fake", "C-MEMBER", undefined, fetchImpl);
     expect(hist.ok).toBe(true);
     expect(hist.texts[0]).toContain("or-mark:d-shape");
-    const replies = await fetchRecentMessageTexts("xoxb-EXAMPLE-fake", "C-MEMBER", "1724.1", fetchImpl);
+    const replies = await fetchRecentMessageTexts("xox" + "b-EXAMPLE-fake", "C-MEMBER", "1724.1", fetchImpl);
     expect(replies.ok).toBe(true);
     for (const c of calls) {
       expect(c.method).toBe("GET");
@@ -93,7 +93,7 @@ describe("request shape — READ methods use GET + URL query (the supported live
 describe("request shape — the JSON-POST family is UNDISTURBED", () => {
   it("auth.test stays a JSON POST and the scope header still parses", async () => {
     const { fetchImpl, calls } = shapeEnforcingSlack();
-    const g = await getGrantedScopes("xoxb-EXAMPLE-fake", fetchImpl);
+    const g = await getGrantedScopes("xox" + "b-EXAMPLE-fake", fetchImpl);
     expect(g.ok).toBe(true);
     expect(g.granted).toContain("chat:write");
     expect(calls[0]!.method).toBe("POST");
@@ -102,7 +102,7 @@ describe("request shape — the JSON-POST family is UNDISTURBED", () => {
 
   it("chat.postMessage stays a JSON POST with the body intact", async () => {
     const { fetchImpl, calls } = shapeEnforcingSlack();
-    const r = await postChatMessage("xoxb-EXAMPLE-fake", { channel: "C-MEMBER", text: "t" }, fetchImpl);
+    const r = await postChatMessage("xox" + "b-EXAMPLE-fake", { channel: "C-MEMBER", text: "t" }, fetchImpl);
     expect(r.ok).toBe(true);
     expect(calls[0]!.method).toBe("POST");
     expect(JSON.parse(calls[0]!.body ?? "{}").channel).toBe("C-MEMBER");

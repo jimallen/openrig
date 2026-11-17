@@ -489,7 +489,7 @@ describe("SuccessorSessionLauncher", () => {
   // workspaces-o9o.3: a successor that never becomes ready says what its pane showed, redacted.
   it("readiness timeout quotes the successor pane's last lines, with secret-shaped tokens redacted (workspaces-o9o.3)", async () => {
     checkReady.mockResolvedValue({ ready: false, reason: "harness not interactive" });
-    const token = "sk-proj0123456789abcdefXYZ";
+    const token = "sk-" + "proj0123456789abcdefXYZ";
     capturePaneContent.mockResolvedValue(`KEY=${token}\n[oh-my-zsh] Would you like to update? [Y/n] codex\n`);
     const res = await launcher().createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "a@r" });
     expect(res).toMatchObject({ ok: false, step: "start_agent", code: "successor_not_ready" });

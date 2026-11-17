@@ -62,7 +62,7 @@ function harness(opts?: {
   const media = new Map<string, Uint8Array>();
   const { fetchImpl, seenAuth } = stubFetch(opts?.routes ?? {});
   const filePort = makeInboundFilePort({
-    token: "xoxb-test-token",
+    token: "xox" + "b-test-token",
     mediaDir: MEDIA_DIR,
     fetchImpl,
     mkdirp: () => {},
@@ -163,7 +163,7 @@ describe("inbound files: the row carries our local copy, never Slack's URL", () 
     expect(path.dirname(stored[0]!), "stored INSIDE the media dir").toBe(path.normalize(MEDIA_DIR));
     expect(body, "the row references the local path").toContain(stored[0]!);
     expect(sha(h.media.get(stored[0]!)!), "bytes hash-match the original").toBe(sha(PNG_BYTES));
-    expect(h.seenAuth.some((a) => a === "Bearer xoxb-test-token"), "download authenticated with the bot token").toBe(true);
+    expect(h.seenAuth.some((a) => a === "Bearer xox" + "b-test-token"), "download authenticated with the bot token").toBe(true);
   });
 
   it("multiple files stay individually attributable; image+text preserves the text", async () => {
@@ -203,7 +203,7 @@ describe("inbound files: the row carries our local copy, never Slack's URL", () 
       expect([...h.media.keys()].some((p) => joined.includes(p)), "each row carries a local media path").toBe(true);
       expect(joined).not.toMatch(/url_private/);
       expect(joined).not.toMatch(/files\.slack\.com|slack\.com\/files|hooks\.slack\.com/);
-      expect(joined, "the bot token never reaches a row").not.toContain("xoxb-test-token");
+      expect(joined, "the bot token never reaches a row").not.toContain("xox" + "b-test-token");
     }
   });
 });

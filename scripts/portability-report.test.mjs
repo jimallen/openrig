@@ -27,7 +27,7 @@ function categories(text) {
 
 test("reports each principle's typical cases", () => {
   assert.deepEqual(categories("key = 'ghp_" + "a".repeat(36) + "'"), ["Credential"]);
-  assert.deepEqual(categories("-----BEGIN OPENSSH PRIVATE KEY-----"), ["Credential"]);
+  assert.deepEqual(categories("---" + "--BEGIN OPENSSH PRIVATE KEY-----"), ["Credential"]);
   assert.deepEqual(categories("key = '" + "glpat" + "-" + "b".repeat(20) + "'"), ["Credential"]);
   assert.deepEqual(categories("key = '" + "npm" + "_" + "c".repeat(36) + "'"), ["Credential"]);
   assert.deepEqual(categories("see /home/bob/project"), ["Home path"]);

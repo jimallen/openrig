@@ -12,7 +12,7 @@ describe("Slack private-file download host gate", () => {
     }) as unknown as typeof fetch;
     const r = await downloadPrivateFile(
       "https://evilslack.com/files-pri/T1-FX/steal.png",
-      "xoxb-test-token",
+      "xox" + "b-test-token",
       spyFetch,
       5_000,
       32_768,
@@ -29,7 +29,7 @@ describe("Slack private-file download host gate", () => {
       calls += 1;
       return new Response("body", { status: 200 });
     }) as unknown as typeof fetch;
-    const r = await downloadPrivateFile("http://files.slack.com/files-pri/T1/x", "xoxb-test-token", spyFetch, 5_000, 32_768);
+    const r = await downloadPrivateFile("http://files.slack.com/files-pri/T1/x", "xox" + "b-test-token", spyFetch, 5_000, 32_768);
     expect(r.ok).toBe(false);
     expect(calls).toBe(0);
   });

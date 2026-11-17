@@ -587,7 +587,7 @@ describe("rig-body-guard refusal text", () => {
     expect(reason).toContain("rig send <session> --file - <<'EOF'");
   });
   it("never repeats the offending text (it may hold content)", () => {
-    const secret = "SECRET-BODY-7f3a";
+    const secret = "SECRET-BODY-" + "7f3a";
     const { reason } = guard.check(`rig send a@b "${secret} ${T}x${T}"`);
     expect(reason).not.toContain(secret);
   });

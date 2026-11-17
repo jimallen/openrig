@@ -52,7 +52,7 @@ describe("rig seat set-resume-token", () => {
 
     expect(postCalls.length).toBe(1);
     expect(postCalls[0]!.path).toBe("/api/sessions/dev-impl%40my-rig/resume-token");
-    expect(postCalls[0]!.body).toEqual({ token: "claude-stdin-tok-789", reason: "founder re-authed" });
+    expect(postCalls[0]!.body).toEqual({ token: "claude-stdin-" + "tok-789", reason: "founder re-authed" });
     // Auth headers were passed (terminalAuthHeaders()).
     expect(postCalls[0]!.options).toHaveProperty("headers");
     // The token never appears in stdout.

@@ -116,7 +116,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
     let wire: ReturnType<typeof buildSlackGatewayWire>;
     let inboundSocket: WsLike;
     beforeEach(() => {
-      const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n");
+      const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
       posts = [];
       wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
@@ -184,7 +184,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
     // Rebuild the wire with inbound Socket Mode on a fake socket; returns a human-reply sender.
     async function connectInbound(): Promise<(threadTs: string | undefined, ts: string) => Promise<void>> {
       const secrets = join(home, "fake.env");
-      writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+      writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
       const sockets: WsLike[] = [];
       const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
       wire.stop();

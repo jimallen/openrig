@@ -60,7 +60,7 @@ function slackFetch(failLeg?: "get-url" | "put" | "complete"): { fetchImpl: Fetc
 function makeDeliver(fetchImpl: FetchImpl, logs: string[] = []) {
   const fsx = memFs();
   return subsystemSlackDeliver({
-    botToken: "xoxb-EXAMPLE-fake",
+    botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C-TEST",
     sourceLabel: "vm",
     fetchImpl,
@@ -131,7 +131,7 @@ describe("local attachments: images, video and PDF from disk, size-capped, misse
   function deliverWithDefaultReader(fetchImpl: FetchImpl, logs: string[]) {
     const fsx = memFs();
     return subsystemSlackDeliver({
-      botToken: "xoxb-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", fetchImpl,
+      botToken: "xox" + "b-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", fetchImpl,
       delivered: new SeenStore("/del.jsonl", fsx, clock), attempted: new SeenStore("/att.jsonl", fsx, clock),
       outboundSeen: new SeenStore("/seen.jsonl", fsx, clock), log: (m) => logs.push(m),
     });

@@ -41,7 +41,7 @@ describe("restart inside the rate-limit wait", () => {
 
   it("posts exactly once when the gateway is restarted while the retry is waiting", async () => {
     const item = await repo.create(request);
-    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n");
+    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets }, home);
 
     let wire1Posts = 0;

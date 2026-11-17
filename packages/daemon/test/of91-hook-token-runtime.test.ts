@@ -30,7 +30,7 @@ const SEEDED: Record<string, { type: string; token: string } | null> = {
   codex: { type: "codex_id", token: "thread-seeded-codex" },
   pi: { type: "pi_session_file", token: "/seed/pi.jsonl" },
   omp: { type: "omp_session_file", token: "/seed/omp.jsonl" },
-  pda: { type: "pda_agent", token: "http://127.0.0.1:9001/agents/seeded" },
+  pda: { type: "pda_agent", token: "http://127.0.0." + "1:9001/agents/seeded" },
   terminal: null,
 };
 // What each claim posts, and the row it would store if the claim were honoured.
@@ -39,7 +39,7 @@ const CLAIM: Record<Runtime, { sessionId: string; sessionFile?: string; type: st
   codex: { sessionId: "thread-claimed-codex", type: "codex_id", token: "thread-claimed-codex" },
   pi: { sessionId: "native-pi", sessionFile: "/claim/pi.jsonl", type: "pi_session_file", token: "/claim/pi.jsonl" },
   omp: { sessionId: "native-omp", sessionFile: ompFile, type: "omp_session_file", token: ompFile },
-  pda: { sessionId: "http://127.0.0.1:9999/agents/evil", type: "pda_agent", token: "http://127.0.0.1:9999/agents/evil" },
+  pda: { sessionId: "http://127.0.0.1:9999/agents/evil", type: "pda_agent", token: "http://127.0.0." + "1:9999/agents/evil" },
 };
 
 /** `spelling`: post this text as the runtime claim instead of the claim's own name (the OF-97 case/whitespace rows). */

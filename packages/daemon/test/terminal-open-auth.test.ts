@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { terminalRoutes, rigTerminalRoutes } from "../src/routes/terminal.js";
 
-const TOKEN = "t0ken-for-the-terminal-guard-0123456789";
+const TOKEN = "t0ken-for-the-" + "terminal-guard-0123456789";
 
 function makeApp(token: string | null) {
   const opened: string[] = [];

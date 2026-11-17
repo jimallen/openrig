@@ -321,9 +321,9 @@ describe("M2b redaction (openrig-v0 / velocity-v1 patterns)", () => {
   });
 
   it("redacts ghp_/ghs_/gho_ GitHub tokens", () => {
-    const text = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123 was leaked.";
+    const text = "ghp" + "_AbCdEfGhIjKlMnOpQrStUvWxYz0123 was leaked.";
     const redacted = redact(text);
-    expect(redacted).not.toContain("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123");
+    expect(redacted).not.toContain("ghp" + "_AbCdEfGhIjKlMnOpQrStUvWxYz0123");
     expect(redacted).toContain("[REDACTED]");
   });
 

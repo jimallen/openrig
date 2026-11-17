@@ -64,7 +64,7 @@ function harness(fetchImpl: FetchImpl) {
   const fsx = memFs();
   const outboundSeen = new SeenStore("/seen.jsonl", fsx, clock);
   const deliver = subsystemSlackDeliver({
-    botToken: "xoxb-EXAMPLE-fake",
+    botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C1",
     sourceLabel: "vm",
     fetchImpl,

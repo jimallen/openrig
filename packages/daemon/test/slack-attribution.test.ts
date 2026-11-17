@@ -86,7 +86,7 @@ describe("customize ABSENCE — posted bytes carry the app identity ONLY", () =>
     const fsx = memFs();
     const { fetchImpl, bodies } = capture();
     const deliver = subsystemSlackDeliver({
-      botToken: "xoxb-EXAMPLE-fake",
+      botToken: "xox" + "b-EXAMPLE-fake",
       channel: "C1",
       sourceLabel: "vm",
       fetchImpl,

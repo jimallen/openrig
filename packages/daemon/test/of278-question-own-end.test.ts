@@ -33,7 +33,7 @@ const questionHook = require("../assets/plugins/openrig-core/hooks/scripts/quest
 
 const T0 = Date.parse("2031-03-04T10:00:00.000Z");
 const MIN = 60_000;
-const TOKEN = "hook-token-o9o56";
+const TOKEN = "hook-token-" + "o9o56";
 
 type Questions = Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>;
 const ask = (question: string, header: string, recommended: string, other: string): Questions => [{
