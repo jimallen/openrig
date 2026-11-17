@@ -22,12 +22,44 @@ import { cn } from "../lib/utils.js";
 import { useRigStatus } from "../hooks/useRigStatus.js";
 
 export function RigStatusControl({ rigId, rigName }: { rigId: string; rigName: string }) {
-  const { data: status, isLoading } = useRigStatus(rigId);
+  const { data: status, isLoading, isError, error, refetch, isFetching } = useRigStatus(rigId);
   const [modalOpen, setModalOpen] = useState(false);
 
-  // Defensive: render the placeholder until a well-formed status object arrives
-  // (a malformed/empty response must never crash the topology page).
-  if (isLoading || !status || typeof status.rigName !== "string" || !Array.isArray(status.src)) {
+  // Defensive: a malformed/empty response must never crash the topology page.
+  const wellFormed = !!status && typeof status.rigName === "string" && Array.isArray(status.src);
+  // workspaces-o9o.114: a request that failed, or an answer that is not a rig status, used to leave "Loading rig status…"
+  // up for good. Say it is unavailable, with the reason, and offer a retry (the 10 s poll keeps asking as well).
+  const unavailable = wellFormed || isLoading
+    ? null
+    : isError
+      ? (error instanceof Error ? error.message : String(error))
+      : status
+        ? "the daemon's answer is not a rig status"
+        : null;
+  if (unavailable !== null) {
+    return (
+      <div
+        data-testid={`rig-status-control-${rigId}`}
+        data-status="unavailable"
+        className="inline-flex items-center gap-2 border border-on-surface bg-surface-lowest px-2 py-1.5"
+      >
+        <span data-testid={`rig-status-error-${rigId}`} className="font-mono text-[9px] text-on-surface">
+          <span className="font-bold uppercase">Rig status unavailable</span> — {unavailable}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+          data-testid={`rig-status-retry-${rigId}`}
+          className="font-mono text-[10px] tracking-widest"
+        >
+          {isFetching ? "Retrying…" : "Retry"}
+        </Button>
+      </div>
+    );
+  }
+  if (!wellFormed) {
     return (
       <div
         data-testid={`rig-status-control-${rigId}`}

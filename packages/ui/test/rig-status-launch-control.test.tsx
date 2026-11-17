@@ -160,6 +160,59 @@ describe("RigStatusControl — compact modal-launch button (no inline card)", ()
     fireEvent.click(primary);
     await waitFor(() => expect(screen.getByTestId("launch-recovery-modal")).toBeTruthy());
   });
+
+  // workspaces-o9o.114: a status request that fails used to leave the control on "Loading rig status…" for good (seen in the UI
+  // twin: a 404). It says the status is unavailable, with the reason, and offers a retry.
+  const statusCalls = () => mockFetch.mock.calls.filter(([u]) => String(u).includes("/status")).length;
+
+  it("a failed status request (404) says the status is unavailable, with the reason and a retry, not 'Loading' for good", async () => {
+    mockFetch.mockImplementation(() => jsonResponse({ error: "rig not found" }, 404));
+    renderWithClient(<RigStatusControl rigId="r9" rigName="demo" />);
+    await waitFor(() => expect(screen.getByTestId("rig-status-error-r9")).toBeTruthy());
+    expect(screen.getByTestId("rig-status-error-r9").textContent).toContain("Rig status unavailable");
+    expect(screen.getByTestId("rig-status-error-r9").textContent).toContain("HTTP 404");
+    expect(screen.getByTestId("rig-status-control-r9").textContent).not.toContain("Loading");
+    expect(screen.getByTestId("rig-status-retry-r9")).toBeTruthy();
+    expect(screen.queryByTestId("rig-primary-action-r9")).toBeNull();
+  });
+
+  it("retry asks again: after a 500, a status that now answers renders the normal control", async () => {
+    let answer: "fail" | "ok" = "fail";
+    mockFetch.mockImplementation((url: unknown) => {
+      if (String(url).includes("/status")) return answer === "fail" ? jsonResponse({}, 500) : jsonResponse(RIG_STATUS_UP);
+      return jsonResponse({});
+    });
+    renderWithClient(<RigStatusControl rigId="r9" rigName="demo" />);
+    await waitFor(() => expect(screen.getByTestId("rig-status-error-r9").textContent).toContain("HTTP 500"));
+    const before = statusCalls();
+    answer = "ok";
+    fireEvent.click(screen.getByTestId("rig-status-retry-r9"));
+    await waitFor(() => expect(screen.getByTestId("rig-primary-action-r9")).toBeTruthy());
+    expect(statusCalls()).toBe(before + 1);
+    expect(screen.queryByTestId("rig-status-error-r9")).toBeNull();
+    expect(screen.getByTestId("seats-r9").textContent).toBe("7/7");
+  });
+
+  it("an answer that is not a rig status (a 200 with the wrong shape) is unavailable too, never a crash or 'Loading' for good", async () => {
+    mockFetch.mockImplementation(() => jsonResponse({ unexpected: true }));
+    renderWithClient(<RigStatusControl rigId="r9" rigName="demo" />);
+    await waitFor(() => expect(screen.getByTestId("rig-status-error-r9")).toBeTruthy());
+    expect(screen.getByTestId("rig-status-error-r9").textContent).toContain("not a rig status");
+    expect(screen.getByTestId("rig-status-retry-r9")).toBeTruthy();
+  });
+
+  it("control: a request still in flight shows 'Loading rig status…' and no error, then the control once it answers", async () => {
+    let answer: (value: unknown) => void = () => {};
+    mockFetch.mockImplementation((url: unknown) =>
+      String(url).includes("/status") ? new Promise((resolve) => { answer = resolve; }) : jsonResponse({}));
+    renderWithClient(<RigStatusControl rigId="r9" rigName="demo" />);
+    expect(screen.getByTestId("rig-status-control-r9").textContent).toContain("Loading rig status");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId("rig-status-error-r9")).toBeNull();
+    expect(screen.getByTestId("rig-status-control-r9").textContent).toContain("Loading rig status");
+    await act(async () => { answer({ ok: true, status: 200, json: async () => RIG_STATUS_UP }); });
+    await waitFor(() => expect(screen.getByTestId("rig-primary-action-r9")).toBeTruthy());
+  });
 });
 
 describe("LaunchRecoveryModal — plan-before-mutation + the LOCK + honesty", () => {

@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A rig page says when its status cannot be read, and offers a retry (workspaces-o9o.114)
+
+- Symptom: when `GET /api/rigs/:id/status` failed (a 404 or 500), or answered something that is not a rig status, the rig page's status control said "Loading rig status…" for good, so a failure read as a slow load.
+- Now it says `Rig status unavailable — <reason>` (the HTTP status, or "the daemon's answer is not a rig status") beside a Retry button that asks again. Retry is keyboard-reachable and reads "Retrying…" while it asks. The 10 s poll keeps asking too, so a status that comes back replaces the message on its own. A request still in flight shows "Loading rig status…" as before.
+- The message uses the theme's surface and text colours (12.8:1 on light, 14.2:1 on dark).
+
 ### The web UI's restore modal shows a seat's plan warning (workspaces-o9o.112)
 
 - Symptom: a restore plan node can carry `warning`, which restore reports for that seat while still starting it (today: its leases could not be read, so they were not judged; workspaces-o9o.111). `rig up --plan` prints it under the seat, but the web UI's restore modal showed only the seat's prompt or reason and dropped it.
