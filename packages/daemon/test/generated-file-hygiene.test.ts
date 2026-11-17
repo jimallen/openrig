@@ -30,6 +30,10 @@ describe("generated file Git hygiene", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "generated-file-hygiene-"));
     repo = path.join(root, "repo"); fs.mkdirSync(repo);
     git(repo, "init", "-q");
+    // These rows start from git's default template, which ships info/exclude; a template without it is not guaranteed to
+    // (workspaces-o9o.70), and that case has its own rows in generated-file-hygiene-no-info.test.ts.
+    fs.mkdirSync(path.join(repo, ".git", "info"), { recursive: true });
+    fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "");
     git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "initial");
   });
   afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }); });

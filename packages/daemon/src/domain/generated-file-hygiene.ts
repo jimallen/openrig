@@ -48,8 +48,17 @@ export function excludeNewGeneratedFiles(cwd: string, createdFiles: string[]): s
   try {
     const [exclude, common] = git(root, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude", "--git-common-dir"]).trimEnd().split("\n");
     if (!exclude || !common) throw new Error("Git did not return exclusion and common metadata paths");
-    const metadataIdentity = (file: string) => fs.existsSync(file) ? fs.realpathSync(file)
-      : path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+    // Git does not guarantee info/ or info/exclude exists (a custom or empty template; workspaces-o9o.70): resolve the
+    // deepest folder that exists and append the missing names, so an absent info/ is an identity, not an error.
+    const metadataIdentity = (file: string) => {
+      const missing: string[] = [];
+      let existing = file;
+      while (!fs.existsSync(existing) && path.dirname(existing) !== existing) {
+        missing.unshift(path.basename(existing));
+        existing = path.dirname(existing);
+      }
+      return path.join(fs.realpathSync(existing), ...missing);
+    };
     const coreDirectories = corePluginDirectories.map(directory => path.join(path.relative(root, fs.realpathSync(cwd)), directory));
     const ignoresCase = (dir: string) => git(dir, ["config", "--type=bool", "--get", "core.ignorecase"], undefined, true).trim() === "true";
     // One bounded listing per worktree, including ignored files only at relevant paths.
@@ -105,7 +114,15 @@ export function excludeNewGeneratedFiles(cwd: string, createdFiles: string[]): s
     const patterns = candidates.filter(c => !conflicts.has(c.relative)).map(c => patternFor(c.relative));
     if (!patterns.length) return warnings;
     remaining();
-    fs.mkdirSync(path.dirname(exclude), { recursive: true });
+    const infoDir = path.dirname(exclude);
+    if (!fs.existsSync(infoDir)) {
+      // Create info/ only as the real common Git directory's own child, never where a link points: --git-path resolves a
+      // link at info/ or info/exclude to its target, which this identity check refuses, and an unresolved dangling link
+      // still occupies the name, so the non-recursive mkdir fails rather than following it.
+      const realInfo = path.join(fs.realpathSync(common), "info");
+      if (metadataIdentity(infoDir) !== realInfo) throw new Error("Git exclusion path resolves outside repository metadata");
+      fs.mkdirSync(realInfo);
+    }
     if (!within(fs.realpathSync(common), fs.realpathSync(path.dirname(exclude)))
       || (fs.existsSync(exclude) && !within(fs.realpathSync(common), fs.realpathSync(exclude)))) {
       throw new Error("Git exclusion path resolves outside repository metadata");

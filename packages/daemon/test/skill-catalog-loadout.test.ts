@@ -334,7 +334,9 @@ describe("managed skill catalog and composable loadouts", () => {
     commit(f.root);
 
     const excludePath = join(f.root, ".git", "info", "exclude");
-    const operatorExclude = `${readFileSync(excludePath, "utf8")}\n# operator-owned rule\n/private-cache/\n`;
+    // The git template may have no info/exclude (workspaces-o9o.70): an absent file reads as empty.
+    const operatorExclude = `${existsSync(excludePath) ? readFileSync(excludePath, "utf8") : ""}\n# operator-owned rule\n/private-cache/\n`;
+    mkdirSync(join(f.root, ".git", "info"), { recursive: true });
     writeFileSync(excludePath, operatorExclude);
     const selected = resolveSkillLoadout({ catalogRoot: f.catalog, projectSkills: ["managed"] });
     expect(selected.ok).toBe(true);

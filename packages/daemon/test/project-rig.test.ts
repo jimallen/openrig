@@ -139,8 +139,17 @@ describe("prepareProjectRigWorkspaces", () => {
     expect(status).toContain("a1/.workspaces/x-y/f");
   });
 
+  it("creates .git/info/exclude when the git template made no info/ (o9o.70)", () => {
+    const template = path.join(tmp, "empty-template"); fs.mkdirSync(template);
+    git("init", "-q", `--template=${template}`);
+    expect(fs.existsSync(path.join(tmp, ".git", "info"))).toBe(false);
+    prepareProjectRigWorkspaces(tmp, [path.join(tmp, ".workspaces", "x-y")]);
+    expect(fs.readFileSync(path.join(tmp, ".git", "info", "exclude"), "utf-8")).toBe("/.workspaces/\n");
+  });
+
   it("anchors at the repo root when the project is the repo", () => {
     git("init", "-q");
+    fs.mkdirSync(path.join(tmp, ".git", "info"), { recursive: true }); // the git template may have no info/ (workspaces-o9o.70)
     fs.writeFileSync(path.join(tmp, ".git", "info", "exclude"), "# existing");
     prepareProjectRigWorkspaces(tmp, [path.join(tmp, ".workspaces", "x-y")]);
     expect(fs.readFileSync(path.join(tmp, ".git", "info", "exclude"), "utf-8")).toBe("# existing\n/.workspaces/\n");

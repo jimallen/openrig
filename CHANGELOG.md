@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Projection keeps generated plugin files out of `git add` in a repo with no `.git/info` (workspaces-o9o.70)
+
+- Symptom: in a repo made with a git template that has no `info/` directory (a custom or empty template; git does not guarantee `.git/info/exclude` exists), projection did not write the exclusion for the generated `openrig-core` plugin files. It logged `generated_file_exclude_skipped: ... ENOENT ... .git/info`, and `git add .` then picked the generated files up.
+- Cause: the exclusion resolved the real path of `.git/info` before creating it.
+- Now a missing `info/` (or `info/exclude`) is created when there is something to write, only inside the repository's real common Git directory, and never through a link: an `info/` or `info/exclude` that is a symlink resolving nowhere is refused with the same warning, and nothing is created at its target. `rig up`'s exclusion of `.workspaces/` already created a missing `info/`; it is now pinned.
 ### `rig seat launch --fresh --stop` checks the seat's unfinished work before it stops anything (workspaces-o9o.8)
 
 - Symptom: operators checked by hand before a relaunch. They looked for a UI test host lease the seat held, for builds or test runs still running under the seat's agent, and for the seat's handover file. A launch that stopped a seat mid-test left the shared host's lease held for every other seat. A build left running under the agent kept writing into the worktree.
