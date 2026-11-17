@@ -208,12 +208,15 @@ describe("o9o.17: the refresh never writes or removes outside the managed copy",
     expect(read(nodePath.join(outsideDir, "precious.txt"))).toBe("keep me\n");
     expect(read(nodePath.join(outsideDir, "claude.json"))).toBe("outside manifest\n");
     expect(fs.readdirSync(outsideDir).sort()).toEqual(["claude.json", "precious.txt"]);
-    // The refused paths are reported, never passed off as a verified copy.
-    expect(errors.join("\n")).toMatch(/still differs from the running package/);
-    expect(errors.join("\n")).toMatch(/hooks\/claude\.json \(differs\)/);
+    // workspaces-o9o.55: the copy is replaced as a whole tree, so nothing is written through a link at all: the linked
+    // paths are gone (removed, never followed) and the package's own files stand in their place, verified.
+    expect(fs.lstatSync(nodePath.join(copy, "hooks", "claude.json")).isFile()).toBe(true);
+    expect(fs.existsSync(nodePath.join(copy, "hooks", "scripts", "linked.cjs"))).toBe(false);
+    expect(fs.existsSync(nodePath.join(copy, "linked-dir"))).toBe(false);
+    expect(errors.join("\n")).not.toMatch(/still differs from the running package/);
   });
 
-  it("a symlinked file whose outside target holds the package's exact bytes is reported, not passed as verified", async () => {
+  it("a symlinked file whose outside target holds the package's exact bytes is replaced by the package's own file (o9o.55)", async () => {
     const host = driftedHost();
     const outside = nodePath.join(host.home, "outside-hooks.json");
     fs.writeFileSync(outside, PACKAGE_HOOKS);
@@ -223,7 +226,10 @@ describe("o9o.17: the refresh never writes or removes outside the managed copy",
     const errors: string[] = [];
     await daemonStart(host, [], errors);
 
-    expect(errors.join("\n")).toMatch(/hooks\/claude\.json \(differs\)/);
+    // workspaces-o9o.55: the whole-tree swap replaces the link with the package's own file; the outside file is untouched.
+    expect(fs.lstatSync(nodePath.join(copy, "hooks", "claude.json")).isFile()).toBe(true);
+    expect(fs.readFileSync(outside, "utf-8")).toBe(PACKAGE_HOOKS);
+    expect(errors.join("\n")).not.toMatch(/still differs from the running package/);
   });
 
   it("a path that climbs out of the copy ('..') is never written", async () => {

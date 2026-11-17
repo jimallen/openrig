@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The plugin refresh replaces the whole tree, so a full disk cannot leave a mixed copy (workspaces-o9o.55)
+
+- Symptom: the daemon-start refresh of `OPENRIG_HOME/plugins/openrig-core` replaced it file by file. Each file was atomic, the tree was not: a full disk (ENOSPC) partway through left the copy mixed, some files new, some old, files the package dropped still present, for that whole boot. The same failure also skipped the global skill seed refreshes, which shared its try block.
+- Now the package is copied into a private staging folder beside the copy, verified, and swapped in with two renames; the old tree is then removed. A failure before the swap leaves the installed copy exactly as it was; a failed swap puts the old copy back; staging and old folders a crash left are removed at the next start; a copy that already matches is not rewritten. Nothing is written or removed through a link: a link inside the old copy is removed, never followed.
+- A failed refresh is reported and no longer skips the global seed refreshes.
+- The temp file behind every single-file write stays exclusive (O_EXCL), now pinned by a test.
+
 ### The generation record `rig walk` reads is served redacted (workspaces-o9o.60)
 
 - Symptom: `GET /api/sessions/:name/generation-record?sinceBytes=N`, the record `rig walk` reads to confirm each piece was consumed, returned the seat's native conversation record (Claude JSONL, Codex rollout) from that offset as raw bytes, with no transcript redaction.
@@ -3338,6 +3345,7 @@ but genuinely-resuming Codex sessions:
 ### Quick Verification Commands
 
 ```bash
+
 # Confirm CLI version after the release-manager version bump
 rig --version
 
@@ -3706,6 +3714,7 @@ to "which skills are affected by this release":
 ### Quick Verification Commands
 
 ```bash
+
 # Confirm CLI version after the release-manager version bump
 rig --version
 
@@ -4271,6 +4280,7 @@ agent-prompt design + daemon-to-LLM trust establishment:
 ### Quick Verification Commands
 
 ```bash
+
 # Confirm CLI version after the release-manager version bump
 rig --version
 
@@ -4320,6 +4330,7 @@ changes since `0.2.0`.
 ### Quick Verification Commands
 
 ```bash
+
 # Confirm CLI version after the release-manager version bump
 rig --version
 

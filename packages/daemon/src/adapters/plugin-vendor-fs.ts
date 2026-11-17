@@ -75,5 +75,11 @@ export function nodePluginVendorFs(): PluginVendorFs {
     gitWorkTreeOf,
     statMode: (p) => fs.statSync(p).mode,
     chmod: (p, m) => fs.chmodSync(p, m),
+    // workspaces-o9o.55: the whole-tree swap. mkdirSync without `recursive` fails EEXIST on anything already there, a link
+    // included; renameSync and rmSync act on the path itself and never follow a link at it.
+    makeDir: (p) => { fs.mkdirSync(p, { mode: 0o755 }); },
+    rename: (from, to) => fs.renameSync(from, to),
+    removeTree: (p) => fs.rmSync(p, { recursive: true, force: true }),
+    readdir: (dir) => { try { return fs.readdirSync(dir); } catch { return []; } },
   };
 }

@@ -50,6 +50,14 @@ export interface PluginVendorFs {
   statMode?(path: string): number;
   /** Apply permission bits to a file (for mode-preserving vendor staging). Optional: no-op if absent. */
   chmod?(path: string, mode: number): void;
+  /** Create one directory; fails if anything (a link included) is already at `path` (workspaces-o9o.55: the staging folder). */
+  makeDir(path: string): void;
+  /** Rename `from` to `to` in the same folder; acts on `from` itself, never through a link at it. */
+  rename(from: string, to: string): void;
+  /** Remove `path` and everything under it, never following a link (a link is removed, not its target). */
+  removeTree(path: string): void;
+  /** The names in a folder; [] when it does not exist. */
+  readdir(dir: string): string[];
 }
 
 export interface HttpClientResponse {
@@ -84,6 +92,9 @@ function parseNumericVersion(raw: string, source: string): number[] {
   }
   return value.split(".").map(Number);
 }
+
+/** Distinguishes two refreshes in one millisecond in one process (the staging folder is created exclusively anyway). */
+let swapCounter = 0;
 
 export class PluginVendorService {
   private vendoredAssetsDir: string;
@@ -163,8 +174,67 @@ export class PluginVendorService {
       }
     }
 
-    this.mirror(sourceDir, targetDir, new Set(), nodePath.dirname(this.userPluginsDir));
+    this.replaceTree(pluginName, sourceDir, targetDir);
     this.reportDrift(`plugin '${pluginName}'`, sourceDir, targetDir, new Set());
+  }
+
+  /**
+   * workspaces-o9o.55: replace targetDir with a copy of sourceDir as a whole tree, never file by file in place. The copy
+   * is built in a private staging folder beside it (created exclusively), verified against the source, then swapped in
+   * with two renames (installed -> old, staged -> installed) and the old tree removed. A failure before the swap leaves
+   * the installed copy exactly as it was and removes the staging folder; a failure between the renames puts the old
+   * copy back. Staging and old folders a crashed refresh left (OpenRig's own names only) are removed first.
+   */
+  private replaceTree(pluginName: string, sourceDir: string, targetDir: string): void {
+    const anchor = nodePath.dirname(this.userPluginsDir);
+    const refusal = this.unsafe(anchor, targetDir, targetDir);
+    if (refusal !== null) {
+      this.errorLogger(`[plugin-vendor] not writing ${targetDir}: ${refusal}`);
+      return;
+    }
+    this.fs.mkdirp(this.userPluginsDir);
+    // Already exact: no new tree. The in-place mirror then writes no content (every file hash-matches) and only reconciles
+    // modes, so a start with nothing to change rewrites nothing.
+    if (this.fs.lstat(targetDir) === "directory" && this.drift(sourceDir, targetDir, new Set()).length === 0) {
+      this.mirror(sourceDir, targetDir, new Set(), anchor);
+      return;
+    }
+    const leftover = new RegExp(`^\\.${pluginName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.openrig-(staging|old)-`);
+    for (const name of this.fs.readdir(this.userPluginsDir)) {
+      if (leftover.test(name)) this.fs.removeTree(nodePath.join(this.userPluginsDir, name));
+    }
+    const suffix = `${process.pid}-${Date.now().toString(36)}-${(swapCounter++).toString(36)}`;
+    const staged = nodePath.join(this.userPluginsDir, `.${pluginName}.openrig-staging-${suffix}`);
+    const old = nodePath.join(this.userPluginsDir, `.${pluginName}.openrig-old-${suffix}`);
+    this.fs.makeDir(staged);
+    let differing: string[];
+    try {
+      this.mirror(sourceDir, staged, new Set(), anchor);
+      differing = this.drift(sourceDir, staged, new Set());
+    } catch (err) {
+      this.fs.removeTree(staged);
+      throw err;
+    }
+    if (differing.length > 0) {
+      // A staged copy that does not match the package is never swapped in: the installed copy stays as it was.
+      this.fs.removeTree(staged);
+      this.errorLogger(`[plugin-vendor] not replacing ${targetDir}: the staged copy still differs from the running package in ${differing.length} path(s): ${differing.slice(0, 10).join(", ")}`);
+      return;
+    }
+    const hadTarget = this.fs.lstat(targetDir) !== null;
+    if (hadTarget) this.fs.rename(targetDir, old);
+    try {
+      this.fs.rename(staged, targetDir);
+    } catch (err) {
+      if (hadTarget) this.fs.rename(old, targetDir);
+      this.fs.removeTree(staged);
+      throw err;
+    }
+    if (hadTarget) {
+      try { this.fs.removeTree(old); } catch (err) {
+        this.errorLogger(`[plugin-vendor] could not remove the replaced copy ${old}: ${(err as Error).message}; the next start removes it`);
+      }
+    }
   }
 
   /**
@@ -403,4 +473,30 @@ export class PluginVendorService {
 
 function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+/**
+ * Daemon start's plugin refresh and the global seed refreshes that follow it. Each step has its own failure: a refresh
+ * that fails (a full disk, say) leaves the installed copy as it was (workspaces-o9o.55) and does not skip the seeds,
+ * which copy from the running package, not from the plugin copy. Every failure is reported through `warn`.
+ */
+export async function refreshPluginAndSeeds(
+  vendor: Pick<PluginVendorService, "ensureLatest" | "ensureSkillGlobally">,
+  pluginName: string,
+  skills: readonly string[],
+  seedRoots: string[],
+  warn: (message: string) => void,
+): Promise<void> {
+  try {
+    await vendor.ensureLatest(pluginName);
+  } catch (err) {
+    warn(`${pluginName} plugin refresh warning: ${(err as Error).message}; the installed copy was left as it was`);
+  }
+  for (const skill of skills) {
+    try {
+      vendor.ensureSkillGlobally(pluginName, skill, seedRoots);
+    } catch (err) {
+      warn(`global ${skill} skill setup warning: ${(err as Error).message}`);
+    }
+  }
 }

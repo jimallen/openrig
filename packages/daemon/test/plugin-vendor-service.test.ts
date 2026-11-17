@@ -31,6 +31,13 @@ function mockFs(initialFiles?: Record<string, string>) {
     lstat: (p: string): "file" | "directory" | null => p in store ? "file" : Object.keys(store).some((k) => k.startsWith(p + "/")) ? "directory" : null,
     removeFile: (p: string) => { delete store[p]; },
     gitWorkTreeOf: (): string | null => null,
+    // workspaces-o9o.55: the whole-tree swap, over the same flat store (a folder exists while a file is under it).
+    makeDir: (p: string) => { if (p in store || Object.keys(store).some((k) => k.startsWith(p + "/"))) throw new Error(`EEXIST: ${p}`); },
+    rename: (from: string, to: string) => {
+      for (const k of Object.keys(store)) if (k === from || k.startsWith(from + "/")) { store[to + k.slice(from.length)] = store[k]!; delete store[k]; }
+    },
+    removeTree: (p: string) => { for (const k of Object.keys(store)) if (k === p || k.startsWith(p + "/")) delete store[k]; },
+    readdir: (dir: string) => [...new Set(Object.keys(store).filter((k) => k.startsWith(dir + "/")).map((k) => k.slice(dir.length + 1).split("/")[0]!))],
     _store: store,
   };
 }

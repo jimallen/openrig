@@ -245,10 +245,16 @@ At this pin, the route's source filter accepts vendored, Claude-cache and Codex-
 `packages/daemon/src/domain/plugin-vendor-service.ts` owns `PluginVendorService`.
 `ensureVendored()` makes `OPENRIG_HOME/plugins/<name>` match the running package's bundled
 plugin at every daemon start, whatever version the installed copy declares (equal, older or
-newer: workspaces-o9o.17, Jim 2026-11-16, "Running package wins"). It writes changed files,
-reconciles file modes, removes files the package no longer ships, logs the installed version it
-replaced, then verifies the copy and reports any path that still differs through `errorLogger`
-(`console.error` at startup). Right before each write, chmod, mkdir or delete, every path component
+newer: workspaces-o9o.17, Jim 2026-11-16, "Running package wins"). A copy that already matches
+only has its file modes reconciled. Otherwise the whole tree is replaced, never file by file in
+place (workspaces-o9o.55): the package is copied into a private staging folder beside the copy
+(`.<name>.openrig-staging-<pid>-...`, created exclusively), verified, then swapped in with two
+renames (installed to `.<name>.openrig-old-...`, staged to installed) and the old tree removed.
+A failure before the swap (a full disk, a staged copy that does not verify) leaves the installed
+copy exactly as it was; a failed second rename puts the old copy back; staging and old folders a
+crash left are removed at the next start. It logs the installed version it replaced and reports
+any path that still differs through `errorLogger` (`console.error` at startup); a failed refresh
+does not skip the global seed refreshes (`refreshPluginAndSeeds`). Right before each write, chmod, mkdir or delete, every path component
 from `OPENRIG_HOME` (a seed's anchor: its root's parent) down to the file is lstat-checked, and a
 symlink or non-directory anywhere on it refuses the step; a refused copy or seed root is reported.
 Writes are atomic: an O_EXCL temp file in the same folder, its mode set, renamed over the target;

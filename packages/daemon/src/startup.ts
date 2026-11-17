@@ -1064,7 +1064,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // (repo currently empty as of 2026-05-10; vendored
   // copy is the source of truth at v0).
   try {
-    const { PluginVendorService } = await import("./domain/plugin-vendor-service.js");
+    const { PluginVendorService, refreshPluginAndSeeds } = await import("./domain/plugin-vendor-service.js");
     const vendoredAssetsDir = nodePath.resolve(import.meta.dirname, "../assets/plugins");
     const userPluginsDir = getDefaultOpenRigPath("plugins");
     const { nodePluginVendorFs } = await import("./adapters/plugin-vendor-fs.js");
@@ -1087,17 +1087,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       logger: (...args) => console.log("[openrig]", ...args),
       errorLogger: (...args) => console.error("[openrig]", ...args),
     });
-    await vendorService.ensureLatest("openrig-core");
-    for (const skill of ["openrig-skills", "refocusing"]) {
-      try {
-        vendorService.ensureSkillGlobally("openrig-core", skill, [
-          nodePath.join(os.homedir(), ".claude", "skills"),
-          nodePath.join(os.homedir(), ".agents", "skills"),
-        ]);
-      } catch (err) {
-        console.error(`[openrig] global ${skill} skill setup warning: ${(err as Error).message}`);
-      }
-    }
+    // workspaces-o9o.55: a failed plugin refresh leaves the installed copy as it was and does not skip the seeds.
+    await refreshPluginAndSeeds(vendorService, "openrig-core", ["openrig-skills", "refocusing"],
+      [nodePath.join(os.homedir(), ".claude", "skills"), nodePath.join(os.homedir(), ".agents", "skills")],
+      (message) => console.error(`[openrig] ${message}`));
     // `rigs` is the person-facing guide (skills/rigs, the skills.sh front door), for a session that isn't on a
     // team yet, so it isn't a plugin skill: that would put it in every seat's loadout. Its packaged copy
     // installs under OpenRig's own version, so each upgrade refreshes it; a copy installed another way has no
