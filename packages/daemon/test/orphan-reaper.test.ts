@@ -1003,3 +1003,40 @@ describe.skipIf(!hasProcFs())("OF-274: the watchdog's bound", () => {
     expect(processAlive(carrier)).toBe(true);
   }, 60_000);
 });
+
+// workspaces-o9o.90: a stopped run is killed as a TREE (a tool's stop walks the worker's descendants by parent link and kills
+// each). A private hc core's server is not in that tree (`hc server start` daemonizes it), so it survives; a watchdog that is
+// still the worker's child dies with the tree, and nothing reaps the core. Measured on sparky 2026-11-17: 31 scratch cores left
+// with no watchdog, each root still holding its run's registry entry. The watchdog must leave the tree as the core does.
+describe("a run stopped as a whole tree still reaps what left the tree (workspaces-o9o.90)", () => {
+  it("killing every descendant of the worker by parent link leaves no victim behind", async () => {
+    const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("./fixtures/reaper-tree-kill-child.ts", import.meta.url))],
+      { stdio: ["ignore", "pipe", "inherit"] });
+    cleanups.push(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } });
+    const victimPid = await new Promise<number>((resolve, reject) => {
+      let out = "";
+      child.stdout!.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+        const m = /READY (\d+)/.exec(out);
+        if (m) resolve(Number(m[1]));
+      });
+      child.once("exit", (code) => reject(new Error(`fixture exited ${code} before READY`)));
+    });
+    const victim = identity(victimPid);
+    cleanups.push(() => { if (sameProcess(victim)) { try { process.kill(victim.pid, "SIGKILL"); } catch { /* gone */ } } });
+    expect(sameProcess(victim), "positive control: the victim runs while its worker lives").toBe(true);
+    const parents = new Map<number, number>();
+    for (const line of execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" }).split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+      if (m) parents.set(Number(m[1]), Number(m[2]));
+    }
+    const tree = [child.pid!];
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [pid, ppid] of parents) if (!tree.includes(pid) && tree.includes(ppid)) { tree.push(pid); grew = true; }
+    }
+    expect(tree, "the victim is outside the worker's tree, as a daemonized core is").not.toContain(victim.pid);
+    for (const pid of tree) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    expect(await waitGone(victim.pid, 30_000), "the victim is reaped after the worker's whole tree was killed").toBe(true);
+  }, 90_000);
+});

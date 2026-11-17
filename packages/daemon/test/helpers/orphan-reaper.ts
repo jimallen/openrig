@@ -312,6 +312,14 @@ export function ancestorsOf(pid: number, source: "proc" | "ps"): number[] {
   return chain;
 }
 
+/** node -e program: start argv[1] (a JSON [file, ...args]) detached with no stdin or stdout and this process's stderr, print its pid, exit. */
+export const WATCHDOG_LAUNCHER = `const { spawn } = require("node:child_process");
+const [file, ...args] = JSON.parse(process.argv[1]);
+const child = spawn(file, args, { detached: true, stdio: ["ignore", "ignore", "inherit"] });
+child.unref();
+if (child.pid === undefined) process.exit(1);
+process.stdout.write(String(child.pid));`;
+
 export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () => void; pid: number } {
   for (const socket of targets.tmuxSockets ?? []) assertOwnedTmuxSocket(socket);
   if ((targets.environ?.length ?? 0) > 0 && !canSweepEnviron()) {
@@ -326,14 +334,22 @@ export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () =>
     ...(targets.environ ?? []).flatMap((entry) => ["env", entry]),
     ...(targets.identities ?? []).flatMap((id) => ["pid", String(id.pid), id.started, id.command]),
   ];
-  const child = spawn("/bin/sh", ["-c", WATCHDOG, `reaper:${targets.label ?? "test"}`, String(owner), ownerStart, source, String(targets.maxSelected ?? WATCHDOG_SELECTION_CAP), [...new Set([...ancestorsOf(owner, source), ...ancestorsOf(targets.armerPid ?? process.pid, source)])].join(" "), ...args], {
-    detached: true,
-    // stdout is unused; stderr carries the one overflow line (to this process's own stderr unless a test gives a file).
-    stdio: ["ignore", "ignore", targets.stderrFd ?? 2],
+  const argv = ["-c", WATCHDOG, `reaper:${targets.label ?? "test"}`, String(owner), ownerStart, source, String(targets.maxSelected ?? WATCHDOG_SELECTION_CAP), [...new Set([...ancestorsOf(owner, source), ...ancestorsOf(targets.armerPid ?? process.pid, source)])].join(" "), ...args];
+  // workspaces-o9o.90: the watchdog is started by a short-lived launcher that exits at once, so it is NOT a descendant of
+  // this process. A stopped run is killed as a tree (a tool's stop walks the worker's descendants by parent link); a
+  // watchdog that was the worker's child died with it, while what it guards (a private hc core's server, which `hc server
+  // start` daemonizes) had already left the tree and lived on with nothing to reap it. Still detached: the watchdog leads
+  // its own session and group, so disarm() and its own last line work as before. stdout carries only its pid; stderr the
+  // one overflow line (to this process's own stderr unless a test gives a file).
+  const launched = spawnSync(process.execPath, ["-e", WATCHDOG_LAUNCHER, JSON.stringify(["/bin/sh", ...argv])], {
+    stdio: ["ignore", "pipe", targets.stderrFd ?? 2],
+    encoding: "utf8",
+    timeout: 30_000,
   });
-  child.unref();
-  const pid = child.pid;
-  if (pid === undefined) throw new Error("could not start the orphan reaper");
+  const pid = Number(launched.stdout?.trim());
+  if (launched.status !== 0 || !Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`could not start the orphan reaper (launcher exit ${launched.status}${launched.error ? `, ${launched.error.message}` : ""})`);
+  }
   return {
     pid,
     disarm: () => { try { process.kill(-pid, "SIGKILL"); } catch { /* already finished */ } },
