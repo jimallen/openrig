@@ -9,6 +9,7 @@ import {
   parseArguments,
   readReceipt,
   runTier,
+  namesStem,
   newlyCalledNames,
   scanAddedLines,
   scannedCallNames,
@@ -339,6 +340,55 @@ test("the tier 2 selection unites imports, files naming a changed stem, and chan
     ]);
     assert.deepEqual(picked.viaNamesOnly, ["test/census-by-name.test.ts", "test/queue-store.test.ts"]);
   });
+});
+
+// workspaces-o9o.86: the name match (b) took any substring, so a short, common-word stem selected most of a package
+// (a diff to up.ts matched 1133 daemon test files through "setup", "cleanup" and the like). A short stem without a hyphen
+// now counts only as a file reference (up.ts, up.js), a quoted name ("up") or a path segment (routes/up); a hyphenated
+// stem or one of 10 or more characters keeps the substring match.
+test("tier 2's name match: a short stem drops substring and bare-word hits, and keeps file references, quoted names and path segments", async () => {
+  await withRepo(async ({ repo }) => {
+    write(repo, "packages/daemon/src/up.ts", "export const up = 1;\n");
+    write(repo, "packages/daemon/src/queue-worker.ts", "export const w = 1;\n");
+    write(repo, "packages/daemon/src/orchestrator.ts", "export const o = 1;\n");
+    write(repo, "packages/daemon/test/setup-noise.test.ts", "await setup(); await cleanup();\n");
+    write(repo, "packages/daemon/test/prose-noise.test.ts", "// run rig up later, then check the seat\n");
+    write(repo, "packages/daemon/test/file-ref.test.ts", "const watched = ['up.ts'];\n");
+    write(repo, "packages/daemon/test/quoted.test.ts", 'const route = "up";\n');
+    write(repo, "packages/daemon/test/path-seg.test.ts", "const src = readFileSync(join(SRC, 'routes/up'));\n");
+    write(repo, "packages/daemon/test/hyphen-sub.test.ts", "const names = ['queue-worker-pool'];\n");
+    write(repo, "packages/daemon/test/long-sub.test.ts", "class FakeOrchestratorLike { orchestratorId = 1 }\n");
+    commit(repo, "fixtures");
+    git(repo, "branch", "-f", "main");
+    write(repo, "packages/daemon/src/up.ts", "export const up = 2;\n");
+    write(repo, "packages/daemon/src/queue-worker.ts", "export const w = 2;\n");
+    write(repo, "packages/daemon/src/orchestrator.ts", "export const o = 2;\n");
+    commit(repo, "change three files");
+    const changed = ["packages/daemon/src/up.ts", "packages/daemon/src/queue-worker.ts", "packages/daemon/src/orchestrator.ts"];
+    const picked = await selectReach({ repo, mergeBase: git(repo, "rev-parse", "main"), changed, packageName: "daemon", listChanged: async () => [] });
+    assert.deepEqual(picked.viaNamesOnly, ["test/file-ref.test.ts", "test/hyphen-sub.test.ts", "test/long-sub.test.ts", "test/path-seg.test.ts", "test/quoted.test.ts"]);
+  });
+});
+
+test("namesStem: the rule for one stem", () => {
+  assert.equal(namesStem("await setup();", "up"), false);
+  assert.equal(namesStem("// run rig up later", "up"), false);
+  assert.equal(namesStem("const seat = { seat: 'a' };", "seat"), false, "an object key and an identifier are not the file");
+  assert.equal(namesStem("vi.mock('../src/seat.js')", "seat"), true);
+  assert.equal(namesStem("['seat.ts', 'up.ts']", "up"), true);
+  assert.equal(namesStem('readFileSync("hexagonal-baseline.txt")', "hexagonal-baseline"), true);
+  assert.equal(namesStem("const s = `seat`;", "seat"), true);
+  assert.equal(namesStem("join(SRC, 'routes/seat')", "seat"), true);
+  assert.equal(namesStem("routes/seat-handover", "seat"), false, "a longer name's path segment is not this file");
+  assert.equal(namesStem("a node-launcherish helper", "node-launcher"), true, "a hyphenated stem keeps the substring match");
+  assert.equal(namesStem("the pi-shell probe", "pi-sh"), true, "a short hyphenated stem keeps the substring match too");
+  assert.equal(namesStem("const dir = SRC + '/routes/seat/index';", "seat"), true, "a path segment followed by another segment");
+  assert.equal(namesStem("orchestratorId", "orchestrator"), true, "a stem of 10 or more characters keeps the substring match");
+  assert.equal(namesStem("const f = 'backup.ts';", "up"), false, "another file whose name ends in the stem is not this file");
+  assert.equal(namesStem("tenletters inside", "tenletter"), false, "nine characters: still short");
+  assert.equal(namesStem("tenletters inside", "tenletters"), true, "ten characters: substring");
+  assert.equal(namesStem("x = 1", "a+b"), false, "a stem's regex characters are literal");
+  assert.equal(namesStem("const f = 'a+b.ts';", "a+b"), true);
 });
 
 // workspaces-o9o.83: a census test reads source as text and counts calls by name (OF-235's kill-site census greps

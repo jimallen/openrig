@@ -175,13 +175,22 @@ node scripts/gate-tiers.mjs --tier 3 --base main -- <your slot or lock wrapper> 
 node scripts/gate-tiers.mjs --tier 2 --base main --list    # print the tier-2 selection only
 ```
 
-**How tier 2 picks tests.** It takes the union of three sets, per package: what `vitest list --changed <merge
-base>` reaches through the import graph; the test files that contain the name (without extension) of any changed
-file other than a test; and the changed test files themselves. The name match is there because census, guard and
-process-spawning tests read source as text or start it as a process, so no import edge leads to them. Measured on one
-diff to `pi-runner.ts`: the import graph reached 714 of the daemon's 1378 test files, and the name match found 8 more
-that it missed. A diff to three plugin-vendor files reached 51. Reach depends on which hub modules a diff touches, and
-it is an estimate, not a proof: run tier 3 before review. `--list` prints the selection and needs neither a clean
+**How tier 2 picks tests.** It takes the union of four sets, per package: what `vitest list --changed <merge
+base>` reaches through the import graph; the test files that name a changed file other than a test; the changed test
+files themselves; and the test files that scan source for a method the diff newly calls. The name match is there
+because census, guard and process-spawning tests read source as text or start it as a process, so no import edge leads
+to them. A name (the file's name without extension) that has a hyphen or 10 or more characters matches anywhere in a
+test file; a shorter one counts only as a file reference (`up.ts`, `hexagonal-baseline.txt`), a quoted name (`"up"`)
+or a path segment (`routes/up`), because a short common word as a substring selected most of the package (`up` matched
+1133 daemon test files, `seat` 825). The call match (workspaces-o9o.83) reads each test's own source-scanning patterns
+(`\.(killSession|respawnPane)\(`, or a quoted `".name("`), and, in a test that reads source, the camelCase names it compares
+(`=== "sendShellCommand"` in an AST census, `.includes("respawnPane")`, a list of names), and selects it when the diff
+adds a `.name(` call in a source file, more often than that file's removed lines had it. A changed `.test.mjs` or
+`.test.js` counts as a test, not as source. Known over-selection, accepted: a `.name(` inside a template string or prose
+in source still counts as a call, so tier 2 may run a census more often than it needs to. Measured on one diff to `pi-runner.ts`: the import graph reached
+714 of the daemon's 1378 test files, and the name match found 8 more that it missed. A diff to three plugin-vendor
+files reached 51. Tier 2 is an estimate of what a diff reaches, not a proof: a test that depends on a change in a way
+none of the four sets sees is not run. Tier 3 runs everything; run it before review. `--list` prints the selection and needs neither a clean
 tree nor a receipt, so a mutation battery can take its file list from it.
 
 **Receipts.** Each run writes `tier-<n>.json` for `HEAD` under `<git common dir>/openrig-gate-tiers/<sha>/` (override

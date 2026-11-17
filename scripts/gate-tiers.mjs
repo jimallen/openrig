@@ -312,6 +312,21 @@ export function scannedCallNames(text) {
   return names;
 }
 
+// workspaces-o9o.86: the name match (b) took any substring of a test file, so a short, common-word stem selected most of
+// a package. Measured on four real diffs: "up" matched 1133 daemon test files, "seat" 825, "add" 738, "help" 627. A short
+// stem without a hyphen (under 10 characters) now counts only where it names the file: a file reference (up.ts, up.js,
+// hexagonal-baseline.txt), a quoted name ("up") or a path segment (routes/up). A hyphenated or longer stem is specific
+// enough to keep the substring match. On the same diffs (917, 922, 43, 1241 files) this selects 546, 573, 42 and 206;
+// every dropped file sampled was a substring inside another word, an object key or prose. Tier 3 still runs everything.
+const SPECIFIC_STEM_LENGTH = 10;
+
+/** Does this test text name the file whose stem (name without extension) is `stem`? */
+export function namesStem(text, stem) {
+  if (stem.includes("-") || stem.length >= SPECIFIC_STEM_LENGTH) return text.includes(stem);
+  const name = stem.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&");
+  return new RegExp(`(?<![\\w-])${name}(?:\\.[A-Za-z0-9]+\\b|["'\`])|/${name}(?![\\w-])`).test(text);
+}
+
 function stemOf(path) {
   return basename(path).replace(/\.[^.]+$/, "");
 }
@@ -331,7 +346,7 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
   const viaCalls = new Set();
   for (const file of testFiles) {
     const text = readFileSync(file, "utf8");
-    if (stems.some((stem) => text.includes(stem))) viaNames.add(relative(packageDir, file));
+    if (stems.some((stem) => namesStem(text, stem))) viaNames.add(relative(packageDir, file));
     if (newCalls.length > 0) {
       const scanned = scannedCallNames(text);
       if (newCalls.some((name) => scanned.has(name))) viaCalls.add(relative(packageDir, file));
