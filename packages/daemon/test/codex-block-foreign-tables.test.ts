@@ -80,6 +80,14 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     expect(inside).not.toContain("notify-send");
   });
 
+  it("a person's own hooks group for another event that runs the same relay is theirs, not OpenRig's: kept", async () => {
+    blockLast();
+    const ownGroup = ["[[hooks.PreToolUse]]", "[[hooks.PreToolUse.hooks]]", 'type = "command"', `command = 'node "${RELAY_ASSET}"'`].join("\n");
+    appendInsideBlock(ownGroup);
+    adapter().ensureCodexActivityHooks();
+    expect(split(config()).outside).toContain(ownGroup);
+  });
+
   it("OpenRig's own stanzas are never kept as foreign: after an upsert the file has exactly its four, inside the block", () => {
     blockLast();
     appendInsideBlock(PLUGIN_TABLES);
