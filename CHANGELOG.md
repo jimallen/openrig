@@ -15,6 +15,8 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: since the generation record is served redacted (workspaces-o9o.60), `rig walk` accepted a record whose text equalled the piece once redacted. A different message holding a different secret redacts to the same text, so it could confirm, and close the turn of, a piece that was never consumed.
 - Now each suffix read sends `pieceSha256`, the sha256 of the piece's canonical text. The daemon hashes each user message's raw text and marks the one that matches with `"openrigPieceMatch": true`; it removes any such field the record already carried, and it never serves a digest. When the daemon answers `pieceMatching: true`, walk counts only a marked record as the piece. An older daemon does not answer that, so walk keeps the text rule there.
 - Not a served digest: since workspaces-o9o.48 a short UPPER_SNAKE value (`DB_PASSWORD=hunter2`) is redacted, and a raw digest served next to the rest of the message would let anyone hash guesses offline until one matched. The match runs on the daemon, one yes or no per authenticated request, for a whole message the caller must already know.
+- The piece is the first matching user message after walk's snapshot, and only that message's own turn can close it. A later message with the same text (the daemon marks it too) closing its turn does not close the piece's.
+- Known limit: the daemon marks every message whose raw text matches, so a caller learns how many times its own message was sent within the window. It already knows the whole message.
 
 ### `rig doctor` checks a host before its first launch (workspaces-o9o.11)
 

@@ -41,6 +41,10 @@ export function analyzeWalkSuffix(suffix: string, content: string, opts: { serve
     && !(Array.isArray(rec.message.content) && rec.message.content.some(b => b?.type === "tool_result"));
   let activeTurn: string | undefined;
   let matchedTurn: string | undefined;
+  // workspaces-o9o.82 (verify-sec review): the piece is the FIRST record after the snapshot that is the piece, and only that record's own
+  // turn can close it. Two user records of identical text (both marked by the daemon) are two messages; a later one closing its turn says
+  // nothing about the piece's.
+  let bound = false;
   for (const line of suffix.split("\n").slice(0, -1)) { // unfinished appends are not evidence
     let rec: Record;
     try { rec = JSON.parse(line); } catch { continue; }
@@ -52,7 +56,8 @@ export function analyzeWalkSuffix(suffix: string, content: string, opts: { serve
     }
     if (rec.type === "turn_context" && activeTurn !== p?.turn_id) activeTurn = undefined;
     if (rec.type === "response_item" && p?.type === "message" && p.role === "user"
-      && isPieceRecord(rec, canonical(textOf(p.content)))) {
+      && !bound && isPieceRecord(rec, canonical(textOf(p.content)))) {
+      bound = true;
       consumed = true;
       matchedTurn = activeTurn;
     }
@@ -61,7 +66,8 @@ export function analyzeWalkSuffix(suffix: string, content: string, opts: { serve
       if (p.turn_id === activeTurn) activeTurn = undefined;
     }
     if (typeof rec.uuid === "string") claudeRecords.set(rec.uuid, rec);
-    if (isPrompt(rec) && isPieceRecord(rec, canonical(textOf(rec.message?.content)))) {
+    if (isPrompt(rec) && !bound && isPieceRecord(rec, canonical(textOf(rec.message?.content)))) {
+      bound = true;
       consumed = true;
       if (typeof rec.uuid === "string") matchedInputs.add(rec.uuid);
     }
