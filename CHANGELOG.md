@@ -21,6 +21,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: `rig send --host <ssh host>` from a shell (not a seat) reached the far seat as `From: <the FAR host's operator_seat_name>`. The ssh transport runs `rig send` again on the far host, and that CLI, finding no seat identity, used its own host's operator name. Measured on two real daemons with an ssh stand-in.
 - Now the relay sets `OPENRIG_ORIGIN_HOST_ID` (this host's own id) and `OPENRIG_ORIGIN_SHELL_LABEL` (the shell's own `workspace.operator_seat_name`, when set) on the far command line. The far `rig send` labels the envelope with that label and states the origin to its daemon, as the http transport does. The far seat then sees `From: <label> (a shell on <host>)` and that no rig address answers a shell, as with http (workspaces-o9o.16).
 - Unchanged: a seat's send over ssh (it carries its seat identity), raw sends, and http hosts. A far host on an older release ignores the two variables and labels as before.
+
 ### `rig walk` confirms a piece by its raw text, not by how it redacts (workspaces-o9o.82)
 
 - Symptom: since the generation record is served redacted (workspaces-o9o.60), `rig walk` accepted a record whose text equalled the piece once redacted. A different message holding a different secret redacts to the same text, so it could confirm, and close the turn of, a piece that was never consumed.
