@@ -27,8 +27,9 @@ const inside = (outer: string, inner: string): boolean => {
 /**
  * Remove from `targetDir` (a seat's plugin copy, inside `cwd`) every file OpenRig recorded writing there that is not in
  * `wanted` (the absolute paths this projection just wrote or confirmed). Returns warnings for what it kept and why.
- * Residual (as in o9o.17, accepted by Jim 2026-11-16): a component swapped for a link between the lstat walk and the
- * unlink; that needs a concurrent same-user writer inside the seat folder.
+ * Residual, the one o9o.17 accepted on 2026-11-16 by OpenRig's 15-minute auto-answer (its Recommended option, queue
+ * record qa-f5c084b1679e94516e44aff1e88a8361; under Jim's 2026-11-08 rule that is his go): a component swapped for a
+ * link between the lstat walk and the unlink; that needs a concurrent same-user writer inside the seat folder.
  */
 export function pruneDroppedPluginFiles(input: {
   cwd: string;
