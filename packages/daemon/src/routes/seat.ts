@@ -209,8 +209,9 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     // promoted rung authority. Optional in the deps contract; ALWAYS wired here.
     activityOracle: (c.get("seatActivityService" as never) as import("../domain/seat-activity-service.js").SeatActivityService | undefined) ?? undefined,
     // workspaces-o9o.93: the successor replaces the live retiree, so the seat's leases and the agent's children are judged as a fresh launch
-    // that stops it judges them: the same service, with the same lease store, process lister and per-seat settings.
-    replacementChecks: seatLifecycleService(c),
+    // that stops it judges them: the same service, with the same lease store, process lister and per-seat settings. Built only when the
+    // handover asks, so a handover that judges nothing (discovered, a refused request) never constructs it.
+    replacementChecks: { judgeReplacement: (input) => seatLifecycleService(c).judgeReplacement(input) },
   });
   // The same rule as launch: a list of check names, or 400 before the service is asked.
   const despite = despiteOf(body);
