@@ -14,6 +14,17 @@ import { findIgnoredVendoredPlugins } from "@openrig/daemon/vendored-plugin-conf
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
 import { classifyNodeVersion } from "../node-support.js";
 import { checkProviderReadiness } from "../provider-auth.js";
+import {
+  SEAT_SHELL_NOTE,
+  daemonHostRows,
+  gitTemplateCheck,
+  inotifyHeadroomCheck,
+  piOperatorLoginCheck,
+  remoteHostsCheck,
+  runtimesInSpec,
+  type LocalHostFacts,
+} from "../host-readiness.js";
+import { realLocalHostFacts } from "../host-readiness-facts.js";
 
 interface DoctorCheck {
   name: string;
@@ -51,6 +62,34 @@ export interface DoctorDeps {
   readHcHello?: () => Promise<HcHelloOutcome>;
   /** The daemon's vendored plugins folder (default: OPENRIG_HOME/plugins). */
   pluginsDir?: string;
+  /** workspaces-o9o.11: this machine's reads for the host rows (default: the real ones). */
+  localHostFacts?: LocalHostFacts;
+  /** workspaces-o9o.11: ask the daemon for its host rows; null when it cannot be reached. */
+  fetchHostRows?: (input: { seatShell: boolean; runtimes: string[] | null }) => Promise<{ status: number; rows: DoctorCheck[] | null } | null>;
+}
+
+/**
+ * workspaces-o9o.11: the host section, checked before a host's first launch. It is separate from runDoctorChecks
+ * because `rig setup` runs those too, and setup must not start a probe shell. Reads and reports; fixes nothing.
+ */
+export async function runHostReadinessChecks(deps: DoctorDeps, options: { seatShell: boolean }): Promise<DoctorCheck[]> {
+  const facts = deps.localHostFacts ?? realLocalHostFacts();
+  let runtimes: string[] | null = null;
+  if (deps.specPath) {
+    const raw = deps.readFile(deps.specPath);
+    if (raw !== null) {
+      try { runtimes = runtimesInSpec(parseYaml(raw)); } catch { runtimes = null; }
+    }
+  }
+  const config = deps.configStore.resolve() as { pi?: { operatorLoginDir?: string } };
+  const local: DoctorCheck[] = [
+    piOperatorLoginCheck(config.pi?.operatorLoginDir, runtimes === null ? null : runtimes.includes("pi"), facts),
+    inotifyHeadroomCheck(facts),
+    gitTemplateCheck(facts),
+    remoteHostsCheck(facts),
+  ];
+  const response = deps.fetchHostRows ? await deps.fetchHostRows({ seatShell: options.seatShell, runtimes }) : null;
+  return [...daemonHostRows(response, options.seatShell), ...local];
 }
 
 const DEFAULT_PORT = 7433;
@@ -297,13 +336,14 @@ async function buildSpecConformanceCheck(deps: DoctorDeps): Promise<DoctorCheck>
 
 export function doctorCommand(depsOverride?: DoctorDeps): Command {
   const cmd = new Command("doctor")
-    .description("Check installation, provider authentication, writable paths, port/daemon and the hc core")
-    .addHelpText("after", "\nWith --spec, compares declared and live topology. This is not an end-to-end readiness check.\nReports Claude and Codex authentication using setup's checks, including configured Codex credential variables. No agent task or provider request is tested.\nInspect your team with rig ps --nodes --rig <rig> and rig capture <seat> --lines 30.");
+    .description("Check installation, provider authentication, writable paths, port/daemon, the hc core, and this host before a first launch")
+    .addHelpText("after", "\nWith --spec, compares declared and live topology. This is not an end-to-end readiness check.\nReports Claude and Codex authentication using setup's checks, including configured Codex credential variables. No agent task or provider request is tested.\nInspect your team with rig ps --nodes --rig <rig> and rig capture <seat> --lines 30.\nThe host rows check this machine before a first launch: a seat's login shell and the runtimes it finds (seat_shell, seat_runtime_*), the spec folders, the Pi operator login, inotify headroom, the git template and the registered remote hosts. seat_shell starts one login shell the way a seat launch does, so your login profile runs once; --no-seat-shell skips it. Nothing is changed: each problem row names its fix.");
 
   cmd
     .option("--json", "JSON output for agents")
     .option("--spec <path>", "Rig spec to check against the running rig of the same name (spec-vs-live topology)")
-    .action(async (opts: { json?: boolean; spec?: string }) => {
+    .option("--no-seat-shell", "Skip the host check that starts one login shell the way a seat launch does")
+    .action(async (opts: { json?: boolean; spec?: string; seatShell?: boolean }) => {
       const deps: DoctorDeps = depsOverride ?? {
         exists: existsSync,
         baseDir: import.meta.dirname,
@@ -316,6 +356,21 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         specPath: opts.spec ? path.resolve(opts.spec) : undefined,
         // Returns null on ANY failure to read the live side. The conformance check treats null as
         // "unknown" and skips — an unreachable daemon must never read as a matching topology.
+        fetchHostRows: async (input) => {
+          try {
+            const cfg = new ConfigStore().resolve();
+            const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
+            const res = await fetch(`${base}/api/doctor/host`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ seatShell: input.seatShell, ...(input.runtimes ? { runtimes: input.runtimes } : {}) }),
+            });
+            const body = res.ok ? (await res.json()) as { rows?: DoctorCheck[] } : null;
+            return { status: res.status, rows: Array.isArray(body?.rows) ? body!.rows : null };
+          } catch {
+            return null;
+          }
+        },
         fetchLiveLogicalIds: async (rigName: string): Promise<string[] | null> => {
           try {
             const cfg = new ConfigStore().resolve();
@@ -342,11 +397,14 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
       });
       const { checks, asyncChecks } = runDoctorChecks(deps, providerChecks);
       const resolvedAsync = await Promise.all(asyncChecks);
-      const allChecks = [...checks, ...resolvedAsync];
+      const seatShell = opts.seatShell !== false;
+      const hostChecks = await runHostReadinessChecks(deps, { seatShell });
+      const allChecks = [...checks, ...resolvedAsync, ...hostChecks];
+      const seatShellRan = seatShell && hostChecks.some((c) => c.name === "seat_shell" && c.status !== "skipped");
       const healthy = allChecks.every((c) => c.status !== "fail");
 
       if (opts.json) {
-        console.log(JSON.stringify({ healthy, checks: allChecks }, null, 2));
+        console.log(JSON.stringify({ healthy, checks: allChecks, ...(seatShellRan ? { note: SEAT_SHELL_NOTE } : {}) }, null, 2));
         if (!healthy) process.exitCode = 1;
         return;
       }
@@ -364,6 +422,7 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
       console.log("Only the harnesses selected for your project need a login; an unused harness does not.");
       console.log("A credential variable being set does not prove the provider accepts it or that managed seats receive it.");
       console.log("Inspect your team with `rig ps --nodes --rig <rig>` and `rig capture <seat> --lines 30`.");
+      if (seatShellRan) console.log(SEAT_SHELL_NOTE);
       if (!healthy) process.exitCode = 1;
     });
 

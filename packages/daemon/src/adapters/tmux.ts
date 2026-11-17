@@ -402,7 +402,7 @@ export class TmuxAdapter {
   private readonly freshProbes = new Map<string, string>();
   private readonly freshManaged = new Map<string, {nodeId: string; pane: string}>();
 
-  /** Only the private metadata probe uses this door. Success proves allocation,
+  /** Only the private probes use this door: the metadata probe and `rig doctor`'s seat-shell probe. Success proves allocation,
    * never authority over a pre-existing or registry-managed target. */
   async createProbeSession(name: string, cwd?: string): Promise<TmuxResult> {
     if (this.deliveryGuard?.maybeTarget(name)) return { ok: false, code: "guard_target_managed", message: "A probe cannot reuse a managed seat." };

@@ -582,6 +582,18 @@
   "when": "!findHc()"
  },
  {
+  "file": "packages/daemon/test/host-readiness.real.test.ts",
+  "kind": "skipIf",
+  "task": "rig doctor's seat-shell probe on a real login shell (real tmux)",
+  "when": "!HAS_TMUX || process.platform === \"win32\""
+ },
+ {
+  "file": "packages/daemon/test/host-readiness.real.test.ts",
+  "kind": "skipIf",
+  "task": "the seat PATH comes from an interactive login zsh, .zshrc included (real tmux)",
+  "when": "!HAS_TMUX || !HAS_ZSH || process.platform === \"win32\""
+ },
+ {
   "file": "packages/daemon/test/keep-capture-on-kill-failure.test.ts",
   "kind": "skipIf",
   "task": "hc failed-kill transcript continuity",

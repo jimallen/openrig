@@ -26,7 +26,12 @@ rig doctor --json
 Use the installed command's `--help` if an option is unavailable. Read the diagnostic findings; don't treat them as
 instructions to reset the machine. `rig doctor` checks Claude and Codex authentication using the same local checks
 as setup, including a configured Codex provider credential variable. A set variable does not prove that the provider accepts it or that managed
-seats receive it. Doctor does not run an agent task: also inspect `rig ps --nodes --rig <rig>`. If the daemon is involved, `rig daemon status` and `rig daemon logs` show its state
+seats receive it. Doctor does not run an agent task: also inspect `rig ps --nodes --rig <rig>`.
+Its host rows check the machine before a first launch: a login shell started the way a seat's is (does it run a typed
+command, or does something in the login profile wait for an answer first?), the program each runtime runs there against
+the daemon's PATH, the spec folders, `pi.operator_login_dir`, inotify headroom, the git template and the registered
+remote hosts. The shell check runs your login profile once, as a seat launch does; `--no-seat-shell` skips it. Doctor
+changes nothing: each problem row names its fix. If the daemon is involved, `rig daemon status` and `rig daemon logs` show its state
 and recent output.
 
 **If OpenRig won't install or `rig` won't run, start here anyway.** Record the attempted package version, install

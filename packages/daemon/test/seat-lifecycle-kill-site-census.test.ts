@@ -31,6 +31,7 @@ const CENSUS: Record<string, { calls: number; entries: string[]; note: string }>
   "domain/seat-restart-in-place.ts": { calls: 2, note: "the in-place restart's two respawns, entered from seat-lifecycle-service restartInPlace", entries: [] },
   "domain/successor-session-launcher.ts": { calls: 1, note: "the handover successor's respawn, entered from seat-handover-service", entries: [] },
   "domain/resume-metadata-refresher.ts": { calls: 1, note: "the metadata probe's own terminal (a probe label, never a seat)", entries: [] },
+  "domain/host-readiness.ts": { calls: 1, note: "rig doctor's seat-shell probe terminal (workspaces-o9o.11; a probe label, never a seat)", entries: [] },
 };
 /** Entries that live in a caller's file, not the file that holds the call. */
 const CALLER_ENTRIES: Array<[file: string, text: string]> = [

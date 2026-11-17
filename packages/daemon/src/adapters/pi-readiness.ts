@@ -18,8 +18,8 @@ export function piVersionNotice(output: string, probed: { seatExecutable?: strin
   return difference < 0
     ? `Pi version ${version} is older than OpenRig's tested baseline ${TESTED_PI_VERSION}; compatibility is unverified and launch continues. Update with 'npm install -g @earendil-works/pi-coding-agent', then check 'command -v pi' in the pane's shell.`
     : probed.seatExecutable !== undefined
-      // workspaces-o9o.65: what a non-interactive login shell resolves, and no more (its profile may or may not source .bashrc or .zshrc).
-      ? `Pi ${version} at ${probed.seatExecutable}, as a non-interactive login shell resolves it (a seat's interactive shell may also load startup files such as .zshrc or .bashrc, and resolve another); this does not verify provider access. Credentials are checked for the managed seat before Pi starts.`
+      // workspaces-o9o.65, reconciled in o9o.11: the PATH comes from a login shell started the way a seat's terminal is (interactive, on a pty).
+      ? `Pi ${version} at ${probed.seatExecutable}, as a login shell started the way a seat's is resolves it; this does not verify provider access. Credentials are checked for the managed seat before Pi starts.`
       : `Pi version ${version} answered on the daemon's PATH; this does not verify the pane's executable or provider access. Credentials are checked for the managed seat before Pi starts.`;
 }
 

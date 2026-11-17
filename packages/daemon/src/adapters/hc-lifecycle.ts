@@ -348,7 +348,7 @@ export class HcLifecycle {
     }
   }
 
-  /** The metadata probe's private terminal: a login shell under the probe's own name, labelled as a probe and never as
+  /** A private probe's terminal (the metadata probe, `rig doctor`'s seat-shell probe): a login shell under the probe's own name, labelled as a probe and never as
    *  a seat. It cannot reuse a live terminal of that name (`name_taken`, atomic) or a managed seat's name. Remove it
    *  with killSession. */
   async createProbeSession(name: string, cwd?: string): Promise<TmuxResult> {

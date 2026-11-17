@@ -1,4 +1,5 @@
 import { healthDiagnosisRoutes } from "./routes/health-diagnosis.js";
+import { hostReadinessRoutes } from "./routes/host-readiness.js";
 import type { HealthDiagnosisService } from "./domain/health-diagnosis.js";
 import type { HealthPolicyStore } from "./domain/health-policy.js";
 import type { HealthCheckpointSource } from "./domain/health-checkpoints.js";
@@ -345,6 +346,8 @@ export interface AppDeps {
   /** 0.5.10 S04 — one on-demand, read-only health projection shared by consumers. */
   healthProjection?: import("./domain/health-detectors.js").HealthProjectionService;
   healthDiagnosis?: HealthDiagnosisService;
+  /** workspaces-o9o.11: the host rows of `rig doctor` (a seat-shaped probe shell, runtime paths, spec folders). */
+  hostReadiness?: import("./domain/host-readiness.js").HostReadinessService;
   healthPolicy?: HealthPolicyStore;
   healthCheckpoints?: HealthCheckpointSource;
   contextMonitor?: { pollOnce(): Promise<void> };
@@ -619,6 +622,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("seatLeases" as never, deps.seatLeases);
     c.set("healthProjection" as never, deps.healthProjection);
     c.set("healthDiagnosis" as never, deps.healthDiagnosis);
+    c.set("hostReadiness" as never, deps.hostReadiness);
     c.set("healthPolicy" as never, deps.healthPolicy);
     c.set("healthCheckpoints" as never, deps.healthCheckpoints);
     c.set("contextMonitor" as never, deps.contextMonitor);
@@ -850,6 +854,7 @@ export function createApp(deps: CreateAppDeps): Hono {
   app.route("/api/health", healthRoutes());
   app.route("/api/attention", attentionRoutes());
   app.route("/api/health-diagnosis", healthDiagnosisRoutes());
+  app.route("/api/doctor/host", hostReadinessRoutes());
   // S10 — gateway subsystem admin (slack enable/disable with the seeding rule preserved).
   app.route("/api/gateway", gatewayRoutes());
   app.route("/api/rigs/:rigId/env", envRoutes());

@@ -1,57 +1,63 @@
-// workspaces-o9o.65 — which runtime executable a seat will launch, and its version, as the seat sees it.
+// workspaces-o9o.65, reconciled in workspaces-o9o.11 — which runtime executable a seat will launch, and its version, as the seat
+// sees it. ONE mechanism, used by spec preflight's Pi notice and by `rig doctor`'s runtime rows.
 //
-// The relaunch preview used to run `pi --version` on the DAEMON's PATH, while a seat's Pi runner resolves `pi` on the PATH of
-// the seat's terminal: the daemon's SHELL run as a login shell (hc-host createSession), whose profile can put another
-// directory first. On sparky (2026-11-16) the daemon found ~/.local/bin/pi (1.5.0) and every seat ran ~/.pi/agent/bin/pi (1.4.0),
-// so the preview named a Pi no seat ran. This asks that SHELL as a login shell for its PATH, resolves the name the way the runner does
-// (resolveRuntimeExecutable: first executable on PATH, then its real path, through a mise shim), and runs that file's --version.
-// Limit (build-arch, measured): `-l -c` is a NON-interactive login shell. A seat's terminal is an interactive login shell on a
-// pty, which may also load startup files such as .zshrc or .bashrc, so a PATH set only there (oh-my-zsh, brew, mise) may not be seen.
-// workspaces-o9o.11 replaces this with a probe terminal; until then the notice says exactly what was measured.
+// The relaunch preview used to run `pi --version` on the DAEMON's PATH, while a seat's Pi runner resolves `pi` on the PATH of the
+// seat's terminal. On sparky (2026-11-16) the daemon found ~/.local/bin/pi (1.5.0) and every seat ran ~/.pi/agent/bin/pi (1.4.0).
+// o9o.65 asked `$SHELL -l -c` for that PATH; that is a NON-interactive login shell, which skips .zshrc and .bashrc (measured by
+// build-arch: a PATH entry set in .zshrc is missing there and present in an interactive login shell on a pty). A seat's terminal
+// is an interactive login shell, so the PATH now comes from a `SeatPathSource`: in the daemon, the probe terminal of
+// HostReadinessService (a login shell started the way a seat's is). This module only resolves a name on a given PATH, the way the
+// runner does (resolveRuntimeExecutable: first executable on PATH, then its real path, through a mise shim), and runs that file's
+// --version.
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { seatEnvironment } from "./hc-seat.js";
 import { resolveRuntimeExecutable } from "./pi-runner.js";
 import type { SeatRuntimeProbe } from "../domain/rigspec-preflight.js";
 
 export type ProbeRun = (file: string, args: string[], env: Record<string, string>, timeoutMs: number) => Promise<string>;
 
+/** A seat's PATH. Rejects (never guesses) when it cannot be read; the error's message says why. */
+export type SeatPathSource = () => Promise<string>;
+
 const run: ProbeRun = (file, args, env, timeoutMs) => new Promise((resolve, reject) => {
   execFile(file, args, { env, timeout: timeoutMs, encoding: "utf8", maxBuffer: 1024 * 1024 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
 });
 
-/** A probe that asks the daemon's SHELL (default /bin/sh) as a NON-interactive login shell (`-l -c`), with the
- *  environment hc-host gives a seat terminal (seatEnvironment). Bounded: each step stops at `timeoutMs`. */
-/** The PATH between two lines holding exactly `marker`; throws when there is no such frame (it is never guessed). */
-function framedPath(output: string, marker: string): string {
-  const lines = output.split("\n");
-  const start = lines.indexOf(marker);
-  const end = start < 0 ? -1 : lines.indexOf(marker, start + 1);
-  if (start < 0 || end !== start + 2) {
-    throw Object.assign(new Error("could not read the PATH of a non-interactive login shell (no framed answer)"), { code: "EPROTO" });
-  }
-  return lines[start + 1]!;
+function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) if (typeof value === "string") out[key] = value;
+  return out;
 }
 
-export function seatRuntimeProbe(opts: { daemonEnv?: NodeJS.ProcessEnv; run?: ProbeRun; timeoutMs?: number } = {}): SeatRuntimeProbe {
-  const daemon = opts.daemonEnv ?? process.env;
+/** Resolve on the PATH `pathSource` gives, in `env`, and run --version. `where` names that PATH in a not-found error. */
+export function runtimeProbeOnPath(pathSource: SeatPathSource, opts: { env: Record<string, string>; where: string; run?: ProbeRun; timeoutMs?: number }): SeatRuntimeProbe {
   const exec = opts.run ?? run;
   const timeoutMs = opts.timeoutMs ?? 10_000;
   return async (name) => {
-    const seat = seatEnvironment({}, daemon);
-    const shell = daemon["SHELL"] || "/bin/sh";
-    // The PATH is framed by a nonce made for this run, and only what lies between the two markers is read: a profile may print
-    // at login (review of 181a21d4c: "profile startup noise" became part of the first PATH entry, and the probe found the
-    // daemon's Pi). No framed answer is unknown, never a guess.
-    const marker = `openrig-path-${randomBytes(12).toString("hex")}`;
-    const argv = [...seat.unset.flatMap((key) => ["-u", key]), shell, "-l", "-c", `printf '\\n%s\\n%s\\n%s\\n' '${marker}' "$PATH" '${marker}'`];
-    const seatPath = framedPath(await exec("env", argv, seat.env, timeoutMs), marker);
-    const env = { ...seat.env, PATH: seatPath };
+    let path: string;
+    try {
+      path = await pathSource();
+    } catch (err) {
+      throw Object.assign(new Error(`the PATH of ${opts.where} could not be read (${(err as Error).message})`), { code: "EPROTO" });
+    }
+    const env = { ...opts.env, PATH: path };
     const resolved = resolveRuntimeExecutable(name, env);
     if (!resolved.ok) {
-      // Bounded: the seat's PATH is not echoed (runtimeProbeFailure's rule for a probe's output).
-      throw Object.assign(new Error(`'${name}' is not on the PATH of a non-interactive login shell`), { code: "ENOENT" });
+      // Bounded: the PATH is not echoed (runtimeProbeFailure's rule for a probe's output).
+      throw Object.assign(new Error(`'${name}' is not on the PATH of ${opts.where}`), { code: "ENOENT" });
     }
     return { path: resolved.path, output: await exec(resolved.path, ["--version"], env, timeoutMs) };
   };
+}
+
+/** The runtime a seat launches: its terminal's PATH from `seatPath`, in the environment hc-host gives a seat terminal. */
+export function seatRuntimeProbe(opts: { seatPath: SeatPathSource; daemonEnv?: NodeJS.ProcessEnv; run?: ProbeRun; timeoutMs?: number }): SeatRuntimeProbe {
+  const seat = seatEnvironment({}, opts.daemonEnv ?? process.env);
+  return runtimeProbeOnPath(opts.seatPath, { env: seat.env, where: "a seat's login shell", ...(opts.run ? { run: opts.run } : {}), ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}) });
+}
+
+/** The runtime the daemon's own checks see: the daemon's PATH, in the daemon's environment. */
+export function daemonRuntimeProbe(opts: { daemonEnv?: NodeJS.ProcessEnv; run?: ProbeRun; timeoutMs?: number } = {}): SeatRuntimeProbe {
+  const env = stringEnv(opts.daemonEnv ?? process.env);
+  return runtimeProbeOnPath(async () => env["PATH"] ?? "", { env, where: "the daemon", ...(opts.run ? { run: opts.run } : {}), ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}) });
 }

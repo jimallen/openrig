@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { verifyPiRuntimeAvailable, type SeatRuntimeProbe } from "../src/domain/rigspec-preflight.js";
+import { verifyPiRuntimeAvailable } from "../src/domain/rigspec-preflight.js";
 import { execPreflightCommand } from "../src/adapters/preflight-exec.js";
+import { daemonRuntimeProbe, seatRuntimeProbe } from "../src/adapters/seat-runtime-probe.js";
 import type { RigSpec as PodRigSpec } from "../src/domain/types.js";
 
-// workspaces-o9o.65. The relaunch preview said "Pi version 1.5.0 answered on the daemon's PATH" (~/.local/bin/pi) while every
-// seat ran ~/.pi/agent/bin/pi 1.4.0: a seat's terminal is the daemon's SHELL as a LOGIN shell, whose profile puts another
-// directory first. Here a fake login shell does the same with two fake Pi executables in a temp dir.
+// workspaces-o9o.65, reconciled in o9o.11. The relaunch preview said "Pi version 1.5.0 answered on the daemon's PATH"
+// (~/.local/bin/pi) while every seat ran ~/.pi/agent/bin/pi 1.4.0: a seat's terminal is a login shell whose startup files put
+// another directory first. The seat's PATH now comes from a SeatPathSource (in the daemon, the probe terminal of rig doctor, a
+// login shell started the way a seat's is; its framing and its real shells are pinned in host-readiness*.test.ts). Here the
+// source is given directly, with two fake Pi executables in a temp dir, so what this file pins is the one resolution rule.
 
 const temps: string[] = [];
 afterEach(() => {
@@ -22,32 +25,17 @@ function executable(file: string, body: string): string {
   return file;
 }
 
-/** A daemon whose PATH finds one Pi, and a login shell whose profile puts another Pi first (or none, with `seatHasPi` false). */
-function host(seatHasPi = true, profileNoise = false): { daemonPi: string; seatPi: string; daemonEnv: NodeJS.ProcessEnv } {
+/** A daemon whose PATH finds one Pi, and a seat PATH that puts another Pi first (or has none, with `seatHasPi` false). Hermetic:
+ *  only the fake folders, so a probe that loses its way lands on the daemon's fake Pi (1.5.0), never on a real Pi on the host. */
+function host(seatHasPi = true): { daemonPi: string; seatPi: string; seatPath: string; daemonEnv: NodeJS.ProcessEnv } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "o9o65-")));
   temps.push(root);
   const daemonPi = executable(path.join(root, "daemon-bin", "pi"), "echo 1.5.0");
   const seatPi = path.join(root, "seat-bin", "pi");
   if (seatHasPi) executable(seatPi, 'echo "pi 1.4.0"');
   else fs.mkdirSync(path.dirname(seatPi), { recursive: true });
-  // A login shell's profile, read only when it runs as a login shell (-l): it puts the seat's directory first, and with no Pi there
-  // leaves the daemon's directory out. Run without -l it keeps the daemon's PATH, so the probe must ask a LOGIN shell.
-  // Hermetic: the fake folders only (the fake shell and the fake Pis call /bin/sh by absolute path), so a probe that loses its way
-  // lands on the daemon's fake Pi (1.5.0), and a seat with no Pi finds none, never a real Pi installed on the host.
   const seatPath = seatHasPi ? `${path.dirname(seatPi)}:${path.dirname(daemonPi)}` : path.dirname(seatPi);
-  const loginShell = executable(path.join(root, "login-shell"),
-    `if [ "$1" = "-l" ]; then shift; ${profileNoise ? 'echo "profile startup noise"; ' : ""}PATH="${seatPath}"; export PATH; fi\nexec /bin/sh "$@"`);
-  return { daemonPi, seatPi, daemonEnv: { ...process.env, PATH: `${path.dirname(daemonPi)}:${process.env["PATH"]}`, SHELL: loginShell } };
-}
-
-/** The probe module is new in this change; loaded dynamically so this file also runs (and fails on the symptom) without it. */
-async function probeFor(daemonEnv: NodeJS.ProcessEnv): Promise<SeatRuntimeProbe | undefined> {
-  try {
-    const mod = await import("../src/adapters/seat-runtime-probe.js");
-    return mod.seatRuntimeProbe({ daemonEnv });
-  } catch {
-    return undefined;
-  }
+  return { daemonPi, seatPi, seatPath, daemonEnv: { PATH: `${path.dirname(daemonPi)}:/usr/bin:/bin`, HOME: root } };
 }
 
 const piSpec: PodRigSpec = {
@@ -56,48 +44,47 @@ const piSpec: PodRigSpec = {
 };
 
 describe("o9o.65: the preview names the Pi a seat will launch", () => {
-  it("the probe answers with the seat's Pi (its path and version), not the daemon's", async () => {
-    const { seatPi, daemonEnv } = host();
-    const probe = await probeFor(daemonEnv);
-    expect(probe, "seat-runtime-probe exists").toBeDefined();
-    expect(await probe!("pi")).toEqual({ path: seatPi, output: "pi 1.4.0\n" });
+  it("the probe answers with the Pi on the seat's PATH (its path and version), not the daemon's", async () => {
+    const { seatPi, seatPath, daemonEnv } = host();
+    const probe = seatRuntimeProbe({ seatPath: async () => seatPath, daemonEnv });
+    expect(await probe("pi")).toEqual({ path: seatPi, output: "pi 1.4.0\n" });
+  });
+
+  it("the daemon-side probe answers with the daemon's Pi, by the same rule", async () => {
+    const { daemonPi, daemonEnv } = host();
+    expect(await daemonRuntimeProbe({ daemonEnv })("pi")).toEqual({ path: daemonPi, output: "1.5.0\n" });
   });
 
   it("the preflight's Pi notice names version 1.4.0 at the seat's executable, where the daemon's PATH would give 1.5.0", async () => {
-    const { seatPi, daemonEnv } = host();
+    const { seatPi, seatPath, daemonEnv } = host();
     vi.stubEnv("PATH", daemonEnv["PATH"]!);
-    vi.stubEnv("SHELL", daemonEnv["SHELL"]!);
     const warnings: string[] = [];
-    const errors = await verifyPiRuntimeAvailable(piSpec, execPreflightCommand, warnings, await probeFor(daemonEnv));
+    const errors = await verifyPiRuntimeAvailable(piSpec, execPreflightCommand, warnings, seatRuntimeProbe({ seatPath: async () => seatPath, daemonEnv }));
     expect(errors).toEqual([]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`Pi 1.4.0 at ${seatPi}, as a non-interactive login shell resolves it`);
+    expect(warnings[0]).toContain(`Pi 1.4.0 at ${seatPi}, as a login shell started the way a seat's is resolves it`);
     expect(warnings[0]).not.toContain("1.5.0");
   });
 
   it("a seat PATH with no Pi says so for the seat's shell, and does not echo the PATH", async () => {
-    const { seatPi, daemonEnv } = host(false);
+    const { seatPi, seatPath, daemonEnv } = host(false);
     vi.stubEnv("PATH", daemonEnv["PATH"]!);
-    vi.stubEnv("SHELL", daemonEnv["SHELL"]!);
     const warnings: string[] = [];
-    const errors = await verifyPiRuntimeAvailable(piSpec, execPreflightCommand, warnings, await probeFor(daemonEnv));
+    const errors = await verifyPiRuntimeAvailable(piSpec, execPreflightCommand, warnings, seatRuntimeProbe({ seatPath: async () => seatPath, daemonEnv }));
     expect(errors).toEqual([]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/not found on the PATH of a non-interactive login shell/);
+    expect(warnings[0]).toMatch(/not found on the PATH of a login shell started the way a seat's is/);
     expect(warnings[0]).not.toContain(path.dirname(seatPi));
   });
 
-  // Review of 181a21d4c (verify-qa): the probe took ALL of the login shell's stdout as PATH, so a profile that prints
-  // corrupted the first component and the probe answered with the daemon's Pi again: the original symptom.
-  it("a profile that prints at login does not redirect the probe to the daemon's Pi", async () => {
-    const { seatPi, daemonEnv } = host(true, true);
-    const probe = await probeFor(daemonEnv);
-    expect(await probe!("pi")).toEqual({ path: seatPi, output: "pi 1.4.0\n" });
-  });
-
-  it("an answer with no PATH between the markers is unknown, never a guess", async () => {
-    const mod = await import("../src/adapters/seat-runtime-probe.js");
-    const probe = mod.seatRuntimeProbe({ daemonEnv: { PATH: "/usr/bin:/bin", SHELL: "/bin/sh" }, run: async () => "/usr/bin:/bin" });
-    await expect(probe("pi")).rejects.toThrow(/could not read the PATH/);
+  it("a seat PATH that cannot be read is unknown, never a guess and never the daemon's Pi", async () => {
+    const { daemonEnv } = host();
+    const probe = seatRuntimeProbe({ seatPath: async () => { throw new Error("the probe shell did not run"); }, daemonEnv });
+    await expect(probe("pi")).rejects.toMatchObject({ code: "EPROTO", message: expect.stringContaining("could not be read (the probe shell did not run)") });
+    const warnings: string[] = [];
+    vi.stubEnv("PATH", daemonEnv["PATH"]!);
+    await verifyPiRuntimeAvailable(piSpec, execPreflightCommand, warnings, probe);
+    expect(warnings[0]).toMatch(/^Pi version unknown/);
+    expect(warnings[0]).not.toContain("1.5.0");
   });
 });

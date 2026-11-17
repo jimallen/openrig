@@ -756,7 +756,7 @@ exit code passes through ([`rsiCommand`](../../packages/cli/src/commands/rsi.ts)
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig doctor` | — | `--json`<br>`--spec <path>` |
+| `rig doctor` | — | `--json`<br>`--spec <path>`<br>`--no-seat-shell` |
 
 ### expand
 

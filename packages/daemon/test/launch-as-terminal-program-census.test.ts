@@ -16,8 +16,10 @@ import ts from "typescript";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
 
-/** The implementation, its delegate and the tmux adapter (which ignores the option: its shell stays above the agent, the deployed shape). */
-const NOT_LAUNCH_SITES = new Set(["adapters/tmux.ts", "adapters/hc-input.ts", "adapters/hc-adapter.ts"]);
+/** The implementation, its delegate and the tmux adapter (which ignores the option: its shell stays above the agent, the deployed shape), and
+ *  `rig doctor`'s seat-shell probe (workspaces-o9o.11), which starts no agent: it types a probe script into a private probe terminal that is
+ *  never a seat (no message is routed to it) and removes that terminal when the probe ends. */
+const NOT_LAUNCH_SITES = new Set(["adapters/tmux.ts", "adapters/hc-input.ts", "adapters/hc-adapter.ts", "domain/host-readiness.ts"]);
 
 type Flags = readonly string[];
 /** Options a launch site passes, as written. A runner is `exec`ed by its script, so the runner is the terminal's own process. A Codex or managed

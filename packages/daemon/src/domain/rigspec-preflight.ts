@@ -8,13 +8,11 @@ import { piVersionNotice } from "../adapters/pi-readiness.js";
 import type { LegacyRigSpec as RigSpec, PreflightResult, RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { deriveSessionName, validateSessionName, validateSessionComponents, VIRTUAL_DOMAIN_TOKENS } from "./session-name.js";
 import { probePresence, type SessionPresence } from "./session-liveness.js";
+import { RUNTIME_BINARIES } from "./host-readiness.js";
 
-const RUNTIME_COMMANDS: Record<string, string> = {
-  "claude-code": "claude --version",
-  "codex": "codex --version",
-  "pi": "pi --version",
-  "omp": "omp --version",
-};
+const RUNTIME_COMMANDS: Record<string, string> = Object.fromEntries(
+  Object.entries(RUNTIME_BINARIES).map(([runtime, binary]) => [runtime, `${binary} --version`]),
+);
 
 /** workspaces-o9o.65: the executable a seat would launch for a runtime name (its real path) and its --version output, found on
  *  the PATH of the seat's own terminal (adapters/seat-runtime-probe.ts). Throws as exec does; `code: "ENOENT"` when not found. */
@@ -554,7 +552,7 @@ function piAvailabilityFailure(err: unknown, warnings: string[], onSeatPath = fa
   const detail = runtimeProbeFailure(err);
   if (detail === "ENOENT" || detail.includes("executable not found on PATH")) {
     warnings.push(onSeatPath
-      ? `Pi was not found on the PATH of a non-interactive login shell (${detail}); a seat's interactive shell may still find it, and launch checks Pi again in the pane. Install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`
+      ? `Pi was not found on the PATH of a login shell started the way a seat's is (${detail}); launch checks Pi again in the pane. Install @earendil-works/pi-coding-agent and check 'command -v pi' in a new login shell, or run 'rig doctor'.`
       : `Pi was not found on the daemon's PATH ('pi --version': ${detail}). The pane's shell may have a different PATH; launch will check Pi there. If it also cannot find Pi, install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`);
     return [];
   }

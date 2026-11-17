@@ -11,6 +11,7 @@ import { HealthPolicyStore } from "./domain/health-policy.js";
 import { HealthCheckpointSource } from "./domain/health-checkpoints.js";
 import { PassiveCeremonySource } from "./domain/health-passive-ceremony.js";
 import { HealthDiagnosisService } from "./domain/health-diagnosis.js";
+import { HostReadinessService } from "./domain/host-readiness.js";
 import { readHealthArtifact, healthAuthority, healthHumanReadiness } from "./domain/health-context.js";
 import type { Hono } from "hono";
 import type Database from "better-sqlite3";
@@ -88,7 +89,7 @@ import { InstallEngine } from "./domain/install-engine.js";
 import { InstallVerifier } from "./domain/install-verifier.js";
 import { BootstrapRepository } from "./domain/bootstrap-repository.js";
 import { RuntimeVerifier } from "./domain/runtime-verifier.js";
-import { seatRuntimeProbe } from "./adapters/seat-runtime-probe.js";
+import { daemonRuntimeProbe, seatRuntimeProbe } from "./adapters/seat-runtime-probe.js";
 import { RequirementsProbeRegistry } from "./domain/requirements-probe.js";
 import { ExternalInstallPlanner } from "./domain/external-install-planner.js";
 import { ExternalInstallExecutor } from "./domain/external-install-executor.js";
@@ -111,7 +112,7 @@ import { SeatStructuralActivityService } from "./domain/seat-structural-activity
 import { deriveSelfHostIdSource, SeatIdentityReconciler, reconcileSelfHostIdentity } from "./domain/seat-identity-reconciler.js";
 import { SeatIdentityStore, SelfHostIdentityStore } from "./domain/seat-identity-store.js";
 import { DaemonLifecycleStore } from "./domain/daemon-lifecycle-store.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { getSelfHostId, setSelfHostId, setSelfHostIdSource } from "./domain/hosts/fanout-contract.js";
 import { FarDaemons, OriginPollsSenderReturn, FarSeatDirectory, withFarSeats } from "./domain/seat-messaging/far-daemon.js";
 import { UpCommandRouter } from "./domain/up-command-router.js";
@@ -216,6 +217,7 @@ import { readSeatMcpServers } from "./domain/seat-mcp-servers.js";
 import { codexConfigLayerFiles, codexConfigServerNames, mcpSpecRoots } from "./domain/codex-mcp-servers.js";
 import { piRetainedFieldLookups } from "./adapters/pi-retained-field-lookups.js";
 import { specSourceTrustOf } from "./domain/recorded-spec-source-judge.js";
+import { redactPaneText } from "./domain/launch-failure-report.js";
 import { codexSeatHomePath } from "./domain/codex-seat-home.js";
 import {
   getCompatibleOpenRigPath,
@@ -923,9 +925,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const podRepo = new PodRepository(db);
   const rigSpecExporter = new RigSpecExporter({ rigRepo, sessionRegistry, podRepo });
-  // workspaces-o9o.65: the Pi on a non-interactive login shell's PATH, closer to a seat's than the daemon's own. A test that injects its own exec
-  // gets no probe (the daemon-PATH notice, which says so).
-  const probeSeatRuntime = opts?.tmuxExec ? undefined : seatRuntimeProbe();
+  // workspaces-o9o.65, reconciled in o9o.11: the Pi a seat launches, resolved on the PATH of a login shell started the way a seat's is
+  // (hostReadiness's probe terminal, defined below; read only when a preflight runs). A test that injects its own exec gets no probe
+  // (the daemon-PATH notice, which says so).
+  const probeSeatRuntime = opts?.tmuxExec ? undefined : seatRuntimeProbe({ seatPath: () => hostReadiness.seatPath() });
   const rigSpecPreflight = new RigSpecPreflight({
     rigRepo, tmuxAdapter, exec: opts?.tmuxExec ?? execPreflightCommand, probeSeatRuntime,
   });
@@ -1501,6 +1504,25 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // copies (~/.agents-release) or a spec library root; the rig's recorded spec directory is added per request. The
   // same roots judge a rig's recorded spec source at every read (OF-103).
   const mcpTrust = { specRoots: () => mcpSpecRoots({ home: daemonHome, specLibraryRoots: [userSpecLibraryRoot, compatibleSpecLibraryRoot, nodePath.resolve(import.meta.dirname, "../specs")] }) };
+  // workspaces-o9o.11: `rig doctor`'s host rows. The probe terminal is the metadata probe's door (a seat-shaped login shell);
+  // spec folders are judged against the same trust a fresh launch applies to a recorded spec source.
+  const hostReadiness = new HostReadinessService({
+    terminal: tmuxAdapter,
+    specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots() }),
+    homeDir: daemonHome,
+    seatRuntimeProbeOn: (path: string) => seatRuntimeProbe({ seatPath: async () => path }),
+    daemonRuntimeProbe: daemonRuntimeProbe(),
+    io: {
+      makeResultDir: () => fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-doctor-")),
+      nonce: () => randomBytes(16).toString("hex"),
+      readText: (p: string) => { try { return fs.readFileSync(p, "utf-8"); } catch { return null; } },
+      removeDir: (p: string) => fs.rmSync(p, { recursive: true, force: true }),
+      sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.now(),
+      shell: () => process.env.SHELL || "/bin/sh",
+      redact: redactPaneText,
+    },
+  });
 
   // The runtime adapter map the routes see, and the ONE map `rig send`'s runner readiness is built from (pda L0/L2a):
   // runnerSendReadinessFromAdapters asks only a runtime whose adapter declares sendReadiness (pda, pi and omp), so a
@@ -1722,6 +1744,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     contextUsageStore,
     healthProjection,
     healthDiagnosis,
+    hostReadiness,
     healthPolicy,
     healthCheckpoints,
     serviceOrchestrator,
