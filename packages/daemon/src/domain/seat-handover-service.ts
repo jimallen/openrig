@@ -452,11 +452,12 @@ export class SeatHandoverService {
       });
     }
 
-    // Full-cycle composer for fresh (CUTOVER): capture -> respawn a live successor INTO the departing
-    // pane in place -> deliver captured context -> verify continuity -> rebind. The registry BINDING is
+    // Full-cycle composer for fresh, fork and rebuild (CUTOVER): capture -> respawn a live successor INTO the
+    // departing pane in place -> deliver captured context -> verify continuity -> rebind. The registry BINDING is
     // untouched until the commit inside finalizeWithDiscovered (the SOLE, LAST rebind), but the retiree
     // PROCESS is force-replaced at the in-place respawn (it exits in place; its provider session file is
-    // the durable wake target). (fork/rebuild were rejected above; discovered was finalized above.)
+    // the durable wake target). Fork and rebuild come through here too and branch at the successor's launch
+    // below; discovered was finalized above.
 
     // 1. Capture the departing seat's context BEFORE the respawn replaces it.
     // workspaces-o9o.93: the successor force-replaces the live retiree, so the seat's own unfinished work is judged first, before anything is
