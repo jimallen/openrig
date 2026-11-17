@@ -15,6 +15,7 @@ import {
   scannedCallNames,
   selectReach,
   summaryLines,
+  walksSourceTree,
 } from "./gate-tiers.mjs";
 
 const GATE = resolve("scripts/gate-tiers.mjs");
@@ -435,6 +436,90 @@ test("tier 2 selects an AST census that compares a call's name, when the diff ne
     assert.equal((await run(repo, receipts, 2, ports, { list: true })).exitCode, EXIT.pass);
     assert.ok(ports.lines.includes("  test/launch-census.test.ts"), ports.lines.join("\n"));
   });
+});
+
+// workspaces-o9o.86 review (verify-qa2): census-tmux-exec-calls.test.ts keeps its patterns and its tree walk in
+// test/helpers/tmux-exec-scanner.ts, so neither its own text nor a changed file's stem reaches it.
+const KILL_PATTERNS_HELPER = String.raw`export const countKills = (text) => (text.match(/\.(killSession|respawnPane)\(/g) ?? []).length;` + "\n";
+const TREE_SCANNER_HELPER = [
+  'import fs from "node:fs";',
+  'import path from "node:path";',
+  "export function listSourceFiles(repoRoot) {",
+  "  const out = [];",
+  "  const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, e.name); if (e.isDirectory()) walk(full); else out.push(full); } };",
+  '  const packages = path.join(repoRoot, "packages");',
+  '  for (const pkg of fs.readdirSync(packages, { withFileTypes: true })) { const src = path.join(packages, pkg.name, "src"); if (fs.existsSync(src)) walk(src); }',
+  "  return out;",
+  "}",
+].join("\n") + "\n";
+const OWN_TREE_WALK = [
+  'const SRC = join(here, "..", "src");',
+  "const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]);",
+  "const files = walk(SRC);",
+].join("\n") + "\n";
+
+test("tier 2 reads a test's own helpers under test/: a call the helper scans for selects the test that imports it", async () => {
+  await withRepo(async ({ repo, receipts }) => {
+    write(repo, "packages/daemon/test/helpers/kill-patterns.ts", KILL_PATTERNS_HELPER);
+    write(repo, "packages/daemon/test/kill-census.test.ts", 'import { countKills } from "./helpers/kill-patterns.js";\nexpect(countKills(text)).toBe(0);\n');
+    write(repo, "packages/daemon/src/kill-patterns.ts", KILL_PATTERNS_HELPER);
+    write(repo, "packages/daemon/test/src-import.test.ts", 'import { countKills } from "../src/kill-patterns.js";\nexpect(countKills("")).toBe(0);\n');
+    write(repo, "packages/daemon/src/doctor.ts", "export async function probe(tmux) {\n  return 1;\n}\n");
+    commit(repo, "base");
+    git(repo, "branch", "-f", "main");
+    write(repo, "packages/daemon/src/doctor.ts", "export async function probe(tmux, name) {\n  await tmux.killSession(name);\n  return 1;\n}\n");
+    commit(repo, "the probe kills its own terminal");
+    const ports = fakePorts();
+    assert.equal((await run(repo, receipts, 2, ports, { list: true })).exitCode, EXIT.pass);
+    assert.ok(ports.lines.includes("  test/kill-census.test.ts"), ports.lines.join("\n"));
+    assert.ok(!ports.lines.includes("  test/src-import.test.ts"), "a module imported from src/ is source, not the test's helper");
+    assert.match(ports.lines.join("\n"), /calls 1[;,]/);
+  });
+});
+
+test("tier 2 selects a test that walks a whole source tree, itself or through its helper, on any source change (verify-qa2's probe)", async () => {
+  await withRepo(async ({ repo, receipts }) => {
+    write(repo, "packages/daemon/test/helpers/exec-scanner.ts", TREE_SCANNER_HELPER);
+    write(repo, "packages/daemon/test/census-exec-calls.test.ts", 'import { listSourceFiles } from "./helpers/exec-scanner.js";\nconst files = listSourceFiles(ROOT);\n');
+    write(repo, "packages/daemon/test/own-walk.test.ts", OWN_TREE_WALK);
+    write(repo, "packages/daemon/test/reads-one.test.ts", 'const text = readFileSync(join(here, "../src/startup.ts"), "utf8");\nmkdirSync(tmp, { recursive: true });\n');
+    write(repo, "packages/daemon/src/routes/up.ts", "export function up() {\n  return 1;\n}\n");
+    write(repo, "docs/notes.md", "notes\n");
+    commit(repo, "base");
+    git(repo, "branch", "-f", "main");
+    write(repo, "docs/notes.md", "notes, edited\n");
+    commit(repo, "a docs-only change");
+    const docsOnly = fakePorts();
+    assert.equal((await run(repo, receipts, 2, docsOnly, { list: true })).exitCode, EXIT.pass);
+    assert.ok(!docsOnly.lines.includes("  test/census-exec-calls.test.ts"), "no source changed, so no tree walker is reached");
+    assert.ok(!docsOnly.lines.includes("  test/own-walk.test.ts"), docsOnly.lines.join("\n"));
+    git(repo, "branch", "-f", "main");
+    write(repo, "packages/daemon/src/routes/up.ts", 'import { spawn } from "node:child_process";\nexport function up() {\n  spawn("tmux", ["-V"]);\n  return 1;\n}\n');
+    commit(repo, "a new tmux exec in routes/up.ts");
+    const ports = fakePorts();
+    assert.equal((await run(repo, receipts, 2, ports, { list: true })).exitCode, EXIT.pass);
+    assert.ok(ports.lines.includes("  test/census-exec-calls.test.ts"), ports.lines.join("\n"));
+    assert.ok(ports.lines.includes("  test/own-walk.test.ts"), ports.lines.join("\n"));
+    assert.ok(!ports.lines.includes("  test/reads-one.test.ts"), "reading one source file is not walking the tree");
+    assert.match(ports.lines.join("\n"), /trees 2[;,)]/);
+  });
+});
+
+test("walksSourceTree: a recursive listing plus a source root, in each form the tree's scanners write it", () => {
+  const walk = "for (const e of readdirSync(dir, { withFileTypes: true })) if (e.isDirectory()) walk(e);\n";
+  for (const root of [
+    'const SRC = new URL("../src/", import.meta.url).pathname;',
+    'const SRC = join(import.meta.dirname, "..", "src");',
+    'for (const root of ["packages/daemon/src", "packages/cli/src"]) {}',
+    'const DOMAIN = "src/domain";',
+    'const src = path.join(packages, pkg.name, "src");',
+  ]) assert.equal(walksSourceTree(walk + root), true, root);
+  assert.equal(walksSourceTree('const files = readdirSync(srcDir, { recursive: true });\nconst srcDir = resolve(here, "../src");\n'), true);
+  // Not a source tree: one source file, a file under src, a fixture called src.json, or a listing that does not recurse.
+  assert.equal(walksSourceTree(walk + 'const f = readFileSync(join(here, "../src/startup.ts"));'), false);
+  assert.equal(walksSourceTree(walk + 'const RUNNER = path.join(PACKAGE_DIR, "src", "adapters", "pi-runner.ts");'), false);
+  assert.equal(walksSourceTree(walk + 'const s = path.join(root, "src.json");'), false);
+  assert.equal(walksSourceTree('readdirSync(dir).map((n) => n);\nconst SRC = join(here, "..", "src");\nmkdirSync(SRC, { recursive: true });\n'), false);
 });
 
 test("a changed .test.mjs or .test.js is a test: it adds no new call names and no name stem", async () => {

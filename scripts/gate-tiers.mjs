@@ -27,7 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addedLines, CHECKS } from "./portability-report.mjs";
 
@@ -312,6 +312,44 @@ export function scannedCallNames(text) {
   return names;
 }
 
+// workspaces-o9o.86 review (verify-qa2): census-tmux-exec-calls.test.ts keeps both its patterns and its walk over every
+// packages/*/src file in test/helpers/tmux-exec-scanner.ts. So a test's own helpers count: the files it imports by a
+// relative path that lands under its package's test/ folder, one level deep (a helper's own imports are not followed).
+const RELATIVE_IMPORT = /(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g;
+const HELPER_SOURCE = /\.[cm]?[jt]sx?$/;
+
+/** The files a test imports from its own package's test/ folder, read one level deep. */
+export function testHelperPaths(file, text, testDir) {
+  const paths = new Set();
+  for (const match of text.matchAll(RELATIVE_IMPORT)) {
+    const target = resolve(dirname(file), match[1]);
+    if (!target.startsWith(`${testDir}/`)) continue;
+    const found = [target.replace(/\.js$/, ".ts"), target.replace(/\.js$/, ".tsx"), target, `${target}.ts`]
+      .find((candidate) => candidate !== file && HELPER_SOURCE.test(candidate) && existsSync(candidate));
+    if (found) paths.add(found);
+  }
+  return [...paths];
+}
+
+// A test that walks a whole source tree (a census or guard over every file under a src folder) can be reached by a
+// change to any source file, whatever it calls or is named: verify-qa2's probe added `spawn("tmux", ...)` to
+// routes/up.ts, a bare call no name or call match sees. Such a test, or one whose helper does this, is selected on any
+// change to a non-test source file under packages/*/src. "Walks" is a recursive directory listing (an isDirectory()
+// recursion, or readdir with recursive: true) together with a source root: a quoted folder path with a src segment and no
+// file extension ("../src", "packages/cli/src", "src/domain", join(x, "src")). Census at 15d00f86a, 2057 test files: 34
+// match (daemon 27, cli 4, tui 1, ui 2). Of the 32 in the three suite packages, 31 walk a src tree; one,
+// adapter-plugin-exec-mode, walks a fixture of its own and is over-selected. No test that walks a src tree was missed;
+// the walkers left out list test folders, assets or fixtures.
+const LISTS_DIRECTORY = /\b(?:readdirSync|readdir|globSync)\b/;
+const RECURSES = /\.isDirectory\(\)|\b(?:readdirSync|readdir)\([^)]*recursive:\s*true/;
+const SOURCE_ROOT = /["'`](?:(?:[\w.@${}-]+\/)+src(?:\/[\w-]+)*\/?|src\/(?:[\w-]+\/?)*)["'`]|["'`]src["'`]\s*\)/;
+const SOURCE_UNDER_SRC = /^packages\/[^/]+\/src\//;
+
+/** Does this test (or helper) text walk a whole source tree? */
+export function walksSourceTree(text) {
+  return LISTS_DIRECTORY.test(text) && RECURSES.test(text) && SOURCE_ROOT.test(text);
+}
+
 // workspaces-o9o.86: the name match (b) took any substring of a test file, so a short, common-word stem selected most of
 // a package. Measured on four real diffs: "up" matched 1133 daemon test files, "seat" 825, "add" 738, "help" 627. A short
 // stem without a hyphen (under 10 characters) now counts only where it names the file: a file reference (up.ts, up.js,
@@ -342,15 +380,19 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
     (await listChanged(packageDir, mergeBase)).map((file) => relative(packageDir, resolve(packageDir, file))),
   );
   const stems = [...new Set(changed.filter((file) => !ANY_TEST_FILE.test(file)).map(stemOf))].filter(Boolean);
+  const sourceChanged = changed.some((file) => SOURCE_UNDER_SRC.test(file) && SOURCE_FILE.test(file) && !ANY_TEST_FILE.test(file));
   const viaNames = new Set();
   const viaCalls = new Set();
+  const viaTrees = new Set();
   for (const file of testFiles) {
     const text = readFileSync(file, "utf8");
+    const helpers = testHelperPaths(file, text, join(packageDir, "test")).map((path) => readFileSync(path, "utf8"));
     if (stems.some((stem) => namesStem(text, stem))) viaNames.add(relative(packageDir, file));
     if (newCalls.length > 0) {
-      const scanned = scannedCallNames(text);
+      const scanned = new Set([text, ...helpers].flatMap((body) => [...scannedCallNames(body)]));
       if (newCalls.some((name) => scanned.has(name))) viaCalls.add(relative(packageDir, file));
     }
+    if (sourceChanged && [text, ...helpers].some(walksSourceTree)) viaTrees.add(relative(packageDir, file));
   }
   const prefix = `packages/${packageName}/`;
   const changedTests = new Set(
@@ -359,7 +401,7 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
       .map((file) => file.slice(prefix.length))
       .filter((file) => existsSync(join(packageDir, file))),
   );
-  const files = [...new Set([...viaImports, ...viaNames, ...changedTests, ...viaCalls])]
+  const files = [...new Set([...viaImports, ...viaNames, ...changedTests, ...viaCalls, ...viaTrees])]
     .filter((file) => existsSync(join(packageDir, file)))
     .sort();
   return {
@@ -370,6 +412,10 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
     changedTests: changedTests.size,
     viaCalls: viaCalls.size,
     viaCallsOnly: [...viaCalls].filter((file) => !viaImports.has(file) && !viaNames.has(file) && !changedTests.has(file)).sort(),
+    viaTrees: viaTrees.size,
+    viaTreesOnly: [...viaTrees]
+      .filter((file) => !viaImports.has(file) && !viaNames.has(file) && !changedTests.has(file) && !viaCalls.has(file))
+      .sort(),
   };
 }
 
@@ -388,7 +434,7 @@ function printSelection(context, changed, selection) {
   context.log(`changed files: ${changed.length}`);
   for (const [packageName, picked] of Object.entries(selection)) {
     context.log(
-      `packages/${packageName}: ${picked.files.length} test files (imports ${picked.viaImports}, names ${picked.viaNames}, changed tests ${picked.changedTests}, calls ${picked.viaCalls}; reached by name only: ${picked.viaNamesOnly.length}, by call only: ${picked.viaCallsOnly.length})`,
+      `packages/${packageName}: ${picked.files.length} test files (imports ${picked.viaImports}, names ${picked.viaNames}, changed tests ${picked.changedTests}, calls ${picked.viaCalls}, trees ${picked.viaTrees}; reached by name only: ${picked.viaNamesOnly.length}, by call only: ${picked.viaCallsOnly.length}, by tree walk only: ${picked.viaTreesOnly.length})`,
     );
     for (const file of picked.files) context.log(`  ${file}`);
   }
