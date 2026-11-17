@@ -69,7 +69,7 @@ describe("o9o.65: the preview names the Pi a seat will launch", () => {
     const errors = await verifyPiRuntimeAvailable(piSpec, execPreflightCommand, warnings, await probeFor(daemonEnv));
     expect(errors).toEqual([]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`Pi version 1.4.0 at ${seatPi}`);
+    expect(warnings[0]).toContain(`Pi 1.4.0 at ${seatPi}, as a non-interactive login shell resolves it`);
     expect(warnings[0]).not.toContain("1.5.0");
   });
 
@@ -81,7 +81,7 @@ describe("o9o.65: the preview names the Pi a seat will launch", () => {
     const errors = await verifyPiRuntimeAvailable(piSpec, execPreflightCommand, warnings, await probeFor(daemonEnv));
     expect(errors).toEqual([]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/not found on the PATH of a seat's login shell/);
+    expect(warnings[0]).toMatch(/not found on the PATH of a non-interactive login shell/);
     expect(warnings[0]).not.toContain(path.dirname(seatPi));
   });
 });

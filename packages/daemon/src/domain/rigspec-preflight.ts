@@ -554,7 +554,7 @@ function piAvailabilityFailure(err: unknown, warnings: string[], onSeatPath = fa
   const detail = runtimeProbeFailure(err);
   if (detail === "ENOENT" || detail.includes("executable not found on PATH")) {
     warnings.push(onSeatPath
-      ? `Pi was not found on the PATH of a seat's login shell (${detail}); launch will check Pi again in the pane. Install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`
+      ? `Pi was not found on the PATH of a non-interactive login shell (${detail}); a seat's interactive shell may still find it, and launch checks Pi again in the pane. Install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`
       : `Pi was not found on the daemon's PATH ('pi --version': ${detail}). The pane's shell may have a different PATH; launch will check Pi there. If it also cannot find Pi, install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`);
     return [];
   }

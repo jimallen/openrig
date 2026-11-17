@@ -904,7 +904,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const podRepo = new PodRepository(db);
   const rigSpecExporter = new RigSpecExporter({ rigRepo, sessionRegistry, podRepo });
-  // workspaces-o9o.65: the Pi a seat launches is the one on its login-shell PATH, not the daemon's. A test that injects its own exec
+  // workspaces-o9o.65: the Pi on a non-interactive login shell's PATH, closer to a seat's than the daemon's own. A test that injects its own exec
   // gets no probe (the daemon-PATH notice, which says so).
   const probeSeatRuntime = opts?.tmuxExec ? undefined : seatRuntimeProbe();
   const rigSpecPreflight = new RigSpecPreflight({
