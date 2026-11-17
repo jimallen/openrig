@@ -204,6 +204,14 @@ describe("workspaces-o9o.76: on a Codex seat the relay runs once per hook when t
     expect(posts("Stop")).toHaveLength(0);
   });
 
+  it("a legitimate multiline literal string elsewhere in config.toml does not stop OpenRig's real block from counting (the plugin steps aside)", async () => {
+    writeConfig(daemonRelay);
+    const config = join(codexHome, "config.toml");
+    writeFileSync(config, `notes = '''\nfirst line\nsecond line\n'''\n\n${readFileSync(config, "utf8")}`);
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(0);
+  });
+
   it("a config that ends inside an unterminated string is not trusted: the plugin relays", async () => {
     writeConfig(daemonRelay);
     const config = join(codexHome, "config.toml");
