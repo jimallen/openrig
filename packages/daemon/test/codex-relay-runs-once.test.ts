@@ -5,13 +5,13 @@
 // PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT (the installed plugin root) and CODEX_HOME, and no CLAUDE_PROJECT_DIR, so the Claude-side rule of
 // workspaces-o9o.33 never applied. The rows run the REAL relay as two processes against a counting endpoint; the env is built from nothing.
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { upsertCodexActivityHooks } from "../src/adapters/codex-runtime-adapter.js";
+import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 
 const RELAY_ASSET = resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
 const SEAT = "dev-codex@relayrig";
@@ -22,8 +22,22 @@ let root: string; let server: Server; let arrivals: Arrival[]; let baseUrl: stri
 let home: string; let codexHome: string; let project: string; let pluginRoot: string; let daemonRelay: string;
 const pluginRelay = () => join(pluginRoot, "hooks", "scripts", "activity-relay.cjs");
 
-/** CODEX_HOME/config.toml as the adapter writes it, around whatever else `extra` holds. */
-const writeConfig = (relayPath: string, extra = "") => writeFileSync(join(codexHome, "config.toml"), upsertCodexActivityHooks(extra, relayPath));
+/** What OpenRig writes, by the real adapter: CODEX_HOME/config.toml's managed block (around whatever else `extra` holds) and, since the
+ *  verify-sec review of workspaces-o9o.76, the exact relay path it wrote, under the seat's OPENRIG_HOME. */
+const writeConfig = (relayPath: string, extra = "") => {
+  if (extra) writeFileSync(join(codexHome, "config.toml"), extra);
+  new CodexRuntimeAdapter({ tmux: {} as never, codexHome, stateDir: home, activityRelayPath: relayPath, fsOps: realFs() } as never).ensureCodexActivityHooks();
+};
+const realFs = () => ({
+  readFile: (f: string) => readFileSync(f, "utf8"), writeFile: (f: string, c: string) => writeFileSync(f, c), exists: (f: string) => existsSync(f),
+  mkdirp: (d: string) => mkdirSync(d, { recursive: true }), homedir: codexHome, chmod: (f: string, m: number) => chmodSync(f, m),
+  removeFile: (f: string) => unlinkSync(f),
+  writeFileAtomic: (f: string, c: string, mode: number) => { const t = `${f}.tmp-${process.pid}`; writeFileSync(t, c, { mode }); renameSync(t, f); },
+});
+const relayRecord = () => join(home, "state", "codex-activity-hooks", "relay-path");
+/** The managed Stop stanza as text, for the rows that put it where no top-level table is. */
+const stanzaAsText = () => ["# BEGIN OPENRIG MANAGED ACTIVITY HOOKS", "[[hooks.Stop]]", "[[hooks.Stop.hooks]]", 'type = "command"',
+  `command = 'node "${daemonRelay}"'`, "# END OPENRIG MANAGED ACTIVITY HOOKS"].join("\n");
 
 function runRelay(path: string, payload: Record<string, unknown>, asPlugin: boolean): Promise<string> {
   const env: Record<string, string> = {
@@ -148,6 +162,63 @@ describe("workspaces-o9o.76: on a Codex seat the relay runs once per hook when t
       `command = 'node "${daemonRelay}"'`, "# END OPENRIG MANAGED ACTIVITY HOOKS", ""].join("\n"));
     await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
     expect(posts("Stop")).toHaveLength(1);
+  });
+
+  // verify-sec FAIL of aa07a461c: the step-aside read config.toml as raw text and took any readable path ending hooks/scripts/activity-relay.cjs.
+  it("RED (review a): the managed stanza runs a readable no-op with the relay's file name, not the relay OpenRig wrote: the plugin relays", async () => {
+    writeConfig(daemonRelay);
+    const decoy = join(root, "decoy", "hooks", "scripts", "activity-relay.cjs");
+    mkdirSync(dirname(decoy), { recursive: true }); writeFileSync(decoy, "process.exit(0);\n");
+    const config = join(codexHome, "config.toml");
+    writeFileSync(config, readFileSync(config, "utf8").split(daemonRelay).join(decoy));
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(1);
+  });
+
+  it("RED (review b): the sentinels and stanza sit inside a multiline TOML string (no top-level hooks at all): the plugin relays", async () => {
+    writeConfig(daemonRelay);   // the record of the relay OpenRig wrote stays; the block itself is replaced by text inside a string
+    writeFileSync(join(codexHome, "config.toml"), `instructions = """\n${stanzaAsText()}\n"""\n`);
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(1);
+  });
+
+  it("the same inside a multiline literal string: the plugin relays", async () => {
+    writeConfig(daemonRelay);
+    writeFileSync(join(codexHome, "config.toml"), `notes = '''\n${stanzaAsText()}\n'''\n`);
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(1);
+  });
+
+  it("no record of the relay OpenRig wrote (an older daemon, or the record removed): the plugin relays", async () => {
+    writeConfig(daemonRelay);
+    rmSync(join(home, "state", "codex-activity-hooks"), { recursive: true, force: true });
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(1);
+  });
+
+  it("a closed multiline string holding fake sentinels, then OpenRig's real block: the real block still counts (the plugin steps aside)", async () => {
+    writeConfig(daemonRelay);   // the real block (and the record) first: the adapter's own upsert matches sentinel text even inside a string
+    const config = join(codexHome, "config.toml");
+    writeFileSync(config, `instructions = """\n${stanzaAsText()}\n"""\n\n${readFileSync(config, "utf8")}`);
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(0);
+  });
+
+  it("a config that ends inside an unterminated string is not trusted: the plugin relays", async () => {
+    writeConfig(daemonRelay);
+    const config = join(codexHome, "config.toml");
+    writeFileSync(config, `${readFileSync(config, "utf8")}\nbroken = """\nnever closed\n`);
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(1);
+  });
+
+  it("OpenRig records the exact relay path it wrote: mode 0600 in a 0700 directory, and removes the record when it strips its block", () => {
+    writeConfig(daemonRelay);
+    expect(readFileSync(relayRecord(), "utf8")).toBe(`${daemonRelay}\n`);
+    expect(statSync(relayRecord()).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(relayRecord())).mode & 0o777).toBe(0o700);
+    new CodexRuntimeAdapter({ tmux: {} as never, codexHome, stateDir: home, activityRelayPath: daemonRelay, fsOps: realFs() } as never).removeCodexActivityHooks();
+    expect(existsSync(relayRecord())).toBe(false);
   });
 
   it("the managed copy always relays, whatever the plugin is doing", async () => {

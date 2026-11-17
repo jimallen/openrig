@@ -508,7 +508,7 @@ function defersToManagedCopy(env, hookEvent, script, selfPath) {
   if (projectDir) return claudeSettingsRunManagedCopy(projectDir, hookEvent, script);
   // A Codex hook has no CLAUDE_PROJECT_DIR; its managed copy is the OpenRig block of CODEX_HOME/config.toml (codex-runtime-adapter).
   const codexHome = firstString(env.CODEX_HOME);
-  if (codexHome) return codexConfigRunsManagedCopy(codexHome, hookEvent, script);
+  if (codexHome) return codexConfigRunsManagedCopy(codexHome, hookEvent, script, env);
   return false;
 }
 
@@ -521,31 +521,99 @@ function claudeSettingsRunManagedCopy(projectDir, hookEvent, script) {
     && group.hooks.some((hook) => hook && typeof hook.command === "string" && runsManagedScript(hook.command, managed)));
 }
 
-// workspaces-o9o.76: the sentinel block codex-runtime-adapter writes into CODEX_HOME/config.toml, one [[hooks.<Event>]] stanza per event,
-// each `command = 'node "<the daemon's own activity-relay.cjs>"'`. Only that block counts: a user's own hook elsewhere is not OpenRig's copy.
+// workspaces-o9o.76 (verify-sec review): CODEX_HOME/config.toml is read as TOML, not text, with no dependency (this script runs from Codex's
+// plugin cache, where there is no node_modules). The scanner follows strings (basic, literal, and their multiline forms), comments, and
+// arrays or inline tables that span lines, so only a line outside all of them can be a table header or one of OpenRig's sentinel comments:
+// text inside a multiline string is never a stanza. The managed stanza counts only when its command runs EXACTLY the relay path OpenRig
+// recorded under OPENRIG_HOME when it wrote the block (codex-runtime-adapter CODEX_MANAGED_RELAY_RECORD). Anything unread or unsure: false,
+// and the plugin copy relays.
 const CODEX_MANAGED_BEGIN = "# BEGIN OPENRIG MANAGED ACTIVITY HOOKS";
 const CODEX_MANAGED_END = "# END OPENRIG MANAGED ACTIVITY HOOKS";
+const CODEX_MANAGED_RELAY_RECORD = path.join("state", "codex-activity-hooks", "relay-path");
 
-function codexConfigRunsManagedCopy(codexHome, hookEvent, script) {
+/** The top-level lines of a TOML text: each line that starts outside every string, array and inline table, with its text. Null when the
+ *  text ends inside a string, an array or an inline table (not valid TOML: nothing is trusted). */
+function tomlTopLevelLines(text) {
+  const out = [];
+  let multiline = null;   // '"""' or "'''" while inside a multiline string
+  let depth = 0;          // open [ and { of values that span lines
+  for (const line of text.split("\n")) {
+    const topLevel = multiline === null && depth === 0;
+    if (topLevel) out.push(line);
+    let i = 0;
+    if (topLevel && /^\s*\[/.test(line)) i = line.length;   // a table header: its brackets are not a value
+    while (i < line.length) {
+      if (multiline !== null) {
+        const close = line.indexOf(multiline, i);
+        if (close === -1) { i = line.length; break; }
+        // A basic multiline string ends at an unescaped """ (count the backslashes before it).
+        let backslashes = 0;
+        for (let k = close - 1; k >= 0 && line[k] === "\\" && multiline === '"""'; k -= 1) backslashes += 1;
+        if (backslashes % 2 === 1) { i = close + 1; continue; }
+        i = close + 3;
+        while (line[i] === multiline[0]) i += 1;   // up to two more quote characters belong to the string
+        multiline = null;
+        continue;
+      }
+      const c = line[i];
+      if (c === "#") break;
+      if (line.startsWith('"""', i) || line.startsWith("'''", i)) { multiline = line.slice(i, i + 3); i += 3; continue; }
+      if (c === '"') {
+        let j = i + 1;
+        for (; j < line.length && line[j] !== '"'; j += 1) if (line[j] === "\\") j += 1;
+        if (j >= line.length) return null;
+        i = j + 1; continue;
+      }
+      if (c === "'") {
+        const j = line.indexOf("'", i + 1);
+        if (j === -1) return null;
+        i = j + 1; continue;
+      }
+      if (c === "[" || c === "{") depth += 1;
+      else if (c === "]" || c === "}") depth = Math.max(0, depth - 1);
+      i += 1;
+    }
+  }
+  return multiline === null && depth === 0 ? out : null;
+}
+
+function codexConfigRunsManagedCopy(codexHome, hookEvent, script, env) {
+  if (script !== "activity-relay.cjs") return false;   // OpenRig's Codex block runs the relay only
+  const openrigHome = firstString(env.OPENRIG_HOME, env.RIGGED_HOME) || path.join(os.homedir(), ".openrig");
+  let expected;
+  try { expected = fs.readFileSync(path.join(openrigHome, CODEX_MANAGED_RELAY_RECORD), "utf8").trim(); } catch { return false; }
+  if (!expected || !path.isAbsolute(expected)) return false;
   let text;
   try { text = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"); } catch { return false; }
-  const begin = text.indexOf(CODEX_MANAGED_BEGIN);
-  const end = begin === -1 ? -1 : text.indexOf(CODEX_MANAGED_END, begin);
-  if (begin === -1 || end === -1) return false;
-  const managed = path.join("hooks", "scripts", script);
+  const lines = tomlTopLevelLines(text);
+  if (lines === null) return false;
+  let inBlock = false;
   let event = null;
-  for (const line of text.slice(begin, end).split("\n")) {
-    const header = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(line);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === CODEX_MANAGED_BEGIN) { inBlock = true; event = null; continue; }
+    if (trimmed === CODEX_MANAGED_END) { inBlock = false; event = null; continue; }
+    if (!inBlock) continue;
+    const header = /^\[\[hooks\.([A-Za-z]+)\]\]$/.exec(trimmed);
     if (header) { event = header[1]; continue; }
-    // Any other table ends the stanza, except the stanza's own [[hooks.<Event>.hooks]] (Codex's `plugin add` appends its [marketplaces.*]
-    // and [plugins.*] tables INSIDE this block, measured on 0.166.0).
-    if (/^\s*\[/.test(line) && !/^\s*\[\[hooks\.[A-Za-z]+\.hooks\]\]\s*$/.test(line)) { event = null; continue; }
+    // Any other table ends the stanza, except the stanza's own [[hooks.<Event>.hooks]] (Codex's `plugin add` appends [marketplaces.*] and
+    // [plugins.*] tables INSIDE this block, measured on 0.166.0).
+    if (trimmed.startsWith("[")) { if (trimmed !== `[[hooks.${event}.hooks]]`) event = null; continue; }
     if (event !== hookEvent) continue;
     // The adapter writes a TOML literal string ('...'); a command in any other form is not counted, and the plugin copy runs.
-    const literal = /^\s*command\s*=\s*'([^']*)'\s*$/.exec(line);
-    if (literal && runsManagedScript(literal[1], managed)) return true;
+    const literal = /^command\s*=\s*'([^']*)'$/.exec(trimmed);
+    if (literal && runsRecordedRelay(literal[1], expected)) return true;
   }
   return false;
+}
+
+// The command runs EXACTLY the recorded relay: `node <that path>` (node, or any path whose basename is node), the file readable.
+function runsRecordedRelay(command, expected) {
+  const words = shellWords(command);
+  if (!words || words.length !== 2) return false;
+  if (words[0] !== "node" && path.basename(words[0]) !== "node") return false;
+  if (words[1] !== expected) return false;
+  try { fs.accessSync(expected, fs.constants.R_OK); return fs.statSync(expected).isFile(); } catch { return false; }
 }
 // The words of a shell command as a POSIX shell splits them, for the plain forms the adapter writes (`node '<path>'`, an apostrophe in the
 // path written '"'"'): single quotes, double quotes with backslash escapes, bare words. Null when the command uses anything a plain

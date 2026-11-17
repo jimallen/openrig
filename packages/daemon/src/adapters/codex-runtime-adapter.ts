@@ -94,7 +94,14 @@ export interface CodexAdapterFsOps {
   lstat?(path: string): "file" | "directory" | "symlink" | "other" | null;
   /** Remove one file (the plugin-copy prune). Absent: nothing is removed. */
   removeFile?(path: string): void;
+  /** workspaces-o9o.76: write `content` to `path` atomically (a sibling temp file renamed over it) with permission bits `mode`. Absent: the
+   *  record of the relay path is not written, and the openrig-core plugin's own relay keeps running beside OpenRig's (fails open). */
+  writeFileAtomic?(path: string, content: string, mode: number): void;
 }
+
+/** workspaces-o9o.76: under OPENRIG_HOME, the exact relay path OpenRig wrote into a Codex config.toml's managed block. The openrig-core
+ *  plugin's relay steps aside for an event only when that block's stanza runs exactly this path (activity-relay.cjs codexConfigRunsManagedCopy). */
+export const CODEX_MANAGED_RELAY_RECORD = ["state", "codex-activity-hooks", "relay-path"] as const;
 
 /**
  * Codex runtime adapter. Projects resources to .agents/ targets (preserving
@@ -114,6 +121,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private sleep: (ms: number) => Promise<void>;
   private resolveHomeDirByPid: ResolveHomeDirByPid;
   private codexHome?: string;
+  /** workspaces-o9o.76: OPENRIG_HOME, where the record of the managed relay path is written. */
+  private stateDir?: string;
   private launchPath?: string;
   // Housekeeping B1 fixback (guard-blocking, arch HK-AR-1 = whole-probe DI):
   // the Codex profile-LOAD probe is an injectable dep in the adapter's
@@ -170,6 +179,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     reconcileSeatGate?: (sessionName: string, threadId: string | null) => void;
     /** Explicit CODEX_HOME; absent preserves the legacy OS/PID home behavior. */
     codexHome?: string;
+    stateDir?: string;
     /** Match the daemon's prerequisite probe even if the pane's login shell rewrites PATH. */
     launchPath?: string;
     verifyProfilePreflight?: (profile: string) => Promise<CodexProfileProbeResult>;
@@ -190,6 +200,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
     this.codexHome = deps.codexHome;
+    this.stateDir = deps.stateDir;
     this.launchPath = deps.launchPath;
     this.detectDaemonSupport = deps.detectDaemonSupport;
     this.detectVersion = deps.detectVersion;
@@ -286,6 +297,22 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, trusted);
     }
+    this.recordManagedRelay(relay);
+  }
+
+  /** workspaces-o9o.76: record the exact relay path the managed block runs, mode 0600 in a 0700 directory, written atomically. Without the
+   *  ops or a state dir it writes nothing (the plugin copy then keeps relaying). */
+  private recordManagedRelay(relay: string | null): void {
+    if (!this.stateDir || !this.fs.writeFileAtomic) return;
+    const record = nodePath.join(this.stateDir, ...CODEX_MANAGED_RELAY_RECORD);
+    if (relay === null) {
+      if (this.fs.exists(record)) this.fs.removeFile?.(record);
+      return;
+    }
+    const dir = nodePath.dirname(record);
+    this.fs.mkdirp(dir);
+    this.fs.chmod?.(dir, 0o700);
+    this.fs.writeFileAtomic(record, `${relay}\n`, 0o600);
   }
 
   /**
@@ -331,6 +358,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (updated !== existing) {
       this.fs.writeFile(configPath, updated);
     }
+    this.recordManagedRelay(null);
   }
 
   async listInstalled(binding: NodeBinding): Promise<InstalledResource[]> {
