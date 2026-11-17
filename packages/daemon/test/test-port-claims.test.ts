@@ -124,9 +124,13 @@ describe("workspaces-o9o.81: a test port is claimed, not probed and released", (
   });
 
   it("RED (review): claimPort refuses a port that is not a positive integer, and writes no file for it", () => {
+    // The claims directory is shared by every test process on the host (an older helper still writes "undefined" there), so the check is that
+    // THIS call writes nothing: a name absent before stays absent.
     for (const bad of [undefined, null, Number.NaN, 1.5, -1, 0, "4242"] as unknown[]) {
+      const name = join(TEST_PORT_CLAIMS_DIR, String(bad));
+      const before = existsSync(name);
       expect(claimPort(bad as number), String(bad)).toBe(false);
-      expect(existsSync(join(TEST_PORT_CLAIMS_DIR, String(bad))), String(bad)).toBe(false);
+      if (!before) expect(existsSync(name), String(bad)).toBe(false);
     }
   });
 
