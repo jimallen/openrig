@@ -17,6 +17,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: the TUI's agent detail showed a running tool's start in the TUI's time zone (`since 2031-03-04 08:05:41 PST`) right above the daemon's posture line, which is UTC (`(since 16:05Z)`), so the same instant read as two different times.
 - Now the tool line also gives the start in the posture line's own UTC form: `since 2031-03-04 08:05:41 PST (16:05Z)`, with the date added once the start is on an earlier UTC day (`(03-04 16:05Z)`). The posture line stays the daemon's text, word for word.
 
+
+### A rig's culture_file may name a file in the running OpenRig install (`shipped:`) (workspaces-o9o.52)
+
+- Symptom: the kernel rig spec reached its culture through a symlink to an install path (`/opt/homebrew/...` on a Mac, `~/.local/...` on Linux), so each host needed its own copy of the spec. `culture_file` took only a path relative to the rig root, and `shipped:...` was read as a folder named `shipped:` there.
+- Now `culture_file: shipped:<relative>` (for example `shipped:rigs/launch/kernel/culture/CULTURE.md`) names a file in the running install's own specs folder, whatever its prefix, so one spec serves every host. It is confined to that folder (no `..` and no symlink out), its content goes through the guarded culture reader at `rig add` and at every delivery, and it is recorded under the install so an upgraded or moved install is followed. `rig up`, `rig add --culture` and preflight take it, and a bundle keeps it as a reference and vendors nothing for it. A plain culture_file works as before.
 ### `rig seat launch` and `rig seat continue` show what the launch pane said (workspaces-o9o.35)
 
 - After o9o.3, a failed launch's pane tail reached `rig up` and restore output but not `rig seat launch --fresh` or `rig seat continue`. Both now print `pane: <last lines>` after the error, and their `--json` carries `paneTail`. The fresh start an operator accepts at `rig up` or `rig start` prints it too (`<seat> pane: ...`).

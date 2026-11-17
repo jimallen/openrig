@@ -236,6 +236,26 @@ describe("PodBundleAssembler", () => {
     expect(impB!.originalRef).toBe("local:../lib-b");
   });
 
+  // workspaces-o9o.52: a shipped: culture_file names the installing host's own OpenRig specs, so the bundle keeps the reference as written
+  // and vendors no file (there is no rig-root file to copy, and copying would freeze one install's culture into the bundle).
+  it("keeps a shipped: culture_file as a reference and vendors nothing for it", () => {
+    const spec = makeRigSpec({ cultureFile: "shipped:rigs/launch/kernel/culture/CULTURE.md" });
+    const files: Record<string, string> = {
+      [`${RIG_ROOT}/rig.yaml`]: rigSpecYaml(spec),
+      [`${RIG_ROOT}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
+    };
+    const fs = mockFs(files);
+    const assembler = new PodBundleAssembler({ fsOps: fs });
+
+    const result = assembler.assemble({
+      rigRoot: RIG_ROOT, rigSpecPath: `${RIG_ROOT}/rig.yaml`,
+      outputDir: "/tmp/staging", bundleName: "test", bundleVersion: "1.0",
+    });
+
+    expect(result.manifest.cultureFile).toBe("shipped:rigs/launch/kernel/culture/CULTURE.md");
+    expect(result.collectedFiles.some((f) => f.includes("CULTURE") || f.includes("shipped:"))).toBe(false);
+  });
+
   // T4: culture_file included
   it("includes culture_file in bundle", () => {
     const spec = makeRigSpec({ cultureFile: "culture.md" });
