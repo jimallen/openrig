@@ -239,14 +239,61 @@ function listTestFiles(directory) {
   return files;
 }
 
+// workspaces-o9o.83: a census test reads source as text and counts calls by name (OF-235's kill-site census greps
+// `\.(killSession|respawnPane)\(`), so neither the import graph nor a changed file's stem reaches it when a diff adds such a
+// call in a file named otherwise. Measured on four real diffs: matching every test that mentions a called name added
+// 87 to 1328 daemon test files; matching the names a test scans for added 0 to 4.
+const CALL = /\.([A-Za-z_$][\w$]*)\s*\(/g;
+const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
+const UNDER_TEST_DIR = /(^|\/)test\//;
+
+/** The method names a diff newly calls: `.name(` in the added lines of non-test source files, more often than in that
+ *  file's removed lines. Counted per file, as a census counts: a call moved within a file is not new, one moved to
+ *  another file is. Lines are read as content only inside a hunk, so a removed line starting with "--" is not a header. */
+export function newlyCalledNames(diff) {
+  const perFile = new Map();
+  let file = null;
+  let inHunk = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) { file = null; inHunk = false; continue; }
+    if (!inHunk) {
+      if (line.startsWith("+++ ")) file = line.slice(4).replace(/^b\//, "");
+      else if (line.startsWith("@@")) inHunk = true;
+      continue;
+    }
+    if (line.startsWith("@@")) continue;
+    if (!file || file === "/dev/null" || TEST_FILE.test(file) || UNDER_TEST_DIR.test(file) || !SOURCE_FILE.test(file)) continue;
+    const sign = line.startsWith("+") ? 1 : line.startsWith("-") ? -1 : 0;
+    if (sign === 0) continue;
+    if (!perFile.has(file)) perFile.set(file, new Map());
+    const counts = perFile.get(file);
+    for (const match of line.slice(1).matchAll(CALL)) counts.set(match[1], (counts.get(match[1]) ?? 0) + sign);
+  }
+  const names = new Set();
+  for (const counts of perFile.values()) for (const [name, count] of counts) if (count > 0) names.add(name);
+  return [...names].sort();
+}
+
+/** The call names a test scans source text for, read from its own patterns: a regex `\.(a|b)\(` or `\.a\(`, or a quoted
+ *  ".a(". A name the test merely calls or mocks is not one. */
+export function scannedCallNames(text) {
+  const names = new Set();
+  for (const match of text.matchAll(/\\\.\(?((?:[A-Za-z_$][\w$]*\|)*[A-Za-z_$][\w$]*)\)?\\\(/g)) {
+    for (const name of match[1].split("|")) names.add(name);
+  }
+  for (const match of text.matchAll(/["'`]\.([A-Za-z_$][\w$]*)\(["'`]/g)) names.add(match[1]);
+  return names;
+}
+
 function stemOf(path) {
   return basename(path).replace(/\.[^.]+$/, "");
 }
 
 // The tier-2 selection for one package: the union of (a) what vitest's import graph says the diff reaches, (b) the
 // package's test files that name a changed file's stem (census, guard and process-spawning tests read source as text
-// or spawn it, so no import edge reaches them), and (c) the package's changed test files themselves.
-export async function selectReach({ repo, mergeBase, changed, packageName, listChanged }) {
+// or spawn it, so no import edge reaches them), (c) the package's changed test files themselves, and (d) its test files
+// that scan source for a call the diff newly makes (newCalls, from newlyCalledNames; workspaces-o9o.83).
+export async function selectReach({ repo, mergeBase, changed, packageName, listChanged, newCalls = [] }) {
   const packageDir = join(repo, "packages", packageName);
   const testFiles = listTestFiles(join(packageDir, "test"));
   const viaImports = new Set(
@@ -254,9 +301,14 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
   );
   const stems = [...new Set(changed.filter((file) => !TEST_FILE.test(file)).map(stemOf))].filter(Boolean);
   const viaNames = new Set();
+  const viaCalls = new Set();
   for (const file of testFiles) {
     const text = readFileSync(file, "utf8");
     if (stems.some((stem) => text.includes(stem))) viaNames.add(relative(packageDir, file));
+    if (newCalls.length > 0) {
+      const scanned = scannedCallNames(text);
+      if (newCalls.some((name) => scanned.has(name))) viaCalls.add(relative(packageDir, file));
+    }
   }
   const prefix = `packages/${packageName}/`;
   const changedTests = new Set(
@@ -265,7 +317,7 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
       .map((file) => file.slice(prefix.length))
       .filter((file) => existsSync(join(packageDir, file))),
   );
-  const files = [...new Set([...viaImports, ...viaNames, ...changedTests])]
+  const files = [...new Set([...viaImports, ...viaNames, ...changedTests, ...viaCalls])]
     .filter((file) => existsSync(join(packageDir, file)))
     .sort();
   return {
@@ -274,15 +326,18 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
     viaNames: viaNames.size,
     viaNamesOnly: [...viaNames].filter((file) => !viaImports.has(file)).sort(),
     changedTests: changedTests.size,
+    viaCalls: viaCalls.size,
+    viaCallsOnly: [...viaCalls].filter((file) => !viaImports.has(file) && !viaNames.has(file) && !changedTests.has(file)).sort(),
   };
 }
 
 async function selectAll(context) {
   const { repo, mergeBase, listChanged } = context;
   const changed = changedFiles(repo, mergeBase);
+  const newCalls = newlyCalledNames(git(repo, ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", mergeBase, "HEAD"]));
   const selection = {};
   for (const packageName of SUITE_PACKAGES) {
-    selection[packageName] = await selectReach({ repo, mergeBase, changed, packageName, listChanged });
+    selection[packageName] = await selectReach({ repo, mergeBase, changed, packageName, listChanged, newCalls });
   }
   return { changed, selection };
 }
@@ -291,7 +346,7 @@ function printSelection(context, changed, selection) {
   context.log(`changed files: ${changed.length}`);
   for (const [packageName, picked] of Object.entries(selection)) {
     context.log(
-      `packages/${packageName}: ${picked.files.length} test files (imports ${picked.viaImports}, names ${picked.viaNames}, changed tests ${picked.changedTests}; reached by name only: ${picked.viaNamesOnly.length})`,
+      `packages/${packageName}: ${picked.files.length} test files (imports ${picked.viaImports}, names ${picked.viaNames}, changed tests ${picked.changedTests}, calls ${picked.viaCalls}; reached by name only: ${picked.viaNamesOnly.length}, by call only: ${picked.viaCallsOnly.length})`,
     );
     for (const file of picked.files) context.log(`  ${file}`);
   }

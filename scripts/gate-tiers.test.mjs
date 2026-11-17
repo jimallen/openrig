@@ -9,7 +9,9 @@ import {
   parseArguments,
   readReceipt,
   runTier,
+  newlyCalledNames,
   scanAddedLines,
+  scannedCallNames,
   selectReach,
   summaryLines,
 } from "./gate-tiers.mjs";
@@ -293,6 +295,86 @@ test("the tier 2 selection unites imports, files naming a changed stem, and chan
     ]);
     assert.deepEqual(picked.viaNamesOnly, ["test/census-by-name.test.ts", "test/queue-store.test.ts"]);
   });
+});
+
+// workspaces-o9o.83: a census test reads source as text and counts calls by name (OF-235's kill-site census greps
+// `\.(killSession|respawnPane)\(`), so neither the import graph nor a changed file's stem reaches it when a diff adds such a
+// call in a file named otherwise. T3 caught o9o.11's miss; tier 2 now selects it from the call names the census scans for.
+const KILL_SITE_CENSUS = String.raw`const n = (read(f).match(/\.(killSession|respawnPane)\(/g) ?? []).length;` + "\n";
+
+test("tier 2 selects a census test that scans source for a call the diff newly makes, and not tests that only call it", async () => {
+  await withRepo(async ({ repo, receipts }) => {
+    write(repo, "packages/daemon/test/kill-site-census.test.ts", KILL_SITE_CENSUS);
+    write(repo, "packages/daemon/test/launch-census.test.ts", String.raw`const n = text.match(/\.launchNode\(/g);` + "\n");
+    write(repo, "packages/daemon/test/calls-it.test.ts", "await tmux.killSession('x'); const mock = { killSession: async () => {} };\n");
+    write(repo, "packages/daemon/src/doctor.ts", "export async function probe(tmux) {\n  return 1;\n}\n");
+    commit(repo, "base tests");
+    git(repo, "branch", "-f", "main");
+    write(repo, "packages/daemon/src/doctor.ts", "export async function probe(tmux, name) {\n  await tmux.killSession(name);\n  return 1;\n}\n");
+    commit(repo, "the probe kills its own terminal");
+    const ports = fakePorts();
+    assert.equal((await run(repo, receipts, 2, ports, { list: true })).exitCode, EXIT.pass);
+    assert.ok(ports.lines.includes("  test/kill-site-census.test.ts"), ports.lines.join("\n"));
+    assert.ok(!ports.lines.includes("  test/calls-it.test.ts"), "a test that only calls the method is not a census of it");
+    assert.ok(!ports.lines.includes("  test/launch-census.test.ts"), "a census of another call is not reached");
+    assert.match(ports.lines.join("\n"), /calls 1[;,]/);
+  });
+});
+
+test("newlyCalledNames: method calls added to non-test source, counted per file, so a call moved within a file is not new", () => {
+  const diff = [
+    "diff --git a/packages/daemon/src/a.ts b/packages/daemon/src/a.ts",
+    "--- a/packages/daemon/src/a.ts",
+    "+++ b/packages/daemon/src/a.ts",
+    "@@ -1,2 +1,2 @@",
+    "-  await tmux.respawnPane(p);",
+    "+  await tmux.respawnPane(p, cmd);",
+    "+  await tmux.killSession(name);",
+    "--- a removed line that starts with two dashes is content, not a header",
+    "diff --git a/packages/daemon/src/b.ts b/packages/daemon/src/b.ts",
+    "--- a/packages/daemon/src/b.ts",
+    "+++ b/packages/daemon/src/b.ts",
+    "@@ -0,0 +1 @@",
+    "+  this.client.listSessions();",
+    "diff --git a/packages/daemon/test/c.test.ts b/packages/daemon/test/c.test.ts",
+    "--- a/packages/daemon/test/c.test.ts",
+    "+++ b/packages/daemon/test/c.test.ts",
+    "@@ -0,0 +1 @@",
+    "+  await tmux.destroyEverything();",
+    "diff --git a/packages/daemon/src/colocated.test.ts b/packages/daemon/src/colocated.test.ts",
+    "--- a/packages/daemon/src/colocated.test.ts",
+    "+++ b/packages/daemon/src/colocated.test.ts",
+    "@@ -0,0 +1 @@",
+    "+  await tmux.colocatedTestOnly();",
+    "diff --git a/packages/daemon/test/helpers/h.ts b/packages/daemon/test/helpers/h.ts",
+    "--- a/packages/daemon/test/helpers/h.ts",
+    "+++ b/packages/daemon/test/helpers/h.ts",
+    "@@ -0,0 +1 @@",
+    "+  await tmux.helperOnly();",
+    "diff --git a/docs/x.md b/docs/x.md",
+    "--- a/docs/x.md",
+    "+++ b/docs/x.md",
+    "@@ -0,0 +1 @@",
+    "+call `tmux.docsOnly()` here",
+  ].join("\n");
+  assert.deepEqual(newlyCalledNames(diff), ["killSession", "listSessions"]);
+  // Inside a hunk, "--- " and "+++ " start content lines: a call removed on a line whose content begins "-- " still cancels.
+  const moved = [
+    "diff --git a/packages/daemon/src/q.ts b/packages/daemon/src/q.ts",
+    "--- a/packages/daemon/src/q.ts",
+    "+++ b/packages/daemon/src/q.ts",
+    "@@ -1 +1 @@",
+    "--- sql`DELETE FROM t`; await store.purgeRows(id);",
+    "+await store.purgeRows(id);",
+  ].join("\n");
+  assert.deepEqual(newlyCalledNames(moved), []);
+});
+
+test("scannedCallNames reads the call names a census test greps source for, and nothing a test merely calls", () => {
+  assert.deepEqual([...scannedCallNames(KILL_SITE_CENSUS)].sort(), ["killSession", "respawnPane"]);
+  assert.deepEqual([...scannedCallNames(String.raw`expect(src).not.toMatch(/\.createSession\(/);`)], ["createSession"]);
+  assert.deepEqual([...scannedCallNames(`if (text.includes(".sendKeys(")) count++;`)], ["sendKeys"]);
+  assert.deepEqual([...scannedCallNames("await tmux.killSession('x'); const m = { killSession: vi.fn() };")], []);
 });
 
 test("tier 2 runs test:repo and vitest on each reached package, with 4 workers, no --reporter, scratch homes", async () => {
