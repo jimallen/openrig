@@ -196,6 +196,36 @@ describe("daemon startServer", () => {
     }
   });
 
+  // verify-sec o9o.74 finding 2: a db that is a symlink is never followed, and daemon start says so.
+  it("startServer names an external db that is a symlink, and leaves its target alone", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "o9o74-dblink-"));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const target = path.join(base, "real.sqlite");
+      fs.writeFileSync(target, "db");
+      fs.chmodSync(target, 0o644);
+      const dir = path.join(base, "db");
+      fs.mkdirSync(dir);
+      const db = path.join(dir, "openrig.sqlite");
+      fs.symlinkSync(target, db);
+      vi.stubEnv("OPENRIG_DB", db);
+      const { startServer } = await import("../src/index.js");
+
+      await startServer(7441);
+
+      expect(fs.statSync(target).mode & 0o777).toBe(0o644);
+      expect(errors.mock.calls.map((call) => String(call[0])).join("\n"))
+        .toContain(`${db} is a symlink; its target was not secured; point OPENRIG_DB at a real file`);
+    } finally {
+      errors.mockRestore();
+      vi.unstubAllEnvs();
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("does not require a terminal bearer token for the default loopback bind", async () => {
     const { startServer } = await import("../src/index.js");
 

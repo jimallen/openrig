@@ -290,8 +290,22 @@ describe("o9o.74: an external db", () => {
     const dir = join(base, "db");
     mkdirSync(dir);
     symlinkSync(target, join(dir, "openrig.sqlite"));
-    securePrivateDb(join(dir, "openrig.sqlite"), port(base));
-    expect(mode(target)).toBe("0644");
+    const sideTarget = writeWithMode(join(base, "elsewhere", "real.sqlite-wal"), "wal", 0o664);
+    symlinkSync(sideTarget, join(dir, "openrig.sqlite-wal"));
+    const result = securePrivateDb(join(dir, "openrig.sqlite"), port(base));
+    expect({ target: mode(target), sideTarget: mode(sideTarget) }).toEqual({ target: "0644", sideTarget: "0664" });
+    // verify-sec o9o.74 finding 2: never followed, but named, so the caller can say the target is exposed.
+    expect(result.symlinks).toEqual([join(dir, "openrig.sqlite"), join(dir, "openrig.sqlite-wal")]);
+  });
+
+  it("D7 every db file ends exactly 0600, whatever owner bits it had (0700, 0744, 0400)", () => {
+    const base = freshRoot();
+    const dir = join(base, "db");
+    const db = writeWithMode(join(dir, "openrig.sqlite"), "db", 0o700);
+    const wal = writeWithMode(join(dir, "openrig.sqlite-wal"), "wal", 0o744);
+    const shm = writeWithMode(join(dir, "openrig.sqlite-shm"), "shm", 0o400);
+    securePrivateDb(db, port(base));
+    expect({ db: mode(db), wal: mode(wal), shm: mode(shm) }).toEqual({ db: "0600", wal: "0600", shm: "0600" });
   });
 
   it("D5 a db folder that is the user's home is refused: the folder keeps its mode, the db is made 0600", () => {

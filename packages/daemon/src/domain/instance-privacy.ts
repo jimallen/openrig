@@ -153,19 +153,26 @@ export interface PrivateDbResult extends InstancePrivacyResult {
    *  `refused`: it is the user's home or above it. `missing`: it does not exist. */
   folder: "secured" | "shared" | "refused" | "missing";
   others?: string[];
+  /** The db files that are symlinks: never followed, so their targets were not secured. SQLite follows them, so the caller names
+   *  each one (verify-sec, o9o.74 finding 2). */
+  symlinks: string[];
 }
+
+/** A db file's mode: owner read and write, nothing else, whatever it had (verify-sec, o9o.74 finding 1). */
+const PRIVATE_DB_FILE = 0o600;
 
 /**
  * Keep a database configured outside the OpenRig home private to its owner (workspaces-o9o.74). Unlike a transcripts root, the db's
  * folder is not necessarily OpenRig's: db.path may name a file in a shared folder (~/Documents/openrig.sqlite). So:
- * - the db and its SQLite sidecars are made 0600 (lstat; a symlink is never followed; a missing file is skipped);
+ * - the db and its SQLite sidecars are made exactly 0600 (lstat; a missing file is skipped; a symlink is never followed and is
+ *   returned in `symlinks`, since its target stays as it was);
  * - the folder is made exactly 0700 only when it is OpenRig's own: it holds nothing but those files (an empty folder, as the preflight
  *   leaves it before the first start, counts). A folder holding anything else is left as it is and its other entries are named;
  * - a folder that is the user's home or above it is refused;
  * - nothing below the folder is walked.
  */
 export function securePrivateDb(dbPath: string, port: InstancePrivacyPort): PrivateDbResult {
-  const result: PrivateDbResult = { status: "secured", folder: "secured", tightened: 0, failures: [] };
+  const result: PrivateDbResult = { status: "secured", folder: "secured", tightened: 0, failures: [], symlinks: [] };
   const dir = dirname(resolve(dbPath));
   const dirEntry = port.entry(dir);
   if (!dirEntry || dirEntry.kind !== "directory") return { ...result, status: "missing", folder: "missing" };
@@ -174,9 +181,14 @@ export function securePrivateDb(dbPath: string, port: InstancePrivacyPort): Priv
   for (const name of dbFiles) {
     const path = join(dir, name);
     const entry = port.entry(path);
-    if (!entry || entry.kind !== "file" || (entry.mode & SHARED_BITS) === 0) continue;
+    if (!entry) continue;
+    if (entry.kind === "symlink") {
+      result.symlinks.push(path);
+      continue;
+    }
+    if (entry.kind !== "file" || entry.mode === PRIVATE_DB_FILE) continue;
     try {
-      port.chmod(path, entry.mode & 0o700);
+      port.chmod(path, PRIVATE_DB_FILE);
       result.tightened += 1;
     } catch (err) {
       result.failures.push({ path, error: (err as Error).message });

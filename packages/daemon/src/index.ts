@@ -348,6 +348,9 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
     } else if (dbPrivacy.folder === "refused") {
       console.error(`[instance-privacy] the db folder ${path.dirname(path.resolve(dbPath))} is the user's home or above it; its mode was left alone (the db files are 0600)`);
     }
+    for (const link of dbPrivacy.symlinks) {
+      console.error(`[instance-privacy] ${link} is a symlink; its target was not secured; point OPENRIG_DB at a real file`);
+    }
     for (const failure of dbPrivacy.failures) console.error(`[instance-privacy] could not remove group/other access from ${failure.path}: ${failure.error}`);
   }
 
