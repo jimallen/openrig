@@ -220,6 +220,16 @@ describe("workspaces-o9o.76: on a Codex seat the relay runs once per hook when t
     expect(posts("Stop")).toHaveLength(1);
   });
 
+  // verify-qa2's review of 525c0a0aa, declined by the CoS on a measurement: the scanner checks lexical shape, not every value, so an invalid
+  // value elsewhere in the file still lets OpenRig's real block count. Measured on Codex 0.166.0 (`codex` TUI under a pty and `codex exec`,
+  // temporary CODEX_HOME): a config.toml that does not parse stops Codex at load ("Error loading config.toml ... string values must be
+  // quoted", exit 1) before any session, plugin or hook exists, so neither copy of the relay runs and the plugin stepping aside loses nothing.
+  it("an invalid value elsewhere in config.toml (Codex refuses to load the file, measured: no copy runs at all): the plugin still steps aside", async () => {
+    writeConfig(daemonRelay, "invalid_value = @@@\n");
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(0);
+  });
+
   it("OpenRig records the exact relay path it wrote: mode 0600 in a 0700 directory, and removes the record when it strips its block", () => {
     writeConfig(daemonRelay);
     expect(readFileSync(relayRecord(), "utf8")).toBe(`${daemonRelay}\n`);
