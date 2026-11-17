@@ -31,6 +31,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: on the package install page the steps not yet reached (`[ 2 VALIDATE ]` to `[ 5 APPLY ]` at the start) were drawn at 30% of the muted ink: measured in a rendered browser, 1.55:1 on the light page and 1.82:1 on the dark one.
 - Now they use 90% of it: 4.86:1 (light) and 6.84:1 (dark), still a little dimmer than a completed step, which also carries its ✓.
 
+### The web UI keeps both a custom font size and a text colour on one element (workspaces-o9o.116)
+
+- Symptom: `cn()` (tailwind-merge) did not know the theme's custom font sizes (`text-label-sm` and the 8 others in `tailwind.config`), so a custom size and a text colour in the same `cn()` call counted as one conflict and only the later one survived. Every table header lost its muted colour; the package install stepper's labels lost their 10px size and wrapped onto two lines; the bundle inspector's DIGEST and INTEGRITY lines and two install-plan cells lost theirs; a text field given a custom size lost its own text colour.
+- Now `cn()` knows the 9 sizes: a custom size and a colour both stay, and two sizes give the later one, as for Tailwind's own sizes. A test keeps `cn()`'s list equal to the config's.
+- Visible changes: table headers are in their muted header colour; the restore modal's plan-table headers keep 12px (they no longer add their own 9px; Jim, 2026-11-17) in that colour; the install stepper is 10px on one line; the rollback dialog's title takes its headline size's own line height.
+
 ### Text on an amber fill is readable (workspaces-o9o.115)
 
 - Symptom: text set on the amber fill (`bg-warning`) was white or inherited: the "hold" verb button (white on amber when active, and on hover) at 2.05:1 on light and 1.68:1 on dark, and a package's "ROLLED BACK" install badge at 1.36:1 on dark.

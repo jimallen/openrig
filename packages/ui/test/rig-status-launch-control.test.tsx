@@ -307,6 +307,20 @@ describe("LaunchRecoveryModal — plan-before-mutation + the LOCK + honesty", ()
     expect(execute.textContent).toContain("Restore original");
   });
 
+  // workspaces-o9o.116: the plan table's headers render as the TableHead primitive defines them, 12px label-md in the muted
+  // header colour like every other table (Jim, 2026-11-17). They used to add text-[9px], and cn() dropped their muted colour.
+  it("the plan table's headers are label-md in the muted header colour, with no size of their own", async () => {
+    await openWith(MIXED_PLAN);
+    const heads = screen.getByTestId("launch-plan-table").querySelectorAll("th");
+    expect(heads.length).toBe(4);
+    for (const th of heads) {
+      const classes = th.className.split(/\s+/);
+      expect(classes, th.textContent ?? "").toContain("text-label-md");
+      expect(classes, th.textContent ?? "").toContain("text-foreground-muted");
+      expect(classes.filter((c) => /^text-\[/.test(c)), th.textContent ?? "").toEqual([]);
+    }
+  });
+
   // workspaces-o9o.112: a plan node carries `warning` (o9o.111): apply reports it for this seat while still starting it, today
   // when the seat's leases could not be read. `rig up --plan` prints it under the seat; the modal showed only the prompt or the
   // reason and dropped it. It is shown on that seat's row, beside its reason, and on no other row.

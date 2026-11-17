@@ -225,10 +225,10 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
             <Table data-testid="launch-plan-table">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="font-mono text-[9px]">Seat</TableHead>
-                  <TableHead className="font-mono text-[9px]">Token</TableHead>
-                  <TableHead className="font-mono text-[9px]">Plan</TableHead>
-                  <TableHead className="font-mono text-[9px]">Prompt / note</TableHead>
+                  <TableHead className="font-mono">Seat</TableHead>
+                  <TableHead className="font-mono">Token</TableHead>
+                  <TableHead className="font-mono">Plan</TableHead>
+                  <TableHead className="font-mono">Prompt / note</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
