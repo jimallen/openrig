@@ -11,35 +11,19 @@
 //   the runner's own ERROR line, else the fixed PANE_TAIL_NOT_STORED marker. The tail itself rides a transient field
 //   (paneTail) that responses carry and persisting code strips or never reads.
 // - Redact what is stored anyway. Pane evidence that was durable before this unit (restore attention evidence, the
-//   resume-failure quote) and the runner ERROR line go through redactPaneText: the v0 transcript patterns plus shapes
-//   they miss. A pattern list is never complete; that is why the first rule exists.
+//   resume-failure quote) and the runner ERROR line go through redactPaneText, which is the one transcript redaction
+//   policy (transcript-redaction.ts, twinned with the CLI's restore-packet list). A pattern list is never complete;
+//   that is why the first rule exists.
 
 import { redactTranscriptContent } from "./transcript-redaction.js";
 
 /** The durable suffix when the pane showed something but no runner ERROR line: the tail is withheld from every store. */
 export const PANE_TAIL_NOT_STORED = " — pane tail not stored";
 
-/** Shapes the v0 transcript patterns (transcript-redaction.ts, a twin of the CLI's restore-packet list, so not widened
- *  here) miss. Pane text only. Order matters: token shapes first, then secret-named assignments. */
-const PANE_TOKEN_PATTERNS: readonly RegExp[] = [
-  /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,                                   // Slack
-  /\bglpat-[A-Za-z0-9_-]{20,}/g,                                        // GitLab personal access token
-  /\bnpm_[A-Za-z0-9]{36}\b/g,                                           // npm
-  /\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g,    // JWT
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,                                      // AWS access key id
-  /\bAIza[0-9A-Za-z_-]{35}/g,                                           // Google API key
-];
-/** user:password@ in a URL: the password is redacted, the user and host kept. */
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@/]+@/gi;
-/** NAME=value or NAME: value where NAME ends in a secret word: the value is redacted. */
-const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|KEY))(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"']+)/gi;
-
-/** Pane text with the v0 transcript patterns and the pane-only shapes above replaced by `[REDACTED]`. */
+/** Pane text redacted by the shared transcript policy. There is one redaction list (workspaces-o9o.48): the pane-only
+ *  token shapes this unit first added are in it, and its over-broad NAME=value rule gave way to the shared one. */
 export function redactPaneText(text: string): string {
-  let out = redactTranscriptContent(text);
-  for (const pattern of PANE_TOKEN_PATTERNS) out = out.replace(pattern, "[REDACTED]");
-  out = out.replace(URL_PASSWORD, "$1[REDACTED]@");
-  return out.replace(SECRET_ASSIGNMENT, "$1$2[REDACTED]");
+  return redactTranscriptContent(text);
 }
 
 /** Non-empty pane lines a tail quotes. */

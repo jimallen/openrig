@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Pane evidence uses the one transcript redaction list (workspaces-o9o.48)
+
+- Symptom: launch-failure pane text (restore attention evidence, resume-failure quotes, runner ERROR lines) had a redaction list of its own. Its NAME=value rule redacted any value after a name ending in `KEY` or `TOKEN`, in any case, so it ate prose and code (`the key: ensure tests pass` became `the key: [REDACTED] tests pass`, and so did `{ key: value }`, `MONKEY=`, `SORT_KEY=` and `primary_key:`). It also missed the JSON form `"client_secret": "…"`.
+- Now `redactPaneText` is the shared transcript policy (`redactTranscriptContent`), so pane text, transcripts and restore packets are redacted by one list. The pane-only token shapes were already in that list.
+- An UPPER_SNAKE secret-named assignment (`DB_PASSWORD=`, `MY_API_KEY=`, `SESSION_TOKEN=`) now redacts any value that is not a reference, however short (`hunter2`, `t0k`), in pane text, transcripts and restore packets alike. Lower-case, camelCase and kebab names keep the 8-character floor, so prose stays (`password: none`). **Changed from the entry above:** `TOKEN: abc` was kept and is now redacted.
+
 ### Transcript redaction covers more credential shapes, on both twins (workspaces-o9o.28)
 
 - Symptom: transcript text redacted only `sk-`, GitHub, `Bearer` and long base64 shapes. AWS key ids, Google keys, Slack, GitLab and npm tokens, short JWTs, URL passwords and `NAME=value` secrets passed through. So did a token wider than its tmux pane: the transcript held it as two fragments, each too short to match.

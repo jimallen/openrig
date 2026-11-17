@@ -37,6 +37,9 @@ const JSON_SECRET = "abc" + "DEF123ghi";
 const CAMEL = "tok" + "ValueZ9q";
 const KEBAB = "kebab" + "Pass77";
 const LOWER_PW = "hunter22" + "hunter";
+const SHORT_PW = "hunt" + "er2";
+const SHORT_KEY = "abc" + "123";
+const SHORT_TOK = "t" + "0k";
 const BEARER_VALUE = "o9o28" + fill(24, "AbCdEf012345");
 
 const HEX41 = fill(41, "0123456789abcdef");
@@ -79,6 +82,12 @@ const SECRET_ROWS: SecretRow[] = [
   { shape: "token_<40hex>", text: `use token_${HEX40} now`, secret: HEX40, kept: ["use ", " now"] },
   { shape: "key-<64hex>", text: `use key-${HEX64} now`, secret: HEX64, kept: ["use ", " now"] },
   { shape: "<40hex>-suffix", text: `use ${HEX40}-prod now`, secret: HEX40, kept: ["use ", " now"] },
+  // workspaces-o9o.48 (CoS decision A): an UPPER_SNAKE secret name is an env-var assignment, where real secrets sit, so
+  // any value that is not a reference is redacted, however short. ("TOKEN: abc" was a negative pin before this.)
+  { shape: "short UPPER_SNAKE password", text: `export DB_PASSWORD=${SHORT_PW} next`, secret: SHORT_PW, kept: ["export DB_PASSWORD=", " next"] },
+  { shape: "short UPPER_SNAKE api key", text: `MY_API_KEY=${SHORT_KEY}`, secret: SHORT_KEY, kept: ["MY_API_KEY="] },
+  { shape: "three-character TOKEN value", text: `TOKEN: ${SHORT_TOK}`, secret: SHORT_TOK, kept: ["TOKEN: "] },
+  { shape: "short quoted UPPER_SNAKE secret", text: `SECRET='${SHORT_TOK}'`, secret: SHORT_TOK, kept: ["SECRET='", "'"] },
 ];
 
 // workspaces-o9o.28 review (3): a quoted secret value with spaces is redacted whole, not only its first word (or not at
@@ -111,7 +120,9 @@ const NEGATIVE_ROWS: Array<[string, string]> = [
   ["git@ ssh URL", "git@github.com:jimallen/openrig.git and ssh://git@host/r"],
   ["npm_config_*", "npm_config_cache=/home/user/.npm"],
   ["max_tokens=", "max_tokens=409600000"],
-  ["short TOKEN value", "TOKEN: abc"],
+  // workspaces-o9o.48 (CoS decision A): the 8-character floor holds for lower-case, camelCase and kebab names only.
+  ["short lower-case password value", "password: abc"],
+  ["short camelCase token value", "accessToken: abc"],
   ["variable reference", "API_KEY=$OPENAI_API_KEY_FROM_ENV and SECRET=${VAULT_SECRET_VALUE}"],
   ["placeholder", "GITHUB_TOKEN=<your-token-here>"],
   ["URL with port, no userinfo", "http://localhost:8080/api@x"],

@@ -1,7 +1,12 @@
 // workspaces-o9o.3: the quote a failed launch carries from its pane. Expected values are written out here, not derived
 // from the module's constants, so a change to the line count, the cap, the separator or the redaction fails a row.
 import { describe, expect, it } from "vitest";
-import { launchFailureSuffix, paneTailQuote, runnerErrorQuote } from "../src/domain/launch-failure-report.js";
+import { launchFailureSuffix, paneTailQuote, redactPaneText, runnerErrorQuote } from "../src/domain/launch-failure-report.js";
+import { redactTranscriptContent } from "../src/domain/transcript-redaction.js";
+
+/** Fakes assembled at runtime, so no credential-shaped literal sits in this file (CoS rule, 2026-11-16). */
+const SK = ["s", "k-"].join("");
+const EYJ = "ey" + "J";
 
 describe("paneTailQuote", () => {
   it("quotes the last four non-empty lines, joined with ' | '", () => {
@@ -13,7 +18,7 @@ describe("paneTailQuote", () => {
   });
 
   it("redacts secret-shaped tokens", () => {
-    expect(paneTailQuote("key sk-abcdefghijklmnop0123 here")).toBe("key [REDACTED] here");
+    expect(paneTailQuote(`key ${SK}abcdefghijklmnop0123 here`)).toBe("key [REDACTED] here");
   });
 
   // workspaces-o9o.3 review (verify-sec 1): shapes the v0 transcript patterns miss. Synthetic values only.
@@ -22,7 +27,7 @@ describe("paneTailQuote", () => {
     ["Slack user token", "xox" + "p-1234567890-1234567890-1234567890123-abcdef0123456789abcdef0123456789", "xox" + "p-"],
     ["GitLab token", "gl" + "pat-AbCdEfGhIjKlMnOpQrSt", "glpat-"],
     ["npm token", "np" + "m_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "npm_"],
-    ["JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk", "eyJ"],
+    ["JWT", `${EYJ}hbGciOiJIUzI1NiJ9.${EYJ}zdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`, EYJ],
     ["AWS access key id", "AK" + "IAIOSFODNN7EXAMPLE", "AKIA"],
     ["Google API key", "AI" + "zaSyA1234567890abcdefghijklmnopqrstuv", "AIza"],
   ])("redacts a %s", (_label, secret, prefix) => {
@@ -52,7 +57,7 @@ describe("paneTailQuote", () => {
   });
 
   it("redacts before it cuts, so a token across the cap is not left as an unredacted fragment", () => {
-    const quote = paneTailQuote(`${"ab ".repeat(130)}sk-abcdefghijklmnopqrstuvwxyz0123456789`);
+    const quote = paneTailQuote(`${"ab ".repeat(130)}${SK}abcdefghijklmnopqrstuvwxyz0123456789`);
     expect(quote).toBe(`${"ab ".repeat(130)}[REDACTED]`);
   });
 
@@ -96,5 +101,42 @@ describe("launchFailureSuffix", () => {
   it("is empty when the pane shows nothing", () => {
     expect(launchFailureSuffix("")).toBe("");
     expect(launchFailureSuffix(null)).toBe("");
+  });
+});
+
+// workspaces-o9o.48: pane text is redacted by the ONE transcript list (transcript-redaction.ts), not by a pane-only list
+// of its own. C's own assignment rule redacted any value after a name ending in KEY, so it ate prose and code, and it
+// missed the JSON form; the shared rule keeps prose and catches JSON.
+describe("redactPaneText is the shared transcript redaction policy", () => {
+  it.each([
+    ["prose 'the key:'", "the key: ensure tests pass"],
+    ["an object literal", "const o = { key: valueFromSomewhere };"],
+    ["MONKEY=", "MONKEY=bananarama"],
+    ["SORT_KEY=", "SORT_KEY=lastname_first"],
+    ["primary_key:", "primary_key: identifier"],
+  ])("leaves %s alone", (_label, text) => {
+    expect(redactPaneText(text)).toBe(text);
+  });
+
+  it("redacts a JSON secret field", () => {
+    const value = "abc" + "DEF123ghi";
+    expect(redactPaneText(`{"client_secret": "${value}"}`)).toBe('{"client_secret": "[REDACTED]"}');
+  });
+
+  it("redacts a quoted phrase whole and keeps its quotes", () => {
+    expect(redactPaneText('export DB_PASSWORD="correct horse battery"')).toBe('export DB_PASSWORD="[REDACTED]"');
+  });
+
+  it("gives the transcript policy's output, byte for byte, over a mixed corpus", () => {
+    const corpus = [
+      `key ${SK}abcdefghijklmnop0123 here`,
+      "git clone https://jim:hunter2pass@example.com/repo.git",
+      "export DB_PASSWORD=hunter2 MY_API_KEY=abc123 SESSION_TOKEN=t0k",
+      "client_secret: s3cr3t-v4lue",
+      'API_KEY="two words" and password: "hunter22x more"',
+      "the key: ensure tests pass; SORT_KEY=lastname_first",
+      `auth ${EYJ}hbGciOiJIUzI1NiJ9.${EYJ}zdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk end`,
+    ];
+    for (const text of corpus) expect(redactPaneText(text), text).toBe(redactTranscriptContent(text));
   });
 });

@@ -359,10 +359,10 @@ describe("M2b redaction (openrig-v0 / velocity-v1 patterns)", () => {
     expect(hasSecretPattern("")).toBe(false);
   });
 
-  it("exposes the pattern list (5 Velocity patterns, hex 40/64 exempt, + 9 credential shapes + 2 quoted-value rules, workspaces-o9o.28)", () => {
+  it("exposes the pattern list (5 Velocity patterns, hex 40/64 exempt, + 9 credential shapes, assignment rules for two name casings, workspaces-o9o.28/.48)", () => {
     // Per-shape rows, over-redaction negatives and the daemon-twin parity check live in
     // packages/daemon/test/transcript-redaction.test.ts, which runs every row on this module too.
-    expect(SECRET_PATTERNS.length).toBe(16);
+    expect(SECRET_PATTERNS.length).toBe(19);
   });
 });
 
