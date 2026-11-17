@@ -116,7 +116,7 @@ describe("the store gives a plain prompt's Notification the tool its PermissionR
     const store = new AgentActivityStore({ db, eventBus: new EventBus(db), now: () => NOW });
     const hook = (hookEvent: string, subtype?: string, at = "2026-11-17T10:00:00.000Z") =>
       store.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@r", hookEvent, ...(subtype ? { subtype } : {}), occurredAt: at });
-    return { db, hook };
+    return { db, hook, store };
   };
 
   it("a Notification/permission_prompt after a plain PermissionRequest carries its tool", () => {
@@ -132,6 +132,25 @@ describe("the store gives a plain prompt's Notification the tool its PermissionR
     hook("UserPromptSubmit");
     const note = hook("Notification", "permission_prompt", "2026-11-17T10:00:01.000Z");
     expect(note.ok && note.activity.promptTool).toBeUndefined();
+    db.close();
+  });
+
+  // workspaces-o9o.98 (o9o.37 survivor P5): the PermissionRequest and its Notification must come from the same occupant. A prior occupant's
+  // PermissionRequest followed by the new occupant's Notification is not that prompt's tool. Generations are carried on the hook as given.
+  it("a Notification from another occupant than the PermissionRequest carries no promptTool", () => {
+    const { store, db } = setup();
+    store.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@r", hookEvent: "PermissionRequest", subtype: "Bash", generation: "gen-old", occurredAt: "2026-11-17T10:00:00.000Z" });
+    const note = store.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@r", hookEvent: "Notification", subtype: "permission_prompt", generation: "gen-new", occurredAt: "2026-11-17T10:00:01.000Z" });
+    expect(note.ok).toBe(true);
+    expect(note.ok && note.activity.promptTool).toBeUndefined();
+    db.close();
+  });
+
+  it("control: the same occupant's PermissionRequest and Notification, both carrying a generation, do pass the tool", () => {
+    const { store, db } = setup();
+    store.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@r", hookEvent: "PermissionRequest", subtype: "Bash", generation: "gen-new", occurredAt: "2026-11-17T10:00:00.000Z" });
+    const note = store.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@r", hookEvent: "Notification", subtype: "permission_prompt", generation: "gen-new", occurredAt: "2026-11-17T10:00:01.000Z" });
+    expect(note.ok && note.activity.promptTool).toBe("Bash");
     db.close();
   });
 

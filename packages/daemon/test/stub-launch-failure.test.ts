@@ -39,11 +39,11 @@ describe("o9o.29: a stub script's readiness", () => {
 });
 
 /** A stub adapter on its runner path, with a fake filesystem holding the sidecar and a fake pane. */
-function adapterWith(sidecar: () => string | null, pane: string) {
+function adapterWith(sidecar: () => string | null, pane: string, capture?: (opts?: { joinWrappedLines?: boolean }) => string) {
   const files = new Map<string, string>([["/r.js", ""]]);
   const tmux = Object.assign(mockTmuxAdapter(), {
     sendShellCommand: async () => ({ ok: true as const }),
-    capturePaneContent: async () => pane,
+    capturePaneContent: async (_pane: string, _lines?: number, opts?: { joinWrappedLines?: boolean }) => (capture ? capture(opts) : pane),
   });
   const adapter = new StubRuntimeAdapter({
     tmux,
@@ -77,6 +77,20 @@ describe("o9o.29: a stub launch failure says what the pane showed", () => {
     if (result.ok) return;
     expect(result.error).toBe("stub launch: timed out waiting for the runner to report ready — pane tail not stored");
     expect(result.paneTail).toBe("[stub] held line one | [stub] held line two");
+  });
+
+  // workspaces-o9o.98 (from verify-qa2's o9o.29 review): the pane is read with soft-wrapped lines joined, so a token wider than the pane
+  // is redacted whole. The fake pane honours the option the way tmux does: without the join the token arrives split over two rows, and
+  // neither half is a token shape the redaction knows.
+  it("the pane tail is read with wrapped lines joined, so a token split by the pane width is redacted whole", async () => {
+    const token = ["xox", "b-", "1234567890", "-", "abcdefghijklmnop"].join("");
+    const cut = 2;
+    const pane = (opts?: { joinWrappedLines?: boolean }) =>
+      opts?.joinWrappedLines === true ? `[stub] login ${token}\n` : `[stub] login ${token.slice(0, cut)}\n${token.slice(cut)}\n`;
+    const result = await adapterWith(() => null, "", pane);
+    if (result.ok) throw new Error("expected a failure");
+    expect(result.paneTail).toBe("[stub] login [REDACTED]");
+    expect(result.paneTail ?? "").not.toContain(token.slice(cut));
   });
 
   it("an ERROR line carrying a token is redacted in the error and the tail", async () => {
