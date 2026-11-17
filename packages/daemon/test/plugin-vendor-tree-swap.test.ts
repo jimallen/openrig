@@ -108,6 +108,17 @@ describe("o9o.55: the vendor refresh swaps the whole tree, never leaves a mixed 
     expect(fs.readdirSync(w.plugins).sort()).toEqual(["openrig-core", "openrig-core.bak"]);
   });
 
+  it("an exact copy with leftovers beside it (a crash after the swap, before the old tree went) is cleaned, the copy untouched", async () => {
+    const w = world();
+    await w.service.ensureVendored("openrig-core");
+    const exact = tree(w.installed);
+    put(nodePath.join(w.plugins, ".openrig-core.openrig-old-1234-abcdef"), "hooks/a.cjs", "old\n");
+    put(nodePath.join(w.plugins, ".openrig-core.openrig-staging-1234-abcdef"), "hooks/a.cjs", "half\n");
+    await w.service.ensureVendored("openrig-core");
+    expect(fs.readdirSync(w.plugins)).toEqual(["openrig-core"]);
+    expect(tree(w.installed)).toEqual(exact);
+  });
+
   it("a staging name planted as a symlink is never followed: its target stays", async () => {
     const w = world();
     const outside = tempDir();

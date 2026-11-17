@@ -15,6 +15,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: the daemon-start refresh of `OPENRIG_HOME/plugins/openrig-core` replaced it file by file. Each file was atomic, the tree was not: a full disk (ENOSPC) partway through left the copy mixed, some files new, some old, files the package dropped still present, for that whole boot. The same failure also skipped the global skill seed refreshes, which shared its try block.
 - Now the package is copied into a private staging folder beside the copy, verified, and swapped in with two renames; the old tree is then removed. A failure before the swap leaves the installed copy exactly as it was; a failed swap puts the old copy back; staging and old folders a crash left are removed at the next start; a copy that already matches is not rewritten. Nothing is written or removed through a link: a link inside the old copy is removed, never followed.
 - A failed refresh is reported and no longer skips the global seed refreshes.
+- Known limit: between the swap's two renames the copy's path briefly does not exist, so a seat reading `OPENRIG_HOME/plugins/openrig-core` at that instant of a daemon start gets ENOENT and reads it again later. That moment is the cost of never showing a mixed copy.
 - The temp file behind every single-file write stays exclusive (O_EXCL), now pinned by a test.
 
 ### The generation record `rig walk` reads is served redacted (workspaces-o9o.60)

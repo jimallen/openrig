@@ -193,15 +193,17 @@ export class PluginVendorService {
       return;
     }
     this.fs.mkdirp(this.userPluginsDir);
+    // OpenRig's own leftovers from a crashed refresh go first, whether or not the copy needs rewriting: a crash after the
+    // swap but before the old tree's removal leaves an exact copy beside them (o9o.55 review).
+    const leftover = new RegExp(`^\\.${pluginName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.openrig-(staging|old)-`);
+    for (const name of this.fs.readdir(this.userPluginsDir)) {
+      if (leftover.test(name)) this.fs.removeTree(nodePath.join(this.userPluginsDir, name));
+    }
     // Already exact: no new tree. The in-place mirror then writes no content (every file hash-matches) and only reconciles
     // modes, so a start with nothing to change rewrites nothing.
     if (this.fs.lstat(targetDir) === "directory" && this.drift(sourceDir, targetDir, new Set()).length === 0) {
       this.mirror(sourceDir, targetDir, new Set(), anchor);
       return;
-    }
-    const leftover = new RegExp(`^\\.${pluginName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.openrig-(staging|old)-`);
-    for (const name of this.fs.readdir(this.userPluginsDir)) {
-      if (leftover.test(name)) this.fs.removeTree(nodePath.join(this.userPluginsDir, name));
     }
     const suffix = `${process.pid}-${Date.now().toString(36)}-${(swapCounter++).toString(36)}`;
     const staged = nodePath.join(this.userPluginsDir, `.${pluginName}.openrig-staging-${suffix}`);
