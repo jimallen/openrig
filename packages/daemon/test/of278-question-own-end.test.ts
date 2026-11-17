@@ -148,17 +148,23 @@ describe("OF-278 a question is settled only by the end of its own AskUserQuestio
     });
   }
 
-  // verify-qa2 review of b285a5a5d, through the real service: B's question-wait hook fires, A's late end lands, and only then does B's poll reach
-  // the daemon, with B's relayed PermissionRequest lost. The hold finds the seat not asking and records B itself (stamped when B's hook fired,
-  // before A's end). Counted by source that was one ask beside A's relay record, and A's end masked B; counted by question it is two.
-  it("the hold records B itself after A's late end (B's relay report lost): B is still on record as asking and is auto-answered", async () => {
+  // verify-qa2 review of b285a5a5d, through the real service. Between A and B the turn runs a Bash call that needs approval, so the seat's
+  // newest word is a permission prompt, not a question. B's relayed PermissionRequest is lost; B's question-wait hook finds the seat not asking
+  // and the hold records B itself. A's end then lands late. Counted by source, A's relay record and B's hold record were one ask and A's end
+  // masked B (no auto-answer); counted by question they are two.
+  it("the hold records B itself (B's relay report lost) and A's end lands after it: B is still on record as asking and is auto-answered", async () => {
     await relayed(provider("UserPromptSubmit", null));
     const a = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
-    clock += MIN;
+    clock += MIN;                                          // A answered; its end is queued in the background
+    await relayed(provider("PreToolUse", null, { tool_name: "Bash", tool_use_id: "toolu_bash_0001" }));
+    await relayed(provider("Notification", null, { notification_type: "permission_prompt" }));   // Bash needs approval
+    clock += 5_000;
+    await relayed(provider("PostToolUse", null, { tool_name: "Bash", tool_use_id: "toolu_bash_0001" }));   // approved and ran
+    clock += 1_000;
     const bAskedAtMs = clock;                              // B's dialog opens; its relayed PermissionRequest never arrives
+    expect((await poll("req-size-00001", SIZE, bAskedAtMs)).action).toBe("wait");   // the hold records B
     clock += 2_000;
-    await ends(COLOUR, "toolu_colour_0001", { "Pick a colour": "Blue" });   // A's late end
-    expect((await poll("req-size-00001", SIZE, bAskedAtMs)).action).toBe("wait");   // the hold records B, stamped at bAskedAtMs
+    await ends(COLOUR, "toolu_colour_0001", { "Pick a colour": "Blue" });   // A's late end, after the hold's record of B
     const b = SeatQuestionService.rowId(nodeId, "req-size-00001");
     expect([state(a.rowId), state(b)]).toEqual(["answered_human", "waiting"]);
     clock = bAskedAtMs + 15 * MIN;
