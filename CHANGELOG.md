@@ -59,6 +59,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - `rig doctor` has a new `vendored_plugins` check that warns with the same folders and says to move them out. It reads the folder from disk, so it works while the daemon is down.
 - A read-only `openrig-lab` folder whose obsolete refocus hook can't be retired is reported and ignored too, instead of stopping the daemon.
 - Changed contract: two different plugins that register the same hook no longer fail daemon start; the later one is ignored and reported.
+
 ### An unreadable process table no longer drives a resume, a rotation or a refusal reason (workspaces-o9o.72)
 
 - Follows o9o.67, which made an unreadable process table "unavailable" for the identity verdicts. Five more consumers judged it as "no such process" (census during o9o.67); each now treats it as unknown:
