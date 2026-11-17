@@ -35,6 +35,7 @@ import { ProcessCensus } from "../domain/process-census.js";
 import { CodexThreadIdResolver } from "../domain/codex-thread-id.js";
 import { resolveLiveCodexThreadId } from "../domain/model-divergence/current-generation-record.js";
 import { redactedRecordView } from "../domain/generation-record-view.js";
+import { createHash } from "node:crypto";
 import { SeatIdentityStore } from "../domain/seat-identity-store.js";
 import { parseSqliteUtcMs } from "../domain/sqlite-time.js";
 import { requestPdaRelease } from "../domain/pda-release.js";
@@ -703,6 +704,13 @@ sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), a
   const fs = await import("node:fs");
   const sinceRaw = c.req.query("sinceBytes");
   const since = sinceRaw === undefined ? 0 : Number(sinceRaw);
+  // workspaces-o9o.82: rig walk asks for its piece by digest; the view marks the record whose raw text it is.
+  const pieceSha256 = c.req.query("pieceSha256");
+  if (pieceSha256 !== undefined && !/^[0-9a-f]{64}$/.test(pieceSha256)) {
+    return c.json({ error: "invalid_piece_sha256", message: "pieceSha256 must be 64 lower-case hex characters." }, 400);
+  }
+  const matchesPiece = pieceSha256 === undefined ? undefined
+    : (text: string) => createHash("sha256").update(text, "utf8").digest("hex") === pieceSha256;
   if (!Number.isSafeInteger(since) || since < 0 || sinceRaw === "") {
     return c.json({ error: "invalid_since_bytes", message: "sinceBytes must be a non-negative safe integer." }, 400);
   }
@@ -740,7 +748,7 @@ sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), a
       // Is sinceBytes a line start? Only the byte before it can say (a raw offset may land inside a line, even a token).
       const before = Buffer.alloc(1);
       const startsAtLine = since === 0 || (fs.readSync(fd, before, 0, 1, since - 1) === 1 && before[0] === 0x0a);
-      return c.json({ generationId, sessionId, runtime, totalBytes, suffix: redactedRecordView(buf.subarray(0, read).toString("utf8"), startsAtLine), truncated: totalBytes - since > read });
+      return c.json({ generationId, sessionId, runtime, totalBytes, suffix: redactedRecordView(buf.subarray(0, read).toString("utf8"), startsAtLine, matchesPiece), truncated: totalBytes - since > read, ...(matchesPiece ? { pieceMatching: true } : {}) });
     } finally {
       fs.closeSync(fd);
     }

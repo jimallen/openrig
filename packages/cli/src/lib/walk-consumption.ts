@@ -1,7 +1,17 @@
+import { createHash } from "node:crypto";
 import { redact } from "../restore-packet/redaction.js";
 
+/** The field a daemon's generation-record view sets on the record whose RAW text is the walked piece (o9o.82). */
+const PIECE_MATCH_FIELD = "openrigPieceMatch";
+
+/** The digest rig walk sends as `pieceSha256`: sha256 of the piece's canonical text (CRLF to LF, trimmed). The daemon
+ *  compares it with each user message's raw text and marks the match; it never serves a digest. */
+export function pieceSha256(content: string): string {
+  return createHash("sha256").update(content.replace(/\r\n/g, "\n").trim(), "utf8").digest("hex");
+}
+
 /** Receipt evidence only: complete input and its closed native turn, never comprehension. */
-export function analyzeWalkSuffix(suffix: string, content: string): { consumed: boolean; turnClosed: boolean } {
+export function analyzeWalkSuffix(suffix: string, content: string, opts: { serverMatched?: boolean } = {}): { consumed: boolean; turnClosed: boolean } {
   // CRLF and surrounding whitespace are the only permitted transport normalization.
   // Internal whitespace (including code indentation) remains content.
   const canonical = (text: string) => text.replace(/\r\n/g, "\n").trim();
@@ -11,6 +21,11 @@ export function analyzeWalkSuffix(suffix: string, content: string): { consumed: 
   // piece as sent, or the piece as redacted, is the piece; an older daemon serves it unredacted.
   const redactedExpected = canonical(redact(content));
   const isPiece = (text: string) => expected !== "" && (text === expected || text === redactedExpected);
+  // workspaces-o9o.82: a daemon that matched the piece by its raw digest marks that record, and only a marked record is
+  // the piece. Two messages that redact alike (each holding a different secret) then cannot certify each other. Without
+  // the daemon's word (an older daemon), the text rule above stands.
+  const isPieceRecord = (rec: { [PIECE_MATCH_FIELD]?: unknown }, text: string) =>
+    opts.serverMatched === true ? expected !== "" && rec[PIECE_MATCH_FIELD] === true : isPiece(text);
   const textOf = (value: unknown): string => typeof value === "string" ? value
     : Array.isArray(value) ? value.map(b => (b?.type === "text" || b?.type === "input_text") && typeof b.text === "string" ? b.text : "").join("") : "";
   let consumed = false;
@@ -18,6 +33,7 @@ export function analyzeWalkSuffix(suffix: string, content: string): { consumed: 
     type?: string; subtype?: string; uuid?: string; parentUuid?: string; isSidechain?: boolean; isMeta?: boolean;
     message?: { role?: string; content?: unknown };
     payload?: { type?: string; role?: string; content?: unknown; turn_id?: string };
+    [PIECE_MATCH_FIELD]?: unknown;
   };
   const claudeRecords = new Map<string, Record>();
   const matchedInputs = new Set<string>();
@@ -36,7 +52,7 @@ export function analyzeWalkSuffix(suffix: string, content: string): { consumed: 
     }
     if (rec.type === "turn_context" && activeTurn !== p?.turn_id) activeTurn = undefined;
     if (rec.type === "response_item" && p?.type === "message" && p.role === "user"
-      && isPiece(canonical(textOf(p.content)))) {
+      && isPieceRecord(rec, canonical(textOf(p.content)))) {
       consumed = true;
       matchedTurn = activeTurn;
     }
@@ -45,7 +61,7 @@ export function analyzeWalkSuffix(suffix: string, content: string): { consumed: 
       if (p.turn_id === activeTurn) activeTurn = undefined;
     }
     if (typeof rec.uuid === "string") claudeRecords.set(rec.uuid, rec);
-    if (isPrompt(rec) && isPiece(canonical(textOf(rec.message?.content)))) {
+    if (isPrompt(rec) && isPieceRecord(rec, canonical(textOf(rec.message?.content)))) {
       consumed = true;
       if (typeof rec.uuid === "string") matchedInputs.add(rec.uuid);
     }

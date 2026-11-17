@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, appendFileSync, renameSync } from "node:fs";
 import { Command } from "commander";
 import { walkCommand } from "../../cli/src/commands/walk.js";
@@ -479,13 +480,24 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
     expect((await app.request(`/api/sessions/dev-offset@r/generation-record?sinceBytes=${offset}`)).status).toBe(400);
   });
 
-  it.each(["complete", "prefix", "old-file", "replaced-file", "changed-occupant", "wrong-turn", "missing-turn", "missing-file", "claude"])(
+  // workspaces-o9o.82: "collision" walks a piece holding one secret while the seat records a DIFFERENT message holding
+  // another; both redact to the same text, and must not certify each other. "secret-piece" is the positive twin.
+  it.each(["complete", "prefix", "old-file", "replaced-file", "changed-occupant", "wrong-turn", "missing-turn", "missing-file", "claude", "secret-piece", "collision", "collision-closes"])(
     "integrated CLI → route → native record: %s", async (scenario) => {
       const { record, node } = seedCodex();
-      const piece = "Shared heading. ".repeat(8) + "The complete middle matters.\n".repeat(9) + "unique tail Ω";
-      const seat = scenario === "claude" ? "dev-claude@r" : "dev-codex@codex-rig";
-      const claudePath = scenario === "claude" ? seedSidecar(seat, "claude-gen", "") : null;
-      const records = (text: string) => scenario === "claude" ? [
+      const OTHER_SECRET = ["s", "k-"].join("") + "o9o82other" + "Z".repeat(14);
+      const withSecret = scenario === "secret-piece" || scenario === "collision" || scenario === "collision-closes";
+      const piece = "Shared heading. ".repeat(8) + "The complete middle matters.\n".repeat(9) + (withSecret ? `key ${SECRET} ` : "") + "unique tail Ω";
+      const claudeSeat = scenario === "claude" || scenario === "collision-closes";
+      const seat = claudeSeat ? "dev-claude@r" : "dev-codex@codex-rig";
+      const claudePath = claudeSeat ? seedSidecar(seat, "claude-gen", "") : null;
+      const records = (text: string) => scenario === "collision-closes" ? [
+        // The walked piece is recorded but its turn never closes; a DIFFERENT message that redacts alike closes its own.
+        { type: "user", uuid: "input", message: { role: "user", content: text } },
+        { type: "user", uuid: "other", message: { role: "user", content: text.replace(SECRET, OTHER_SECRET) } },
+        { type: "assistant", uuid: "answer", parentUuid: "other", message: { role: "assistant", content: "done" } },
+        { type: "system", subtype: "turn_duration", uuid: "closed", parentUuid: "answer" },
+      ] : scenario === "claude" ? [
         { type: "user", uuid: "input", message: { role: "user", content: text } },
         { type: "assistant", uuid: "answer", parentUuid: "input", message: { role: "assistant", content: "done" } },
         { type: "system", subtype: "turn_duration", uuid: "closed", parentUuid: "answer" },
@@ -516,7 +528,7 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
             post: async (path: string) => {
               if (path.endsWith("/capture")) return { status: 200, data: { content: "idle" } };
               sends++;
-              const text = scenario === "prefix" ? piece.slice(0, 115) : piece;
+              const text = scenario === "prefix" ? piece.slice(0, 115) : scenario === "collision" ? piece.replace(SECRET, OTHER_SECRET) : piece;
               const suffix = records(text).map(r => JSON.stringify(r)).join("\n") + "\n";
               if (scenario === "missing-file") rmSync(record);
               else if (scenario === "replaced-file") {
@@ -533,7 +545,7 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
         }));
         await command.parseAsync(["node", "rig", "walk", seat, "--through", "piece.md", "--json", "--pace", "0ms",
           "--consume-timeout", "20ms", "--consume-poll", "1ms", "--turn-timeout", "20ms"]);
-        const positive = scenario === "complete" || scenario === "claude";
+        const positive = scenario === "complete" || scenario === "claude" || scenario === "secret-piece";
         expect(process.exitCode).toBe(positive ? undefined : 1);
         expect(log.mock.calls.some(([line]) => String(line).includes('"consumptionVerified":true'))).toBe(positive);
         expect(sends).toBe(1);
@@ -653,6 +665,39 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
     seedSidecar("dev-midlast@r", "gen-midlast", only);
     const body = await suffixOf("dev-midlast@r", 5);
     expect(body.suffix).toBe("");
+  });
+
+  // workspaces-o9o.82: rig walk names its piece by digest and the view marks the record whose RAW text it is. No digest
+  // is ever served (a raw digest beside redacted text would be an offline oracle for a short redacted value).
+  const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+  const markOf = async (seat: string, digest: string) => {
+    const res = await app.request(`/api/sessions/${encodeURIComponent(seat)}/generation-record?sinceBytes=0&pieceSha256=${digest}`);
+    expect(res.status).toBe(200);
+    return await res.json() as { suffix: string; pieceMatching?: boolean };
+  };
+
+  it("marks only the user message whose RAW text is the piece, never one that merely redacts alike, and serves no digest", async () => {
+    const piece = `deploy with ${SECRET}`;
+    const other = piece.replace(SECRET, ["s", "k-"].join("") + "o9o82other" + "Z".repeat(14));
+    seedSidecar("dev-mark@r", "gen-mark", userLine(other) + userLine(piece));
+    const body = await markOf("dev-mark@r", sha(piece));
+    expect(body.pieceMatching).toBe(true);
+    const recs = body.suffix.trimEnd().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(recs.map((r) => r["openrigPieceMatch"] === true)).toEqual([false, true]);
+    expect(body.suffix).not.toContain(sha(piece));
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("drops a record's own openrigPieceMatch field, so the raw record cannot claim the mark", async () => {
+    seedSidecar("dev-spoof@r", "gen-spoof", `${JSON.stringify({ type: "user", openrigPieceMatch: true, message: { role: "user", content: "not the piece" } })}\n`);
+    const body = await markOf("dev-spoof@r", sha("the piece"));
+    expect(JSON.parse(body.suffix.trimEnd())).not.toHaveProperty("openrigPieceMatch");
+  });
+
+  it.each(["ABC", "g".repeat(64), "A".repeat(64), ""])("refuses a malformed pieceSha256 %j with 400", async (digest) => {
+    seedSidecar("dev-bad@r", "gen-bad", userLine("x"));
+    const res = await app.request(`/api/sessions/dev-bad@r/generation-record?sinceBytes=0&pieceSha256=${digest}`);
+    expect(res.status).toBe(400);
   });
 
   it("a complete line that is not JSON is redacted as text", async () => {

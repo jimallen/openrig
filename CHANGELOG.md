@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### `rig walk` confirms a piece by its raw text, not by how it redacts (workspaces-o9o.82)
+
+- Symptom: since the generation record is served redacted (workspaces-o9o.60), `rig walk` accepted a record whose text equalled the piece once redacted. A different message holding a different secret redacts to the same text, so it could confirm, and close the turn of, a piece that was never consumed.
+- Now each suffix read sends `pieceSha256`, the sha256 of the piece's canonical text. The daemon hashes each user message's raw text and marks the one that matches with `"openrigPieceMatch": true`; it removes any such field the record already carried, and it never serves a digest. When the daemon answers `pieceMatching: true`, walk counts only a marked record as the piece. An older daemon does not answer that, so walk keeps the text rule there.
+- Not a served digest: since workspaces-o9o.48 a short UPPER_SNAKE value (`DB_PASSWORD=hunter2`) is redacted, and a raw digest served next to the rest of the message would let anyone hash guesses offline until one matched. The match runs on the daemon, one yes or no per authenticated request, for a whole message the caller must already know.
+
 ### `rig doctor` checks a host before its first launch (workspaces-o9o.11)
 
 - Symptom: Sparky's first launch of a team failed four ways that no check reported beforehand: an oh-my-zsh "update? [Y/n]" question in the login shell read the typed launch as its answer; Pi was on the daemon's PATH but not on the seat's; `pi.operator_login_dir` was unset, so Pi refused for lack of a credential; and a spec folder was writable by group, so the spec source was refused.
@@ -38,9 +44,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now the served `suffix` is a redacted view at raw offsets. `totalBytes` and `sinceBytes` still address the record's bytes on disk (`rig walk` takes every offset from `totalBytes`, never from the text). Only complete lines are served, so a line still being written, or one cut by the 8 MiB cap, is held back. Every string in a JSON line, object keys included, is redacted with the shared transcript policy, and a line that is not JSON is redacted as text. A `sinceBytes` that falls inside a line serves from the next line start, so the rest of a token cut by the offset is never served.
 - `rig walk` recognises a piece that holds a secret-shaped string in its redacted form, and still in its raw form when it talks to an older daemon.
 - Not in this change: by default the terminal routes, this one included, take no bearer token, while the default bind includes the tailnet when it is active. That config policy is filed as workspaces-o9o.78.
-- Known limits (a digest-based design is filed as workspaces-o9o.82):
-  - Two different messages that redact to the same text (identical except for the secret they hold) look alike to `rig walk`, so one can certify the other. That needs a near-identical message to arrive inside the same walk's window.
-  - Redaction works within one JSON string value or one line. A token split across separate string values, or across JSONL lines, is not redacted. Providers do not write tokens that way.
+- Known limit: redaction works within one JSON string value or one line. A token split across separate string values, or across JSONL lines, is not redacted. Providers do not write tokens that way.
 
 ### Pane evidence uses the one transcript redaction list (workspaces-o9o.48)
 

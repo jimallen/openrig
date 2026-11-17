@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 // raw file list; each piece is one send into the pane.
 
 import { Command } from "commander";
-import { analyzeWalkSuffix } from "../lib/walk-consumption.js";
+import { analyzeWalkSuffix, pieceSha256 } from "../lib/walk-consumption.js";
 import { existsSync, readFileSync } from "node:fs";
 import { DaemonClient, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , statusGuardMessage} from "../daemon-lifecycle.js";
@@ -179,9 +179,11 @@ initial record is explicitly reported as unverified delivery.`)
         const normalize = (s: string) => s.replace(/\s+/g, "");
         const recordPath = `/api/sessions/${encodeURIComponent(seat)}/generation-record`;
 
-        interface RecordRead { generationId?: string; totalBytes?: number; suffix?: string; error?: string; message?: string }
-        const readRecord = async (sinceBytes?: number): Promise<{ status: number; data: RecordRead }> =>
-          client.get<RecordRead>(sinceBytes === undefined ? recordPath : `${recordPath}?sinceBytes=${sinceBytes}`, { headers: terminalAuthHeaders() });
+        interface RecordRead { generationId?: string; totalBytes?: number; suffix?: string; pieceMatching?: boolean; error?: string; message?: string }
+        // workspaces-o9o.82: a suffix read names the piece by digest, so the daemon can mark the record whose RAW text it is.
+        const readRecord = async (sinceBytes?: number, pieceDigest?: string): Promise<{ status: number; data: RecordRead }> =>
+          client.get<RecordRead>(sinceBytes === undefined ? recordPath
+            : `${recordPath}?sinceBytes=${sinceBytes}${pieceDigest ? `&pieceSha256=${pieceDigest}` : ""}`, { headers: terminalAuthHeaders() });
 
         // One pre-walk record probe decides the mode. No record (unsupported runtime / no sidecar /
         // a daemon without the route) → legacy delivery with a NAMED advisory: unverified is
@@ -260,12 +262,12 @@ initial record is explicitly reported as unverified delivery.`)
             const pollConsumed = async (): Promise<"consumed" | "generation-rolled" | "timeout"> => {
               const deadline = Date.now() + consumeTimeoutMs;
               for (;;) {
-                const rec = await readRecord(preLen);
+                const rec = await readRecord(preLen, pieceSha256(piece.content));
                 if (rec.status !== 200) throw new Error(`Generation record became unavailable: ${rec.data.message ?? rec.data.error ?? rec.status}. Consumption is unverified.`);
                 if (rec.status === 200 && typeof rec.data.generationId === "string") {
                   if (rec.data.generationId !== preGen) return "generation-rolled";
                   if ((rec.data.totalBytes ?? -1) < preLen) return "generation-rolled";
-                  if (analyzeWalkSuffix(rec.data.suffix ?? "", piece.content).consumed) return "consumed";
+                  if (analyzeWalkSuffix(rec.data.suffix ?? "", piece.content, { serverMatched: rec.data.pieceMatching === true }).consumed) return "consumed";
                 }
                 if (Date.now() >= deadline) return "timeout";
                 await sleep(consumePollMs);
@@ -317,7 +319,7 @@ initial record is explicitly reported as unverified delivery.`)
           if (verifiable) {
             const turnDeadline = Date.now() + turnTimeoutMs;
             for (;;) {
-              const rec = await readRecord(preLen);
+              const rec = await readRecord(preLen, pieceSha256(piece.content));
               if (rec.status !== 200) {
                 failPiece(i, piece.label, `generation record became unavailable while waiting for turn closure: ${rec.data.message ?? rec.data.error ?? rec.status}.`);
                 return;
@@ -327,7 +329,7 @@ initial record is explicitly reported as unverified delivery.`)
                   failPiece(i, piece.label, "the seat's generation rolled while waiting for its turn to close.");
                   return;
                 }
-                if (analyzeWalkSuffix(rec.data.suffix ?? "", piece.content).turnClosed) break;
+                if (analyzeWalkSuffix(rec.data.suffix ?? "", piece.content, { serverMatched: rec.data.pieceMatching === true }).turnClosed) break;
               }
               if (Date.now() >= turnDeadline) {
                 failPiece(i, piece.label, `consumed, but the seat's turn did not CLOSE within ${turnTimeoutMs}ms — refusing to send the next piece into an open turn (it would be queued, never a distinct user turn).`);

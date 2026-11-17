@@ -32,10 +32,38 @@ function redactStrings(value: unknown): unknown {
   return value;
 }
 
+/** The field the view sets on a record whose raw message text is the walked piece (workspaces-o9o.82). */
+export const PIECE_MATCH_FIELD = "openrigPieceMatch";
+
+/** A message's text as rig walk reads it: a string, or the text / input_text blocks of an array, joined; CRLF and the
+ *  surrounding whitespace are the only normalisation (twin of the CLI's walk-consumption.ts textOf + canonical). */
+export function canonicalMessageText(content: unknown): string {
+  const text = typeof content === "string" ? content
+    : Array.isArray(content) ? content.map((block: unknown) => {
+      const b = block as { type?: unknown; text?: unknown } | null;
+      return (b?.type === "text" || b?.type === "input_text") && typeof b.text === "string" ? b.text : "";
+    }).join("") : "";
+  return text.replace(/\r\n/g, "\n").trim();
+}
+
+/** A user message's raw content in a Claude record (message.content) or a Codex one (payload.content); undefined else. */
+function userMessageContent(record: unknown): unknown {
+  const r = record as { type?: unknown; message?: { role?: unknown; content?: unknown }; payload?: { type?: unknown; role?: unknown; content?: unknown } } | null;
+  if (r?.type === "user" && r.message?.role === "user") return r.message.content;
+  if (r?.type === "response_item" && r.payload?.type === "message" && r.payload.role === "user") return r.payload.content;
+  return undefined;
+}
+
+/** The outbound port for matching a walked piece: true when a raw message text (canonicalMessageText) is the piece. The
+ *  route implements it with the piece's digest, so no raw digest is ever served (workspaces-o9o.82). */
+export type PieceMatcher = (canonicalText: string) => boolean;
+
 /** The redacted view of a slice of a native record: its complete lines, each redacted, each newline-terminated.
  *  `startsAtLine` says whether the slice's first byte begins a line; when it does not, the partial first line is
- *  dropped, as the unfinished last one is. */
-export function redactedRecordView(slice: string, startsAtLine: boolean): string {
+ *  dropped, as the unfinished last one is. With `matchesPiece`, a user-message record whose RAW text is the walked piece
+ *  carries `openrigPieceMatch: true`: rig walk then trusts only that mark, so two messages that redact alike cannot
+ *  certify each other. A record's own field of that name is dropped first, so only the view can set it. */
+export function redactedRecordView(slice: string, startsAtLine: boolean, matchesPiece?: PieceMatcher): string {
   const whole = startsAtLine ? slice : slice.slice(slice.indexOf("\n") + 1 || slice.length);
   const lines = completeLines(whole).split("\n").slice(0, -1);
   return lines.map((line) => {
@@ -45,6 +73,13 @@ export function redactedRecordView(slice: string, startsAtLine: boolean): string
     } catch {
       return `${redactTranscriptContent(line)}\n`;
     }
-    return `${JSON.stringify(redactStrings(parsed))}\n`;
+    const redacted = redactStrings(parsed);
+    if (matchesPiece && redacted !== null && typeof redacted === "object" && !Array.isArray(redacted)) {
+      const view = redacted as Record<string, unknown>;
+      delete view[PIECE_MATCH_FIELD];
+      const content = userMessageContent(parsed);
+      if (content !== undefined && matchesPiece(canonicalMessageText(content))) view[PIECE_MATCH_FIELD] = true;
+    }
+    return `${JSON.stringify(redacted)}\n`;
   }).join("");
 }
