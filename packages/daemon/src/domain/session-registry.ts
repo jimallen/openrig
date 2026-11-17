@@ -558,13 +558,18 @@ export class SessionRegistry {
     sessionId: string,
     type: string,
     token: string,
-    evidence: { source: string | null; currentGeneration: boolean; resumeLaunch?: string | null; launchedProcess?: ClaudeLaunchedProcess | null },
+    evidence: { source: string | null; currentGeneration: boolean; resumeLaunch?: string | null; launchedProcess?: ClaudeLaunchedProcess | null;
+      /** The process table could not be read, so whether this hook came from the launched process is unknown (o9o.72). */
+      launchedProcessUnknown?: boolean },
   ): boolean {
     return this.db.transaction(() => {
       const launched = (this.db.prepare("SELECT resume_launch_token FROM sessions WHERE id = ?").get(sessionId) as
         { resume_launch_token: string | null } | undefined)?.resume_launch_token?.trim() || null;
       const written = this.updateResumeToken(sessionId, type, token, "hook");
-      if (launched && evidence.currentGeneration) {
+      // An unknown launching process leaves the launch armed: consuming it here would lose the rotation for good on one
+      // unreadable process table (workspaces-o9o.72). It only matters to a later first hook that names this launch, and
+      // the next launch re-arms it.
+      if (launched && evidence.currentGeneration && !(evidence.launchedProcessUnknown && !evidence.launchedProcess)) {
         this.db.prepare("UPDATE sessions SET resume_launch_token = NULL WHERE id = ?").run(sessionId);
         if (written && evidence.source === "resume" && evidence.resumeLaunch?.trim() === launched
           && evidence.launchedProcess && launched !== token.trim()) {

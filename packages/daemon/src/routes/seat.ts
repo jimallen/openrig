@@ -294,7 +294,7 @@ function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
     || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file" || code === "apply_spec_invalid_spec_file"
     || code === "invalid_claude_config_dir" || code === "invalid_despite" || code === "invalid_lease_holder" || code === "invalid_lease_pid") return 400;
   if (code === "seat_not_found" || code === "lease_not_found") return 404;
-  if (code === "tmux_probe_failed") return 502;
+  if (code === "tmux_probe_failed" || code === "process_table_unavailable") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed"
     || code === "effort_unavailable" || code === "mcp_unavailable" || code === "apply_spec_not_saved" || code === "claude_home_unavailable"
     || code === "leases_unavailable") return 500;

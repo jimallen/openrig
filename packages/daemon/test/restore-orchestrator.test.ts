@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { ProcessTableUnavailableError } from "../src/domain/native-process-lineage.js";
 import { mkTemp } from "./helpers/temp-roots.js";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import fs from "node:fs";
@@ -5054,6 +5055,27 @@ describe("RestoreOrchestrator", () => {
       expect(db.prepare("SELECT * FROM events WHERE type = 'restore.outcome_reconciled'").all()).toHaveLength(usable ? 1 : 0);
       expect(tmux.sendKeys).not.toHaveBeenCalled();
       expect(tmux.sendText).not.toHaveBeenCalled();
+    });
+
+    // workspaces-o9o.72: an unreadable process table is unknown, never a lineage mismatch or an unusable pane.
+    it.each(["rebind", "after-rebind"] as const)("A3 reconciliation on an unreadable process table (%s) says so, and changes nothing", async (when) => {
+      const tmux = mockTmuxForReconciler();
+      vi.mocked(tmux.hasSession).mockResolvedValue(true);
+      vi.mocked(tmux.getPaneCommand).mockResolvedValue("sh");
+      // Only Claude's prompt glyph: the screen alone does not show Claude, so the identity proof decides (o9o.72).
+      vi.mocked(tmux.capturePaneContent).mockResolvedValue("❯ ");
+      const seeded = seedFailedAttempt({ restoreOutcome: "attention_required", withResumeToken: true });
+      // The strict rebind reads the table twice; "after-rebind" fails only the reads after it (the identity check).
+      let calls = 0;
+      const listProcesses = async () => {
+        calls++;
+        if (when === "rebind" || calls > 2) throw new ProcessTableUnavailableError("fixture", new Error("ps exited 1"));
+        return managedClaudeRows("tok-abc-123");
+      };
+      const result = await createOrchestrator({ tmux, listProcesses }).reconcileNodeRuntimeTruth(seeded.rig.id, seeded.nodeId);
+      expect(result).toMatchObject({ ok: false, code: "process_table_unavailable" });
+      expect(db.prepare("SELECT * FROM events WHERE type = 'restore.outcome_reconciled'").all()).toHaveLength(0);
+      expect(tmux.sendKeys).not.toHaveBeenCalled();
     });
 
     // #1077 — the seat launched with --resume tok-abc-123 and Claude continued as a new id. The

@@ -12,7 +12,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
-import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { ProcessTableUnavailableError, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
 import type { HarnessLaunchResult, NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { ArbitratedSeatState } from "../src/domain/activity-taxonomy.js";
 import type { SeatCwdFault } from "../src/domain/cwd-resolution.js";
@@ -112,6 +112,7 @@ function world(options: WorldOptions = {}) {
   const paneAsked: string[] = [];
 
   const runningArgs = options.runningArgs ?? `-m gpt-5.5 -s workspace-write resume ${TOKEN}`;
+  let tableUnavailable = false; // workspaces-o9o.72: the process table becomes unreadable
   let rows: NativeProcessRow[] = shape === "shell_backed"
     ? options.between
       ? [shellRow(100, 150), { pid: 150, ppid: 100, pgid: 150, tpgid: 150, executableName: options.betweenName ?? options.between.split(" ")[0]!.split("/").pop()!, command: options.between, startedAt: LSTART },
@@ -244,7 +245,10 @@ function world(options: WorldOptions = {}) {
   const service = new SeatLifecycleService({
     db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
     runtimeAdapters: { codex: codex as never },
-    ...(options.productionLister ? {} : { listProcesses: () => (options.identityFails && rows.some((row) => row.pid === 300) ? [] : rows) }),
+    ...(options.productionLister ? {} : { listProcesses: () => {
+      if (tableUnavailable) throw new ProcessTableUnavailableError("fixture", new Error("ps exited 1"));
+      return options.identityFails && rows.some((row) => row.pid === 300) ? [] : rows;
+    } }),
     activityOracle: { declareOccupantSwap: () => {}, getSeatState: () => options.activity ?? null },
     inPlaceRestartIo: io,
     inPlaceRestartTiming: { pollMs: 1, timeoutMs: 2, sleep: async () => {} },
@@ -254,6 +258,7 @@ function world(options: WorldOptions = {}) {
     .map((row) => ({ type: row.type, ...JSON.parse(row.payload) }));
   return { db, service, node, session, calls, paneDeadReads, respawnCwds, launches, builds, events, sessionRegistry, paneAsked,
     setRows: (next: NativeProcessRow[]) => { rows = next; },
+    failTable: () => { tableUnavailable = true; },
     print: (text: string) => { paneLines.push(...text.split("\n").filter(Boolean)); } };
 }
 
@@ -418,7 +423,7 @@ describe("rig seat restart --keep-conversation: gates before any signal", () => 
     expect(await fresh.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: false, code: "resume_binding_unverified" });
   });
 
-  it("refuses with a structured result, not an error, when the process table cannot be read (o9o.67)", async () => {
+  it("refuses with a structured, honest result, not an error, when the process table cannot be read (o9o.67, o9o.72)", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "o9o67-restart-ps-"));
     fs.writeFileSync(path.join(dir, "ps"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     const savedPath = process.env.PATH;
@@ -426,12 +431,19 @@ describe("rig seat restart --keep-conversation: gates before any signal", () => 
     process.env.PATH = dir; console.warn = () => {};
     try {
       const w = world({ productionLister: true });
-      expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: false, code: "resume_binding_unverified" });
+      expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: false, code: "process_table_unavailable" });
       expect(w.calls).toEqual([]);
     } finally {
       process.env.PATH = savedPath; console.warn = warn;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("verify says the process table is unreadable, not that the seat restarted since, when it cannot read it (o9o.72)", async () => {
+    const w = world();
+    expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "x" })).toMatchObject({ ok: true, outcome: "restarted_account_unverified" });
+    w.failTable();
+    expect(await w.service.verifyRestartInPlace({ seatRef: SEAT })).toMatchObject({ ok: false, code: "process_table_unavailable" });
   });
 
   it("proves a fresh-launched Codex by its own native logs", async () => {

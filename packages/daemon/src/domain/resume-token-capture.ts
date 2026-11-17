@@ -16,6 +16,7 @@
 // which lifecycle ops adopt. It only removes the duplication between the two
 // derive sites the ruling asked us to share.
 
+import { ProcessTableUnavailableError } from "./native-process-lineage.js";
 import { resumeTypeForRuntime, validateResumeToken, type ResumeType } from "./resume-token-validation.js";
 
 export interface ResumeTokenCaptureDeps {
@@ -47,27 +48,40 @@ export type ResumeTokenDeriveResult =
   /** A live token was derived + format-validated. The caller persists it. */
   | { outcome: "captured"; resumeType: ResumeType; token: string }
   /** Derivation ran but produced no usable token — the caller emits a skip event. */
-  | { outcome: "skipped"; reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "invalid_token" | "stale_sidecar" };
+  | { outcome: "skipped"; reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "invalid_token" | "stale_sidecar" | "process_table_unavailable" };
 
 /**
  * A Claude sidecar outlives the process that wrote it (#421: a seat that keeps a user's own status
  * line never refreshes it). A sample taken before the pane's current Claude process started can
- * only come from an earlier process, so its session id is not this process's. True only when both
- * times are known; unknown never reads as stale.
+ * only come from an earlier process, so its session id is not this process's. "earlier" only when
+ * both times are known; any other unknown reads "current_or_unknown" (fail-open, as before), except an
+ * unreadable process table: "process_table_unavailable", where the caller writes nothing this cycle
+ * (workspaces-o9o.72; CoS 2026-11-17: a wrong token opens the wrong conversation, a skipped cycle retries).
  */
+/** True only when the sample is known to predate the pane's current Claude process (claudeSidecarAge "earlier"). */
 export async function isClaudeSidecarFromEarlierProcess(
   sampledAt: unknown,
   sessionName: string,
   claudeProcessStartedAt: ResumeTokenCaptureDeps["claudeProcessStartedAt"],
 ): Promise<boolean> {
-  if (typeof sampledAt !== "string" || !claudeProcessStartedAt) return false;
+  return (await claudeSidecarAge(sampledAt, sessionName, claudeProcessStartedAt)) === "earlier";
+}
+
+export async function claudeSidecarAge(
+  sampledAt: unknown,
+  sessionName: string,
+  claudeProcessStartedAt: ResumeTokenCaptureDeps["claudeProcessStartedAt"],
+): Promise<"earlier" | "current_or_unknown" | "process_table_unavailable"> {
+  if (typeof sampledAt !== "string" || !claudeProcessStartedAt) return "current_or_unknown";
   const sampled = Date.parse(sampledAt);
-  if (Number.isNaN(sampled)) return false;
+  if (Number.isNaN(sampled)) return "current_or_unknown";
   let startedAt: string | null;
-  try { startedAt = await claudeProcessStartedAt(sessionName); } catch { return false; }
+  try { startedAt = await claudeProcessStartedAt(sessionName); } catch (err) {
+    return err instanceof ProcessTableUnavailableError ? "process_table_unavailable" : "current_or_unknown";
+  }
   // `ps` lstart is local time to the second, so a sample from the current process is never earlier.
   const started = startedAt ? Date.parse(startedAt) : Number.NaN;
-  return !Number.isNaN(started) && sampled < started;
+  return !Number.isNaN(started) && sampled < started ? "earlier" : "current_or_unknown";
 }
 
 /**
@@ -99,9 +113,9 @@ export async function deriveResumeToken(
     const sid = sidecar.data.session_id;
     if (typeof sid === "string" && sid.trim().length > 0) token = sid.trim();
     else return { outcome: "skipped", reason: "missing_sidecar" };
-    if (await isClaudeSidecarFromEarlierProcess(sidecar.data.sampled_at, input.sessionName, deps.claudeProcessStartedAt)) {
-      return { outcome: "skipped", reason: "stale_sidecar" };
-    }
+    const age = await claudeSidecarAge(sidecar.data.sampled_at, input.sessionName, deps.claudeProcessStartedAt);
+    if (age === "earlier") return { outcome: "skipped", reason: "stale_sidecar" };
+    if (age === "process_table_unavailable") return { outcome: "skipped", reason: "process_table_unavailable" };
   } else if (runtime === "codex") {
     if (!deps.resumeTokenCapturer) return { outcome: "noop" }; // dep absent — silent no-op
     token = await deps.resumeTokenCapturer.captureCodexThreadId(input.sessionName);

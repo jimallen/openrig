@@ -511,6 +511,16 @@ export async function listNativeProcesses(): Promise<NativeProcessRow[]> {
 
 export type NativeProcessLister = () => NativeProcessRow[] | Promise<NativeProcessRow[]>;
 
+/** A lister wrapped so its caller can tell "the table could not be read" from "no matching process" after an
+ *  observer that answers null for both (workspaces-o9o.72). Any rejection of the wrapped lister counts. */
+export function watchProcessTable(list: NativeProcessLister = listNativeProcesses): { list: NativeProcessLister; unavailable: () => boolean } {
+  let unavailable = false;
+  return {
+    list: () => Promise.resolve().then(() => list()).catch((err: unknown) => { unavailable = true; throw err; }),
+    unavailable: () => unavailable,
+  };
+}
+
 /** listNativeProcesses, but [] when the table cannot be read (the failure is still logged). Only for a consumer whose
  *  every use of [] already means "unknown": it may refuse, wait or leave a value pending on it, never record a negative
  *  verdict. A new consumer takes listNativeProcesses and handles ProcessTableUnavailableError (workspaces-o9o.67). */
@@ -698,8 +708,13 @@ export async function verifyClaudePaneRuntime(input: Parameters<typeof observeCl
 
 /** The `ps` start time (lstart, local time) of the one stable Claude foreground
  * process. This makes no claim about its conversation token. */
+/** The start time of the pane's Claude process; null when it cannot be told. Rejects with ProcessTableUnavailableError
+ *  when the process table could not be read (workspaces-o9o.72), so a caller can tell that from "no Claude here". */
 export async function observeClaudePaneStartedAt(input: Parameters<typeof observeClaudePaneRuntime>[0]): Promise<string | null> {
-  return (await verifyClaudePaneRuntime(input))?.process.startedAt ?? null;
+  const table = watchProcessTable(input.listProcesses);
+  const startedAt = (await verifyClaudePaneRuntime({ ...input, listProcesses: table.list }))?.process.startedAt ?? null;
+  if (startedAt === null && table.unavailable()) throw new ProcessTableUnavailableError("claude.pane_started_at", new Error("the process table could not be read"));
+  return startedAt;
 }
 
 /** A launcher shim that spawns (rather than execs) Claude or Codex leaves several

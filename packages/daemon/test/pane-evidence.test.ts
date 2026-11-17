@@ -44,7 +44,8 @@ describe("pane evidence is read with soft wraps joined (workspaces-o9o.3)", () =
     const calls = files.flatMap((f) => (fs.readFileSync(f, "utf8").match(/\bjoinedPaneEvidence\(/g) ?? []).map(() => path.relative(SRC, f)));
     expect(calls.filter((f) => f !== "domain/pane-evidence.ts").sort()).toEqual([
       "adapters/claude-code-adapter.ts", "adapters/claude-code-adapter.ts",
-      "adapters/claude-resume.ts", "adapters/claude-resume.ts", "adapters/claude-resume.ts",
+      // the fourth: an unreadable process table retains the launch with evidence (workspaces-o9o.72)
+      "adapters/claude-resume.ts", "adapters/claude-resume.ts", "adapters/claude-resume.ts", "adapters/claude-resume.ts",
       "adapters/codex-resume.ts", "adapters/codex-resume.ts",
       "adapters/codex-runtime-adapter.ts", "adapters/codex-runtime-adapter.ts", "adapters/codex-runtime-adapter.ts",
       "adapters/pda-runtime-adapter.ts",

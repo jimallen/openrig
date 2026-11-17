@@ -19,7 +19,7 @@ type ProcessRow = NativeProcessRow;
 
 export type PaneIdentityReconcileResult =
   | { ok: true; pane: string; pid: number; command: string | null }
-  | { ok: false; detail: string };
+  | { ok: false; detail: string; /** The process table could not be read: identity is unknown, not mismatched (o9o.72). */ processTableUnavailable?: true };
 
 /** The rotation recorded with the node's current stored token, when the caller is checking that
  *  stored token (#1077). Exact-resume callers pass the rotation they mean to accept, if any. */
@@ -187,7 +187,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
     return { ok: false, detail: `tmux pane '${pane.id}' has no live process` };
   }
   if (verdict.verdict === "process_table_unavailable") {
-    return { ok: false, detail: `the process table could not be read, so the occupant of tmux pane '${pane.id}' is unknown (not a mismatch)` };
+    return { ok: false, processTableUnavailable: true, detail: `the process table could not be read, so the occupant of tmux pane '${pane.id}' is unknown (not a mismatch)` };
   }
   if (verdict.verdict === "mismatch") {
     if (runtimeAmbiguous) {

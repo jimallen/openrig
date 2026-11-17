@@ -16,7 +16,7 @@ import {
 } from "./native-resume-probe.js";
 import { runAsyncSite } from "./sync-site-wrap.js";
 import { withTrueStartTimes } from "./process-start-clock.js";
-import { isClaudeSidecarFromEarlierProcess, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
+import { claudeSidecarAge, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import { observeClaudePaneRuntime, readProcessTable, reportProcessTableFailure, reportProcessTableRead, type NativeProcessLister } from "./native-process-lineage.js";
 import { validateResumeToken, isTypedResumeWord, observedResumeTokenToWrite } from "./resume-token-validation.js";
 
@@ -192,7 +192,7 @@ export class ResumeMetadataRefresher {
             const token = sidecar.data.session_id;
             const writable = typeof token === "string" ? observedResumeTokenToWrite("claude-code", token) : null;
             if (writable
-              && !(await isClaudeSidecarFromEarlierProcess(sidecar.data.sampled_at, session.sessionName, this.claudeProcessStartedAt))) {
+              && (await claudeSidecarAge(sidecar.data.sampled_at, session.sessionName, this.claudeProcessStartedAt)) === "current_or_unknown") {
               this.sessionRegistry.updateResumeToken(session.sessionId, "claude_id", writable, "scrape");
             }
           }
@@ -216,7 +216,7 @@ export class ResumeMetadataRefresher {
           if (sidecar?.ok) {
             const derived = sidecar.data.session_id;
             if (typeof derived === "string" && derived.trim().length > 0 && derived.trim() === session.resumeToken
-              && !(await isClaudeSidecarFromEarlierProcess(sidecar.data.sampled_at, session.sessionName, this.claudeProcessStartedAt))) {
+              && (await claudeSidecarAge(sidecar.data.sampled_at, session.sessionName, this.claudeProcessStartedAt)) === "current_or_unknown") {
               this.sessionRegistry.markResumeProbeResult(session.sessionId, "resumable");
             }
           }

@@ -25,7 +25,7 @@ import type { PdaResumeAdapter } from "../adapters/pda-resume.js";
 import { PDA_RESUME_TYPE, parsePdaResumeToken, pdaRestoreBindingWarning } from "../adapters/pda-runner-protocol.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { assessNativeResumeProbe } from "./native-resume-probe.js";
-import { observeClaudeDelivery, observeClaudeResumeLaunch, verifyClaudePaneProcess, type ClaudeLaunchedProcess } from "./native-process-lineage.js";
+import { observeClaudeDelivery, observeClaudeResumeLaunch, verifyClaudePaneProcess, watchProcessTable, type ClaudeLaunchedProcess } from "./native-process-lineage.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import { seatGuidance, restoreMissingGuidance, missingGuidanceBlocks } from "./restore-guidance.js";
 import type {
@@ -81,6 +81,8 @@ export type ReconcileNodeResult =
         | "tmux_session_missing"
         | "binding_mismatch"
         | "process_lineage_mismatch"
+        /** workspaces-o9o.72: the process table could not be read, so identity and pane state are unknown. */
+        | "process_table_unavailable"
         | "fg_process_not_runtime"
         | "resume_token_not_used"
         | "pane_not_usable"
@@ -2358,17 +2360,18 @@ export class RestoreOrchestrator {
       ...(this.listProcesses ? { listProcesses: this.listProcesses } : {}),
     });
     if (!identity.ok) {
-      return { ok: false, code: "process_lineage_mismatch", detail: identity.detail };
+      return { ok: false, code: identity.processTableUnavailable ? "process_table_unavailable" : "process_lineage_mismatch", detail: identity.detail };
     }
     const paneCommand = await this.tmuxAdapter.getPaneCommand(identity.pane);
     const paneContent = (await this.tmuxAdapter.capturePaneContent(identity.pane, 40)) ?? "";
+    const table = watchProcessTable(this.listProcesses);
     const claudeResumeIdentityVerified = runtime === "claude-code" && !!await verifyClaudePaneProcess({
       target: identity.pane,
       tmux: this.tmuxAdapter,
       expectedToken: expectedResumeToken,
       rotation,
       requireResume: true,
-      ...(this.listProcesses ? { listProcesses: this.listProcesses } : {}),
+      listProcesses: table.list,
     });
     const probe = assessNativeResumeProbe({
       runtime,
@@ -2385,6 +2388,9 @@ export class RestoreOrchestrator {
 
     // Precondition #4: pane is at a usable/idle state — explicitly NOT a
     // resume-selection prompt and not the "returned to shell" failure mode.
+    if (probe.status !== "resumed" && table.unavailable()) {
+      return { ok: false, code: "process_table_unavailable", detail: "The process table could not be read, so the pane's Claude identity is unknown; reconciliation needs it." };
+    }
     if (probe.status !== "resumed") {
       return { ok: false, code: "pane_not_usable", detail: `Pane state is ${probe.status} (${probe.code}); reconciliation requires resumed.` };
     }

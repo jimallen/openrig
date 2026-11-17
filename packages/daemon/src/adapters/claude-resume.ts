@@ -8,7 +8,7 @@ import { claudeRemoteControlArg, claudeRemoteControlArgs, claudeRemoteControlNam
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
 import { holdResumedPoll } from "../domain/resume-settle.js";
-import { verifyClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
+import { verifyClaudePaneProcess, watchProcessTable, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { observeClaudePermission, type AppliedLaunchObservation } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
 import { claudeRigBodyGuardRefusal } from "./claude-rig-body-guard.js";
@@ -206,11 +206,13 @@ export class ClaudeResumeAdapter {
     // visible, and after the untrusted screen classifiers have had their say.
     const mayBeWrappedComposer = finalProbe.status === "inconclusive"
       || (finalProbe.status === "failed" && finalProbe.code === "returned_to_shell");
+    // workspaces-o9o.72: an unreadable process table leaves this proof unknown; it must not read as "not Claude".
+    const table = watchProcessTable(this.options.listProcesses);
     if (/(^|\n)\s*❯/.test(finalContent) && mayBeWrappedComposer) {
       const identity = await verifyClaudePaneProcess({
         target: tmuxSessionName,
         tmux: this.tmux,
-        ...(this.options.listProcesses ? { listProcesses: this.options.listProcesses } : {}),
+        listProcesses: table.list,
         expectedToken: resumeToken,
       });
       if (identity) {
@@ -229,6 +231,14 @@ export class ClaudeResumeAdapter {
       }
     }
 
+    if (finalProbe.code === "returned_to_shell" && table.unavailable()) {
+      return {
+        ok: false,
+        code: "attention_required",
+        message: "Claude resume could not be verified: the process table could not be read, so Claude's prompt on screen may still be the resumed session; launch retained.",
+        evidence: await joinedPaneEvidence(this.tmux, tmuxSessionName),
+      };
+    }
     if (finalProbe.code === "returned_to_shell") {
       return {
         ok: false,

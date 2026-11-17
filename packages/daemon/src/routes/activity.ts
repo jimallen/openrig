@@ -10,7 +10,7 @@ import type { AgentActivity } from "../domain/types.js";
 import * as parkedQuery from "../domain/parked-query.js";
 import { runtimeRungInventory } from "../domain/activity-taxonomy.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
-import { claudeHookFromLaunchedProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
+import { claudeHookFromLaunchedProcess, watchProcessTable, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
@@ -514,6 +514,8 @@ activityRoutes.post("/hooks", async (c) => {
     // relay records that locally, so a first hook lost in delivery still counts), and was it sent
     // by the process OpenRig launched?
     let launchedProcess: ClaudeLaunchedProcess | null = null;
+    // workspaces-o9o.72: an unreadable process table leaves the launching process unknown, not absent.
+    let launchedProcessUnknown = false;
     const armed = runtime === "claude-code" && currentGeneration && source === "resume" && resumeLaunch
       && body.resumeLaunchFirst === true ? sessionRegistry.armedResumeLaunch(resolved.sessionId) : null;
     const hookPid = typeof body.hookPid === "number" && Number.isInteger(body.hookPid) && body.hookPid > 0 ? body.hookPid : null;
@@ -522,14 +524,15 @@ activityRoutes.post("/hooks", async (c) => {
       const binding = sessionRegistry.getBindingForNode(resolved.nodeId);
       const target = binding?.tmuxPane ?? binding?.tmuxSession;
       if (target) {
-        launchedProcess = await claudeHookFromLaunchedProcess({ target, tmux, launchToken: armed, hookPid,
-          listProcesses: c.get("listProcesses" as never) as NativeProcessLister | undefined });
+        const table = watchProcessTable(c.get("listProcesses" as never) as NativeProcessLister | undefined);
+        launchedProcess = await claudeHookFromLaunchedProcess({ target, tmux, launchToken: armed, hookPid, listProcesses: table.list });
+        launchedProcessUnknown = launchedProcess === null && table.unavailable();
       }
     }
     const persistHook = (type: string, token: string): boolean => {
       if (runtime !== "claude-code") return sessionRegistry.updateResumeToken(resolved.sessionId, type, token, "hook");
       return sessionRegistry.recordHookSessionIdentity(resolved.sessionId, type, token,
-        { source, currentGeneration, resumeLaunch, launchedProcess });
+        { source, currentGeneration, resumeLaunch, launchedProcess, launchedProcessUnknown });
     };
     const tokenPersisted = validation.ok
       && (persistHook(validation.resumeType, validation.token)

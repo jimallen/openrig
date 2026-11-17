@@ -59,6 +59,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - `rig doctor` has a new `vendored_plugins` check that warns with the same folders and says to move them out. It reads the folder from disk, so it works while the daemon is down.
 - A read-only `openrig-lab` folder whose obsolete refocus hook can't be retired is reported and ignored too, instead of stopping the daemon.
 - Changed contract: two different plugins that register the same hook no longer fail daemon start; the later one is ignored and reported.
+### An unreadable process table no longer drives a resume, a rotation or a refusal reason (workspaces-o9o.72)
+
+- Follows o9o.67, which made an unreadable process table "unavailable" for the identity verdicts. Five more consumers judged it as "no such process" (census during o9o.67); each now treats it as unknown:
+  - Claude resume: a shell foreground with Claude's prompt on screen was answered `retry_fresh` (start a new conversation) when the process proof could not be read. It is now `attention_required`, and the launch is retained.
+  - The first SessionStart hook of a resume launch consumed the armed launch with no rotation recorded when the launching process could not be read. The launch now stays armed.
+  - `rig seat restart --keep-conversation` refused with "No single Codex process ... could be tied to the stored conversation", and its verify with "no longer the process the restart started". Both now answer `process_table_unavailable` (HTTP 502), and nothing is stopped.
+  - Restore reconciliation answered `process_lineage_mismatch` or `pane_not_usable`. It now answers `process_table_unavailable`, and nothing is recorded.
+  - A Claude status-line sidecar was captured as the current session id while the pane's process could not be read. That cycle now skips (skip reason `process_table_unavailable`) and the next one retries; every other unknown start time still captures, as before.
 
 ### A busy host's process table no longer blinds liveness, identity and delivery checks (workspaces-o9o.67)
 

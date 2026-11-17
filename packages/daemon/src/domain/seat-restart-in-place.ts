@@ -10,7 +10,7 @@ import type { SessionRegistry } from "./session-registry.js";
 import type { HarnessLaunchResult, NodeBinding } from "./runtime-adapter.js";
 import type { PersistedEvent, RigEvent } from "./types.js";
 import {
-  codexCommandResumeToken, listNativeProcessesBestEffort, processArgv, verifyCodexPaneProcess,
+  codexCommandResumeToken, listNativeProcesses, listNativeProcessesBestEffort, ProcessTableUnavailableError, processArgv, verifyCodexPaneProcess,
   type NativeProcessLister, type NativeProcessRow,
 } from "./native-process-lineage.js";
 import { CodexThreadIdResolver, resolveCodexDbPaths } from "./codex-thread-id.js";
@@ -105,7 +105,9 @@ export interface InPlaceRestartTarget {
 
 export type InPlaceRestartRefusalCode =
   | "pane_unverified" | "pane_shape_unknown" | "resume_binding_unverified" | "settings_unverified"
-  | "settings_drift" | "restart_in_progress" | "relaunch_unavailable" | "tmux_probe_failed" | "seat_cwd_unusable";
+  | "settings_drift" | "restart_in_progress" | "relaunch_unavailable" | "tmux_probe_failed" | "seat_cwd_unusable"
+  /** The process table could not be read (workspaces-o9o.72): the seat's Codex is unknown, not absent. */
+  | "process_table_unavailable";
 
 export interface InPlaceRestartRefusal { ok: false; code: InPlaceRestartRefusalCode; message: string; guidance?: string; detail?: unknown }
 
@@ -182,7 +184,7 @@ export type InPlaceVerifyResult =
       toolTurn: { completed: number; errors: number; since: string; state: "observed" | "not_observed" | "unreadable" };
       accountEvidence: { state: "matched" | "not_matched" | "not_requested" | "not_observed"; detail: string };
     }
-  | { ok: false; code: "no_restart_recorded" | "restart_not_completed" | "seat_restarted_since"; message: string };
+  | { ok: false; code: "no_restart_recorded" | "restart_not_completed" | "seat_restarted_since" | "process_table_unavailable"; message: string };
 
 const RESTART_STARTED = "seat.restart_in_place_started" as const;
 const RESTART_FINISHED = "seat.restart_in_place_finished" as const;
@@ -204,6 +206,8 @@ export class CodexInPlaceRestart {
   private readonly io: InPlaceRestartIo;
   private readonly timing: PaneCutoverTiming;
   private readonly listProcesses: NativeProcessLister;
+  /** For observeCodex, which must tell an unreadable table from "no Codex" (workspaces-o9o.72). */
+  private readonly listProcessesStrict: NativeProcessLister;
   private readonly now: () => Date;
   private readonly daemonStartedAt: Date;
 
@@ -217,6 +221,7 @@ export class CodexInPlaceRestart {
     // Best effort: every use here reads [] as unknown (a refusal before anything stops, or "unknown" after); an unreadable
     // table must not turn a refusal into a 500 (workspaces-o9o.67).
     this.listProcesses = deps.listProcesses ?? listNativeProcessesBestEffort;
+    this.listProcessesStrict = deps.listProcesses ?? listNativeProcesses;
     this.now = deps.now ?? (() => new Date());
     this.daemonStartedAt = deps.daemonStartedAt ?? new Date(Date.now() - process.uptime() * 1000);
   }
@@ -392,6 +397,9 @@ export class CodexInPlaceRestart {
     const registeredPane = registeredPaneOf(target.binding);
     if (!registeredPane) return { ok: false, code: "seat_restarted_since", message: "The seat has no registered pane to verify against; verify the current occupant another way." };
     const current = await this.observeCodex(registeredPane, null);
+    if (current === "unavailable") {
+      return { ok: false, code: "process_table_unavailable", message: "The process table could not be read, so the seat's Codex could not be checked against the restart. Nothing is known yet; verify again." };
+    }
     if (!current || !sameProcessIdentity(current.process, { pid: finished.newPid, startedAt: finished.newStartedAt })) {
       return { ok: false, code: "seat_restarted_since", message: "The seat's Codex is no longer the process the restart started; verify the current occupant another way." };
     }
@@ -429,6 +437,9 @@ export class CodexInPlaceRestart {
         guidance: "Record the conversation with: rig seat set-resume-token" };
     }
     const codex = await this.observeCodex(pane, token);
+    if (codex === "unavailable") {
+      return { ok: false, code: "process_table_unavailable", message: "The process table could not be read, so the seat's Codex could not be tied to its stored conversation. Nothing was stopped." };
+    }
     if (!codex) {
       return { ok: false, code: "resume_binding_unverified", message: "No single Codex process in the seat's pane could be tied to the stored conversation (a running Codex that names another conversation is refused too). Nothing was stopped." };
     }
@@ -574,8 +585,13 @@ export class CodexInPlaceRestart {
     } };
   }
 
+  /** The seat's Codex in `pane`, null when none can be tied to it, "unavailable" when the process table could not be read. */
   private async observeCodex(pane: string, token: string | null) {
-    const rows = await this.listProcesses();
+    let rows: NativeProcessRow[];
+    try { rows = await this.listProcessesStrict(); } catch (err) {
+      if (err instanceof ProcessTableUnavailableError) return "unavailable" as const;
+      throw err;
+    }
     const panePid = await this.deps.tmux.getPanePid(pane);
     if (!panePid) return null;
     const observation = await verifyCodexPaneProcess({ target: pane, tmux: { getPanePid: async () => panePid },
@@ -624,8 +640,9 @@ export class CodexInPlaceRestart {
     // rebound the seat's binding to it. Reading the retiree's address here would observe its finished terminal.
     const currentPane = identity.ok ? identity.pane : report.pane;
     const now = await this.observeCodex(currentPane, report.conversationId);
-    if (!identity.ok || !now) {
-      return { ...report, outcome: "native_unknown", couldNotSee: [`the replacement Codex's identity: ${identity.ok ? "process not observed" : identity.detail}`],
+    if (!identity.ok || !now || now === "unavailable") {
+      return { ...report, outcome: "native_unknown", couldNotSee: [`the replacement Codex's identity: ${!identity.ok ? identity.detail
+        : now === "unavailable" ? "the process table could not be read" : "process not observed"}`],
         message: "Codex reported a resumed conversation, but the process in the pane could not be proven to be that conversation." };
     }
     const after = await this.io.readProcess(now.process.pid);
@@ -737,7 +754,8 @@ export class CodexInPlaceRestart {
     for (const row of rows) {
       let home: PeerReport["home"] = "unknown";
       if (row.tmux_pane && row.tmux_session) {
-        const observed = await this.observeCodex(row.tmux_pane, null).catch(() => null);
+        const found = await this.observeCodex(row.tmux_pane, null).catch(() => null);
+        const observed = found === "unavailable" ? null : found;
         const facts = observed ? await this.io.readProcess(observed.process.pid) : null;
         const peerHome = facts?.env.CODEX_HOME ?? (facts?.env.HOME ? nodePath.join(facts.env.HOME, ".codex") : null);
         if (peerHome) home = peerHome === codexHome ? "same" : "different";
