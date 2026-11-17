@@ -12,6 +12,9 @@ export const PASSING_CASES = {
   transcript: { file: 'library/transcript-reads-addressed-seat.yaml', scenario: 'transcript-reads-addressed-seat' },
   capture: { file: 'library/capture-returns-addressed-seat.yaml', scenario: 'capture-returns-addressed-seat' },
   'shipped-ref': { file: 'library/shipped-agent-ref-resolves.yaml', scenario: 'shipped-agent-ref-resolves' },
+  // workspaces-o9o.29: the two launch-failure paths, a seat held short of ready and a runner that exits before ready.
+  'launch-held': { file: 'library/launch-held-short-of-ready.yaml', scenario: 'launch-held-short-of-ready' },
+  'launch-exit': { file: 'library/launch-runner-exits-before-ready.yaml', scenario: 'launch-runner-exits-before-ready' },
 };
 
 // Only a clean PASS of the named scenario counts: no error, no seed, no fault.

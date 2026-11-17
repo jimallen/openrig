@@ -254,7 +254,9 @@ and no model cost.
    `packages/daemon/test/helpers/scenario-schema.ts`. Step verbs: `up`, `down`, `send`, `restart`,
    `restore`, `emit`, `mutate`, `policy`, `seed_regression`, `daemon`, plus `expect`. `expect` may
    only read shipped surfaces: `ps`, `queue`, `stream`, `scope`, `pane`, `transcript`,
-   `tui_socket`, `policy_provenance`.
+   `tui_socket`, `policy_provenance`. `up: { fails: { contains: "<text>" } }` expects the launch
+   to fail: the step passes only when `rig up` exits non-zero with the text in its output (for a
+   seat a stub script holds short of ready or ends before ready; `packages/test-system/scripts/README.md`).
 3. Today the runner binds `up`, `down`, `send`, `restart` and `daemon`. `restore`, `emit`,
    `mutate` and `policy` fail with `UnboundActionError`, and `seed_regression` needs a fault
    controller (`packages/daemon/test/helpers/scenario-real-deps.ts`).
@@ -268,9 +270,9 @@ and no model cost.
    inside tmux, including an agent's pane. It supplies no fault controller, so a
    `seed_regression` step fails there; the seeded pair runs in the container path.
 6. **CI.** The `installed-scenario` job runs `scripts/run-pr-scenarios.sh` in disposable,
-   network-less containers built from the packed package. It runs five cases: `fixture` and `library`
+   network-less containers built from the packed package. It runs seven cases: `fixture` and `library`
    (`queue-baton-survives-restart.yaml`), each with a healthy run and a seeded lost-baton run, plus
-   `transcript`, `capture` and `shipped-ref`, healthy runs only. Adding a seeded case means changing three files:
+   `transcript`, `capture`, `shipped-ref`, `launch-held` and `launch-exit`, healthy runs only. Adding a seeded case means changing three files:
    the `--case` list in `scripts/run-pr-scenarios.sh`, `CASES` in
    `packages/test-system/ci/result.mjs`, and the fault controller in
    `packages/test-system/ci/run.mjs`; a healthy-only case goes in `PASSING_CASES` in the first two

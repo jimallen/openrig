@@ -9,7 +9,7 @@ CASES=(fixture library)
 MODES=(healthy lost-baton healthy)
 # Stub-script scenarios run once each, healthy only: their planted failures are
 # product-code mutations, kept as per-PR evidence outside CI.
-PASSING_CASES=(transcript capture shipped-ref)
+PASSING_CASES=(transcript capture shipped-ref launch-held launch-exit)
 OUT="$REPO_ROOT/dist/pr-scenarios"
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -17,8 +17,8 @@ while [ "$#" -gt 0 ]; do
     --case)
       case "${2:-}" in
         fixture|library) CASES=("$2"); PASSING_CASES=();;
-        transcript|capture|shipped-ref) CASES=(); PASSING_CASES=("$2");;
-        *) echo 'Expected --case fixture|library|transcript|capture|shipped-ref' >&2; exit 2;;
+        transcript|capture|shipped-ref|launch-held|launch-exit) CASES=(); PASSING_CASES=("$2");;
+        *) echo 'Expected --case fixture|library|transcript|capture|shipped-ref|launch-held|launch-exit' >&2; exit 2;;
       esac
       shift 2 ;;
     --mode)

@@ -1,0 +1,27 @@
+# Family: launch (a runner that refuses before ready).
+# Defect class: a runner that exits before ready is reported without what it said, so the operator has to read the
+#   dead pane to learn why (workspaces-o9o.3, o9o.29).
+# What this proves: STUB PLUMBING plus the shipped launch report. The stub seat's script makes its runner print
+#   `[stub-runner] ERROR o9o29-refused-3b8d no seat login` and exit 1 before ready (readiness: exit). `rig up` fails,
+#   and its reason quotes the runner's own ERROR line. After `down`, `rig ps --json` records the rig stopped.
+# What this does NOT prove: the pane tail in the response (see launch-held-short-of-ready and workspaces-o9o.89), or
+#   any real runtime's refusal.
+# Planted negative: a stub adapter that drops durableLaunchFailureSuffix from its exit error makes step 0 fail with
+#   "its output does not contain".
+scenario: launch-runner-exits-before-ready
+topology: ./solo-stub.yaml
+env:
+  stub_scripts:
+    worker: ./scripts/launch-refused.json
+steps:
+  - up:
+      fails:
+        contains: "stub launch failed: the runner exited (code 1) — runner said: [stub-runner] ERROR o9o29-refused-3b8d no seat login"
+  - down: {}
+  - expect:
+      surface: ps
+      within: 30s
+      match:
+        - name: solo-stub
+          status: stopped
+          runningCount: 0

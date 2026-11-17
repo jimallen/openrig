@@ -87,6 +87,18 @@ export async function runValidatedScenario(
     // Action verb.
     const seat = typeof value === "string" ? value : (value as { seat?: string } | null)?.seat;
     const res = await deps.runAction(verb, value, seat);
+    // workspaces-o9o.29: `up: { fails: { contains } }` expects the launch to fail, saying `contains` in its output.
+    const expectedFailure = verb === "up" ? upFailureExpected(value) : null;
+    if (expectedFailure !== null) {
+      const output = [res.stdout, res.stderr].filter(Boolean).join("\n");
+      if (res.code === 0) {
+        return fail(scenario.scenario, i, `action \`up\` was expected to fail and exited 0: ${output}`, deps);
+      }
+      if (!output.includes(expectedFailure)) {
+        return fail(scenario.scenario, i, `action \`up\` failed (exit ${res.code}) as expected, but its output does not contain ${JSON.stringify(expectedFailure)}: ${output}`, deps);
+      }
+      continue;
+    }
     if (res.code !== 0) {
       return fail(scenario.scenario, i, `action \`${verb}\` failed (exit ${res.code}): ${res.stderr || res.stdout}`, deps);
     }
@@ -95,6 +107,15 @@ export async function runValidatedScenario(
   const rec: RunRecord = { scenario: scenario.scenario, verdict: "PASS" };
   deps.appendRecord?.(rec);
   return { scenario: scenario.scenario, verdict: "PASS" };
+}
+
+/** The text an `up` expected to fail must report (`up: { fails: { contains } }`), or null when it is expected to succeed. */
+function upFailureExpected(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const fails = (value as { fails?: unknown }).fails;
+  if (typeof fails !== "object" || fails === null) return null;
+  const contains = (fails as { contains?: unknown }).contains;
+  return typeof contains === "string" ? contains : null;
 }
 
 /** Execute one `expect`, retaining the actual failed read alongside its DIFF. */

@@ -93,7 +93,8 @@ export type ValidationErrorCode =
   | "EMIT_NOT_OBJECT"
   | "UNKNOWN_EMIT_BEHAVIOR"
   | "USAGE_LIMIT_IN_STUB_TOPOLOGY"
-  | "UNKNOWN_DAEMON_OP";
+  | "UNKNOWN_DAEMON_OP"
+  | "UP_FAILS_INVALID";
 
 export interface ValidationError {
   code: ValidationErrorCode;
@@ -285,6 +286,7 @@ function validateStep(
   if (verb === "expect") validateExpect(value, `${base}.expect`, push);
   else if (verb === "emit") validateEmit(value, `${base}.emit`, topologyKind, push);
   else if (verb === "daemon") validateDaemon(value, `${base}.daemon`, push);
+  else if (verb === "up") validateUp(value, `${base}.up`, push);
   // Other action verbs (up/down/send/restart/restore/mutate/policy/seed_regression)
   // carry free-form payloads the runner interprets; no schema gate at v1.
 }
@@ -423,6 +425,27 @@ function validateEmit(
     `${path}.behavior: unknown behavior ${JSON.stringify(behavior)} — the stub repertoire is: ${EMIT_BEHAVIORS.join(", ")}`,
     `${path}.behavior`,
   );
+}
+
+/** workspaces-o9o.29: `up: { fails: { contains: "<text>" } }` expects the launch to FAIL (rig up exits non-zero) with
+ *  the text in its output, so a launch-failure scenario can say what the failure must report. Only `fails` is checked
+ *  here; the other `up` keys keep their current treatment. */
+function validateUp(
+  value: unknown,
+  path: string,
+  push: (code: ValidationErrorCode, message: string, p: string) => void,
+): void {
+  if (!isPlainObject(value) || value.fails === undefined) return;
+  const fails = value.fails;
+  const keys = isPlainObject(fails) ? Object.keys(fails) : [];
+  if (!isPlainObject(fails) || typeof fails.contains !== "string" || fails.contains.length === 0 || keys.length !== 1) {
+    push(
+      "UP_FAILS_INVALID",
+      `${path}.fails: must be { contains: "<text>" }, the text a failed launch's output must contain; a launch expected ` +
+        `to fail with nothing named about its failure would pass on any failure, including the wrong one`,
+      `${path}.fails`,
+    );
+  }
 }
 
 function validateDaemon(

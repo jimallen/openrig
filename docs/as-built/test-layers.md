@@ -475,8 +475,9 @@ pane. The scenario catches a capture that resolves the seat by a prefix match on
 name (so `dev-impl` also matches `dev-impl2`) and takes the first hit, or any resolver that
 returns the same pane for both seats; it does not exercise a prefix match on the full seat
 name. All five run with the local runner (`run-scenarios.mjs`). The transcript and capture
-scenarios also run in the CI job, in passing form only, as does `shipped-agent-ref-resolves` (the
-`shipped-ref` case); the down, send and up scenarios don't.
+scenarios also run in the CI job, in passing form only, as do `shipped-agent-ref-resolves` (the
+`shipped-ref` case) and the two launch-failure scenarios (`launch-held`, `launch-exit`); the down,
+send and up scenarios don't.
 They do not prove that panes are gone or that a seat consumed a message. The transcript
 case does not establish ordering, uniqueness, sibling-token absence, tail limits or restart
 persistence. `up` has partial coverage in `up-relaunch-restores-a-two-seat-team.yaml`: a

@@ -24,7 +24,7 @@ import {
   STUB_RUNNER_ERROR_MARKER,
   type StubRunnerState,
 } from "./stub-runner-protocol.js";
-import { parseStubScript, DEFAULT_STUB_SCRIPT, type StubScript } from "./stub-script.js";
+import { parseStubScript, DEFAULT_STUB_SCRIPT, STUB_EXIT_BEFORE_READY_CODE, type StubScript } from "./stub-script.js";
 import { fireCompaction, type CompactionResult } from "./stub-compaction.js";
 import { fireRestore, type RestoreResult } from "./stub-restore.js";
 
@@ -291,6 +291,46 @@ export async function runStubRunner(args: StubRunnerArgs): Promise<void> {
     const injected = process.env.OPENRIG_TEST_CLOCK_NOW;
     return typeof injected === "string" && injected.trim().length > 0 ? injected : new Date().toISOString();
   };
+  // workspaces-o9o.29: the script is read BEFORE readiness, because its readiness can hold the seat short of ready or
+  // end it before ready. A script that fails to parse keeps the old order: the seat reports ready, then says why the
+  // script failed (below), so a broken scenario script is still loud on a live seat.
+  let script: StubScript | undefined;
+  let scriptError: Error | undefined;
+  try {
+    script = resolveStubScript(args.cwd, {
+      readFile: (p) => nodeFs.readFileSync(p, "utf-8"),
+      exists: (p) => nodeFs.existsSync(p),
+    });
+  } catch (err) {
+    scriptError = err as Error;
+  }
+  const paneLine = (line: string) => { process.stdout.write(`${line}\n`); };
+  const recordExit = (code: number | null) => {
+    try {
+      writeSidecar(args.cwd, { ready: false, launchId: args.launchId, exited: { code, at: nowIso() }, updatedAt: nowIso() });
+    } catch { /* best-effort on the way out */ }
+    paneLine(STUB_RUNNER_EXIT_MARKER);
+  };
+  if (script?.readiness === "exit") {
+    // A runner that refuses before ready: its say lines, its own ERROR line (what o9o.3 surfaces in the launch
+    // failure), the exit recorded for THIS launch, then exit. It never reports ready and posts no activity.
+    for (const step of script.steps) if (step.kind === "say") paneLine(step.text);
+    paneLine(`${STUB_RUNNER_ERROR_MARKER} ${script.error ?? ""}`);
+    recordExit(STUB_EXIT_BEFORE_READY_CODE);
+    process.exitCode = STUB_EXIT_BEFORE_READY_CODE;
+    return;
+  }
+  if (script?.readiness === "hold") {
+    // A seat held short of ready: its say lines, a pending (not ready) record for THIS launch, and then it idles as the
+    // pane's live foreground process until a signal, which it records like any stop. It posts no activity.
+    for (const step of script.steps) if (step.kind === "say") paneLine(step.text);
+    try {
+      writeSidecar(args.cwd, { ready: false, launchId: args.launchId, updatedAt: nowIso() });
+    } catch { /* the seat stays held either way */ }
+    await idleUntilSignal(recordExit);
+    return;
+  }
+
   try {
     writeSidecar(args.cwd, { ready: true, launchId: args.launchId, updatedAt: nowIso() });
     // eslint-disable-next-line no-console
@@ -364,10 +404,7 @@ export async function runStubRunner(args: StubRunnerArgs): Promise<void> {
   // SessionStart signals the seat came up (running); it precedes the turn's events.
   io.postActivity(stubActivityPayload(identity, "SessionStart", null, nowIso()));
   try {
-    const script = resolveStubScript(args.cwd, {
-      readFile: (p) => nodeFs.readFileSync(p, "utf-8"),
-      exists: (p) => nodeFs.existsSync(p),
-    });
+    if (scriptError || !script) throw scriptError ?? new Error("no stub script");
     // Author the seat's own transcript BEFORE executing, so `emit compaction`
     // fires the real seam over the stub's scripted conversation, not a foreign one.
     nodeFs.mkdirSync(nodePath.dirname(transcriptPath), { recursive: true });
@@ -382,6 +419,12 @@ export async function runStubRunner(args: StubRunnerArgs): Promise<void> {
     console.error(`${STUB_RUNNER_ERROR_MARKER} script execution failed: ${(err as Error).message}`);
   }
 
+  await idleUntilSignal(recordExit);
+}
+
+/** Idle as the pane's live foreground process until SIGTERM, SIGINT or SIGHUP, which records the exit and ends the
+ *  process. Never resolves on its own. */
+async function idleUntilSignal(recordExit: (code: number | null) => void): Promise<void> {
   // Keep the Node event loop alive so the process IDLES as the pane's live
   // foreground process. The `await new Promise(()=>{})` below never resolves, but an
   // unresolved promise does NOT ref the loop — nor do signal listeners — so without a
@@ -392,16 +435,8 @@ export async function runStubRunner(args: StubRunnerArgs): Promise<void> {
 
   // Record an honest exit on termination so the daemon's readiness never
   // false-greens a stopped seat off a stale ready sidecar.
-  const recordExit = (code: number | null) => {
-    clearInterval(keepAlive);
-    try {
-      writeSidecar(args.cwd, { ready: false, launchId: args.launchId, exited: { code, at: nowIso() }, updatedAt: nowIso() });
-    } catch { /* best-effort on the way out */ }
-    // eslint-disable-next-line no-console
-    console.log(STUB_RUNNER_EXIT_MARKER);
-  };
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
-    process.on(sig, () => { recordExit(0); process.exit(0); });
+    process.on(sig, () => { clearInterval(keepAlive); recordExit(0); process.exit(0); });
   }
 
   // Idle as the pane's live foreground process (held open by `keepAlive` above).

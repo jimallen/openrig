@@ -98,7 +98,10 @@ cannot prove" in [test-layers.md](test-layers.md).
   and Pi seats launch through the seat launch environment (`seat-launch-environment.ts`), which
   no scenario reaches. Real Codex launch and handover run only in two opt-in daemon tests
   (`OPENRIG_E2E_REAL_CODEX=1`, which needs tmux, `codex` and a Codex login). The CI containers
-  have no provider CLIs or credentials.
+  have no provider CLIs or credentials. Launch failures: covered for stub seats (workspaces-o9o.29).
+  CI runs `launch-held-short-of-ready.yaml` (a seat held short of ready: the readiness timeout) and
+  `launch-runner-exits-before-ready.yaml` (the runner's own ERROR line in the failure) healthy; on
+  the attention path `rig up`'s response does not carry the pane tail yet (workspaces-o9o.89).
 
 ## Regression log
 

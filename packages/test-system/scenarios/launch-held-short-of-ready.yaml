@@ -1,0 +1,36 @@
+# Family: launch (a seat that never becomes ready).
+# Defect class: a launch whose seat never reports ready is reported as a bare timeout, or is not reported at all, or
+#   `down` leaves the held seat running (workspaces-o9o.3, o9o.29).
+# What this proves: STUB PLUMBING plus the shipped launch report. The stub seat's script holds it short of ready
+#   (readiness: hold): it prints its line and never reports ready. `rig up` fails, naming the readiness timeout and
+#   saying the pane tail was not stored (the durable text never carries pane output). The held seat's pane, read
+#   through the shipped `rig capture`, shows the held line. After `down`, `rig ps --json` records the rig stopped
+#   with no running seat; the host-mode test that runs this file then checks that no stub runner and no terminal of
+#   this scenario is left.
+# What this does NOT prove: that rig up's response carries the pane tail for a seat needing attention. It does not
+#   today (rigspec-instantiator's attentionNodes drop paneTail); workspaces-o9o.89 owns that.
+# Planted negative: a stub runner that reports ready before it reads its script (the pre-o9o.29 order) makes `up`
+#   succeed, and step 0 fails with "action `up` was expected to fail and exited 0".
+# The stub adapter's own launch wait is a fixed ~15 s; the configurable readiness window does not govern it.
+scenario: launch-held-short-of-ready
+topology: ./solo-stub.yaml
+env:
+  stub_scripts:
+    worker: ./scripts/launch-held.json
+steps:
+  - up:
+      fails:
+        contains: "stub launch: timed out waiting for the runner to report ready — pane tail not stored"
+  - expect:
+      surface: pane
+      seat: work-worker@solo-stub
+      within: 10s
+      contains: "o9o29-held-7c1e waiting short of ready"
+  - down: {}
+  - expect:
+      surface: ps
+      within: 30s
+      match:
+        - name: solo-stub
+          status: stopped
+          runningCount: 0

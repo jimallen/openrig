@@ -82,6 +82,16 @@ imports a `shipped:` ref against the installed package's own specs folder, and b
 come up. Its planted failure (the `shipped:` branch removed from the daemon's agent-ref
 resolution) is a product-code mutation too, kept as per-PR evidence.
 
+`../scenarios/launch-held-short-of-ready.yaml` (`launch-held`) and
+`../scenarios/launch-runner-exits-before-ready.yaml` (`launch-exit`) run the same way: once,
+healthy only (workspaces-o9o.29). A stub script holds the one seat short of ready, or makes its
+runner exit before ready with its own ERROR line; `up: { fails: { contains } }` expects `rig up`
+to fail saying so, and the rig is stopped after `down`. Their planted failures are product-code
+mutations (the runner reporting ready before it reads its script; the stub adapter dropping the
+runner's ERROR line), kept as per-PR evidence. The daemon test
+`launch-failure-scenarios.integration.test.ts` runs both on a private hc core and also checks that
+`down` leaves no stub runner and no live terminal, which the scenario grammar cannot say.
+
 The other library scenarios are **unadmitted**. Several need step-time `emit`,
 `policy`, `mutate`, or `restore`. Others have incomplete assertions or setup:
 clean-lifecycle has no post-down residue assertion, ps-scope neither brings up its

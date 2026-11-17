@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { readReport, verifyPassingRun, verifyRun, PASSING_CASES, RESULT_PREFIX, SCENARIO } from '../packages/test-system/ci/result.mjs';
 
 // Pure admission controls, not E2E evidence. No process, socket, native addon or DB.
@@ -98,6 +99,19 @@ test('a passing-only case admits only a clean PASS of its own scenario', () => {
   }
   assert.throws(() => verifyPassingRun(0, green, 'fixture'));
   assert.throws(() => verifyRun('healthy', 0, green, 'transcript'));
+});
+// workspaces-o9o.29: the runner script's passing cases and result.mjs's are one list; a case in one and not the other
+// fails only inside CI. Each case's scenario is a library file whose `scenario:` name is the one result.mjs expects.
+test('the runner script and result.mjs name the same passing cases, each a real library scenario', () => {
+  const script = readFileSync(new URL('./run-pr-scenarios.sh', import.meta.url), 'utf8');
+  const listed = /^PASSING_CASES=\(([^)]*)\)$/m.exec(script)?.[1].trim().split(/\s+/) ?? [];
+  const accepted = /^\s*([a-z|-]+)\) CASES=\(\); PASSING_CASES=\("\$2"\);;$/m.exec(script)?.[1].split('|') ?? [];
+  assert.deepEqual([...listed].sort(), Object.keys(PASSING_CASES).sort());
+  assert.deepEqual([...accepted].sort(), Object.keys(PASSING_CASES).sort());
+  for (const { file, scenario } of Object.values(PASSING_CASES)) {
+    const yaml = readFileSync(new URL(`../packages/test-system/scenarios/${file.replace(/^library\//, '')}`, import.meta.url), 'utf8');
+    assert.match(yaml, new RegExp(`^scenario: ${scenario}$`, 'm'));
+  }
 });
 test('only one structured outcome is allowed amid human-readable logs', () => {
   const line = RESULT_PREFIX + JSON.stringify(red);

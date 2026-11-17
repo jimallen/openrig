@@ -120,15 +120,15 @@ export function buildRealDeps(opts: RealDepsOptions): ScenarioRunnerDeps {
         const upArgs = ["up", topologyPath, "--json", "--yes"];
         if (opts.seatCwd) upArgs.push("--cwd", opts.seatCwd);
         const r = await runRig(upArgs, daemon.readEnv, rigBin, UP_TIMEOUT_MS);
-        if (r.code === 0) {
-          try {
-            const j = JSON.parse(r.stdout) as Record<string, unknown>;
-            const rig = (j.rig as Record<string, unknown> | undefined) ?? undefined;
-            rigId = (j.rigId as string) ?? (rig?.id as string) ?? rigId;
-            rigName = (j.rigName as string) ?? (rig?.name as string) ?? rigName;
-          } catch {
-            /* non-JSON up output — leave the rig ids uncaptured; down/restart will fail loud */
-          }
+        // workspaces-o9o.29: a failed up (a seat that never became ready) still created its rig, so its ids are
+        // captured too, when its output names them, and a later `down` stops what it started.
+        try {
+          const j = JSON.parse(r.stdout) as Record<string, unknown>;
+          const rig = (j.rig as Record<string, unknown> | undefined) ?? undefined;
+          rigId = (j.rigId as string) ?? (rig?.id as string) ?? rigId;
+          rigName = (j.rigName as string) ?? (rig?.name as string) ?? rigName;
+        } catch {
+          /* non-JSON up output — leave the rig ids uncaptured; down/restart will fail loud */
         }
         return r;
       }

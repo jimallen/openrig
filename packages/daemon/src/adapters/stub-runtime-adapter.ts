@@ -31,6 +31,7 @@ import {
   stubSeatSidecarPath, buildStubRunnerCommand, parseStubRunnerState,
   type StubRunnerState,
 } from "./stub-runner-protocol.js";
+import { durableLaunchFailureSuffix, paneTailQuote, redactPaneText } from "../domain/launch-failure-report.js";
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
 
@@ -271,19 +272,47 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
       // false-fail this launch.
       if (state && state.launchId === launchId) {
         if (state.exited) {
+          // workspaces-o9o.29, mirroring Pi (o9o.3): the runner's own ERROR line goes in the error, which is persisted
+          // (node.startup_failed), so it never carries the pane tail; the tail rides the transient paneTail.
+          const paneContent = await this.joinedPane(binding.tmuxSession);
+          const tail = paneTailQuote(paneContent);
           return {
             ok: false,
-            failure: { ok: false, error: `stub launch failed: the runner exited (code ${state.exited.code ?? "unknown"})`, recovery: "attention_required" },
+            failure: {
+              ok: false,
+              error: `stub launch failed: the runner exited (code ${state.exited.code ?? "unknown"})${durableLaunchFailureSuffix(paneContent)}`,
+              recovery: "attention_required",
+              evidence: redactPaneText(paneContent.split("\n").slice(-12).join("\n")),
+              ...(tail ? { paneTail: tail } : {}),
+            },
           };
         }
         if (state.ready) return { ok: true };
       }
       if (attempt < attempts - 1) await this.sleep(pollMs);
     }
+    const paneContent = await this.joinedPane(binding.tmuxSession);
+    const tail = paneTailQuote(paneContent);
     return {
       ok: false,
-      failure: { ok: false, error: "stub launch: timed out waiting for the runner to report ready", recovery: "attention_required" },
+      failure: {
+        ok: false,
+        error: `stub launch: timed out waiting for the runner to report ready${durableLaunchFailureSuffix(paneContent)}`,
+        recovery: "attention_required",
+        ...(tail ? { paneTail: tail } : {}),
+      },
     };
+  }
+
+  /** The pane's recent text with soft-wrapped lines joined (as Pi reads it, o9o.3), so a token wider than the pane is
+   *  redacted whole; "" when the pane cannot be read. */
+  private async joinedPane(sessionName: string | null | undefined): Promise<string> {
+    if (!sessionName) return "";
+    try {
+      return (await this.tmux.capturePaneContent(sessionName, 40, { joinWrappedLines: true })) ?? "";
+    } catch {
+      return "";
+    }
   }
 
   private projectEntry(entry: ProjectionEntry, binding: NodeBinding, warnings: string[]): boolean {

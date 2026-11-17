@@ -70,7 +70,7 @@ runs the four emit behaviors only from a per-seat launch script (`env.stub_scrip
 step verbs `emit`, `restore`, `mutate` and `policy` parse, but the runner throws
 `UnboundActionError` when it reaches one. In CI, `queue-baton-survives-restart` runs with
 its seed, and `transcript-reads-addressed-seat`, `capture-returns-addressed-seat` and
-`shipped-agent-ref-resolves` run healthy only (see [ci/README.md](ci/README.md)). The other ten historical scenarios are
+`shipped-agent-ref-resolves`, `launch-held-short-of-ready` and `launch-runner-exits-before-ready` run healthy only (see [ci/README.md](ci/README.md)). The other ten historical scenarios are
 not yet runnable as meaningful checks, and `down-stops-every-seat` and
 `send-renders-in-addressed-pane` don't run in CI. Scenario #11 is RED-FIRST: its GREEN gates on the 51-06 transactional
 execution-closure fix and on its own setup and assertion-shape gaps (R-17, R-20); until

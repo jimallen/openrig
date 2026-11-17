@@ -26,8 +26,22 @@ export type StubStep =
   | { kind: "say"; text: string }
   | { kind: "emit"; behavior: StubBehavior };
 
+/** How a stub seat comes up (workspaces-o9o.29). "ready" (the default) reports ready and then runs its steps. "hold" prints
+ *  its say steps and never reports ready: a seat held short of ready, so the launch's readiness wait runs out. "exit"
+ *  prints its say steps and `[stub-runner] ERROR <error>`, records the exit and exits 1 before ready. This is a launch
+ *  property, not a behavior: a behavior is a step a ready seat performs, so it is not in STUB_BEHAVIORS. */
+export const STUB_READINESS = ["ready", "hold", "exit"] as const;
+export type StubReadiness = (typeof STUB_READINESS)[number];
+
+/** The exit code of a stub runner that exits before ready ("exit"). */
+export const STUB_EXIT_BEFORE_READY_CODE = 1;
+
 export interface StubScript {
   steps: StubStep[];
+  /** Absent means "ready". */
+  readiness?: StubReadiness;
+  /** What the runner's ERROR line says; present exactly when readiness is "exit". */
+  error?: string;
 }
 
 /** Loud, typed rejection — a malformed/dishonest script must fail, never silently no-op. */
@@ -82,7 +96,26 @@ export function parseStubScript(raw: string): StubScript {
   if (!isPlainObject(parsed)) throw new StubScriptError("stub script must be an object { steps: [...] }");
   const steps = parsed.steps;
   if (!Array.isArray(steps)) throw new StubScriptError("stub script requires a steps array");
-  return { steps: steps.map((step, i) => parseStep(step, `steps[${i}]`)) };
+  const parsedSteps = steps.map((step, i) => parseStep(step, `steps[${i}]`));
+  const readiness = parsed.readiness ?? "ready";
+  if (typeof readiness !== "string" || !(STUB_READINESS as readonly string[]).includes(readiness)) {
+    throw new StubScriptError(`readiness: unknown readiness ${JSON.stringify(parsed.readiness)} — expected one of: ${STUB_READINESS.join(", ")}`);
+  }
+  const error = parsed.error;
+  if (readiness === "exit" && (typeof error !== "string" || error.length === 0)) {
+    throw new StubScriptError(`error: a seat whose readiness is "exit" requires a non-empty error, the text of its ERROR line`);
+  }
+  if (readiness !== "exit" && error !== undefined) {
+    throw new StubScriptError(`error: only a seat whose readiness is "exit" prints an ERROR line; this one's readiness is "${readiness}"`);
+  }
+  if (readiness !== "ready") {
+    const emitAt = parsedSteps.findIndex((step) => step.kind === "emit");
+    if (emitAt >= 0) {
+      throw new StubScriptError(`steps[${emitAt}]: an emit needs a ready seat, and this seat's readiness is "${readiness}"; only say steps run`);
+    }
+  }
+  if (readiness === "ready") return { steps: parsedSteps };
+  return { steps: parsedSteps, readiness: readiness as StubReadiness, ...(readiness === "exit" ? { error: error as string } : {}) };
 }
 
 /** The built-in default script for a standalone stub seat (no scenario-resolved script):
