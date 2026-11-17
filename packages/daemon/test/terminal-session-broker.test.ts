@@ -16,6 +16,10 @@ interface FakeSub extends TerminalSubscriber {
   closed: { code: number; reason: string }[];
 }
 
+/** How long a row waits for the broker to deliver what it is waiting for (workspaces-o9o.110). A row passes as soon as its condition holds;
+ *  this bound only ends a real hang, inside the 20 s test timeout. It was 1 s against a 10 ms poll, and a full suite on a loaded host missed it. */
+const DELIVERY_WAIT_MS = 15_000;
+
 function makeSub(): FakeSub {
   const received: string[] = [];
   const closed: { code: number; reason: string }[] = [];
@@ -100,7 +104,7 @@ describe("TerminalSessionBroker", () => {
     await vi.waitFor(() => {
       expect(a.received.join("")).toContain("hello-world");
       expect(b.received.join("")).toContain("hello-world");
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
   });
 
   it("test 2: a 2nd subscriber does NOT start a second pipe-pane", async () => {
@@ -158,7 +162,7 @@ describe("TerminalSessionBroker", () => {
     fs.appendFileSync(broker.pipeOutputPath!, "still-live");
     await vi.waitFor(() => {
       expect(b.received.join("")).toContain("still-live");
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
     expect(a.received.join("")).not.toContain("still-live");
   });
 
@@ -174,7 +178,7 @@ describe("TerminalSessionBroker", () => {
     await vi.waitFor(() => {
       expect(stopPipePane).toHaveBeenCalledWith("dev@rig");
       expect(fs.existsSync(path)).toBe(false);
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
     expect(broker.subscriberCount).toBe(0);
   });
 
@@ -193,7 +197,7 @@ describe("TerminalSessionBroker", () => {
     await vi.waitFor(() => {
       expect(a.closed[0]?.code).toBe(1001);
       expect(b.closed[0]?.code).toBe(1001);
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
     expect(a.closed[0]?.reason).toContain("terminated");
   });
 
@@ -370,7 +374,7 @@ describe("TerminalBrokerRegistry", () => {
     broker.detach(sub);
     await vi.waitFor(() => {
       expect(reg.size).toBe(0);
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
   });
 });
 
@@ -407,7 +411,7 @@ describe("TerminalSessionBroker - lifecycle hardening", () => {
     await vi.waitFor(() => {
       expect(good.received.join("")).toContain("ISOLATION-DATA");
       expect(broker.subscriberCount).toBe(1); // the throwing subscriber was detached
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
   });
 
   it("last-detach unlinks even a NON-EMPTY pipe file (AC-7 no temp leak)", async () => {
@@ -421,7 +425,7 @@ describe("TerminalSessionBroker - lifecycle hardening", () => {
     broker.detach(a);
     await vi.waitFor(() => {
       expect(fs.existsSync(path)).toBe(false);
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
   });
 
   it("registry: CONCURRENT attaches to one session share ONE broker / ONE pipe", async () => {
@@ -445,7 +449,7 @@ describe("TerminalSessionBroker - lifecycle hardening", () => {
     const sub1 = makeSub();
     const first = await reg.attach("dev@rig", sub1);
     first.detach(sub1);
-    await vi.waitFor(() => { expect(reg.size).toBe(0); }, { timeout: 1000 });
+    await vi.waitFor(() => { expect(reg.size).toBe(0); }, { timeout: DELIVERY_WAIT_MS });
 
     const sub2 = makeSub();
     const second = await reg.attach("dev@rig", sub2);
@@ -471,7 +475,7 @@ describe("TerminalSessionBroker - shared history ring (AC-5)", () => {
     fs.appendFileSync(broker.pipeOutputPath!, "HISTORY-A-SAW-THEN-SCROLLED-OFF");
     await vi.waitFor(() => {
       expect(a.received.join("")).toContain("HISTORY-A-SAW-THEN-SCROLLED-OFF");
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
 
     const b = makeSub();
     await broker.attach(b);
@@ -496,7 +500,7 @@ describe("TerminalSessionBroker - shared history ring (AC-5)", () => {
     );
     await vi.waitFor(() => {
       expect(a.received.join("")).toContain("STALE TUI PROMPT");
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
 
     const b = makeSub();
     await broker.attach(b);
@@ -505,6 +509,25 @@ describe("TerminalSessionBroker - shared history ring (AC-5)", () => {
     expect(bSeed).not.toContain("STALE TUI PROMPT");
     expect(bSeed).not.toContain("overpainted status");
     expect(bSeed).toContain("CURRENT SCREEN");
+  });
+
+  // workspaces-o9o.110: the delivery the late-subscriber row waits for came from a 10 ms poll, but the row allowed it only 1 s; on a loaded host
+  // (a full suite beside other seats' suites) that window was missed once. The broker's poll is a seam: a poll slower than the old window
+  // must not fail the row, because the row waits for the delivery itself.
+  it("RED: the first subscriber's delivery, slower than the old 1 s window, still arrives and the late subscriber still gets the screen", async () => {
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({
+      capturePaneScreen: async () => "CURRENT SCREEN",
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 120, height: 40 }),
+    }), { pollMs: 1_500 }));
+    const a = makeSub();
+    await broker.attach(a);
+    fs.appendFileSync(broker.pipeOutputPath!, "\x1b[2J\x1b[12;1HSTALE TUI PROMPT\x1b[13;1Hoverpainted status");
+    await vi.waitFor(() => {
+      expect(a.received.join("")).toContain("STALE TUI PROMPT");
+    }, { timeout: DELIVERY_WAIT_MS });
+    const b = makeSub();
+    await broker.attach(b);
+    expect(b.received.join("")).toContain("CURRENT SCREEN");
   });
 
   it("the history ring is bounded under sustained output", async () => {
@@ -524,10 +547,10 @@ describe("TerminalSessionBroker - shared history ring (AC-5)", () => {
     const a = makeSub();
     await broker.attach(a);
     fs.appendFileSync(broker.pipeOutputPath!, "transient history");
-    await vi.waitFor(() => { expect(broker.historyByteLength).toBeGreaterThan(0); }, { timeout: 1000 });
+    await vi.waitFor(() => { expect(broker.historyByteLength).toBeGreaterThan(0); }, { timeout: DELIVERY_WAIT_MS });
 
     broker.detach(a);
-    await vi.waitFor(() => { expect(broker.historyByteLength).toBe(0); }, { timeout: 1000 });
+    await vi.waitFor(() => { expect(broker.historyByteLength).toBe(0); }, { timeout: DELIVERY_WAIT_MS });
   });
 });
 
@@ -583,7 +606,7 @@ describe("TerminalSessionBroker - concurrent attach failure (honest close)", () 
 
     expect(a.closed[0]?.code).toBe(1008);
     expect(b.closed[0]?.code).toBe(1008);
-    await vi.waitFor(() => { expect(reg.size).toBe(0); }, { timeout: 1000 });
+    await vi.waitFor(() => { expect(reg.size).toBe(0); }, { timeout: DELIVERY_WAIT_MS });
   });
 });
 
@@ -616,7 +639,7 @@ describe("TerminalSessionBroker - teardown during seed (honest close)", () => {
 
     // Session dies while B is mid-seed; liveness fires and tears the broker down.
     alive = false;
-    await vi.waitFor(() => { expect(a.closed[0]?.code).toBe(1001); }, { timeout: 1000 });
+    await vi.waitFor(() => { expect(a.closed[0]?.code).toBe(1001); }, { timeout: DELIVERY_WAIT_MS });
 
     releaseCapture(); // B's seed now resolves
     await bAttach;
@@ -686,7 +709,7 @@ describe("TerminalSessionBroker - per-subscriber scroll-back (OPR.0.4.0.39)", ()
     fs.appendFileSync(broker.pipeOutputPath!, "LIVE-AFTER-SCROLL");
     await vi.waitFor(() => {
       expect(b.received.join("")).toContain("LIVE-AFTER-SCROLL");
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
     // a was scrolled back: the live byte must NOT overwrite its history view.
     expect(a.received.length).toBe(aAfterScroll);
     expect(a.received.join("")).not.toContain("LIVE-AFTER-SCROLL");
@@ -716,7 +739,7 @@ describe("TerminalSessionBroker - per-subscriber scroll-back (OPR.0.4.0.39)", ()
     fs.appendFileSync(broker.pipeOutputPath!, "BACK-TO-LIVE-STREAM");
     await vi.waitFor(() => {
       expect(a.received.join("")).toContain("BACK-TO-LIVE-STREAM");
-    }, { timeout: 1000 });
+    }, { timeout: DELIVERY_WAIT_MS });
   });
 
   it("scroll on an UNKNOWN subscriber is a no-op (never throws, sends nothing)", async () => {
