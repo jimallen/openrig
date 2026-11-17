@@ -198,16 +198,20 @@ export class AgentActivityStore {
     return pickLatestByOrdering(parsed, questionCallsIn(parsed));
   }
 
-  /** The seat's latest word when it is a question to the human that the turn has not gone on past: no tool other than AskUserQuestion has
-   *  started (by its own eventAt) since the question's dialog. Null otherwise. Used to tell a question's own delayed Notification from another
+  /** The seat's latest word when it is a question to the human still open: the turn has asked more questions than have ended, and it has not
+   *  gone on past the dialog (no tool other than AskUserQuestion has started, by its own eventAt, since). Null otherwise. Used to tell a question's own delayed Notification from another
    *  tool's permission prompt (workspaces-o9o.57). */
   private _questionStillOpen(nodeId: string): AgentActivity | null {
     const rows = this.db.prepare(
       `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${ACTIVITY_SCAN_ROWS}`
     ).all(nodeId) as EventPayloadRow[];
     const parsed = rows.map((r) => parseActivityPayload(r.payload));
-    const latest = pickLatestByOrdering(parsed, questionCallsIn(parsed))?.activity ?? null;
+    const questions = questionCallsIn(parsed);
+    const latest = pickLatestByOrdering(parsed, questions)?.activity ?? null;
     if (!latest || latest.dialog !== "question" || latest.state !== "needs_input") return null;
+    // An end of the turn's questions has arrived for every question it asked (o9o.59's count): the question is answered, whatever order the
+    // end's stamp gives it (an end stamped in the same millisecond as its dialog does not displace it).
+    if (questions.ends >= questions.asks) return null;
     const askedMs = latest.eventAt ? Date.parse(latest.eventAt) : Number.NaN;
     const wentOn = turnCalls(parsed).turn.some((a) => a.rawEvent === "PreToolUse" && a.rawSubtype !== QUESTION_DIALOG_TOOL
       && !!a.eventAt && Number.isFinite(askedMs) && Date.parse(a.eventAt) > askedMs);
