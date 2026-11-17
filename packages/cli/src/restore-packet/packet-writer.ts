@@ -207,7 +207,8 @@ function buildSummary(opts: WritePacketOptions): Record<string, unknown> {
     caveats: opts.caveats,
     authority_boundaries: opts.authorityBoundaries,
     omitted_classes: omittedClassesActive,
-    redaction_policy_id: "openrig-v0",
+    // The list redact() applies (workspaces-o9o.51; readers accept it since release 5).
+    redaction_policy_id: "openrig-v1",
     source_trust_ranking: opts.sourceTrustRanking,
     generator_version: opts.generatorVersion,
     generated_at: new Date().toISOString(),

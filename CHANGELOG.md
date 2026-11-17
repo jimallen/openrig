@@ -26,6 +26,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - The rollout shape is measured (structure only) on this host's Codex 0.137 to 0.158 rollouts and one 0.166.0 turn: a call is a `custom_tool_call` with a `call_id`, closed by a `custom_tool_call_output` with the same `call_id`, inside `task_started` … `task_complete`. The Responses API spelling (`function_call`, `function_call_output`) counts the same. That the call is written when it starts is argued from 0.158 rollouts, where a call's record comes before its output by the run time; on 0.166.0 it is not measured.
 - A call older than the window, or a rollout the daemon cannot read, shows today's `turn running` line, never a wrong tool.
 
+### Restore packets name the redaction list they were written with: `openrig-v1` (workspaces-o9o.51)
+
+- Restore packets have been redacted with the widened list since workspaces-o9o.28, but their `restore-summary.json` still said `redaction_policy_id: "openrig-v0"`. The writer now records `openrig-v1`.
+- Compatibility: a validator from before release 5 accepts only `velocity-v1` and `openrig-v0`, so it rejects a packet this writer makes. This change ships only once release 5 is live on every host. Packets that say `openrig-v0` still validate.
+
 ### `rig doctor` checks a host before its first launch (workspaces-o9o.11)
 
 - Symptom: Sparky's first launch of a team failed four ways that no check reported beforehand: an oh-my-zsh "update? [Y/n]" question in the login shell read the typed launch as its answer; Pi was on the daemon's PATH but not on the seat's; `pi.operator_login_dir` was unset, so Pi refused for lack of a credential; and a spec folder was writable by group, so the spec source was refused.

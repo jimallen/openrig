@@ -939,7 +939,7 @@ describe("M2c-CLI packet-writer atomic emission", () => {
     expect(summary.target_runtime).toBe("claude-code");
     expect(summary.role_pointer).toBe("rigs/openrig-velocity-claude/state/velocity/driver-role.md");
     expect(summary.bounded_latest_transcript.bound).toBe(120);
-    expect(summary.redaction_policy_id).toBe("openrig-v0");
+    expect(summary.redaction_policy_id).toBe("openrig-v1");
     expect(summary.generator_version).toBe("rig-restore-packet@0.1.0");
     expect(summary.source_runtime).toBe("codex");
     expect(summary.source_session_id).toBe("velocity-driver@openrig-velocity");
@@ -1614,7 +1614,7 @@ describe("M2c-Daemon final regression — CLI-surface redaction + omitted round-
     // Summary's omitted_classes records the redaction occurrence.
     const summary = JSON.parse(fs.readFileSync(path.join(target, "restore-summary.json"), "utf-8"));
     expect(summary.omitted_classes).toContain("redacted_secrets");
-    expect(summary.redaction_policy_id).toBe("openrig-v0");
+    expect(summary.redaction_policy_id).toBe("openrig-v1");
   });
 
   it("--source-jsonl with M2b R2 nested Claude content (tool_use + tool_result): omitted counts populated via CLI surface", async () => {

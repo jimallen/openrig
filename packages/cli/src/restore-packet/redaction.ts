@@ -6,13 +6,14 @@
 //   codex-jsonl-to-restore-packet.mjs:34-48 (sk-*, gh[pousr]_*,
 //   github_pat_*, Bearer *, base64 ≥40 chars).
 // - `openrig-v0`: the productized v0 policy, identical patterns to
-//   `velocity-v1` but with the canonical name. v0 generator emits
-//   `redaction_policy_id: "openrig-v0"`.
+//   `velocity-v1` but with the canonical name. Packets written before
+//   workspaces-o9o.51 carry it, and the validator still accepts it.
 // - `openrig-v1`: the v0 patterns plus vendor token shapes (Slack, GitLab,
 //   npm, JWT, AWS, Google), URL passwords and secret-named assignments
-//   (workspaces-o9o.28). SECRET_PATTERNS below IS this list. The validator
-//   accepts the id now; the writer still emits `openrig-v0` until a later
-//   revision flips it, so an older CLI never rejects a newer packet.
+//   (workspaces-o9o.28/.48). SECRET_PATTERNS below IS this list. The writer
+//   emits it since workspaces-o9o.51, which ships only after a release whose
+//   validator accepts it (release 5) is live on every host, so no reader
+//   in use rejects a new packet.
 //
 // Redaction is applied to:
 // - transcript content in transcript-latest.md and transcript.md.
