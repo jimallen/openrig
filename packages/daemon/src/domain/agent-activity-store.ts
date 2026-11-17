@@ -13,7 +13,8 @@ export interface HookActivityInput {
   nodeId?: string | null;
   hookEvent: string;
   subtype?: string | null;
-  /** OF-278 / workspaces-o9o.56: on an AskUserQuestion end, the digest of the questions it ended (seat-question-policy questionKeyOf). */
+  /** OF-278 / workspaces-o9o.56: on an AskUserQuestion end, the digest of the questions it ended (seat-question-policy questionKeyOf);
+   *  workspaces-o9o.59: on an AskUserQuestion PermissionRequest, the digest of the questions it asks. */
   questionKey?: string | null;
   occurredAt?: string | null;
   /** W2a-1 — the EMITTING occupant's generation, CARRIED source-bound on the hook (the producer/relay
@@ -418,16 +419,14 @@ const LATEST_SCAN_ROWS = 20;
  *  is unmeasured: such an end would clear the prompt early. A question to the human never uses this window (promptClearedBy). */
 export const ASYNC_PROMPT_CLEAR_SLACK_MS = 2_000;
 
-type OrderingActivity = Pick<AgentActivity, "rawEvent" | "eventAt"> & Partial<Pick<AgentActivity, "state" | "rawSubtype" | "dialog" | "toolCallId" | "generation" | "recordedBy">>;
+type OrderingActivity = Pick<AgentActivity, "rawEvent" | "eventAt"> & Partial<Pick<AgentActivity, "state" | "rawSubtype" | "dialog" | "toolCallId" | "generation" | "recordedBy" | "questionKey">>;
 
 /** workspaces-o9o.4 F3: the AskUserQuestion calls of the current turn, by call id: those started, and those of them still open.
  *  workspaces-o9o.59: and how many questions the turn asked and how many of them ended, which needs no call id. */
 export interface QuestionCalls {
   started: ReadonlySet<string>;
   open: ReadonlySet<string>;
-  /** The turn's question dialogs: AskUserQuestion PermissionRequests. The relay's and the question-wait hold's records of one question are
-   *  one ask, so this is the larger of the two counts: it can undercount (a question only the hold recorded, beside one only the relay
-   *  did), never overcount. */
+  /** The turn's questions: the smallest number of questions its AskUserQuestion PermissionRequests can be (questionsAsked). */
   asks: number;
   /** The turn's AskUserQuestion ends (PostToolUse/PostToolUseFailure), one per call id; an end with no call id counts on its own. */
   ends: number;
@@ -520,15 +519,44 @@ export function questionCallsIn(newestFirst: Array<{ activity?: OrderingActivity
   const { turn, started, open } = turnCalls(newestFirst);
   const ids = (rows: OrderingActivity[]) => new Set(rows.filter((a) => a.rawSubtype === QUESTION_DIALOG_TOOL).map((a) => a.toolCallId!));
   const asked = turn.filter((a) => a.rawEvent === "PermissionRequest" && a.rawSubtype === QUESTION_DIALOG_TOOL);
-  const byHold = asked.filter((a) => a.recordedBy === "question_hold").length;
   const ended = turn.filter((a) => (a.rawEvent === "PostToolUse" || a.rawEvent === "PostToolUseFailure") && a.rawSubtype === QUESTION_DIALOG_TOOL);
   const endIds = new Set(ended.filter((a) => a.toolCallId).map((a) => a.toolCallId!));
   return {
     started: ids(started),
     open: ids(open),
-    asks: Math.max(asked.length - byHold, byHold),
+    asks: questionsAsked(asked),
     ends: endIds.size + ended.filter((a) => !a.toolCallId).length,
   };
+}
+
+/** workspaces-o9o.59: how many questions a turn's AskUserQuestion PermissionRequests are. One question can be recorded twice, once by the relay
+ *  and once by the question-wait hold (recordedBy: question_hold), and never more than once by each; each record names its questions by digest
+ *  (questionKey). So per digest the question count is the larger of the two sources' counts. A record with no digest (a seat on a relay copy
+ *  from before, or a hold given no questions) may be any question: it is matched against the other source's records that are not yet paired,
+ *  and counts only beyond them. The result is the smallest count the records allow: a stale "waiting" (an overcount) is the worse failure,
+ *  and only keyless records can undercount. */
+function questionsAsked(asked: OrderingActivity[]): number {
+  const relay = new Map<string, number>();
+  const hold = new Map<string, number>();
+  let relayKeyless = 0;
+  let holdKeyless = 0;
+  for (const a of asked) {
+    const byHold = a.recordedBy === "question_hold";
+    if (!a.questionKey) { if (byHold) holdKeyless += 1; else relayKeyless += 1; continue; }
+    const side = byHold ? hold : relay;
+    side.set(a.questionKey, (side.get(a.questionKey) ?? 0) + 1);
+  }
+  let keyed = 0;
+  let relayUnpaired = 0;
+  let holdUnpaired = 0;
+  for (const key of new Set([...relay.keys(), ...hold.keys()])) {
+    const r = relay.get(key) ?? 0;
+    const h = hold.get(key) ?? 0;
+    keyed += Math.max(r, h);
+    relayUnpaired += Math.max(0, r - h);
+    holdUnpaired += Math.max(0, h - r);
+  }
+  return keyed + Math.max(relayKeyless - holdUnpaired, holdKeyless - relayUnpaired, 0);
 }
 
 /** The tool starts with a call id in the current turn (rows newer than the last turn boundary, in the newest generation, read whole,
@@ -669,7 +697,7 @@ function normalizeHookActivity(input: {
     stale: false,
     generation: input.generation ?? null,
     ...(input.toolCallId && TOOL_CALL_EVENTS.has(rawEvent) ? { toolCallId: input.toolCallId } : {}),
-    ...(input.questionKey && (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure") && rawSubtype === QUESTION_DIALOG_TOOL
+    ...(input.questionKey && (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure" || rawEvent === "PermissionRequest") && rawSubtype === QUESTION_DIALOG_TOOL
       ? { questionKey: input.questionKey } : {}),
     ...(input.recordedBy && rawEvent === "PermissionRequest" && rawSubtype === QUESTION_DIALOG_TOOL ? { recordedBy: input.recordedBy } : {}),
   };

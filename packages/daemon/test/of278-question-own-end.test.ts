@@ -125,6 +125,29 @@ describe("OF-278 a question is settled only by the end of its own AskUserQuestio
     expect((await poll(b.requestId, SIZE, b.askedAtMs)).action, "B's hook keeps waiting for its answer").toBe("wait");
   });
 
+  // workspaces-o9o.59 with o9o.56, end to end: verify-qa's round-3 order (B's dialog reported before B's own start), A's end landing late. The
+  // store keeps B waiting (o9o.56) and the posture still reads B as asked (o9o.59), so after the rig's wait B gets its Recommended answer.
+  for (const bStart of ["never seen", "seen late"] as const) {
+    it(`a follow-up question asked before its own start is seen (B's start ${bStart}) is still auto-answered after A's late end`, async () => {
+      await relayed(provider("UserPromptSubmit", null));
+      const a = await opens("req-colour-0001", COLOUR, "toolu_colour_0001");
+      clock += MIN;                                          // the human answers A; A's PostToolUse is queued in the background
+      await relayed(provider("PermissionRequest", SIZE));    // follow-up B: its dialog, before its own (async) start
+      const bAskedAtMs = clock;
+      expect((await poll("req-size-00001", SIZE, bAskedAtMs)).action).toBe("wait");
+      clock += 2_000;
+      await ends(COLOUR, "toolu_colour_0001", { "Pick a colour": "Blue" });   // A's end lands only now
+      if (bStart === "seen late") await relayed(provider("PreToolUse", SIZE, { tool_use_id: "toolu_size_00001" }));
+      const b = SeatQuestionService.rowId(nodeId, "req-size-00001");
+      expect([state(a.rowId), state(b)]).toEqual(["answered_human", "waiting"]);
+      clock = bAskedAtMs + 15 * MIN;                         // the rig's wait (the default) has passed with B unanswered
+      const reply = await poll("req-size-00001", SIZE, bAskedAtMs);
+      expect(reply.action, `B auto-answered (${reply.why ?? ""})`).toBe("answer");
+      expect(reply.updatedInput?.answers).toEqual({ "Pick a size": "Small (Recommended)" });
+      expect(state(b)).toBe("answered_auto");
+    });
+  }
+
   it("a question's own end still settles it: answered_human, and the hook gets none", async () => {
     await relayed(provider("UserPromptSubmit", null));
     const b = await opens("req-size-00001", SIZE, "toolu_size_00001");
@@ -269,14 +292,15 @@ describe("the question digest: the relay's and the daemon's are one function (wo
     expect(questionKeyOf({ questions: COLOUR })).not.toBe(questionKeyOf({ questions: SIZE }));
     expect(questionKeyOf({ questions: COLOUR })).toMatch(/^[0-9a-f]{32}$/);
   });
-  it("is sent on an AskUserQuestion end only", () => {
+  it("is sent on an AskUserQuestion end and on the PermissionRequest that opens its dialog (workspaces-o9o.59), and nowhere else", () => {
     const env = { OPENRIG_SESSION_NAME: "s@r", OPENRIG_RUNTIME: "claude-code" };
     const at = () => new Date(T0);
     const key = (p: Record<string, unknown>) => relay.buildOpenRigPayload(p, env, at)?.questionKey;
     const input = { questions: COLOUR, answers: { "Pick a colour": "Blue" } };
     expect(key({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_input: input })).toBe(questionKeyOf(input));
     expect(key({ hook_event_name: "PostToolUseFailure", tool_name: "AskUserQuestion", tool_input: input })).toBe(questionKeyOf(input));
-    expect(key({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: input })).toBeUndefined();
+    expect(key({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: input })).toBe(questionKeyOf(input));
+    expect(key({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_input: input })).toBeUndefined();
     expect(key({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: input })).toBeUndefined();
     expect(key({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", tool_input: { questions: [] } })).toBeUndefined();
   });

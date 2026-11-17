@@ -90,7 +90,8 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   // a newer one still open (this end runs in the background and can land after a follow-up question opened). Measured on Claude Code
   // 2.1.325: the PermissionRequest that opens the dialog carries no tool_use_id, and tool_input.questions is the same on PreToolUse,
   // PermissionRequest and PostToolUse (PostToolUse adds `answers`). Only a digest is sent, never the question text.
-  const questionKey = (hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") && subtype === "AskUserQuestion"
+  // workspaces-o9o.59: the PermissionRequest that opens the dialog carries it too, so the daemon counts the turn's questions by what they ask.
+  const questionKey = (hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure" || hookEvent === "PermissionRequest") && subtype === "AskUserQuestion"
     ? questionKeyOf(providerPayload.tool_input)
     : null;
 

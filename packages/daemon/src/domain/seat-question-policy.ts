@@ -157,7 +157,7 @@ export interface SeatQuestionServiceDeps {
   /** Whether the seat's newest activity is still this open dialog: the question_dialog reason, in this generation. */
   stillAsking: (nodeId: string, generation: string | null) => boolean;
   /** Records the dialog as the seat's activity when the daemon never saw it (it was down when the hook first fired). */
-  recordAsking: (seat: { nodeId: string; sessionName: string; runtime: string | null }, generation: string | null, atIso: string) => void;
+  recordAsking: (seat: { nodeId: string; sessionName: string; runtime: string | null }, generation: string | null, atIso: string, questionKey: string | null) => void;
   emit: (event: Extract<import("./types.js").RigEvent, { type: "seat.question_auto_answered" | "seat.question_held" }>) => void;
   /** Files the one line to the human. Idempotent on `qitemId`. */
   tell: (note: { qitemId: string; seat: string; body: string; summary: string }) => Promise<void>;
@@ -210,7 +210,7 @@ export class SeatQuestionService {
       const askedAt = new Date(Math.min(req.askedAtMs, now().getTime())).toISOString();
       const plan = planAnswer(req.toolInput);
       if (waitMs === 0) return { action: "none", why: "this rig does not auto-answer" };
-      if (!this.deps.stillAsking(seat.nodeId, req.generation)) this.deps.recordAsking(seat, req.generation, askedAt);
+      if (!this.deps.stillAsking(seat.nodeId, req.generation)) this.deps.recordAsking(seat, req.generation, askedAt, questionKeyOf(req.toolInput));
       if (plan.kind === "held") {
         if (store.insert({ id, rigId: seat.rigId, nodeId: seat.nodeId, sessionName: seat.sessionName, generation: req.generation, state: "held", toolInput: req.toolInput, askedAt, dueAt: null, note: plan.reason })) {
           this.deps.emit({ type: "seat.question_held", rigId: seat.rigId, nodeId: seat.nodeId, sessionName: seat.sessionName, questionId: id, askedAt, reason: plan.reason });
@@ -326,8 +326,8 @@ export function activityBackedPorts(store: AgentActivityStore): Pick<SeatQuestio
       const latest = store.getLatestRecorded(nodeId);
       return !!latest && latest.state === "needs_input" && latest.dialog === "question" && (latest.generation ?? null) === (generation ?? null);
     },
-    recordAsking: (seat, generation, atIso) => {
-      store.recordHookEvent({ runtime: seat.runtime, sessionName: seat.sessionName, nodeId: seat.nodeId, hookEvent: "PermissionRequest", subtype: QUESTION_DIALOG_TOOL, occurredAt: atIso, generation, recordedBy: "question_hold" });
+    recordAsking: (seat, generation, atIso, questionKey) => {
+      store.recordHookEvent({ runtime: seat.runtime, sessionName: seat.sessionName, nodeId: seat.nodeId, hookEvent: "PermissionRequest", subtype: QUESTION_DIALOG_TOOL, occurredAt: atIso, generation, recordedBy: "question_hold", questionKey });
     },
   };
 }
