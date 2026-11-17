@@ -117,6 +117,7 @@ test("tier 0 fails on each banned addition and names where it is", async () => {
     [`// ${TS_OFF}`, "lint or type suppression"],
     [`${["it", "skipIf"].join(".")}(true)("x", () => {});`, "skip whose condition is a constant"],
     [`${["describe", "runIf"].join(".")}(false)("x", () => {});`, "skip whose condition is a constant"],
+    [`${["it", "skipIf"].join(".")} ( true )("x", () => {});`, "skip whose condition is a constant"],
   ];
   for (const [line, category] of cases) {
     await withRepo(async ({ repo, receipts }) => {

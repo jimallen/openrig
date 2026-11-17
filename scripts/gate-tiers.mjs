@@ -63,7 +63,7 @@ export const BANNED_ADDITIONS = [
   {
     category: "skip whose condition is a constant",
     applies: (file) => CODE_FILE.test(file),
-    pattern: /\.(?:skipIf\(\s*(?:true|1|!0)\s*\)|runIf\(\s*(?:false|0|!1)\s*\))/,
+    pattern: /\.(?:skipIf\s*\(\s*(?:true|1|!0)\s*\)|runIf\s*\(\s*(?:false|0|!1)\s*\))/,
   },
   {
     category: "x-prefixed test",
