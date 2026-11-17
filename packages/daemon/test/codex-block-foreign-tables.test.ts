@@ -218,6 +218,20 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     expect(config()).toContain(PLUGIN_TABLES);
   });
 
+  it("no record and a person's table first in the block: the stanzas running the current relay are still OpenRig's, upsert and strip", () => {
+    blockLast();
+    fs.writeFileSync(configPath, config().replace(`${BEGIN}\n`, `${BEGIN}\n[marketplaces.first]\nsource = "a"\n\n`));
+    const before = config();
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().ensureCodexActivityHooks();
+    expect(managedCommands(config())).toBe(4);
+    fs.writeFileSync(configPath, before);
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().removeCodexActivityHooks();
+    expect(managedCommands(config())).toBe(0);
+    expect(config()).toContain("[marketplaces.first]");
+  });
+
   it("no record and a changed relay path (an older daemon's block): its stanzas are replaced, and a person's same-named relay stays", () => {
     const older = path.join(codexHome, "older", "activity-relay.cjs");
     fs.mkdirSync(path.dirname(older), { recursive: true }); fs.copyFileSync(RELAY_ASSET, older);
