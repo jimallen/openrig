@@ -289,6 +289,23 @@ describe("SeatHandoverService", () => {
       expect(launchHarness).not.toHaveBeenCalled();
     });
 
+    // verify-qa2, review of 8f45028bb (FAIL 1/3): only fresh and rebuild were pinned. A fork the real handover would run (the
+    // seat's session has a native id) is refused while the lease is held, and the same fork goes ahead with --despite lease.
+    it("a fork handover is judged the same way", async () => {
+      const { sessionId } = seedSeat({ runtime: "codex" });
+      sessionRegistry.updateResumeToken(sessionId!, "codex_id", "native-abc", "scrape");
+      heldLease();
+      const refused = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port() }), { source: "fork:dev-impl@seat-rig" });
+      expect(refused).toMatchObject({ ok: false, code: "relaunch_check_held" });
+      expect((refused as { message: string }).message).toContain("ui-test-host");
+      expect(capturePaneScreen).not.toHaveBeenCalled();
+      expect(launchHarness).not.toHaveBeenCalled();
+      const overridden = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port() }), { source: "fork:dev-impl@seat-rig", despite: ["lease"] });
+      expect(overridden.ok, JSON.stringify(overridden)).toBe(true);
+      expect(asked).toEqual([[], ["lease"]]);
+      expect(launchHarness).toHaveBeenCalledTimes(1);
+    });
+
     it("a discovered handover stops nothing, so it is not judged", async () => {
       seedSeat();
       const discovered = seedDiscovery();

@@ -254,11 +254,20 @@ start fresh rather than resume, including every seat named with `--fresh`. A lea
 `relaunch_check_held`, naming the holder; every other seat starts as usual. So does `POST
 /api/rigs/:rigId/nodes/:logicalId/launch` for a seat in a pod (it goes through the same restore).
 
+A handover whose successor replaces the retiring occupant in its pane (`rig seat handover` and `rig handover` with
+`--source fresh`, the default, `fork:<id>` or `rebuild`) runs both checks against the retiring occupant, with the seat's
+own `relaunch_checks` settings, before anything is captured or stopped (workspaces-o9o.93). While one is held it is
+refused with `relaunch_check_held` (HTTP 409), naming each holder or process, and the seat keeps its occupant.
+`--despite lease` and `--despite children` hand over anyway; the result warns which held checks it went past, and the
+handover records its `--reason`. `--dry-run` shows the refusal it would meet ("Would be refused: …"). A check that
+cannot be read only warns. `--source discovered:<id>` rebinds a session the operator already prepared and stops
+nothing, so it is not checked.
+
 Not checked, so a held lease does not stop them:
 - a seat a restore resumes (its saved conversation continues; nothing is replaced);
 - a rig's first launch from its spec (`rig up <spec>`), whose seats are new;
 - the kernel's boot, and the TUI's start of a kernel seat that never had an occupant;
-- a handover successor (`rig seat handover`);
+- a handover with `--source discovered:<id>` (above);
 - `POST /api/rigs/:rigId/nodes/:logicalId/launch` for a seat outside any pod, or with `retryStartupFrom`.
 
 `--despite lease` and `--despite children` launch anyway, one check each; the launch event records them with the
