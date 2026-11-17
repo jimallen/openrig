@@ -120,4 +120,3 @@ describe("o9o.46 (review): the CLI takes the same one rule", () => {
     expect(report.items?.map((i) => i.id)).toEqual(["configured-item"]);
   });
 });
-

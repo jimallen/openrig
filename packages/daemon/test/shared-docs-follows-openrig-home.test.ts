@@ -137,4 +137,3 @@ describe("o9o.46 (review): a shared-docs root variable that is not absolute is n
     expect(compat.resolveSharedDocsRoot()).toBe(named);
   });
 });
-
