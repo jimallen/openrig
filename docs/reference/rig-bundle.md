@@ -28,7 +28,9 @@ upload files to remote daemons. For a remote target, run the link command on tha
 it with its sibling digest, and use the existing path command there. Existing local path/name commands keep their
 dispatch. Importing does not install dependencies or execute repository scripts. Before packaging a link, it checks
 the checkout's symlinks (excluding Git metadata), member agent refs, agent imports and legacy package refs (including
-additional `--include-packages` entries): every target must resolve inside the fetched checkout. Shared agents and
+additional `--include-packages` entries): every target must resolve inside the fetched checkout. A `shipped:` agent
+ref is refused ("GitHub bundles take local: or path: refs; shipped: is not allowed"): it would name an agent from the
+reader's installed OpenRig, not from the repository. Shared agents and
 legacy packages outside the selected folder are allowed within that repository. Preset staging
 preserves that directory layout. Unresolved or escaping references stop the import and remove its temporary source.
 

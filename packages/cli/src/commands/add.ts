@@ -36,7 +36,7 @@ export function addMemberCommand(depsOverride?: StatusDeps): Command {
 The rig can be named the way rig whoami --json reports it, or by id. A name that
 matches more than one rig is refused; use one of the listed ids instead.
 
-The fragment's agent_ref: Whoever can call the daemon is trusted to name any persona folder, so path: has no allowlist; the daemon guards against accidents and swaps, not a hostile caller: a local: ref must stay inside the spec tree it is written in (a stray .. or a symlink out is refused: use path:/abs/dir for a persona outside), and agent.yaml must be a regular, single-link file of at most 64 KiB.
+The fragment's agent_ref: Whoever can call the daemon is trusted to name any persona folder, so path: has no allowlist; the daemon guards against accidents and swaps, not a hostile caller: a local: ref must stay inside the spec tree it is written in (a stray .. or a symlink out is refused: use path:/abs/dir for a persona outside), and agent.yaml must be a regular, single-link file of at most 64 KiB. A shipped: ref (for example shipped:agents/shared) names a folder in the running OpenRig install's own specs folder and needs no rig root; it may not leave that folder.
 
 Examples:
   rig add my-rig dev ./reviewer.member.yaml

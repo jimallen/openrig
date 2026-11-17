@@ -3,8 +3,9 @@
 The first PR automation increment is described in [ci/README.md](ci/README.md).
 It runs the existing daemon-restart baton fixture plus a fault control in the
 installed-package testbed, now alongside the library's queue-baton scenario and
-its explicit seed binding. The same job also runs `transcript-reads-addressed-seat`
-and `capture-returns-addressed-seat` once each, healthy only (`ci/result.mjs`).
+its explicit seed binding. The same job also runs `transcript-reads-addressed-seat`,
+`capture-returns-addressed-seat` and `shipped-agent-ref-resolves` once each, healthy only
+(`ci/result.mjs`).
 Hosted green/red execution is required before claiming either verified. The
 fifteen authored scenarios below are a broader target; they are not fifteen
 admitted CI passes.
@@ -68,8 +69,8 @@ The runner (`packages/daemon/scripts/run-scenarios.mjs`, over
 runs the four emit behaviors only from a per-seat launch script (`env.stub_scripts`); the
 step verbs `emit`, `restore`, `mutate` and `policy` parse, but the runner throws
 `UnboundActionError` when it reaches one. In CI, `queue-baton-survives-restart` runs with
-its seed, and `transcript-reads-addressed-seat` and `capture-returns-addressed-seat` run
-healthy only (see [ci/README.md](ci/README.md)). The other ten historical scenarios are
+its seed, and `transcript-reads-addressed-seat`, `capture-returns-addressed-seat` and
+`shipped-agent-ref-resolves` run healthy only (see [ci/README.md](ci/README.md)). The other ten historical scenarios are
 not yet runnable as meaningful checks, and `down-stops-every-seat` and
 `send-renders-in-addressed-pane` don't run in CI. Scenario #11 is RED-FIRST: its GREEN gates on the 51-06 transactional
 execution-closure fix and on its own setup and assertion-shape gaps (R-17, R-20); until

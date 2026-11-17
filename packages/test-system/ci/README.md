@@ -76,6 +76,12 @@ content, and capture resolving a seat by member-name prefix). The read-only inst
 can't carry them, so they stay per-PR evidence outside CI. A green run here shows the
 passing leg only.
 
+`../scenarios/shipped-agent-ref-resolves.yaml` (the `shipped-ref` case) runs the same way:
+once, healthy only. `rig up` resolves a member `shipped:` agent ref and a local persona that
+imports a `shipped:` ref against the installed package's own specs folder, and both seats
+come up. Its planted failure (the `shipped:` branch removed from the daemon's agent-ref
+resolution) is a product-code mutation too, kept as per-PR evidence.
+
 The other library scenarios are **unadmitted**. Several need step-time `emit`,
 `policy`, `mutate`, or `restore`. Others have incomplete assertions or setup:
 clean-lifecycle has no post-down residue assertion, ps-scope neither brings up its

@@ -108,6 +108,9 @@ snapshot, resuming seats where their harness allows; it refuses while any of its
 whose rig name already exists starts a new team in place of the stopped one, which
 is archived, and refuses if the old one may still be running. To bring a stopped
 team back with its conversations, run rig up <rig-name> --existing, not the spec.
+
+A GitHub folder link takes local: and path: agent refs that resolve inside the fetched repository; a shipped: ref is
+refused, since it would name an agent from the reader's installed OpenRig rather than from the repository.
 `);
   const getDepsF = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 

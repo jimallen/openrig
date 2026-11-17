@@ -142,6 +142,22 @@ describe("GitHub bundle source", () => {
     await expect(prepareGitHubBundle(URL, git, path.join(root, "imports"))).resolves.toBeTruthy();
   });
 
+  // workspaces-o9o.21 (CoS): a GitHub bundle names its agents from its own checkout; a shipped: ref would name one from whatever
+  // OpenRig the reader has installed, so it stays refused, now with a message that says so instead of the generic one.
+  it.each(["member", "import"])("refuses a shipped: agent ref (%s) and says GitHub bundles take local: or path: refs", async kind => {
+    const imports = path.join(root, "imports");
+    const git = checkoutWith((checkout, folder) => {
+      if (kind === "member") rigWithAgent(folder, "shipped:agents/shared");
+      else {
+        rigWithAgent(folder, "local:../../agents/helper");
+        writeAgent(path.join(checkout, "agents/helper"), "helper", ["shipped:agents/shared"]);
+      }
+    });
+    const failure = await prepareGitHubBundle(URL, git, imports).then(() => "accepted", (e: Error) => e.message);
+    expect(failure).toBe(`GitHub bundles take local: or path: refs; shipped: is not allowed ("shipped:agents/shared"); no bundle was built.`);
+    expect(fs.readdirSync(imports)).toEqual([]);
+  });
+
   it.each(["member-local", "member-path", "import-local", "import-path"])("rejects outside agent references: %s", async kind => {
     const outside = path.join(root, "host-agent");
     writeAgent(outside, "host-fixture");

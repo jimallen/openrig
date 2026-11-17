@@ -231,13 +231,17 @@ non-idempotent actions on restore (`startup-orchestrator.ts:634`,
 re-runs a first start that failed at projection, before any harness launch.
 
 **Remote import constraints**: `agent_ref` and AgentSpec imports accept
-`local:<relative path>` and `path:<absolute path>` only
-(`rigspec-schema.ts:41`, `agent-manifest.ts:40`); a terminal member uses the
-`builtin:terminal` sentinel (`rigspec-schema.ts:532`). Remote `agent_ref`
-sources remain unsupported: RigSpec validation rejects them
-(`rigspec-schema.ts:563`), `rigPreflight` runs that validation
-(`rigspec-preflight.ts:252`), and the resolver refuses a remote import again
-(`agent-resolver.ts:203`).
+`local:<relative path>`, `path:<absolute path>` and `shipped:<path relative to the
+running install's specs folder>` only, through one grammar (`parseAgentRef`,
+`agent-ref-grammar.ts:33`, called at `rigspec-schema.ts:716` and
+`agent-manifest.ts:48`); a terminal member uses the `builtin:terminal` sentinel
+(`rigspec-schema.ts:688`). A GitHub bundle link takes `local:` and `path:` refs
+inside the fetched repository only, and refuses `shipped:`
+(`packages/cli/src/lib/bundle-source.ts`, `checkGitHubBundleRefs`). Remote
+`agent_ref` sources remain unsupported: the grammar rejects any other scheme, so
+RigSpec validation rejects them (`rigspec-schema.ts:716`), `rigPreflight` runs
+that validation (`rigspec-preflight.ts:312`), and the resolver refuses a remote
+import again (`agent-resolver.ts:238`).
 
 ## 5. Instantiation, preflight, export
 

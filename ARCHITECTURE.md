@@ -268,9 +268,9 @@ and no model cost.
    inside tmux, including an agent's pane. It supplies no fault controller, so a
    `seed_regression` step fails there; the seeded pair runs in the container path.
 6. **CI.** The `installed-scenario` job runs `scripts/run-pr-scenarios.sh` in disposable,
-   network-less containers built from the packed package. It runs four cases: `fixture` and `library`
+   network-less containers built from the packed package. It runs five cases: `fixture` and `library`
    (`queue-baton-survives-restart.yaml`), each with a healthy run and a seeded lost-baton run, plus
-   `transcript` and `capture`, healthy runs only. Adding a seeded case means changing three files:
+   `transcript`, `capture` and `shipped-ref`, healthy runs only. Adding a seeded case means changing three files:
    the `--case` list in `scripts/run-pr-scenarios.sh`, `CASES` in
    `packages/test-system/ci/result.mjs`, and the fault controller in
    `packages/test-system/ci/run.mjs`; a healthy-only case goes in `PASSING_CASES` in the first two
