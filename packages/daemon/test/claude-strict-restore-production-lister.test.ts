@@ -1,6 +1,8 @@
 // #1091 round 5: strict restore through the production process lister. No listProcesses
 // is injected; `ps` is stubbed at the spawn seam, answering whichever columns the caller
 // asks for. These rows are process observations only, not a Claude session.
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -9,8 +11,8 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { rebindAndVerifyPaneIdentity } from "../src/domain/seat-attention-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 
-const processMocks = vi.hoisted(() => ({ execFile: vi.fn() }));
-vi.mock("node:child_process", async (importOriginal) => ({ ...(await importOriginal<object>()), execFile: processMocks.execFile }));
+const processMocks = vi.hoisted(() => ({ execFile: vi.fn(), spawn: vi.fn() }));
+vi.mock("node:child_process", async (importOriginal) => ({ ...(await importOriginal<object>()), execFile: processMocks.execFile, spawn: processMocks.spawn }));
 // The executable-path witness is unavailable (as for exited or unreadable pids), so
 // no fake pid here can resolve to a real process on the test host.
 // Each case sets the witnesses it needs; any other pid has none.
@@ -32,10 +34,24 @@ processMocks.execFile.mockImplementation((file: string, args: string[], _options
     return callback(null, { stdout: JSON.stringify(pids.map((pid) => [pid, witnesses.get(pid) ?? null])), stderr: "" });
   }
   if (file !== "ps") return callback(new Error(`unexpected spawn: ${file}`), { stdout: "", stderr: "" });
+  callback(null, { stdout: psTable(args), stderr: "" });
+});
+function psTable(args: string[]): string {
   const columns = args[1]!.split(",");
   const line = (row: Row) => columns.map((column) => column === "lstart" ? startedAt
     : column === "command" ? row.command : String(row[column as keyof Row])).join(" ");
-  callback(null, { stdout: [columns.join(" ").toUpperCase(), ...rows.map(line)].join("\n") + "\n", stderr: "" });
+  return [columns.join(" ").toUpperCase(), ...rows.map(line)].join("\n") + "\n";
+}
+// The full process table is read as a stream (workspaces-o9o.67): the same table, through `spawn`.
+processMocks.spawn.mockImplementation((file: string, args: string[]) => {
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
+  queueMicrotask(() => {
+    if (file !== "ps") { child.emit("error", new Error(`unexpected spawn: ${file}`)); return; }
+    child.stdout.end(psTable(args)); child.stderr.end();
+    child.stdout.on("end", () => setImmediate(() => child.emit("close", 0, null)));
+    child.stdout.resume();
+  });
+  return child;
 });
 
 const databases: Database.Database[] = [];
