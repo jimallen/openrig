@@ -577,6 +577,69 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
     expect(suf.truncated).toBe(false);
   });
 
+  // workspaces-o9o.60: the served suffix is a REDACTED VIEW at RAW offsets. totalBytes and sinceBytes address the native
+  // record's bytes as they are on disk; only the text served from that offset is redacted (shared transcript policy),
+  // line by line, and only complete lines are served, so a secret is never cut in two by the slice's end.
+  // The fake secret is built at runtime: no credential-shaped literal sits in this file (CoS rule, 2026-11-16).
+  const SECRET = ["s", "k-"].join("") + "o9o60fixture" + "Q".repeat(12);
+  const userLine = (text: string) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } }) + "\n";
+  const suffixOf = async (seat: string, since: number) => {
+    const res = await app.request(`/api/sessions/${encodeURIComponent(seat)}/generation-record?sinceBytes=${since}`);
+    expect(res.status).toBe(200);
+    return await res.json() as { suffix: string; totalBytes: number; truncated: boolean };
+  };
+
+  it("serves the suffix redacted, as parseable JSON lines, with totalBytes still the raw size", async () => {
+    const raw = userLine(`export OPENAI_KEY=${SECRET} then deploy`);
+    seedSidecar("dev-red@r", "gen-red", raw);
+    const body = await suffixOf("dev-red@r", 0);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    expect(body.totalBytes).toBe(Buffer.byteLength(raw, "utf8"));
+    expect(body.suffix.endsWith("\n")).toBe(true);
+    const rec = JSON.parse(body.suffix.trimEnd()) as { message: { content: Array<{ text: string }> } };
+    expect(rec.message.content[0]!.text).toBe("export OPENAI_KEY=[REDACTED] then deploy");
+  });
+
+  it("sinceBytes addresses RAW bytes: a redacted earlier line does not shift where the next one starts", async () => {
+    const early = userLine(`token ${SECRET}`);
+    const late = userLine("the walked piece");
+    seedSidecar("dev-off@r", "gen-off", early + late);
+    const body = await suffixOf("dev-off@r", Buffer.byteLength(early, "utf8"));
+    expect(body.suffix).toBe(late);
+    expect(body.totalBytes).toBe(Buffer.byteLength(early + late, "utf8"));
+  });
+
+  it("serves only complete lines: an unfinished last line (a token still being written) is held back", async () => {
+    const done = userLine("first");
+    seedSidecar("dev-part@r", "gen-part", done + `{"type":"user","message":{"content":"${SECRET.slice(0, 10)}`);
+    const body = await suffixOf("dev-part@r", 0);
+    expect(body.suffix).toBe(done);
+    expect(body.suffix).not.toContain(SECRET.slice(0, 6));
+  });
+
+  it("a complete line that is not JSON is redacted as text", async () => {
+    seedSidecar("dev-txt@r", "gen-txt", `plain ${SECRET} line\n`);
+    const body = await suffixOf("dev-txt@r", 0);
+    expect(body.suffix).toBe("plain [REDACTED] line\n");
+  });
+
+  it("at the 8 MiB cap the slice ends at the last complete line, so a token across the cap is not served in part", async () => {
+    const CAP = 8 * 1024 * 1024;
+    const filler = userLine("x ".repeat(500)); // space-broken: an unbroken 40+ run is itself redacted, and would shrink
+    const fillerCount = Math.floor((CAP - 100) / Buffer.byteLength(filler, "utf8"));
+    const head = filler.repeat(fillerCount);
+    // The secret's line starts 20 bytes before the cap, so the cap falls inside the secret.
+    const pad = CAP - Buffer.byteLength(head, "utf8") - 20 - Buffer.byteLength('{"t":"', "utf8");
+    expect(pad).toBeGreaterThan(0);
+    const straddle = `{"t":"${" ".repeat(pad)}${SECRET}"}\n`;
+    seedSidecar("dev-cap@r", "gen-cap", head + straddle);
+    const body = await suffixOf("dev-cap@r", 0);
+    expect(body.truncated).toBe(true);
+    expect(body.suffix).not.toContain(SECRET.slice(0, 6));
+    expect(body.suffix.endsWith("\n")).toBe(true);
+    expect(Buffer.byteLength(body.suffix, "utf8")).toBe(Buffer.byteLength(head, "utf8"));
+  });
+
   it("refuses LOUD (409 unsupported_runtime) when no sidecar record resolves — never an empty success", async () => {
     const res = await app.request(`/api/sessions/${encodeURIComponent("ghost@r")}/generation-record`);
     expect(res.status).toBe(409);

@@ -1,9 +1,16 @@
+import { redact } from "../restore-packet/redaction.js";
+
 /** Receipt evidence only: complete input and its closed native turn, never comprehension. */
 export function analyzeWalkSuffix(suffix: string, content: string): { consumed: boolean; turnClosed: boolean } {
   // CRLF and surrounding whitespace are the only permitted transport normalization.
   // Internal whitespace (including code indentation) remains content.
   const canonical = (text: string) => text.replace(/\r\n/g, "\n").trim();
   const expected = canonical(content);
+  // workspaces-o9o.60: the daemon serves the record as a redacted view (the shared transcript policy, which `redact` is
+  // the CLI twin of), so a piece holding a secret-shaped string appears there redacted. A record text that equals the
+  // piece as sent, or the piece as redacted, is the piece; an older daemon serves it unredacted.
+  const redactedExpected = canonical(redact(content));
+  const isPiece = (text: string) => expected !== "" && (text === expected || text === redactedExpected);
   const textOf = (value: unknown): string => typeof value === "string" ? value
     : Array.isArray(value) ? value.map(b => (b?.type === "text" || b?.type === "input_text") && typeof b.text === "string" ? b.text : "").join("") : "";
   let consumed = false;
@@ -29,7 +36,7 @@ export function analyzeWalkSuffix(suffix: string, content: string): { consumed: 
     }
     if (rec.type === "turn_context" && activeTurn !== p?.turn_id) activeTurn = undefined;
     if (rec.type === "response_item" && p?.type === "message" && p.role === "user"
-      && expected && canonical(textOf(p.content)) === expected) {
+      && isPiece(canonical(textOf(p.content)))) {
       consumed = true;
       matchedTurn = activeTurn;
     }
@@ -38,7 +45,7 @@ export function analyzeWalkSuffix(suffix: string, content: string): { consumed: 
       if (p.turn_id === activeTurn) activeTurn = undefined;
     }
     if (typeof rec.uuid === "string") claudeRecords.set(rec.uuid, rec);
-    if (isPrompt(rec) && expected && canonical(textOf(rec.message?.content)) === expected) {
+    if (isPrompt(rec) && isPiece(canonical(textOf(rec.message?.content)))) {
       consumed = true;
       if (typeof rec.uuid === "string") matchedInputs.add(rec.uuid);
     }

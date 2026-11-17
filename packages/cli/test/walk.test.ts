@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { walkCommand, parsePaceMs, type WalkDeps } from "../src/commands/walk.js";
+import { redact } from "../src/restore-packet/redaction.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import { mkTemp } from "./helpers/temp-roots.js";
 import { setOffCommands, rigWords, closesCleanly } from "../../daemon/test/helpers/shell-argv.js";
@@ -339,6 +340,70 @@ describe("rig walk — per-piece consumption verification (RED-first, mechanics-
     ]));
     expect(result.exitCode).toBe(succeeds ? undefined : 1);
     expect(result.logs.some(l => l.includes('"consumptionVerified":true'))).toBe(succeeds);
+  });
+
+  // workspaces-o9o.60: the daemon serves the record's suffix as a redacted view at raw offsets. The fake secret is built at
+  // runtime: no credential-shaped literal sits in this file (CoS rule, 2026-11-16).
+  const SECRET = ["s", "k-"].join("") + "o9o60walk" + "Q".repeat(14);
+  const secretPiece = `Set the key: export OPENAI_KEY=${SECRET}\nthen run the deploy step.`;
+
+  it("a piece that holds a secret is verified against the redacted record the daemon serves", async () => {
+    const w: ScriptedWorld = { record: { generationId: "g1", content: "" }, pane: "", sends: [], gets: [] };
+    // What the daemon's redacted view shows of that piece's records: the message text redacted.
+    w.sendBehavior = b => { w.record.content += linkedClaude(redact(String(b.text))); return { status: 200, data: { ok: true } }; };
+    const deps = consumptionDeps(w);
+    deps.fileExists = () => true;
+    deps.readFile = () => secretPiece;
+    const result = await captureLogs(() => makeCmd(deps).parseAsync([
+      "node", "rig", "walk", "dev@rig", "--through", "piece.md", "--json", "--pace", "0ms",
+      "--consume-timeout", "5ms", "--consume-poll", "1ms", "--turn-timeout", "5ms",
+    ]));
+    expect(result.exitCode).toBeUndefined();
+    expect(result.logs.some(l => l.includes('"consumptionVerified":true'))).toBe(true);
+  });
+
+  it("still verifies the same piece against an unredacted record (a daemon from before the redacted view)", async () => {
+    const w: ScriptedWorld = { record: { generationId: "g1", content: "" }, pane: "", sends: [], gets: [] };
+    w.sendBehavior = b => { w.record.content += linkedClaude(String(b.text)); return { status: 200, data: { ok: true } }; };
+    const deps = consumptionDeps(w);
+    deps.fileExists = () => true;
+    deps.readFile = () => secretPiece;
+    const result = await captureLogs(() => makeCmd(deps).parseAsync([
+      "node", "rig", "walk", "dev@rig", "--through", "piece.md", "--json", "--pace", "0ms",
+      "--consume-timeout", "5ms", "--consume-poll", "1ms", "--turn-timeout", "5ms",
+    ]));
+    expect(result.exitCode).toBeUndefined();
+    expect(result.logs.some(l => l.includes('"consumptionVerified":true'))).toBe(true);
+  });
+
+  it("PIN: walk takes every sinceBytes from the raw totalBytes, never from the served suffix (which is redacted, so shorter)", async () => {
+    const w: ScriptedWorld = { record: { generationId: "g1", content: "" }, pane: "", sends: [], gets: [] };
+    const rawSizes: number[] = [];
+    w.sendBehavior = b => {
+      if (b.text === undefined) return { status: 200, data: { ok: true } };
+      rawSizes.push(Buffer.byteLength(w.record.content, "utf8"));
+      // The raw record carries the secret; the fake below serves it redacted, as the daemon does.
+      w.record.content += linkedClaude(`${String(b.text)} ${SECRET}`);
+      return { status: 200, data: { ok: true } };
+    };
+    const deps = consumptionDeps(w);
+    const inner = deps.clientFactory;
+    deps.clientFactory = (...a: Parameters<typeof inner>) => {
+      const client = inner(...a);
+      return {
+        ...client,
+        get: async (path: string) => {
+          const res = await client.get(path) as { status: number; data: { suffix?: string } };
+          if (res.data.suffix !== undefined) res.data.suffix = redact(res.data.suffix);
+          return res;
+        },
+      } as typeof client;
+    };
+    await captureLogs(() => makeCmd(deps).parseAsync([...pacingArgs, "--json"]));
+    const since = w.gets.flatMap(p => { const m = /sinceBytes=(\d+)/.exec(p); return m ? [Number(m[1])] : []; });
+    expect(rawSizes.length).toBeGreaterThan(0);
+    expect(since.length).toBeGreaterThan(0);
+    for (const n of since) expect(rawSizes, `sinceBytes=${n}`).toContain(n);
   });
 
   it.each(["during-send", "between-pieces"])("generation changes %s cannot produce a verified walk", async when => {

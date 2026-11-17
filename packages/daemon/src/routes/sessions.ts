@@ -34,6 +34,7 @@ import type { PermissionDriftReader } from "../domain/permission-drift-observer.
 import { ProcessCensus } from "../domain/process-census.js";
 import { CodexThreadIdResolver } from "../domain/codex-thread-id.js";
 import { resolveLiveCodexThreadId } from "../domain/model-divergence/current-generation-record.js";
+import { redactedRecordView } from "../domain/generation-record-view.js";
 import { SeatIdentityStore } from "../domain/seat-identity-store.js";
 import { parseSqliteUtcMs } from "../domain/sqlite-time.js";
 import { requestPdaRelease } from "../domain/pda-release.js";
@@ -643,8 +644,10 @@ sessionAdminRoutes.post("/:sessionName/resume-token", terminalAuthGuard(), async
 // to its native thread and then the existing context store's thread table — never a pane snapshot
 // or a transcript-recency search. Refuses LOUD when the seat has no resolvable record: verification is
 // impossible, never receive an empty success.
-// Round-2 (r2 HIGH-2): raw conversation bytes with no transcript redaction — a TERMINAL-CLASS
-// surface behind the same bearer gate as its neighbors (401/401/200; null-token loopback passes).
+// Round-2 (r2 HIGH-2): a TERMINAL-CLASS surface behind the same bearer gate as its neighbors (401/401/200; null-token
+// loopback passes). workspaces-o9o.60: the suffix is a REDACTED VIEW at RAW offsets (domain/generation-record-view.ts):
+// totalBytes and sinceBytes address the record's bytes on disk, and the text served from sinceBytes is its complete lines
+// with every string redacted by the shared transcript policy.
 sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), async (c) => {
   const sessionName = c.req.param("sessionName")!;
   const store = c.get("contextUsageStore" as never) as ContextUsageStore | undefined;
@@ -734,7 +737,7 @@ sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), a
       const length = Math.min(totalBytes - since, MAX_SUFFIX_BYTES);
       const buf = Buffer.alloc(length);
       const read = fs.readSync(fd, buf, 0, length, since);
-      return c.json({ generationId, sessionId, runtime, totalBytes, suffix: buf.subarray(0, read).toString("utf8"), truncated: totalBytes - since > read });
+      return c.json({ generationId, sessionId, runtime, totalBytes, suffix: redactedRecordView(buf.subarray(0, read).toString("utf8")), truncated: totalBytes - since > read });
     } finally {
       fs.closeSync(fd);
     }
