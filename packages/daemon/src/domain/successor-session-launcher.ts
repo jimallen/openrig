@@ -15,6 +15,7 @@ import { launchFailureSuffix } from "./launch-failure-report.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
 import { getSeatCwdFault, handoverCwdRefusalMessage, type SeatCwdFault } from "./cwd-resolution.js";
+import { ensureGitWorktreeShim, withWorktreeShimPath, type ShimFiles } from "./git-worktree-shim.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -120,6 +121,7 @@ export class SuccessorSessionLauncher {
   private exitTimeoutMs: number;
   private seatCwdFault: (cwd: string) => SeatCwdFault | null;
   private claudeHomeRead: ClaudeHomeReader | null;
+  private shimFiles: ShimFiles | null;
 
   constructor(
     tmuxAdapter: TmuxAdapter,
@@ -153,6 +155,9 @@ export class SuccessorSessionLauncher {
       seatCwdFault?: (cwd: string) => SeatCwdFault | null;
       /** workspaces-o9o.10: reads the seat's own Claude home for the no-model warning, as NodeLauncher does. Absent: no warning. */
       claudeHomeRead?: ClaudeHomeReader;
+      /** workspaces-o9o.50: the git worktree shim's file port, as NodeLauncher takes it: the successor's PATH starts with
+       *  <OPENRIG_HOME>/rig-bin, refreshed first. Absent: no shim on PATH and nothing is written (most unit tests). */
+      shimFiles?: ShimFiles;
     } = {},
   ) {
     this.seatCwdFault = opts.seatCwdFault ?? ((cwd) => getSeatCwdFault(cwd));
@@ -170,6 +175,7 @@ export class SuccessorSessionLauncher {
     this.exitPollMs = opts.exitPollMs ?? 100;
     this.exitTimeoutMs = opts.exitTimeoutMs ?? 3_000;
     this.claudeHomeRead = opts.claudeHomeRead ?? null;
+    this.shimFiles = opts.shimFiles ?? null;
   }
 
   /**
@@ -228,6 +234,18 @@ export class SuccessorSessionLauncher {
       } catch (err) {
         // seeding failed — keep the sessionEnv projection, and say so (a fresh launch says it too)
         seatHomeWarnings.push(`codex per-seat CODEX_HOME seeding failed (${err instanceof Error ? err.message : String(err)}); the successor launches on the shared home and may inherit a foreign session identity`);
+      }
+    }
+    // workspaces-o9o.50: the same worktree placement shim a fresh launch gets (NodeLauncher), first on the successor's
+    // PATH. Fail-open like the launch: a refusal or failure is a warning and the successor launches without it.
+    const shimFiles = this.shimFiles;
+    const shimHome = this.sessionEnv["OPENRIG_HOME"];
+    if (shimFiles && shimHome) {
+      try {
+        await ensureGitWorktreeShim(shimHome, shimFiles);
+        withWorktreeShimPath(env, shimHome);
+      } catch (err) {
+        seatHomeWarnings.push(`worktree shim materialization failed (${err instanceof Error ? err.message : String(err)}); the successor launches without the placement shim`);
       }
     }
     const cwd = input.node.cwd ?? undefined;

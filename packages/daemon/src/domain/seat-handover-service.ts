@@ -197,6 +197,8 @@ interface SeatHandoverServiceDeps {
   codexConfigWritePolicy?: import("./codex-config-write-policy.js").CodexConfigWritePolicy;
   /** workspaces-o9o.10: forwarded to the successor launcher for the no-model warning. */
   claudeHomeRead?: import("./claude-config-dir.js").ClaudeHomeReader;
+  /** workspaces-o9o.50: the git worktree shim's file port, handed to the successor launcher this service builds. */
+  shimFiles?: import("./git-worktree-shim.js").ShimFiles;
   /**
    * Ghost-stage (e) seam — the per-store retiring-occupant invalidator, authored by the ghost-stage
    * slice and CALLED once at commit() so the cutover successor never inherits a predecessor's seat-name-
@@ -302,6 +304,7 @@ export class SeatHandoverService {
       ...(deps.codexConfigWritePolicy ? { codexConfigWritePolicy: deps.codexConfigWritePolicy } : {}),
       ...(deps.seatCwdFault ? { seatCwdFault: deps.seatCwdFault } : {}),
       ...(deps.claudeHomeRead ? { claudeHomeRead: deps.claudeHomeRead } : {}),
+      ...(deps.shimFiles ? { shimFiles: deps.shimFiles } : {}),
     });
     this.captureDeps = {
       contextUsageStore: deps.contextUsageStore ?? null,

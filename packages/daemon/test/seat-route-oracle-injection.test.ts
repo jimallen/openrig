@@ -21,6 +21,7 @@ vi.mock("../src/domain/seat-handover-service.js", () => ({
 }));
 
 import { seatLifecycleService, seatRoutes } from "../src/routes/seat.js";
+import { nodeShimFiles } from "../src/adapters/node-shim-files.js";
 
 function makeApp(sentinelOracle: object, sentinelInvalidator?: object) {
   const app = new Hono();
@@ -56,6 +57,16 @@ describe("Wave-O B1 — production handover construction injects the one activit
     expect(constructed).toHaveLength(1);
     // The R2 discriminator, preserved: candidate captured `undefined` here.
     expect(constructed[0]!.activityOracle).toBe(sentinel);
+  });
+
+  // workspaces-o9o.50 (verify-qa, attempt 2): the handover route gives the service the git worktree shim's file port.
+  it("POST /api/seat/handover/:seatRef constructs the service WITH the node shim-files adapter", async () => {
+    const res = await makeApp({ declareOccupantSwap: vi.fn() }).request("/api/seat/handover/dev-impl%40seat-rig", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "context-wall", source: "fresh" }),
+    });
+    expect(res.status).toBe(200);
+    expect(constructed).toHaveLength(1);
+    expect(constructed[0]!.shimFiles).toBe(nodeShimFiles);
   });
 
   // P16 finding A1 (graduated): the same construction receives the daemon's occupant invalidator (server.ts sets it in the

@@ -25,6 +25,7 @@ import { SqliteQueuedMessages } from "../adapters/sqlite-queued-messages.js";
 import { nodeRelaunchChecks, type SeatLeaseStore } from "../adapters/seat-lease-store.js";
 import { listNativeProcesses } from "../domain/native-process-lineage.js";
 import { RELAUNCH_CHECK_NAMES, type RelaunchCheckName } from "../domain/relaunch-checks.js";
+import { nodeShimFiles } from "../adapters/node-shim-files.js";
 
 export const seatRoutes = new Hono();
 
@@ -134,6 +135,8 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     codexConfigWritePolicy: (c.get("codexConfigWritePolicy" as never) as import("../domain/codex-config-write-policy.js").CodexConfigWritePolicy | undefined) ?? undefined,
     // workspaces-o9o.10: the successor warns, as a fresh launch does, when a Claude seat's own home sets no model.
     claudeHomeRead: { exists: (p) => existsSync(p), isDirectory: (p) => statSync(p).isDirectory(), readFile: (p) => readFileSync(p, "utf8") },
+    // workspaces-o9o.50: the successor gets the git worktree shim a fresh launch gets (the same node adapter startup wires).
+    shimFiles: nodeShimFiles,
     // B2 — discovered-mode resume-token capture derive-helper deps.
     contextUsageStore: (c.get("contextUsageStore" as never) as import("../domain/resume-token-capture.js").ResumeTokenCaptureDeps["contextUsageStore"]) ?? undefined,
     resumeTokenCapturer: (c.get("resumeMetadataRefresher" as never) as import("../domain/resume-token-capture.js").ResumeTokenCaptureDeps["resumeTokenCapturer"]) ?? undefined,

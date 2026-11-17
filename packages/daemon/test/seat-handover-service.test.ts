@@ -23,6 +23,7 @@ import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DefaultOccupantInvalidator, type OccupantInvalidator } from "../src/domain/occupant-invalidator.js";
 import type { SeatCwdFault } from "../src/domain/cwd-resolution.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+import { nodeShimFiles } from "../src/adapters/node-shim-files.js";
 
 describe("SeatHandoverService", () => {
   let db: Database.Database;
@@ -768,6 +769,31 @@ describe("SeatHandoverService", () => {
       expect(result.ok).toBe(true);
       expect(result.ok && "result" in result ? result.result : {}).not.toHaveProperty("warnings");
     });
+  });
+
+  // workspaces-o9o.50 (verify-qa, attempt 2): the service hands its shim port to the successor it builds.
+  it("the service's successor gets the git worktree shim: its respawn PATH starts with <home>/rig-bin", async () => {
+    const home = mkdtempSync(`${tmpdir()}/sh-shim-home-`);
+    try {
+      seedSeat({ runtime: "claude-code", model: "opus" });
+      const service = new SeatHandoverService({
+        db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
+        tmuxAdapter: tmux(),
+        now: () => new Date("2026-04-24T18:30:00.000Z"),
+        newSuccessorId: () => "01SUCCID0",
+        seatCwdFault: () => null,
+        runtimeAdapters: { "claude-code": fakeAdapter("claude-code") },
+        activityOracle: { declareOccupantSwap },
+        predecessorRecapResolver: resolvePredecessorRecap as never,
+        readinessTimeoutMs: 50,
+        sleep: async () => {},
+        sessionEnv: { OPENRIG_HOME: home, PATH: "/usr/bin:/bin" },
+        shimFiles: nodeShimFiles,
+      });
+      const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+      expect(result.ok).toBe(true);
+      expect((respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env.PATH).toBe(`${home}/rig-bin:/usr/bin:/bin`);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it("does NOT invalidate the retiring occupant when the handover fails before commit (no re-key on a non-committed handover)", async () => {

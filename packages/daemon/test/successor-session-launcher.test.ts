@@ -12,6 +12,8 @@ import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaul
 import type { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import { hostCodexWithTrustedHook, secondDaemonPolicyFor, type HostCodexFixture } from "./helpers/codex-shared-config-fixture.js";
 import type { CodexConfigWritePolicy } from "../src/domain/codex-config-write-policy.js";
+import { nodeShimFiles } from "../src/adapters/node-shim-files.js";
+import { __shimSource } from "../src/domain/git-worktree-shim.js";
 
 describe("SuccessorSessionLauncher", () => {
   let db: Database.Database;
@@ -917,6 +919,46 @@ describe("SuccessorSessionLauncher", () => {
         expect(respawnPane).not.toHaveBeenCalled();
         expect(listPanes).not.toHaveBeenCalled();
       } finally { fs.rmSync(here, { recursive: true, force: true }); }
+    });
+  });
+
+  // workspaces-o9o.50 (verify-qa, attempt 2): a handover successor gets the same git worktree shim a fresh launch does.
+  // Measured at base 936abf41b and at 792305f6: the respawn PATH was the daemon's own (/usr/bin:/bin), no <home>/rig-bin.
+  describe("the git worktree shim at a handover (workspaces-o9o.50)", () => {
+    const shimEnv = () => ({ OPENRIG_HOME: seatHomes, HOME: "/daemon-home", CODEX_HOME: "/daemon-codex", PATH: "/usr/bin:/bin" });
+    const respawnPath = () => (respawnPane.mock.calls[0]![2] as { env: Record<string, string> }).env.PATH;
+    const handOver = (overrides: Partial<ConstructorParameters<typeof SuccessorSessionLauncher>[2]>) =>
+      launcher(undefined, "/daemon-codex", { sessionEnv: shimEnv(), ...overrides }).createSuccessor({
+        node: { id: "node-1", runtime: "codex", cwd: "/w" },
+        departingSessionName: "dev-impl@rig",
+      });
+
+    it("the successor's respawn PATH starts with <home>/rig-bin, and the shim there is the package's, mode 0755", async () => {
+      const res = await handOver({ shimFiles: nodeShimFiles });
+      expect(res.ok).toBe(true);
+      expect(respawnPath()).toBe(`${path.join(seatHomes, "rig-bin")}:/usr/bin:/bin`);
+      const shim = path.join(seatHomes, "rig-bin", "git");
+      expect(fs.readFileSync(shim, "utf8")).toBe(__shimSource());
+      expect(fs.statSync(shim).mode & 0o777).toBe(0o755);
+    });
+
+    it("a refused shim (rig-bin is a symlink) is a successor warning; the handover goes on with the PATH it had", async () => {
+      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "ssl-shim-elsewhere-"));
+      try {
+        fs.symlinkSync(elsewhere, path.join(seatHomes, "rig-bin"));
+        const res = await handOver({ shimFiles: nodeShimFiles });
+        expect(res.ok).toBe(true);
+        expect(respawnPath()).toBe("/usr/bin:/bin");
+        expect(fs.readdirSync(elsewhere)).toEqual([]);
+        expect(res.ok && res.warnings).toEqual([expect.stringMatching(/^worktree shim materialization failed \(git worktree shim: refused .*rig-bin is a symlink\); the successor launches without the placement shim$/)]);
+      } finally { fs.rmSync(elsewhere, { recursive: true, force: true }); }
+    });
+
+    it("control: a launcher given no shim port writes nothing and leaves the PATH as it was", async () => {
+      const res = await handOver({});
+      expect(res.ok).toBe(true);
+      expect(respawnPath()).toBe("/usr/bin:/bin");
+      expect(fs.existsSync(path.join(seatHomes, "rig-bin"))).toBe(false);
     });
   });
 });
