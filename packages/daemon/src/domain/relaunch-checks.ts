@@ -42,7 +42,8 @@ export const RELAUNCH_CHECK_DEFAULTS = {
   shells: /^-?(sh|bash|dash|zsh|fish)$/,
   /**
    * The seat's agent, by runtime (o9o.8 finding 2): the processes that are the agent itself rather than its work. Pi and OMP seats run
-   * OpenRig's runner in the pane (`node .../pi-runner.js`), which spawns the runtime (measured on sparky: a child named `pi`).
+   * OpenRig's runner in the pane (`node .../pi-runner.js`, the pane's own process, so it is the agent's top), which spawns the runtime
+   * (measured on sparky: a child named `pi`).
    */
   agentProcesses: {
     "claude-code": /^(claude|\.claude-unwrapped|\.claude-wrapped)$/,
@@ -50,8 +51,6 @@ export const RELAUNCH_CHECK_DEFAULTS = {
     pi: /^pi$/,
     omp: /^omp$/,
   } as Record<string, RegExp>,
-  /** OpenRig's Pi/OMP runner, the program its node runs. */
-  runnerEntry: /^pi-runner\.(js|ts)$/,
 } as const;
 
 /**
@@ -142,18 +141,16 @@ function expectedKind(row: NativeProcessRow): string | null {
   return null;
 }
 
-/** Whether a process is the seat's agent itself: the runtime's own executable, or OpenRig's Pi/OMP runner. */
+/** Whether a process is the seat's runtime itself (Claude, Codex, Pi, OMP). */
 function isAgentProcess(row: NativeProcessRow, runtime: string | null): boolean {
-  const names = identityNames(row);
   const own = runtime ? RELAUNCH_CHECK_DEFAULTS.agentProcesses[runtime] : undefined;
-  if (own && names.some((name) => own.test(name))) return true;
-  return (runtime === "pi" || runtime === "omp") && names.some((name) => RELAUNCH_CHECK_DEFAULTS.runnerEntry.test(name));
+  return own !== undefined && identityNames(row).some((name) => own.test(name));
 }
 
 /**
  * The agent's children: every process beneath the seat's agent. The agent is the first process at or below the pane's own process that is
  * not a shell (a shell wrapping the agent is not the agent's work). Beneath it, these are the agent itself, not its work: a process that is
- * the seat's runtime (`runtime`: Claude, Codex, Pi or OMP, or OpenRig's Pi/OMP runner), and one re-running the agent's own executable
+ * the seat's runtime (`runtime`: Claude, Codex, Pi or OMP), and one re-running the agent's own executable
  * unless that executable is an interpreter such as node (a Pi seat's runner is node; a node build beneath it is work). `panePid` null, or a
  * process table without the pane's process, cannot be judged.
  */
