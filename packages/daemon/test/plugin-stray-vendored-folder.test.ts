@@ -3,7 +3,8 @@
 // plugin discovery service throw "Duplicate hook registration" while the daemon was being built. systemd restarted it
 // 55 times in about 11 minutes, and every seat's rig CLI was down until the folder was moved out by hand.
 // Now the daemon keeps one provider (the folder whose manifest names it), ignores the other, says which folder and why,
-// and never moves or deletes it. Every root here is a temp dir (OPENRIG_HOME and HOME): nothing touches ~/.openrig.
+// and never moves or deletes it. Every root here is a temp dir (OPENRIG_HOME, and HOME through the entrypoint helper): nothing
+// touches ~/.openrig.
 
 import { describe, it, expect, afterEach } from "vitest";
 import * as fs from "node:fs";
@@ -182,13 +183,12 @@ describe("o9o.44: the daemon starts with a stale openrig-core copy in its plugin
   it("starts, serves openrig-core, names the ignored folder in its log, and leaves the folder as it was", async () => {
     const root = tempRoot();
     const home = nodePath.join(root, "instance");
-    const userHome = nodePath.join(root, "home");
-    fs.mkdirSync(userHome, { recursive: true });
     const stale = nodePath.join(home, "plugins", STALE);
     fs.cpSync(PACKAGE_CORE, stale, { recursive: true });
     const before = treeDigest(stale);
 
-    const daemon = await spawnDaemonEntrypoint({ home, env: { HOME: userHome }, readyTimeoutMs: 90_000, attempts: 2 });
+    // The helper gives the daemon its own HOME under `home` (<home>/user-home); a caller may not route it (o9o.61).
+    const daemon = await spawnDaemonEntrypoint({ home, readyTimeoutMs: 90_000, attempts: 2 });
     daemons.push(daemon);
 
     const res = await fetch(`http://127.0.0.1:${daemon.port}/api/plugins?source=vendored`);
