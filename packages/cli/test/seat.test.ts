@@ -999,3 +999,32 @@ describe("seat request deadlines (#260)", () => {
     expect((output as { error: Error }).error.message).toContain("timed out after 5000ms");
   });
 });
+
+// workspaces-o9o.35: a failed seat launch or continue prints the launch pane's tail (o9o.3), as rig up does.
+describe("rig seat launch / continue: the pane tail of a failed startup (o9o.35)", () => {
+  const PANE_TAIL = "$ claude --settings x | zsh: command not found: claude";
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it.each([
+    ["launch", ["--fresh", "--reason", "pane tail"], { ok: false, code: "startup_failed", status: "failed", message: "Fresh startup failed and was rolled back to zero live session/binding: Harness launch failed: binary missing", paneTail: PANE_TAIL }],
+    ["continue", [], { ok: false, code: "attention_required", startupStatus: "attention_required", errors: ["x"], message: "Startup requires attention", paneTail: PANE_TAIL }],
+  ] as const)("seat %s prints 'pane: <tail>' after the error", async (verb, extra, data) => {
+    const deps = makeDeps({ status: 409, data }, []);
+    const out = await captureLogs(() => makeCommand(deps).parseAsync(["node", "rig", "seat", verb, "dev-impl@seat-rig", ...extra]).then(() => undefined));
+    expect(out.errors).toContain(`pane: ${PANE_TAIL}`);
+    expect(out.errors[0]).toBe(data.message);
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("an error without a pane tail prints no pane line", async () => {
+    const deps = makeDeps({ status: 409, data: { ok: false, code: "startup_failed", message: "Fresh startup failed" } }, []);
+    const out = await captureLogs(() => makeCommand(deps).parseAsync(["node", "rig", "seat", "launch", "dev-impl@seat-rig", "--fresh", "--reason", "x"]).then(() => undefined));
+    expect(out.errors.some((line) => line.startsWith("pane:"))).toBe(false);
+  });
+
+  it("--json keeps the pane tail in the JSON", async () => {
+    const deps = makeDeps({ status: 409, data: { ok: false, code: "startup_failed", message: "m", paneTail: PANE_TAIL } }, []);
+    const out = await captureLogs(() => makeCommand(deps).parseAsync(["node", "rig", "seat", "launch", "dev-impl@seat-rig", "--fresh", "--reason", "x", "--json"]).then(() => undefined));
+    expect(JSON.parse(out.logs.join("\n"))).toMatchObject({ paneTail: PANE_TAIL });
+  });
+});

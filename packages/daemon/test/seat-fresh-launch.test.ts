@@ -1000,6 +1000,29 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(db.prepare("SELECT COUNT(*) AS c FROM events WHERE type = 'seat.fresh_launch_failed'").get()).toEqual({ c: 1 });
   });
 
+  // workspaces-o9o.35: the launch's pane tail (o9o.3) rides the seat launch response, transiently: no store gains it.
+  const PANE_TAIL = "$ claude --settings x | zsh: command not found: claude-o9o35";
+  function storedRowsContaining(text: string): string[] {
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((t) => t.name);
+    return tables.filter((table) => (db.prepare(`SELECT * FROM "${table}"`).all() as unknown[]).some((row) => JSON.stringify(row).includes(text)));
+  }
+
+  it("o9o.35: a hard startup failure's response carries the pane tail, and no stored row gains it", async () => {
+    seedSeat({ clean: true });
+    harnessResult = { ok: false, error: "binary missing", paneTail: PANE_TAIL };
+    const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "pane tail on a hard failure" });
+    expect(result).toMatchObject({ ok: false, code: "startup_failed", paneTail: PANE_TAIL });
+    expect(storedRowsContaining("claude-o9o35")).toEqual([]);
+  });
+
+  it("o9o.35: an attention-required startup's response carries the pane tail, and no stored row gains it", async () => {
+    seedSeat({ clean: true });
+    harnessResult = { ok: false, error: "login required", recovery: "attention_required", evidence: "login", paneTail: PANE_TAIL };
+    const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "pane tail on attention" });
+    expect(result).toMatchObject({ ok: false, code: "attention_required", paneTail: PANE_TAIL });
+    expect(storedRowsContaining("claude-o9o35")).toEqual([]);
+  });
+
   it("OF-30: a failed fresh launch is marked, so a later failed launch cannot read past it into the conversation it superseded", async () => {
     const seat = seedSeat();
     sessionRegistry.updateStartupStatus(seat.session!.id, "ready", "2020-01-02T03:04:05.000Z");

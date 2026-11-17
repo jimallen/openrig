@@ -16,12 +16,15 @@ export interface FreshSeatOutcome {
   warnings: string[];
   /** The daemon's next step for a refusal (for example `--startup-from stored`), when it gave one. */
   guidance: string | null;
+  /** workspaces-o9o.35: a failed startup's launch pane tail (redacted by the daemon, never stored), when it gave one. */
+  paneTail?: string | null;
 }
 
 /** Print what the daemon said beyond ok/failed, so the operator sees it on the accept path too (OF-32). */
 export function printFreshSeatNotes(outcome: FreshSeatOutcome, indent: string): void {
   for (const warning of outcome.warnings) console.error(`${indent}${outcome.logicalId}: warning: ${warning}`);
   if (outcome.guidance) console.error(`${indent}${outcome.logicalId}: ${outcome.guidance}`);
+  if (outcome.paneTail) console.error(`${indent}${outcome.logicalId} pane: ${outcome.paneTail}`);
 }
 
 export async function launchAcceptedFreshSeats(
@@ -47,7 +50,8 @@ export async function launchAcceptedFreshSeats(
       const text = typeof data["message"] === "string" ? data["message"] : typeof data["error"] === "string" ? data["error"] : "fresh launch refused";
       const warnings = Array.isArray(data["warnings"]) ? (data["warnings"] as unknown[]).filter((w): w is string => typeof w === "string") : [];
       const guidance = !ok && typeof data["guidance"] === "string" ? data["guidance"] : null;
-      outcomes.push({ logicalId, ok, httpStatus: res.status, message: ok ? null : `${code}${text}`, warnings, guidance });
+      const paneTail = !ok && typeof data["paneTail"] === "string" && data["paneTail"] ? data["paneTail"] : null;
+      outcomes.push({ logicalId, ok, httpStatus: res.status, message: ok ? null : `${code}${text}`, warnings, guidance, paneTail });
     } catch (err) {
       // Each seat is independent: whatever happened to this one, the next is still tried and every result is returned.
       if (err instanceof DaemonResponseError) {

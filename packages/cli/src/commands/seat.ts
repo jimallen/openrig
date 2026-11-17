@@ -65,6 +65,8 @@ interface SeatStatusError {
   guidance?: string;
   matches?: Array<{ rig_name: string; logical_id: string; current_occupant: string | null }>;
   clients?: Array<{ name: string; session: string }>;
+  /** workspaces-o9o.35: a failed startup's launch pane tail (redacted by the daemon; never stored). */
+  paneTail?: string;
 }
 
 interface SeatHandoverPlan {
@@ -288,6 +290,8 @@ function printHumanSwitchClient(r: SeatSwitchClientResponse): void {
 
 function printSeatError(error: SeatStatusError, fallback: string): void {
   console.error(error.message ?? error.error ?? fallback);
+  // workspaces-o9o.35: what the launch pane showed, as rig up prints it.
+  if (typeof error.paneTail === "string" && error.paneTail) console.error(`pane: ${error.paneTail}`);
   if (error.guidance) {
     console.error(error.guidance);
   }

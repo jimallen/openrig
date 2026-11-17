@@ -56,4 +56,16 @@ describe("launchAcceptedFreshSeats", () => {
     try { for (const o of outcomes) printFreshSeatNotes(o, "  "); } finally { console.error = original; }
     expect(printed).toEqual([`  a.one: warning: ${replay}`, `  b.two: ${guidance}`]);
   });
+
+  it("o9o.35: a failed fresh launch's pane tail is kept and printed, as rig up prints it", async () => {
+    const tail = "$ claude --settings x | zsh: command not found: claude";
+    const client = { post: async () => ({ status: 500, data: { ok: false, code: "startup_failed", message: "Fresh startup failed", paneTail: tail } }) };
+    const [outcome] = await launchAcceptedFreshSeats(client as never, ["a.one"], "r", "why", 1000);
+    expect(outcome).toMatchObject({ ok: false, paneTail: tail });
+    const printed: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { printed.push(args.join(" ")); };
+    try { printFreshSeatNotes(outcome!, "  "); } finally { console.error = original; }
+    expect(printed).toEqual([`  a.one pane: ${tail}`]);
+  });
 });

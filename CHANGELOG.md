@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### `rig seat launch` and `rig seat continue` show what the launch pane said (workspaces-o9o.35)
+
+- After o9o.3, a failed launch's pane tail reached `rig up` and restore output but not `rig seat launch --fresh` or `rig seat continue`. Both now print `pane: <last lines>` after the error, and their `--json` carries `paneTail`. The fresh start an operator accepts at `rig up` or `rig start` prints it too (`<seat> pane: ...`).
+- The tail stays transient, as in o9o.3: it rides the response only, already redacted by the shared redaction list, and no stored row gains it.
+
 ### `rig walk` confirms a piece by its raw text, not by how it redacts (workspaces-o9o.82)
 
 - Symptom: since the generation record is served redacted (workspaces-o9o.60), `rig walk` accepted a record whose text equalled the piece once redacted. A different message holding a different secret redacts to the same text, so it could confirm, and close the turn of, a piece that was never consumed.

@@ -1751,6 +1751,8 @@ export class SeatLifecycleService {
     // exactly as it was.
     let failed = !startupResult.ok && startupResult.startupStatus === "failed";
     let startupErrors = startupResult.ok ? [] : startupResult.errors;
+    // workspaces-o9o.35: the launch pane's last lines (o9o.3, redacted), TRANSIENT: on the response only, never stored.
+    const paneTailField = !startupResult.ok && startupResult.paneTail ? { paneTail: startupResult.paneTail } : {};
     if (!failed) {
       try {
         writeStartupContext(this.db, {
@@ -1785,6 +1787,7 @@ export class SeatLifecycleService {
             status: "failed",
             message: `Fresh startup failed and was rolled back to zero live session/binding: ${startupErrors.join("; ")}`,
             warnings: withSourceWarnings(startupResult.warnings),
+            ...paneTailField,
           }
         : {
             ok: false, ...withHandOver,
@@ -1795,6 +1798,7 @@ export class SeatLifecycleService {
             sessionName: canonicalSessionName,
             sessionId: launch.session.id,
             generation,
+            ...paneTailField,
           };
     }
 
@@ -1870,6 +1874,7 @@ export class SeatLifecycleService {
         sessionId: launch.session.id,
         generation,
         warnings: withSourceWarnings(startupResult.warnings),
+        ...paneTailField,
       };
     }
 
