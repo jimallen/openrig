@@ -265,13 +265,15 @@ Not checked, so a held lease does not stop them:
 `--reason`. A check that cannot be read (no pane process, an unreadable lease folder) only warns, so a broken seat can
 still be recovered. `--plan` shows every check's verdict.
 
-The seat's newest `HANDOVER*.md` in its own folder is when its old occupant last wrote down what it knew. Without
+The seat's newest handover file (`HANDOVER*.md`, unless its spec names another) in its own folder is when its old occupant last wrote down what it knew. Without
 `--hand-over-since`, when it was written during the retiring occupant's tenure and is earlier than the launch's own
 start, messages the old occupant took from then on are handed to the fresh one as well, and the result names the file
 (`handOver.sinceSource: handover_file`). An explicit `--hand-over-since` is used as given, earlier or later than the
 file (`handOver.sinceSource: hand_over_since`); the result still names the file and when it was written
 (`handOver.handoverFileWrittenAt`), and the CLI says it was not used. Either way the fresh occupant is sent its path. A file from an earlier tenure, one
-whose tenure is not recorded, or a folder that cannot be read is named in a warning and not used. The pattern and the expected children are fixed defaults for now (`RELAUNCH_CHECK_DEFAULTS`).
+whose tenure is not recorded, or a folder that cannot be read is named in a warning and not used. A seat's spec can name
+its own handover file and add expected children with the member field `relaunch_checks` (see the rig-spec reference);
+the defaults (`RELAUNCH_CHECK_DEFAULTS`) stay the floor.
 
 **Where a fresh seat's startup files come from.** A fresh conversation has no continuity, so `rig seat launch --fresh`
 reads the rig's spec again as it is now. OpenRig records the spec a rig was launched from in the spelling you used: a

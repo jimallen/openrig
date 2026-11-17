@@ -27,6 +27,7 @@ import type { MessageHandOff } from "../src/domain/seat-messaging/hand-off.js";
 import type { MessageAcceptInput } from "../src/domain/seat-messaging/message-store.js";
 import type { RelaunchCheckPort, SeatLeaseObservation } from "../src/domain/relaunch-checks.js";
 import { mockTmuxAdapter } from "./helpers/test-app.js";
+import { mcpTrustFixture } from "./helpers/mcp-trust-fixture.js";
 
 const SEAT = "dev-impl@checks-rig";
 const PANE_PID = 4242;
@@ -49,6 +50,7 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
   let accepted: MessageAcceptInput[];
   let folderError: Error | null;
   let nodeId: string;
+  let rigId: string;
   let deps: ConstructorParameters<typeof SeatLifecycleService>[0];
 
   beforeEach(() => {
@@ -117,6 +119,7 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     const tenure = sessionRegistry.mintOccupantTenure(node.id, "fresh");
     db.prepare("UPDATE occupant_tenures SET boot_at = '2026-11-16 08:30:00' WHERE id = ?").run(tenure.id);
     nodeId = node.id;
+    rigId = rig.id;
     db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'claude-code')").run(node.id);
   });
   afterEach(() => { db.close(); fs.rmSync(seatDir, { recursive: true, force: true }); });
@@ -358,6 +361,57 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     const plan = await service.planFresh({ seatRef: SEAT, fresh: true });
     expect(plan).toMatchObject({ ok: true, launchable: false, relaunchChecks: { lease: { verdict: "held" }, children: { verdict: "not_applicable" } } });
     expect(plan.ok && plan.blockers.map((b) => b.code)).toContain("relaunch_check_held");
+  });
+
+  // workspaces-o9o.64: the seat's spec overrides the defaults, read at launch through the trusted read of the rig's recorded spec source.
+  /** The rig records a spec source declaring this seat with `relaunch` under the member; the service is the daemon's (trust anchored).
+   *  Its launches replay the stored startup files (`--startup-from stored`): where startup files come from is not what these rows test. */
+  function withSeatSpec(relaunch: string): { service: SeatLifecycleService; specPath: string; cleanup: () => void } {
+    const trust = mcpTrustFixture("o9o64");
+    fs.mkdirSync(nodePath.join(trust.dir, "spec"));
+    fs.chmodSync(nodePath.join(trust.dir, "spec"), 0o755);
+    const specPath = nodePath.join(trust.dir, "spec", "rig.yaml");
+    fs.writeFileSync(specPath, `version: "0.2"\nname: checks-rig\npods:\n  - id: dev\n    label: Dev\n    members:\n      - id: impl\n        runtime: claude-code\n`
+      + `        agent_ref: local:agents/impl\n        profile: default\n        cwd: .\n${relaunch}`);
+    deps.rigRepo.setRigSpecSource(rigId, specPath);
+    const seatService = new SeatLifecycleService({ ...deps, mcpTrust: { io: trust.io, specRoots: () => [nodePath.join(trust.dir, "spec")] } });
+    return { service: seatService, specPath, cleanup: () => fs.rmSync(trust.dir, { recursive: true, force: true }) };
+  }
+
+  it("o9o.64 SV1: the seat's ignore_children clears a process the defaults would hold", async () => {
+    const seat = withSeatSpec("        relaunch_checks:\n          ignore_children: [sccache]\n");
+    try {
+      processes = [AGENT, row(5001, PANE_PID, "sccache", "sccache --start-server")];
+      const plan = await seat.service.planFresh({ seatRef: SEAT, fresh: true, stop: true, startupFrom: "stored" });
+      expect(plan).toMatchObject({ ok: true, relaunchChecks: { settings: "spec", children: { verdict: "clear", ignored: [{ pid: 5001, kind: "seat_spec" }] } } });
+    } finally { seat.cleanup(); }
+  });
+
+  it("o9o.64 SV2: the seat's handover_file names its handover; HANDOVER.md is then not it", async () => {
+    const seat = withSeatSpec("        relaunch_checks:\n          handover_file: \"NOTES-*.md\"\n");
+    try {
+      writeHandover("HANDOVER.md", "2026-11-16T09:30:00.000Z");
+      const notes = writeHandover("NOTES-tuesday.md", "2026-11-16T09:00:00.000Z");
+      const result = await seat.service.launchFresh({ seatRef: SEAT, fresh: true, stop: true, reason: "relaunch checks", startupFrom: "stored" });
+      expect(result.ok && result.handOver).toMatchObject({ sinceSource: "handover_file", handoverFile: notes });
+    } finally { seat.cleanup(); }
+  });
+
+  it("o9o.64 SV3: a recorded spec source that cannot be read gives the defaults, with a warning naming why", async () => {
+    const seat = withSeatSpec("        relaunch_checks:\n          ignore_children: [sccache]\n");
+    try {
+      fs.rmSync(seat.specPath);
+      processes = [AGENT, row(5001, PANE_PID, "sccache", "sccache --start-server")];
+      const plan = await seat.service.planFresh({ seatRef: SEAT, fresh: true, stop: true, startupFrom: "stored" });
+      expect(plan).toMatchObject({ ok: true, relaunchChecks: { settings: "defaults", children: { verdict: "held" } } });
+      expect(plan.ok && plan.warnings.join("\n")).toContain("relaunch_checks");
+    } finally { seat.cleanup(); }
+  });
+
+  it("o9o.64 SV4: with no spec source recorded the defaults apply, and nothing warns about it", async () => {
+    const plan = await service.planFresh({ seatRef: SEAT, fresh: true, stop: true });
+    expect(plan).toMatchObject({ ok: true, relaunchChecks: { settings: "defaults" } });
+    expect(plan.ok && plan.warnings.join("\n")).not.toContain("relaunch_checks");
   });
 
   it("plan: --plan shows every check's verdict and a held check as a blocker", async () => {

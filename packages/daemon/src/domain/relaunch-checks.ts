@@ -21,8 +21,8 @@ export type RelaunchCheckName = "lease" | "children";
 export const RELAUNCH_CHECK_NAMES: readonly RelaunchCheckName[] = ["lease", "children"];
 
 /**
- * The defaults. One place, so that a per-seat source (a spec field) can later supply its own values instead (follow-up to o9o.8; CoS,
- * 2026-11-16: fixed defaults until someone needs the override).
+ * The defaults. A seat's spec may name its own handover file and add expected processes (`relaunch_checks`, RelaunchCheckSettings,
+ * workspaces-o9o.64); these stay the floor.
  */
 export const RELAUNCH_CHECK_DEFAULTS = {
   /** A seat writes its handover into its own folder, often in dated variants (HANDOVER.md, HANDOVER-2026-11-15-1910.md); the newest wins. */
@@ -53,6 +53,58 @@ export const RELAUNCH_CHECK_DEFAULTS = {
     omp: /^omp$/,
   } as Record<string, RegExp>,
 } as const;
+
+/**
+ * What one seat's checks use: the defaults, or what the seat's spec says (workspaces-o9o.64, the member field `relaunch_checks`). The
+ * spec can name the seat's handover file and add processes its agent keeps running; it cannot remove a default.
+ */
+export interface RelaunchCheckSettings {
+  handoverFile: { prefix: string; suffix: string };
+  /** Names of processes the agent keeps running, beyond the defaults: matched exactly against a process's executable, argv[0], or a part
+   *  of the program an interpreter runs. Never against an argument. */
+  ignoreChildren: readonly string[];
+  source: "defaults" | "spec";
+}
+
+export const DEFAULT_RELAUNCH_CHECK_SETTINGS: RelaunchCheckSettings = {
+  handoverFile: { ...RELAUNCH_CHECK_DEFAULTS.handoverFile }, ignoreChildren: [], source: "defaults",
+};
+
+/** A handover file pattern: one "*", no "/" (a file in the seat's own folder). */
+const HANDOVER_PATTERN = /^([^/*]*)\*([^/*]*)$/;
+/** A process name: letters, digits and @ . _ + - only, 1 to 64 of them. */
+const CHILD_NAME = /^[A-Za-z0-9@._+-]{1,64}$/;
+const SETTINGS_KEYS = new Set(["handover_file", "ignore_children"]);
+
+/** The seat's settings from its spec's `relaunch_checks` (absent: the defaults), or every error with its path under `at`. */
+export function relaunchCheckSettingsFrom(value: unknown, at: string): { ok: true; settings: RelaunchCheckSettings } | { ok: false; errors: string[] } {
+  if (value === undefined) return { ok: true, settings: DEFAULT_RELAUNCH_CHECK_SETTINGS };
+  const path = `${at}.relaunch_checks`;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { ok: false, errors: [`${path}: must be a mapping with handover_file and/or ignore_children`] };
+  const record = value as Record<string, unknown>;
+  const errors: string[] = [];
+  for (const key of Object.keys(record)) {
+    if (!SETTINGS_KEYS.has(key)) errors.push(`${path}.${key}: unknown key (allowed: handover_file, ignore_children)`);
+  }
+  let handoverFile = DEFAULT_RELAUNCH_CHECK_SETTINGS.handoverFile;
+  if (record["handover_file"] !== undefined) {
+    const pattern = typeof record["handover_file"] === "string" ? HANDOVER_PATTERN.exec(record["handover_file"]) : null;
+    if (!pattern) errors.push(`${path}.handover_file: a file name in the seat's folder with exactly one "*" and no "/", such as "HANDOVER*.md"`);
+    else handoverFile = { prefix: pattern[1]!, suffix: pattern[2]! };
+  }
+  let ignoreChildren: string[] = [];
+  if (record["ignore_children"] !== undefined) {
+    const names = record["ignore_children"];
+    if (!Array.isArray(names)) errors.push(`${path}.ignore_children: must be a list of process names`);
+    else {
+      names.forEach((name, i) => {
+        if (typeof name !== "string" || !CHILD_NAME.test(name)) errors.push(`${path}.ignore_children[${i}]: a process name (letters, digits, @ . _ + -; 1-64), not a path or a pattern`);
+      });
+      ignoreChildren = names.filter((name): name is string => typeof name === "string");
+    }
+  }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, settings: { handoverFile, ignoreChildren, source: "spec" } };
+}
 
 /**
  * A lease a seat's own work registered (rig seat lease), as observed. `alive`: its holder is the process that registered it (same pid and
@@ -92,7 +144,12 @@ export type ChildrenCheck =
   /** workspaces-o9o.71: the seat has no live pane, so no agent is running anything to judge. Not a warning. */
   | { verdict: "not_applicable"; cause: string };
 
-export interface RelaunchChecks { lease: LeaseCheck; children: ChildrenCheck }
+export interface RelaunchChecks {
+  lease: LeaseCheck;
+  children: ChildrenCheck;
+  /** workspaces-o9o.64: whose settings judged them, the defaults or the seat's spec. */
+  settings?: RelaunchCheckSettings["source"];
+}
 
 export function judgeLeases(read: () => SeatLeaseObservation[], despite: readonly RelaunchCheckName[]): LeaseCheck {
   let leases: SeatLeaseObservation[];
@@ -136,8 +193,9 @@ function identityNames(row: NativeProcessRow): string[] {
   return names.filter((name) => name !== "");
 }
 
-function expectedKind(row: NativeProcessRow): string | null {
+function expectedKind(row: NativeProcessRow, settings: RelaunchCheckSettings): string | null {
   const names = identityNames(row);
+  if (settings.ignoreChildren.length > 0 && names.some((name) => settings.ignoreChildren.includes(name))) return "seat_spec";
   for (const expected of RELAUNCH_CHECK_DEFAULTS.expectedChildren) {
     if (names.some((name) => expected.identity.test(name))) return expected.kind;
   }
@@ -157,7 +215,8 @@ function isAgentProcess(row: NativeProcessRow, runtime: string | null): boolean 
  * unless that executable is an interpreter such as node (a Pi seat's runner is node; a node build beneath it is work). `panePid` null, or a
  * process table without the pane's process, cannot be judged.
  */
-export function judgeChildren(processes: NativeProcessRow[] | null, panePid: number | null, despite: readonly RelaunchCheckName[], runtime: string | null = null): ChildrenCheck {
+export function judgeChildren(processes: NativeProcessRow[] | null, panePid: number | null, despite: readonly RelaunchCheckName[], runtime: string | null = null,
+  settings: RelaunchCheckSettings = DEFAULT_RELAUNCH_CHECK_SETTINGS): ChildrenCheck {
   if (panePid === null) return { verdict: "unknown", cause: "the seat's pane process could not be read" };
   if (!processes || !processes.some((row) => row.pid === panePid)) return { verdict: "unknown", cause: "the process table does not show the seat's pane process" };
   const byParent = new Map<number, NativeProcessRow[]>();
@@ -191,7 +250,7 @@ export function judgeChildren(processes: NativeProcessRow[] | null, panePid: num
       below.push(...(byParent.get(row.pid) ?? []));
       continue;
     }
-    const kind = expectedKind(row);
+    const kind = expectedKind(row, settings);
     if (kind) {
       ignored.push({ ...summary(row), kind });
       continue;
@@ -203,8 +262,8 @@ export function judgeChildren(processes: NativeProcessRow[] | null, panePid: num
 }
 
 /** The seat's newest handover file, by modification time, or null. Throws as the port does. */
-export function newestHandoverFile(dir: string, port: RelaunchCheckPort): { path: string; modifiedAt: string } | null {
-  const { prefix, suffix } = RELAUNCH_CHECK_DEFAULTS.handoverFile;
+export function newestHandoverFile(dir: string, port: RelaunchCheckPort, settings: RelaunchCheckSettings = DEFAULT_RELAUNCH_CHECK_SETTINGS): { path: string; modifiedAt: string } | null {
+  const { prefix, suffix } = settings.handoverFile;
   let newest: { path: string; modifiedAt: string } | null = null;
   for (const file of port.folderFiles(dir)) {
     if (!file.name.startsWith(prefix) || !file.name.endsWith(suffix)) continue;
@@ -218,9 +277,9 @@ export function newestHandoverFile(dir: string, port: RelaunchCheckPort): { path
  * tenure (o9o.8 finding 4). A file from an earlier tenure, or one whose tenure cannot be placed, is named in a warning and not used, so
  * messages from before this tenure are never re-delivered. Throws as the port does (the caller warns, o9o.8 finding 5).
  */
-export function retiringOccupantHandover(dir: string, port: RelaunchCheckPort, tenureStartedAt: string | null):
-  { file: { path: string; modifiedAt: string } | null; warning?: string } {
-  const newest = newestHandoverFile(dir, port);
+export function retiringOccupantHandover(dir: string, port: RelaunchCheckPort, tenureStartedAt: string | null,
+  settings: RelaunchCheckSettings = DEFAULT_RELAUNCH_CHECK_SETTINGS): { file: { path: string; modifiedAt: string } | null; warning?: string } {
+  const newest = newestHandoverFile(dir, port, settings);
   if (!newest) return { file: null };
   if (tenureStartedAt === null) {
     return { file: null, warning: `${newest.path} was not used: when the retiring occupant's tenure began is not recorded, so the file cannot be shown to be its own.` };

@@ -4,7 +4,7 @@ import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedClaudeFields, diffRetainedPiFields, diffSeatIdentity, envNameChanges, specClaudeFields, specRetainedFields, type IdentityFieldDiff, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
 import type { NativeProcessLister, NativeProcessRow } from "./native-process-lineage.js";
-import { blockingChecks, checkWarnings, describeHeld, judgeChildren, judgeLeases, retiringOccupantHandover, seatLeaseName, RELAUNCH_CHECK_NAMES, type RelaunchCheckName, type RelaunchCheckPort, type RelaunchChecks, type SeatLeaseRegistry } from "./relaunch-checks.js";
+import { blockingChecks, checkWarnings, describeHeld, judgeChildren, judgeLeases, retiringOccupantHandover, seatLeaseName, RELAUNCH_CHECK_NAMES, type RelaunchCheckName, type RelaunchCheckPort, type RelaunchChecks, type SeatLeaseRegistry, relaunchCheckSettingsFrom, DEFAULT_RELAUNCH_CHECK_SETTINGS, type RelaunchCheckSettings } from "./relaunch-checks.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { rigAdviceHandle, seatRefRigs } from "./rig-ref.js";
@@ -1443,6 +1443,7 @@ export class SeatLifecycleService {
     const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom, input.storedEscape);
     if ("code" in prepared) return refusal(prepared);
     const { seat, rig, node, startup, canonicalSessionName } = prepared;
+    const seatSettings = this.relaunchCheckPort ? this.seatRelaunchSettings(seat, node) : { settings: DEFAULT_RELAUNCH_CHECK_SETTINGS };
     const blockers: Array<{ code: string; message: string; guidance?: string }> = [];
     const warnings = ["Snapshot only; execution resolves and validates again. Native readiness is not checked.", ...startup.sourceWarnings];
     let complete = true;
@@ -1480,7 +1481,7 @@ export class SeatLifecycleService {
         if (!input.stop) blockers.push({ code: "session_live", message: "A live managed occupant requires --stop." });
         // workspaces-o9o.8: what a launch would judge before it stopped this occupant.
         if (this.relaunchCheckPort) {
-          relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)), true);
+          relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)), true, seatSettings.settings);
           if (blockingChecks(relaunchChecks).length > 0) {
             blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
               guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
@@ -1491,13 +1492,14 @@ export class SeatLifecycleService {
     }
     // workspaces-o9o.71: with no live pane the launch still judges the seat's leases; show that verdict too.
     if (currentOccupant === "absent" && this.relaunchCheckPort) {
-      relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)), false);
+      relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)), false, seatSettings.settings);
       if (blockingChecks(relaunchChecks).length > 0) {
         blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
           guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
       }
       warnings.push(...checkWarnings(relaunchChecks));
     }
+    if (seatSettings.warning) warnings.push(seatSettings.warning);
     const launchable = blockers.length > 0 ? false : complete ? true : null;
     const siblings = rig.nodes.filter(n => n.id !== node.id).map(n => ({
       logicalId: n.logicalId, sessionName: n.binding?.tmuxSession ?? null, effect: "unchanged" as const,
@@ -1567,6 +1569,8 @@ export class SeatLifecycleService {
     const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom, input.storedEscape);
     if ("code" in prepared) return prepared;
     const { seat, node, adapter, startup, canonicalSessionName, nodeLauncher, startupOrchestrator } = prepared;
+    // workspaces-o9o.64: the seat's own relaunch-check settings, from its spec as it is now (read only when the daemon wires the checks).
+    const seatSettings = this.relaunchCheckPort ? this.seatRelaunchSettings(seat, node) : { settings: DEFAULT_RELAUNCH_CHECK_SETTINGS };
     // OF-69: the seat's folder is judged BEFORE anything is stopped. The launcher refuses an unusable folder too, but by
     // then the live occupant would already be gone, and the refusal would be for a launch that could never have happened.
     const cwdRefusal = this.seatCwdRefusal(seat.logicalId, node.cwd);
@@ -1631,7 +1635,7 @@ export class SeatLifecycleService {
       const currentSession = await this.validateFreshCollision(resolved, canonicalSessionName, input.stop === true);
       if ("code" in currentSession) return currentSession;
       // workspaces-o9o.8: the seat's own unfinished work is judged BEFORE its occupant is stopped (when the daemon wires the checks).
-      relaunchChecks = this.relaunchCheckPort ? await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite, true) : undefined;
+      relaunchChecks = this.relaunchCheckPort ? await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite, true, seatSettings.settings) : undefined;
       const held = relaunchChecks ? heldRelaunchRefusal(relaunchChecks, canonicalSessionName) : null;
       if (held) return held;
       const stopped = await this.stopManagedTmuxSeat(
@@ -1651,7 +1655,7 @@ export class SeatLifecycleService {
     } else if (this.relaunchCheckPort) {
       // workspaces-o9o.71: no live pane (the TUI's explicit fresh, a stopped seat), so nothing is stopped; but a lease the seat's work
       // still holds is still held. Judged before stale rows are cleaned or anything is started.
-      relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite, false);
+      relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite, false, seatSettings.settings);
       const held = heldRelaunchRefusal(relaunchChecks, canonicalSessionName);
       if (held) return held;
     }
@@ -1684,12 +1688,12 @@ export class SeatLifecycleService {
     }
 
     // workspaces-o9o.7: the old session is gone, so nothing more can reach it or be recorded by it, and the new one has not started.
-    const seatHandover = stoppedOccupant || input.handOverSince !== undefined ? this.retiringOccupantHandover(node.cwd, retiringTenure?.bootAt ?? null) : { file: null };
+    const seatHandover = stoppedOccupant || input.handOverSince !== undefined ? this.retiringOccupantHandover(node.cwd, retiringTenure?.bootAt ?? null, seatSettings.settings) : { file: null };
     const handoverFile = seatHandover.file;
     const handOver = stoppedOccupant || input.handOverSince !== undefined
       ? this.handOverFromRetiringOccupant(canonicalSessionName, input.handOverSince, launchBeganAt, retiringGeneration, handoverFile)
       : undefined;
-    const checkWarningList = [...(relaunchChecks ? checkWarnings(relaunchChecks) : []), ...(seatHandover.warning ? [seatHandover.warning] : [])];
+    const checkWarningList = [...(seatSettings.warning ? [seatSettings.warning] : []), ...(relaunchChecks ? checkWarnings(relaunchChecks) : []), ...(seatHandover.warning ? [seatHandover.warning] : [])];
     const withChecks = relaunchChecks ? { relaunchChecks } : {};
     const withHandOver = handOver ? { handOver } : {};
 
@@ -1944,13 +1948,39 @@ export class SeatLifecycleService {
     return acquired.ok ? { ok: true, seat, holder: input.holder, lease: acquired.lease } : acquired;
   }
 
+  /**
+   * workspaces-o9o.64: the seat's relaunch-check settings, from the member field `relaunch_checks` of the rig's recorded spec source as it
+   * is now, through the one trusted read of a seat's spec (the one set-mcp and apply-spec use). Nothing is stored. A seat whose rig records
+   * no spec source, or whose spec does not declare it or the field, gets the defaults silently; a recorded source that cannot be read
+   * gets the defaults and a warning that says why.
+   */
+  private seatRelaunchSettings(seat: SeatDescriptor, node: { cwd: string | null }): { settings: RelaunchCheckSettings; warning?: string } {
+    const read = readTrustedSeatSpec({
+      specSource: this.rigRepo.getRigSpecSource(seat.rigId), rigName: seat.rigName, node: { logicalId: seat.logicalId, cwd: node.cwd },
+      purpose: "relaunch checks", surgeMembers: true,
+      trustedSpecRoots: this.mcpTrust?.specRoots?.() ?? [],
+      ...(this.mcpTrust?.io ? { io: this.mcpTrust.io } : {}),
+      ...(this.mcpTrust?.exactDepthRoot ? { recordedExactDepthRoot: this.mcpTrust.exactDepthRoot } : {}),
+    });
+    if (!read.ok) {
+      return read.kind === "unrecorded" ? { settings: DEFAULT_RELAUNCH_CHECK_SETTINGS }
+        : { settings: DEFAULT_RELAUNCH_CHECK_SETTINGS, warning: `The seat's relaunch_checks could not be read, so the defaults apply: ${read.message}` };
+    }
+    if (!read.member || !read.pod) return { settings: DEFAULT_RELAUNCH_CHECK_SETTINGS };
+    const parsed = relaunchCheckSettingsFrom(rawMemberOf(read.raw, read.pod.id, read.member.id)?.["relaunch_checks"], `${read.pod.id}.${read.member.id}`);
+    // The trusted read validated the whole spec, so this is the same answer; kept as a guard, never a crash.
+    return parsed.ok ? { settings: parsed.settings }
+      : { settings: DEFAULT_RELAUNCH_CHECK_SETTINGS, warning: `The seat's relaunch_checks are malformed, so the defaults apply: ${parsed.errors.join("; ")}` };
+  }
+
   /** workspaces-o9o.8: the leases and agent children of the seat whose live occupant is about to be stopped. */
-  private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, runtime: string | null, despite: readonly RelaunchCheckName[], livePane: boolean): Promise<RelaunchChecks> {
+  private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, runtime: string | null, despite: readonly RelaunchCheckName[], livePane: boolean,
+    settings: RelaunchCheckSettings): Promise<RelaunchChecks> {
     const lease = judgeLeases(() => port.leases(sessionName), despite);
-    if (!livePane) return { lease, children: { verdict: "not_applicable", cause: "the seat has no live pane, so no agent is running" } };
+    if (!livePane) return { lease, children: { verdict: "not_applicable", cause: "the seat has no live pane, so no agent is running" }, settings: settings.source };
     // The process table comes through the daemon's process-lister port, wired at the edge (o9o.8 finding 6).
     const lister = this.listProcesses;
-    if (!lister) return { lease, children: { verdict: "unknown", cause: "this daemon has no process lister wired" } };
+    if (!lister) return { lease, children: { verdict: "unknown", cause: "this daemon has no process lister wired" }, settings: settings.source };
     let panePid: number | null = null;
     let processes: NativeProcessRow[] | null = null;
     try {
@@ -1959,17 +1989,17 @@ export class SeatLifecycleService {
     } catch {
       processes = null;
     }
-    return { lease, children: judgeChildren(processes, panePid, despite, runtime) };
+    return { lease, children: judgeChildren(processes, panePid, despite, runtime, settings), settings: settings.source };
   }
 
   /** workspaces-o9o.8: the retiring occupant's own handover file, if it wrote one during its tenure. A folder that cannot be read warns and
    *  the launch goes on without it (o9o.8 finding 5). */
-  private retiringOccupantHandover(cwd: string | null, tenureBootAt: string | null): { file: { path: string; modifiedAt: string } | null; warning?: string } {
+  private retiringOccupantHandover(cwd: string | null, tenureBootAt: string | null, settings: RelaunchCheckSettings): { file: { path: string; modifiedAt: string } | null; warning?: string } {
     if (!cwd || !this.relaunchCheckPort) return { file: null };
     const tenureStartedAt = tenureBootAt === null ? null : parseSqliteUtcMs(tenureBootAt);
     try {
       return retiringOccupantHandover(cwd, this.relaunchCheckPort,
-        tenureStartedAt === null || !Number.isFinite(tenureStartedAt) ? null : new Date(tenureStartedAt).toISOString());
+        tenureStartedAt === null || !Number.isFinite(tenureStartedAt) ? null : new Date(tenureStartedAt).toISOString(), settings);
     } catch (err) {
       return { file: null, warning: `The seat's handover file could not be looked for in ${cwd}: ${(err as Error).message}. No handover was used; check it by hand.` };
     }

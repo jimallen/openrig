@@ -1,4 +1,5 @@
 import { SHIPPED_CULTURE_PREFIX, shippedCultureShapeProblem } from "./culture-file-ref.js";
+import { relaunchCheckSettingsFrom } from "./relaunch-checks.js";
 import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX, piModelOverridesErrors, normalizePiModelOverrides } from "../adapters/pi-runner-protocol.js";
 import { claudeConfigDirShapeError } from "./claude-config-dir.js";
 import type {
@@ -92,7 +93,7 @@ export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough", "model_overrides", "pi",
-  "claude_config_dir", "ask_in_modal",
+  "claude_config_dir", "ask_in_modal", "relaunch_checks",
 ]);
 
 /** Member keys a pda seat cannot take: OpenRig delivers no startup content to a pda agent (D4), and the model,
@@ -562,6 +563,11 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
   const prefix = `${podPrefix}.members[${index}]`;
   if (!isMapping(member)) return [`${prefix}: must be an object`];
   errors.push(...rejectUnknownTopologyKeys(member, MEMBER_KEYS, prefix));
+  // workspaces-o9o.64: the seat's own relaunch-check settings, validated by the rule that reads them at launch.
+  if (member["relaunch_checks"] !== undefined) {
+    const parsed = relaunchCheckSettingsFrom(member["relaunch_checks"], prefix);
+    if (!parsed.ok) errors.push(...parsed.errors);
+  }
 
   // OPR.0.5.6.20 A5 — member-level compaction_strategy: all vocabulary decisions go
   // through the manifest's one canonical site; this leg only classifies the answer.
