@@ -136,6 +136,15 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     expect(managedCommands(config())).toBe(4);
   });
 
+  it("after the relay path changed, the strip still removes the stanzas OpenRig wrote with the older path (the recorded one)", () => {
+    const older = path.join(codexHome, "older", "activity-relay.cjs");
+    fs.mkdirSync(path.dirname(older), { recursive: true }); fs.copyFileSync(RELAY_ASSET, older);
+    adapter(older).ensureCodexActivityHooks();
+    adapter().removeCodexActivityHooks();
+    expect(config()).not.toContain(older);
+    expect(managedCommands(config())).toBe(0);
+  });
+
   it("the upsert is idempotent with foreign tables moved out: a second upsert changes nothing", () => {
     blockLast();
     appendInsideBlock(PLUGIN_TABLES);
