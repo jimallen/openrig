@@ -15,6 +15,7 @@ import { hydrateSnapshot } from "../src/hydrate.js";
 import { createViewState } from "../src/state.js";
 import { renderScreen } from "../src/render.js";
 import { stripAnsi } from "../src/theme.js";
+import { postureClock } from "../src/time.js";
 import type { FleetSnapshot, ViewState } from "../src/types.js";
 
 const databases: ReturnType<typeof createDb>[] = [];
@@ -128,6 +129,32 @@ describe("the agent detail says it in words (workspaces-o9o.4)", () => {
     const text = f.render(await f.read("agent"), "agent", START + 3 * MIN).join("\n").replace(/\s+/g, " ");
     expect(text).toMatch(/tool: Bash · running 3m · since \S/);
     expect(text).toContain("posture: busy: running Bash for 3 min (since 16:05Z)");
+  });
+
+  // workspaces-o9o.32: the tool line is in the TUI's zone and the posture line beside it is the daemon's UTC text; the tool line also names the
+  // instant in the posture line's own form, so the two read as one start.
+  it("the tool line names its start in the TUI's zone and in the posture line's UTC form", async () => {
+    const confirmed = fixture(busy);
+    const text = confirmed.render(await confirmed.read("agent"), "agent", START + 3 * MIN).join("\n").replace(/\s+/g, " ");
+    expect(text).toMatch(/tool: Bash · running 3m · since 2031-03-04 08:05:41 PST \(16:05Z\)/);
+    expect(text).toContain("posture: busy: running Bash for 3 min (since 16:05Z)");
+    const unconfirmed = fixture(open);
+    const later = unconfirmed.render(await unconfirmed.read("agent"), "agent", START + 20 * MIN).join("\n").replace(/\s+/g, " ");
+    expect(later).toMatch(/tool: Bash · started 2031-03-04 08:05:41 PST \(16:05Z\), 20m ago · no end recorded/);
+  });
+
+  it("the UTC form: the time alone on the clock's UTC day, the date otherwise or with no clock, nothing for a value that is not a time", () => {
+    expect(postureClock(S, START + 3 * MIN)).toBe("16:05Z");
+    expect(postureClock(S, START + 9 * 60 * MIN)).toBe("03-04 16:05Z");
+    expect(postureClock(S, 0)).toBe("03-04 16:05Z");
+    expect(postureClock("not a time", START)).toBeNull();
+    expect(postureClock(null, START)).toBeNull();
+  });
+
+  it("past the start's UTC day, the UTC form carries its date, as the posture line's does", async () => {
+    const f = fixture(open);
+    const text = f.render(await f.read("agent"), "agent", START + 9 * 60 * MIN).join("\n").replace(/\s+/g, " ");
+    expect(text).toMatch(/tool: Bash · started 2031-03-04 08:05:41 PST \(03-04 16:05Z\), 9h ago · no end recorded/);
   });
 
   it("an unconfirmed call: started, how long ago, and no end recorded", async () => {

@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The agent detail's tool line and posture line name the same start (workspaces-o9o.32)
+
+- Symptom: the TUI's agent detail showed a running tool's start in the TUI's time zone (`since 2031-03-04 08:05:41 PST`) right above the daemon's posture line, which is UTC (`(since 16:05Z)`), so the same instant read as two different times.
+- Now the tool line also gives the start in the posture line's own UTC form: `since 2031-03-04 08:05:41 PST (16:05Z)`, with the date added once the start is on an earlier UTC day (`(03-04 16:05Z)`). The posture line stays the daemon's text, word for word.
+
 ### `rig seat launch` and `rig seat continue` show what the launch pane said (workspaces-o9o.35)
 
 - After o9o.3, a failed launch's pane tail reached `rig up` and restore output but not `rig seat launch --fresh` or `rig seat continue`. Both now print `pane: <last lines>` after the error, and their `--json` carries `paneTail`. The fresh start an operator accepts at `rig up` or `rig start` prints it too (`<seat> pane: ...`).

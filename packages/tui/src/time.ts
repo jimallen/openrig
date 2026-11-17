@@ -26,6 +26,19 @@ export function displayTime(value: unknown, timeZone = DEFAULT_TIME_ZONE): strin
   return `${p("year")}-${p("month")}-${p("day")} ${p("hour")}:${p("minute")}:${p("second")} ${p("timeZoneName")}${zone !== timeZone ? " (timezone fallback)" : ""}`;
 }
 
+/**
+ * An instant in the daemon's posture-line form (seat-posture.ts formatPostureTime): "16:05Z" on the clock's own UTC day, else "03-04 16:05Z".
+ * With no clock (0) the date is always given. The TUI shows times in its own zone; this lets a line that does say which instant the daemon's
+ * UTC posture line means (workspaces-o9o.32). Null when the value is not a time.
+ */
+export function postureClock(value: unknown, nowMs = 0): string | null {
+  const ms = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  if (!Number.isFinite(ms)) return null;
+  const iso = new Date(ms).toISOString();
+  const time = `${iso.slice(11, 16)}Z`;
+  return nowMs > 0 && iso.slice(0, 10) === new Date(nowMs).toISOString().slice(0, 10) ? time : `${iso.slice(5, 10)} ${time}`;
+}
+
 export function resolveTimeZone(setting: unknown, readWarning = false): { timeZone: string; warning: string | null } {
   const timeZone = validTimeZone(setting) ? setting : DEFAULT_TIME_ZONE;
   return { timeZone, warning: validTimeZone(setting) && !readWarning ? null

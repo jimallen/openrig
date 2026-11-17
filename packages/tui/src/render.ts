@@ -3,7 +3,7 @@ import { helpScreen } from "./commands/help.js";
 import { commandFocusVisible } from "./motion.js";
 import { attentionLines } from "./attention/attention-model.js";
 import { fileLines, externalLines, fileTargetForPath, referenceLines, referenceAction } from "./reading.js";
-import { DEFAULT_TIME_ZONE, displayTime } from "./time.js";
+import { DEFAULT_TIME_ZONE, displayTime, postureClock } from "./time.js";
 import { startupLines, type StartupState } from "./startup.js";
 import { configLines } from "./config/config-model.js";
 import { connectionsLines } from "./connections/connections-model.js";
@@ -261,10 +261,13 @@ function agentDetailLines(
   // workspaces-o9o.4: the open tool call, aged on the render clock; unconfirmed past the hook freshness window.
   const tool = agent.runningTool ?? null;
   const toolAgeText = tool ? toolAge(tool.since, nowMs) : null;
+  // workspaces-o9o.32: the start in the TUI's zone, and in the UTC form the daemon's posture line beside it uses, so the two read as one instant.
+  const toolClock = tool ? postureClock(tool.since, nowMs) : null;
+  const toolStart = tool ? `${displayTime(tool.since, timeZone)}${toolClock ? ` (${toolClock})` : ""}` : "";
   const toolValue = tool
     ? tool.confirmed
-      ? `${tool.name} · running${toolAgeText ? ` ${toolAgeText}` : ""} · since ${displayTime(tool.since, timeZone)}${tool.more ? ` · +${tool.more} more` : ""}`
-      : `${tool.name} · started ${displayTime(tool.since, timeZone)}${toolAgeText ? `, ${toolAgeText} ago` : ""} · no end recorded${tool.more ? ` · +${tool.more} more` : ""}`
+      ? `${tool.name} · running${toolAgeText ? ` ${toolAgeText}` : ""} · since ${toolStart}${tool.more ? ` · +${tool.more} more` : ""}`
+      : `${tool.name} · started ${toolStart}${toolAgeText ? `, ${toolAgeText} ago` : ""} · no end recorded${tool.more ? ` · +${tool.more} more` : ""}`
     : null;
   const specInLibrary = !!agent.spec && !!findSpec(snap, agent.spec, "agent");
   const currentRows = session ? rowsForAgent(snap, session, [snap.attention, snap.blocked, snap.inProgress]) : [];
