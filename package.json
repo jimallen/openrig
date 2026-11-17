@@ -14,7 +14,7 @@
     "build": "npm run build --workspaces",
     "test": "npm run test:repo && npm run test:workspaces",
     "test:repo": "npm run build -w packages/daemon && node --test --test-concurrency=1 --import ./scripts/seat-path-preload.mjs scripts/*.test.mjs && node --import tsx scripts/check-first-run-references.mjs && node scripts/check-docs-guard.mjs && node scripts/mirror-skills.mjs --check && node scripts/generate-context-packs.mjs --check",
-    "test:workspaces": "npm run test -w packages/daemon -w packages/cli -w packages/tui",
+    "test:workspaces": "npm run test -w packages/daemon -w packages/cli -w packages/tui -w packages/ui",
     "test:ui": "npm run test -w packages/ui",
     "typecheck:daemon-tests": "node scripts/check-daemon-test-types.mjs",
     "typecheck:ui-tests": "tsc --noEmit -p packages/ui/test/tsconfig.json",

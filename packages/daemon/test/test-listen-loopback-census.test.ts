@@ -17,7 +17,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // OF-239: the same census covers the cli and tui test trees (one rule, one classifier; measured at d05bcda2: cli 126 calls in 88 files, 71 of them host-less
 // TCP listens in 52 files, now pinned; tui 11 calls, all pinned; ui has no test listener). Paths in a failure are relative to packages/.
 const PACKAGES = path.resolve(HERE, "../..");
-const TEST_PACKAGES = ["daemon", "cli", "tui"] as const;
+const TEST_PACKAGES = ["daemon", "cli", "tui", "ui"] as const; // ui since workspaces-o9o.107: it runs in npm test now
 const TEST_DIR = PACKAGES;
 
 const LOOPBACK_LITERALS = new Set(["127.0.0.1", "::1", "localhost"]);

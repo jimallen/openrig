@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### `npm test` runs the web UI suite too (workspaces-o9o.107)
+
+- Symptom: `packages/ui`'s 203 test files ran in no local gate and no release run. `npm test` (`test:workspaces`) named only daemon, cli and tui, and `scripts/gate-tiers.mjs` used the same three.
+- Cause: upstream keeps the UI suite out of `npm test` because its pull-request CI runs it as `package-tests (ui)`. This fork merges and releases locally without that CI, so nothing ran it.
+- Now `test:workspaces` includes `packages/ui`, gate-tiers' tier 2 selects UI tests and tier 3 runs them, and the test-listen loopback census covers the UI test tree. `npm run test:ui` still runs the UI suite alone. `scripts/test-workspaces.test.mjs` keeps every package with a test script in `test:workspaces`, and gate-tiers' list the same.
+- Measured at release-6 578992143 before the change: the UI suite passes, 203 files and 1766 tests.
+
 ### A seat handover is refused while the seat's work holds a lease or still runs (workspaces-o9o.93)
 
 - Symptom: `rig seat handover` (and `rig handover`) with the fresh, fork or rebuild source launches the successor into the retiring occupant's own pane, which ends the live occupant, but it never ran the checks `rig seat launch --fresh --stop` runs first. So a lease the seat's work held (a UI test host, say) did not stop it, and a build the agent was running was ended with it.

@@ -32,8 +32,10 @@ import { fileURLToPath } from "node:url";
 import { addedLines, CHECKS } from "./portability-report.mjs";
 
 export const EXIT = { pass: 0, failed: 1, refused: 2, usage: 64 };
-// The packages `npm run test:workspaces` runs. The web UI suite is advisory and stays out, as in `npm test`.
-export const SUITE_PACKAGES = ["daemon", "cli", "tui"];
+// The packages `npm run test:workspaces` runs (scripts/test-workspaces.test.mjs keeps the two lists the same). Upstream kept
+// the web UI suite out of `npm test` because pull-request CI runs it; this fork merges and releases without that CI, so
+// ui is in both (workspaces-o9o.107).
+export const SUITE_PACKAGES = ["daemon", "cli", "tui", "ui"];
 export const T2_MAX_WORKERS = 4;
 export const DEFAULT_T3_COMMAND = ["npm", "test"];
 const RECEIPT_SCHEMA = 1;

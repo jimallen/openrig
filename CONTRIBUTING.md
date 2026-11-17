@@ -47,7 +47,7 @@ git clone https://github.com/mvschwarz/openrig.git
 cd openrig
 npm ci                 # exactly what package-lock.json records
 npm run build          # all workspaces
-npm test               # repo checks + daemon, cli, tui test suites
+npm test               # repo checks + daemon, cli, tui, ui test suites
 npm run lint           # typecheck every package
 ```
 
@@ -64,8 +64,8 @@ tracked file under `docs/` must be in `docs/as-built/`, `docs/reference/` or `do
 (`docs/DESIGN.md` is the one exception). They check that shipped first-run text names only teams, skills and
 commands that exist, and they validate the context-pack sources;
 `npm run generate-context-packs` rebuilds the generated packs locally, which aren't committed.
-The UI unit-test suite is separate from `npm test`: run `npm run test:ui`. CI runs it on every pull
-request as `package-tests (ui)`, so a change has to pass it.
+The UI unit-test suite is part of `npm test` in this fork (`npm run test:ui` runs it alone). Upstream CI runs it on every pull
+request as `package-tests (ui)`; this fork merges and releases without that CI, so `npm test` carries it (workspaces-o9o.107).
 [docs/as-built/test-layers.md](docs/as-built/test-layers.md) lists every test layer, what CI runs,
 and what each layer can and cannot prove.
 

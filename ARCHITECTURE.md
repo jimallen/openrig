@@ -283,8 +283,8 @@ and no model cost.
 ## Guards you will meet
 
 `npm test` runs `test:repo` (builds the daemon, runs `node --test scripts/*.test.mjs`, the docs
-guard, `mirror-skills --check` and `generate-context-packs --check`) and then the daemon, CLI and
-TUI suites. `npm run test:ui` runs the web UI suite separately. `npm run lint` typechecks all four
+guard, `mirror-skills --check` and `generate-context-packs --check`) and then the daemon, CLI,
+TUI and web UI suites (the web UI since workspaces-o9o.107: this fork has no PR CI to run it). `npm run test:ui` runs the web UI suite alone. `npm run lint` typechecks all four
 packages.
 
 - **Docs guard** (`scripts/check-docs-guard.mjs`). Under `docs/`, git may track only
