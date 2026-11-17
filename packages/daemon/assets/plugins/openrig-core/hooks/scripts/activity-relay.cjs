@@ -501,16 +501,50 @@ function isInside(child, parent) {
 }
 
 function defersToManagedCopy(env, hookEvent, script, selfPath) {
-  const pluginRoot = firstString(env.CLAUDE_PLUGIN_ROOT);
+  // The plugin copy: Claude Code sets CLAUDE_PLUGIN_ROOT; Codex sets PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT (measured, 0.166.0: workspaces-o9o.76).
+  const pluginRoot = firstString(env.CLAUDE_PLUGIN_ROOT, env.PLUGIN_ROOT);
+  if (!pluginRoot || !hookEvent || !isInside(selfPath, pluginRoot)) return false;
   const projectDir = firstString(env.CLAUDE_PROJECT_DIR);
-  if (!pluginRoot || !projectDir || !hookEvent || !isInside(selfPath, pluginRoot)) return false;
+  if (projectDir) return claudeSettingsRunManagedCopy(projectDir, hookEvent, script);
+  // A Codex hook has no CLAUDE_PROJECT_DIR; its managed copy is the OpenRig block of CODEX_HOME/config.toml (codex-runtime-adapter).
+  const codexHome = firstString(env.CODEX_HOME);
+  if (codexHome) return codexConfigRunsManagedCopy(codexHome, hookEvent, script);
+  return false;
+}
+
+function claudeSettingsRunManagedCopy(projectDir, hookEvent, script) {
   let settings;
   try { settings = JSON.parse(fs.readFileSync(path.join(projectDir, ".claude", "settings.local.json"), "utf8")); } catch { return false; }
   const groups = settings && typeof settings === "object" && settings.hooks && Array.isArray(settings.hooks[hookEvent]) ? settings.hooks[hookEvent] : [];
+  const managed = path.join(MANAGED_HOOK_DIR, script);
   return groups.some((group) => group && Array.isArray(group.hooks)
-    && group.hooks.some((hook) => hook && typeof hook.command === "string" && runsManagedScript(hook.command, script)));
+    && group.hooks.some((hook) => hook && typeof hook.command === "string" && runsManagedScript(hook.command, managed)));
 }
 
+// workspaces-o9o.76: the sentinel block codex-runtime-adapter writes into CODEX_HOME/config.toml, one [[hooks.<Event>]] stanza per event,
+// each `command = 'node "<the daemon's own activity-relay.cjs>"'`. Only that block counts: a user's own hook elsewhere is not OpenRig's copy.
+const CODEX_MANAGED_BEGIN = "# BEGIN OPENRIG MANAGED ACTIVITY HOOKS";
+const CODEX_MANAGED_END = "# END OPENRIG MANAGED ACTIVITY HOOKS";
+
+function codexConfigRunsManagedCopy(codexHome, hookEvent, script) {
+  let text;
+  try { text = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"); } catch { return false; }
+  const begin = text.indexOf(CODEX_MANAGED_BEGIN);
+  const end = begin === -1 ? -1 : text.indexOf(CODEX_MANAGED_END, begin);
+  if (begin === -1 || end === -1) return false;
+  const managed = path.join("hooks", "scripts", script);
+  let event = null;
+  for (const line of text.slice(begin, end).split("\n")) {
+    const header = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(line);
+    if (header) { event = header[1]; continue; }
+    if (event !== hookEvent) continue;
+    const literal = /^\s*command\s*=\s*'([^']*)'\s*$/.exec(line);
+    const basic = /^\s*command\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/.exec(line);
+    const command = literal ? literal[1] : basic ? basic[1].replace(/\\(["\\])/g, "$1") : null;
+    if (command !== null && runsManagedScript(command, managed)) return true;
+  }
+  return false;
+}
 // The words of a shell command as a POSIX shell splits them, for the plain forms the adapter writes (`node '<path>'`, an apostrophe in the
 // path written '"'"'): single quotes, double quotes with backslash escapes, bare words. Null when the command uses anything a plain
 // invocation does not (an unquoted ; | & < > $ ` ( ) or a newline), so a chained or redirected command never counts as running the script.
@@ -547,12 +581,12 @@ function shellWords(command) {
 // workspaces-o9o.33 (verify-qa review): a settings command counts as the managed copy only when it RUNS the managed script, either the
 // script itself (then executable) or `node <script>` (then readable), and that script is a regular file. A command that only mentions the path, names a missing file, or
 // hands it to another program leaves the plugin copy running: an event is never lost to a copy that cannot run.
-function runsManagedScript(command, script) {
+function runsManagedScript(command, managed) {
   const words = shellWords(command);
   if (!words || words.length === 0 || words.length > 2) return false;
   if (words.length === 2 && words[0] !== "node" && path.basename(words[0]) !== "node") return false;
   const target = words[words.length - 1];
-  if (!path.isAbsolute(target) || !target.endsWith(path.sep + path.join(MANAGED_HOOK_DIR, script))) return false;
+  if (!path.isAbsolute(target) || !target.endsWith(path.sep + managed)) return false;
   // Run directly, the script must be executable (question-wait.cjs ships 100644, and the adapter keeps the source mode); node only reads it.
   const access = words.length === 1 ? fs.constants.X_OK : fs.constants.R_OK;
   try { fs.accessSync(target, access); return fs.statSync(target).isFile(); } catch { return false; }

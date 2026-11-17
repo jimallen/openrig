@@ -1475,7 +1475,7 @@ const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"
  * runs the hook under. No matcher (verified on 0.139: no-matcher fires for every
  * turn-scope event).
  */
-function upsertCodexActivityHooks(content: string, relayPath: string): string {
+export function upsertCodexActivityHooks(content: string, relayPath: string): string {
   const command = `'node "${relayPath}"'`;
   const stanzas = OPENRIG_ACTIVITY_HOOK_EVENTS
     .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5`)
