@@ -30,7 +30,7 @@ export function probeFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
     srv.once("error", reject);
-    srv.listen(0, TEST_PORT_HOST, () => {
+    srv.listen(0, "127.0.0.1", () => {   // loopback only, spelled out for the loopback census (test-listen-loopback-census)
       const addr = srv.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
       srv.close(() => (port ? resolve(port) : reject(new Error("the OS offered no port"))));

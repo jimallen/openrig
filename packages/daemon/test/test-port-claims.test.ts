@@ -113,8 +113,8 @@ describe("census: no probe-then-release site outside helpers/test-ports.ts", () 
     .split("\n").filter((f) => /\.(ts|mts|cts|js|mjs|cjs)$/.test(f));
 
   it("the detector sees the shape it is meant to catch (positive control) and leaves a kept server alone (negative control)", () => {
-    const released = ["const srv = createServer();", "srv.listen(0, \"127.0.0.1\", () => {", "  const port = (srv.address() as any).port;", "  srv.close(() => resolve(port));", "});"].join("\n");
-    const kept = ["await new Promise((r) => server.listen(0, \"127.0.0.1\", r));", "port = (server.address() as any).port;", "});", "afterAll(() => {", "  server.close();", "});"].join("\n");
+    const released = ["const srv = createServer();", "srv.listen(0, \"127.0.0.1\", () => {", "  const port = (srv.address() as AddressInfo).port;", "  srv.close(() => resolve(port));", "});"].join("\n");
+    const kept = ["await new Promise((r) => server.listen(0, \"127.0.0.1\", r));", "port = (server.address() as AddressInfo).port;", "});", "afterAll(() => {", "  server.close();", "});"].join("\n");
     expect(probeThenRelease(released)).toEqual([2]);
     // The one-line form delivery-review's freePort had: listen and close in one statement.
     expect(probeThenRelease("const p = run(\"const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})\");")).toEqual([1]);
