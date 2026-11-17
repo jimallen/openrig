@@ -47,6 +47,12 @@ export interface RunCrossHostCommandOpts {
    * (byte-unchanged). This is a DERIVED origin, never a caller-supplied identity claim.
    */
   originTriple?: string;
+  /**
+   * workspaces-o9o.34: a SHELL sender's origin (this host's own id and the shell's label), for the far `rig send` to label the envelope with
+   * instead of the far host's operator name. Prefixed as `OPENRIG_ORIGIN_HOST_ID=<id>` (and `OPENRIG_ORIGIN_SHELL_LABEL=<label>` when there is
+   * one) inside the remote `sh -lc` line, on the same shellQuote layer as the argv. Absent: byte-unchanged.
+   */
+  shellOrigin?: { hostId: string; label?: string };
 }
 
 /**
@@ -97,9 +103,12 @@ export async function runCrossHostCommand(
   // INSIDE the sh -lc line so the remote's rig derives the ORIGIN identity, not its own seat. The
   // prefix rides the SAME shellQuote layer as the argv; absent ⇒ byte-unchanged from D13.
   const quotedArgv = argv.map(shellQuote).join(" ");
-  const innerCommand = opts.originTriple
-    ? `OPENRIG_SESSION_NAME=${shellQuote(opts.originTriple)} ${quotedArgv}`
-    : quotedArgv;
+  const envPrefix = [
+    ...(opts.originTriple ? [`OPENRIG_SESSION_NAME=${shellQuote(opts.originTriple)}`] : []),
+    ...(opts.shellOrigin ? [`OPENRIG_ORIGIN_HOST_ID=${shellQuote(opts.shellOrigin.hostId)}`] : []),
+    ...(opts.shellOrigin?.label ? [`OPENRIG_ORIGIN_SHELL_LABEL=${shellQuote(opts.shellOrigin.label)}`] : []),
+  ];
+  const innerCommand = envPrefix.length ? `${envPrefix.join(" ")} ${quotedArgv}` : quotedArgv;
   const remoteCommandLine = `sh -lc ${shellQuote(innerCommand)}`;
   const fullArgs = [...sshOpts, sshHost.target, remoteCommandLine];
 

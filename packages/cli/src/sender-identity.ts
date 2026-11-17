@@ -13,6 +13,27 @@ export function resolveSenderSession(): string | undefined {
   return readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
 }
 
+/** The env names an ssh relay sets on the far `rig send` for a SHELL sender (workspaces-o9o.34). */
+export const RELAYED_ORIGIN_HOST_ENV = "OPENRIG_ORIGIN_HOST_ID";
+export const RELAYED_ORIGIN_LABEL_ENV = "OPENRIG_ORIGIN_SHELL_LABEL";
+/** A host's own id, as `/api/messages/accept` and `/api/transport/send` take it. */
+const HOST_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * A shell's send relayed over ssh (workspaces-o9o.34): `rig send --host` runs `rig send` again ON the far host, where no seat env is set, so
+ * this CLI would label the envelope with the FAR host's operator name. The relay states instead where the send came from: the origin host's
+ * own id and the label that shell gave itself (its own `workspace.operator_seat_name`, or none). This CLI then labels the envelope with that,
+ * and states the origin to its daemon as the http path does, so the daemon names the origin host by its registry and says no rig address
+ * answers a shell (reply-path.ts). Read only when the dispatch has no seat identity; undefined when the host id is absent or not one.
+ * Trust: the same as a stated origin on `/api/transport/send`, the caller's claim.
+ */
+export function resolveRelayedShellOrigin(): { host: string; label: string | undefined } | undefined {
+  const host = process.env[RELAYED_ORIGIN_HOST_ENV]?.trim();
+  if (!host || !HOST_ID.test(host)) return undefined;
+  const label = process.env[RELAYED_ORIGIN_LABEL_ENV]?.trim();
+  return { host, label: label ? label : undefined };
+}
+
 /**
  * The From: label for a send that carries no seat identity (OF-196): the configured `workspace.operator_seat_name` (a send from the
  * operator's own shell), or `undefined` when none is set, which leaves the caller on `SENDER_FALLBACK`. A LABEL only: the actor stays

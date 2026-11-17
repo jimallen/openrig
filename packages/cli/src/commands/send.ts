@@ -12,7 +12,7 @@ import { emitCrossHostError, emitCrossHostFailure, emitRemoteHttpFailure } from 
 import { resolveCrossHostTarget } from "../cross-host-target.js";
 import { runRemoteHttpOp } from "../remote-host-ops.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
-import { resolveOperatorLabel, resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
+import { resolveOperatorLabel, resolveRelayedShellOrigin, resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
 import { COMPOSER_PROMPT_CLASS } from "@openrig/daemon/composer-prompts";
 import { transportFanoutBudgetMs, transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
@@ -550,12 +550,15 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
       if (refuseEmptyMessage(payload, "send", Boolean(opts.json))) return;
       // Send/broadcast header (ruling 03c35295): a directed `rig send` is a DM — stamp it at send-time
       // (Sent: MM-DD HH:MMZ) so transcripts are timestamped; the To line stays the single recipient.
-      const outboundText = raw ? payload : wrapSendBody(senderSession ?? resolveOperatorLabel(), session, payload, stampMeta(opts.id));
+      // workspaces-o9o.34: a shell's send relayed here over ssh carries the shell's own label and host, not this host's operator name.
+      const relayed = senderSession || raw ? undefined : resolveRelayedShellOrigin();
+      const outboundText = raw ? payload : wrapSendBody(senderSession ?? (relayed ? relayed.label : resolveOperatorLabel()), session, payload, stampMeta(opts.id));
       let res: { status: number; data: Record<string, unknown> };
       try {
         res = await client.post<Record<string, unknown>>("/api/transport/send", {
           session, text: outboundText, deliveryId: opts.id ?? randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
           dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
+          ...(relayed ? { origin: { host: relayed.host, sender: "unknown" } } : {}),
         }, transportRequestOptions(waitForIdleMs));
       } catch (err) {
         if (err instanceof DaemonConnectionError) {
@@ -873,7 +876,11 @@ async function runCrossHostSend(
   // remote's rig derives the ORIGIN identity from its env (the shipped derivation path), not its own
   // seat. --from STAYS on argv above (a pre-I4 remote still reads origin from it; the argv removal is a
   // separate P23-D1-gated increment). Same triple for both, composed once above.
-  const result = await runner(host, argv, originTriple ? { originTriple } : {});
+  // workspaces-o9o.34: a SHELL sender (no seat, so no origin triple) tells the far `rig send` its own host and label, so the far host does
+  // not label it with its own operator name. Enveloped sends only; a raw send carries no From line.
+  const shellOrigin = !originTriple && !opts.raw && !opts.dangerouslyInteract && selfHostId
+    ? { hostId: selfHostId, label: resolveOperatorLabel() } : undefined;
+  const result = await runner(host, argv, { ...(originTriple ? { originTriple } : {}), ...(shellOrigin ? { shellOrigin } : {}) });
 
   if (opts.json) {
     console.log(JSON.stringify({

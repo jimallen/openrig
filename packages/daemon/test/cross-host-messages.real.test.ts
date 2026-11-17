@@ -320,6 +320,41 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     expect(after.join("\n")).not.toContain("<unknown sender>");
   }, 120_000);
 
+  // workspaces-o9o.34: the ssh transport runs `rig send` again ON the far host. A shell sender (no seat) used to be labelled there with the FAR
+  // host's operator name. Here `ssh` is a stand-in on PATH that runs the remote command line as ssh would: a fresh environment (nothing of the
+  // near shell's), the far host's settings, and `rig` resolving to the real CLI against the far daemon.
+  it("a shell's send over ssh names the near host's operator and host, never the far host's operator", async () => {
+    const { near, far } = await pair();
+    const s = seat(far);
+    await start(far); await start(near);
+    await s.launch();
+    const bin = join(near.dir, "ssh-bin"); mkdirSync(bin);
+    const farBin = join(far.dir, "rig-bin"); mkdirSync(farBin);
+    writeFileSync(join(farBin, "rig"), `#!/bin/sh\ncd ${DAEMON_PACKAGE} && exec ${process.execPath} --import tsx ${CLI} "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(bin, "ssh"), [
+      "#!/bin/sh",
+      'for last; do :; done',
+      `exec /usr/bin/env -i PATH=${farBin}:${dirname(process.execPath)}:/usr/bin:/bin HOME=${join(core.root, "h")} TMPDIR=${join(core.root, "h")} OPENRIG_HOME=${far.home} OPENRIG_URL=http://127.0.0.1:${far.qport} OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME=far-operator /bin/sh -c "$last"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+    writeFileSync(join(near.home, "hosts.yaml"), "hosts:\n  - id: sparky\n    transport: ssh\n    target: far-box\n");
+    const run = spawnSync(process.execPath, ["--import", "tsx", CLI, "send", s.name, "from a shell over ssh", "--host", "sparky", "--id", "o9o34-ssh-1"], { cwd: DAEMON_PACKAGE, encoding: "utf8", env: {
+      PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(core.root, "h"), OPENRIG_HOME: near.home, TMPDIR: join(core.root, "h"), OPENRIG_URL: `http://127.0.0.1:${near.qport}`,
+      OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME: "near-operator",
+      // The CLI reads this host's own id from the daemon's database, as on a real host where they share OPENRIG_HOME's db.
+      OPENRIG_DB: near.db,
+    } });
+    expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
+    const id = nearId(near);
+    await state(far, "o9o34-ssh-1", "received");
+    const lines = String(far.read("o9o34-ssh-1")?.body).split("\n");
+    expect([lines[0], lines[lines.length - 1]]).toEqual([
+      `From: near-operator (a shell on ${id})`,
+      `↩ No reply path: near-operator is a shell on ${id}, not a seat; no rig address answers it`,
+    ]);
+    expect(lines.join("\n")).not.toContain("far-operator");
+  }, 120_000);
+
   it("a seat's send: the far seat's reply line names the sender by the far registry, and that command delivers the answer to it", async () => {
     const { near, far } = await pair();
     const s = seat(far); const back = seat(near); const lead = back.name;
