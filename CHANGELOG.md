@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Text on an amber fill is readable (workspaces-o9o.115)
+
+- Symptom: text set on the amber fill (`bg-warning`) was white or inherited: the "hold" verb button (white on amber when active, and on hover) at 2.05:1 on light and 1.68:1 on dark, and a package's "ROLLED BACK" install badge at 1.36:1 on dark.
+- Now text on the amber fill uses `--on-warning` (`text-on-warning`), a near-black on both themes: 9.1:1 on light amber, 11.1:1 on dark. The fill keeps the brand amber (Jim, 2026-11-17).
+- A test checks the token against the fill in both themes, and a guard fails if any solid amber fill carries white text again.
+- The UI twin has a package page (`/packages/pkg_relay`) with applied, rolled-back and failed installs.
+
 ### Amber text is readable on the light theme (workspaces-o9o.113)
 
 - Symptom: amber text used the brand amber (`--warning`, hsl(40 90% 50%)), which measures 2.05:1 on white, below WCAG AA's 4.5:1 at any size. That covered the "partial" status badge, the restore modal's "will fail" note and stale/unverified token tones, the launcher's notes, and alert and inline warning text: 22 uses in 11 files. In the dark theme, the rig page's status control was a hard-coded white box, so its badge read 1.68:1.

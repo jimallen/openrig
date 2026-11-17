@@ -70,6 +70,8 @@
     /* workspaces-o9o.113: amber TEXT. --warning is ~2:1 on white; this ink clears 4.5:1 on every light surface
        (worst: surface-container-highest, measured in test/warning-ink-contrast.test.ts). Borders and fills keep --warning. */
     --warning-ink: 40 90% 27%;
+    /* workspaces-o9o.115: text ON an amber fill (bg-warning). White was 2.05:1 here; this is 9.1:1. */
+    --on-warning: 120 8% 7%;
     --accent: var(--secondary);
   }
 
@@ -640,6 +642,7 @@
 
   /* Warning amber — slightly brighter for dark. */
   --warning: 42 92% 60%;                   /* #f6b13a */
+  --on-warning: 120 8% 7%;                 /* o9o.115: text on the amber fill, dark on both themes (11.1:1) */
   --warning-ink: 42 92% 60%;               /* o9o.113: amber text on dark = the brand amber (10.4:1 on surfaces) */
 
   /* shadcn compat aliases reference the base tokens above (var(--…)) → they

@@ -32,6 +32,13 @@ function statusBadgeColor(status: string): string {
   }
 }
 
+/** workspaces-o9o.115: the label's colour on its fill. The amber fill takes the on-amber text (white was ~2:1). It goes on
+ *  an inner span, not through cn(): tailwind-merge does not know the custom text-label-sm size, so it drops it when a text
+ *  colour follows it in the same cn() call (measured: the badge fell to 16px). */
+function statusBadgeText(status: string): string {
+  return status === "rolled_back" ? "text-on-warning" : "";
+}
+
 function statusLabel(status: string): string {
   switch (status) {
     case "applied":
@@ -115,7 +122,7 @@ function InstallRow({
                 statusBadgeColor(install.status)
               )}
             >
-              {statusLabel(install.status)}
+              <span data-testid="install-status-label" className={statusBadgeText(install.status)}>{statusLabel(install.status)}</span>
             </span>
           </div>
           <div className="text-label-sm font-mono text-foreground-muted-on-dark">

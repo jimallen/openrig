@@ -19,6 +19,7 @@ import type { SliceListResponse } from "../src/hooks/useSlices.js";
 import type { RigStatusObject } from "../src/hooks/useRigStatus.js";
 import type { LaunchPlan } from "../src/hooks/useLaunchPlan.js";
 import type { HostsResponse } from "../src/hooks/useHosts.js";
+import type { PackageInfo, InstallSummary } from "../src/hooks/usePackageDetail.js";
 
 export const rigSummary: RigSummary[] = [
   { id: "rig_alpha", name: "acme-build", nodeCount: 11, hasServices: true, latestSnapshotAt: "2025-09-01T01:40:00.000Z", latestSnapshotId: "snap_a_204" },
@@ -344,4 +345,21 @@ export const launchPlanByRig: Record<string, LaunchPlan> = {
       { logicalId: "comms.drafter", intendedAction: "fresh-primed", tokenState: "missing", freshRequired: true, reason: "no token recorded", warning: BRAVO_LEASE_WARNING },
     ],
   },
+};
+
+// workspaces-o9o.115: one package with an applied, a rolled-back and a failed install, so its page (/packages/pkg_relay)
+// renders every install-status badge, the rolled-back one on the amber fill.
+export const packageInfoById: Record<string, PackageInfo> = {
+  pkg_relay: {
+    id: "pkg_relay", name: "comms-relay", version: "1.4.0", sourceKind: "local", sourceRef: "/Users/x/code/packages/comms-relay",
+    manifestHash: "sha256:0f3c9d2e", summary: "Relay seat and its startup files", createdAt: "2025-09-01T00:10:00.000Z",
+  },
+};
+
+export const installsByPackage: Record<string, InstallSummary[]> = {
+  pkg_relay: [
+    { id: "inst_3", packageId: "pkg_relay", targetRoot: "/Users/x/code/workspace", scope: "project", status: "applied", riskTier: "low", createdAt: "2025-09-01T01:40:00.000Z", appliedAt: "2025-09-01T01:41:00.000Z", rolledBackAt: null, appliedCount: 4, deferredCount: null },
+    { id: "inst_2", packageId: "pkg_relay", targetRoot: "/Users/x/code/workspace", scope: "project", status: "rolled_back", riskTier: "low", createdAt: "2025-09-01T01:10:00.000Z", appliedAt: "2025-09-01T01:11:00.000Z", rolledBackAt: "2025-09-01T01:30:00.000Z", appliedCount: 4, deferredCount: null },
+    { id: "inst_1", packageId: "pkg_relay", targetRoot: "/Users/x/code/workspace", scope: "project", status: "failed", riskTier: "medium", createdAt: "2025-09-01T00:40:00.000Z", appliedAt: null, rolledBackAt: null, appliedCount: 0, deferredCount: null },
+  ],
 };

@@ -169,6 +169,12 @@ describe("PackageDetail", () => {
     const badges = screen.getAllByTestId("install-status-badge");
     expect(badges[0]!.className).toContain("bg-success");
     expect(badges[1]!.className).toContain("bg-warning");
+    // workspaces-o9o.115: the rolled-back label sits on the amber fill, so it takes the on-amber text colour, and the badge
+    // keeps its size (a text colour merged into the same cn() call drops text-label-sm).
+    const labels = screen.getAllByTestId("install-status-label");
+    expect(labels[1]!.className.split(/\s+/)).toContain("text-on-warning");
+    expect(labels[0]!.className.split(/\s+/)).not.toContain("text-on-warning");
+    for (const badge of badges) expect(badge.className.split(/\s+/)).toContain("text-label-sm");
     expect(badges[2]!.className).toContain("bg-destructive");
   });
 

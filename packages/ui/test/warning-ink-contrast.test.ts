@@ -50,6 +50,17 @@ describe("warning ink: amber text clears WCAG AA (4.5:1) on every surface of bot
     });
   }
 
+  // workspaces-o9o.115: text ON an amber fill (bg-warning) uses --on-warning. White on the fill was 2.05:1 (light) and 1.68:1
+  // (dark); the fill keeps the brand amber (Jim, 2026-11-17), so the text on it is what changes.
+  for (const theme of [":root", ".dark"] as const) {
+    it(`${theme === ":root" ? "light" : "dark"}: --on-warning on the --warning fill`, () => {
+      const t = tokens(theme);
+      expect(t["on-warning"], `--on-warning is declared in ${theme}`).toBeDefined();
+      const ratio = contrast(t["on-warning"]!, t["warning"]!);
+      expect(ratio, `--on-warning on --warning (${theme}) = ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
   it("control: the brand amber itself is below 4.5:1 on light white, which is why text has its own ink", () => {
     const t = tokens(":root");
     expect(contrast(t["warning"]!, t["surface-container-lowest"]!)).toBeLessThan(4.5);
@@ -74,6 +85,21 @@ describe("no amber text class except the ink (o9o.113)", () => {
     const hits = files.flatMap((f) =>
       readFileSync(f, "utf8").split("\n").flatMap((line, i) => (line.match(BARE) ? [`${path.relative(UI, f)}:${i + 1}`] : [])));
     expect(hits).toEqual([]);
+  });
+
+  // workspaces-o9o.115: an amber fill never carries white text (2.05:1 light, 1.68:1 dark), with or without a variant prefix.
+  // A solid fill only: a tint (bg-warning/[0.08]) is near the surface colour and its text is judged as text on a surface.
+  const SOLID_FILL = /(?<![\w-])(?:[a-z-]+:)*bg-warning(?![\w/-])/;
+  it("no solid amber fill carries white text", () => {
+    const hits = files.flatMap((f) =>
+      readFileSync(f, "utf8").split("\n").flatMap((line, i) =>
+        SOLID_FILL.test(line) && /(?<![\w-])(?:[a-z-]+:)*text-white(?![\w-])/.test(line) ? [`${path.relative(UI, f)}:${i + 1}`] : []));
+    expect(hits).toEqual([]);
+  });
+
+  it("control: the fill scan sees solid amber fills", () => {
+    const fills = files.flatMap((f) => readFileSync(f, "utf8").split("\n").filter((line) => SOLID_FILL.test(line)));
+    expect(fills.length).toBeGreaterThan(5);
   });
 
   it("control: the scan sees the source tree and finds the ink where amber text is used", () => {
