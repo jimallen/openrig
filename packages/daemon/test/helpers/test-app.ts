@@ -270,6 +270,8 @@ export function createTestApp(
       diagnose(nodeId: string): import("../../src/domain/permission-drift.js").PermissionDriftDiagnostic | null;
     };
     listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
+    /** workspaces-o9o.71: one seat lease store for the restore orchestrator and the seat routes, as startup.ts wires it. */
+    seatLeases?: import("../../src/adapters/seat-lease-store.js").SeatLeaseStore;
     /** OF-208: wire a SimulatorLifecycle (with a fake simctl) into removal; omitted, removal touches no simulator. */
     simulatorLifecycle?: import("../../src/domain/simulator-lifecycle.js").SimulatorLifecycle;
     /**
@@ -327,6 +329,7 @@ export function createTestApp(
     db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
     checkpointStore, nodeLauncher, tmuxAdapter: tmux, claudeResume, codexResume,
     ...(opts?.listProcesses ? { listProcesses: opts.listProcesses } : {}),
+    ...(opts?.seatLeases ? { seatLeases: opts.seatLeases } : {}),
   });
   const podRepo = new PodRepository(db);
   const rigSpecExporter = new RigSpecExporter({ rigRepo, sessionRegistry, podRepo });
@@ -464,6 +467,7 @@ export function createTestApp(
     // instantiator stubs only when explicitly wired, since they would make
     // restore routes report resumes.
     runtimeAdapters: opts?.wireRuntimeAdapters ? adapters : opts?.adapters as Record<string, RuntimeAdapter> | undefined,
+    ...(opts?.seatLeases ? { seatLeases: opts.seatLeases } : {}),
     ...opts?.appDeps,
   };
   // withWebSocket: the production createAppWithWebSocket path, returning its injectWebSocket.

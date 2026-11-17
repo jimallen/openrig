@@ -212,7 +212,7 @@ import { WebhookNotificationAdapter } from "./domain/mission-control/notificatio
 import type { NotificationAdapter } from "./domain/mission-control/notification-adapter-types.js";
 import type { BindingAttachmentType } from "./domain/types.js";
 import { OPENRIG_HOME, resolveSharedDocsRoot } from "./openrig-compat.js";
-import { SeatLeaseStore } from "./adapters/seat-lease-store.js";
+import { nodeRelaunchChecks, SeatLeaseStore } from "./adapters/seat-lease-store.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { guardedAgentRefFsOps } from "./domain/agent-ref-guard.js";
@@ -852,10 +852,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const composeAdapter = new ComposeServicesAdapter(opts?.tmuxExec ?? execCommand);
   const serviceOrchestrator = new ServiceOrchestrator({ rigRepo, composeAdapter });
 
+  // workspaces-o9o.8/o9o.71: one seat lease store, read by the seat routes (rig seat lease, rig seat launch) and by restore.
+  const seatLeaseStore = new SeatLeaseStore(nodePath.join(OPENRIG_HOME, "state", "seat-leases"));
   const restoreOrchestrator = new RestoreOrchestrator({
     db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
     checkpointStore, nodeLauncher, tmuxAdapter, claudeResume, codexResume, piResume, ompResume, pdaResume,
     transcriptStore, serviceOrchestrator,
+    seatLeases: nodeRelaunchChecks(seatLeaseStore),
     // OF-32: a seat restored fresh re-reads its rig's spec through the same reader `rig seat launch --fresh` uses.
     // The instantiator is built further down; a restore only runs once the daemon is serving.
     seatStartupSource: {
@@ -1787,7 +1790,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     specReviewService,
     mcpTrust,
     // workspaces-o9o.8: what `rig seat lease` registers and a fresh launch's relaunch checks read.
-    seatLeases: new SeatLeaseStore(nodePath.join(OPENRIG_HOME, "state", "seat-leases")),
+    seatLeases: seatLeaseStore,
     specLibraryService: (() => {
       const userSpecsRoot = userSpecLibraryRoot;
       const legacySpecsRoot = compatibleSpecLibraryRoot;

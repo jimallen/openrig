@@ -247,9 +247,19 @@ refuses with `relaunch_check_held` (naming each holder or process; nothing is st
   by an argument. The agent is recognised per runtime: on a Pi or OMP seat, OpenRig's runner and the `pi` or `omp` it
   starts are the agent.
 
-A fresh launch of a seat with no live pane (a stopped seat, the TUI's explicit fresh, a fresh seat of `rig up`) stops
-nothing, but it still checks the seat's leases and refuses the same way while one is held. The children check needs a
-running agent, so there it does not apply.
+A fresh launch of a seat with no live pane stops nothing, but it still checks the seat's leases and refuses the same way
+while one is held: `rig seat launch --fresh` on a stopped seat, and the TUI's explicit fresh. The children check needs a
+running agent, so there it does not apply. `rig up --existing` and `rig start` (a restore) do the same for each seat they
+start fresh rather than resume, including every seat named with `--fresh`. A leased seat is not started and its row says
+`relaunch_check_held`, naming the holder; every other seat starts as usual. So does `POST
+/api/rigs/:rigId/nodes/:logicalId/launch` for a seat in a pod (it goes through the same restore).
+
+Not checked, so a held lease does not stop them:
+- a seat a restore resumes (its saved conversation continues; nothing is replaced);
+- a rig's first launch from its spec (`rig up <spec>`), whose seats are new;
+- the kernel's boot, and the TUI's start of a kernel seat that never had an occupant;
+- a handover successor (`rig seat handover`);
+- `POST /api/rigs/:rigId/nodes/:logicalId/launch` for a seat outside any pod, or with `retryStartupFrom`.
 
 `--despite lease` and `--despite children` launch anyway, one check each; the launch event records them with the
 `--reason`. A check that cannot be read (no pane process, an unreadable lease folder) only warns, so a broken seat can

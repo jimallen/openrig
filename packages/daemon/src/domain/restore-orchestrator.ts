@@ -99,6 +99,7 @@ import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, freshSeatLa
 import { rigAdviceHandle, rigAdviceHandleIn } from "./rig-ref.js";
 import { registeredPaneOf } from "./binding-pane.js";
 import { redactPaneText } from "./launch-failure-report.js";
+import { describeHeld, judgeLeases, type RelaunchCheckPort } from "./relaunch-checks.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -196,6 +197,9 @@ interface RestoreOrchestratorDeps {
   ompResume?: OmpResumeAdapter;
   /** pda L2a: re-attaches a pda seat to the agent its `pda_agent` token names (legacy resume path). */
   pdaResume?: PdaResumeAdapter;
+  /** workspaces-o9o.71: the seats' leases (rig seat lease). A seat this restore would start fresh is not launched while one is held.
+   *  Absent: no lease is judged (as before). */
+  seatLeases?: Pick<RelaunchCheckPort, "leases">;
   transcriptStore?: TranscriptStore;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
   listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -232,6 +236,7 @@ export class RestoreOrchestrator {
   private piResume: PiResumeAdapter | null;
   private ompResume: OmpResumeAdapter | null;
   private pdaResume: PdaResumeAdapter | null;
+  private seatLeases: Pick<RelaunchCheckPort, "leases"> | null;
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
   private listProcesses: (() => Promise<Array<{ pid: number; ppid: number; command: string }>>) | undefined;
@@ -274,6 +279,7 @@ export class RestoreOrchestrator {
     this.piResume = deps.piResume ?? null;
     this.ompResume = deps.ompResume ?? null;
     this.pdaResume = deps.pdaResume ?? null;
+    this.seatLeases = deps.seatLeases ?? null;
     this.transcriptStore = deps.transcriptStore ?? null;
     this.serviceOrchestrator = deps.serviceOrchestrator ?? null;
     this.listProcesses = deps.listProcesses;
@@ -1283,6 +1289,24 @@ export class RestoreOrchestrator {
           ...(copyFromSnapshotId && copyFromSnapshotId !== snapshotId ? { snapshotId: copyFromSnapshotId } : {}),
         };
       }
+    }
+
+    // workspaces-o9o.71: a seat this restore starts fresh (it does not resume the saved conversation) is judged for a held lease, as
+    // `rig seat launch --fresh` judges it: while the seat's own work holds one, this seat is not launched and gets its own refusal. The
+    // rest of the restore goes on. Nothing has been launched for this seat yet; its state is put back as a failed launch's is.
+    if (this.seatLeases && expectedSessionName
+      && !snapshotSeatResumes(occupantResolution.kind === "resolved" ? occupantResolution.session : null, freshRequested)) {
+      const seatLeases = this.seatLeases;
+      const lease = judgeLeases(() => seatLeases.leases(expectedSessionName!), []);
+      if (lease.verdict === "held") {
+        this.restoreNodeState(nodeId, priorState);
+        return {
+          nodeId, logicalId: node.logicalId, status: "failed", errorCode: "relaunch_check_held",
+          error: `${node.logicalId} was not started: ${describeHeld({ lease, children: { verdict: "not_applicable", cause: "not judged by restore" } }, expectedSessionName)} `
+            + `Let the work finish, or start it anyway with rig seat launch ${expectedSessionName} --fresh --despite lease --reason "<why>".`,
+        };
+      }
+      if (lease.verdict === "unknown") warnings?.push(`Node ${node.logicalId}: its leases were not judged: ${lease.cause}`);
     }
 
     // Write transcript boundary marker BEFORE launch (before pipe-pane attaches)
