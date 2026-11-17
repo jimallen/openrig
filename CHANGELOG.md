@@ -15,6 +15,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: a plain permission prompt (a seat not in bypass mode asking to run a tool) names no tool, so the daemon cleared it with any tool end stamped more than 2 s after it. An end of an earlier call that was relayed late could clear a prompt still waiting for its answer.
 - Now Claude seats relay `PermissionRequest` for every tool (synchronously; it names the tool), and the prompt is cleared only by an end of that same tool, with no time window. `question-wait` (the hook that answers a question with its recommended option) stays on `AskUserQuestion`; the every-tool hook group runs the relay only and never answers a prompt.
 - A Claude seat picks this up at its next launch. Until then it keeps the 2 s rule. Seats in bypass mode (`builtin:yolo`) see no plain permission prompts, so nothing changes for them.
+
 ### The running tool stays visible at every width, and the agent detail's two lines name the same start (workspaces-o9o.32)
 
 - Symptom: at 120 columns the seat table's NOW cell cut a long tool name and lost its age and the `?` that marks an unconfirmed call (`⚙ WebSearc…`); at 84 and 100 columns the table has no NOW column, so the running tool showed only in the agent detail.
