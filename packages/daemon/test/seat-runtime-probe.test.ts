@@ -32,9 +32,9 @@ function host(seatHasPi = true, profileNoise = false): { daemonPi: string; seatP
   else fs.mkdirSync(path.dirname(seatPi), { recursive: true });
   // A login shell's profile, read only when it runs as a login shell (-l): it puts the seat's directory first, and with no Pi there
   // leaves the daemon's directory out. Run without -l it keeps the daemon's PATH, so the probe must ask a LOGIN shell.
-  // Hermetic: only the fake folders and the system ones, so a probe that loses its way lands on the daemon's fake Pi (1.5.0), never
-  // a real Pi installed on the host.
-  const seatPath = seatHasPi ? `${path.dirname(seatPi)}:${path.dirname(daemonPi)}:/usr/bin:/bin` : `${path.dirname(seatPi)}:/usr/bin:/bin`;
+  // Hermetic: the fake folders only (the fake shell and the fake Pis call /bin/sh by absolute path), so a probe that loses its way
+  // lands on the daemon's fake Pi (1.5.0), and a seat with no Pi finds none, never a real Pi installed on the host.
+  const seatPath = seatHasPi ? `${path.dirname(seatPi)}:${path.dirname(daemonPi)}` : path.dirname(seatPi);
   const loginShell = executable(path.join(root, "login-shell"),
     `if [ "$1" = "-l" ]; then shift; ${profileNoise ? 'echo "profile startup noise"; ' : ""}PATH="${seatPath}"; export PATH; fi\nexec /bin/sh "$@"`);
   return { daemonPi, seatPi, daemonEnv: { ...process.env, PATH: `${path.dirname(daemonPi)}:${process.env["PATH"]}`, SHELL: loginShell } };
@@ -101,4 +101,3 @@ describe("o9o.65: the preview names the Pi a seat will launch", () => {
     await expect(probe("pi")).rejects.toThrow(/could not read the PATH/);
   });
 });
-
