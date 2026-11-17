@@ -5,10 +5,11 @@
 // directory first. On sparky (2026-11-16) the daemon found ~/.local/bin/pi (1.5.0) and every seat ran ~/.pi/agent/bin/pi (1.4.0),
 // so the preview named a Pi no seat ran. This asks that SHELL as a login shell for its PATH, resolves the name the way the runner does
 // (resolveRuntimeExecutable: first executable on PATH, then its real path, through a mise shim), and runs that file's --version.
-// Limit (build-arch, measured): `-l -c` is a NON-interactive login shell, so zsh skips .zshrc and bash skips .bashrc. A seat's
-// terminal is an interactive login shell on a pty, so a PATH set only in those files (oh-my-zsh, brew, mise) is not seen here.
+// Limit (build-arch, measured): `-l -c` is a NON-interactive login shell. A seat's terminal is an interactive login shell on a
+// pty, which may also load startup files such as .zshrc or .bashrc, so a PATH set only there (oh-my-zsh, brew, mise) may not be seen.
 // workspaces-o9o.11 replaces this with a probe terminal; until then the notice says exactly what was measured.
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { seatEnvironment } from "./hc-seat.js";
 import { resolveRuntimeExecutable } from "./pi-runner.js";
 import type { SeatRuntimeProbe } from "../domain/rigspec-preflight.js";
@@ -21,6 +22,17 @@ const run: ProbeRun = (file, args, env, timeoutMs) => new Promise((resolve, reje
 
 /** A probe that asks the daemon's SHELL (default /bin/sh) as a NON-interactive login shell (`-l -c`), with the
  *  environment hc-host gives a seat terminal (seatEnvironment). Bounded: each step stops at `timeoutMs`. */
+/** The PATH between two lines holding exactly `marker`; throws when there is no such frame (it is never guessed). */
+function framedPath(output: string, marker: string): string {
+  const lines = output.split("\n");
+  const start = lines.indexOf(marker);
+  const end = start < 0 ? -1 : lines.indexOf(marker, start + 1);
+  if (start < 0 || end !== start + 2) {
+    throw Object.assign(new Error("could not read the PATH of a non-interactive login shell (no framed answer)"), { code: "EPROTO" });
+  }
+  return lines[start + 1]!;
+}
+
 export function seatRuntimeProbe(opts: { daemonEnv?: NodeJS.ProcessEnv; run?: ProbeRun; timeoutMs?: number } = {}): SeatRuntimeProbe {
   const daemon = opts.daemonEnv ?? process.env;
   const exec = opts.run ?? run;
@@ -28,8 +40,12 @@ export function seatRuntimeProbe(opts: { daemonEnv?: NodeJS.ProcessEnv; run?: Pr
   return async (name) => {
     const seat = seatEnvironment({}, daemon);
     const shell = daemon["SHELL"] || "/bin/sh";
-    const argv = [...seat.unset.flatMap((key) => ["-u", key]), shell, "-l", "-c", 'printf "%s" "$PATH"'];
-    const seatPath = await exec("env", argv, seat.env, timeoutMs);
+    // The PATH is framed by a nonce made for this run, and only what lies between the two markers is read: a profile may print
+    // at login (review of 181a21d4c: "profile startup noise" became part of the first PATH entry, and the probe found the
+    // daemon's Pi). No framed answer is unknown, never a guess.
+    const marker = `openrig-path-${randomBytes(12).toString("hex")}`;
+    const argv = [...seat.unset.flatMap((key) => ["-u", key]), shell, "-l", "-c", `printf '\\n%s\\n%s\\n%s\\n' '${marker}' "$PATH" '${marker}'`];
+    const seatPath = framedPath(await exec("env", argv, seat.env, timeoutMs), marker);
     const env = { ...seat.env, PATH: seatPath };
     const resolved = resolveRuntimeExecutable(name, env);
     if (!resolved.ok) {
