@@ -511,7 +511,7 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
         ...(scenario === "missing-turn" ? [] : [{ type: "event_msg", payload: { type: "task_complete", turn_id: scenario === "wrong-turn" ? "other" : "turn" } }]),
       ];
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
-      vi.spyOn(console, "error").mockImplementation(() => {});
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
       const oldExit = process.exitCode;
       process.exitCode = undefined;
       let sends = 0;
@@ -552,6 +552,13 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
         expect(process.exitCode).toBe(positive ? undefined : 1);
         expect(log.mock.calls.some(([line]) => String(line).includes('"consumptionVerified":true'))).toBe(positive);
         expect(sends).toBe(1);
+        // workspaces-o9o.82: a message that only redacts like the piece is not the piece, so walk aborts on "not consumed",
+        // never on a consumed piece whose turn stayed open.
+        if (scenario === "collision") {
+          const errors = err.mock.calls.map(([line]) => String(line)).join("\n");
+          expect(errors).toContain("neither consumed");
+          expect(errors).not.toContain("consumed, but");
+        }
       } finally { process.exitCode = oldExit; }
     },
   );
