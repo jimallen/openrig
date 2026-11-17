@@ -13,9 +13,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 ### The generation record `rig walk` reads is served redacted (workspaces-o9o.60)
 
 - Symptom: `GET /api/sessions/:name/generation-record?sinceBytes=N`, the record `rig walk` reads to confirm each piece was consumed, returned the seat's native conversation record (Claude JSONL, Codex rollout) from that offset as raw bytes, with no transcript redaction.
-- Now the served `suffix` is a redacted view at raw offsets. `totalBytes` and `sinceBytes` still address the record's bytes on disk (`rig walk` takes every offset from `totalBytes`, never from the text). Only complete lines are served, so a line still being written, or one cut by the 8 MiB cap, is held back. Every string in a JSON line is redacted with the shared transcript policy, and a line that is not JSON is redacted as text.
+- Now the served `suffix` is a redacted view at raw offsets. `totalBytes` and `sinceBytes` still address the record's bytes on disk (`rig walk` takes every offset from `totalBytes`, never from the text). Only complete lines are served, so a line still being written, or one cut by the 8 MiB cap, is held back. Every string in a JSON line, object keys included, is redacted with the shared transcript policy, and a line that is not JSON is redacted as text. A `sinceBytes` that falls inside a line serves from the next line start, so the rest of a token cut by the offset is never served.
 - `rig walk` recognises a piece that holds a secret-shaped string in its redacted form, and still in its raw form when it talks to an older daemon.
 - Not in this change: by default the terminal routes, this one included, take no bearer token, while the default bind includes the tailnet when it is active. That config policy is filed as workspaces-o9o.78.
+- Known limits (a digest-based design is filed as workspaces-o9o.82):
+  - Two different messages that redact to the same text (identical except for the secret they hold) look alike to `rig walk`, so one can certify the other. That needs a near-identical message to arrive inside the same walk's window.
+  - Redaction works within one JSON string value or one line. A token split across separate string values, or across JSONL lines, is not redacted. Providers do not write tokens that way.
 
 ### Pane evidence uses the one transcript redaction list (workspaces-o9o.48)
 

@@ -10,7 +10,10 @@
 // - A JSON line is parsed, every string value in it redacted with the shared transcript policy, and written back as one
 //   line. Redacting the parsed strings, not the serialized bytes, means a redaction can never eat a JSON quote or an
 //   escape, and a reader comparing message text sees exactly what redacting that text gives (rig walk relies on it).
-//   Object keys are kept as they are. A line that is not JSON is redacted as text.
+//   Object keys are redacted the same way (a credential-shaped key is rare, so the meaning is kept). A line that is not
+//   JSON is redacted as text.
+// - A slice that starts inside a line (sinceBytes not at a line start) is served from the next line start, so the tail
+//   of a token cut by the offset never reaches the text fallback (verify-sec review of o9o.60).
 
 import { redactTranscriptContent } from "./transcript-redaction.js";
 
@@ -24,14 +27,17 @@ function redactStrings(value: unknown): unknown {
   if (typeof value === "string") return redactTranscriptContent(value);
   if (Array.isArray(value)) return value.map(redactStrings);
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, redactStrings(inner)]));
+    return Object.fromEntries(Object.entries(value).map(([key, inner]) => [redactTranscriptContent(key), redactStrings(inner)]));
   }
   return value;
 }
 
-/** The redacted view of a slice of a native record: its complete lines, each redacted, each newline-terminated. */
-export function redactedRecordView(slice: string): string {
-  const lines = completeLines(slice).split("\n").slice(0, -1);
+/** The redacted view of a slice of a native record: its complete lines, each redacted, each newline-terminated.
+ *  `startsAtLine` says whether the slice's first byte begins a line; when it does not, the partial first line is
+ *  dropped, as the unfinished last one is. */
+export function redactedRecordView(slice: string, startsAtLine: boolean): string {
+  const whole = startsAtLine ? slice : slice.slice(slice.indexOf("\n") + 1 || slice.length);
+  const lines = completeLines(whole).split("\n").slice(0, -1);
   return lines.map((line) => {
     let parsed: unknown;
     try {

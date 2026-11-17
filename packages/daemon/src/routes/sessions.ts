@@ -737,7 +737,10 @@ sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), a
       const length = Math.min(totalBytes - since, MAX_SUFFIX_BYTES);
       const buf = Buffer.alloc(length);
       const read = fs.readSync(fd, buf, 0, length, since);
-      return c.json({ generationId, sessionId, runtime, totalBytes, suffix: redactedRecordView(buf.subarray(0, read).toString("utf8")), truncated: totalBytes - since > read });
+      // Is sinceBytes a line start? Only the byte before it can say (a raw offset may land inside a line, even a token).
+      const before = Buffer.alloc(1);
+      const startsAtLine = since === 0 || (fs.readSync(fd, before, 0, 1, since - 1) === 1 && before[0] === 0x0a);
+      return c.json({ generationId, sessionId, runtime, totalBytes, suffix: redactedRecordView(buf.subarray(0, read).toString("utf8"), startsAtLine), truncated: totalBytes - since > read });
     } finally {
       fs.closeSync(fd);
     }

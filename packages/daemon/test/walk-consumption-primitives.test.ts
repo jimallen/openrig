@@ -627,6 +627,34 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
     expect(rec.message.content[0]!.text).toBe("first line\n[REDACTED]");
   });
 
+  // verify-sec review of o9o.60 (FIX 1): a credential-shaped object KEY is redacted like a value.
+  it("redacts a credential-shaped object key, keeping the line valid JSON", async () => {
+    seedSidecar("dev-key@r", "gen-key", `${JSON.stringify({ type: "user", [SECRET]: "value" })}\n`);
+    const body = await suffixOf("dev-key@r", 0);
+    expect(body.suffix).not.toContain(SECRET);
+    expect(JSON.parse(body.suffix.trimEnd())).toEqual({ type: "user", "[REDACTED]": "value" });
+  });
+
+  // verify-sec review of o9o.60 (FIX 2): an offset inside a line serves from the NEXT line start, so the rest of a token
+  // never reaches the text fallback. Offsets stay raw.
+  it("a sinceBytes inside a line (mid-token) serves from the next line start: no token fragment", async () => {
+    const first = userLine(`token ${SECRET} end`);
+    const next = userLine("the next message");
+    seedSidecar("dev-mid@r", "gen-mid", first + next);
+    const midToken = Buffer.byteLength(first.slice(0, first.indexOf(SECRET) + 10), "utf8");
+    const body = await suffixOf("dev-mid@r", midToken);
+    expect(body.suffix).toBe(next);
+    expect(body.suffix).not.toContain(SECRET.slice(10));
+    expect(body.totalBytes).toBe(Buffer.byteLength(first + next, "utf8"));
+  });
+
+  it("a sinceBytes inside the last line serves nothing", async () => {
+    const only = userLine(`token ${SECRET} end`);
+    seedSidecar("dev-midlast@r", "gen-midlast", only);
+    const body = await suffixOf("dev-midlast@r", 5);
+    expect(body.suffix).toBe("");
+  });
+
   it("a complete line that is not JSON is redacted as text", async () => {
     seedSidecar("dev-txt@r", "gen-txt", `plain ${SECRET} line\n`);
     const body = await suffixOf("dev-txt@r", 0);
