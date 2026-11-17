@@ -368,7 +368,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!this.mayChangeConfig(configPath)) return;
     if (!this.fs.exists(configPath)) return;
     const existing = this.fs.readFile(configPath);
-    const updated = stripCodexActivityHooks(existing, this.activityRelayPath, this.recordedManagedRelay());
+    const updated = stripCodexActivityHooks(existing, this.activityRelayPath ?? null, this.recordedManagedRelay());
     if (updated !== existing) {
       this.fs.writeFile(configPath, updated);
     }
