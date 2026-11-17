@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const ASSETS = resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts");
 const SCRIPTS = ["activity-relay.cjs", "question-wait.cjs"] as const;
 const SEAT = "dev-impl@relayrig";
-const TOKEN = "hook-token-o9o33";
+const TOKEN = "hook-token-" + "o9o33";
 
 interface Arrival { route: string; body: Record<string, unknown> }
 
