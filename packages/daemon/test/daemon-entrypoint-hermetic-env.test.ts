@@ -114,7 +114,7 @@ describe("o9o.61: a test daemon started outside vitest gets none of the caller's
   ])("the caller's hc core named by $route is never contacted, while a private core passed as privateHcSocket is (positive control)", async ({ drop, core }) => {
     const root = tempDir("o9o61-");
     const ambient = await fakeCore(core(root));
-    const toldHome = tempDir("o9o61-told-");
+    const toldHome = fs.realpathSync(tempDir("o9o61-told-")); // canonical: on macOS os.tmpdir() sits under a symlinked /var
     const explicit = await fakeCore(path.join(toldHome, "own.sock"));
     const seat = seatEnv(root);
     for (const name of drop) delete seat[name];
@@ -211,7 +211,7 @@ describe("o9o.61: opts.env cannot route a test daemon to live state", () => {
   });
 
   it("testDaemonEnv keeps a PATH stub (the simulator's), and a privateHcSocket outside the test home is refused", () => {
-    const home = tempDir("o9o61-h-");
+    const home = fs.realpathSync(tempDir("o9o61-h-"));
     expect(testDaemonEnv({ home, env: { PATH: "/stub:/usr/bin" } }, 1)["PATH"]).toBe("/stub:/usr/bin");
     expect(testDaemonEnv({ home, privateHcSocket: path.join(home, "core.sock") }, 1)["HC_SOCKET"]).toBe(path.join(home, "core.sock"));
     expect(() => testDaemonEnv({ home, privateHcSocket: "/run/user/1000/herdr-core/default.sock" }, 1)).toThrow(/not under the test home/);
@@ -228,6 +228,14 @@ describe("o9o.61: opts.env cannot route a test daemon to live state", () => {
     { via: "a socket inside the home that is a symlink to an outside one", place: (home: string, outside: string) => {
       fs.symlinkSync(path.join(outside, "fake-core.sock"), path.join(home, "core.sock"));
       return path.join(home, "core.sock");
+    } },
+    // Round 3 (verify-qa2): a lexical resolve cancels `linked/..` before the symlink is seen; physically it is the outside
+    // folder's parent. The link points at <outsideRoot>/sub, so `linked/..` is <outsideRoot>, where the sentinel listens.
+    { via: "'..' after a symlinked folder", place: (home: string, outside: string) => {
+      const sub = path.join(outside, "sub");
+      fs.mkdirSync(sub);
+      fs.symlinkSync(sub, path.join(home, "linked"));
+      return `${home}/linked/../fake-core.sock`;
     } },
   ])("a privateHcSocket that reaches an outside core through $via is refused, and that core is never contacted", async ({ place }) => {
     const outside = tempDir("o9o61-outside-");

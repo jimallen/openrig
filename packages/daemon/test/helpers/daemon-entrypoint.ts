@@ -79,20 +79,30 @@ export function stateRoutingName(name: string): boolean {
     || ["XDG_", "HC_", "OPENRIG_", "RIGGED_"].some((prefix) => name.startsWith(prefix));
 }
 
-/** Whether `file` lies under `dir` by REAL path (review of 2529eac37: a lexical check let home/linked -> <outside> carry a socket
- *  out). The socket itself when it exists (it may be a link), else its folder (it is made later); false when either cannot be
- *  resolved, so an unprovable containment is a refusal. */
-function realPathUnder(file: string, dir: string): boolean {
-  let realDir: string;
-  try { realDir = fs.realpathSync(dir); } catch { return false; }
-  const absolute = path.resolve(file);
-  let real: string;
+/** Whether `socket` is a canonical path inside `home`, the strict rule (Jim, 2026-11-17, after three review rounds): absolute;
+ *  normalized (no `.` or `..` segment, which a lexical resolve would cancel across a symlink); its folder's real path equal to
+ *  the folder as given (no symlinked component); that folder inside the home's real path; and the socket itself, if it exists,
+ *  not a link. Anything that cannot be proved is a refusal. */
+function canonicalSocketUnder(socket: string, home: string): boolean {
+  if (!path.isAbsolute(socket) || path.normalize(socket) !== socket) return false;
+  if (socket.split(path.sep).some((segment) => segment === "." || segment === "..")) return false;
+  const folder = path.dirname(socket);
+  let realFolder: string;
+  let realHome: string;
   try {
-    real = fs.realpathSync(absolute);
+    realFolder = fs.realpathSync(folder);
+    realHome = fs.realpathSync(home);
   } catch {
-    try { real = path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute)); } catch { return false; }
+    return false;
   }
-  return real.startsWith(realDir + path.sep);
+  if (realFolder !== folder) return false;
+  if (folder !== realHome && !folder.startsWith(realHome + path.sep)) return false;
+  try {
+    if (fs.lstatSync(socket).isSymbolicLink()) return false;
+  } catch {
+    // not there yet: the daemon's core makes it
+  }
+  return true;
 }
 
 export function testDaemonEnv(
@@ -103,8 +113,8 @@ export function testDaemonEnv(
     throw new Error(`spawnDaemonEntrypoint: opts.env may not name ${routed.join(", ")}: a test daemon's state and servers are the `
       + "helper's (under its home). For a private hc core pass privateHcSocket.");
   }
-  if (opts.privateHcSocket !== undefined && !realPathUnder(opts.privateHcSocket, opts.home)) {
-    throw new Error(`spawnDaemonEntrypoint: privateHcSocket ${opts.privateHcSocket} is not under the test home ${opts.home} (by real path)`);
+  if (opts.privateHcSocket !== undefined && !canonicalSocketUnder(opts.privateHcSocket, opts.home)) {
+    throw new Error(`spawnDaemonEntrypoint: privateHcSocket ${opts.privateHcSocket} is not under the test home ${opts.home} (it must be a canonical path, no link, inside the home's real path)`);
   }
   const inherited = Object.fromEntries(Object.entries(parent).filter(([name]) =>
     TEST_DAEMON_INHERITED_ENV.includes(name) || name.startsWith(INHERITED_ENV_PREFIX)));
