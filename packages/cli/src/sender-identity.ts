@@ -16,7 +16,7 @@ export function resolveSenderSession(): string | undefined {
 /** The env names an ssh relay sets on the far `rig send` for a SHELL sender (workspaces-o9o.34). */
 export const RELAYED_ORIGIN_HOST_ENV = "OPENRIG_ORIGIN_HOST_ID";
 export const RELAYED_ORIGIN_LABEL_ENV = "OPENRIG_ORIGIN_SHELL_LABEL";
-/** A host's own id, as `/api/messages/accept` and `/api/transport/send` take it. */
+/** A host's own id, as the daemon's message accept and transport send routes take it. */
 const HOST_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /**
@@ -25,7 +25,7 @@ const HOST_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * own id and the label that shell gave itself (its own `workspace.operator_seat_name`, or none). This CLI then labels the envelope with that,
  * and states the origin to its daemon as the http path does, so the daemon names the origin host by its registry and says no rig address
  * answers a shell (reply-path.ts). Read only when the dispatch has no seat identity; undefined when the host id is absent or not one.
- * Trust: the same as a stated origin on `/api/transport/send`, the caller's claim.
+ * Trust: the same as an origin stated on the daemon's transport send route, the caller's claim.
  */
 export function resolveRelayedShellOrigin(): { host: string; label: string | undefined } | undefined {
   const host = process.env[RELAYED_ORIGIN_HOST_ENV]?.trim();
