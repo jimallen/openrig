@@ -17,6 +17,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Kept visible: a standalone 40- or 64-character hex hash (git shas, sha256), as Jim decided on 2026-11-16 ("Keep shas, exempt hex 40/64"). A hex run joined to a prefix or a suffix by `-` or `_` (`token-<40hex>`, `<40hex>-prod`) is a token and is redacted, and so is a 40+ run right after an `_`. Prose and code (`the key: …`, `{ key: value }`, `SORT_KEY=`, `primary_key:`), variable references (`$VAR`, `${VAR}`, `<placeholder>`) and values under 8 characters are left alone.
 - Transcript rotation now captures with soft-wrapped rows joined (tmux `capture-pane -J`, batched or per session; hc reads were already joined), so a wrapped token reaches redaction whole.
 - The restore-packet validator and schema accept `redaction_policy_id: "openrig-v1"`. The writer still emits `openrig-v0`, so an older CLI never rejects a newer packet.
+
 ### The shared-docs tree follows OPENRIG_HOME (workspaces-o9o.46)
 
 - Symptom: a scratch daemon started with its own `OPENRIG_HOME` created `~/.openrig/shared-docs/rigs/<rig>/state/<pod>` in the operator's real home and gave that folder to a Codex seat as a writable `--add-dir`. So an instance meant to be isolated wrote into the live one's tree.
