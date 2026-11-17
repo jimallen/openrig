@@ -14,6 +14,29 @@ const HELPER = resolve(import.meta.dirname, "helpers/test-ports.ts");
 const DAEMON_PKG = resolve(import.meta.dirname, "..");
 const REPO = resolve(DAEMON_PKG, "../..");
 
+/** A free port with a claim file of `content` staged on it: only a port no other test process has claimed (a free port can be claimed and
+ *  not yet bound), retried when the exclusive create finds one there. */
+function stagedClaim(content: string): Promise<{ p: number; file: string }> {
+  return (async () => {
+    for (let i = 0; i < 50; i += 1) {
+      const p = await probeFreePort();
+      const file = join(TEST_PORT_CLAIMS_DIR, String(p));
+      try { writeFileSync(file, content, { flag: "wx" }); return { p, file }; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+    }
+    throw new Error("no unclaimed free port to stage a claim on");
+  })();
+}
+
+/** A free port nobody has claimed, claimed now by this process through claimPort (the "absent" state), retried if another took it first. */
+async function claimFromAbsent(): Promise<number> {
+  for (let i = 0; i < 50; i += 1) {
+    const p = await probeFreePort();
+    if (existsSync(join(TEST_PORT_CLAIMS_DIR, String(p)))) continue;
+    if (claimPort(p)) return p;
+  }
+  throw new Error("no absent claim to take");
+}
+
 /** Rewrites this process's own claim on `port` to a pid that is gone; throws for a claim it does not hold. */
 function makeOwnClaimStale(port: number): void {
   const file = join(TEST_PORT_CLAIMS_DIR, String(port));
@@ -93,9 +116,7 @@ describe("workspaces-o9o.81: a test port is claimed, not probed and released", (
   // A writer paused between the two left an empty file that a second claimer reclaimed, so both believed they held the port. What a paused
   // (or crashed) writer leaves is reproduced exactly: an empty claim file.
   it("RED (review): an empty claim (a writer between its open and its write) is held, not reclaimed", async () => {
-    const port = await probeFreePort();
-    const file = join(TEST_PORT_CLAIMS_DIR, String(port));
-    writeFileSync(file, "", { flag: "wx" });
+    const { p: port, file } = await stagedClaim("");
     try {
       expect(claimPort(port)).toBe(false);
       expect(readFileSync(file, "utf8")).toBe("");
@@ -111,24 +132,22 @@ describe("workspaces-o9o.81: a test port is claimed, not probed and released", (
 
   it("the census of claim states, each with its answer: absent, own, held-live, held-dead, writing, unparseable (fresh and old)", async () => {
     const aged = (file: string) => { const t = (Date.now() - 10 * 60_000) / 1000; utimesSync(file, t, t); };
-    const fresh = async () => { const p = await probeFreePort(); return { p, file: join(TEST_PORT_CLAIMS_DIR, String(p)) }; };
     const gone = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
     const holder = await otherProcess(`return await h.claimTestPort();`, { keepAlive: true });
     const live = JSON.parse(holder.out) as number;
     try {
-      const absent = await fresh();
-      expect(claimPort(absent.p), "absent").toBe(true);
-      expect(claimPort(absent.p), "own").toBe(false);
-      releasePort(absent.p);
+      const absent = await claimFromAbsent();   // absent, then claimed
+      expect(claimPort(absent), "own").toBe(false);
+      releasePort(absent);
       expect(claimPort(live), "held by a live process").toBe(false);
-      const dead = await fresh(); writeFileSync(dead.file, gone, { flag: "wx" });
+      const dead = await stagedClaim(gone);
       expect(claimPort(dead.p), "held by a process that is gone").toBe(true);
       releasePort(dead.p);
-      const writing = await fresh(); writeFileSync(writing.file, "", { flag: "wx" });
+      const writing = await stagedClaim("");
       expect(claimPort(writing.p), "writing (empty, fresh)").toBe(false);
-      const garbled = await fresh(); writeFileSync(garbled.file, "not a pid", { flag: "wx" });
+      const garbled = await stagedClaim("not a pid");
       expect(claimPort(garbled.p), "unparseable, fresh").toBe(false);
-      const old = await fresh(); writeFileSync(old.file, "", { flag: "wx" }); aged(old.file);
+      const old = await stagedClaim(""); aged(old.file);
       expect(claimPort(old.p), "empty, older than the grace").toBe(true);
       releasePort(old.p);
       for (const f of [writing.file, garbled.file]) rmSync(f, { force: true });
