@@ -266,6 +266,26 @@ describe("BootstrapOrchestrator", () => {
     expect(JSON.stringify(result.errors)).not.toContain("PANE-TAIL-SENTINEL");
   });
 
+  // workspaces-o9o.89: the same for an all-attention instantiate: the tails ride the import_rig stage detail (response
+  // only), never errors or the attention nodes, and no stored row gains them.
+  it("carries an all-attention instantiate's pane tails in the stage detail, never in errors or attentionNodes, and stores none (o9o.89)", async () => {
+    const tail = "PANE-TAIL-SENTINEL-o9o89 $ claude | zsh: command not found";
+    const instantiate = vi.fn(async () => ({ ok: false as const, code: "attention_required" as const, rigId: "attention-rig",
+      message: "1 node requires attention before becoming interactive. Inspect the affected sessions and reasons before choosing recovery.",
+      attentionNodes: [{ logicalId: "dev.shell", sessionName: "dev-shell@tails", reason: "Startup requires attention" }],
+      paneTails: [{ logicalId: "dev.shell", paneTail: tail }] }));
+    const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+    const yaml = `version: "0.2"\nname: tails\npods: [{id: dev, label: Dev, members: [{id: shell, agent_ref: "builtin:terminal", runtime: terminal, profile: none, cwd: .}], edges: []}]\nedges: []\n`;
+    const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(yaml) });
+    expect(result.status).toBe("partial");
+    const detail = result.stages.find((s) => s.stage === "import_rig")?.detail as { paneTails?: unknown; attentionNodes?: unknown };
+    expect(detail).toMatchObject({ code: "attention_required", paneTails: [{ logicalId: "dev.shell", paneTail: tail }] });
+    expect(JSON.stringify(detail.attentionNodes)).not.toContain("PANE-TAIL-SENTINEL");
+    expect(JSON.stringify(result.errors)).not.toContain("PANE-TAIL-SENTINEL");
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((t) => t.name);
+    expect(tables.filter((t) => (db.prepare(`SELECT * FROM "${t}"`).all() as unknown[]).some((row) => JSON.stringify(row).includes("PANE-TAIL-SENTINEL")))).toEqual([]);
+  });
+
   describe("project_rig", () => {
     const ownRig = (name: string, project: string) => {
       const repo = new RigRepository(db);

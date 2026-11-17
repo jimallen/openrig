@@ -1814,6 +1814,8 @@ export class PodRigInstantiator {
           evidence: n.evidence,
           reason: n.error ?? "node awaiting attention",
         }));
+      // workspaces-o9o.89: every seat's tail, a failed one's beside the waiting ones' (as instantiate_error carries them).
+      const attentionPaneTails = nodeResults.flatMap((n) => n.paneTail ? [{ logicalId: n.logicalId, paneTail: n.paneTail }] : []);
       // Emit rig.imported so callers see the rig exists; nodes are
       // attention_required, not "launched", so `rig ps` shows the
       // correct lifecycle state.
@@ -1834,6 +1836,8 @@ export class PodRigInstantiator {
         attentionNodes,
         // #141: the replacement is kept on this path, so its archive notice must reach the user too.
         ...(archivedGenerations.length > 0 ? { warnings: podInstantiateWarnings } : {}),
+        // workspaces-o9o.89: the seats' pane tails beside the attention nodes, as instantiate_error carries them (o9o.3).
+        ...(attentionPaneTails.length > 0 ? { paneTails: attentionPaneTails } : {}),
       };
     }
 

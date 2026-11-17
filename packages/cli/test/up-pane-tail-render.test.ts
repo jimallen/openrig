@@ -76,6 +76,17 @@ describe("rig up prints the pane tail of a seat that never became ready (workspa
     expect(await runUp()).toContain(`  dev.impl pane: ${TAIL}`);
   });
 
+  it("every seat needs attention (409): prints each seat's tail after the three-part error (o9o.89)", async () => {
+    reply = { status: 409, body: { runId: "r", status: "partial", rigId: "rig-1", warnings: [], errors: ["1 node requires attention"],
+      error: { fact: "1 node requires attention", consequence: "rig rig-1 is parked; see rig ps", action: "attach and approve" },
+      attentionNodes: [{ logicalId: "dev.impl", reason: "trust_gate" }],
+      stages: [{ stage: "import_rig", status: "blocked", detail: { code: "attention_required", attentionNodes: [{ logicalId: "dev.impl", reason: "trust_gate" }],
+        paneTails: [{ logicalId: "dev.impl", paneTail: TAIL }] } }] } };
+    const out = await runUp();
+    expect(out).toContain("1 node requires attention");
+    expect(out).toContain(`  dev.impl pane: ${TAIL}`);
+  });
+
   it("one seat failed on a rig that came up: prints its tail from the stage detail's nodes", async () => {
     reply = { status: 200, body: { runId: "r", status: "partial", rigId: "rig-1", warnings: [], errors: [ERROR],
       stages: [{ stage: "import_rig", status: "failed", detail: { rigId: "rig-1", specName: "s", nodes: [

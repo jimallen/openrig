@@ -1484,6 +1484,9 @@ export type InstantiateOutcome =
       attentionNodes: AttentionNode[];
       /** #141: notices that must reach the user even though the import stopped for attention. */
       warnings?: string[];
+      /** workspaces-o9o.89: the seats' launch pane tails (redacted), TRANSIENT as in instantiate_error: callers show them
+       *  and never store them; never inside `message` or `attentionNodes`. */
+      paneTails?: { logicalId: string; paneTail: string }[];
     };
 
 export interface AttentionNode {

@@ -1521,15 +1521,16 @@ state: 2-named
   // surviving rig's node results; paneTails on instantiate_error, whose message bootstrap persists), never inside it.
   describe("pane tails of failed startups (workspaces-o9o.3)", () => {
     const tail = "PANE-TAIL-SENTINEL [oh-my-zsh] Would you like to update? [Y/n]";
-    function instantiator(fail: (logicalNodeId: string) => boolean) {
+    function instantiator(fail: (logicalNodeId: string) => boolean, statusOf: (logicalNodeId: string) => "failed" | "attention_required" = () => "failed") {
       const ctx = setup({ [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"), [`${RIG_ROOT}/agents/qa/agent.yaml`]: agentYaml("qa") });
       const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: ctx.tmux });
       const startupOrch = new StartupOrchestrator({ db: ctx.db, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: ctx.tmux });
       startupOrch.startNode = async (input) => {
         const logicalId = ctx.rigRepo.getRig(input.rigId)!.nodes.find((n) => n.id === input.nodeId)!.logicalId;
         if (!fail(logicalId)) { ctx.sessionRegistry.updateStartupStatus(input.sessionId, "ready"); return { ok: true, startupStatus: "ready", continuityOutcome: "fresh" }; }
-        ctx.sessionRegistry.updateStartupStatus(input.sessionId, "failed");
-        return { ok: false, startupStatus: "failed", errors: ["Readiness timeout after 30s — harness did not become interactive: x — pane tail not stored"], paneTail: tail };
+        const status = statusOf(logicalId);
+        ctx.sessionRegistry.updateStartupStatus(input.sessionId, status);
+        return { ok: false, startupStatus: status, errors: ["Readiness timeout after 30s — harness did not become interactive: x — pane tail not stored"], paneTail: tail };
       };
       const inst = new PodRigInstantiator({
         db: ctx.db, rigRepo: ctx.rigRepo, podRepo: ctx.podRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, nodeLauncher,
@@ -1551,6 +1552,27 @@ state: 2-named
       expect(result.message).not.toContain("PANE-TAIL-SENTINEL");
       expect(result.message).toContain("pane tail not stored");
       expect(result.paneTails).toEqual([{ logicalId: "dev.impl", paneTail: tail }, { logicalId: "dev.qa", paneTail: tail }]);
+      ctx.db.close();
+    });
+
+    it("o9o.89: every seat needs attention: the tails ride paneTails, never the message or attentionNodes, and nothing stores them", async () => {
+      const { ctx, run } = instantiator(() => true, () => "attention_required");
+      const result = await run();
+      if (result.ok || result.code !== "attention_required") throw new Error(JSON.stringify(result));
+      expect(result.message).not.toContain("PANE-TAIL-SENTINEL");
+      expect(JSON.stringify(result.attentionNodes)).not.toContain("PANE-TAIL-SENTINEL");
+      expect((result as { paneTails?: unknown }).paneTails).toEqual([{ logicalId: "dev.impl", paneTail: tail }, { logicalId: "dev.qa", paneTail: tail }]);
+      const tables = (ctx.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((t) => t.name);
+      expect(tables.filter((t) => (ctx.db.prepare(`SELECT * FROM "${t}"`).all() as unknown[]).some((row) => JSON.stringify(row).includes("PANE-TAIL-SENTINEL")))).toEqual([]);
+      ctx.db.close();
+    });
+
+    it("o9o.89: one seat needs attention and the other failed: both seats' tails ride paneTails", async () => {
+      const { ctx, run } = instantiator(() => true, (id) => id === "dev.impl" ? "attention_required" : "failed");
+      const result = await run();
+      if (result.ok || result.code !== "attention_required") throw new Error(JSON.stringify(result));
+      expect(result.attentionNodes.map((n) => n.logicalId)).toEqual(["dev.impl"]);
+      expect((result as { paneTails?: unknown }).paneTails).toEqual([{ logicalId: "dev.impl", paneTail: tail }, { logicalId: "dev.qa", paneTail: tail }]);
       ctx.db.close();
     });
 

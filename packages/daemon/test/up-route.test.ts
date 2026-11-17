@@ -1410,6 +1410,8 @@ edges: []
               attentionNodes: [
                 { logicalId: "dev.impl", sessionName: "dev-impl@conveyor-attention-route-test", evidence: "trust prompt", reason: "trust_gate" },
               ],
+              // workspaces-o9o.89: the seats' redacted pane tails ride the stage detail of the response.
+              paneTails: [{ logicalId: "dev.impl", paneTail: "ROUTE-PANE-TAIL-SENTINEL" }],
             },
           },
         ],
@@ -1446,6 +1448,12 @@ edges: []
         expect(body.attentionNodes).toBeInstanceOf(Array);
         expect(body.attentionNodes).toHaveLength(1);
         expect(body.attentionNodes[0].logicalId).toBe("dev.impl");
+        // workspaces-o9o.89: the 409 body keeps the stage detail's pane tails (the CLI prints them from there),
+        // and the tail is not copied into the error triple or the attention nodes.
+        const importStage = (body.stages as { stage: string; detail: { paneTails?: unknown } }[]).find((s) => s.stage === "import_rig");
+        expect(importStage?.detail.paneTails).toEqual([{ logicalId: "dev.impl", paneTail: "ROUTE-PANE-TAIL-SENTINEL" }]);
+        expect(JSON.stringify(body.error)).not.toContain("ROUTE-PANE-TAIL-SENTINEL");
+        expect(JSON.stringify(body.attentionNodes)).not.toContain("ROUTE-PANE-TAIL-SENTINEL");
         // The bootstrap's partial result still carries the rigId
         // for `rig ps` lookups
         expect(body.rigId).toBe("rig-stub-1");

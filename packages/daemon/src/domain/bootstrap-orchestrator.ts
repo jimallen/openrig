@@ -888,6 +888,8 @@ export class BootstrapOrchestrator {
       if (outcome.code === "attention_required") {
         const attentionMsg = (outcome as { message: string }).message;
         const attentionNodes = (outcome as { attentionNodes: import("./types.js").AttentionNode[] }).attentionNodes;
+        // workspaces-o9o.89: the seats' pane tails reach the caller in the stage detail (a response, never stored), as o9o.3's do.
+        const attentionPaneTails = (outcome as { paneTails?: { logicalId: string; paneTail: string }[] }).paneTails;
         stages.push({
           stage: "import_rig",
           status: "blocked",
@@ -895,6 +897,7 @@ export class BootstrapOrchestrator {
             code: "attention_required",
             message: attentionMsg,
             attentionNodes,
+            ...(attentionPaneTails?.length ? { paneTails: attentionPaneTails } : {}),
           },
         });
         this.deps.bootstrapRepo.updateRunStatus(run.id, "partial", { rigId: (outcome as { rigId: string }).rigId });

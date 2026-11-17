@@ -22,6 +22,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now the relay sets `OPENRIG_ORIGIN_HOST_ID` (this host's own id) and `OPENRIG_ORIGIN_SHELL_LABEL` (the shell's own `workspace.operator_seat_name`, when set) on the far command line. The far `rig send` labels the envelope with that label and states the origin to its daemon, as the http transport does. The far seat then sees `From: <label> (a shell on <host>)` and that no rig address answers a shell, as with http (workspaces-o9o.16).
 - Unchanged: a seat's send over ssh (it carries its seat identity), raw sends, and http hosts. A far host on an older release ignores the two variables and labels as before.
 
+### `rig up` shows the seats' pane tails when every seat needs attention (workspaces-o9o.89)
+
+- Symptom: when every seat of a pod rig stopped at an attention gate (a trust prompt, for example), `rig up` answered 409 with the attention nodes but without the seats' last pane lines, while a failed launch (workspaces-o9o.3) carried them. The operator saw that a seat was waiting, not what its pane said.
+- Now the all-attention outcome carries `paneTails` (`{logicalId, paneTail}[]`, redacted with the shared list) beside `attentionNodes`, one per seat with a tail, a seat that failed beside the waiting ones included, and the bootstrap's `import_rig` stage detail returns them in the 409 body. `rig up` prints each as `<logicalId> pane: <tail>` after the three-part error, as it already did for instantiate_error.
+- Transient, as in workspaces-o9o.3: the tails ride the response only. They are never put in the stage `message`, `attentionNodes`, `errors` or any stored row; a test scans every table for the tail after the run.
+
 ### `rig walk` confirms a piece by its raw text, not by how it redacts (workspaces-o9o.82)
 
 - Symptom: since the generation record is served redacted (workspaces-o9o.60), `rig walk` accepted a record whose text equalled the piece once redacted. A different message holding a different secret redacts to the same text, so it could confirm, and close the turn of, a piece that was never consumed.
