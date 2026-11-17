@@ -5,6 +5,7 @@
 // The rig spec validator imports only the shape check from here, so validating a spec never loads a module that reads files.
 
 import nodePath from "node:path";
+import { confineUnderRoot, isInside, realOrSame } from "./confined-ref.js";
 
 /** A culture_file that names a file in the RUNNING OpenRig install's own specs folder. */
 export const SHIPPED_CULTURE_PREFIX = "shipped:";
@@ -23,14 +24,6 @@ export interface CulturePathIo {
 export type ShippedCultureTarget =
   | { ok: true; absolutePath: string; ownerRoot: string }
   | { ok: false; message: string };
-
-function isInside(root: string, p: string): boolean {
-  return p === root || p.startsWith(root.endsWith(nodePath.sep) ? root : root + nodePath.sep);
-}
-
-function realOrSame(io: CulturePathIo, p: string): string {
-  try { return io.realpath(p); } catch { return p; }
-}
 
 /**
  * The shape of a `shipped:` culture_file: a non-empty relative path that does not climb out (`..`). Null when it is well formed.
@@ -56,15 +49,12 @@ export function shippedCultureShapeProblem(cultureFile: string): string | null {
 export function confineShippedCulture(cultureFile: string, specsRoot: string, io: CulturePathIo): ShippedCultureTarget {
   const shape = shippedCultureShapeProblem(cultureFile);
   if (shape) return { ok: false, message: shape };
-  const rel = cultureFile.slice(SHIPPED_CULTURE_PREFIX.length);
-  const typedRoot = nodePath.resolve(specsRoot);
-  const root = realOrSame(io, typedRoot);
-  const lexical = nodePath.resolve(root, rel);
-  const target = realOrSame(io, lexical);
-  if (!isInside(root, lexical) || !isInside(root, target)) {
-    return { ok: false, message: `culture_file "${cultureFile}" resolves to ${target}, outside ${root}, the installed OpenRig's specs folder; a shipped: culture_file must stay inside it` };
+  // The same confinement rule as a shipped: or agents-release: agent_ref (confined-ref.ts, workspaces-o9o.53).
+  const confined = confineUnderRoot(specsRoot, cultureFile.slice(SHIPPED_CULTURE_PREFIX.length), io);
+  if (!confined.ok) {
+    return { ok: false, message: `culture_file "${cultureFile}" resolves to ${confined.real}, outside ${confined.root}, the installed OpenRig's specs folder; a shipped: culture_file must stay inside it` };
   }
-  return { ok: true, absolutePath: nodePath.resolve(typedRoot, rel), ownerRoot: typedRoot };
+  return { ok: true, absolutePath: confined.typed, ownerRoot: nodePath.resolve(specsRoot) };
 }
 
 /**

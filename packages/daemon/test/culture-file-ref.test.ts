@@ -15,8 +15,10 @@ describe("the shipped: culture's dependency direction", () => {
     expect(imports("rigspec-schema.ts")).not.toContain("./culture-file-guard.js");
   });
 
-  it("the pure culture_file module imports only node:path (no filesystem, no adapter)", () => {
-    expect(imports("culture-file-ref.ts")).toEqual(["node:path"]);
+  it("the pure culture_file module reaches only node:path (no filesystem, no adapter), through the shared confinement rule", () => {
+    // workspaces-o9o.53: the confinement is the one shared with shipped: and agents-release: agent refs (confined-ref.ts), itself pure.
+    expect(imports("culture-file-ref.ts")).toEqual(["node:path", "./confined-ref.js"]);
+    expect(imports("confined-ref.ts")).toEqual(["node:path"]);
   });
 
   it("confinement runs on the port alone: a fake realpath decides, no filesystem is read", () => {
