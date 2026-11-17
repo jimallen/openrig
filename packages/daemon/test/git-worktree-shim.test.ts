@@ -715,7 +715,7 @@ describe("git-worktree-shim", () => {
     }
 
     async function setup() {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const top = path.join(tmp, "top");
       await fs.mkdir(path.join(top, "sub"), { recursive: true });
       const realTop = await fs.realpath(top);
@@ -791,7 +791,7 @@ describe("git-worktree-shim", () => {
       const { top, outside, redirected } = await setup();
       const decoy = path.join(tmp, "decoy");
       await fs.mkdir(path.join(decoy, "top"), { recursive: true });
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["-C", "top", "worktree", "add", outside], [shim, await globalRecordingGitDir(), "/usr/bin", "/bin"], tmp, { CDPATH: decoy });
       expect(top).toBe(path.join(tmp, "top"));
       expect(r.stdout.split("\0").slice(0, -1)).toEqual(["-C", "top", "worktree", "add", redirected]);
@@ -870,7 +870,7 @@ describe("git-worktree-shim", () => {
     it.skipIf(!dockerImagePresent("bash:3.2"))(
       "bash:3.2: 'git -C /top worktree add -b feat ../elsewhere/wt' from / redirects and keeps -C and -b (NOT RUN without docker and the bash:3.2 image)",
       async () => {
-        const shim = await ensureGitWorktreeShim(tmp);
+        const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
         const rec = await globalRecordingGitDir();
         const r = spawnSync("docker", [
           "run", "--rm", "--init", "--network", "none",
@@ -899,7 +899,7 @@ describe("git-worktree-shim", () => {
       expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
       await fs.mkdir(path.join(repo, ".git", "info"), { recursive: true }); // the git template may have no info/ (workspaces-o9o.70)
       await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["-C", repo, "worktree", "add", "-b", "feat", "../outside-c"], [shim, realGitDir(), "/usr/bin", "/bin"], tmp);
       expect(r.status, r.stderr).toBe(0);
       const wt = path.join(await fs.realpath(repo), ".rig-worktrees", "outside-c");
@@ -921,7 +921,7 @@ describe("git-worktree-shim", () => {
     }
 
     it("real git: 'git -C - worktree add' where '-' is a directory: '-' is that directory, never OLDPWD, and the outside path is redirected", async () => {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       for (const [k, gitDir] of realGits().entries()) {
         const work = path.join(tmp, `dash-${k}`);
         const repo = path.join(work, "-");
@@ -939,7 +939,7 @@ describe("git-worktree-shim", () => {
     });
 
     it("real git: 'git -C <repo whose path ends in a newline> worktree add <outside>': the newline is kept and the path is redirected under that repo", async () => {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       for (const [k, gitDir] of realGits().entries()) {
         const repo = path.join(tmp, `nl-${k}`, "repo\n");
         await repoAt(repo, gitDir);
