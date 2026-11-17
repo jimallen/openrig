@@ -238,6 +238,19 @@ describe("LaunchRecoveryModal — plan-before-mutation + the LOCK + honesty", ()
     expect(execute.textContent).toContain("Restore original");
   });
 
+  // workspaces-o9o.112: a plan node carries `warning` (o9o.111): apply reports it for this seat while still starting it, today
+  // when the seat's leases could not be read. `rig up --plan` prints it under the seat; the modal showed only the prompt or the
+  // reason and dropped it. It is shown on that seat's row, beside its reason, and on no other row.
+  it("a seat's plan warning (its leases could not be read) is shown on that seat's row, with its reason, and on no other", async () => {
+    const warning = "Node dev.leased: its leases were not judged: the seat's leases could not be read: EACCES: permission denied";
+    await openWith(planWith({ logicalId: "dev.leased", intendedAction: "fresh-primed", tokenState: "missing", freshRequired: true, reason: "no token recorded", warning }));
+    const row = screen.getByTestId("plan-row-dev.leased");
+    expect(row.textContent).toContain("no token recorded");
+    expect(screen.getByTestId("plan-warning-dev.leased").textContent).toBe(`warning: ${warning}`);
+    expect(screen.queryByTestId("plan-warning-orch.advisor")).toBeNull();
+    expect(screen.getByTestId("plan-row-orch.advisor").textContent).not.toContain("warning");
+  });
+
   // OF-62 (review B2): a damaged saved row makes restore refuse the WHOLE rig. The damaged seat's own status is `failed`
   // (which means "removed seat, the rest restore"), so the plan carries a rig-level restoreRefusal the modal must honour.
   const REFUSAL = { reason: "restore would refuse the whole rig and start no seat: its pre-restore snapshot cannot be taken because dev.damaged's saved row is damaged (package_refs is not JSON). Repair the row first.", seats: ["dev.damaged"] };

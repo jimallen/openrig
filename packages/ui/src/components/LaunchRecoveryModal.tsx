@@ -247,6 +247,17 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
                     </TableCell>
                     <TableCell className="py-2 font-mono text-[9px] text-secondary">
                       {s.runtimePrompt ?? s.reason ?? "—"}
+                      {/* workspaces-o9o.112: restore still starts this seat but will report this warning, as `rig up --plan` prints it.
+                          The words carry it, in the primary text colour (the warning amber is ~2:1 on white at 9px, below
+                          WCAG AA); the amber rule only marks it. */}
+                      {s.warning ? (
+                        <div
+                          data-testid={`plan-warning-${s.logicalId}`}
+                          className="mt-1 border-l-2 border-warning pl-1.5 text-on-surface"
+                        >
+                          <span className="font-bold uppercase">warning:</span> {s.warning}
+                        </div>
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))}

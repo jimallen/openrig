@@ -16,6 +16,9 @@ import type { SteeringPayload } from "../src/hooks/useSteering.js";
 import type { NodeDetailData } from "../src/hooks/useNodeDetail.js";
 import type { NodePreviewResponse } from "../src/hooks/useNodePreview.js";
 import type { SliceListResponse } from "../src/hooks/useSlices.js";
+import type { RigStatusObject } from "../src/hooks/useRigStatus.js";
+import type { LaunchPlan } from "../src/hooks/useLaunchPlan.js";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 
 export const rigSummary: RigSummary[] = [
   { id: "rig_alpha", name: "acme-build", nodeCount: 11, hasServices: true, latestSnapshotAt: "2025-09-01T01:40:00.000Z", latestSnapshotId: "snap_a_204" },
@@ -276,4 +279,66 @@ export const artifactsTreeByPath: Record<string, FileEntry[]> = {
   "missions/release-1.0.0/digital-twin": [
     { name: "example-mockup-01", type: "dir", size: null, mtime: "2025-09-01T01:34:00.000Z" },
   ],
+};
+
+// workspaces-o9o.112: GET /api/hosts. Without it the host selection never resolves, and every rig page stays at "Resolving
+// selected host…" (the rig control mounts only once the selection is known and local). The twin is the local host.
+export const hostsResponse: HostsResponse = { ownName: "localhost", selected: "local", hosts: [] };
+
+// workspaces-o9o.112: acme-comms (rig_bravo) has one seat down, so its rig page offers "Restore / launch". Its restore plan
+// starts that seat fresh, and that seat's leases could not be read, so the plan node carries the warning restore would report
+// while still starting it, in the daemon's own words (freshSeatLeaseRefusal + judgeLeases, workspaces-o9o.111).
+const BRAVO_LEASE_WARNING =
+  "Node comms.drafter: its leases were not judged: the seat's leases could not be read: EACCES: permission denied, scandir '/home/x/.openrig/state/seat-leases/drafter-comms@acme-comms'";
+
+export const rigStatusByRig: Record<string, RigStatusObject> = {
+  // acme-build is up: its rig page's control reads "Running" instead of waiting on a status that never comes. The seats are
+  // the three its graph shows; their runtimes are not part of the twin's data, so they stay null.
+  rig_alpha: {
+    rigId: "rig_alpha",
+    rigName: "acme-build",
+    isKernel: false,
+    status: "up",
+    seatsTotal: 3,
+    seatsRunning: 3,
+    recoverable: false,
+    perSeat: [
+      { logicalId: "lead.coordinator", runtime: null, lifecycleState: "running", tokenState: "present", intendedAction: "resume-original", freshRequired: false, blocked: false },
+      { logicalId: "builders.builder2", runtime: null, lifecycleState: "running", tokenState: "present", intendedAction: "resume-original", freshRequired: false, blocked: false },
+      { logicalId: "builders.reviewer1", runtime: null, lifecycleState: "running", tokenState: "present", intendedAction: "resume-original", freshRequired: false, blocked: false },
+    ],
+    src: ["ps-lifecycle"],
+  },
+  rig_bravo: {
+    rigId: "rig_bravo",
+    rigName: "acme-comms",
+    isKernel: false,
+    status: "partial",
+    seatsTotal: 3,
+    seatsRunning: 2,
+    recoverable: true,
+    perSeat: [
+      { logicalId: "comms.lead", runtime: "claude-code", lifecycleState: "running", tokenState: "present", intendedAction: "resume-original", freshRequired: false, blocked: false },
+      { logicalId: "comms.relay", runtime: "codex", lifecycleState: "running", tokenState: "present", intendedAction: "resume-original", freshRequired: false, blocked: false },
+      { logicalId: "comms.drafter", runtime: "pi", lifecycleState: "recoverable", tokenState: "missing", intendedAction: "fresh-primed", freshRequired: true, blocked: false, reason: "no token recorded" },
+    ],
+    src: ["ps-lifecycle", "restore-plan"],
+  },
+};
+
+export const launchPlanByRig: Record<string, LaunchPlan> = {
+  rig_bravo: {
+    status: "plan",
+    mode: "restore",
+    rigId: "rig_bravo",
+    rigName: "acme-comms",
+    snapshot: { id: "snap_b_087", kind: "auto-pre-down", createdAt: "2025-09-01T00:55:00.000Z" },
+    wouldCaptureCurrentState: true,
+    mutated: false,
+    nodes: [
+      { logicalId: "comms.lead", intendedAction: "resume-original", tokenState: "present", freshRequired: false },
+      { logicalId: "comms.relay", intendedAction: "resume-original", tokenState: "present", freshRequired: false },
+      { logicalId: "comms.drafter", intendedAction: "fresh-primed", tokenState: "missing", freshRequired: true, reason: "no token recorded", warning: BRAVO_LEASE_WARNING },
+    ],
+  },
 };

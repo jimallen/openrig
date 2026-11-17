@@ -19,6 +19,9 @@ import {
   steeringPayload,
   missionBriefMd,
   artifactsTreeByPath,
+  rigStatusByRig,
+  launchPlanByRig,
+  hostsResponse,
 } from "./fixtures.js";
 // CORRECTIVE REDESIGN 2026-07-05 — the one-structure review contract fixtures
 // (typed vs useReview.ts). Lookups degrade to a benign 404 on a miss.
@@ -44,6 +47,15 @@ const realFetch: typeof fetch | undefined = globalThis.fetch ? globalThis.fetch.
 function route(pathname: string, search: URLSearchParams): Response {
   if (pathname === "/api/rigs/summary") return json(rigSummary);
   if (pathname === "/api/ps") return json(psEntries);
+  if (pathname === "/api/hosts") return json(hostsResponse);
+  // workspaces-o9o.112: a rig's composed status (its rig page's Restore control) and its read-only restore plan (the
+  // launch/recovery modal). A rig with no fixture falls through to the benign 404.
+  const rigScoped = /^\/api\/rigs\/([^/]+)\/(status|launch-plan)$/.exec(pathname);
+  if (rigScoped) {
+    const rigId = decodeURIComponent(rigScoped[1] ?? "");
+    const body = rigScoped[2] === "status" ? rigStatusByRig[rigId] : launchPlanByRig[rigId];
+    if (body) return json(body);
+  }
   // Settings (useSettings, staleTime:0). workspace.root unblocks the /project surface
   // (useWorkspaceName); preview settings keep the terminal pane consistent.
   if (pathname === "/api/config") {

@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The web UI's restore modal shows a seat's plan warning (workspaces-o9o.112)
+
+- Symptom: a restore plan node can carry `warning`, which restore reports for that seat while still starting it (today: its leases could not be read, so they were not judged; workspaces-o9o.111). `rig up --plan` prints it under the seat, but the web UI's restore modal showed only the seat's prompt or reason and dropped it.
+- Now the modal's Prompt / note cell shows it under that seat's prompt or reason, as `warning: <text>`, and nowhere else. The text is in the primary text colour (about 11.6:1 on the light theme's white, 14.4:1 on dark); the warning amber, about 2:1 at that size, only marks it as a left rule.
+- The UI twin (`npm run twin:build`) answers `/api/hosts`, so its rig pages no longer stay at "Resolving selected host…" and the dashboard no longer shows "host registry unreadable: HTTP 404". It also has a rig status for acme-build and acme-comms, and a restore plan for acme-comms whose fresh seat carries this warning.
+
 ### `rig up --plan` shows the warning apply gives when a seat's leases cannot be read (workspaces-o9o.111)
 
 - Symptom: when a seat that `rig up --existing` would start fresh had a lease file that could not be read, apply warned (`Node <seat>: its leases were not judged: …`) and started the seat, but `--plan` said nothing about it.

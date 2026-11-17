@@ -23,6 +23,9 @@ export interface LaunchPlanNode {
   /** Restore would reattach this seat's adopted session, which rig down left running: nothing is started for it
    *  (intendedAction stays resume-original). Absent on older daemons. */
   reattach?: { sessionId: string; sessionName: string };
+  /** A warning apply would report for this seat while still starting it, in restore's own words (today: its leases could
+   *  not be read, so they were not judged; workspaces-o9o.111). Absent: none, or an older daemon. */
+  warning?: string;
 }
 
 export interface LaunchPlan {
