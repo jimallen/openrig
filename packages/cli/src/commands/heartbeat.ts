@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { sharedDocsRoot } from "@openrig/daemon/shared-docs-root";
-import { getOpenRigHome } from "../openrig-compat.js";
+import { resolveSharedDocsRoot as sharedDocsRootByRule } from "../openrig-compat.js";
 import fs from "node:fs";
 import nodePath from "node:path";
 import { Command } from "commander";
@@ -130,7 +129,7 @@ to stalled/unproven owners; it does not modify queue files or reroute work.`);
       const env = deps.env ?? process.env;
       const sharedDocsRoot = deps.sharedDocsRoot ?? resolveSharedDocsRoot(env);
       if (!sharedDocsRoot) {
-        console.error("rig heartbeat: cannot resolve shared-docs root. Set RIGX_SHARED_DOCS_ROOT.");
+        console.error("rig heartbeat: no shared-docs rigs folder. Set OPENRIG_SHARED_DOCS_ROOT to an absolute path.");
         process.exitCode = 1;
         return;
       }
@@ -289,12 +288,10 @@ export async function sendHeartbeatNudges(
   return results;
 }
 
-/** RIGX_SHARED_DOCS_ROOT (the older name) when it holds a rigs folder, else the shared-docs rule (workspaces-o9o.46:
- *  OPENRIG_SHARED_DOCS_ROOT from `env`, else this instance's <OPENRIG_HOME>/shared-docs) when that does. */
+/** The shared-docs tree by the one rule (openrig-compat resolveSharedDocsRoot, workspaces-o9o.46; RIGX_SHARED_DOCS_ROOT is an
+ *  older name inside it), when it holds a rigs folder. */
 function resolveSharedDocsRoot(env: NodeJS.ProcessEnv): string | null {
-  const legacy = env["RIGX_SHARED_DOCS_ROOT"];
-  if (legacy && fs.existsSync(nodePath.join(legacy, "rigs"))) return legacy;
-  const root = sharedDocsRoot({ env, openrigHome: getOpenRigHome() });
+  const root = sharedDocsRootByRule(env);
   return fs.existsSync(nodePath.join(root, "rigs")) ? root : null;
 }
 

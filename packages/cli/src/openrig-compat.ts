@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { legacySharedDocsNotice, sharedDocsRoot } from "@openrig/daemon/shared-docs-root";
+import { legacySharedDocsNotice, resolveSharedDocs } from "@openrig/daemon/shared-docs-root";
 
 const warnedKeys = new Set<string>();
 
@@ -108,13 +108,16 @@ export function getCompatibleOpenRigPath(filename: string): string {
   return primaryPath;
 }
 
-/** workspaces-o9o.46: this instance's shared-docs tree (OPENRIG_SHARED_DOCS_ROOT, else <OpenRig home>/shared-docs), the rule in
- *  shared-docs-root.ts. Says once per process how to keep a tree left at ~/.openrig/shared-docs by a non-default home. */
-export function resolveSharedDocsRoot(): string {
-  const sources = { env: process.env, openrigHome: getOpenRigHome() };
-  const notice = legacySharedDocsNotice({ ...sources, accountHome: homedir() }, existsSync);
-  if (notice) warnOnce("path:shared-docs", notice);
-  return sharedDocsRoot(sources);
+/** workspaces-o9o.46: this instance's shared-docs tree, the one rule in shared-docs-root.ts (an absolute OPENRIG_SHARED_DOCS_ROOT,
+ *  else an absolute RIGX_SHARED_DOCS_ROOT, else <OpenRig home>/shared-docs). Says once per process when a variable is not used,
+ *  and how to keep a tree left at ~/.openrig/shared-docs by a non-default home. */
+export function resolveSharedDocsRoot(env: Record<string, string | undefined> = process.env): string {
+  const sources = { env, openrigHome: getOpenRigHome() };
+  const { root, notices } = resolveSharedDocs(sources);
+  for (const notice of notices) warnOnce(`env:shared-docs:${notice}`, notice);
+  const legacy = legacySharedDocsNotice({ ...sources, accountHome: homedir() }, existsSync);
+  if (legacy) warnOnce("path:shared-docs", legacy);
+  return root;
 }
 
 /** The rigs folder of resolveSharedDocsRoot(). */

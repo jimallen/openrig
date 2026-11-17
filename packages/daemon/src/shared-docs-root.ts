@@ -15,20 +15,38 @@ export interface SharedDocsSources {
   openrigHome: string;
 }
 
-/** The shared-docs root: OPENRIG_SHARED_DOCS_ROOT when set (blank is unset), else `<OpenRig home>/shared-docs`. */
+/** The variables that name the tree, in order: RIGX_SHARED_DOCS_ROOT is the older name, used only when the first is unset. */
+const ROOT_VARIABLES = ["OPENRIG_SHARED_DOCS_ROOT", "RIGX_SHARED_DOCS_ROOT"] as const;
+
+/** The shared-docs root and what to tell the operator about it. The first of ROOT_VARIABLES that is set (blank is unset) names
+ *  the root, if it is an absolute path. A value that is not absolute is not used (review of f4aeb5705: the daemon and each seat
+ *  resolved a relative one against different cwds, so the trust root and the seats' write root differed); it is never resolved
+ *  against a cwd. It is reported, and the default `<OpenRig home>/shared-docs` is used. */
+export function resolveSharedDocs(sources: SharedDocsSources): { root: string; notices: string[] } {
+  const fallback = path.join(sources.openrigHome, "shared-docs");
+  for (const name of ROOT_VARIABLES) {
+    const value = sources.env[name]?.trim();
+    if (!value) continue;
+    if (path.isAbsolute(value)) return { root: value, notices: [] };
+    return { root: fallback, notices: [`Warning: ${name}=${value} is not an absolute path, so it is not used (it would name a different folder from each seat's working folder); the shared-docs tree is ${fallback}.`] };
+  }
+  return { root: fallback, notices: [] };
+}
+
+/** The shared-docs root (resolveSharedDocs without its notices). */
 export function sharedDocsRoot(sources: SharedDocsSources): string {
-  return sources.env["OPENRIG_SHARED_DOCS_ROOT"]?.trim() || path.join(sources.openrigHome, "shared-docs");
+  return resolveSharedDocs(sources).root;
 }
 
 /** Before workspaces-o9o.46 the tree was `<account home>/.openrig/shared-docs` whatever OPENRIG_HOME said. On a box with a
  *  non-default home that still has its tree there and none in the new place, say how to keep it. Nothing is moved or copied.
- *  Null when OPENRIG_SHARED_DOCS_ROOT is set, the home is the default, the new tree exists, or there is no old one. */
+ *  Null when a variable names the tree, the home is the default, the new tree exists, or there is no old one. */
 export function legacySharedDocsNotice(
   sources: SharedDocsSources & { accountHome: string }, exists: (p: string) => boolean,
 ): string | null {
-  if (sources.env["OPENRIG_SHARED_DOCS_ROOT"]?.trim()) return null;
-  const legacy = path.join(sources.accountHome, ".openrig", "shared-docs");
   const current = sharedDocsRoot(sources);
+  if (current !== path.join(sources.openrigHome, "shared-docs")) return null; // a variable names the tree on purpose
+  const legacy = path.join(sources.accountHome, ".openrig", "shared-docs");
   // With the default home `current` IS `legacy`, so it exists exactly when the old one does: no separate check is needed.
   if (exists(current) || !exists(legacy)) return null;
   return `Warning: the shared-docs tree now follows OPENRIG_HOME (${current}), which does not exist; one exists at ${legacy}. `

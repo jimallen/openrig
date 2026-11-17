@@ -107,3 +107,34 @@ describe("o9o.46: a box with a non-default home and its tree still at ~/.openrig
     warn.mockRestore();
   });
 });
+
+// Review of f4aeb5705 (verify-sec), finding 1: a relative OPENRIG_SHARED_DOCS_ROOT was used as is, so the daemon (trust root,
+// from its cwd) and each Codex seat (--add-dir, from the seat's cwd) resolved different trees. A value that is not absolute
+// is not used: one warning naming the variable, then the default. It is never resolved against a cwd.
+describe("o9o.46 (review): a shared-docs root variable that is not absolute is not used", () => {
+  it.each(["OPENRIG_SHARED_DOCS_ROOT", "RIGX_SHARED_DOCS_ROOT"])("a relative %s gives the default <OPENRIG_HOME>/shared-docs and one warning naming it", async (name) => {
+    const { instanceHome } = scratchInstance();
+    vi.stubEnv(name, "relative-docs");
+    vi.resetModules();
+    const { resolveSharedDocsRoot } = await import("../src/openrig-compat.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(resolveSharedDocsRoot()).toBe(path.join(instanceHome, "shared-docs"));
+    resolveSharedDocsRoot();
+    // Exactly one "not used" notice for the variable (the legacy-tree notice may also name OPENRIG_SHARED_DOCS_ROOT as the remedy).
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith(`Warning: ${name}=`) && m.includes("not an absolute path"))).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it("an absolute RIGX_SHARED_DOCS_ROOT is the older name of the same setting, used only when OPENRIG_SHARED_DOCS_ROOT is unset", async () => {
+    scratchInstance();
+    const legacy = temp("o9o46-rigx-");
+    const named = temp("o9o46-named-");
+    vi.stubEnv("RIGX_SHARED_DOCS_ROOT", legacy);
+    vi.resetModules();
+    const compat = await import("../src/openrig-compat.js");
+    expect(compat.resolveSharedDocsRoot()).toBe(legacy);
+    vi.stubEnv("OPENRIG_SHARED_DOCS_ROOT", named);
+    expect(compat.resolveSharedDocsRoot()).toBe(named);
+  });
+});
+

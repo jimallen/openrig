@@ -87,3 +87,37 @@ describe("o9o.46: the CLI tells a box with a non-default home how to keep its ol
     expect(existsSync(join(operatorHome, ".openrig", "shared-docs", "rigs"))).toBe(true);
   });
 });
+
+// Review of f4aeb5705 (verify-sec): finding 1 for the CLI's resolver, and finding 2, rig heartbeat's own selector, which let
+// RIGX_SHARED_DOCS_ROOT win over OPENRIG_SHARED_DOCS_ROOT. Heartbeat now takes the one rule and nothing else.
+describe("o9o.46 (review): the CLI takes the same one rule", () => {
+  it("a relative OPENRIG_SHARED_DOCS_ROOT is not used by the CLI either", async () => {
+    const { instanceHome } = scratchInstance();
+    vi.stubEnv("OPENRIG_SHARED_DOCS_ROOT", "relative-docs");
+    vi.resetModules();
+    const { resolveSharedDocsRoot: resolve } = await import("../src/openrig-compat.js");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(resolve()).toBe(join(instanceHome, "shared-docs"));
+  });
+
+  it("rig heartbeat with both variables set reads OPENRIG_SHARED_DOCS_ROOT's tree, not RIGX_SHARED_DOCS_ROOT's", async () => {
+    scratchInstance();
+    const configured = temp("o9o46-configured-");
+    const legacy = temp("o9o46-legacy-");
+    writeQueue(configured, "configured-item");
+    writeQueue(legacy, "legacy-item");
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a) => { logs.push(a.join(" ")); });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitBefore = process.exitCode;
+    try {
+      await heartbeatCommand({ env: { OPENRIG_SHARED_DOCS_ROOT: configured, RIGX_SHARED_DOCS_ROOT: legacy }, now: () => new Date("2026-04-24T12:00:00Z") })
+        .parseAsync(["node", "rig", "--rig", "alpha", "--json"]);
+    } finally {
+      process.exitCode = exitBefore;
+    }
+    const report = JSON.parse(logs[0] ?? "{}") as { items?: Array<{ id: string }> };
+    expect(report.items?.map((i) => i.id)).toEqual(["configured-item"]);
+  });
+});
+
