@@ -210,6 +210,19 @@ describe.skipIf(!HC)("hc scratch against a real private core", () => {
     expect(s.session).not.toBe("default");
   });
 
+  it("o9o.77: a seat's PATH head (its git worktree shim, its own rig) is not part of the core's PATH", () => {
+    const seatHome = mkdtempSync(join(tmpdir(), "o9o77-seat-"));
+    const rigBin = join(seatHome, ".openrig", "rig-bin");
+    const seatBin = join(seatHome, ".openrig", "run", "seat-bin", "e".repeat(64));
+    try {
+      const s = startHcScratch({ baseEnv: { PATH: [seatBin, rigBin, PATH].join(":") } });
+      scratches.push(s);
+      expect((s.env.PATH ?? "").split(":").filter((d) => d === rigBin || d === seatBin)).toEqual([]);
+    } finally {
+      rmSync(seatHome, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(!hasProcFs())("the core process itself carries only the stated env (read from /proc)", () => {
     const s = startHcScratch({ baseEnv: { PATH, DOCKER_HOST: "tcp://leak", HC_TERMINAL_ID: "t9", TYPESAFE_API_KEY: "k" } });
     scratches.push(s);

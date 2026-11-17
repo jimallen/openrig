@@ -12,6 +12,7 @@
 // reservation and the bind.
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { withoutSeatPath } from "../../../../scripts/seat-path.mjs";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -109,8 +110,11 @@ function canonicalSocketUnder(socket: string, home: string): boolean {
 /** The allow-listed names of `parent` (TEST_DAEMON_INHERITED_ENV and LC_*), and nothing else. Shared by every test helper that
  *  starts a daemon, CLI or seat from a caller's env (testDaemonEnv here; prepareHermeticEnv's scaffold, workspaces-o9o.66). */
 export function inheritedTestEnv(parent: Record<string, string | undefined>): Record<string, string | undefined> {
-  return Object.fromEntries(Object.entries(parent).filter(([name]) =>
+  const kept = Object.fromEntries(Object.entries(parent).filter(([name]) =>
     TEST_DAEMON_INHERITED_ENV.includes(name) || name.startsWith(INHERITED_ENV_PREFIX)));
+  // workspaces-o9o.77: never a seat's PATH head (its git worktree shim, its own rig), whoever the caller is.
+  if (kept["PATH"] !== undefined) kept["PATH"] = withoutSeatPath(kept["PATH"]);
+  return kept;
 }
 
 /** The HOME a test daemon on OpenRig home `home` gets: `<home>-user-home`, beside it (see testDaemonEnv). */

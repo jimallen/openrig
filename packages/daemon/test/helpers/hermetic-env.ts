@@ -28,6 +28,7 @@ import { delimiter, join } from "node:path";
 import { resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { startHcScratch, type HcScratch } from "./hc-scratch.js";
 import { inheritedTestEnv, stateRoutingName } from "./daemon-entrypoint.js";
+import { withoutSeatPath } from "../../../../scripts/seat-path.mjs";
 import { hasProcFs, reapWhenOwnerDies, stopOwnedTmuxServerSync } from "./orphan-reaper.js";
 
 /**
@@ -374,7 +375,8 @@ export function prepareHermeticEnv(opts: PrepareHermeticEnvOptions = {}): Hermet
 
   // Test-only command seam: every child `tmux` call gets one explicit private
   // socket. TMUX_TMPDIR remains for compatibility, but is never the selector.
-  const originalPath = baseEnv.PATH ?? process.env.PATH ?? "";
+  // workspaces-o9o.77: without a seat's PATH head (its git worktree shim, its own rig).
+  const originalPath = withoutSeatPath(baseEnv.PATH ?? process.env.PATH ?? "") ?? "";
   removeRootOnFailure(() => writeFileSync(
     tmuxWrapperPath,
     `#!/usr/bin/env node

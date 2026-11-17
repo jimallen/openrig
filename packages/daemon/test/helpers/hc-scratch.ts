@@ -43,6 +43,7 @@ import { tmpdir } from "node:os";
 import { basename, join, relative, isAbsolute } from "node:path";
 import { registerHcScratchRoot } from "../../../../test/hc-scratch-tripwire.js";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
+import { withoutSeatPath } from "../../../../scripts/seat-path.mjs";
 import {
   canSweepEnviron, hasProcFs, identityOf, pidsWithEnv, reapWhenOwnerDies, sameProcess, type ProcessIdentity,
 } from "./orphan-reaper.js";
@@ -274,7 +275,7 @@ function askingTestFile(): string | undefined {
 
 /** The `hc` on PATH, or null (a suite skips on null). */
 export function findHc(env: EnvLike = process.env): string | null {
-  const out = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8", env: { PATH: env.PATH ?? process.env.PATH ?? "" } });
+  const out = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8", env: { PATH: withoutSeatPath(env.PATH ?? process.env.PATH ?? "") ?? "" } });
   const path = out.stdout.trim();
   return path.length > 0 ? path : null;
 }
@@ -324,7 +325,7 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
 
   // BUILT, not copied: PATH and nothing else. A seat's HC_* names, DOCKER_HOST, credentials: none of it reaches the core.
   const env: NodeJS.ProcessEnv = {
-    PATH: baseEnv.PATH ?? process.env.PATH ?? "",
+    PATH: withoutSeatPath(baseEnv.PATH ?? process.env.PATH ?? "") ?? "", // workspaces-o9o.77: never a seat's PATH head
     HOME: dirs.home,
     HC_SESSION: session,
     XDG_CONFIG_HOME: dirs.config,

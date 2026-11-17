@@ -267,8 +267,9 @@ test("Plain B keeps guard enforcement out of root test:repo while fixture tests 
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   const command = pkg.scripts["test:repo"];
 
-  // Packaging tests rebuild daemon/dist while other script tests import it.
-  assert.match(command, /node --test --test-concurrency=1 scripts\/\*\.test\.mjs/);
+  // Packaging tests rebuild daemon/dist while other script tests import it. (workspaces-o9o.77: one --import preload may sit
+  // before the files; it drops a seat's PATH head, scripts/seat-path-preload.mjs.)
+  assert.match(command, /node --test --test-concurrency=1 (?:--import \S+ )?scripts\/\*\.test\.mjs/);
   assert.doesNotMatch(command, /node scripts\/check-internal-leak-guard\.mjs/);
 });
 

@@ -30,6 +30,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll } from "vitest";
+import { withoutSeatPath } from "../scripts/seat-path.mjs";
+
+// workspaces-o9o.77: a suite run from a seat finds the seat's git worktree shim and its own `rig` first on PATH; drop both, so a
+// run from a seat equals one from a plain shell (scripts/seat-path.mjs).
+if (process.env["PATH"] !== undefined) process.env["PATH"] = withoutSeatPath(process.env["PATH"]);
 
 // Scrub inherited instance selectors before product modules capture their defaults.
 // Tests can still set explicit overrides after setup; test/provider opt-in flags
