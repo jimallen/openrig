@@ -654,7 +654,7 @@ release rather than from the repository.
         } else if (res.data["wouldCaptureCurrentState"] === true) {
           console.log(`Snapshot: none usable — apply would first capture current DB state as an auto-rehydrate snapshot.`);
         }
-        const planNodes = (res.data["nodes"] as Array<{ logicalId: string; intendedAction: string; reattach?: { sessionName: string }; reason?: string; tokenState?: string; provenance?: string | null; lastVerified?: string | null; freshRequired?: boolean; runtimePrompt?: string; wouldRefuse?: string }>) ?? [];
+        const planNodes = (res.data["nodes"] as Array<{ logicalId: string; intendedAction: string; reattach?: { sessionName: string }; reason?: string; tokenState?: string; provenance?: string | null; lastVerified?: string | null; freshRequired?: boolean; runtimePrompt?: string; wouldRefuse?: string; warning?: string }>) ?? [];
         for (const n of planNodes) {
           // OF-163: a seat apply would reattach (its adopted session left running by rig down) is named as such.
           console.log(`  ${n.logicalId}: ${n.reattach ? "reattach" : n.intendedAction}${n.reason ? ` — ${n.reason}` : ""}`);
@@ -670,6 +670,8 @@ release rather than from the repository.
           }
           // OF-32 follow-up: a seat listed with --fresh that apply would refuse before launching it, in restore's own words.
           if (n.wouldRefuse) console.log(`      would be refused: Fresh start refused: ${n.wouldRefuse} No session would be started.`);
+          // workspaces-o9o.111: a warning apply would report for this seat (e.g. its leases could not be read), in restore's words.
+          if (n.warning) console.log(`      warning: ${n.warning}`);
         }
         const refusal = res.data["restoreRefusal"] as { reason: string; seats: string[] } | undefined;
         if (refusal) console.log(`Restore would be refused for the whole rig: ${refusal.reason}`);

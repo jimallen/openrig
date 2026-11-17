@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### `rig up --plan` shows the warning apply gives when a seat's leases cannot be read (workspaces-o9o.111)
+
+- Symptom: when a seat that `rig up --existing` would start fresh had a lease file that could not be read, apply warned (`Node <seat>: its leases were not judged: …`) and started the seat, but `--plan` said nothing about it.
+- Now the plan carries the same warning on that seat (`warning` on the plan node, from every route that plans a restore), and `rig up --plan` prints it under the seat. Nothing else in the plan changes.
+
 ### `npm test` runs the web UI suite too (workspaces-o9o.107)
 
 - Symptom: `packages/ui`'s 203 test files ran in no local gate and no release run. `npm test` (`test:workspaces`) named only daemon, cli and tui, and `scripts/gate-tiers.mjs` used the same three.

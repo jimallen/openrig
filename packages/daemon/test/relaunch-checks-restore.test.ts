@@ -133,4 +133,33 @@ describe("o9o.71: rig up --existing --fresh judges each fresh seat's leases", ()
     expect(started).toContain(`dev-qa@${rig.name}`);
     expect(seatRow(applied, "dev.impl")).toMatchObject({ status: "failed", errorCode: "relaunch_check_held" });
   });
+
+  /** Every string in an answer that carries the given words, wherever the route puts it. */
+  function stringsWith(answer: unknown, words: string): string[] {
+    if (typeof answer === "string") return answer.includes(words) ? [answer] : [];
+    if (Array.isArray(answer)) return answer.flatMap((item) => stringsWith(item, words));
+    if (answer && typeof answer === "object") return Object.values(answer).flatMap((value) => stringsWith(value, words));
+    return [];
+  }
+
+  // workspaces-o9o.111: leases that cannot be read are a warning apply reports and still starts the seat; the plan carries the same
+  // warning on that seat, so plan and apply agree on it too.
+  it.each(routes)("%s: --plan carries the unreadable-leases warning apply reports, on that seat only", async (_route, up) => {
+    const { rig } = seed(`warn-rig-${_route.length}`);
+    const dir = nodePath.join(leaseRoot, encodeURIComponent(`dev-impl@${rig.name}`));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(nodePath.join(dir, "broken.json"), "{}");
+
+    const plan: { nodes: Array<{ logicalId: string; intendedAction: string; warning?: string }> } =
+      await (await up(rig, { freshLogicalIds: ["dev.impl", "dev.qa"], plan: true })).json();
+    const forecast = Object.fromEntries(plan.nodes.map((node) => [node.logicalId, node]));
+    expect(forecast["dev.impl"]).toMatchObject({ intendedAction: "fresh-primed" });
+    expect(forecast["dev.qa"]).toMatchObject({ intendedAction: "fresh-primed" });
+    expect(forecast["dev.qa"]!.warning).toBeUndefined();
+
+    const applied: unknown = await (await up(rig, { freshLogicalIds: ["dev.impl", "dev.qa"] })).json();
+    const reported = stringsWith(applied, "its leases were not judged");
+    expect(reported).toHaveLength(1);
+    expect(forecast["dev.impl"]!.warning).toBe(reported[0]);
+  });
 });

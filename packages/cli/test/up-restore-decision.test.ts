@@ -613,6 +613,31 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(output).toContain("No changes made.");
   });
 
+  // workspaces-o9o.111: a warning apply would report for a seat (its leases could not be read) is printed under that seat.
+  it("--plan prints a seat's warning the daemon forecast, and nothing for a seat without one", async () => {
+    const warning = "Node dev.impl: its leases were not judged: a lease file could not be read";
+    respond = () => ({
+      status: "plan", mode: "restore", rigId: "rig-1", rigName: "myrig", snapshot: null, wouldCaptureCurrentState: true,
+      nodes: [
+        { logicalId: "dev.impl", intendedAction: "fresh-primed", reason: "listed in --fresh", warning },
+        { logicalId: "dev.qa", intendedAction: "fresh-primed", reason: "listed in --fresh" },
+      ],
+      mutated: false,
+    });
+
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan", "--fresh", "dev.impl", "dev.qa"]);
+    });
+
+    const output = logs.join("\n");
+    const implLine = logs.findIndex((line) => line.startsWith("  dev.impl:"));
+    const qaLine = logs.findIndex((line) => line.startsWith("  dev.qa:"));
+    const warningLine = logs.indexOf(`      warning: ${warning}`);
+    expect(warningLine).toBeGreaterThan(implLine);
+    expect(warningLine).toBeLessThan(qaLine);
+    expect(output.match(/warning: /g)).toHaveLength(1);
+  });
+
   // OF-62 (review B2): a rig-level refusal (a damaged saved row) is printed, once, before "No changes made."
   it("--plan prints the rig-level refusal the daemon reports, and nothing when there is none", async () => {
     const plan = (extra: Record<string, unknown>) => ({

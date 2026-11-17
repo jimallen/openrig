@@ -69,6 +69,9 @@ export interface RestorePlanPreviewNode {
    *  node carries it. Restore's pre-restore snapshot refuses the whole rig on it, so the plan does not forecast a
    *  start for this seat. Absent: the row is readable. */
   savedRowDamage?: string[];
+  /** workspaces-o9o.111: a warning apply would report for this seat while still starting it, in restore's own words (today: its
+   *  leases could not be read, so they were not judged). Absent: none. */
+  warning?: string;
 }
 
 export interface RestorePlanPreview {
@@ -299,12 +302,17 @@ export function buildRestorePlanPreview(
     // workspaces-o9o.71: a seat restore would start fresh (not resume, not skip) is judged for a held lease by restore's own function:
     // restore reports it failed (relaunch_check_held) and starts nothing for it, so the plan says so too.
     // "fresh-primed" is exactly the seats restore starts fresh (a resumed seat is "resume-original"), except a skipped one, which starts nothing.
+    // workspaces-o9o.111: leases that cannot be read are a warning restore reports while it still starts the seat, so the plan
+    // carries the same words on that seat.
+    let warning: string | undefined;
     if (leaseJudge && intendedAction === "fresh-primed" && outcome.kind !== "skip_restoring") {
       const judged = leaseJudge(logicalId);
       if (judged && "refusal" in judged) {
         intendedAction = "awaiting-decision";
         reason = judged.refusal;
         restoreStatus = "failed";
+      } else if (judged) {
+        warning = judged.warning;
       }
     }
     // OPR.0.4.3.20 FR-6 — per-seat token state (read-only), derived from the
@@ -329,6 +337,7 @@ export function buildRestorePlanPreview(
       ...(runtimePrompt ? { runtimePrompt } : {}),
       // Only a seat that is actually listed can be refused (a refusal for an unlisted seat is never predicted).
       ...(freshRequested && refusals.has(logicalId) ? { wouldRefuse: refusals.get(logicalId)! } : {}),
+      ...(warning ? { warning } : {}),
     };
   };
   const resolveOccupant = (savedNodeId: string, nodeId: string): ActiveOccupantResolution<PreviewSessionRow> => snapshot
