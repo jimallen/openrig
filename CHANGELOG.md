@@ -16,6 +16,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now the served `suffix` is a redacted view at raw offsets. `totalBytes` and `sinceBytes` still address the record's bytes on disk (`rig walk` takes every offset from `totalBytes`, never from the text). Only complete lines are served, so a line still being written, or one cut by the 8 MiB cap, is held back. Every string in a JSON line is redacted with the shared transcript policy, and a line that is not JSON is redacted as text.
 - `rig walk` recognises a piece that holds a secret-shaped string in its redacted form, and still in its raw form when it talks to an older daemon.
 - Not in this change: by default the terminal routes, this one included, take no bearer token, while the default bind includes the tailnet when it is active. That config policy is filed as workspaces-o9o.78.
+
 ### Pane evidence uses the one transcript redaction list (workspaces-o9o.48)
 
 - Symptom: launch-failure pane text (restore attention evidence, resume-failure quotes, runner ERROR lines) had a redaction list of its own. Its NAME=value rule redacted any value after a name ending in `KEY` or `TOKEN`, in any case, so it ate prose and code (`the key: ensure tests pass` became `the key: [REDACTED] tests pass`, and so did `{ key: value }`, `MONKEY=`, `SORT_KEY=` and `primary_key:`). It also missed the JSON form `"client_secret": "…"`.
