@@ -1,4 +1,5 @@
 import { TRANSPORT_BROADCAST_CONCURRENCY } from "../transport-budget.js";
+import type { SeatOpenCallsSource } from "./codex-open-calls.js";
 import { CODEX_TURN_STATUS_PATTERN } from "./codex-pane-patterns.js";
 import type { ClaudeNativeInbox } from "./claude-native-inbox.js";
 import { randomUUID } from "node:crypto";
@@ -1212,6 +1213,8 @@ interface SessionTransportDeps {
   hcDelivery?: HcSeatDelivery;
   /** OF-267 (B): a Pi seat's herdr-core terminal status, to tell a silent tool call from a lost turn in the "not yet received" answer. */
   seatTerminalStatus?: SeatTerminalStatusReader;
+  /** workspaces-o9o.31: a Codex seat's open tool calls, from its rollout (Codex relays no tool hook). Absent = no tool shown for Codex. */
+  codexOpenCalls?: SeatOpenCallsSource;
 }
 
 /** What the transport needs to write to an hc seat: HcDelivery. One call is paste and submit as one `terminal.send`,
@@ -1327,6 +1330,7 @@ export class SessionTransport {
   private runnerSendReadiness?: SessionTransportDeps["runnerSendReadiness"];
   private hcDelivery?: HcSeatDelivery;
   private seatTerminalStatus?: SeatTerminalStatusReader;
+  private codexOpenCalls?: SeatOpenCallsSource;
 
   constructor(deps: SessionTransportDeps) {
     this.db = deps.db;
@@ -1347,6 +1351,7 @@ export class SessionTransport {
     this.runnerSendReadiness = deps.runnerSendReadiness;
     this.hcDelivery = deps.hcDelivery;
     this.seatTerminalStatus = deps.seatTerminalStatus;
+    this.codexOpenCalls = deps.codexOpenCalls;
   }
 
   /** Freeze the registration and binding before asking tmux about this name. */
@@ -1775,7 +1780,8 @@ export class SessionTransport {
       const status = resolved ? (this.db.prepare("SELECT status FROM sessions WHERE id = ?").get(resolved.sessionId) as { status: string } | undefined)?.status : undefined;
       if (status !== "running") return undefined;
       const runtime = resolved?.runtime ?? null;
-      const fromHooks = deriveSeatPosture(store.getLatestForNode({ sessionName, now }), runtime, now, store.openToolCalls({ sessionName }));
+      const openCalls = runtime === "codex" ? this.codexOpenCalls?.openToolCalls({ sessionName }) ?? [] : store.openToolCalls({ sessionName });
+      const fromHooks = deriveSeatPosture(store.getLatestForNode({ sessionName, now }), runtime, now, openCalls);
       return await refineSeatPosture(fromHooks, runtime, sessionName, this.seatTerminalStatus, now);
     } catch {
       return undefined;

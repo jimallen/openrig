@@ -194,6 +194,8 @@ export interface AppDeps {
   seatActivityService?: import("./domain/seat-activity-service.js").SeatActivityService;
   /** OF-267 (B): reads a Pi seat's herdr-core terminal status for the busy report in `rig ps` (absent without an hc core). */
   seatTerminalStatus?: import("./domain/seat-posture.js").SeatTerminalStatusReader;
+  /** workspaces-o9o.31: a Codex seat's open tool calls, from its rollout, for the busy report in `rig ps` and the node views. */
+  codexOpenCalls?: import("./domain/codex-open-calls.js").SeatOpenCallsSource;
   /** 5b82324b — the structural pane-activity cache; feeds attachAgentActivity so ACTIVITY is real. */
   seatStructuralActivityService?: import("./domain/seat-structural-activity-service.js").SeatStructuralActivityService;
   /** OPR.0.4.3.19 — periodic liveness identity reconciler (started post-bind). */
@@ -642,6 +644,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("seatActivityService" as never, deps.seatActivityService);
     c.set("seatStructuralActivityService" as never, deps.seatStructuralActivityService);
     c.set("seatTerminalStatus" as never, deps.seatTerminalStatus);
+    c.set("codexOpenCalls" as never, deps.codexOpenCalls);
     c.set("activityHookToken" as never, deps.activityHookToken);
     c.set("serviceOrchestrator" as never, deps.serviceOrchestrator);
     c.set("composeAdapter" as never, deps.composeAdapter);

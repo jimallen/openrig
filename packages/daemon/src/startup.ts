@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { CodexRolloutOpenCalls } from "./adapters/codex-rollout-open-calls.js";
 import { wirePostRestartPrompt, type PostRestartWiringOptions } from "./domain/post-restart-wiring.js";
 import { resolveSessionNodeId } from "./domain/queue-owner.js";
 import { isSessionNameRunning, resolveRunningSeat } from "./domain/latest-session-name-match.js";
@@ -1361,14 +1362,18 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
   const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
   // Seat Messaging: one setting, read at boot, default on. Off, no pump and no health source exist, and every path is as it was.
+  /** A Codex seat's rollout: the current thread's file, by the seat's resume token. Shared by its message gate and its open-call read. */
+  const codexRolloutOf = (seat: string): string | null => {
+    const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? AND resume_token IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string } | undefined;
+    return row ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
+  };
+  /** workspaces-o9o.31: Codex relays no tool hook, so a Codex seat's running tool is read from its rollout. */
+  const codexOpenCalls = new CodexRolloutOpenCalls(codexRolloutOf);
   const localSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
     db, rows: seatMessages, hookStore: new HookSeenStore(seatGateRoot(OPENRIG_HOME)), stateRoots: { pi: piStateRoot, omp: ompStateRoot },
     foregroundGroup: foregroundGroupPrograms, client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: transcriptHasPrompt,
     bodyGraceMs: opts?.seatGateBodyGraceMs,
-    rolloutOf: (seat) => {
-      const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? AND resume_token IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string } | undefined;
-      return row ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
-    },
+    rolloutOf: codexRolloutOf,
     input: {
       submitText: async (seat, text) => {
         const sent = await hcAdapter.submitText(seat, text);
@@ -1638,6 +1643,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     seatActivityService,
     seatStructuralActivityService,
     seatTerminalStatus,
+    codexOpenCalls,
     seatIdentityReconciler,
     // OF-286: told when a Pi or OMP seat starts and stops looping on model errors; index.ts starts and stops it.
     seatModelErrorLoopNotifier,
@@ -1671,6 +1677,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         nativeInbox: claudeNativeInbox,
         ...(hcDelivery ? { hcDelivery } : {}),
         ...(seatTerminalStatus ? { seatTerminalStatus } : {}),
+        codexOpenCalls,
         captureObserver: shadow.capture?.observer,
         runnerSendReadiness: runnerSendReadinessFromAdapters(runtimeAdapterMap),
       });

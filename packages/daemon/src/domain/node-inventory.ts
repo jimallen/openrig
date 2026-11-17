@@ -1,4 +1,5 @@
 import type { CaptureObserver, ObservedBinding } from "./capture-observer.js";
+import type { SeatOpenCallsSource } from "./codex-open-calls.js";
 import type Database from "better-sqlite3";
 import { decodeTime } from "ulid";
 import { resolveActiveOccupantRow } from "./active-occupant.js";
@@ -1353,6 +1354,8 @@ export async function attachAgentActivity(
     now?: Date;
     /** OF-267 (B): a Pi seat's herdr-core terminal status, read only for a seat whose hooks left an open turn. */
     seatTerminalStatus?: SeatTerminalStatusReader;
+    /** workspaces-o9o.31: a Codex seat's open tool calls, from its rollout (Codex relays no tool hook). Absent = no tool shown for Codex, as before. */
+    codexOpenCalls?: SeatOpenCallsSource;
     // OPR.0.4.3 healthz-wedge amplification fix: cheap by default. The per-node
     // tmux `capturePaneContent` fallback (probeSessionActivity) is the storm that
     // amplifies fleet-scale under the CLI `rig ps --nodes` fan-out + the graph/nodes
@@ -1601,7 +1604,9 @@ export async function attachAgentActivity(
     const hook = deps.activityStore?.getLatestForNode({ sessionName: entry.canonicalSessionName, now: sampledAt });
     const runtime = entry.runtime ?? null;
     // Capability-checked like heldMessagesFor below: an injected store double without the open-call read keeps the old rule.
-    const openCalls = deps.activityStore?.openToolCalls?.({ sessionName: entry.canonicalSessionName }) ?? [];
+    const openCalls = runtime === "codex"
+      ? deps.codexOpenCalls?.openToolCalls({ sessionName: entry.canonicalSessionName }) ?? []
+      : deps.activityStore?.openToolCalls?.({ sessionName: entry.canonicalSessionName }) ?? [];
     const seatPosture = await refineSeatPosture(deriveSeatPosture(hook, runtime, sampledAt, openCalls), runtime, entry.canonicalSessionName ?? "", deps.seatTerminalStatus, sampledAt);
     const heldMessages = deps.activityStore?.heldMessagesFor?.(entry.canonicalSessionName ?? "", sampledAt) ?? undefined;
     const modelErrorLoop = deps.activityStore?.modelErrorLoopFor?.(entry.canonicalSessionName ?? "", runtime, sampledAt) ?? undefined;
