@@ -175,9 +175,10 @@ node scripts/gate-tiers.mjs --tier 3 --base main -- <your slot or lock wrapper> 
 node scripts/gate-tiers.mjs --tier 2 --base main --list    # print the tier-2 selection only
 ```
 
-**How tier 2 picks tests.** It takes the union of four sets, per package: what `vitest list --changed <merge
+**How tier 2 picks tests.** It takes the union of five sets, per package: what `vitest list --changed <merge
 base>` reaches through the import graph; the test files that name a changed file other than a test; the changed test
-files themselves; and the test files that scan source for a method the diff newly calls. The name match is there
+files themselves; the test files that scan source for a method the diff newly calls; and, when the diff changes any
+non-test source file under `packages/*/src`, the test files that walk a whole source tree. The name match is there
 because census, guard and process-spawning tests read source as text or start it as a process, so no import edge leads
 to them. A name (the file's name without extension) that has a hyphen or 10 or more characters matches anywhere in a
 test file; a shorter one counts only as a file reference (`up.ts`, `hexagonal-baseline.txt`), a quoted name (`"up"`)
@@ -186,11 +187,18 @@ or a path segment (`routes/up`), because a short common word as a substring sele
 (`\.(killSession|respawnPane)\(`, or a quoted `".name("`), and, in a test that reads source, the camelCase names it compares
 (`=== "sendShellCommand"` in an AST census, `.includes("respawnPane")`, a list of names), and selects it when the diff
 adds a `.name(` call in a source file, more often than that file's removed lines had it. A changed `.test.mjs` or
-`.test.js` counts as a test, not as source. Known over-selection, accepted: a `.name(` inside a template string or prose
+`.test.js` counts as a test, not as source. A test's own helpers count as part of it (workspaces-o9o.86): the files it
+imports by a relative path under its package's `test/` folder, one level deep, so `census-tmux-exec-calls`, whose patterns
+and walk live in `test/helpers/tmux-exec-scanner.ts`, is read through its helper. A test, or such a helper, "walks a whole
+source tree" when it lists a directory recursively (an `isDirectory()` recursion, or `readdir` with `recursive: true`)
+and names a source folder (`"../src"`, `"packages/cli/src"`, `"src/domain"`, `join(x, "src")`). Such a scan can be
+broken by a change to any source file, by a bare call (`spawn("tmux")`) neither the name nor the call match sees, so it
+runs on every source change: 32 test files across the three packages when this was written, one of which
+(`adapter-plugin-exec-mode`) walks a fixture of its own and is over-selected. Known over-selection, accepted: a `.name(` inside a template string or prose
 in source still counts as a call, so tier 2 may run a census more often than it needs to. Measured on one diff to `pi-runner.ts`: the import graph reached
 714 of the daemon's 1378 test files, and the name match found 8 more that it missed. A diff to three plugin-vendor
 files reached 51. Tier 2 is an estimate of what a diff reaches, not a proof: a test that depends on a change in a way
-none of the four sets sees is not run. Tier 3 runs everything; run it before review. `--list` prints the selection and needs neither a clean
+none of the five sets sees is not run. Tier 3 runs everything; run it before review. `--list` prints the selection and needs neither a clean
 tree nor a receipt, so a mutation battery can take its file list from it.
 
 **Receipts.** Each run writes `tier-<n>.json` for `HEAD` under `<git common dir>/openrig-gate-tiers/<sha>/` (override
