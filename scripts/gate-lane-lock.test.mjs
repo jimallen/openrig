@@ -6,6 +6,11 @@ import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireGateLane, GATE_LANE_PORT } from "./gate-lane-lock.mjs";
+import { claimTestPort } from "../packages/daemon/test/helpers/test-ports-core.mjs";
+
+// workspaces-o9o.81: each test's lane port is claimed for this process (helpers/test-ports-core.mjs), not a fixed number another run of this
+// file, or anything else on the host, may already hold.
+const [PORT_1, PORT_2, PORT_3, PORT_4, PORT_5, PORT_6] = [await claimTestPort(), await claimTestPort(), await claimTestPort(), await claimTestPort(), await claimTestPort(), await claimTestPort()];
 
 // F1 gate-lane (arch d6a6c1db; mechanism (B) bound-localhost-port, desk-concurred): a machine-wide
 // kernel-released-on-death mutex. Acquire NON-BLOCKING; gate-vs-gate contention HARD-REFUSES naming the
@@ -15,7 +20,7 @@ const info = () => join(mkdtempSync(join(tmpdir(), "gl-")), "holder.json");
 
 test("acquires the lane on a free port + writes holder-info (pid, started-at)", async () => {
   const p = info();
-  const a = await acquireGateLane({ port: 45871, holderInfoPath: p });
+  const a = await acquireGateLane({ port: PORT_1, holderInfoPath: p });
   assert.equal(a.ok, true);
   assert.ok(existsSync(p));
   const h = JSON.parse(readFileSync(p, "utf8"));
@@ -27,9 +32,9 @@ test("acquires the lane on a free port + writes holder-info (pid, started-at)", 
 
 test("gate-vs-gate contention → HARD-REFUSE naming the holder (pid/started-at), non-blocking", async () => {
   const p = info();
-  const a = await acquireGateLane({ port: 45872, holderInfoPath: p });
+  const a = await acquireGateLane({ port: PORT_2, holderInfoPath: p });
   assert.equal(a.ok, true);
-  const b = await acquireGateLane({ port: 45872, holderInfoPath: p });
+  const b = await acquireGateLane({ port: PORT_2, holderInfoPath: p });
   assert.equal(b.ok, false);
   assert.equal(b.reason, "gate-holder");
   assert.equal(b.holder.pid, process.pid);
@@ -40,9 +45,9 @@ test("gate-vs-gate contention → HARD-REFUSE naming the holder (pid/started-at)
 test("FOREIGN process on the port + NO holder-info → FAIL-CLOSED 'foreign-holder' (load-115)", async () => {
   const p = info(); // holder-info absent
   const foreign = net.createServer();
-  await new Promise((r) => foreign.listen(45873, "127.0.0.1", r));
+  await new Promise((r) => foreign.listen(PORT_3, "127.0.0.1", r));
   try {
-    const b = await acquireGateLane({ port: 45873, holderInfoPath: p });
+    const b = await acquireGateLane({ port: PORT_3, holderInfoPath: p });
     assert.equal(b.ok, false);
     assert.equal(b.reason, "foreign-holder");
   } finally {
@@ -53,11 +58,11 @@ test("FOREIGN process on the port + NO holder-info → FAIL-CLOSED 'foreign-hold
 test("P2 exclusivity (no SO_REUSEPORT): a second CONCURRENT bind on the same port MUST fail", async () => {
   // Load-bearing: with SO_REUSEPORT both binds would succeed and the mutex would silently vanish.
   const s1 = net.createServer();
-  await new Promise((r) => s1.listen(45875, "127.0.0.1", r));
+  await new Promise((r) => s1.listen(PORT_5, "127.0.0.1", r));
   const s2 = net.createServer();
   const err = await new Promise((resolve) => {
     s2.once("error", resolve);
-    s2.listen(45875, "127.0.0.1", () => resolve(null));
+    s2.listen(PORT_5, "127.0.0.1", () => resolve(null));
   });
   try {
     assert.ok(err, "second concurrent bind must fail — exclusivity IS the mutex");
@@ -80,17 +85,17 @@ test("P4 best-effort: a failed holder-info write does NOT lose the already-held 
   // Parent path is a FILE, so the holder-info mkdir/write fails — but the port bind still holds the lane.
   const f = join(mkdtempSync(join(tmpdir(), "gl-")), "notadir");
   writeFileSync(f, "x");
-  const a = await acquireGateLane({ port: 45876, holderInfoPath: join(f, "holder.json") });
+  const a = await acquireGateLane({ port: PORT_6, holderInfoPath: join(f, "holder.json") });
   assert.equal(a.ok, true); // lane held despite the failed naming-only write
   await a.release();
 });
 
 test("release frees the lane (kernel-released) so a subsequent acquire succeeds", async () => {
   const p = info();
-  const a = await acquireGateLane({ port: 45874, holderInfoPath: p });
+  const a = await acquireGateLane({ port: PORT_4, holderInfoPath: p });
   assert.equal(a.ok, true);
   await a.release();
-  const b = await acquireGateLane({ port: 45874, holderInfoPath: p });
+  const b = await acquireGateLane({ port: PORT_4, holderInfoPath: p });
   assert.equal(b.ok, true);
   await b.release();
 });
@@ -128,10 +133,7 @@ test("configured gate port does not accept a partial numeric prefix", () => {
 
 test("a local probe connection cannot delay gate release", async () => {
   const root = mkdtempSync(join(tmpdir(), "openrig-lock-probe-"));
-  const reservation = net.createServer();
-  await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
-  const port = reservation.address().port;
-  await new Promise((resolve) => reservation.close(resolve));
+  const port = await claimTestPort();   // claimed, not probed and released (workspaces-o9o.81)
   const lane = await acquireGateLane({ port, holderInfoPath: join(root, "holder.json") });
   assert.equal(lane.ok, true);
   const client = net.connect(port, "127.0.0.1");

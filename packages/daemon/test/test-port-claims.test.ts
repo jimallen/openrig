@@ -14,6 +14,15 @@ const HELPER = resolve(import.meta.dirname, "helpers/test-ports.ts");
 const DAEMON_PKG = resolve(import.meta.dirname, "..");
 const REPO = resolve(DAEMON_PKG, "../..");
 
+/** Rewrites this process's own claim on `port` to a pid that is gone; throws for a claim it does not hold. */
+function makeOwnClaimStale(port: number): void {
+  const file = join(TEST_PORT_CLAIMS_DIR, String(port));
+  const owner = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+  if (owner !== String(process.pid)) throw new Error(`port ${port} is not this process's claim (owner ${owner || "none"})`);
+  const gone = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
+  writeFileSync(file, gone);
+}
+
 /** Another test process: imports the same helper and runs `body` (an async function body with `h` bound to the helper module). */
 function otherProcess(body: string, opts: { keepAlive?: boolean } = {}): Promise<{ out: string; pid: number; code: number | null }> {
   const code = `const h = await import(${JSON.stringify(pathToFileURL(HELPER).href)});\n(async () => { ${body} })().then(` +
@@ -59,13 +68,24 @@ describe("workspaces-o9o.81: a test port is claimed, not probed and released", (
   });
 
   it("a claim whose process is gone is reclaimed", async () => {
-    const port = await probeFreePort();
-    const gone = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
-    writeFileSync(join(TEST_PORT_CLAIMS_DIR, String(port)), gone.stdout);
+    const port = await claimTestPort();   // this process's own claim, taken exclusively: no other process's claim is touched
+    makeOwnClaimStale(port);
     try {
       expect(claimPort(port)).toBe(true);
       expect(readFileSync(join(TEST_PORT_CLAIMS_DIR, String(port)), "utf8")).toBe(String(process.pid));
     } finally { releasePort(port); }
+  });
+
+  // verify-qa FAIL of 33dcd26c0 (fix 1): the reclaim row overwrote <claims>/<port> for a port it had only probed, so it could rewrite a live
+  // process's claim. It now makes only its OWN claim stale, and refuses anyone else's.
+  it("RED (review): making a claim stale refuses a claim this process does not hold (a live process's claim is left alone)", async () => {
+    const port = await probeFreePort();
+    const holder = await otherProcess(`return h.claimPort(${port});`, { keepAlive: true });
+    try {
+      expect(JSON.parse(holder.out)).toBe(true);
+      expect(() => makeOwnClaimStale(port)).toThrow(/not this process's claim/);
+      expect(readFileSync(join(TEST_PORT_CLAIMS_DIR, String(port)), "utf8")).toBe(String(holder.pid));
+    } finally { process.kill(holder.pid, "SIGKILL"); }
   });
 
   it("a process's claims are dropped when it exits", async () => {
@@ -81,52 +101,75 @@ describe("workspaces-o9o.81: a test port is claimed, not probed and released", (
   });
 });
 
-// The census: every place a test reads a port from a server it then closes (so the number goes on to something else, or must stay refused)
-// goes through helpers/test-ports.ts. A server closed in teardown (afterAll, afterEach, a cleanup list, a returned close()) kept its socket
-// while in use and is not counted.
-const LISTEN0 = /listen\(\s*0\b|listen\(\s*\{\s*port:\s*0\b/;
+// The census: every place a test (under packages/*/test or scripts/) reads a port from a server it then closes in the same block, so the
+// number goes on to something else or must stay refused, goes through helpers/test-ports-core.mjs. Two shapes count (verify-qa review,
+// fix 3): nothing but reading the port before the close, or handing the port to a child process (spawn, spawnSync, fork, exec*) before the
+// close. A server closed in teardown (afterAll, afterEach, a cleanup list, a returned close()) kept its socket while in use. A server bound
+// to a fixed port number is counted too. The census's own fixture text is assembled at runtime so it never matches here.
+const LISTEN = "lis" + "ten";
+const LISTEN0 = new RegExp(`${LISTEN}\\(\\s*0\\b|${LISTEN}\\(\\s*\\{\\s*port:\\s*0\\b`);
+const LISTEN_FIXED = new RegExp(`\\.${LISTEN}\\(\\s*[1-9]\\d{3,4}\\b`);
 /** What may sit between the listen and the close of a probe: reading the port, waiting for "listening", checking the address. */
-const PROBE_ONLY = /^\s*$|address\(\)|\.port\b|await once\(\s*\w+,\s*"listening"\)|missing fixture address|^\s*\}\)?\)?;?\s*$|^\s*(srv|server|probe|listener|vacant)\.(once|on)\("error"/;
-/** Lines of `source` (1-based) where a listen(0) server is closed with nothing using it in between: its port number is all it gave. */
+const PROBE_ONLY = /^\s*$|address\(\)|\.port\b|await once\(\s*\w+,\s*"listening"\)|missing fixture address|^\s*\}\)?\)?;?\s*$|^\s*(srv|server|probe|listener|vacant|reservation)\.(once|on)\("error"/;
+const HANDOFF = /\b(spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\(/;
+const SAME_BLOCK_CLOSE = /^\s*(await\s+new Promise(<void>)?\(\(\w+\)\s*=>\s*)?\w+\.close\(|^\s*(srv|server|probe|listener|vacant|reservation)\.close\(|^\s*if \(mode === "stopped"\)/;
+/** Lines of `source` (1-based) where a port leaves through a listen(0) server closed in the same block, or a server binds a fixed port. */
 export function probeThenRelease(source: string): number[] {
   const lines = source.split("\n");
   const hits: number[] = [];
   lines.forEach((line, i) => {
+    if (LISTEN_FIXED.test(line)) { hits.push(i + 1); return; }
     if (!LISTEN0.test(line)) return;
     if (/\.close\(/.test(line)) { hits.push(i + 1); return; }   // closed in the listen callback itself
-    for (let j = i + 1; j < Math.min(lines.length, i + 8); j += 1) {
-      if (/\.close\(/.test(lines[j]!)) { if (/^\s*(await\s+new Promise<void>\(\(\w+\)\s*=>\s*)?\w+\.close\(|^\s*srv\.close\(|^\s*if \(mode === "stopped"\)/.test(lines[j]!)) hits.push(i + 1); return; }
-      if (!PROBE_ONLY.test(lines[j]!)) return;   // the server is used before it closes: it kept its socket while in use
+    let handedOn = false;
+    for (let j = i + 1; j < Math.min(lines.length, i + 30); j += 1) {
+      const next = lines[j]!;
+      if (/\.close\(/.test(next)) { if (SAME_BLOCK_CLOSE.test(next)) hits.push(i + 1); return; }
+      if (HANDOFF.test(next)) { handedOn = true; continue; }
+      if (handedOn) continue;                       // the rest of the child call, up to the close
+      if (!PROBE_ONLY.test(next)) return;           // the server is used before it closes: it kept its socket while in use
     }
   });
   return hits;
 }
 
-/** Sites that close a listen(0) server early on purpose and do not hand the number on, each with why. */
-const ALLOWED: Record<string, string> = {
-  "packages/daemon/test/helpers/test-ports.ts": "the helper itself: it probes, then claims before the number leaves",
-  "packages/daemon/test/test-port-claims.test.ts": "this census's own controls: the probe-then-release shape, as text",
-};
+/** The helper's own probe lines: the only listen(0) servers allowed to close before the number leaves (it claims first). */
+const ALLOWED_LINES: Array<{ file: string; line: string; why: string }> = [
+  { file: "packages/daemon/test/helpers/test-ports-core.mjs", line: `srv.${LISTEN}(0, "127.0.0.1"`, why: "probeFreePort: the claim is taken before the number leaves" },
+  { file: "packages/daemon/test/helpers/test-ports-core.mjs", line: `s.${LISTEN}(0,'127.0.0.1'`, why: "claimTestPortSync's child probe: claimed before it leaves" },
+];
 
-describe("census: no probe-then-release site outside helpers/test-ports.ts", () => {
-  const files = spawnSync("git", ["-C", REPO, "ls-files", "packages/*/test/**", "packages/*/test/*"], { encoding: "utf8" }).stdout
+describe("census: no probe-then-release site outside helpers/test-ports-core.mjs", () => {
+  const files = spawnSync("git", ["-C", REPO, "ls-files", "packages/*/test/**", "packages/*/test/*", "scripts/**", "scripts/*"], { encoding: "utf8" }).stdout
     .split("\n").filter((f) => /\.(ts|mts|cts|js|mjs|cjs)$/.test(f));
 
-  it("the detector sees the shape it is meant to catch (positive control) and leaves a kept server alone (negative control)", () => {
-    const released = ["const srv = createServer();", "srv.listen(0, \"127.0.0.1\", () => {", "  const port = (srv.address() as AddressInfo).port;", "  srv.close(() => resolve(port));", "});"].join("\n");
-    const kept = ["await new Promise((r) => server.listen(0, \"127.0.0.1\", r));", "port = (server.address() as AddressInfo).port;", "});", "afterAll(() => {", "  server.close();", "});"].join("\n");
+  it("the detector sees the shapes it is meant to catch (positive controls) and leaves a kept server alone (negative control)", () => {
+    const released = ["const srv = createServer();", `srv.${LISTEN}(0, "127.0.0.1", () => {`, "  const port = (srv.address() as AddressInfo).port;", "  srv.close(() => resolve(port));", "});"].join("\n");
+    const oneLine = `const p = run("const s=require('node:net').createServer();s.${LISTEN}(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})");`;
+    // verify-qa review fix 3: the port handed to a child while the server is still open, then closed in the same block.
+    const handedOn = [`await new Promise((r) => server.${LISTEN}(0, "127.0.0.1", r));`, "const port = server.address().port;",
+      "const out = spawnSync(process.execPath, [CHILD], {", "  env: { PORT: String(port) },", "});", "await new Promise((r) => server.close(r));"].join("\n");
+    const fixed = `await new Promise((r) => foreign.${LISTEN}(45873, "127.0.0.1", r));`;
+    const kept = [`await new Promise((r) => server.${LISTEN}(0, "127.0.0.1", r));`, "port = (server.address() as AddressInfo).port;", "});", "afterAll(() => {", "  server.close();", "});"].join("\n");
+    const used = [`await new Promise((r) => server.${LISTEN}(0, "127.0.0.1", r));`, "const port = server.address().port;", "const result = await waitForKernelReady(url(port));", "server.close();"].join("\n");
     expect(probeThenRelease(released)).toEqual([2]);
-    // The one-line form delivery-review's freePort had: listen and close in one statement.
-    expect(probeThenRelease("const p = run(\"const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})\");")).toEqual([1]);
+    expect(probeThenRelease(oneLine)).toEqual([1]);
+    expect(probeThenRelease(handedOn)).toEqual([1]);
+    expect(probeThenRelease(fixed)).toEqual([1]);
     expect(probeThenRelease(kept)).toEqual([]);
+    expect(probeThenRelease(used)).toEqual([]);
   });
 
-  it("every early-closed listen(0) server is the helper's or allow-listed with a reason", () => {
-    const sites = files.flatMap((f) => probeThenRelease(readFileSync(join(REPO, f), "utf8")).map((line) => ({ f, line })));
+  it("every early-closed listen(0) server, and every fixed-port server, is the helper's own probe", () => {
+    const sites = files.flatMap((f) => {
+      const lines = readFileSync(join(REPO, f), "utf8").split("\n");
+      return probeThenRelease(lines.join("\n")).map((n) => ({ f, n, text: lines[n - 1]! }));
+    });
     const listening = files.filter((f) => LISTEN0.test(readFileSync(join(REPO, f), "utf8"))).length;
-    expect(files.length, "test files read").toBeGreaterThan(1000);
+    expect(files.length, "files read").toBeGreaterThan(1000);
+    expect(files.filter((f) => f.startsWith("scripts/")).length, "scripts/ files read").toBeGreaterThan(20);
     expect(listening, "files that listen on port 0 (the population checked)").toBeGreaterThan(100);
-    const stray = sites.filter((s) => !(s.f in ALLOWED)).map((s) => `${s.f}:${s.line}`);
-    expect(stray, `probe-then-release outside helpers/test-ports.ts: use claimTestPort() (${relative(REPO, HELPER)})`).toEqual([]);
+    const stray = sites.filter((s) => !ALLOWED_LINES.some((a) => a.file === s.f && s.text.includes(a.line))).map((s) => `${s.f}:${s.n}`);
+    expect(stray, `probe-then-release outside the helper: use claimTestPort() (${relative(REPO, HELPER)})`).toEqual([]);
   });
 });

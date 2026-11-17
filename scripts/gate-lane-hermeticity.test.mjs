@@ -10,10 +10,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { claimTestPort } from "../packages/daemon/test/helpers/test-ports-core.mjs";
 
 const GATE_SCRIPT = fileURLToPath(new URL("./gate-lane.mjs", import.meta.url));
 const CONSUMER_SCRIPT = fileURLToPath(new URL("./gate-lane-consume.mjs", import.meta.url));
@@ -65,12 +65,9 @@ function makeRepo({ lockEntries = true, dependencyRoot = "exact" } = {}) {
   return root;
 }
 
+/** The gate's port: claimed for this process, so another test process is not handed it before the gate binds it (workspaces-o9o.81). */
 async function freePort() {
-  const server = net.createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  return claimTestPort();
 }
 
 async function runGate(root) {
