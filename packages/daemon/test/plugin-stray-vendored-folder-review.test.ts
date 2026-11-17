@@ -117,9 +117,7 @@ describe("o9o.44 review 2: the canonical openrig-core folder always wins a confl
 describe("o9o.44 review 3: the selection rule is pure; the scan is an adapter", () => {
   it("selectIgnoredVendoredPlugins decides from in-memory folders, with no filesystem", () => {
     const hook = { identity: '["claude","Stop","","command","x"]', hooksPath: "/nowhere/hooks.json" };
-    const select = (discovery as unknown as { selectIgnoredVendoredPlugins: (f: unknown[]) => Array<{ path: string; keptPath: string }> })
-      .selectIgnoredVendoredPlugins;
-    expect(select([
+    expect(discovery.selectIgnoredVendoredPlugins([
       { entry: "00-stale", pluginPath: "/nowhere/00-stale", manifestNames: ["00-stale"], hooks: [hook] },
       { entry: "openrig-core", pluginPath: "/nowhere/openrig-core", manifestNames: ["openrig-core"], hooks: [hook] },
       { entry: "other", pluginPath: "/nowhere/other", manifestNames: ["other"], hooks: [] },
