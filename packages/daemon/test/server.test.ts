@@ -89,7 +89,7 @@ describe("the web UI page hands the terminal token only to a loopback peer", () 
   });
 
   // workspaces-o9o.78 review F2: `/` (and /index.html) is the page itself, served from the file before the client-route fallback; it gets
-  // the same loopback-only token as any deep link.
+  // the same loopback-only token that a deep link gets.
   it.each(["/", "/index.html"])("the page at %s carries the token for a loopback peer, and none for another device", async (path) => {
     const db = createFullTestDb(); const dir = createTempUiDist(); page(dir);
     const app = createAppWithUiDist(db, dir, { terminalBearerToken: TOKEN });
