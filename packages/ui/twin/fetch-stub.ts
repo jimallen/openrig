@@ -24,6 +24,8 @@ import {
   hostsResponse,
   packageInfoById,
   installsByPackage,
+  packageValidateResult,
+  packagePlanResult,
 } from "./fixtures.js";
 // CORRECTIVE REDESIGN 2026-07-05 — the one-structure review contract fixtures
 // (typed vs useReview.ts). Lookups degrade to a benign 404 on a miss.
@@ -50,6 +52,9 @@ function route(pathname: string, search: URLSearchParams): Response {
   if (pathname === "/api/rigs/summary") return json(rigSummary);
   if (pathname === "/api/ps") return json(psEntries);
   if (pathname === "/api/hosts") return json(hostsResponse);
+  // workspaces-o9o.119: the install flow's validate and plan (POSTs), so the plan table renders every policy status.
+  if (pathname === "/api/packages/validate") return json(packageValidateResult);
+  if (pathname === "/api/packages/plan") return json(packagePlanResult);
   // workspaces-o9o.115: a package page (info + install history). A package with no fixture falls through to the 404.
   const pkgScoped = /^\/api\/packages\/([^/]+)(\/installs)?$/.exec(pathname);
   if (pkgScoped && pkgScoped[1] !== "summary" && pkgScoped[1] !== "installs") {

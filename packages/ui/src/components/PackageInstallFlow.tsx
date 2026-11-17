@@ -112,12 +112,14 @@ function StepIndicator({ currentStep, errorAtStep }: { currentStep: Step; errorA
 }
 
 function policyStatusColor(status: string): string {
+  // workspaces-o9o.119: noop is a step dimmer than deferred and readable: /50 was 2.16:1 (light) and 2.94:1 (dark) on the page;
+  // /90 clears 4.5:1 in both (test/install-plan-noop-contrast.test.ts).
   switch (status) {
     case "approved": return "text-success";
     case "rejected": return "text-warning-ink";
     case "deferred": return "text-foreground-muted";
     case "conflict": return "text-destructive";
-    case "noop": return "text-foreground-muted/50";
+    case "noop": return "text-foreground-muted/90";
     default: return "";
   }
 }

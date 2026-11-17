@@ -363,3 +363,25 @@ export const installsByPackage: Record<string, InstallSummary[]> = {
     { id: "inst_1", packageId: "pkg_relay", targetRoot: "/Users/x/code/workspace", scope: "project", status: "failed", riskTier: "medium", createdAt: "2025-09-01T00:40:00.000Z", appliedAt: null, rolledBackAt: null, appliedCount: 0, deferredCount: null },
   ],
 };
+
+// workspaces-o9o.119: the install flow (/packages/install) driven to its plan: a valid package, then a plan with one entry of every
+// policy status, so the plan table renders each status's colour (the noop one was text-foreground-muted/50).
+export const packageValidateResult = {
+  valid: true,
+  manifest: {
+    name: "comms-relay", version: "1.4.0", summary: "Relay seat and its startup files", runtimes: ["claude-code"],
+    exportCounts: { skills: 2, guidance: 2, agents: 1 }, roles: [], requirements: { cliTools: [], systemPackages: [] },
+  },
+};
+
+export const packagePlanResult = {
+  packageName: "comms-relay", packageVersion: "1.4.0",
+  entries: [
+    { exportType: "skill", exportName: "relay-handoff", classification: "safe_projection", targetPath: ".claude/skills/relay-handoff", deferred: false, policyStatus: "approved" },
+    { exportType: "guidance", exportName: "relay-rules", classification: "managed_merge", targetPath: "CLAUDE.md", deferred: false, policyStatus: "noop" },
+    { exportType: "skill", exportName: "relay-audit", classification: "safe_projection", targetPath: ".claude/skills/relay-audit", deferred: true, deferReason: "role not selected", policyStatus: "deferred" },
+    { exportType: "guidance", exportName: "relay-notes", classification: "managed_merge", targetPath: "AGENTS.md", deferred: false, conflict: { existingPath: "AGENTS.md", reason: "unmanaged content" }, policyStatus: "conflict" },
+    { exportType: "agent", exportName: "relay-seat", classification: "config_mutation", targetPath: ".claude/agents/relay-seat.md", deferred: false, policyStatus: "rejected" },
+  ],
+  actionable: 1, deferred: 1, conflicts: 1, noOps: 1, rejected: 1,
+};

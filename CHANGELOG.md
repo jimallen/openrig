@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### An install plan's no-op entries are readable (workspaces-o9o.119)
+
+- Symptom: in the install plan table a `noop` entry's status was drawn at 50% of the muted ink: measured in a rendered browser, 2.16:1 on the light page and 2.94:1 on the dark one.
+- Now it uses 90%: 4.86:1 (light) and 6.84:1 (dark), still a little dimmer than a deferred entry. The twin now renders the install flow up to its plan, with one entry of every policy status, so the plan table can be checked on screen.
+
 ### Text on green and red fills is readable in both themes (workspaces-o9o.117)
 
 - Symptom: text on a solid success or destructive fill was below 4.5:1. Measured in a rendered browser on the package page: APPLIED 3.19:1 (light) and 1.80:1 (dark), FAILED 1.94:1 and 2.65:1, because those badges inherited the surface text; white on the success fill was 4.01:1 (light) and 2.23:1 (dark), and on the dark destructive fill 3.28:1.
