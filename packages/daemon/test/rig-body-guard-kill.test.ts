@@ -50,6 +50,17 @@ const DENY: Row[] = [
   { kind: "kill-pattern", note: "kill of what pidof finds", cmd: "kill -9 $(pidof node)" },
   { kind: "kill-pattern", note: "pgrep -f piped into xargs kill", cmd: "pgrep -f vitest | xargs kill" },
   { kind: "kill-pattern", note: "pgrep piped into xargs -r kill -9", cmd: "pgrep -u jima node | xargs -r kill -9" },
+  // o9o.108 review (verify-sec2): a target variable assigned in the same command reads as its value
+  { kind: "kill-pattern", note: "pids assigned from pgrep -f, then killed", cmd: "pids=$(pgrep -f vitest); kill $pids" },
+  { kind: "kill-pattern", note: "pids assigned from pidof, then killed", cmd: "pids=$(pidof node); kill $pids" },
+  { kind: "kill-pattern", note: "pids assigned from pgrep in backticks", cmd: "pids=`pgrep -f x`; kill -9 $pids" },
+  { kind: "kill-pattern", note: "pids exported from pgrep", cmd: "export pids=$(pgrep vitest); kill $pids" },
+  { kind: "kill-group", note: "pid=-1 then kill -9 \"$pid\"", cmd: 'pid=-1; kill -9 "$pid"' },
+  { kind: "kill-group", note: "pid=-4242 then kill \"$pid\"", cmd: 'pid=-4242; kill "$pid"' },
+  { kind: "kill-group", note: "pid=0 then kill \"$pid\"", cmd: 'pid=0; kill "$pid"' },
+  { kind: "kill-group", note: "a quoted list holding -1", cmd: 'pids="4242 -1"; kill $pids' },
+  { kind: "kill-group", note: "the assignment inside sh -c", cmd: "sh -c 'pid=-1; kill -9 $pid'" },
+  { kind: "kill-group", note: "the assignment inside eval", cmd: "eval 'p=0; kill ${p}'" },
   // quoting does not hide the program
   { kind: "pkill-f", note: "single-quoted name", cmd: "'pkill' -f vitest" },
   { kind: "pkill-f", note: "double-quoted name", cmd: "\"pkill\" -f vitest" },
@@ -134,6 +145,12 @@ const ALLOW: Row[] = [
   { note: "kill of pgrep anchored to a pidfile", cmd: "kill $(pgrep -F run.pid)" },
   { note: "a signal then -- then a pid", cmd: "kill -9 -- 4242" },
   { note: "kill -l 0 names a signal, it sends nothing", cmd: "kill -l 0" },
+  { note: "kill of an unresolved variable (carried-in pid)", cmd: "kill $pid" },
+  { note: "kill -9 of an unresolved quoted variable", cmd: 'kill -9 "$pid"' },
+  { note: "a variable assigned a plain pid", cmd: 'pid=4242; kill "$pid"' },
+  { note: "a variable signal before a pid", cmd: "sig=-9; kill $sig 4242" },
+  { note: "pids from pgrep anchored to this shell", cmd: "pids=$(pgrep -P $$); kill $pids" },
+  { note: "pids read from a pidfile", cmd: "pids=$(cat run.pid); kill $pids" },
 ];
 
 describe("o9o.108: the guard refuses a kill that is not by PID", () => {

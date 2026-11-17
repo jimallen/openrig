@@ -505,6 +505,8 @@ const NAME_MAX_LEN = 4096;
 const DECLARERS = new Set(["export", "declare", "typeset", "local", "readonly"]);
 const UNKNOWN = "\u0001";
 let ASSIGNS = new Map();
+// o9o.108 review: variables assigned in the same command from a substitution that selects pids by pattern (`pids=$(pgrep -f x); kill $pids`). Flat like ASSIGNS.
+let PATTERN_VARS = new Set();
 
 /** Record the plain NAME=value assignments of these commands (also after export / declare / local / readonly). */
 function collectAssigns(cmds) {
@@ -515,6 +517,7 @@ function collectAssigns(cmds) {
     for (; k < c.words.length && ASSIGN_RE.test(c.words[k].text); k++) {
       const w = c.words[k];
       const eq = w.text.indexOf("=");
+      if (w.expands && w.text[eq - 1] !== "+" && (w.subs || []).some(selectsByPattern)) PATTERN_VARS.add(w.text.slice(0, eq));
       if (w.expands || w.param || w.text[eq - 1] === "+") continue;
       const name = w.text.slice(0, eq);
       const value = w.text.slice(eq + 1);
@@ -617,7 +620,7 @@ function topLevel(args) {
 // quoting or a wrapper the guard reads cannot hide them, and text that only mentions a kill (echo, grep, a commit message) is not one.
 // Refused: pkill -f / --full; pkill with a name pattern or an owner, group or session selector; killall (except listing or help);
 // kill of a negative pid, -1 or 0 (a process group, or every process of the user); kill of what pgrep or pidof selects
-// (`kill $(pgrep -f x)`, `pgrep -f x | xargs kill`). Allowed: kill <pid>, kill %job, kill -l, pkill anchored to a pidfile (-F) or to
+// (`kill $(pgrep -f x)`, `pgrep -f x | xargs kill`), also through a variable assigned in the same command (`pids=$(pgrep -f x); kill $pids`, `pid=-1; kill -9 $pid`). Allowed: kill <pid>, kill %job, kill -l, pkill anchored to a pidfile (-F) or to
 // literal parent pids (-P <pid>), pkill/killall help and listing. Ported from ~/.agents/scripts/bash-guard (pkill_verdict).
 const KILLERS = new Set(["pkill", "killall", "kill"]);
 const PKILL_VALUED_SHORT = new Set("PgGstuUFs".split(""));
@@ -678,6 +681,19 @@ function selectsByPattern(subText) {
   });
 }
 
+/** The variable name when a word is exactly one parameter ($p, ${p}, "$p"), else null. */
+function soleVar(w) {
+  if (!w || !w.param || w.expands) return null;
+  const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$/.exec(w.text);
+  return m ? m[1] || m[2] : null;
+}
+
+/** The values a one-variable word takes from plain assignments in this same command, or null when it is not one or none is known (carried-in values stay allowed). */
+function varValues(w) {
+  const name = soleVar(w);
+  return name && ASSIGNS.has(name) ? ASSIGNS.get(name) : null;
+}
+
 /** The broad-kill violations of one resolved simple command ({ name, args }). */
 function killViolations(res) {
   if (!res || !KILLERS.has(res.name)) return [];
@@ -688,6 +704,7 @@ function killViolations(res) {
     return [{ kind: "killall", command: "killall" }];
   }
   // kill: the first -X is the signal (or -s/-n with a value); -l/-L list signals. Then the targets.
+  // A word that is one variable assigned in this same command reads as its values (o9o.108 review): `pid=-1; kill -9 "$pid"` is `kill -9 -1`.
   let i = 0;
   let signal = false;
   for (; i < res.args.length; i++) {
@@ -696,11 +713,18 @@ function killViolations(res) {
     if (t === "-l" || t === "-L" || t === "--list" || t === "--table") return [];
     if (t === "-s" || t === "-n" || t === "--signal") { signal = true; i++; continue; }
     if (!signal && t.startsWith("-") && t.length > 1) { signal = true; continue; }
+    // `sig=-9; kill $sig 4242`: a variable read as a signal only when a target follows it; alone (`pid=-4242; kill "$pid"`) it is judged as a target (fails closed)
+    const vals = !signal && i + 1 < res.args.length ? varValues(res.args[i]) : null;
+    if (vals && vals.every((v) => v.startsWith("-") && v.length > 1)) { signal = true; continue; }
     break;
   }
   for (const w of res.args.slice(i)) {
     if (w.text.startsWith("-") || w.text === "0") return [{ kind: "kill-group", command: "kill" }];
     if (w.expands && (w.subs || []).some(selectsByPattern)) return [{ kind: "kill-pattern", command: "kill" }];
+    const name = soleVar(w);
+    if (name && PATTERN_VARS.has(name)) return [{ kind: "kill-pattern", command: "kill" }];
+    const vals = varValues(w);
+    if (vals && vals.some((v) => v.trim().startsWith("-") || /^\s*0(?:\s|$)/.test(v) || /\s(?:-|0(?:\s|$))/.test(v))) return [{ kind: "kill-group", command: "kill" }];
   }
   return [];
 }
@@ -999,6 +1023,7 @@ function check(command, options) {
     OUTER_SUB = pickMarker(command);
     work = 0;
     ASSIGNS = new Map();
+    PATTERN_VARS = new Set();
     deadline = Date.now() + (options && typeof options.budgetMs === "number" ? options.budgetMs : DEFAULT_BUDGET_MS);
     scan(command, 0, violations);
   } catch (error) {
