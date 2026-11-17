@@ -9,7 +9,7 @@ import { chatroomCommand, realHcDeps, type ChatroomHcDeps } from "../src/command
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type DaemonState, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
-import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
+import { mkHcTestRoot, hcServerUntilUp } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -102,7 +102,7 @@ describe.skipIf(!HC)("rig chatroom watch --terminal never starts or feeds a core
 
   it("with a core the caller did not start (clean env): the terminal runs, and neither its env nor the core's holds an operator secret", async () => {
     const cleanEnv: NodeJS.ProcessEnv = { ...env };  // no secrets: how the daemon starts a core
-    expect(spawnSync(HC, ["server", "start"], { env: cleanEnv, encoding: "utf8" }).status).toBe(0);
+    hcServerUntilUp(HC, cleanEnv, "start");
     expect(existsSync(socket())).toBe(true);
     expect(await watch()).toBeUndefined();
     const until = Date.now() + 10_000;

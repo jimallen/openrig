@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { HcClient, HcError, type HcHello, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
-import { mkHcTestRoot } from "./helpers/hc-scratch.js";
+import { mkHcTestRoot, hcServerUntilUp } from "./helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -18,7 +18,7 @@ describe.skipIf(!HC)("HcClient against a private hc core", () => {
 
   beforeAll(() => {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");
     client = new HcClient(resolveHcSocket(env, env.HOME));
   });
 

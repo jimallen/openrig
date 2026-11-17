@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { hcScratchBase, hcScratchFallback } from "./helpers/hc-scratch.js";
+import { hcScratchBase, hcScratchFallback, hcServerUntilUp } from "./helpers/hc-scratch.js";
 import { join } from "node:path";
 import { HcClient, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { HcHost, hcTerminalName } from "../src/adapters/hc-host.js";
@@ -39,7 +39,7 @@ describe.skipIf(!HC)("HcPlacement against a private hc core", () => {
 
   beforeAll(() => {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");
     client = new HcClient(resolveHcSocket(env, env.HOME));
     host = new HcHost(client, { daemonEnv: { PATH: process.env.PATH, HOME: env.HOME, SHELL: "/bin/sh" } });
     app = new LabelStrippingApp(client);

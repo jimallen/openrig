@@ -7,7 +7,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { HC_GENERATION, HC_TESTED_VERSIONS, classifyHcCore, parseHcVersion, probeHcInstall, readHcHello } from "../src/tmux-health.js";
 import { resolveHcSocket } from "@openrig/daemon/hc";
-import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
+import { mkHcTestRoot, hcServerUntilUp } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -49,7 +49,7 @@ describe.skipIf(!HC)("hc health against a private hc core", () => {
   });
 
   it("reads hello from a running core: this generation, and the version hc --version names", async () => {
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");
     started = true;
     const hello = await readHcHello(socket);
     expect(hello).toMatchObject({ kind: "hello", generation: HC_GENERATION });

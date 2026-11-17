@@ -12,7 +12,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
 import { HC_TESTED_VERSION, HC_TESTED_VERSIONS, judgeHcVersion } from "../src/adapters/hc-version.js";
-import { mkHcTestRoot } from "./helpers/hc-scratch.js";
+import { mkHcTestRoot, hcServerUntilUp } from "./helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const run = promisify(execFile);
@@ -53,7 +53,7 @@ describe.skipIf(!HC)("RuntimeVerifier.verifyHc against a private hc core", () =>
   });
 
   it("with a core: verified (silently at any tested version, with a warning at an untested one), naming the generation it answered", async () => {
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");
     started = true;
     const result = await verifier().verifyHc();
     if (installed !== undefined && (HC_TESTED_VERSIONS as readonly string[]).includes(installed)) {

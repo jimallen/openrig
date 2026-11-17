@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { attachSharedTui, resolveSharedTerminal } from "../src/shared-tui.js";
-import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
+import { mkHcTestRoot, hcServerUntilUp } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -22,7 +22,7 @@ describe.skipIf(!HC)("shared kernel terminal against a private hc core", () => {
 
   beforeAll(() => {
     for (const d of ["h", "c", "d", "s", "r", "bin"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
-    expect(spawnSync(HC, ["server", "start"], { env }).status).toBe(0);
+    hcServerUntilUp(HC, env, "start");
     // The code under test reads the core from process.env, as the real CLI does; point it at the private core only.
     for (const k of Object.keys(process.env)) if (/^(HC_|XDG_)/.test(k) || k === "HOME") delete process.env[k];
     Object.assign(process.env, env);

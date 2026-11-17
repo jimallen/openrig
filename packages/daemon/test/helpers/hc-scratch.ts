@@ -112,6 +112,35 @@ export function hcScratchFallback(tmp: string): string {
  * put the socket over the limit: hc refused to start, `beforeAll` failed and vitest listed the file's tests as skipped. The caller
  * removes it, as it removed the tmpdir() root before.
  */
+/**
+ * workspaces-o9o.80: hc gives a new core 5 s to come up and then gives up, exit 5 with "core did not start within 5 s", leaving no
+ * core running. On a loaded host that budget is missed now and then (measured on Sparky, hc 0.1.18: 1 restart in 15 to 25 with 40
+ * busy processes on 20 cores), and a release full suite lost a private core to it. The terminals' holder outlives it, and
+ * `hc server start` then brings the core back with them (measured: 19 ms, the terminal still live). So `server <verb>` that hc
+ * refused for that reason, and only that one, is followed by `server start`, at most 3 times. Returns the last result, for the
+ * caller to judge; every test that starts or restarts a private core itself goes through this (the census in
+ * hc-private-core-start-budget.test.ts holds the tree to it).
+ */
+export function hcServerUntilUpResult(
+  spawn: (args: string[]) => SpawnSyncReturns<string>, verb: "start" | "restart",
+): { result: SpawnSyncReturns<string>; args: string[]; attempt: number } {
+  for (let attempt = 1; ; attempt++) {
+    const args = ["server", attempt === 1 ? verb : "start"];
+    const result = spawn(args);
+    if (result.status === 0) return { result, args, attempt };
+    const said = `${result.stderr ?? ""}${result.stdout ?? ""}`;
+    if (result.status !== 5 || !/did not start within/.test(said) || attempt > 3) return { result, args, attempt };
+  }
+}
+
+/** `hc server start|restart` with hcServerUntilUpResult's recovery; anything but success throws with hc's own message. */
+export function hcServerUntilUp(hc: string, env: NodeJS.ProcessEnv, verb: "start" | "restart"): void {
+  const { result: r, args, attempt } = hcServerUntilUpResult((a) => spawnSync(hc, a, { env, encoding: "utf8" }), verb);
+  if (r.status === 0) return;
+  const said = `${r.stderr ?? ""}${r.stdout ?? ""}`.trim();
+  throw new Error(`hc ${args.join(" ")} failed (exit ${r.status ?? r.signal}, attempt ${attempt}): ${said || r.error?.message || "no output"}`);
+}
+
 export function mkHcTestRoot(prefix: string): string {
   return mkdtempSync(join(hcScratchBase(process.env, hcScratchFallback(tmpdir())), prefix));
 }
@@ -368,7 +397,7 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
 
   try {
     arm();
-    const started = run(["server", "start"], { timeoutMs: 30_000 });
+    const started = hcServerUntilUpResult((args) => run(args, { timeoutMs: 30_000 }), "start").result;
     // A binary that cannot be run at all (spawn error) has a null status and no stderr; say so instead of throwing on the missing text.
     if (started.status !== 0) {
       const what = started.error ? `could not run (${started.error.message})` : `exited ${started.status}`;

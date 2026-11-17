@@ -3,9 +3,9 @@
 // `server start`, at most 3 times; every other failure throws, with hc's own message. Driven through a stand-in hc that plays
 // a scripted sequence of exits and records each call, so no real core is involved.
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PrivateCore } from "./hc-private-core.js";
 
@@ -85,8 +85,8 @@ describe("PrivateCore: hc's 5 s start budget missed under load", () => {
 });
 
 // workspaces-o9o.80 (CoS): the files that started or restarted their private core with a bare spawn now go through the harness, so a
-// start budget missed under a release suite's load cannot take their core either. A text scan of each file: no `["server", "start"]`
-// or `["server", "restart"]` spawn of its own, and the harness call that replaced it.
+// start budget missed under a release suite's load cannot take their core either. A text scan of each file: no bare spawn of the
+// server's start or restart verb of its own, and the harness call that replaced it. Then one census over every test tree.
 describe("private-core starts and restarts go through hcServerUntilUp", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = (file: string) => readFileSync(join(here, file), "utf8");
@@ -104,7 +104,39 @@ describe("private-core starts and restarts go through hcServerUntilUp", () => {
   });
 
   it("control: the scan sees a bare spawn where one is (the harness itself spawns `server` through its argument list)", () => {
-    expect('execFileSync(HC, ["server", "restart"], { env })').toMatch(bareServerSpawn);
-    expect(source("hc-private-core.ts")).toMatch(/const args = \["server", attempt === 1 \? verb : "start"\];/);
+    expect(`execFileSync(HC, ["server", ${'"restart"'}], { env })`).toMatch(bareServerSpawn);
+    expect(source("helpers/hc-scratch.ts")).toMatch(/const args = \["server", attempt === 1 \? verb : "start"\];/);
+  });
+});
+
+// workspaces-o9o.80 (CoS): the whole tree, not a list of known files. Every test file in every package's test folder and in the
+// repository's own test folder that spawns the hc server's start or restart verb itself is one of these, each for a reason; every
+// other file goes through hcServerUntilUp (helpers/hc-scratch.ts). A file added with a bare spawn fails here, and so does an entry
+// whose file no longer has one.
+const BARE_SPAWN_ALLOWED: Record<string, string> = {
+  "packages/daemon/test/hc-version-swap.real.test.ts": "runs another release's binary on purpose; a failed swap is the assertion",
+  "packages/daemon/test/hc-launch-refusal.real.test.ts": "runs the restart an operator runs and asserts its exit status itself",
+  "packages/daemon/test/hc-scratch.test.ts": "asserts hc's own refusal of a too-long socket path (exit 2), which a retry would hide",
+};
+
+describe("census: no test starts or restarts an hc core with a bare spawn outside the allowlist", () => {
+  it("every match in packages/*/test and test/ is allowlisted, and every allowlisted file still matches", () => {
+    const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+    const bareServerSpawn = /\[\s*"server",\s*"(?:start|restart)"\s*\]/;
+    const roots = [join(repo, "test"), ...readdirSync(join(repo, "packages")).map((pkg) => join(repo, "packages", pkg, "test"))];
+    const files: string[] = [];
+    const walk = (dir: string): void => {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === "node_modules" || entry.name === "dist") continue;
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(?:ts|tsx|mts|js|mjs)$/.test(entry.name)) files.push(full);
+      }
+    };
+    for (const root of roots) walk(root);
+    expect(files.length, "the population the census ran over is the real tree").toBeGreaterThan(1000);
+    const matched = files.filter((f) => bareServerSpawn.test(readFileSync(f, "utf8"))).map((f) => relative(repo, f)).sort();
+    expect(matched).toEqual(Object.keys(BARE_SPAWN_ALLOWED).sort());
   });
 });

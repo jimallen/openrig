@@ -2,14 +2,14 @@
 // on a private hc core (own HOME, HC_SESSION and XDG paths, as destroy-hc.real.test.ts): with a database sqlite cannot open, the run
 // must stop with those terminals still live and the state in place; with a readable one (control) the same run ends them.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { buildDestroyPlan, executeDestroy, hcCallOverSocket, killHcSeat, listManagedHcSeatsFromDb, listManagedTmuxSessionsFromDb, type DestroyDeps, type HcCall } from "../src/destroy-helpers.js";
 import { resolveHcSocket } from "@openrig/daemon/hc";
-import { mkHcTestRoot } from "../../daemon/test/helpers/hc-scratch.js";
+import { mkHcTestRoot, hcServerUntilUp } from "../../daemon/test/helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const nameOf = (seat: string) => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
@@ -28,7 +28,7 @@ describe.skipIf(!HC)("rig destroy --all with an unreadable database, against a p
 
   beforeAll(() => {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");
     coreUp = true;
     call = hcCallOverSocket(resolveHcSocket(env, env.HOME));
   });

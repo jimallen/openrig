@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HcClient, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { HcHost, hcTerminalName } from "../src/adapters/hc-host.js";
-import { mkHcTestRoot } from "./helpers/hc-scratch.js";
+import { mkHcTestRoot, hcServerUntilUp } from "./helpers/hc-scratch.js";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const SECRET = `sv-${process.pid}-needle`;
@@ -21,7 +21,7 @@ describe.skipIf(!HC)("HcHost launch against a private hc core", () => {
 
   beforeAll(() => {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");
     client = new HcClient(resolveHcSocket(env, env.HOME));
     host = new HcHost(client, { daemonEnv: { PATH: process.env.PATH, HOME: env.HOME, SHELL: "/bin/sh", DOCKER_HOST: "tcp://d", CLAUDECODE: "1" } });
   });
@@ -78,7 +78,7 @@ describe.skipIf(!HC)("HcHost launch against a private hc core", () => {
     await client.call("terminal.kill", { terminal: hcTerminalName("placed@rig") });
     await expect.poll(() => host.probeSession("placed@rig")).toEqual({ state: "absent" });
     spawnSync(HC, ["server", "stop"], { env, stdio: "ignore" });
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");
     await expect(host.createSession("placed@rig", root, { OPENRIG_NODE_ID: "new-node" })).resolves.toEqual({ ok: true });
     const terminal = await client.call<HcTerminal>("terminal.get", { terminal: hcTerminalName("placed@rig") });
     expect(terminal.state).toBe("live");

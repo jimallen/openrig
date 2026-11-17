@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../../src/adapters/hc-host.js";
-import { hcCountedSocketBytes, hcScratchBase, hcScratchFallback, hcSocketFits, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
-import { hcServerUntilUp } from "../hc-private-core.js";
+import { hcCountedSocketBytes, hcScratchBase, hcScratchFallback, hcServerUntilUp, hcSocketFits, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
 
 /** The `hc` on PATH, or "" when there is none (the real-core suites skip). */
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
