@@ -77,6 +77,18 @@ describe("o9o.70: projection excludes generated plugin files in a repo whose git
     expect(fs.existsSync(outside)).toBe(false);
   });
 
+  it("does not append through an info/exclude that is a symlink to a regular file inside the git directory", async () => {
+    fs.mkdirSync(path.join(repo, ".git", "info"));
+    const other = path.join(repo, ".git", "info", "other-file");
+    fs.writeFileSync(other, "# not the exclude file\n");
+    fs.symlinkSync(other, path.join(repo, ".git", "info", "exclude"));
+    const before = fs.readFileSync(other);
+    const result = await project(repo);
+    expect(result.warnings).toEqual([expect.stringContaining("generated_file_exclude_skipped")]);
+    expect(fs.readFileSync(other)).toEqual(before);
+    expect(fs.lstatSync(path.join(repo, ".git", "info", "exclude")).isSymbolicLink()).toBe(true);
+  });
+
   it("does not create through an info/exclude that is a dangling symlink out of the repository", async () => {
     fs.mkdirSync(path.join(repo, ".git", "info"));
     const outside = path.join(root, "outside-exclude");

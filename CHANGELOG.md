@@ -14,6 +14,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 - Symptom: in a repo made with a git template that has no `info/` directory (a custom or empty template; git does not guarantee `.git/info/exclude` exists), projection did not write the exclusion for the generated `openrig-core` plugin files. It logged `generated_file_exclude_skipped: ... ENOENT ... .git/info`, and `git add .` then picked the generated files up.
 - Cause: the exclusion resolved the real path of `.git/info` before creating it.
+- Now a missing `info/` (or `info/exclude`) is created when there is something to write, only inside the repository's real common Git directory, and never through a link: an `info/` or `info/exclude` that is a symlink (resolving nowhere, or to another file inside the Git directory) is refused with the same warning, and nothing is written at its target: only the repository's own regular `info/exclude` is appended to. `rig up`'s exclusion of `.workspaces/` already created a missing `info/`; it is now pinned.
 - Now a missing `info/` (or `info/exclude`) is created when there is something to write, only inside the repository's real common Git directory, and never through a link: an `info/` or `info/exclude` that is a symlink resolving nowhere is refused with the same warning, and nothing is created at its target. `rig up`'s exclusion of `.workspaces/` already created a missing `info/`; it is now pinned.
 ### `rig seat launch --fresh --stop` checks the seat's unfinished work before it stops anything (workspaces-o9o.8)
 

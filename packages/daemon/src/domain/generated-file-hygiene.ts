@@ -123,6 +123,15 @@ export function excludeNewGeneratedFiles(cwd: string, createdFiles: string[]): s
       if (metadataIdentity(infoDir) !== realInfo) throw new Error("Git exclusion path resolves outside repository metadata");
       fs.mkdirSync(realInfo);
     }
+    // Write only the repository's own info/exclude, never through a link (workspaces-o9o.70 review): --git-path
+    // resolves a link at info/exclude to its target, so the path must be the canonical one, and that must be a regular
+    // file or absent. A link to another file inside the Git directory passes the within() checks below; this refuses it.
+    const canonicalExclude = path.join(fs.realpathSync(common), "info", "exclude");
+    let canonicalStat: fs.Stats | null = null;
+    try { canonicalStat = fs.lstatSync(canonicalExclude); } catch { /* absent: created by the append below */ }
+    if (metadataIdentity(exclude) !== canonicalExclude || (canonicalStat !== null && !canonicalStat.isFile())) {
+      throw new Error("Git exclusion target is not the repository's own regular info/exclude (a symlink or other); nothing was written");
+    }
     if (!within(fs.realpathSync(common), fs.realpathSync(path.dirname(exclude)))
       || (fs.existsSync(exclude) && !within(fs.realpathSync(common), fs.realpathSync(exclude)))) {
       throw new Error("Git exclusion path resolves outside repository metadata");
