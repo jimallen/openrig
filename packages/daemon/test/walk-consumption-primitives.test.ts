@@ -617,6 +617,16 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
     expect(body.suffix).not.toContain(SECRET.slice(0, 6));
   });
 
+  it("redacts the parsed strings, not the serialized line: a redaction next to a JSON escape keeps the line valid", async () => {
+    // Serialized, the newline is the two characters \ and n, and the 40+ run would absorb that n, leaving an invalid
+    // `\[` escape and an unparseable line. Redacting the parsed string keeps the newline and the JSON.
+    const run = "Q".repeat(44);
+    seedSidecar("dev-esc@r", "gen-esc", userLine(`first line\n${run}`));
+    const body = await suffixOf("dev-esc@r", 0);
+    const rec = JSON.parse(body.suffix.trimEnd()) as { message: { content: Array<{ text: string }> } };
+    expect(rec.message.content[0]!.text).toBe("first line\n[REDACTED]");
+  });
+
   it("a complete line that is not JSON is redacted as text", async () => {
     seedSidecar("dev-txt@r", "gen-txt", `plain ${SECRET} line\n`);
     const body = await suffixOf("dev-txt@r", 0);
