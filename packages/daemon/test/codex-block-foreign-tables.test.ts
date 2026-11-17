@@ -201,6 +201,30 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     expect(config()).toContain(PLUGIN_TABLES);
   });
 
+  it("no record and a changed relay path (an older daemon's block): its stanzas are replaced, and a person's same-named relay stays", () => {
+    const older = path.join(codexHome, "older", "activity-relay.cjs");
+    fs.mkdirSync(path.dirname(older), { recursive: true }); fs.copyFileSync(RELAY_ASSET, older);
+    adapter(older).ensureCodexActivityHooks();
+    const text = config();
+    fs.writeFileSync(configPath, text.slice(0, text.indexOf(END) + END.length) + "\n");
+    appendInsideBlock(userStopGroup());
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().ensureCodexActivityHooks();
+    expect(config()).not.toContain(older);
+    expect(managedCommands(split(config()).inside)).toBe(4);
+    expect(split(config()).outside).toContain(userStopGroup());
+  });
+
+  it("with a record, a person's SessionStart group placed first inside the block is theirs, not OpenRig's", () => {
+    blockLast();
+    const theirs = ["[[hooks.SessionStart]]", "[[hooks.SessionStart.hooks]]", 'type = "command"', `command = 'node "${userRelay()}"'`].join("\n");
+    fs.writeFileSync(configPath, config().replace(`${BEGIN}\n`, `${BEGIN}\n${theirs}\n\n`));
+    adapter().ensureCodexActivityHooks();
+    const text = config();
+    expect(text).toContain(theirs);
+    expect(text.indexOf(theirs)).toBeLessThan(text.indexOf(BEGIN));
+  });
+
   // verify-qa's review of 2492700bd, finding 2: a line that looks like a table header inside a multiline string is string content, not a
   // header (o9o.76's lesson: a header counts only at the top level, outside any string).
   const MCP_ARGS = 'one\n[not.a.header]\n[[nor.this]]\ntwo\n';
