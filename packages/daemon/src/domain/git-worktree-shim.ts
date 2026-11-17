@@ -44,6 +44,17 @@ real_git() {
   return 127
 }
 real="\$(real_git)" || exit \$?
+# Nesting guard (workspaces-o9o.96): this shim runs the first OTHER git on PATH, so a git wrapper found after it that runs
+# git again comes back here, and the two would run each other without end (a forking one made 44,000 processes on
+# 2026-11-17). Each pass counts one level in the environment the next git inherits; ordinary nesting (a hook or an alias
+# running git) stays low, a loop reaches the limit at once. A value that is not a number counts as 0.
+depth="\${OPENRIG_GIT_SHIM_DEPTH:-0}"
+case "\$depth" in ''|*[!0-9]*) depth=0 ;; esac
+if [ "\$depth" -ge 8 ]; then
+  printf 'openrig git shim: %s nested calls; %s runs git back into this shim (a git wrapper on PATH loops); refusing\n' "\$depth" "\$real" >&2
+  exit 125
+fi
+export OPENRIG_GIT_SHIM_DEPTH=\$((depth + 1))
 # Reach the subcommand past git's global options (git 2.43.0 and 2.55.0: 'git -h', 'git help git').
 # -C and -c take only the next word; the others that take a value also take '=value'. Each -C
 # moves from the one before ('' does nothing), so a relative path resolves from base, as in git.

@@ -230,6 +230,48 @@ describe("git-worktree-shim", () => {
   // workspaces-o9o.2: the generated file run under real bash. At d0303ca8 real_git ran 'command -v -a git'
   // (zsh syntax; bash's 'command' has no -a), built self with literal quotes, and fell back to /usr/bin/git
   // or to 'command -v git', which is the shim itself.
+  // workspaces-o9o.96: the shim runs the first OTHER git on PATH, so a git wrapper found after it that runs `git` again
+  // re-enters the shim, and the two run each other without end (o9o.95: 44,000 processes on sparky when the wrapper forked).
+  // The shim counts its own nesting in OPENRIG_GIT_SHIM_DEPTH and refuses past 8. These wrappers exec, so a missing guard
+  // spins in one process until runGit's timeout, never a fork bomb.
+  describe("a git wrapper that runs git back into the shim stops (workspaces-o9o.96)", () => {
+    async function gitDir(name: string, body: string): Promise<string> {
+      const dir = path.join(tmp, name);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "git"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      return dir;
+    }
+
+    it("a wrapper after the shim that runs git again is refused at depth 8 with 125, naming the wrapper", async () => {
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
+      const wrapper = await gitDir("wrapper", 'exec git "$@"');
+      const r = runGit(["status"], [shim, wrapper, await prefGitDir(), "/usr/bin", "/bin"], tmp);
+      expect(r.signal, "the loop ended on its own, not at the timeout").toBeNull();
+      expect(r.status).toBe(125);
+      expect(r.stderr).toContain("openrig git shim: 8 nested calls");
+      expect(r.stderr).toContain(path.join(wrapper, "git"));
+      expect(r.stdout).toBe("");
+    });
+
+    it("the git it runs sees one more level, counted from what it was given", async () => {
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
+      const echo = await gitDir("echo-depth", 'echo "depth=$OPENRIG_GIT_SHIM_DEPTH"');
+      expect(runGit(["status"], [shim, echo, "/usr/bin", "/bin"], tmp).stdout).toBe("depth=1\n");
+      expect(runGit(["status"], [shim, echo, "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "3" }).stdout).toBe("depth=4\n");
+      expect(runGit(["status"], [shim, echo, "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "x7" }).stdout, "not a number counts as 0").toBe("depth=1\n");
+    });
+
+    it("nesting under the limit runs through; at the limit it refuses", async () => {
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
+      const under = runGit(["--version"], [shim, await prefGitDir(), "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "7" });
+      expect(under.status).toBe(0);
+      expect(under.stdout).toBe("PREF --version\n");
+      const at = runGit(["--version"], [shim, await prefGitDir(), "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "8" });
+      expect(at.status).toBe(125);
+      expect(at.stdout).toBe("");
+    });
+  });
+
   describe("real_git: the first git on PATH that is not this shim", () => {
     it("an ordinary git call prints no 'command: -a: invalid option' and runs the next git on PATH", async () => {
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
