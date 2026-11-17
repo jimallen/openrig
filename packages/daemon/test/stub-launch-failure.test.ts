@@ -86,6 +86,8 @@ describe("o9o.29: a stub launch failure says what the pane showed", () => {
     if (result.ok) throw new Error("expected a failure");
     expect(result.error).not.toContain(token);
     expect(result.paneTail ?? "").not.toContain(token);
+    expect(result.evidence ?? "").not.toContain(token);
+    expect(result.evidence).toContain("[stub-runner] ERROR refused with");
     expect(result.error).toContain("[stub-runner] ERROR refused with");
   });
 });
@@ -100,9 +102,10 @@ describe("o9o.29: the real stub runner held short of ready, or exiting before re
     dir = undefined;
   });
 
-  function spawnWith(script: object): { out: () => string; exit: Promise<number | null> } {
+  function spawnWith(script: object, priorSidecar?: object): { out: () => string; exit: Promise<number | null> } {
     dir = mkdtempSync(join(tmpdir(), "o9o29-"));
     mkdirSync(dirname(stubSeatScriptPath(dir)), { recursive: true });
+    if (priorSidecar) writeFileSync(stubSeatSidecarPath(dir), JSON.stringify(priorSidecar));
     writeFileSync(stubSeatScriptPath(dir), JSON.stringify(script));
     const env: NodeJS.ProcessEnv = { ...process.env, OPENRIG_HOME: join(dir, "home") };
     for (const key of ["OPENRIG_URL", "OPENRIG_PORT", "OPENRIG_HOST", "OPENRIG_ACTIVITY_HOOK_TOKEN"]) delete env[key];
@@ -130,6 +133,15 @@ describe("o9o.29: the real stub runner held short of ready, or exiting before re
     child!.kill("SIGTERM");
     expect(await run.exit).toBe(0);
     expect(sidecar()).toMatchObject({ ready: false, launchId: "launch-9", exited: { code: 0 } });
+  }, 30_000);
+
+  // A held relaunch must not leave the previous launch's ready record readable: checkReady reads the sidecar without the
+  // launch scoping the launch wait has, so the held launch replaces it with its own not-ready record.
+  it("hold: replaces a previous launch's ready record with its own, not ready", async () => {
+    const run = spawnWith({ readiness: "hold", steps: [{ kind: "say", text: "o9o29 held again" }] },
+      { ready: true, launchId: "launch-before", updatedAt: "t" });
+    await until(() => run.out().includes("o9o29 held again") && sidecar()?.launchId === "launch-9", 15_000);
+    expect(sidecar()).toMatchObject({ ready: false, launchId: "launch-9" });
   }, 30_000);
 
   it("exit: prints its lines and its ERROR line, records the exit for this launch, and exits 1 without ever being ready", async () => {
