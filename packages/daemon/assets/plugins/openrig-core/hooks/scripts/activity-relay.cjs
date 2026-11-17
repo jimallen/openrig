@@ -545,7 +545,7 @@ function shellWords(command) {
 }
 
 // workspaces-o9o.33 (verify-qa review): a settings command counts as the managed copy only when it RUNS the managed script, either the
-// script itself or `node <script>`, and that script is a readable file. A command that only mentions the path, names a missing file, or
+// script itself (then executable) or `node <script>` (then readable), and that script is a regular file. A command that only mentions the path, names a missing file, or
 // hands it to another program leaves the plugin copy running: an event is never lost to a copy that cannot run.
 function runsManagedScript(command, script) {
   const words = shellWords(command);
@@ -553,7 +553,9 @@ function runsManagedScript(command, script) {
   if (words.length === 2 && words[0] !== "node" && path.basename(words[0]) !== "node") return false;
   const target = words[words.length - 1];
   if (!path.isAbsolute(target) || !target.endsWith(path.sep + path.join(MANAGED_HOOK_DIR, script))) return false;
-  try { fs.accessSync(target, fs.constants.R_OK); return fs.statSync(target).isFile(); } catch { return false; }
+  // Run directly, the script must be executable (question-wait.cjs ships 100644, and the adapter keeps the source mode); node only reads it.
+  const access = words.length === 1 ? fs.constants.X_OK : fs.constants.R_OK;
+  try { fs.accessSync(target, access); return fs.statSync(target).isFile(); } catch { return false; }
 }
 
 async function main() {

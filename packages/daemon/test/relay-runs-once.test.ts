@@ -11,7 +11,7 @@
 // The rows run the REAL scripts as separate processes, the way Claude Code runs a hook: stdin payload, env, a daemon endpoint (a fake that
 // counts what arrives). The env is built from nothing, so this seat's own OpenRig env never leaks in.
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -208,6 +208,23 @@ describe("workspaces-o9o.33: the activity relay runs once per hook when the open
     writeCommands(`'${managed("activity-relay.cjs")}'`);
     await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
     expect(posts("/api/activity/hooks", "Stop")).toHaveLength(0);
+  });
+
+  // verify-qa FAIL of 317724c7a: run directly, a script must be executable, not just readable. question-wait.cjs ships 100644 and the adapter
+  // keeps the source mode, so a direct `'<managed question-wait>'` command cannot run; the plugin copy must not step aside for it.
+  it("RED (review): the managed question-wait named directly but shipped not executable (100644): the plugin copy still asks, once", async () => {
+    expect(statSync(join(ASSETS, "question-wait.cjs")).mode & 0o111).toBe(0);   // as shipped
+    chmodSync(managed("question-wait.cjs"), 0o644);
+    writeCommands(`'${managed("activity-relay.cjs")}'`, `'${managed("question-wait.cjs")}'`);
+    await runHook(plugin("question-wait.cjs"), { hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions: QUESTIONS } }, true);
+    expect(posts("/api/activity/question-wait")).toHaveLength(1);
+  });
+
+  it("node in front of the same not-executable script counts: node only needs to read it", async () => {
+    chmodSync(managed("question-wait.cjs"), 0o644);
+    writeCommands(`node '${managed("activity-relay.cjs")}'`, `node '${managed("question-wait.cjs")}'`);
+    await runHook(plugin("question-wait.cjs"), { hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions: QUESTIONS } }, true);
+    expect(posts("/api/activity/question-wait")).toHaveLength(0);
   });
 
   it("node chained with another command (shell operators) is not a plain invocation: the plugin copy runs", async () => {
