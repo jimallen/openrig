@@ -196,6 +196,14 @@ describe("workspaces-o9o.33: the activity relay runs once per hook when the open
     expect(posts("/api/activity/hooks", "Stop")).toHaveLength(1);
   });
 
+  it("node running some other readable script (not the managed relay) does not count", async () => {
+    const other = join(project, "my-own-hook.cjs");
+    writeFileSync(other, "process.exit(0);\n");
+    writeCommands(`node '${other}'`);
+    await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
+    expect(posts("/api/activity/hooks", "Stop")).toHaveLength(1);
+  });
+
   it("the managed script run directly (no node in front) counts: the plugin copy steps aside", async () => {
     writeCommands(`'${managed("activity-relay.cjs")}'`);
     await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);
