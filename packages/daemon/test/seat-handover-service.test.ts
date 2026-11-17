@@ -298,6 +298,17 @@ describe("SeatHandoverService", () => {
       expect(result.ok, JSON.stringify(result)).toBe(true);
     });
 
+    it("a discovered handover's dry run is not judged either", async () => {
+      seedSeat();
+      heldLease();
+      const discovered = seedDiscovery();
+      const never = { judgeReplacement: async () => { throw new Error("a discovered dry run was judged"); } };
+      const result = await newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: never })
+        .handover({ seatRef: SEAT, reason: "mvp-proof", source: `discovered:${discovered.id}`, operator: "orch-lead@seat-rig", dryRun: true });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(result).not.toHaveProperty("blockers");
+    });
+
     it("a dry run shows the held lease as a blocker and changes nothing", async () => {
       seedSeat({ runtime: "codex" });
       heldLease();
