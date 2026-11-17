@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RegistryHostDirectory } from "../src/adapters/registry-host-directory.js";
 import { arrivalBody, envelopeLabel, originOf, replyPathFor, restampArrival, type HostDirectory } from "../src/domain/seat-messaging/reply-path.js";
+import { rigWords } from "./helpers/shell-argv.js";
 
 const STU = "host-148dbc2f";
 const named: HostDirectory = { nameFor: (id) => (id === STU ? "stu" : null) };
@@ -27,6 +28,31 @@ describe("the bead's four strings", () => {
     expect(replyPathFor({ host: STU, seat: "build-impl@openrig", label: null }, named)).toEqual({ kind: "reachable", command: "rig send build-impl@openrig@stu '...'" });
     expect(replyPathFor({ host: STU, seat: "build-impl@openrig", label: null }, unnamed).kind).toBe("none");
     expect(replyPathFor({ host: STU, seat: null, label: "openrig-23" }, named).kind).toBe("none");
+  });
+});
+
+// o9o.16 review F1 (verify-qa2): a seat claim reached the reply command unchecked and unquoted, so a claim with ';' or ${IFS} made a reply
+// line a shell would split and run. The claim is checked against the session-name grammar, and the target is quoted where the command is written.
+describe("a reply command is never built from text a shell would split", () => {
+  const PROBE = "dev;echo${IFS}O9O16_PROBE@openrig";  // verify-qa2's claimed seat, as /api/messages/accept received it
+
+  it("(e) a seat claim outside the session-name grammar: no reply command, and the claim is not shown", () => {
+    const origin = originOf(STU, `${PROBE}@${STU}`, envelope("anything"));
+    expect(origin).toEqual({ host: STU, seat: null, label: null, invalidSeat: true });
+    const body = restampArrival(envelope("anything"), origin!, named);
+    expect(body).toBe(restamped("a sender on stu whose seat name is not valid", "↩ No reply path: the sender's seat name is not valid; no rig address answers it"));
+    expect(body).not.toContain("rig send");
+    expect(body).not.toContain("O9O16_PROBE");
+  });
+
+  it("the reply target is one shell word whatever this host's registry calls the host, read by a real shell without running it", () => {
+    const path = replyPathFor({ host: STU, seat: "build-impl@openrig", label: null }, { nameFor: () => "stu;echo${IFS}O9O16 x" });
+    expect(path.kind).toBe("reachable");
+    expect(rigWords((path as { command: string }).command)).toEqual(["send", "build-impl@openrig@stu;echo${IFS}O9O16 x", "..."]);
+  });
+
+  it("an ordinary name stays bare: the approved string (a) is unchanged", () => {
+    expect(replyPathFor({ host: STU, seat: "build-impl@openrig", label: null }, named)).toEqual({ kind: "reachable", command: "rig send build-impl@openrig@stu '...'" });
   });
 });
 

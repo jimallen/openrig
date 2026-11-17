@@ -269,6 +269,13 @@ describe("an arrival from another host", () => {
     expect(body).not.toContain("<unknown sender>");
   });
 
+  it("o9o.16 review F1, verify-qa2's probe: a claimed seat a shell would split gets no reply command at all", async () => {
+    const probe = "dev;echo${IFS}O9O16_PROBE@openrig";
+    const body = await arrive(named, `${probe}@${STU}`, `${probe}@${STU}`);
+    expect(body).toBe(lines("a sender on stu whose seat name is not valid", "↩ No reply path: the sender's seat name is not valid; no rig address answers it"));
+    expect(body).not.toContain("rig send");
+  });
+
   it("only the From line and the closing reply line change: a body line that looks like either rides as written", async () => {
     const text = "From: someone else\n↩ Reply: rig send x@y '...'";
     const far = side({ gated: true, hosts: named });

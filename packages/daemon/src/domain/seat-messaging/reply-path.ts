@@ -9,7 +9,8 @@
  */
 
 import { wrapPaneEnvelope } from "../../lib/pane-envelope.js";
-import { setOff } from "../active-occupant.js";
+import { setOff, shellWord } from "../active-occupant.js";
+import { validateSessionName } from "../session-name.js";
 
 /** The outbound port: this host's name for another host, by that host's own id. Null when this host cannot name it. */
 export interface HostDirectory {
@@ -21,6 +22,8 @@ export interface Origin {
   host: string;
   seat: string | null;
   label: string | null;
+  /** The sender claimed a seat whose name is not a valid seat name (o9o.16 review F1): it gets no reply command, and its claim is not shown. */
+  invalidSeat?: boolean;
 }
 
 /** What a seat here can do to answer: run a command, or nothing, for a stated reason. */
@@ -39,7 +42,9 @@ export function originOf(host: unknown, sender: unknown, body: string): Origin |
   if (typeof host !== "string" || !HOST_ID.test(host) || typeof sender !== "string") return null;
   if (sender === "unknown") return { host, seat: null, label: envelopeLabel(body) };
   const seat = SEAT_OF_HOST.exec(sender);
-  return seat && seat[2] === host ? { host, seat: seat[1]!, label: envelopeLabel(body) } : null;
+  if (!seat || seat[2] !== host) return null;
+  // The seat is the sending daemon's claim, and it reaches a command line: only a name in the session-name grammar is taken as a seat.
+  return validateSessionName(seat[1]!) ? { host, seat: seat[1]!, label: envelopeLabel(body) } : { host, seat: null, label: null, invalidSeat: true };
 }
 
 /** The envelope's marker for a send with no sender, read off the daemon twin (wrapPaneEnvelope) so it is defined in one place. It names nobody,
@@ -52,15 +57,18 @@ const RULE = "---";
 /** The sender as this host shows it. */
 export function senderLine(origin: Origin, hosts: HostDirectory): string {
   const host = hosts.nameFor(origin.host) ?? origin.host;
+  if (origin.invalidSeat) return `a sender on ${host} whose seat name is not valid`;
   if (origin.seat) return `${origin.seat}@${host}`;
   return origin.label ? `${origin.label} (a shell on ${host})` : `a shell on ${host}`;
 }
 
 export function replyPathFor(origin: Origin, hosts: HostDirectory): ReplyPath {
   const name = hosts.nameFor(origin.host);
+  if (origin.invalidSeat) return { kind: "none", reason: "the sender's seat name is not valid; no rig address answers it" };
   if (origin.seat) {
+    // Quoted at the boundary that writes a command line, whatever the name: a host name comes from this registry, a seat from another daemon.
     return name
-      ? { kind: "reachable", command: `rig send ${origin.seat}@${name} '...'` }
+      ? { kind: "reachable", command: `rig send ${shellWord(`${origin.seat}@${name}`)} '...'` }
       : { kind: "none", reason: `${origin.host} is not in this host's registry (${setOff("rig host ls")})` };
   }
   const shell = `a shell on ${name ?? origin.host}`;
