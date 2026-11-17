@@ -16,6 +16,7 @@ import {
   ensureOpenRigInstance,
   formatInstanceInitializationConflicts,
   nodeInstancePrivacy,
+  prepareInstanceHome,
   type InitializationFsOps,
   type InitWorkspaceResult,
   type ManagedPathKind,
@@ -630,6 +631,12 @@ export async function startDaemon(opts: StartOptions, deps: LifecycleDeps): Prom
   const refusal = daemonStartRefusal();
   if (refusal !== null) throw new Error(refusal);
   if (!deps.acquireStartLock) throw new Error("Daemon startup requires a local launch reservation");
+  // workspaces-o9o.36 (verify-sec round 3): the start lock is the first write into the OpenRig home. Before it, a home that is the user's
+  // home or above it is refused (read-only, on real paths), and a home its owner cannot enter (0600) is opened to 0700.
+  const homeConflict = prepareInstanceHome(OPENRIG_DIR, nodeInstancePrivacy());
+  if (homeConflict) {
+    throw new Error(`OpenRig instance initialization blocked: ${formatInstanceInitializationConflicts({ conflicts: [homeConflict] })}`);
+  }
   const lock = deps.acquireStartLock();
   let preserve = false;
   try {

@@ -1,6 +1,7 @@
 export {
   ensureOpenRigInstance,
   formatInstanceInitializationConflicts,
+  prepareInstanceHome,
   type OpenRigInstanceInitializationOptions,
   type OpenRigInstanceInitializationResult,
 } from "./domain/instance-initialization.js";

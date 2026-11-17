@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { createServer } from "node:net";
 import { realDeps } from "../src/commands/daemon.js";
+import { acquireDaemonStartLock } from "../src/daemon-start-lock.js";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import {
@@ -185,13 +186,18 @@ describe("Daemon Lifecycle", () => {
 
   // workspaces-o9o.36: `rig daemon start` writes the layout before the daemon runs, so it refuses first too.
   it("start: refuses an OpenRig home that is the user's home or above it before any write or spawn", async () => {
-    for (const userHome of [OPENRIG_DIR, path.join(OPENRIG_DIR, "jim")]) {
+    // verify-sec round 3: the real start lock, which would create, write and unlink daemon-start.lock in the home, is never taken.
+    const alias = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "o9o36-alias-")), "home");
+    fs.symlinkSync(OPENRIG_DIR, alias);
+    for (const userHome of [OPENRIG_DIR, path.join(OPENRIG_DIR, "jim"), alias]) {
       vi.stubEnv("HOME", userHome);
       try {
-        const deps = startableDeps();
+        const acquireStartLock = vi.fn(() => acquireDaemonStartLock(OPENRIG_DIR));
+        const deps = startableDeps({ acquireStartLock });
         await expect(startDaemon({ port: 7433, db: "openrig.sqlite" }, deps)).rejects.toThrow(
           `${OPENRIG_DIR}: expected instance-home, found user-home`,
         );
+        expect(acquireStartLock).not.toHaveBeenCalled();
         expect(deps.mkdirp).not.toHaveBeenCalled();
         expect(deps.writeFile).not.toHaveBeenCalled();
         expect(deps.spawn).not.toHaveBeenCalled();
@@ -199,19 +205,24 @@ describe("Daemon Lifecycle", () => {
         vi.unstubAllEnvs();
       }
     }
+    fs.rmSync(path.dirname(alias), { recursive: true, force: true });
   });
 
   // workspaces-o9o.36 (verify-sec re-review): `rig daemon start` writes the layout before the daemon runs, so it opens a home its owner
   // cannot enter (0600) to 0700 first, as the daemon does. Real filesystem for the layout, in the fixture home; only spawn and healthz are fakes.
-  it("start: a 0600 OpenRig home is opened to 0700 and the layout written into it, on the real filesystem, before the daemon is spawned", async () => {
+  it("start: a 0600 OpenRig home is opened to 0700 before the start lock and the layout are written into it, on the real filesystem, before the daemon is spawned", async () => {
     const real = realDeps();
     const before = new Set(fs.readdirSync(OPENRIG_DIR));
     fs.chmodSync(OPENRIG_DIR, 0o600);
     try {
-      const deps = startableDeps({ exists: real.exists, mkdirp: real.mkdirp, writeFile: real.writeFile, pathKind: real.pathKind });
+      // verify-sec round 3: the real start lock too, which writes daemon-start.lock into the home before the layout.
+      const deps = startableDeps({ exists: real.exists, mkdirp: real.mkdirp, writeFile: real.writeFile, pathKind: real.pathKind,
+        acquireStartLock: () => acquireDaemonStartLock(OPENRIG_DIR) });
       await startDaemon({ port: 7433, db: "openrig.sqlite" }, deps);
       expect(fs.statSync(OPENRIG_DIR).mode & 0o777).toBe(0o700);
       expect(fs.statSync(path.join(OPENRIG_DIR, "state")).isDirectory()).toBe(true);
+      // The layout the CLI wrote is secured after it is written, as the daemon does (no group/other bits under the home).
+      expect(fs.statSync(path.join(OPENRIG_DIR, "state")).mode & 0o777).toBe(0o700);
       expect(deps.spawn).toHaveBeenCalledTimes(1);
     } finally {
       fs.chmodSync(OPENRIG_DIR, 0o700);

@@ -46,6 +46,18 @@ export function openRigContextLibraryRoots(contextRoot: string): [string, string
 
 /** The conflict for an OpenRig home that is the user's home directory or an ancestor of it (compared on real paths
  * too), or null. Every path that writes an instance layout checks it before writing (workspaces-o9o.36). */
+/**
+ * What a launcher does to an OpenRig home before it writes anything into it, its own start lock included (o9o.36, verify-sec round 3):
+ * refuse a home that is the user's home or above it (read-only, on real paths), else open an existing root its owner cannot enter
+ * (0600) to exactly 0700. Returns the refusal, or null when the home may be written.
+ */
+export function prepareInstanceHome(home: string, privacy: InstancePrivacyPort): InitializationConflict | null {
+  const conflict = instanceHomeConflict(home, privacy);
+  if (conflict) return conflict;
+  openPrivateRoot(home, privacy);
+  return null;
+}
+
 export function instanceHomeConflict(home: string, privacy: InstancePrivacyPort): InitializationConflict | null {
   return privateRootRefusal(home, privacy) ? { path: home, expected: "instance-home", actual: "user-home" } : null;
 }
