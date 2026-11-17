@@ -26,6 +26,16 @@ import {
   checkModeAbsolute,
 } from "./mirror-skills.mjs";
 
+// workspaces-o9o.75: the mode rows pin the modes this script writes under a standard umask. The script's copies follow the
+// process umask (measured: 0600 instead of 0644 under umask 077, the release-4 stage-1 wrapper's), so the file sets its own
+// umask rather than inherit the caller's. node --test runs each file in its own process; the children it starts inherit it.
+process.umask(0o022);
+
+test("this file runs under its own umask 022, whatever the caller's (workspaces-o9o.75)", () => {
+  // Read the way a child the script starts sees it, without the deprecated process.umask() getter.
+  assert.equal(execFileSync("sh", ["-c", "umask"], { encoding: "utf8" }).trim(), "0022");
+});
+
 test("parseChanges extracts file-change and deletion lines from itemize-changes output", () => {
   const output = [
     "sending incremental file list",
