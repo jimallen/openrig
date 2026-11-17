@@ -482,12 +482,15 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
 
   // workspaces-o9o.82: "collision" walks a piece holding one secret while the seat records a DIFFERENT message holding
   // another; both redact to the same text, and must not certify each other. "secret-piece" is the positive twin.
-  it.each(["complete", "prefix", "old-file", "replaced-file", "changed-occupant", "wrong-turn", "missing-turn", "missing-file", "claude", "secret-piece", "collision", "collision-closes"])(
+  it.each(["complete", "prefix", "old-file", "replaced-file", "changed-occupant", "wrong-turn", "missing-turn", "missing-file", "claude", "secret-piece", "collision", "collision-closes", "outer-whitespace"])(
     "integrated CLI → route → native record: %s", async (scenario) => {
       const { record, node } = seedCodex();
       const OTHER_SECRET = ["s", "k-"].join("") + "o9o82other" + "Z".repeat(14);
-      const withSecret = scenario === "secret-piece" || scenario === "collision" || scenario === "collision-closes";
+      const withSecret = scenario === "secret-piece" || scenario === "collision" || scenario === "collision-closes" || scenario === "outer-whitespace";
       const piece = "Shared heading. ".repeat(8) + "The complete middle matters.\n".repeat(9) + (withSecret ? `key ${SECRET} ` : "") + "unique tail Ω";
+      // A piece file as people write it: CRLF line ends and a trailing newline. The digest is of the canonical text on both
+      // sides, so the daemon's mark still names it (workspaces-o9o.82).
+      const pieceFile = scenario === "outer-whitespace" ? `\n${piece.replace(/\n/g, "\r\n")}\n` : piece;
       const claudeSeat = scenario === "claude" || scenario === "collision-closes";
       const seat = claudeSeat ? "dev-claude@r" : "dev-codex@codex-rig";
       const claudePath = claudeSeat ? seedSidecar(seat, "claude-gen", "") : null;
@@ -519,7 +522,7 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
             exists: p => p === STATE_FILE, isProcessAlive: () => true,
             fetch: async () => ({ ok: true }),
           } as never,
-          fileExists: () => true, readFile: () => piece,
+          fileExists: () => true, readFile: () => pieceFile,
           clientFactory: () => ({
             get: async (path: string) => {
               const response = await app.request(path);
@@ -528,7 +531,7 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
             post: async (path: string) => {
               if (path.endsWith("/capture")) return { status: 200, data: { content: "idle" } };
               sends++;
-              const text = scenario === "prefix" ? piece.slice(0, 115) : scenario === "collision" ? piece.replace(SECRET, OTHER_SECRET) : piece;
+              const text = scenario === "prefix" ? piece.slice(0, 115) : scenario === "collision" ? piece.replace(SECRET, OTHER_SECRET) : pieceFile;
               const suffix = records(text).map(r => JSON.stringify(r)).join("\n") + "\n";
               if (scenario === "missing-file") rmSync(record);
               else if (scenario === "replaced-file") {
@@ -545,7 +548,7 @@ describe("GET /api/sessions/:sessionName/generation-record — the consumption-b
         }));
         await command.parseAsync(["node", "rig", "walk", seat, "--through", "piece.md", "--json", "--pace", "0ms",
           "--consume-timeout", "20ms", "--consume-poll", "1ms", "--turn-timeout", "20ms"]);
-        const positive = scenario === "complete" || scenario === "claude" || scenario === "secret-piece";
+        const positive = scenario === "complete" || scenario === "claude" || scenario === "secret-piece" || scenario === "outer-whitespace";
         expect(process.exitCode).toBe(positive ? undefined : 1);
         expect(log.mock.calls.some(([line]) => String(line).includes('"consumptionVerified":true'))).toBe(positive);
         expect(sends).toBe(1);
