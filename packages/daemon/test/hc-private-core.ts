@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -15,7 +15,8 @@ export class PrivateCore {
   readonly socketPath: string;
   readonly client: HcClient;
 
-  constructor(tag: string, extraEnv: NodeJS.ProcessEnv = {}) {
+  /** `hc` is the binary on PATH; a test of this harness passes a stand-in. */
+  constructor(tag: string, extraEnv: NodeJS.ProcessEnv = {}, private readonly hc: string = HC) {
     this.root = mkdtempSync(join(hcScratchBase(process.env, hcScratchFallback(tmpdir())), `hc-${tag}-`));
     this.env = {
       PATH: process.env.PATH, HOME: join(this.root, "h"), HC_SESSION: `${tag}${process.pid}`,
@@ -33,15 +34,35 @@ export class PrivateCore {
   }
 
   start(): void {
-    execFileSync(HC, ["server", "start"], { env: this.env, stdio: "ignore" });
+    this.serverUntilUp("start");
   }
 
   restart(): void {
-    execFileSync(HC, ["server", "restart"], { env: this.env, stdio: "ignore" });
+    this.serverUntilUp("restart");
+  }
+
+  /**
+   * workspaces-o9o.80: hc gives a new core 5 s to come up and then gives up, exit 5 with "core did not start within 5 s", leaving
+   * no core running. On a loaded host that budget is missed now and then: measured on Sparky with hc 0.1.18, 1 restart in 15 to 25
+   * failed that way with 40 busy processes on 20 cores, and a release full suite lost hc-delivery.real.test.ts's core to it, so
+   * every later row found no socket. The terminals' holder outlives it, and `hc server start` then brings the core back with
+   * them (measured: 19 ms, the terminal still live). So a start or restart hc refused for that reason, and only that one, is
+   * followed by `server start`, at most 3 times; any other failure throws with hc's own message, as it always threw.
+   */
+  private serverUntilUp(verb: "start" | "restart"): void {
+    for (let attempt = 1; ; attempt++) {
+      const args = ["server", attempt === 1 ? verb : "start"];
+      const r = spawnSync(this.hc, args, { env: this.env, encoding: "utf8" });
+      if (r.status === 0) return;
+      const said = `${r.stderr ?? ""}${r.stdout ?? ""}`.trim();
+      if (r.status !== 5 || !/did not start within/.test(said) || attempt > 3) {
+        throw new Error(`hc ${args.join(" ")} failed (exit ${r.status ?? r.signal}, attempt ${attempt}): ${said || r.error?.message || "no output"}`);
+      }
+    }
   }
 
   stop(): void {
-    spawnSync(HC, ["server", "stop"], { env: this.env, stdio: "ignore" });
+    spawnSync(this.hc, ["server", "stop"], { env: this.env, stdio: "ignore" });
     rmSync(this.root, { recursive: true, force: true });
   }
 
