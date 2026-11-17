@@ -105,6 +105,12 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   }
   const failed = (s: F) => { if (existsSync(join(s.dir, "child-failed"))) throw new Error(`daemon died: ${readFileSync(join(s.dir, "child-failed"), "utf8").slice(-1800)}`); };
   const hopSaw = async (s: F, line: string, ms = 20_000) => { await until(() => { failed(s); return s.hop(); }, (l) => l.includes(line), `hop ${line}`, ms); };
+  // workspaces-o9o.92: /api/health is read from the store, and the hop's "paused:<reason>" line is written before the pump stores
+  // the reason (recordHopPause runs after the hop returns), so one read straight after the line raced the write and failed under a
+  // full suite's load. Each health check waits for its words instead, bounded like the hop and state waits.
+  const healthSays = async (s: F, ...words: string[]) => {
+    await until(() => { failed(s); return http(s, "/api/health").text; }, (t) => words.every((w) => t.includes(w)), `health names ${words.join(" + ")}`, 20_000);
+  };
   const state = (s: F, id: string, want: string, ms = 20_000) => until(() => { failed(s); return s.read(id); }, (r) => r?.message_state === want, `${id} ${want}`, ms);
   const agent = (s: F, id: string) => s.log().filter((l) => l.startsWith(`agent ${id} `));
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -473,7 +479,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       s.accept("m1"); daemon(s);
       await hopSaw(s, "paused:agent_absent m1");
       await hopSaw(s, "booted");
-      expect(http(s, "/api/health").text).toContain("its agent is not running");
+      await healthSays(s, "its agent is not running");
     }, 50_000);
 
     it("a Codex seat back at its login shell: nothing is typed", async () => {
@@ -503,9 +509,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         expect(queueItems(s)).toEqual([]);
         expect(String(s.read("l1").message_closed_reason)).toContain("no sender");
         expect(s.read("l1").body).toBe("lifecycle text");
-        const health = http(s, "/api/health").text;
-        expect(health).toContain("no sender to return them to");
-        expect(health).toContain("l1");
+        await healthSays(s, "no sender to return them to", "l1");
       }, 40_000);
     }
 
@@ -530,7 +534,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       s.accept("long", "x".repeat(1500)); s.accept("next"); daemon(s);
       await until(() => s.read("long"), (r) => r?.message_pause_reason === "long_no_socket", "the pause");
       await hopSaw(s, "booted");
-      expect(http(s, "/api/health").text).toContain("too long to paste");
+      await healthSays(s, "too long to paste");
       await wait(1000);
       expect(s.log().filter((l) => l.startsWith("agent") || l.startsWith("unmarked"))).toEqual([]);
       expect(spoolFiles(s)).toEqual([]);
@@ -634,7 +638,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       expect(agent(s, "long")).toHaveLength(4);  // the first copy and three resends, not a fifth
       expect(agent(s, "long").slice(1).every((l) => l.includes("resent: not confirmed on file"))).toBe(true);
       expect(context(s, "long")).toHaveLength(4);
-      expect(http(s, "/api/health").text).toContain("could not be found on the agent's file");
+      await healthSays(s, "could not be found on the agent's file");
       expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered" });
     }, 120_000);
 
@@ -703,7 +707,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       await hopSaw(s, "paused:screen_unreadable m1");
       await hopSaw(s, "booted");
       expect(s.log()).toEqual([]);
-      expect(http(s, "/api/health").text).toContain("shows no composer");
+      await healthSays(s, "shows no composer");
     }, 50_000);
 
     it("a terminal that has gone, in a rig still live: health says so at once", async () => {
@@ -713,7 +717,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       s.accept("m1"); daemon(s);
       await hopSaw(s, "paused:seat_stopped m1");
       await hopSaw(s, "booted");
-      expect(http(s, "/api/health").text).toContain("its terminal is not running");
+      await healthSays(s, "its terminal is not running");
     }, 50_000);
   });
 
@@ -725,7 +729,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       s.accept("m1"); daemon(s);
       await hopSaw(s, "paused:blocked m1");
       await hopSaw(s, "booted");
-      expect(http(s, "/api/health").text).toContain("waiting on a dialog");
+      await healthSays(s, "waiting on a dialog");
       s.flag("unblock");
       await state(s, "m1", "received", 30_000);
     }, 60_000);
@@ -739,7 +743,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       s.accept("m1"); daemon(s);
       await hopSaw(s, "paused:draft m1");
       await hopSaw(s, "booted");
-      expect(http(s, "/api/health").text).toContain("wait behind a draft");
+      await healthSays(s, "wait behind a draft");
       await core.client.call("terminal.keys", { terminal: s.address, keys: ["ctrl+u"] });
       await state(s, "m1", "received", 30_000);
     }, 70_000);
