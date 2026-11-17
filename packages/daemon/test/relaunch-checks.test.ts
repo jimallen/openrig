@@ -321,6 +321,45 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     expect(plan).toMatchObject({ ok: true, relaunchChecks: { children: { verdict: "unknown", cause: "this daemon has no process lister wired" } } });
   });
 
+  // workspaces-o9o.71: the TUI's explicit fresh action launches a seat whose pane it observed stopped (launchFresh stop:false). Nothing is
+  // stopped there, but a lease the seat's work still holds is still held: the lease check runs on every fresh launch. The children check
+  // needs a live agent, so with no pane it does not apply (and says so, without a warning).
+  const freshOfStoppedPane = (extra: { despite?: Array<"lease" | "children"> } = {}) =>
+    service.launchFresh({ seatRef: SEAT, fresh: true, stop: false, reason: "TUI explicit fresh consent", ...extra });
+
+  it("o9o.71: a fresh launch of a seat whose pane is gone refuses under a live lease, before anything is cleaned or started", async () => {
+    alive.delete(SEAT);
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
+    const result = await freshOfStoppedPane();
+    expect(result).toMatchObject({ ok: false, code: "relaunch_check_held" });
+    expect(result.ok ? "" : result.message).toContain("ui-test-host (pid 9001)");
+    expect(tmux.createSession).not.toHaveBeenCalled();
+  });
+
+  it("o9o.71: with no live lease the stopped-pane fresh launch goes ahead; the children check does not apply and warns nothing", async () => {
+    alive.delete(SEAT);
+    const result = await freshOfStoppedPane();
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.relaunchChecks).toMatchObject({ lease: { verdict: "clear" }, children: { verdict: "not_applicable" } });
+    expect(result.ok && (result.warnings ?? []).join("\n")).not.toContain("Relaunch check children");
+  });
+
+  it("o9o.71: --despite lease launches the stopped-pane seat anyway", async () => {
+    alive.delete(SEAT);
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
+    const result = await freshOfStoppedPane({ despite: ["lease"] });
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.relaunchChecks?.lease).toMatchObject({ verdict: "held", overridden: true });
+  });
+
+  it("o9o.71: --plan of a seat whose pane is gone shows a live lease as a blocker", async () => {
+    alive.delete(SEAT);
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
+    const plan = await service.planFresh({ seatRef: SEAT, fresh: true });
+    expect(plan).toMatchObject({ ok: true, launchable: false, relaunchChecks: { lease: { verdict: "held" }, children: { verdict: "not_applicable" } } });
+    expect(plan.ok && plan.blockers.map((b) => b.code)).toContain("relaunch_check_held");
+  });
+
   it("plan: --plan shows every check's verdict and a held check as a blocker", async () => {
     leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
     processes = [AGENT, row(5001, PANE_PID, "zsh", "/bin/zsh -c npm test")];

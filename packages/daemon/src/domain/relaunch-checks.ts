@@ -87,7 +87,9 @@ export type LeaseCheck =
 export type ChildrenCheck =
   | { verdict: "clear"; ignored: Array<ProcessSummary & { kind: string }> }
   | { verdict: "held"; held: ProcessSummary[]; ignored: Array<ProcessSummary & { kind: string }>; overridden: boolean }
-  | { verdict: "unknown"; cause: string };
+  | { verdict: "unknown"; cause: string }
+  /** workspaces-o9o.71: the seat has no live pane, so no agent is running anything to judge. Not a warning. */
+  | { verdict: "not_applicable"; cause: string };
 
 export interface RelaunchChecks { lease: LeaseCheck; children: ChildrenCheck }
 

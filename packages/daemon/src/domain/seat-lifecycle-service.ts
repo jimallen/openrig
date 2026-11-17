@@ -368,6 +368,18 @@ export type { FreshStartupSource };
 
 type ParsedStartupContext = FreshStartupContext;
 
+/** workspaces-o9o.8/o9o.71: the refusal for a held relaunch check the operator did not override; null when none is held. Nothing has been
+ *  stopped, cleaned or started when it is returned. */
+function heldRelaunchRefusal(checks: RelaunchChecks, seat: string): (SeatRefusal & { relaunchChecks: RelaunchChecks }) | null {
+  const blocking = blockingChecks(checks);
+  if (blocking.length === 0) return null;
+  return {
+    ok: false, code: "relaunch_check_held", relaunchChecks: checks,
+    message: `Fresh launch refused before anything was stopped: ${describeHeld(checks, seat)}`,
+    guidance: `Let the work finish, or launch anyway with --despite ${blocking.join(" --despite ")} (the --reason is recorded).`,
+  };
+}
+
 export class SeatLifecycleService {
   private readonly db: Database.Database;
   private readonly rigRepo: RigRepository;
@@ -1468,7 +1480,7 @@ export class SeatLifecycleService {
         if (!input.stop) blockers.push({ code: "session_live", message: "A live managed occupant requires --stop." });
         // workspaces-o9o.8: what a launch would judge before it stopped this occupant.
         if (this.relaunchCheckPort) {
-          relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)));
+          relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)), true);
           if (blockingChecks(relaunchChecks).length > 0) {
             blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
               guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
@@ -1476,6 +1488,15 @@ export class SeatLifecycleService {
           warnings.push(...checkWarnings(relaunchChecks));
         }
       }
+    }
+    // workspaces-o9o.71: with no live pane the launch still judges the seat's leases; show that verdict too.
+    if (currentOccupant === "absent" && this.relaunchCheckPort) {
+      relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, (input.despite ?? []).filter((name) => RELAUNCH_CHECK_NAMES.includes(name)), false);
+      if (blockingChecks(relaunchChecks).length > 0) {
+        blockers.push({ code: "relaunch_check_held", message: describeHeld(relaunchChecks, canonicalSessionName),
+          guidance: `Launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")}.` });
+      }
+      warnings.push(...checkWarnings(relaunchChecks));
     }
     const launchable = blockers.length > 0 ? false : complete ? true : null;
     const siblings = rig.nodes.filter(n => n.id !== node.id).map(n => ({
@@ -1610,14 +1631,9 @@ export class SeatLifecycleService {
       const currentSession = await this.validateFreshCollision(resolved, canonicalSessionName, input.stop === true);
       if ("code" in currentSession) return currentSession;
       // workspaces-o9o.8: the seat's own unfinished work is judged BEFORE its occupant is stopped (when the daemon wires the checks).
-      relaunchChecks = this.relaunchCheckPort ? await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite) : undefined;
-      if (relaunchChecks && blockingChecks(relaunchChecks).length > 0) {
-        return {
-          ok: false, code: "relaunch_check_held", relaunchChecks,
-          message: `Fresh launch refused before anything was stopped: ${describeHeld(relaunchChecks, canonicalSessionName)}`,
-          guidance: `Let the work finish, or launch anyway with --despite ${blockingChecks(relaunchChecks).join(" --despite ")} (the --reason is recorded).`,
-        };
-      }
+      relaunchChecks = this.relaunchCheckPort ? await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite, true) : undefined;
+      const held = relaunchChecks ? heldRelaunchRefusal(relaunchChecks, canonicalSessionName) : null;
+      if (held) return held;
       const stopped = await this.stopManagedTmuxSeat(
         resolved,
         currentSession,
@@ -1632,6 +1648,12 @@ export class SeatLifecycleService {
       // empty server (no session is invented; a no-op while the server is up)
       // so they get a positive answer. The classified probes still decide.
       await this.tmuxAdapter.startServer();
+    } else if (this.relaunchCheckPort) {
+      // workspaces-o9o.71: no live pane (the TUI's explicit fresh, a stopped seat), so nothing is stopped; but a lease the seat's work
+      // still holds is still held. Judged before stale rows are cleaned or anything is started.
+      relaunchChecks = await this.relaunchChecks(this.relaunchCheckPort, canonicalSessionName, node.runtime ?? null, despite, false);
+      const held = heldRelaunchRefusal(relaunchChecks, canonicalSessionName);
+      if (held) return held;
     }
 
     // Reuse clean's exhaustive, positive-absence gate for stale/history rows.
@@ -1922,8 +1944,9 @@ export class SeatLifecycleService {
   }
 
   /** workspaces-o9o.8: the leases and agent children of the seat whose live occupant is about to be stopped. */
-  private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, runtime: string | null, despite: readonly RelaunchCheckName[]): Promise<RelaunchChecks> {
+  private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, runtime: string | null, despite: readonly RelaunchCheckName[], livePane: boolean): Promise<RelaunchChecks> {
     const lease = judgeLeases(() => port.leases(sessionName), despite);
+    if (!livePane) return { lease, children: { verdict: "not_applicable", cause: "the seat has no live pane, so no agent is running" } };
     // The process table comes through the daemon's process-lister port, wired at the edge (o9o.8 finding 6).
     const lister = this.listProcesses;
     if (!lister) return { lease, children: { verdict: "unknown", cause: "this daemon has no process lister wired" } };

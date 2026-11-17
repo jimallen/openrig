@@ -247,6 +247,10 @@ refuses with `relaunch_check_held` (naming each holder or process; nothing is st
   by an argument. The agent is recognised per runtime: on a Pi or OMP seat, OpenRig's runner and the `pi` or `omp` it
   starts are the agent.
 
+A fresh launch of a seat with no live pane (a stopped seat, the TUI's explicit fresh, a fresh seat of `rig up`) stops
+nothing, but it still checks the seat's leases and refuses the same way while one is held. The children check needs a
+running agent, so there it does not apply.
+
 `--despite lease` and `--despite children` launch anyway, one check each; the launch event records them with the
 `--reason`. A check that cannot be read (no pane process, an unreadable lease folder) only warns, so a broken seat can
 still be recovered. `--plan` shows every check's verdict.

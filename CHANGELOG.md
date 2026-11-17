@@ -224,7 +224,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - `--despite lease` and `--despite children` launch anyway, one check each; the launch event records them. A check that cannot be read only warns, so a broken seat can still be recovered. `--plan` shows every verdict.
 - The seat's newest `HANDOVER*.md` (in its folder) moves the hand-over time back to when it was written, and the fresh occupant is sent its path. This applies only when the file was written during the retiring occupant's tenure. A file from an earlier tenure, one whose tenure is not recorded, or a folder that cannot be read is named in a warning and not used.
 - The patterns are fixed defaults for now (`RELAUNCH_CHECK_DEFAULTS`); a per-seat override is workspaces-o9o.64.
-- Known limit: the TUI's explicit fresh action starts a seat whose pane it observed stopped, and does not check that seat for a live lease. Only `rig seat launch --stop` does.
+- A fresh launch of a seat with no live pane checks the seat's leases too (workspaces-o9o.71). This covers the TUI's explicit fresh action, `rig seat launch --fresh` on a stopped seat, and the fresh seats `rig up` and `rig start` launch. While a lease is held it refuses before anything is cleaned or started; `--despite lease` overrides it. The children check does not apply there, since no agent is running.
 - Known limit: a holder's pid reused by another process within the same second as the holder's start reads as alive, so the launch refuses until `--despite lease` overrides it (it fails safe).
 - Known limit: a `HANDOVER*.md` written in the same whole second as the retiring occupant's tenure began is accepted, so at most that second's messages are re-delivered, labelled as re-deliveries.
 
