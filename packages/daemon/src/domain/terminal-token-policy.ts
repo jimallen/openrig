@@ -29,23 +29,21 @@ export interface TerminalTokenInput {
   bindHosts: readonly string[];
   /** OPENRIG_TERMINAL_BEARER_TOKEN, when set. */
   envToken?: string | null;
-  /** OPENRIG_AUTH_BEARER_TOKEN (the operator token), when set. */
-  operatorToken: string | null;
-  /** An explicit bind host that is neither loopback nor the tailnet (a LAN address, 0.0.0.0). */
-  explicitUntrusted: boolean;
   /** The outbound port: the instance's terminal token file's contents, made first when absent. Called only when a token is required and
-   *  neither the environment nor the operator token supplies one. */
+   *  the environment supplies none. */
   readOrCreateFile?: () => string;
 }
 
 /**
- * The terminal token: the environment's; else the operator token on an explicit untrusted bind (as before); else, when the daemon listens
- * beyond loopback, the instance's token file; else none (loopback only: no token required).
+ * The terminal token: the environment's; else, when the daemon listens beyond loopback (a public bind included), the instance's token
+ * file; else none (loopback only: no token required). workspaces-o9o.78 review F3 (CoS decision (c)): the operator token
+ * (OPENRIG_AUTH_BEARER_TOKEN) never stands in for it. These are exactly the two sources the rig CLI, the TUI and `rig mcp serve` read
+ * (cli client.ts), so client and daemon agree by construction, and the file other hosts are told to copy never carries the operator
+ * credential.
  */
 export function decideTerminalToken(input: TerminalTokenInput): string | null {
   const env = input.envToken?.trim();
   if (env) return env;
-  if (input.explicitUntrusted && input.operatorToken) return input.operatorToken;
   if (!terminalTokenRequired(input.bindHosts)) return null;
   if (!input.readOrCreateFile) throw new Error("The daemon listens beyond loopback and has no terminal token source.");
   return input.readOrCreateFile();

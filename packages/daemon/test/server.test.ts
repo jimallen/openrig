@@ -28,7 +28,7 @@ function createTempUiDist() {
   return dir;
 }
 
-function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir: string, extra: { terminalBearerToken?: string | null } = {}) {
+function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir: string, extra: { terminalBearerToken?: string | null; missionControlBearerToken?: string | null } = {}) {
   const fullSetup = createTestApp(db);
   return createApp({
     rigRepo: fullSetup.rigRepo,
@@ -88,10 +88,38 @@ describe("the web UI page hands the terminal token only to a loopback peer", () 
     fs.rmSync(dir, { recursive: true, force: true }); db.close();
   });
 
+  // workspaces-o9o.78 review F2: `/` (and /index.html) is the page itself, served from the file before the client-route fallback; it gets
+  // the same loopback-only token as any deep link.
+  it.each(["/", "/index.html"])("the page at %s carries the token for a loopback peer, and none for another device", async (path) => {
+    const db = createFullTestDb(); const dir = createTempUiDist(); page(dir);
+    const app = createAppWithUiDist(db, dir, { terminalBearerToken: TOKEN });
+    expect(await (await app.request(path, {}, peer("127.0.0.1"))).text()).toContain(TOKEN);
+    const remote = await app.request(path, {}, peer("100.64.1.2"));
+    expect(remote.status).toBe(200);
+    expect(await remote.text()).not.toContain(TOKEN);
+    fs.rmSync(dir, { recursive: true, force: true }); db.close();
+  });
+
   it("a page whose peer address cannot be read carries no token (fail closed)", async () => {
     const db = createFullTestDb(); const dir = createTempUiDist(); page(dir);
     const app = createAppWithUiDist(db, dir, { terminalBearerToken: TOKEN });
     expect(await (await app.request("/topology")).text()).not.toContain(TOKEN);
+    fs.rmSync(dir, { recursive: true, force: true }); db.close();
+  });
+});
+
+// workspaces-o9o.78 review F3 (CoS): the terminal-token file is what peers are told to copy, so it must never authorise an operator route.
+describe("the terminal token never authorises an operator (mission-control) route", () => {
+  const OPERATOR = "op-" + "d".repeat(16);
+  const TERMINAL = "tok-" + "e".repeat(16);
+  const post = (app: ReturnType<typeof createAppWithUiDist>, token: string) =>
+    app.request("/api/mission-control/action", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: "{}" }, { incoming: { socket: { remoteAddress: "127.0.0.1" } } });
+
+  it("a mission-control write with the terminal token is refused; with the operator token it passes the gate", async () => {
+    const db = createFullTestDb(); const dir = createTempUiDist();
+    const app = createAppWithUiDist(db, dir, { terminalBearerToken: TERMINAL, missionControlBearerToken: OPERATOR });
+    expect((await post(app, TERMINAL)).status).toBe(401);
+    expect((await post(app, OPERATOR)).status).not.toBe(401);
     fs.rmSync(dir, { recursive: true, force: true }); db.close();
   });
 });

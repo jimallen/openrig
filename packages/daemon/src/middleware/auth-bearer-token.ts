@@ -21,6 +21,7 @@
 // hasn't typed the token into mobile yet — the bearer is for write
 // integrity, not view confidentiality).
 
+import { isLoopbackAddress } from "../domain/terminal-token-policy.js";
 import { Buffer } from "node:buffer";
 import { timingSafeEqual } from "node:crypto";
 import { promises as dns } from "node:dns";
@@ -65,7 +66,7 @@ const UNAUTHORIZED_COPY: Record<BearerCredential, { prefix: string; why: string;
   terminal: {
     prefix: "Terminal auth failed",
     why: "Routes that act on a seat or its terminal (put text in front of an agent, read its screen, run a shell) require the daemon's terminal bearer token.",
-    todo: "Resend the request with `Authorization: Bearer <token>`, using this daemon's terminal token: OPENRIG_TERMINAL_BEARER_TOKEN when it was started with one, otherwise the contents of <OPENRIG_HOME>/terminal-token on the daemon's host (a daemon that listens beyond loopback, the tailnet included, makes that file at start). The rig CLI on that host sends it already. From ANOTHER host: copy that file to the calling host and point the hosts.yaml entry for this daemon at the copy with `bearer_file: <path to the copy>` (cross-host send, walk, doctor --host and the daemons' message pump all use it). A daemon on a public bind with no OPENRIG_TERMINAL_BEARER_TOKEN uses its operator token (OPENRIG_AUTH_BEARER_TOKEN) here instead.",
+    todo: "Resend the request with `Authorization: Bearer <token>`, using this daemon's terminal token: OPENRIG_TERMINAL_BEARER_TOKEN when it was started with one, otherwise the contents of <OPENRIG_HOME>/terminal-token on the daemon's host (a daemon that listens beyond loopback, the tailnet included, makes that file at start). The rig CLI on that host sends it already. From ANOTHER host: copy that file to the calling host and point the hosts.yaml entry for this daemon at the copy with `bearer_file: <path to the copy>` (cross-host send, walk, doctor --host and the daemons' message pump all use it). The operator token (OPENRIG_AUTH_BEARER_TOKEN) is not the terminal token, on any bind.",
   },
 };
 
@@ -147,16 +148,10 @@ export function authBearerTokenMiddleware(
  * treated as non-loopback.
  */
 export function isLoopbackBind(host: string | undefined | null): boolean {
-  if (!host || host.length === 0) {
-    // Default Hono / @hono/node-server bind is 0.0.0.0 — treat as
-    // non-loopback for safety (force operator to either bind explicitly
-    // to 127.0.0.1 or set the bearer token).
-    return false;
-  }
-  const trimmed = host.trim().toLowerCase();
-  if (trimmed === "localhost" || trimmed === "::1" || trimmed === "[::1]") return true;
-  if (trimmed.startsWith("127.")) return true;
-  return false;
+  // workspaces-o9o.78 review F1: ONE loopback predicate decides every bind check (this invariant, index.ts's trusted-bind test, the
+  // terminal-token policy and the web UI's peer check): 127.0.0.0/8, ::1, an IPv4-mapped loopback, localhost. Empty is not loopback (the
+  // default @hono/node-server bind is 0.0.0.0).
+  return isLoopbackAddress(host);
 }
 
 /**

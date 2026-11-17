@@ -33,9 +33,6 @@ import {
 import {
   assertBindAuthInvariant,
   detectTailscaleInterface,
-  isLoopbackBind,
-  isTailscaleBind,
-  resolveToIpOrNull,
 } from "./middleware/auth-bearer-token.js";
 import type { SlowOperationInstrumentation } from "./domain/slow-op-recorder.js";
 import type { ProviderService } from "./domain/provider/provider-service.js";
@@ -243,16 +240,6 @@ export function startWakeLadderScheduler(deps: {
   return scheduler;
 }
 
-async function isTrustedLocalOrTailnetBind(host: string): Promise<boolean> {
-  if (isLoopbackBind(host)) return true;
-  if (isTailscaleBind(host)) return true;
-  if (!/^[\d.]+$/.test(host) && !host.includes(":")) {
-    const resolvedIp = await resolveToIpOrNull(host);
-    if (resolvedIp) return isLoopbackBind(resolvedIp) || isTailscaleBind(resolvedIp);
-  }
-  return false;
-}
-
 export async function startServer(port?: number, opts?: { realSimctl?: boolean }) {
   const p = port ?? parseInt(readOpenRigEnv("OPENRIG_PORT", "RIGGED_PORT") ?? "7433", 10);
   // D15 — anchor the default db under OPENRIG_HOME, never a bare CWD-relative
@@ -313,12 +300,10 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   const bearerToken = process.env.OPENRIG_AUTH_BEARER_TOKEN ?? null;
 
   let bindHosts: string[];
-  let explicitUntrusted = false;
   if (explicitHost) {
     // Operator opt-in path — invariant enforces bearer requirement for
     // genuinely public/LAN binds; loopback/tailscale binds short-circuit.
     await assertBindAuthInvariant({ host: explicitHost, bearerToken });
-    explicitUntrusted = !(await isTrustedLocalOrTailnetBind(explicitHost));
     bindHosts = [explicitHost];
   } else {
     // Default path — the plan already computed loopback + tailscale-when-active.
@@ -327,7 +312,7 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   // workspaces-o9o.78 (Jim, 2026-11-17: "Token when non-loopback"): beyond loopback (the tailnet included) the terminal token is required;
   // with no OPENRIG_TERMINAL_BEARER_TOKEN it is <OPENRIG_HOME>/terminal-token, made when absent. Loopback only stays tokenless.
   const terminalBearerToken = decideTerminalToken({
-    bindHosts, envToken: process.env.OPENRIG_TERMINAL_BEARER_TOKEN, operatorToken: bearerToken, explicitUntrusted,
+    bindHosts, envToken: process.env.OPENRIG_TERMINAL_BEARER_TOKEN,
     readOrCreateFile: () => readOrCreateTerminalToken(OPENRIG_HOME),
   });
 

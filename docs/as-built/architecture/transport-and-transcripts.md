@@ -192,9 +192,14 @@ remote daemon's ordinary local routes; the cross-host logic is in the CLI.
   terminal token whenever it LISTENS BEYOND LOOPBACK, the tailnet included. A daemon that listens on loopback only stays tokenless.
   One pure function decides at start from the bind plan (`domain/terminal-token-policy.ts` decideTerminalToken), and every listener's
   actual address is checked against that decision when it comes up: a listener beyond loopback with no token stops the daemon
-  (`index.ts`, listenerTokenProblem). The token is `OPENRIG_TERMINAL_BEARER_TOKEN` when set; else, on an explicit bind that is
-  neither loopback nor the tailnet, the operator token `OPENRIG_AUTH_BEARER_TOKEN` (as before); else `<OPENRIG_HOME>/terminal-token`,
+  (`index.ts`, listenerTokenProblem). The token is `OPENRIG_TERMINAL_BEARER_TOKEN` when set; else `<OPENRIG_HOME>/terminal-token`,
   which the daemon makes at start when absent (64 hex characters, mode 0600; `adapters/terminal-token-file.ts`).
+  - **Never the operator token** (review F3, CoS decision (c)). `OPENRIG_AUTH_BEARER_TOKEN` gates the operator (mission-control) routes and
+    never stands in for the terminal token, on any bind: a public or LAN bind takes the token file like the tailnet does. The CLI, the
+    TUI and `rig mcp serve` read exactly those two sources, so they agree with the daemon by construction; and the file other hosts are
+    told to copy never authorises an operator route.
+  - **One loopback rule** (review F1). `isLoopbackAddress` (127.0.0.0/8, `::1`, an IPv4-mapped loopback, `localhost`) decides every bind
+    check: the bind invariant (`isLoopbackBind` delegates to it), the terminal-token policy and the web UI's peer check.
   - **Same host.** The rig CLI and the TUI already send the token (`cli/src/client.ts` terminalAuthHeaders: the variable, else that
     file), and so does `rig mcp serve`. Nothing to do.
   - **Another host (provisioning, required before a release with this change).** Copy the daemon host's
@@ -204,7 +209,7 @@ remote daemon's ordinary local routes; the cross-host logic is in the CLI.
     bearer reaching a daemon that listens beyond loopback answers 401, and the 401 names this step. An ssh host needs nothing: the
     remote `rig` runs on that host and reads its own file.
   - **The web UI.** Its page is served without auth, so the token script goes only to a page loaded from the daemon's own machine
-    (a loopback peer). A web UI opened from ANOTHER device (over the tailnet) gets no token: its terminal features (attach, send,
+    (a loopback peer), on every path that serves the page: `/`, `/index.html` and any client-route deep link (review F2). A web UI opened from ANOTHER device (over the tailnet) gets no token: its terminal features (attach, send,
     transcripts) answer 401 there. Use it on the daemon's machine, or put the token into that browser's local storage
     (`openrig.terminalBearerToken`) yourself.
 - **The 3-part form is CLI-edge sugar only.** `resolveCrossHostTarget`

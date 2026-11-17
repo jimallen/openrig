@@ -258,18 +258,40 @@ describe("daemon startServer", () => {
     expect(createDaemonMock).toHaveBeenCalledWith(expect.objectContaining({ terminalBearerToken: fileToken }));
   });
 
-  it("uses the daemon bearer token for terminal routes on explicit public binds", async () => {
-    process.env.OPENRIG_BIND_HOST = "0.0.0.0";
+  // workspaces-o9o.78 review F1: an IPv4-mapped loopback is loopback for every bind check, not only the terminal-token policy.
+  it("an explicit IPv4-mapped loopback bind (::ffff:127.0.0.1) starts with no operator token and stays tokenless", async () => {
+    process.env.OPENRIG_BIND_HOST = "::ffff:127.0.0.1";
+    const { startServer } = await import("../src/index.js");
+
+    await startServer(7441);
+
+    expect(createDaemonMock).toHaveBeenCalledWith(expect.objectContaining({ terminalBearerToken: null }));
+  });
+
+  it("an explicit IPv4-mapped loopback bind with an operator token does not take it as the terminal token", async () => {
+    process.env.OPENRIG_BIND_HOST = "::ffff:127.0.0.1";
     process.env.OPENRIG_AUTH_BEARER_TOKEN = "daemon-token";
     const { startServer } = await import("../src/index.js");
 
     await startServer(7441);
 
-    expect(createDaemonMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        bearerToken: "daemon-token",
-        terminalBearerToken: "daemon-token",
-      }),
-    );
+    expect(createDaemonMock).toHaveBeenCalledWith(expect.objectContaining({ bearerToken: "daemon-token", terminalBearerToken: null }));
   });
+
+  // workspaces-o9o.78 review F3 (CoS decision (c)): the operator token never stands in for the terminal token. On an explicit public bind
+  // the terminal token is <OPENRIG_HOME>/terminal-token, the file the same host's CLI and rig mcp serve already send.
+  it("an explicit public bind takes the instance's terminal-token file, never the operator token, for terminal routes", async () => {
+    process.env.OPENRIG_BIND_HOST = "0.0.0.0";
+    process.env.OPENRIG_AUTH_BEARER_TOKEN = "daemon-token";
+    const { startServer } = await import("../src/index.js");
+    const { OPENRIG_HOME } = await import("../src/openrig-compat.js");
+
+    await startServer(7441);
+
+    const fs = await import("node:fs");
+    const fileToken = fs.readFileSync(`${OPENRIG_HOME}/terminal-token`, "utf8").trim();
+    expect(fileToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(createDaemonMock).toHaveBeenCalledWith(expect.objectContaining({ bearerToken: "daemon-token", terminalBearerToken: fileToken }));
+  });
+
 });

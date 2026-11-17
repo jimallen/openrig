@@ -902,7 +902,9 @@ export function createApp(deps: CreateAppDeps): Hono {
     }
 
     const requestedFile = safeResolveUiPath(uiDistDir, requestPath);
-    if (requestedFile && fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
+    // workspaces-o9o.78 review F2: the page itself (`/`, /index.html) goes through the same token injection as a client-route deep link,
+    // not out as a plain file.
+    if (requestedFile && requestedFile !== uiIndexPath && fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
       return fileResponse(requestedFile);
     }
 

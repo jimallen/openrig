@@ -33,6 +33,18 @@ describe("auth-bearer-token middleware (PL-005 Phase B)", () => {
     expect(isLoopbackBind("[::1]")).toBe(true);
   });
 
+  // workspaces-o9o.78 review F1: one loopback predicate decides every bind check (the bind invariant, the trusted-bind test, the terminal
+  // token policy and the web UI's peer check).
+  it.each(["127.0.0.1", "127.42.7.99", "localhost", "::1", "[::1]", "::ffff:127.0.0.1", "0.0.0.0", "::", "100.64.0.5", "10.0.0.1", "rig.local", "", "127.foo"])(
+    "isLoopbackBind agrees with the terminal policy's loopback predicate on %j", async (host) => {
+      const { isLoopbackAddress } = await import("../src/domain/terminal-token-policy.js");
+      expect(isLoopbackBind(host)).toBe(isLoopbackAddress(host));
+    });
+
+  it("HARD-GATE: an IPv4-mapped loopback bind passes the invariant with no bearer", async () => {
+    await expect(assertBindAuthInvariant({ host: "::ffff:127.0.0.1", bearerToken: null })).resolves.toBeUndefined();
+  });
+
   it("isLoopbackBind treats non-loopback hosts as non-loopback", () => {
     expect(isLoopbackBind("0.0.0.0")).toBe(false);
     expect(isLoopbackBind("100.64.0.5")).toBe(false);
