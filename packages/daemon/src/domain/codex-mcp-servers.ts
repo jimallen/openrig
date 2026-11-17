@@ -289,7 +289,11 @@ function deniedLocation(paths: string[], file: string, what: string, roots: { se
   }
   const installId = roots.runningInstall ? identityOf(roots.runningInstall, io) : null;
   for (const p of paths) {
-    const tree = controlledTree(p, installId, io);
+    // The waiver holds only on a chain with no link in it (verify-sec, o9o.91). lstat follows every component but the last, so
+    // a link anywhere in a typed path (a checkout's link to the install's package folder, say) would reach the install's own
+    // dev:ino and stop the walk early. A path whose resolved form differs from itself contains a link, and is judged unwaived.
+    const linkFree = (() => { try { return io.realpath(p) === nodePath.resolve(p); } catch { return false; } })();
+    const tree = controlledTree(p, linkFree ? installId : null, io);
     if (tree) return `${what} ${file} lies inside ${tree}, so content there could choose ${chooses}`;
   }
   return null;
@@ -320,8 +324,8 @@ function ancestorIdentities(p: string, io: PathJudgeIo): string[] {
 }
 
 /** The nearest enclosing git work tree or `.workspaces` directory (any letter case) of a path; null when none. The walk stops at
- *  the running install's daemon folder (`installId`, its dev:ino): what encloses the install does not count (o9o.91). The folder
- *  is compared with lstat, so a link elsewhere that leads into the install is not the install. */
+ *  the running install's daemon folder (`installId`, its dev:ino): what encloses the install does not count (o9o.91). The caller
+ *  passes `installId` only for a path with no link in it, since lstat would follow a link in an earlier component. */
 function controlledTree(p: string, installId: string | null = null, io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO): string | null {
   let d = nodePath.dirname(p);
   for (;;) {

@@ -140,6 +140,54 @@ describe("o9o.91: the install is matched by identity, never through a link", () 
   });
 });
 
+describe("o9o.91 (verify-sec): a link at ANY level of the typed path forfeits the waiver", () => {
+  // The folders from the prefix down to the specs: a link in a checkout may point at any of them. lstat follows every component
+  // but the last, so a link at or above the daemon folder made the walk land on the install's own dev:ino and stop.
+  const levels = (s: ReturnType<typeof scaffold>) => {
+    const pkg = join(s.daemon, "..");
+    return [
+      { name: "the prefix", target: s.prefix, rest: join("lib", "node_modules", "@openrig", "cli", "daemon", "specs", KERNEL) },
+      { name: "lib/node_modules", target: join(s.prefix, "lib", "node_modules"), rest: join("@openrig", "cli", "daemon", "specs", KERNEL) },
+      { name: "the package folder (@openrig/cli), verify-sec's probe", target: pkg, rest: join("daemon", "specs", KERNEL) },
+      { name: "the daemon folder", target: s.daemon, rest: join("specs", KERNEL) },
+      { name: "the specs folder", target: s.specs, rest: KERNEL },
+    ];
+  };
+
+  it("RED: through a link in another git checkout, at every level, the checkout still counts", () => {
+    const s = scaffold();
+    const repo = join(s.base, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const viaLinks = levels(s).map((level, i) => {
+      symlinkSync(level.target, join(repo, `link${i}`));
+      return { name: level.name, path: join(repo, `link${i}`, level.rest) };
+    });
+    homebrewModes(repo);
+    for (const via of viaLinks) {
+      expect(specFileTrustProblem(via.path, [s.specs], null, DEFAULT_PATH_JUDGE_IO, { runningInstall: s.daemon }), via.name).toContain(`lies inside the git work tree ${repo}`);
+    }
+  });
+
+  it("RED: set-mcp --spec through verify-sec's parent-package link is refused as untrusted", () => {
+    const s = scaffold();
+    const repo = join(s.base, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    symlinkSync(join(s.daemon, ".."), join(repo, "install-link"));
+    homebrewModes(repo);
+    const read = readTrustedSeatSpec({
+      specSource: null, operatorSpecFile: join(repo, "install-link", "daemon", "specs", KERNEL), rigName: "kernel",
+      node: { logicalId: "operator.agent", cwd: null }, purpose: "MCP servers", trustedSpecRoots: [s.specs], io: DEFAULT_PATH_JUDGE_IO,
+      runningInstall: () => s.daemon,
+    });
+    expect(read).toMatchObject({ ok: false, kind: "file_untrusted" });
+  });
+
+  it("the install's real spelling, which has no link, keeps the waiver", () => {
+    const s = scaffold();
+    expect(specFileTrustProblem(s.kernel, [s.specs], null, DEFAULT_PATH_JUDGE_IO, { runningInstall: s.daemon })).toBeNull();
+  });
+});
+
 describe("o9o.91: set-mcp's operator-named spec carries the install through readTrustedSeatSpec", () => {
   it("a spec named with --spec inside the running install is not refused as untrusted", () => {
     const s = scaffold();
