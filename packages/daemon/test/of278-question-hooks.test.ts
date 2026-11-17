@@ -113,11 +113,14 @@ describe("the shipped manifest", () => {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const fsRead = { exists: () => true, readFile: () => readFileSync(manifestPath, "utf8") };
 
-  it("relays PermissionRequest for AskUserQuestion only, with the question-wait hook beside it; a PreToolUse never reports the question", () => {
+  // workspaces-o9o.37: PermissionRequest is relayed for EVERY tool (its own unscoped group, the relay alone), and question-wait, the hook that
+  // answers, keeps AskUserQuestion's group to itself (permission-request-every-tool.test.ts pins that the unscoped group never answers).
+  it("question-wait alone on AskUserQuestion, the relay alone in an unscoped group; a PreToolUse never reports the question", () => {
     const groups = manifest.hooks.PermissionRequest as Array<{ matcher?: string; hooks: Array<{ command: string; timeout: number }> }>;
-    expect(groups).toHaveLength(1);
-    expect(groups[0]!.matcher).toBe("AskUserQuestion");
-    expect(groups[0]!.hooks.map((h) => h.command.match(/scripts\/([a-z-]+\.cjs)/)![1])).toEqual(["activity-relay.cjs", "question-wait.cjs"]);
+    expect(groups.map((g) => [g.matcher ?? null, g.hooks.map((h) => h.command.match(/scripts\/([a-z-]+\.cjs)/)![1])])).toEqual([
+      ["AskUserQuestion", ["question-wait.cjs"]],
+      [null, ["activity-relay.cjs"]],
+    ]);
     // workspaces-o9o.4 relays PreToolUse (async, unscoped) for the running tool, AskUserQuestion's included for its call id; the question
     // is still reported by its PermissionRequest alone (seat-posture-open-calls.test.ts pins that a start never displaces it).
     const preRelay = (manifest.hooks.PreToolUse as Array<{ matcher?: string; hooks: Array<{ command: string; async?: boolean }> }>).filter((g) => g.hooks.some((h) => h.command.includes("activity-relay")));
@@ -125,7 +128,8 @@ describe("the shipped manifest", () => {
   });
 
   it("gives the question-wait hook a timeout that outlives the longest wait, the same number the script and the policy hold", () => {
-    const wait = manifest.hooks.PermissionRequest[0].hooks[1];
+    const wait = manifest.hooks.PermissionRequest[0].hooks[0];
+    expect(wait.command).toContain("question-wait.cjs");
     expect(wait.timeout).toBe(QUESTION_HOOK_TIMEOUT_SECONDS);
     expect(hook.HOOK_TIMEOUT_SECONDS).toBe(QUESTION_HOOK_TIMEOUT_SECONDS);
     // The longest wait is the longest one measured on Claude Code 2.1.319 (a hook with timeout 1200 s honoured at 960 s), plus five minutes of margin.
@@ -134,13 +138,15 @@ describe("the shipped manifest", () => {
     expect(QUESTION_HOOK_TIMEOUT_SECONDS).toBeGreaterThan(MAX_AUTO_ANSWER_MINUTES * 60);
   });
 
-  it("derives a scoped relay entry and a question-wait entry for PermissionRequest, and no new unscoped event", () => {
+  it("derives an unscoped relay entry and a question-wait entry scoped to AskUserQuestion for PermissionRequest", () => {
     const events = deriveRelayEvents(fsRead, manifestPath);
     expect(events.filter((e) => e.event === "PermissionRequest")).toEqual([
-      { event: "PermissionRequest", matcher: "AskUserQuestion", timeout: 5 },
+      { event: "PermissionRequest", timeout: 5 },
       { event: "PermissionRequest", script: "question-wait.cjs", matcher: "AskUserQuestion", timeout: QUESTION_HOOK_TIMEOUT_SECONDS },
     ]);
-    expect(events.filter((e) => e.matcher === undefined).map((e) => e.event)).toEqual(["SessionStart", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification"]);
+    // Every unscoped entry is the relay: the answering script is never unscoped.
+    expect(events.filter((e) => e.matcher === undefined).map((e) => [e.event, e.script ?? "activity-relay.cjs"])).toEqual(
+      ["SessionStart", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Notification"].map((e) => [e, "activity-relay.cjs"]));
   });
 });
 
@@ -167,12 +173,12 @@ describe("delivery into a seat's settings.local.json", () => {
   const entry: ProjectionEntry = { category: "runtime_resource", effectiveId: "claude-activity-hooks", sourceSpec: "shared", sourcePath: "shared/activity", resourcePath: "activity", absolutePath: `${SRC_DIR}/activity-relay.cjs`, resourceType: "claude_activity_hooks", classification: "safe_projection" };
   const plan = (entries: ProjectionEntry[]) => ({ runtime: "claude-code", cwd: "/project", entries, startup: {} as ProjectionPlan["startup"], conflicts: [], noOps: [], diagnostics: [] }) as ProjectionPlan;
 
-  it("writes PermissionRequest as two groups scoped to AskUserQuestion, and delivers both scripts side by side", async () => {
+  it("writes PermissionRequest as an unscoped relay group and a question-wait group scoped to AskUserQuestion, and delivers both scripts side by side", async () => {
     const { store, adapter } = setup(true);
     await adapter.project(plan([entry]), binding);
     const settings = JSON.parse(store[SETTINGS]!);
     expect(settings.hooks.PermissionRequest).toEqual([
-      { matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${shellQuote(relayDest)}`, timeout: 5 }] },
+      { hooks: [{ type: "command", command: `node ${shellQuote(relayDest)}`, timeout: 5 }] },
       { matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${shellQuote(waitDest)}`, timeout: QUESTION_HOOK_TIMEOUT_SECONDS }] },
     ]);
     expect(store[relayDest]).toBe("// relay");
@@ -185,7 +191,7 @@ describe("delivery into a seat's settings.local.json", () => {
     const { store, adapter } = setup(false);
     await adapter.project(plan([entry]), binding);
     const settings = JSON.parse(store[SETTINGS]!);
-    expect(settings.hooks.PermissionRequest).toEqual([{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: `node ${shellQuote(relayDest)}`, timeout: 5 }] }]);
+    expect(settings.hooks.PermissionRequest).toEqual([{ hooks: [{ type: "command", command: `node ${shellQuote(relayDest)}`, timeout: 5 }] }]);
     expect(waitDest in store).toBe(false);
   });
 
