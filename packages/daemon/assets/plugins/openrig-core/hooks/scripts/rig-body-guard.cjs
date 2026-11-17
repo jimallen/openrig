@@ -15,8 +15,11 @@
 // allowed. The lexer is a port of the ideas in ~/.agents/scripts/bash-guard (quote-aware matching of
 // $(...) and `...`, here-document bodies read at the newline), narrowed to this one question.
 //
+// workspaces-o9o.108 adds a second rule on the same shared path (Claude and Pi): a kill that is not by PID (pkill -f / with a pattern,
+// killall, kill of a process group, kill of what pgrep selects) is refused; see "Broad kills".
+//
 // FAIL-CLOSED / FAIL-OPEN (decided, OF-249):
-//   - A command that does not mention a guarded rig command is never refused, whatever the parser does.
+//   - A command that does not mention a guarded rig command, or a broad kill (o9o.108, see "Broad kills" below), is never refused, whatever the parser does.
 //   - A command the guard cannot ANALYSE (unterminated quote or $( , nested past MAX_DEPTH, over the length, mask or work-budget bounds,
 //     internal error) is refused when it contains a backtick or `$(` ANYWHERE, with no look for the word rig: every spelling check of the name
 //     was bypassed by another way to write it (OF-251 re-review rounds 1 to 3). Only pathological or unparseable inputs get here, so the
@@ -605,6 +608,110 @@ function topLevel(args) {
   return null;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Broad kills (workspaces-o9o.108)
+//
+// Every seat on a host runs as the same user, so a kill chosen by name, pattern or process group stops other seats' processes too:
+// on 2026-11-17 at 17:28:56Z a seat ran `pkill -f 'unittest discover -s Tests/ScriptTests'` to stop its own run and stopped four other
+// seats' runs. These rules ride the same traversal as the rig rules (wrappers, sh -c / eval / ssh, substitutions, stdin scripts), so
+// quoting or a wrapper the guard reads cannot hide them, and text that only mentions a kill (echo, grep, a commit message) is not one.
+// Refused: pkill -f / --full; pkill with a name pattern or an owner, group or session selector; killall (except listing or help);
+// kill of a negative pid, -1 or 0 (a process group, or every process of the user); kill of what pgrep or pidof selects
+// (`kill $(pgrep -f x)`, `pgrep -f x | xargs kill`). Allowed: kill <pid>, kill %job, kill -l, pkill anchored to a pidfile (-F) or to
+// literal parent pids (-P <pid>), pkill/killall help and listing. Ported from ~/.agents/scripts/bash-guard (pkill_verdict).
+const KILLERS = new Set(["pkill", "killall", "kill"]);
+const PKILL_VALUED_SHORT = new Set("PgGstuUFs".split(""));
+const PKILL_VALUED_LONG = new Set(["--parent", "--pgroup", "--group", "--session", "--terminal", "--euid", "--uid", "--pidfile", "--signal", "--ns", "--nslist", "--cgroup"]);
+const PID_LIST_RE = /^(?:[0-9]+(?:,[0-9]+)*|\$\$|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)$/;
+const PKILL_SIGNAL_RE = /^(?:(?:SIG)?[A-Z][A-Z0-9+]+|[0-9]+)$/;
+
+/** pkill's (and pgrep's) selection: null when anchored to pids or only asking for help, else "pkill-f" or "pkill". */
+function pkillVerdict(args) {
+  let full = false, pattern = false, anchored = false, helpOnly = false, seenDd = false;
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (!seenDd && t === "--") { seenDd = true; continue; }
+    if (!seenDd && t.startsWith("--")) {
+      const key = t.split("=", 1)[0];
+      if (key === "--full") full = true;
+      else if (key === "--help" || key === "--version" || key === "--list-name") helpOnly = true;
+      else if (key === "--pidfile") anchored = true;
+      else if (key === "--parent") { const v = t.includes("=") ? t.slice(t.indexOf("=") + 1) : (args[i + 1] || ""); anchored = anchored || PID_LIST_RE.test(v); }
+      if (PKILL_VALUED_LONG.has(key) && !t.includes("=")) i++;
+      continue;
+    }
+    if (!seenDd && t.startsWith("-") && t.length > 1) {
+      const letters = t.slice(1);
+      if (PKILL_SIGNAL_RE.test(letters)) continue;                 // -9, -TERM, -SIGKILL
+      for (let k = 0; k < letters.length; k++) {
+        const ch = letters[k];
+        if (ch === "f") full = true;
+        else if (ch === "l" || ch === "h" || ch === "V") helpOnly = true;
+        if (PKILL_VALUED_SHORT.has(ch)) {
+          const val = letters.slice(k + 1) || (args[i + 1] || "");
+          if (ch === "F") anchored = true;
+          else if (ch === "P") anchored = anchored || PID_LIST_RE.test(val);
+          if (!letters.slice(k + 1)) i++;
+          break;
+        }
+      }
+      continue;
+    }
+    pattern = true;
+  }
+  if (helpOnly && !full && !pattern) return null;
+  if (full) return "pkill-f";
+  if (pattern) return "pkill";
+  if (args.length === 0) return null;                             // bare pkill: a usage error, kills nothing
+  return anchored ? null : "pkill";
+}
+
+/** True when a command substitution's text selects processes by name or pattern (pgrep that is not anchored, or pidof). */
+function selectsByPattern(subText) {
+  let cmds;
+  try { cmds = lex(subText).cmds; } catch { return /(?:^|[^\w./-])(?:pgrep|pidof)(?![\w-])/.test(subText); }
+  return cmds.some((c) => {
+    const res = resolve(c.words);
+    if (!res) return false;
+    if (res.name === "pidof") return true;
+    return res.name === "pgrep" && pkillVerdict(res.args.map((a) => a.text)) !== null;
+  });
+}
+
+/** The broad-kill violations of one resolved simple command ({ name, args }). */
+function killViolations(res) {
+  if (!res || !KILLERS.has(res.name)) return [];
+  const texts = res.args.map((a) => a.text);
+  if (res.name === "pkill") { const v = pkillVerdict(texts); return v ? [{ kind: v, command: "pkill" }] : []; }
+  if (res.name === "killall") {
+    if (texts.length === 0 || texts.every((t) => ["-l", "-h", "--help", "-V", "--version", "--list"].includes(t))) return [];
+    return [{ kind: "killall", command: "killall" }];
+  }
+  // kill: the first -X is the signal (or -s/-n with a value); -l/-L list signals. Then the targets.
+  let i = 0;
+  let signal = false;
+  for (; i < res.args.length; i++) {
+    const t = texts[i];
+    if (t === "--") { i++; break; }
+    if (t === "-l" || t === "-L" || t === "--list" || t === "--table") return [];
+    if (t === "-s" || t === "-n" || t === "--signal") { signal = true; i++; continue; }
+    if (!signal && t.startsWith("-") && t.length > 1) { signal = true; continue; }
+    break;
+  }
+  for (const w of res.args.slice(i)) {
+    if (w.text.startsWith("-") || w.text === "0") return [{ kind: "kill-group", command: "kill" }];
+    if (w.expands && (w.subs || []).some(selectsByPattern)) return [{ kind: "kill-pattern", command: "kill" }];
+  }
+  return [];
+}
+
+/** A pgrep that selects by pattern (or pidof) feeding a later `xargs ... kill` in the same pipeline. */
+function selectsForXargs(res) {
+  if (!res) return false;
+  if (res.name === "pidof") return true;
+  return res.name === "pgrep" && pkillVerdict(res.args.map((a) => a.text)) !== null;
+}
+
 const FILE_OPTION_RE = /^(?:--file|-f|--[a-z][a-z-]*-file)$/;
 const FILE_OPTION_EQ_RE = /^(?:--file|--[a-z][a-z-]*-file)=/;
 
@@ -780,6 +887,7 @@ function tmuxSubcommand(args) {
 
 function scanPipeline(cmds, resolved, from, to, depth, out) {
   let message = null;
+  let patternFeed = false;      // an earlier command of this pipeline selects pids by pattern (pgrep -f x | xargs kill)
   let producersDone = from;     // commands [from, producersDone) were already scanned as a stdin shell's producers: each is read once per pipeline (linear, not per shell)
   const producers = (i) => { scanPipeProducers(cmds, resolved, producersDone, i, depth, out); if (i > producersDone) producersDone = i; };
   for (let i = from; i < to; i++) {
@@ -787,6 +895,11 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
     const res = resolved[i];
     if (!res) continue;
     if (res.scripts) for (const sw of res.scripts) scanScriptWords([sw], depth, out);
+    for (const v of killViolations(res)) out.push(v);
+    if (patternFeed && (res.name === "xargs" || res.name === "parallel") && res.args.some((a) => !a.expands && baseName(a.text) === "kill")) {
+      out.push({ kind: "kill-pattern", command: "kill" });
+    }
+    if (selectsForXargs(res)) patternFeed = true;
     let handled = true;
     if (res.name === "rig") {
       const top = topLevel(res.args);
@@ -821,6 +934,11 @@ function scanPipeline(cmds, resolved, from, to, depth, out) {
       if (remote.length && !bareShell) scanScriptWords(remote, depth, out);
       else { scanStdinScript(cmds[i], depth, out); producers(i); }   // ssh host <<'EOF' ... EOF, printf ... | ssh host [sh]
     } else handled = false;
+    if (!handled && !NON_RUNNERS.has(res.name) && !KILLERS.has(res.name)) {
+      // a runner this guard does not model that runs a kill among its arguments (xargs pkill -f, find -exec pkill, docker exec c pkill -f)
+      const kj = res.args.findIndex((a) => !a.expands && KILLERS.has(baseName(a.text)));
+      if (kj >= 0) for (const v of killViolations({ name: baseName(res.args[kj].text), args: res.args.slice(kj + 1) })) out.push(v);
+    }
     if (!handled && !NON_RUNNERS.has(res.name)) {
       // OF-251 review F-1/F-3: a runner this guard does not model (find -exec, parallel, docker exec, script, tmux, ...): `rig <guarded command> ...` among its
       // arguments is judged as if it were run directly, and an argument that is itself a script string naming a guarded rig command is read as shell text
@@ -870,6 +988,8 @@ function pickMarker(src) {
   throw new ParseError("no free marker character");
 }
 
+const KILL_FALLBACK_RE = /(?:^|[^\w./-])(?:pkill|killall)(?![\w-])|(?:^|[^\w./-])kill\s+(?:\S+\s+)*?(?:-[0-9]|0(?:\s|$))/;
+
 /** check(command[, { budgetMs }]) -> { block, violations, reason }. Never throws. */
 function check(command, options) {
   if (typeof command !== "string" || command.length === 0) return { block: false, violations: [], reason: "" };
@@ -888,14 +1008,35 @@ function check(command, options) {
     if (command.includes("`") || command.includes("$(")) {
       violations.push({ kind: "unparseable", command: null });
     }
+    // o9o.108: an unreadable command that names pkill or killall, or a kill aimed at a group, is refused too (fail closed).
+    if (KILL_FALLBACK_RE.test(command)) violations.push({ kind: "unparseable-kill", command: null });
   }
   deadline = Infinity;
   if (violations.length === 0) return { block: false, violations, reason: "" };
   return { block: true, violations, reason: refusal(violations) };
 }
 
+const KILL_KINDS = new Set(["pkill-f", "pkill", "killall", "kill-group", "kill-pattern", "unparseable-kill"]);
+
+function killRefusal(kind) {
+  const why = {
+    "pkill-f": "`pkill -f` matches its pattern against every process's full command line, so it also stops other seats' processes whose command lines contain the same text",
+    pkill: "`pkill` selects by name pattern or by owner, so it stops every matching process on this host, not only the one you started",
+    killall: "`killall` stops every process with that name on this host, not the one you started",
+    "kill-group": "a negative pid, -1 or 0 signals a whole process group, or every process you own, not one process",
+    "kill-pattern": "the pids come from a pattern match (pgrep or pidof), which is `pkill` by another spelling",
+    "unparseable-kill": "the guard could not analyse this command, and it names pkill or killall, or a kill aimed at a process group",
+  }[kind];
+  return [
+    "rig-body-guard BLOCKED this command before it ran. Nothing was executed.",
+    `Why: ${why}. Every seat on this host runs as the same user, so a kill by name or pattern reaches the other seats too (2026-11-17: a \`pkill -f\` stopped four other seats' test runs).`,
+    "Fix: stop by PID. Find it with `pgrep -af '<the exact path or command line you started>'` (or `ps`), confirm each pid is yours (its command line, or its working folder: `readlink /proc/<pid>/cwd`), then `kill <pid>` for each; escalate to `kill -9 <pid>` only if it ignores TERM. For a run you started in the background, stop it by its own pid.",
+  ].join("\n");
+}
+
 function refusal(violations) {
   const first = violations[0];
+  if (KILL_KINDS.has(first.kind)) return killRefusal(first.kind);
   const cmd = first.command ? `rig ${first.command}` : "a rig command";
   const spec = first.command && MESSAGE_COMMANDS[first.command];
   const why = {

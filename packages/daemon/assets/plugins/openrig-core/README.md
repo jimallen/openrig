@@ -14,6 +14,11 @@ off, and never runs at fresh session start.
 **Guard:** `hooks/scripts/rig-body-guard.cjs` is a `PreToolUse` hook on Claude Code's `Bash` tool, active where this plugin is installed (the daemon delivers it to managed Claude seats separately, OF-250) (and, through `pi/rig-body-guard.cjs`, the Pi `tool_call`
 extension the OpenRig pi-runner loads for every Pi seat). It refuses, before the shell runs it, a `rig send` / `rig queue ...` command whose text holds a command
 substitution (backticks or `$(...)`) in double quotes, unquoted, or in an unquoted here-document, and tells the model to use `--file - <<'EOF'`.
+On both Claude and Pi, it also refuses a kill that is not by PID (workspaces-o9o.108): `pkill -f`, `pkill` with a name pattern or an owner,
+group or session selector, `killall`, `kill` of a negative pid, `-1` or `0`, and `kill` of what `pgrep` or `pidof` selects (`kill $(pgrep -f x)`,
+`pgrep -f x | xargs kill`), through the same wrappers and shell forms the rig rule reads. Every seat on a host is the same user, so these reach other
+seats' processes. `kill <pid>`, `kill %job`, `kill -l`, `pkill -F <pidfile>`, `pkill -P <pid>` and help or listing stay allowed; the refusal says to
+find the pid with `pgrep -af '<exact path>'`, confirm it is yours, and `kill <pid>`.
 On Claude Code only, the same hook also refuses a Bash call that is not `run_in_background: true` and starts a shell background job (a top-level `&` with no later
 `wait`, or `nohup`, `disown` or `setsid` as a command word): nothing wakes the seat when such a job ends. The refusal points at `run_in_background: true` or Monitor.
 
