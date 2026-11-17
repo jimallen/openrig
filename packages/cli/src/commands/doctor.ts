@@ -11,7 +11,7 @@ import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, read
 import { parse as parseYaml } from "yaml";
 import { compareSpecToLive, topologyFromRigSpec, topologyFromLiveLogicalIds } from "@openrig/daemon/spec-conformance";
 import { findIgnoredVendoredPlugins } from "@openrig/daemon/vendored-plugin-conflicts";
-import { getDefaultOpenRigPath } from "../openrig-compat.js";
+import { getDefaultOpenRigPath, getOpenRigHome } from "../openrig-compat.js";
 import { classifyNodeVersion } from "../node-support.js";
 import { checkProviderReadiness } from "../provider-auth.js";
 import {
@@ -26,6 +26,8 @@ import {
   type LocalHostFacts,
 } from "../host-readiness.js";
 import { realLocalHostFacts } from "../host-readiness-facts.js";
+import { buildSeatPathHeadCheck, type SeatProcess } from "../seat-path-head.js";
+import { readSeatProcesses } from "../seat-process-environments.js";
 
 interface DoctorCheck {
   name: string;
@@ -67,6 +69,10 @@ export interface DoctorDeps {
   localHostFacts?: LocalHostFacts;
   /** workspaces-o9o.11: ask the daemon for its host rows; null when it cannot be reached. */
   fetchHostRows?: (input: { seatShell: boolean; runtimes: string[] | null }) => Promise<{ status: number; rows: DoctorCheck[] | null } | null>;
+  /** workspaces-o9o.106: the seat processes on this host with their PATH (default: /proc on Linux; null elsewhere). */
+  readSeatProcesses?: () => SeatProcess[] | null;
+  /** The OpenRig instance whose seats that row judges (default: this CLI's OPENRIG_HOME). */
+  openrigHome?: string;
 }
 
 /**
@@ -196,6 +202,8 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
 
   // 6b. Vendored plugin folders the daemon ignores (workspaces-o9o.44). Read from disk, so it answers while the daemon is down.
   checks.push(buildVendoredPluginsCheck(deps.pluginsDir ?? getDefaultOpenRigPath("plugins")));
+  // workspaces-o9o.106: a seat launched before the seat PATH head runs without the git worktree shim until relaunched.
+  checks.push(buildSeatPathHeadCheck((deps.readSeatProcesses ?? readSeatProcesses)(), deps.openrigHome ?? getOpenRigHome()));
 
   // 7. Port availability (async) — daemon already running on that port counts as OK.
   // OPR.0.4.7 slice-05 item-4b: resolve the daemon host+port ONCE from config and use
