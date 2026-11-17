@@ -19,6 +19,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - The waiver applies only to a path with no symbolic link in it, so a path typed through a link (a checkout's link to the install's package folder, or an `npm link` install) is judged without it; name the install by its real path. lstat follows every component but the last, so a link at or above the daemon folder would otherwise have reached the install's own identity and ended the check early (found in verify-sec's review).
 - Residual, declined by design: a bind mount of the install into a git checkout carries the install's identity without a link. Making one needs mount privileges, which a seat does not have; an unprivileged user-namespace mount was refused on Sparky.
 
+### The seats' `git` shim refuses a worktree outside `.rig-worktrees` instead of moving it there (workspaces-o9o.102)
+
+- Symptom: `git worktree add <path>` from a seat whose `git` is the rig-bin shim, with `<path>` outside `<repo>/.rig-worktrees`, created the tree at `<repo>/.rig-worktrees/<name>`, printed nothing and exited 0. A caller that then used the path it asked for failed later, after its own side effects: `openrig-deploy` would push and then find no build tree (o9o.101), and test fixtures failed far from the cause (o9o.77). Measured at release-6 `8edc194e7`.
+- Now such a call is refused: exit 128, nothing created, git not run, and one line on stderr: `openrig git shim: refusing worktree path <path>: seat worktrees go in <repo>/.rig-worktrees/<name>`. The path and the folder are quoted with bash's `%q`, so a newline or a control character stays on the one line. There is no bypass.
+- Unchanged: a path inside `.rig-worktrees` (judged on the physical path, so `..` and symlinks out of it are outside), the global-option handling, the "worktree path not checked" notice for options the shim does not know, and every other git call.
+- The shim's sha256 changes, so every installed `rig-bin/git` is rewritten at the next daemon start. The deploy script's own half (run git without the seat shim, add the build tree before the push) is workspaces-o9o.103.
+
 ### A plain permission prompt is cleared by its own tool's end (workspaces-o9o.37)
 
 - Symptom: a plain permission prompt (a seat not in bypass mode asking to run a tool) names no tool, so the daemon cleared it with any tool end stamped more than 2 s after it. An end of an earlier call that was relayed late could clear a prompt still waiting for its answer.

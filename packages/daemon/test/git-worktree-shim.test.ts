@@ -70,6 +70,14 @@ function runGit(args: string[], pathDirs: string[], cwd: string, extraEnv: Recor
   return { status: r.status, signal: r.signal, stdout: r.stdout?.toString() ?? "", stderr: r.stderr?.toString() ?? "" };
 }
 
+/** The shim's one refusal line for a worktree path outside <toplevel>/.rig-worktrees (workspaces-o9o.102). Plain paths
+ * only (letters, digits, '/', '.', '-', '_'), which bash's %q prints unchanged; a row with other bytes uses REFUSAL. */
+function refusal(target: string, toplevel: string): string {
+  if (!/^[A-Za-z0-9/._-]+$/.test(target + toplevel)) throw new Error(`refusal(): plain paths only: ${JSON.stringify(target)} ${JSON.stringify(toplevel)}`);
+  return `openrig git shim: refusing worktree path ${target}: seat worktrees go in ${toplevel}/.rig-worktrees/<name>\n`;
+}
+const REFUSAL = /^openrig git shim: refusing worktree path [^\n]*: seat worktrees go in [^\n]*\/\.rig-worktrees\/<name>\n$/;
+
 function dockerImagePresent(image: string): boolean {
   const r = spawnSync("docker", ["image", "inspect", image], { stdio: "ignore", timeout: 10000 });
   return r.status === 0;
@@ -184,7 +192,7 @@ describe("git-worktree-shim", () => {
     });
   });
 
-  it("redirects out-of-repo 'git worktree add' into .rig-worktrees, keeps normal add", async () => {
+  it("refuses an out-of-repo 'git worktree add' (nothing created anywhere), keeps normal add", async () => {
     // real repo under tmp
     const repo = path.join(tmp, "repo");
     await fs.mkdir(repo);
@@ -202,15 +210,13 @@ describe("git-worktree-shim", () => {
     const shimDirPath = await ensureGitWorktreeShim(tmp, nodeShimFiles);
     const pathDirs = [shimDirPath, realGitDir(), "/usr/bin", "/bin"];
 
-    // out-of-place target => redirected under <repo>/.rig-worktrees/
+    // out-of-place target => refused: exit 128, one line, nothing at the path asked for or in .rig-worktrees
     const outside = path.join(tmp, "outside-wt");
     const r1 = runGit(["worktree", "add", outside], pathDirs, repo);
-    expect(r1.status).toBe(0);
-    const redirected = path.join(repo, ".rig-worktrees", "outside-wt");
-    expect((await fs.lstat(redirected)).isDirectory()).toBe(true);
+    expect(r1.status).toBe(128);
+    expect(r1.stderr).toBe(refusal(outside, await fs.realpath(repo)));
     expect(existsSync(outside), "the out-of-place target is not created").toBe(false);
-    // git's own progress lines are the only stderr: nothing from the shim
-    expect(r1.stderr).not.toMatch(/invalid option|unbound variable|openrig shim/);
+    expect(existsSync(path.join(repo, ".rig-worktrees", "outside-wt")), "nor moved into .rig-worktrees").toBe(false);
 
     // in-place target => left alone
     const inside = path.join(repo, ".rig-worktrees", "explicit-wt");
@@ -225,6 +231,32 @@ describe("git-worktree-shim", () => {
     // clean repo → empty output is correct; the point is the shim didn't eat the verb
     expect(r3.stdout.trim()).toBe("");
     expect(r3.stderr, "an ordinary git call prints nothing from the shim").toBe("");
+  });
+
+  // workspaces-o9o.102: a worktree asked for outside <repo>/.rig-worktrees is refused, never moved. The shim used to
+  // create it inside .rig-worktrees and exit 0, so a caller that went on to use the path it asked for failed later,
+  // after its own side effects: openrig-deploy pushed, then found no build tree (o9o.101), and test fixtures failed
+  // far from the cause (o9o.77). Measured at release-6 8edc194e7: exit 0, the tree in .rig-worktrees/<sha>, nothing
+  // printed.
+  it("openrig-deploy's call, 'git -c core.hooksPath=/dev/null -C <repo> worktree add --detach <outside> <sha>': refused, exit 128, one line, nothing created", async () => {
+    const repo = path.join(tmp, "fork");
+    await fs.mkdir(repo);
+    const git = path.join(realGitDir(), "git");
+    expect(spawnSync(git, ["init", "-q", repo]).status).toBe(0);
+    expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
+    const sha = spawnSync(git, ["-C", repo, "rev-parse", "HEAD"]).stdout.toString().trim();
+    const realRepoDir = await fs.realpath(repo);
+    const build = path.join(tmp, "rsi", "build", sha);
+    const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
+    const r = runGit(["-c", "core.hooksPath=/dev/null", "-C", repo, "worktree", "add", "--detach", build, sha], [shim, realGitDir(), "/usr/bin", "/bin"], tmp);
+    expect(r.status, r.stderr).toBe(128);
+    expect(r.stderr).toBe(
+      `openrig git shim: refusing worktree path ${build}: seat worktrees go in ${realRepoDir}/.rig-worktrees/<name>\n`,
+    );
+    expect(existsSync(build), "nothing at the path asked for").toBe(false);
+    expect(existsSync(path.join(realRepoDir, ".rig-worktrees")), "nothing moved into .rig-worktrees either").toBe(false);
+    const list = spawnSync(git, ["-C", repo, "worktree", "list", "--porcelain"]).stdout.toString();
+    expect(list.match(/^worktree /gm)?.length, list).toBe(1);
   });
 
   // workspaces-o9o.2: the generated file run under real bash. At d0303ca8 real_git ran 'command -v -a git'
@@ -404,11 +436,12 @@ describe("git-worktree-shim", () => {
     }
   });
 
-  // workspaces-o9o.5: when the redirect fires, git must receive the caller's argv with only the path word
-  // rewritten. At 6a6c796e the shim rebuilt the call from the positional words alone, so -b/-B and every
-  // flag were dropped; it also parsed --track and --guess-remote as taking a value (git 2.43.0's
-  // `git worktree add -h` lists both as booleans), and rewrote an inside path given relative.
-  describe("worktree add redirect: only the path word changes", () => {
+  // workspaces-o9o.5: the shim must find the path word by git's grammar. At 6a6c796e the shim rebuilt the call from
+  // the positional words alone, so -b/-B and every flag were dropped; it also parsed --track and --guess-remote as
+  // taking a value (git 2.43.0's `git worktree add -h` lists both as booleans), and rewrote an inside path given
+  // relative. Since workspaces-o9o.102 an outside path is refused, not rewritten: every known option form is pinned
+  // twice, an inside path reaching git byte-for-byte and an outside one refused by name before git runs.
+  describe("worktree add: the path word found by git's grammar, inside unchanged, outside refused", () => {
     const NOT_CHECKED = "openrig git shim: worktree path not checked (unrecognised option ";
 
     /** A git stand-in that prints its argv NUL-separated; rev-parse answers the physical cwd as the toplevel. */
@@ -429,13 +462,18 @@ describe("git-worktree-shim", () => {
       await fs.mkdir(top, { recursive: true });
       const realTop = await fs.realpath(top);
       const outside = path.join(tmp, "elsewhere", "wt");
-      const redirected = path.join(realTop, ".rig-worktrees", "wt");
       const pathDirs = [shim, await recordingGitDir(), "/usr/bin", "/bin"];
       const run = (args: string[]) => {
         const r = runGit(["worktree", "add", ...args], pathDirs, top);
         return { ...r, argv: r.stdout.split("\0").slice(0, -1) };
       };
-      return { top, realTop, outside, redirected, run };
+      /** Refused: exit 128, the one line naming the target and this toplevel, and git never ran. */
+      const expectRefused = (r: ReturnType<typeof run>, target: string) => {
+        expect(r.status, r.stderr).toBe(128);
+        expect(r.argv, "git did not run").toEqual([]);
+        expect(r.stderr).toBe(refusal(target, realTop));
+      };
+      return { top, realTop, outside, run, expectRefused };
     }
 
     // One row per option form in git 2.43.0's `git worktree add -h`, the --no-* forms and the attached forms.
@@ -452,31 +490,36 @@ describe("git-worktree-shim", () => {
     ];
 
     for (const form of KNOWN_FORMS) {
-      it(`'${form.join(" ")}' before an outside path: every word reaches git, only the path is rewritten`, async () => {
-        const { outside, redirected, run } = await setup();
-        const r = run([...form, outside]);
-        expect(r.argv).toEqual(["worktree", "add", ...form, redirected]);
+      it(`'${form.join(" ")}' then a path: an inside one reaches git with every word, an outside one is refused`, async () => {
+        const { realTop, outside, run, expectRefused } = await setup();
+        const inside = path.join(realTop, ".rig-worktrees", "wt");
+        const r = run([...form, inside]);
+        expect(r.argv).toEqual(["worktree", "add", ...form, inside]);
         expect(r.stderr).toBe("");
         expect(r.status).toBe(0);
+        expectRefused(run([...form, outside]), outside);
       });
     }
 
-    it("keeps the commit-ish and options after the path, in order", async () => {
-      const { outside, redirected, run } = await setup();
-      const r = run(["-b", "feat", outside, "HEAD~0", "--quiet"]);
-      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", redirected, "HEAD~0", "--quiet"]);
+    it("the commit-ish and options after the path: kept in order for an inside path, an outside one refused", async () => {
+      const { realTop, outside, run, expectRefused } = await setup();
+      const inside = path.join(realTop, ".rig-worktrees", "wt");
+      const r = run(["-b", "feat", inside, "HEAD~0", "--quiet"]);
+      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", inside, "HEAD~0", "--quiet"]);
       expect(r.stderr).toBe("");
+      expectRefused(run(["-b", "feat", outside, "HEAD~0", "--quiet"]), outside);
     });
 
     it("after '--' the next word is the path, even when it starts with a dash", async () => {
-      const { realTop, run } = await setup();
-      const r = run(["-b", "feat", "--", "-wt"]);
-      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", "--", path.join(realTop, ".rig-worktrees", "-wt")]);
+      const { run, expectRefused } = await setup();
+      expectRefused(run(["-b", "feat", "--", "-wt"]), "-wt");
+      const r = run(["-b", "feat", "--", ".rig-worktrees/-wt"]);
+      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", "--", ".rig-worktrees/-wt"]);
       expect(r.stderr).toBe("");
     });
 
     for (const unknown of [["--det"], ["-fq"], ["--lock", "--rea", "x"], ["--some-future-option"]]) {
-      it(`an option the shim does not know ('${unknown.join(" ")}') passes through unredirected, with one stderr line`, async () => {
+      it(`an option the shim does not know ('${unknown.join(" ")}') passes through unchecked, with one stderr line`, async () => {
         const { outside, run } = await setup();
         const r = run([...unknown, outside]);
         expect(r.argv).toEqual(["worktree", "add", ...unknown, outside]);
@@ -519,7 +562,7 @@ describe("git-worktree-shim", () => {
     // bash 3.2 (the macOS system bash) differs from the host's 5.x in ways the host rows cannot see: in 3.2 a
     // backslash in a ${var//pat/rep} replacement stays in the result. Same assertions, in the 3.2 image.
     it.skipIf(!dockerImagePresent("bash:3.2"))(
-      "bash:3.2: a relative './' inside path is unchanged and '-b feat <outside>' keeps -b (NOT RUN without docker and the bash:3.2 image)",
+      "bash:3.2: a relative './' inside path is unchanged and '-b feat <outside>' is refused before git runs (NOT RUN without docker and the bash:3.2 image)",
       async () => {
         const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
         const rec = await recordingGitDir();
@@ -529,17 +572,17 @@ describe("git-worktree-shim", () => {
           "bash", "-c",
           "mkdir -p /top && cd /top && export PATH=/s/rig-bin:/s/rec:/usr/local/bin:/usr/bin:/bin; " +
             "timeout -s KILL 5 git worktree add -b feat ./.rig-worktrees/in; printf '\\n'; " +
-            "timeout -s KILL 5 git worktree add -b feat /elsewhere/wt",
+            "timeout -s KILL 5 git worktree add -b feat /elsewhere/wt; printf 'rc=%s' $?",
         ], { timeout: 60000 });
         expect(r.status).toBe(0);
-        expect(r.stderr.toString()).toBe("");
-        const [inside, outside] = r.stdout.toString().split("\n").map(line => line.split("\0").slice(0, -1));
-        expect(inside).toEqual(["worktree", "add", "-b", "feat", "./.rig-worktrees/in"]);
-        expect(outside).toEqual(["worktree", "add", "-b", "feat", "/top/.rig-worktrees/wt"]);
+        expect(r.stderr.toString()).toBe(refusal("/elsewhere/wt", "/top"));
+        const [inside, outside] = r.stdout.toString().split("\n");
+        expect((inside ?? "").split("\0").slice(0, -1)).toEqual(["worktree", "add", "-b", "feat", "./.rig-worktrees/in"]);
+        expect(outside, "git did not run, and the shim exited 128").toBe("rc=128");
       },
     );
 
-    it("real git: 'worktree add -b feat <outside>' creates branch feat, checked out in the redirected worktree", async () => {
+    it("real git: 'worktree add -b feat <outside>' is refused: no branch feat, no worktree anywhere", async () => {
       const repo = path.join(tmp, "repo");
       await fs.mkdir(repo);
       const git = path.join(realGitDir(), "git");
@@ -549,11 +592,11 @@ describe("git-worktree-shim", () => {
       await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["worktree", "add", "-b", "feat", path.join(tmp, "outside-b")], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
-      expect(r.status, r.stderr).toBe(0);
-      const wt = path.join(repo, ".rig-worktrees", "outside-b");
-      const branch = spawnSync(git, ["-C", wt, "branch", "--show-current"]).stdout.toString().trim();
-      expect(branch).toBe("feat");
+      expect(r.status, r.stderr).toBe(128);
+      expect(r.stderr).toBe(refusal(path.join(tmp, "outside-b"), await fs.realpath(repo)));
+      expect(spawnSync(git, ["-C", repo, "branch", "--list", "feat"]).stdout.toString(), "no branch feat").toBe("");
       expect(existsSync(path.join(tmp, "outside-b"))).toBe(false);
+      expect(existsSync(path.join(repo, ".rig-worktrees"))).toBe(false);
     });
 
     // verify-sec, review of 6dc59b2b (FAIL 1/3): "inside" was judged on the path's text, so a '..' out of
@@ -578,28 +621,31 @@ describe("git-worktree-shim", () => {
     }
 
     for (const form of ["relative", "absolute"] as const) {
-      it(`real git, ${form}: '.rig-worktrees/../escaped-wt' does not escape; it lands in .rig-worktrees`, async () => {
+      it(`real git, ${form}: '.rig-worktrees/../escaped-wt' does not escape; it is refused`, async () => {
         const { repo, run } = await realRepo();
         const target = form === "relative" ? "./.rig-worktrees/../escaped-wt" : `${repo}/.rig-worktrees/../escaped-wt`; // not path.join, which would fold the ".." away
         const r = run(["-b", "escaped", target]);
-        expect(r.status, r.stderr).toBe(0);
+        expect(r.status, r.stderr).toBe(128);
+        expect(r.stderr).toBe(refusal(target, repo));
         expect(existsSync(path.join(repo, "escaped-wt")), "nothing is created beside .rig-worktrees").toBe(false);
-        expect(existsSync(path.join(repo, ".rig-worktrees", "escaped-wt", ".git"))).toBe(true);
+        expect(existsSync(path.join(repo, ".rig-worktrees", "escaped-wt")), "nor inside it").toBe(false);
       });
 
-      it(`real git, ${form}: a symlink inside .rig-worktrees to an outside dir is not a way out`, async () => {
+      it(`real git, ${form}: a symlink inside .rig-worktrees to an outside dir is not a way out; it is refused`, async () => {
         const { repo, portalTarget, run } = await realRepo();
         const target = form === "relative" ? "./.rig-worktrees/portal/escaped-symlink" : path.join(repo, ".rig-worktrees", "portal", "escaped-symlink");
         const r = run(["-b", "escaped", target]);
-        expect(r.status, r.stderr).toBe(0);
+        expect(r.status, r.stderr).toBe(128);
+        expect(r.stderr).toBe(refusal(target, repo));
         expect(existsSync(path.join(portalTarget, "escaped-symlink")), "nothing is created in the symlink's target").toBe(false);
-        expect(existsSync(path.join(repo, ".rig-worktrees", "escaped-symlink", ".git"))).toBe(true);
+        expect(existsSync(path.join(repo, ".rig-worktrees", "escaped-symlink")), "nor beside the symlink").toBe(false);
       });
     }
 
     // verify-sec, review of cc9a1496 (FAIL 2/3): the leaf was checked for a symlink but not .rig-worktrees itself, so
     // with the ROOT a symlink to an outside dir, mkdir -p and git both followed it and the worktree landed outside.
-    it("real git: when .rig-worktrees itself is a symlink to an outside dir, the redirect is refused and nothing lands there", async () => {
+    // A path under the symlinked root resolves outside, so it is refused like any outside path.
+    it("real git: when .rig-worktrees itself is a symlink to an outside dir, outside and through-the-root paths are refused and nothing lands there", async () => {
       const repo = path.join(tmp, "rootlink");
       await fs.mkdir(repo);
       const git = path.join(realGitDir(), "git");
@@ -609,27 +655,28 @@ describe("git-worktree-shim", () => {
       await fs.mkdir(outside);
       await fs.symlink(outside, path.join(repo, ".rig-worktrees"));
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
+      const realRepoDir = await fs.realpath(repo);
       const r = runGit(["worktree", "add", "-b", "escape", path.join(tmp, "outside2", "asked")], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
       expect(r.status).toBe(128);
-      expect(r.stderr).toMatch(/^openrig git shim: refusing worktree path [^\n]*\n$/);
+      expect(r.stderr).toBe(refusal(path.join(tmp, "outside2", "asked"), realRepoDir));
+      const through = runGit(["worktree", "add", "-b", "escape2", ".rig-worktrees/through"], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
+      expect(through.status, through.stderr).toBe(128);
+      expect(through.stderr).toBe(refusal(".rig-worktrees/through", realRepoDir));
       expect(await fs.readdir(outside), "nothing is created through the symlinked root").toEqual([]);
       expect(existsSync(path.join(tmp, "outside2")), "nor at the path asked for").toBe(false);
     });
 
-    it("when .rig-worktrees exists but is not a directory, the redirect is refused before mkdir or git runs", async () => {
-      const { realTop, outside, run } = await setup();
+    it("when .rig-worktrees exists but is not a directory, an outside path is refused before git runs", async () => {
+      const { realTop, outside, run, expectRefused } = await setup();
       await fs.writeFile(path.join(realTop, ".rig-worktrees"), "not a dir\n");
-      const r = run(["-b", "feat", outside]);
-      expect(r.status).toBe(128);
-      expect(r.argv, "git did not run").toEqual([]);
-      expect(r.stderr).toMatch(/^openrig git shim: refusing worktree path [^\n]*\n$/);
+      expectRefused(run(["-b", "feat", outside]), outside);
     });
 
-    it("real git: the portal itself as the path ('.rig-worktrees/portal', a symlink to an empty outside dir) is refused, not redirected onto itself", async () => {
-      const { portalTarget, run } = await realRepo();
+    it("real git: the portal itself as the path ('.rig-worktrees/portal', a symlink to an empty outside dir) is refused", async () => {
+      const { repo, portalTarget, run } = await realRepo();
       const r = run(["-b", "escaped", ".rig-worktrees/portal"]);
       expect(r.status).toBe(128);
-      expect(r.stderr).toMatch(/^openrig git shim: refusing worktree path [^\n]*\n$/);
+      expect(r.stderr).toBe(refusal(".rig-worktrees/portal", repo));
       expect(await fs.readdir(portalTarget), "nothing is checked out in the symlink's target").toEqual([]);
     });
 
@@ -643,45 +690,42 @@ describe("git-worktree-shim", () => {
       }
     });
 
-    it("a '..' in the part of the path that does not exist yet counts as outside: redirected by its last name", async () => {
-      const { realTop, run } = await setup();
-      const r = run(["-b", "feat", ".rig-worktrees/not-yet/../wt2"]);
-      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", path.join(realTop, ".rig-worktrees", "wt2")]);
-      expect(r.stderr).toBe("");
+    it("a '..' in the part of the path that does not exist yet counts as outside: refused", async () => {
+      const { run, expectRefused } = await setup();
+      expectRefused(run(["-b", "feat", ".rig-worktrees/not-yet/../wt2"]), ".rig-worktrees/not-yet/../wt2");
     });
 
-    it("a trailing slash on an outside path redirects by the last name, as basename does", async () => {
-      const { outside, redirected, run } = await setup();
-      const r = run(["-b", "feat", outside + "/"]);
-      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", redirected]);
-      expect(r.stderr).toBe("");
+    it("a trailing slash on an outside path: refused, the path named as given", async () => {
+      const { outside, run, expectRefused } = await setup();
+      expectRefused(run(["-b", "feat", outside + "/"]), outside + "/");
     });
 
-    // A redirect named '', '.' or '..' would not be a dir inside .rig-worktrees: '.' made .rig-worktrees itself the
-    // worktree (measured at 6dc59b2b: `git worktree add -b dot <outside>/.` on a repo with no .rig-worktrees yet),
-    // and '..' named the repo. Refused before git runs.
+    // '', '.', '..' and the root: outside paths like any other, among them the shapes that made .rig-worktrees itself
+    // the worktree under the old redirect (measured at 6dc59b2b: `git worktree add -b dot <outside>/.`). A control
+    // character in the path stays quoted on the one line.
     for (const target of ["..", "../..", "/", "/elsewhere/.", ".", "/bad\u001b[31m\nname/."]) {
-      it(`an outside path with no name to redirect to (${JSON.stringify(target)}) is refused: exit 128, one quoted stderr line, git not run`, async () => {
+      it(`an outside path (${JSON.stringify(target)}) is refused: exit 128, one quoted stderr line, git not run`, async () => {
         const { run } = await setup();
         const r = run(["-b", "feat", target]);
         expect(r.status).toBe(128);
         expect(r.argv, "git did not run").toEqual([]);
-        expect(r.stderr).toMatch(/^openrig git shim: refusing worktree path [^\n]*\n$/);
+        expect(r.stderr).toMatch(REFUSAL);
         expect(/[\u0000-\u001f\u007f]/.test(r.stderr.slice(0, -1)), JSON.stringify(r.stderr)).toBe(false);
       });
     }
 
-    it("a real dir named '.rig-worktrees<newline>' is not .rig-worktrees: a path through it is redirected", async () => {
-      const { top, realTop, run } = await setup();
+    it("a real dir named '.rig-worktrees<newline>' is not .rig-worktrees: a path through it is refused", async () => {
+      const { top, run } = await setup();
       await fs.mkdir(path.join(top, ".rig-worktrees\n"));
       const r = run(["-b", "feat", ".rig-worktrees\n/wt"]);
-      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", path.join(realTop, ".rig-worktrees", "wt")]);
-      expect(r.stderr).toBe("");
+      expect(r.status).toBe(128);
+      expect(r.argv, "git did not run").toEqual([]);
+      expect(r.stderr).toMatch(REFUSAL);
     });
 
     // The physical-path check, the refusal, the newline and the quoted diagnostic under the macOS bash version.
     it.skipIf(!dockerImagePresent("bash:3.2"))(
-      "bash:3.2: '..' and a symlink portal are redirected, '.' is refused, a trailing newline is kept, the diagnostic is one line (NOT RUN without docker and the bash:3.2 image)",
+      "bash:3.2: '..', a symlink portal, a trailing newline and '.' are refused with exit 128 on one quoted line, the notice is one line (NOT RUN without docker and the bash:3.2 image)",
       async () => {
         const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
         const rec = await recordingGitDir();
@@ -691,26 +735,25 @@ describe("git-worktree-shim", () => {
           "bash", "-c",
           "mkdir -p /top/.rig-worktrees /out && ln -s /out /top/.rig-worktrees/portal && cd /top && " +
             "export PATH=/s/rig-bin:/s/rec:/usr/local/bin:/usr/bin:/bin; " +
-            "timeout -s KILL 5 git worktree add -b f ./.rig-worktrees/../esc; printf '\\036'; " +
-            "timeout -s KILL 5 git worktree add -b f ./.rig-worktrees/portal/x; printf '\\036'; " +
-            "timeout -s KILL 5 git worktree add -b f $'/elsewhere/wt\\n'; printf '\\036'; " +
-            "timeout -s KILL 5 git worktree add -b f /elsewhere/. 2>/dev/null; printf 'rc=%s\\036' $?; " +
+            "timeout -s KILL 5 git worktree add -b f ./.rig-worktrees/../esc 2>&1; printf 'rc=%s\\036' $?; " +
+            "timeout -s KILL 5 git worktree add -b f ./.rig-worktrees/portal/x 2>&1; printf 'rc=%s\\036' $?; " +
+            "timeout -s KILL 5 git worktree add -b f $'/elsewhere/wt\\n' 2>&1; printf 'rc=%s\\036' $?; " +
+            "timeout -s KILL 5 git worktree add -b f /elsewhere/. 2>&1; printf 'rc=%s\\036' $?; " +
             "timeout -s KILL 5 git worktree add $'--x\\033[31m\\nforged' /elsewhere/wt 2>&1 >/dev/null",
         ], { timeout: 60000 });
         expect(r.status).toBe(0);
-        const [dotdot, portal, newline, refused, diag] = r.stdout.toString().split("\u001e");
-        const argv = (s: string | undefined) => (s ?? "").split("\0").slice(0, -1);
-        expect(argv(dotdot)).toEqual(["worktree", "add", "-b", "f", "/top/.rig-worktrees/esc"]);
-        expect(argv(portal)).toEqual(["worktree", "add", "-b", "f", "/top/.rig-worktrees/x"]);
-        expect(argv(newline)).toEqual(["worktree", "add", "-b", "f", "/top/.rig-worktrees/wt\n"]);
-        expect(refused).toBe("rc=128");
+        const [dotdot, portal, newline, dot, diag] = r.stdout.toString().split("\u001e");
+        expect(dotdot).toBe(`${refusal("./.rig-worktrees/../esc", "/top")}rc=128`);
+        expect(portal).toBe(`${refusal("./.rig-worktrees/portal/x", "/top")}rc=128`);
+        expect(newline).toBe("openrig git shim: refusing worktree path $'/elsewhere/wt\\n': seat worktrees go in /top/.rig-worktrees/<name>\nrc=128");
+        expect(dot).toBe(`${refusal("/elsewhere/.", "/top")}rc=128`);
         expect(diag?.startsWith(NOT_CHECKED)).toBe(true);
         expect(/[\u0000-\u001f\u007f]/.test((diag ?? "").slice(0, -1)), JSON.stringify(diag)).toBe(false);
         expect(r.stderr.toString()).toBe("");
       },
     );
 
-    it("real git: 'worktree add -b dot <outside>/.' does not make .rig-worktrees itself a worktree", async () => {
+    it("real git: 'worktree add -b dot <outside>/.' is refused and makes no worktree", async () => {
       const repo = path.join(tmp, "fresh");
       await fs.mkdir(repo);
       const git = path.join(realGitDir(), "git");
@@ -726,13 +769,16 @@ describe("git-worktree-shim", () => {
     });
 
     // verify-sec finding 2: $(basename ...) dropped a trailing newline from the path word.
-    it("a path word ending in a newline keeps it when redirected, and an inside one is unchanged", async () => {
+    it("a path word ending in a newline is named quoted on one line when refused, and an inside one is unchanged", async () => {
       const { realTop, run } = await setup();
-      const r = run(["-b", "feat", path.join(tmp, "elsewhere", "wt\n")]);
-      expect(r.argv).toEqual(["worktree", "add", "-b", "feat", path.join(realTop, ".rig-worktrees", "wt\n")]);
+      const outsideNl = path.join(tmp, "elsewhere", "wt\n");
+      const r = run(["-b", "feat", outsideNl]);
+      expect(r.status).toBe(128);
+      expect(r.argv, "git did not run").toEqual([]);
+      expect(r.stderr).toBe(`openrig git shim: refusing worktree path $'${outsideNl.slice(0, -1)}\\n': seat worktrees go in ${realTop}/.rig-worktrees/<name>\n`);
       const r2 = run(["-b", "feat", ".rig-worktrees/in\n"]);
       expect(r2.argv).toEqual(["worktree", "add", "-b", "feat", ".rig-worktrees/in\n"]);
-      expect(r.stderr + r2.stderr).toBe("");
+      expect(r2.stderr).toBe("");
     });
 
     // verify-sec finding 3: the unknown word went raw into the diagnostic, so a newline split it and an escape
@@ -786,13 +832,18 @@ describe("git-worktree-shim", () => {
       const realTop = await fs.realpath(top);
       const realTmp = await fs.realpath(tmp);
       const outside = path.join(tmp, "elsewhere", "wt");
-      const redirected = path.join(realTop, ".rig-worktrees", "wt");
       const pathDirs = [shim, await globalRecordingGitDir(), "/usr/bin", "/bin"];
       const run = (args: string[], cwd: string = top) => {
         const r = runGit(args, pathDirs, cwd);
         return { ...r, argv: r.stdout.split("\0").slice(0, -1) };
       };
-      return { top, realTop, realTmp, outside, redirected, run };
+      /** Refused under `toplevel` (the repo the global options moved to): exit 128, the one line, git never ran. */
+      const expectRefused = (r: ReturnType<typeof run>, target: string, toplevel: string = realTop) => {
+        expect(r.status, r.stderr).toBe(128);
+        expect(r.argv, "git did not run").toEqual([]);
+        expect(r.stderr).toBe(refusal(target, toplevel));
+      };
+      return { top, realTop, realTmp, outside, run, expectRefused };
     }
 
     // Every global option that does not move the repo, in each form git accepts. Value options take the next word
@@ -812,27 +863,25 @@ describe("git-worktree-shim", () => {
     ];
 
     for (const globals of LOCATION_NEUTRAL) {
-      it(`'git ${globals.map(w => w || "''").join(" ")} worktree add -b feat <outside>': redirected, every other word unchanged`, async () => {
-        const { outside, redirected, run } = await setup();
-        const r = run([...globals, "worktree", "add", "-b", "feat", outside]);
-        expect(r.argv).toEqual([...globals, "worktree", "add", "-b", "feat", redirected]);
+      it(`'git ${globals.map(w => w || "''").join(" ")} worktree add -b feat <path>': an outside path is refused, an inside one reaches git with every word`, async () => {
+        const { realTop, outside, run, expectRefused } = await setup();
+        expectRefused(run([...globals, "worktree", "add", "-b", "feat", outside]), outside);
+        const inside = path.join(realTop, ".rig-worktrees", "wt");
+        const r = run([...globals, "worktree", "add", "-b", "feat", inside]);
+        expect(r.argv).toEqual([...globals, "worktree", "add", "-b", "feat", inside]);
         expect(r.stderr).toBe("");
         expect(r.status).toBe(0);
       });
     }
 
-    it("'git -C <repo> worktree add <outside>' from outside the repo redirects under that repo's toplevel", async () => {
-      const { top, outside, redirected, run } = await setup();
-      const r = run(["-C", top, "worktree", "add", outside], tmp);
-      expect(r.argv).toEqual(["-C", top, "worktree", "add", redirected]);
-      expect(r.stderr).toBe("");
+    it("'git -C <repo> worktree add <outside>' from outside the repo is refused, naming that repo's toplevel", async () => {
+      const { top, outside, run, expectRefused } = await setup();
+      expectRefused(run(["-C", top, "worktree", "add", outside], tmp), outside);
     });
 
-    it("a relative path after -C resolves from the -C dir: '../elsewhere/wt' is outside, so redirected", async () => {
-      const { redirected, run } = await setup();
-      const r = run(["-C", "top", "worktree", "add", "-b", "feat", "../elsewhere/wt"], tmp);
-      expect(r.argv).toEqual(["-C", "top", "worktree", "add", "-b", "feat", redirected]);
-      expect(r.stderr).toBe("");
+    it("a relative path after -C resolves from the -C dir: '../elsewhere/wt' is outside, so refused", async () => {
+      const { run, expectRefused } = await setup();
+      expectRefused(run(["-C", "top", "worktree", "add", "-b", "feat", "../elsewhere/wt"], tmp), "../elsewhere/wt");
     });
 
     it("a relative inside path after -C resolves from the -C dir and reaches git unchanged", async () => {
@@ -843,24 +892,23 @@ describe("git-worktree-shim", () => {
     });
 
     it("-C words chain, each relative to the one before: '-C top -C sub' and '../.rig-worktrees/in' is inside", async () => {
-      const { realTop, run } = await setup();
+      const { realTop, run, expectRefused } = await setup();
       // The stand-in's toplevel is the cwd it ends in (top/sub), so the inside dir is top/sub/.rig-worktrees.
       const r = run(["-C", "top", "-C", "sub", "worktree", "add", ".rig-worktrees/in"], tmp);
       expect(r.argv).toEqual(["-C", "top", "-C", "sub", "worktree", "add", ".rig-worktrees/in"]);
       expect(r.stderr).toBe("");
-      const r2 = run(["-C", "top", "-C", "sub", "worktree", "add", "../elsewhere-wt"], tmp);
-      expect(r2.argv).toEqual(["-C", "top", "-C", "sub", "worktree", "add", path.join(realTop, "sub", ".rig-worktrees", "elsewhere-wt")]);
+      expectRefused(run(["-C", "top", "-C", "sub", "worktree", "add", "../elsewhere-wt"], tmp), "../elsewhere-wt", path.join(realTop, "sub"));
     });
 
     it("a CDPATH in the caller's env does not move a relative -C dir (git's own chdir ignores CDPATH)", async () => {
-      const { top, outside, redirected } = await setup();
+      const { top, realTop, outside } = await setup();
       const decoy = path.join(tmp, "decoy");
       await fs.mkdir(path.join(decoy, "top"), { recursive: true });
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["-C", "top", "worktree", "add", outside], [shim, await globalRecordingGitDir(), "/usr/bin", "/bin"], tmp, { CDPATH: decoy });
       expect(top).toBe(path.join(tmp, "top"));
-      expect(r.stdout.split("\0").slice(0, -1)).toEqual(["-C", "top", "worktree", "add", redirected]);
-      expect(r.stderr).toBe("");
+      expect(r.status).toBe(128);
+      expect(r.stderr, "refused under top, not under the CDPATH decoy").toBe(refusal(outside, realTop));
     });
 
     it("a -C dir that does not exist: git gets the call unchanged and reports it itself", async () => {
@@ -871,7 +919,7 @@ describe("git-worktree-shim", () => {
     });
 
     // --git-dir, --work-tree and --bare move what git calls the toplevel (with --git-dir alone it is the cwd), so a
-    // redirect could plant .rig-worktrees in the wrong place: pass through, and say the path was not checked.
+    // check would judge the path against the wrong place: pass through, and say the path was not checked.
     for (const globals of [["--git-dir", "x/.git"], ["--git-dir=x/.git"], ["--work-tree", "x"], ["--work-tree=x"], ["--bare"]]) {
       it(`'${globals.join(" ")}' before worktree add: unchanged, one stderr line naming the option`, async () => {
         const { outside, run } = await setup();
@@ -933,7 +981,7 @@ describe("git-worktree-shim", () => {
     }
 
     it.skipIf(!dockerImagePresent("bash:3.2"))(
-      "bash:3.2: 'git -C /top worktree add -b feat ../elsewhere/wt' from / redirects and keeps -C and -b (NOT RUN without docker and the bash:3.2 image)",
+      "bash:3.2: 'git -C /top worktree add -b feat ../elsewhere/wt' from / is refused under /top, and an inside path keeps -C (NOT RUN without docker and the bash:3.2 image)",
       async () => {
         const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
         const rec = await globalRecordingGitDir();
@@ -942,21 +990,23 @@ describe("git-worktree-shim", () => {
           "-v", `${shim}:/s/rig-bin:ro`, "-v", `${rec}:/s/rec:ro`, "bash:3.2",
           "bash", "-c",
           "mkdir -p /top && cd / && export PATH=/s/rig-bin:/s/rec:/usr/local/bin:/usr/bin:/bin; " +
-            "timeout -s KILL 5 git -C /top worktree add -b feat ../elsewhere/wt; printf '\\n'; " +
-            // An outside path, so a -c that is not skipped as a value option shows as a missed redirect.
-            "timeout -s KILL 5 git -c a.b=1 -C /top worktree add /elsewhere/wt2; printf '\\n'; " +
+            "timeout -s KILL 5 git -C /top worktree add -b feat ../elsewhere/wt 2>&1; printf 'rc=%s\\n' $?; " +
+            // An outside path, so a -c that is not skipped as a value option shows as a missed refusal.
+            "timeout -s KILL 5 git -c a.b=1 -C /top worktree add /elsewhere/wt2 2>&1; printf 'rc=%s\\n' $?; " +
             "timeout -s KILL 5 git -C /top worktree add .rig-worktrees/in",
         ], { timeout: 60000 });
         expect(r.status).toBe(0);
         expect(r.stderr.toString()).toBe("");
-        const [relOutside, withC, inside] = r.stdout.toString().split("\n").map(line => line.split("\0").slice(0, -1));
-        expect(relOutside).toEqual(["-C", "/top", "worktree", "add", "-b", "feat", "/top/.rig-worktrees/wt"]);
-        expect(withC).toEqual(["-c", "a.b=1", "-C", "/top", "worktree", "add", "/top/.rig-worktrees/wt2"]);
-        expect(inside).toEqual(["-C", "/top", "worktree", "add", ".rig-worktrees/in"]);
+        const out = r.stdout.toString();
+        const relEnd = out.indexOf("rc=128\n") + "rc=128\n".length;
+        const withCEnd = out.indexOf("rc=128\n", relEnd) + "rc=128\n".length;
+        expect(out.slice(0, relEnd)).toBe(`${refusal("../elsewhere/wt", "/top")}rc=128\n`);
+        expect(out.slice(relEnd, withCEnd)).toBe(`${refusal("/elsewhere/wt2", "/top")}rc=128\n`);
+        expect(out.slice(withCEnd).split("\0").slice(0, -1)).toEqual(["-C", "/top", "worktree", "add", ".rig-worktrees/in"]);
       },
     );
 
-    it("real git: 'git -C <repo> worktree add -b feat ../outside' from outside the repo lands in <repo>/.rig-worktrees on branch feat", async () => {
+    it("real git: 'git -C <repo> worktree add -b feat ../outside' from outside the repo is refused under that repo; no branch, no tree", async () => {
       const repo = path.join(tmp, "repo");
       await fs.mkdir(repo);
       const git = path.join(realGitDir(), "git");
@@ -966,11 +1016,11 @@ describe("git-worktree-shim", () => {
       await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["-C", repo, "worktree", "add", "-b", "feat", "../outside-c"], [shim, realGitDir(), "/usr/bin", "/bin"], tmp);
-      expect(r.status, r.stderr).toBe(0);
-      const wt = path.join(await fs.realpath(repo), ".rig-worktrees", "outside-c");
-      expect(spawnSync(git, ["-C", wt, "branch", "--show-current"]).stdout.toString().trim()).toBe("feat");
+      expect(r.status, r.stderr).toBe(128);
+      expect(r.stderr).toBe(refusal("../outside-c", await fs.realpath(repo)));
+      expect(spawnSync(git, ["-C", repo, "branch", "--list", "feat"]).stdout.toString(), "no branch feat").toBe("");
       expect(existsSync(path.join(tmp, "outside-c")), "the out-of-place target is not created").toBe(false);
-      expect(r.stderr).not.toMatch(/openrig git shim|unbound variable/);
+      expect(existsSync(path.join(repo, ".rig-worktrees")), "nor moved into .rig-worktrees").toBe(false);
     });
 
     // verify-sec, review of 39c68720 (FAIL 1/3): two -C forms escaped .rig-worktrees on real git 2.43.0 and 2.55.0.
@@ -985,7 +1035,7 @@ describe("git-worktree-shim", () => {
       await fs.appendFile(path.join(dir, ".git", "info", "exclude"), ".rig-worktrees/\n");
     }
 
-    it("real git: 'git -C - worktree add' where '-' is a directory: '-' is that directory, never OLDPWD, and the outside path is redirected", async () => {
+    it("real git: 'git -C - worktree add' where '-' is a directory: '-' is that directory, never OLDPWD, and the outside path is refused under it", async () => {
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       for (const [k, gitDir] of realGits().entries()) {
         const work = path.join(tmp, `dash-${k}`);
@@ -994,25 +1044,24 @@ describe("git-worktree-shim", () => {
         const elsewhere = path.join(tmp, `oldpwd-${k}`);
         await fs.mkdir(elsewhere);
         const r = runGit(["-C", "-", "worktree", "add", "-b", "feat", "../../outside-dash"], [shim, gitDir, "/usr/bin", "/bin"], work, { OLDPWD: elsewhere });
-        expect(r.status, `${gitDir}: ${r.stderr}`).toBe(0);
-        const wt = path.join(await fs.realpath(repo), ".rig-worktrees", "outside-dash");
-        expect(spawnSync(path.join(gitDir, "git"), ["-C", wt, "branch", "--show-current"]).stdout.toString().trim(), gitDir).toBe("feat");
+        expect(r.status, `${gitDir}: ${r.stderr}`).toBe(128);
+        expect(r.stderr, gitDir).toBe(refusal("../../outside-dash", await fs.realpath(repo)));
         expect(existsSync(path.join(tmp, "outside-dash")), `${gitDir}: the out-of-place target is not created`).toBe(false);
-        expect(r.stdout, gitDir).not.toContain(elsewhere);
-        await fs.rm(path.join(repo, ".rig-worktrees"), { recursive: true, force: true });
+        expect(existsSync(path.join(repo, ".rig-worktrees")), `${gitDir}: nor moved into .rig-worktrees`).toBe(false);
       }
     });
 
-    it("real git: 'git -C <repo whose path ends in a newline> worktree add <outside>': the newline is kept and the path is redirected under that repo", async () => {
+    it("real git: 'git -C <repo whose path ends in a newline> worktree add <outside>': the newline is kept and the path is refused under that repo", async () => {
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       for (const [k, gitDir] of realGits().entries()) {
         const repo = path.join(tmp, `nl-${k}`, "repo\n");
         await repoAt(repo, gitDir);
         const r = runGit(["-C", repo, "worktree", "add", "-b", "feat", "../outside-nl"], [shim, gitDir, "/usr/bin", "/bin"], tmp);
-        expect(r.status, `${gitDir}: ${r.stderr}`).toBe(0);
-        const wt = path.join(await fs.realpath(repo), ".rig-worktrees", "outside-nl");
-        expect(spawnSync(path.join(gitDir, "git"), ["-C", wt, "branch", "--show-current"]).stdout.toString().trim(), gitDir).toBe("feat");
+        expect(r.status, `${gitDir}: ${r.stderr}`).toBe(128);
+        const realRepoDir = await fs.realpath(repo);
+        expect(r.stderr, gitDir).toBe(`openrig git shim: refusing worktree path ../outside-nl: seat worktrees go in $'${realRepoDir.slice(0, -1)}\\n/.rig-worktrees'/<name>\n`);
         expect(existsSync(path.join(tmp, `nl-${k}`, "outside-nl")), `${gitDir}: the out-of-place target is not created`).toBe(false);
+        expect(existsSync(path.join(repo, ".rig-worktrees")), `${gitDir}: nor moved into .rig-worktrees`).toBe(false);
       }
     });
   });

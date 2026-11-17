@@ -210,8 +210,9 @@ export class NodeLauncher {
     const codexSeatWarnings: string[] = [];
 
     // Worktree placement law: every rig seat gets the git shim first on PATH,
-    // so 'git worktree add' outside <repo>/.rig-worktrees redirects rather
-    // than sprawling into ~/Code as a sibling (171-tree pileup, 2026-10-02).
+    // so 'git worktree add' outside <repo>/.rig-worktrees is refused rather
+    // than sprawling into ~/Code as a sibling (171-tree pileup, 2026-10-02;
+    // refused, not moved, since workspaces-o9o.102).
     const shimFiles = this.shimFiles;
     if (shimFiles) {
       try {

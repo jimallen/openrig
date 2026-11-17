@@ -10,8 +10,10 @@ import * as path from "node:path";
  * NodeLauncher prepends that dir to a seat's PATH. The shim intercepts ONLY
  * `git worktree add … <path>` whose target is outside the current repo's
  * .rig-worktrees dir (reached past git's global options, so `git -C <dir> worktree
- * add` counts, from that dir) — redirecting it in place — and forwards every other git
- * invocation byte-for-byte. The path computation happens inside the calling
+ * add` counts, from that dir) — refusing it with exit 128 and one line naming where
+ * seat worktrees go (workspaces-o9o.102: it used to move the tree there and exit 0, and
+ * a caller that then used the path it asked for failed later) — and forwards every
+ * other git invocation byte-for-byte. The path computation happens inside the calling
  * shell's repo; the shim itself never guesses repos.
  *
  * Why a shim and not a hook: there is no git hook for `worktree add`.
@@ -155,25 +157,12 @@ if [ \$((s+2)) -le "\$n" ] && [ "\${words[\$s]}" = "worktree" ] && [ "\${words[\
       [[ "\${head%/}\$rest" == "\$toplevel/.rig-worktrees/"?* ]] || inside=no
     fi
     if [ "\$inside" = no ]; then
-      # Redirect by the path's last name (basename, without \$(...)). A name that is not a
-      # directory inside .rig-worktrees ('', '.', '..', or a symlink already there) is refused,
-      # and so is every redirect while .rig-worktrees itself is a symlink or not a directory:
-      # mkdir -p and git would both follow it, and nothing is ever made through it.
-      name="\$target"
-      while [ "\${#name}" -gt 1 ] && [ "\${name%/}" != "\$name" ]; do name="\${name%/}"; done
-      name="\${name##*/}"
-      dest="\$toplevel/.rig-worktrees/\$name"
-      case "\$name" in ""|.|..) dest="" ;; esac
-      if [ -L "\$toplevel/.rig-worktrees" ] || { [ -e "\$toplevel/.rig-worktrees" ] && [ ! -d "\$toplevel/.rig-worktrees" ]; }; then
-        dest=""
-      fi
-      if [ -z "\$dest" ] || [ -L "\$dest" ]; then
-        printf 'openrig git shim: refusing worktree path %q (it does not name a directory inside %q)\\n' "\$target" "\$toplevel/.rig-worktrees" >&2
-        exit 128
-      fi
-      words[\$pathi]="\$dest"
-      mkdir -p "\$toplevel/.rig-worktrees"
-      exec "\$real" "\${words[@]}"
+      # Refused, never moved (workspaces-o9o.102): a caller that asked for this path goes on to use
+      # it, so a tree created elsewhere broke it later, after its own side effects. Nothing is
+      # created and git does not run. %q keeps a newline or a control character in the word on this
+      # one line, quoted.
+      printf 'openrig git shim: refusing worktree path %q: seat worktrees go in %q/<name>\\n' "\$target" "\$toplevel/.rig-worktrees" >&2
+      exit 128
     fi
   fi
 fi

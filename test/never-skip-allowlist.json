@@ -368,19 +368,19 @@
  {
   "file": "packages/daemon/test/git-worktree-shim.test.ts",
   "kind": "skipIf",
-  "task": "git-worktree-shim > worktree add redirect: only the path word changes > bash:3.2: a relative './' inside path is unchanged and '-b feat <outside>' keeps -b (NOT RUN without docker and the bash:3.2 image)",
+  "task": "git-worktree-shim > worktree add: the path word found by git's grammar, inside unchanged, outside refused > bash:3.2: a relative './' inside path is unchanged and '-b feat <outside>' is refused before git runs (NOT RUN without docker and the bash:3.2 image)",
   "when": "!dockerImagePresent(\"bash:3.2\")"
  },
  {
   "file": "packages/daemon/test/git-worktree-shim.test.ts",
   "kind": "skipIf",
-  "task": "git-worktree-shim > worktree add redirect: only the path word changes > bash:3.2: '..' and a symlink portal are redirected, '.' is refused, a trailing newline is kept, the diagnostic is one line (NOT RUN without docker and the bash:3.2 image)",
+  "task": "git-worktree-shim > worktree add: the path word found by git's grammar, inside unchanged, outside refused > bash:3.2: '..', a symlink portal, a trailing newline and '.' are refused with exit 128 on one quoted line, the notice is one line (NOT RUN without docker and the bash:3.2 image)",
   "when": "!dockerImagePresent(\"bash:3.2\")"
  },
  {
   "file": "packages/daemon/test/git-worktree-shim.test.ts",
   "kind": "skipIf",
-  "task": "git-worktree-shim > global options before the subcommand > bash:3.2: 'git -C /top worktree add -b feat ../elsewhere/wt' from / redirects and keeps -C and -b (NOT RUN without docker and the bash:3.2 image)",
+  "task": "git-worktree-shim > global options before the subcommand > bash:3.2: 'git -C /top worktree add -b feat ../elsewhere/wt' from / is refused under /top, and an inside path keeps -C (NOT RUN without docker and the bash:3.2 image)",
   "when": "!dockerImagePresent(\"bash:3.2\")"
  },
  {
