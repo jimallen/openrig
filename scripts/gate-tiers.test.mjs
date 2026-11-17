@@ -321,6 +321,51 @@ test("tier 2 selects a census test that scans source for a call the diff newly m
   });
 });
 
+// workspaces-o9o.83 review (verify-qa2): an AST census names the call it counts by comparison, not by a regex
+// (launch-as-terminal-program-census.test.ts parses source and checks `node.expression.name.text === "sendShellCommand"`).
+const AST_CENSUS = [
+  'const SRC = new URL("../src/", import.meta.url).pathname;',
+  "const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);",
+  'if (ts.isCallExpression(node) && node.expression.name.text === "sendShellCommand") found.push(node);',
+].join("\n") + "\n";
+
+test("tier 2 selects an AST census that compares a call's name, when the diff newly makes that call", async () => {
+  await withRepo(async ({ repo, receipts }) => {
+    write(repo, "packages/daemon/test/launch-census.test.ts", AST_CENSUS);
+    write(repo, "packages/daemon/src/other.ts", "export function go(api, args) {\n  return 1;\n}\n");
+    commit(repo, "base");
+    git(repo, "branch", "-f", "main");
+    write(repo, "packages/daemon/src/other.ts", "export function go(api, args) {\n  return api.sendShellCommand(args);\n}\n");
+    commit(repo, "a new launch site");
+    const ports = fakePorts();
+    assert.equal((await run(repo, receipts, 2, ports, { list: true })).exitCode, EXIT.pass);
+    assert.ok(ports.lines.includes("  test/launch-census.test.ts"), ports.lines.join("\n"));
+  });
+});
+
+test("a changed .test.mjs or .test.js is a test: it adds no new call names and no name stem", async () => {
+  const diff = [
+    "diff --git a/scripts/tool.test.mjs b/scripts/tool.test.mjs",
+    "--- a/scripts/tool.test.mjs",
+    "+++ b/scripts/tool.test.mjs",
+    "@@ -0,0 +1 @@",
+    "+  const fixture = 'await tmux.killSession(name);';",
+    "diff --git a/packages/cli/lib/helper.test.js b/packages/cli/lib/helper.test.js",
+    "--- a/packages/cli/lib/helper.test.js",
+    "+++ b/packages/cli/lib/helper.test.js",
+    "@@ -0,0 +1 @@",
+    "+  api.sendShellCommand(x);",
+  ].join("\n");
+  assert.deepEqual(newlyCalledNames(diff), []);
+  await withRepo(async ({ repo }) => {
+    write(repo, "packages/daemon/test/mentions-tool.test.ts", "const watched = ['tool.test'];\n");
+    write(repo, "scripts/tool.test.mjs", "export {};\n");
+    commit(repo, "a script test");
+    const picked = await selectReach({ repo, mergeBase: git(repo, "rev-parse", "main"), changed: ["scripts/tool.test.mjs"], packageName: "daemon", listChanged: async () => [] });
+    assert.deepEqual(picked.viaNamesOnly, []);
+  });
+});
+
 test("newlyCalledNames: method calls added to non-test source, counted per file, so a call moved within a file is not new", () => {
   const diff = [
     "diff --git a/packages/daemon/src/a.ts b/packages/daemon/src/a.ts",
@@ -375,6 +420,13 @@ test("scannedCallNames reads the call names a census test greps source for, and 
   assert.deepEqual([...scannedCallNames(String.raw`expect(src).not.toMatch(/\.createSession\(/);`)], ["createSession"]);
   assert.deepEqual([...scannedCallNames(`if (text.includes(".sendKeys(")) count++;`)], ["sendKeys"]);
   assert.deepEqual([...scannedCallNames("await tmux.killSession('x'); const m = { killSession: vi.fn() };")], []);
+  // A test that reads source: the camelCase names it compares (===, !==, .includes, an identifier list) are scanned names.
+  assert.deepEqual([...scannedCallNames(AST_CENSUS)], ["sendShellCommand"]);
+  const lists = 'const SRC = join(here, "../src"); const text = readFileSync(f); if (text.includes("respawnPane")) n++; const ALLOWED = new Set(["killSession", "listPanes"]);\n';
+  assert.deepEqual([...scannedCallNames(lists)].sort(), ["killSession", "listPanes", "respawnPane"]);
+  // Not in a test that never reads source, and not a single lowercase word, which there is almost always generic.
+  assert.deepEqual([...scannedCallNames('if (kind === "sendShellCommand") return;\n')], []);
+  assert.deepEqual([...scannedCallNames('const SRC = "../src"; readFileSync(x); if (op === "slice" || op === "error") skip();\n')], []);
 });
 
 test("tier 2 runs test:repo and vitest on each reached package, with 4 workers, no --reporter, scratch homes", async () => {

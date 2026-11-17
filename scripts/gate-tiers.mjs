@@ -41,6 +41,9 @@ const RECEIPT_SCHEMA = 1;
 const CODE_FILE = /\.(?:[cm]?[jt]sx?|py|swift)$/;
 const TSCONFIG_FILE = /(?:^|\/)tsconfig[^/]*\.json$/;
 const TEST_FILE = /\.test\.tsx?$/;
+// A test in any language (scripts/*.test.mjs, a .test.js): never production source, never a changed file's name stem
+// (workspaces-o9o.83 review). TEST_FILE stays the files vitest runs.
+const ANY_TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
 
 // What a diff may never add: an unconditional skip, a lint or type suppression, or looser type-checker strictness.
 // Conditional skips (skipIf, runIf) are allowed; the never-skip reporter checks those against its allowlist. The
@@ -262,7 +265,7 @@ export function newlyCalledNames(diff) {
       continue;
     }
     if (line.startsWith("@@")) continue;
-    if (!file || file === "/dev/null" || TEST_FILE.test(file) || UNDER_TEST_DIR.test(file) || !SOURCE_FILE.test(file)) continue;
+    if (!file || file === "/dev/null" || ANY_TEST_FILE.test(file) || UNDER_TEST_DIR.test(file) || !SOURCE_FILE.test(file)) continue;
     const sign = line.startsWith("+") ? 1 : line.startsWith("-") ? -1 : 0;
     if (sign === 0) continue;
     if (!perFile.has(file)) perFile.set(file, new Map());
@@ -274,10 +277,34 @@ export function newlyCalledNames(diff) {
   return [...names].sort();
 }
 
+// The compared-name form (workspaces-o9o.83 review): an AST census names its call by comparison, not by a regex
+// (`node.expression.name.text === "sendShellCommand"`). So in a test that reads source (readFileSync, readdirSync or
+// ts.createSourceFile, and a src path), the camelCase names it compares also count: `=== "a"` / `!== "a"`,
+// `.includes("a")`, or an array or Set of names. A single lowercase word there ("slice", "error", "get") is almost always
+// generic: on four real diffs this form added 21, 28, 12 and 0 test files with any name, 2, 1, 0 and 0 with camelCase
+// names only. Known over-selection, accepted (CoS, o9o.83 review): a `.name(` inside a template string or prose in
+// source still counts as a call, so tier 2 may run a census more often than needed; it errs toward running more.
+const READS_SOURCE = /\b(?:readFileSync|readdirSync|createSourceFile)\b/;
+const NAMES_SRC = /["'`/]src\b|\bSRC\b/;
+const QUOTED_ID = String.raw`["'\`]([A-Za-z_$][\w$]*)["'\`]`;
+const CAMEL_CASE = /^[a-z_$][\w$]*[A-Z]/;
+
+function comparedNames(text) {
+  const names = new Set();
+  if (!(READS_SOURCE.test(text) && NAMES_SRC.test(text))) return names;
+  for (const m of text.matchAll(new RegExp(String.raw`[!=]==\s*${QUOTED_ID}|${QUOTED_ID}\s*[!=]==`, "g"))) names.add(m[1] ?? m[2]);
+  for (const m of text.matchAll(new RegExp(String.raw`\.includes\(\s*${QUOTED_ID}\s*\)`, "g"))) names.add(m[1]);
+  const item = QUOTED_ID.replace("(", "(?:");
+  for (const m of text.matchAll(new RegExp(String.raw`\[\s*(?:${item}\s*,\s*)*${item}\s*,?\s*\]`, "g"))) {
+    for (const n of m[0].matchAll(new RegExp(QUOTED_ID, "g"))) names.add(n[1]);
+  }
+  return new Set([...names].filter((name) => CAMEL_CASE.test(name)));
+}
+
 /** The call names a test scans source text for, read from its own patterns: a regex `\.(a|b)\(` or `\.a\(`, or a quoted
  *  ".a(". A name the test merely calls or mocks is not one. */
 export function scannedCallNames(text) {
-  const names = new Set();
+  const names = comparedNames(text);
   for (const match of text.matchAll(/\\\.\(?((?:[A-Za-z_$][\w$]*\|)*[A-Za-z_$][\w$]*)\)?\\\(/g)) {
     for (const name of match[1].split("|")) names.add(name);
   }
@@ -299,7 +326,7 @@ export async function selectReach({ repo, mergeBase, changed, packageName, listC
   const viaImports = new Set(
     (await listChanged(packageDir, mergeBase)).map((file) => relative(packageDir, resolve(packageDir, file))),
   );
-  const stems = [...new Set(changed.filter((file) => !TEST_FILE.test(file)).map(stemOf))].filter(Boolean);
+  const stems = [...new Set(changed.filter((file) => !ANY_TEST_FILE.test(file)).map(stemOf))].filter(Boolean);
   const viaNames = new Set();
   const viaCalls = new Set();
   for (const file of testFiles) {
