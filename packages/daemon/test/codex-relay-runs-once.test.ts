@@ -5,7 +5,7 @@
 // PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT (the installed plugin root) and CODEX_HOME, and no CLAUDE_PROJECT_DIR, so the Claude-side rule of
 // workspaces-o9o.33 never applied. The rows run the REAL relay as two processes against a counting endpoint; the env is built from nothing.
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -130,6 +130,15 @@ describe("workspaces-o9o.76: on a Codex seat the relay runs once per hook when t
     writeConfig(older);
     await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
     expect(posts("Stop")).toHaveLength(0);
+  });
+
+  it("a table Codex appends inside OpenRig's block (its plugin registration, measured) ends the stanza: a command under it does not count", async () => {
+    // `codex plugin add` (0.166.0) appended [marketplaces.*] and [plugins.*] inside the sentinels. A command line after such a table is not
+    // the [[hooks.Stop]] stanza's, however close it sits.
+    writeFileSync(join(codexHome, "config.toml"), ["# BEGIN OPENRIG MANAGED ACTIVITY HOOKS", "[[hooks.Stop]]", '[plugins."openrig-core@market"]',
+      `command = 'node "${daemonRelay}"'`, "# END OPENRIG MANAGED ACTIVITY HOOKS", ""].join("\n"));
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(1);
   });
 
   it("the managed copy always relays, whatever the plugin is doing", async () => {

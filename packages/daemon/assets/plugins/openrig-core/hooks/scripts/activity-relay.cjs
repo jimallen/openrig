@@ -537,11 +537,13 @@ function codexConfigRunsManagedCopy(codexHome, hookEvent, script) {
   for (const line of text.slice(begin, end).split("\n")) {
     const header = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(line);
     if (header) { event = header[1]; continue; }
+    // Any other table ends the stanza, except the stanza's own [[hooks.<Event>.hooks]] (Codex's `plugin add` appends its [marketplaces.*]
+    // and [plugins.*] tables INSIDE this block, measured on 0.166.0).
+    if (/^\s*\[/.test(line) && !/^\s*\[\[hooks\.[A-Za-z]+\.hooks\]\]\s*$/.test(line)) { event = null; continue; }
     if (event !== hookEvent) continue;
+    // The adapter writes a TOML literal string ('...'); a command in any other form is not counted, and the plugin copy runs.
     const literal = /^\s*command\s*=\s*'([^']*)'\s*$/.exec(line);
-    const basic = /^\s*command\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/.exec(line);
-    const command = literal ? literal[1] : basic ? basic[1].replace(/\\(["\\])/g, "$1") : null;
-    if (command !== null && runsManagedScript(command, managed)) return true;
+    if (literal && runsManagedScript(literal[1], managed)) return true;
   }
   return false;
 }
