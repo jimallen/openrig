@@ -7,7 +7,8 @@
 // copies of delivery-review.real (two heavy-run slots) took one port, so /api/health answered from the other run's daemon, and a
 // scenario daemon died on EADDRINUSE. The OS cannot be told to keep the number; so every test process that probes this way records a
 // claim on the number first, and skips a number another live test process has claimed:
-//  - a claim is a file `<os.tmpdir()>/openrig-test-ports/<port>` created exclusively (O_EXCL), holding the claimant's pid;
+//  - a claim is a file `<os.tmpdir()>/openrig-test-ports/<port>` holding the claimant's pid, written whole to an O_EXCL temp file
+//    and published by link() (which fails if the claim exists), so a half-written claim is never visible;
 //  - a claim whose pid is gone is reclaimable (moved aside atomically, so two reclaimers cannot both win);
 //  - a process removes its own claims when it exits.
 // What it cannot stop: a process that does not use this helper (an in-process server's own listen(0), anything outside the suites)
