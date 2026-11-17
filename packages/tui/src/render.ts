@@ -71,6 +71,9 @@ function columnsWidth(columns: AgentColumn[]): number {
   return columns.reduce((total, [, , width]) => total + width + 1, -1);
 }
 
+/** workspaces-o9o.32 (Jim): how wide STATE is in a table with no NOW column, where it carries a running tool ("⚙ Bash 20m?" is 11). */
+const STATE_WITH_TOOL = 12;
+
 function agentColumns(contentWidth: number): AgentColumn[] {
   if (contentWidth >= 110) return [
     ["pod", "POD", 8, "left"], ["seat", "SEAT", 15, "left"], ["runtime", "RT", 4, "left"],
@@ -86,10 +89,11 @@ function agentColumns(contentWidth: number): AgentColumn[] {
   ];
   // At 84x28 the L2 content pane is 58 cells. The three explicitly deferred
   // columns (MODEL/NOW/ACTIONS) move to drill; identity, state and work remain.
-  const fixed = 6 + 12 + 3 + 5 + 9 + 2 + 6; // widths + separators, excluding WORK
+  // workspaces-o9o.32 (Jim): with no NOW column STATE carries a running tool, so it is STATE_WITH_TOOL wide.
+  const fixed = 6 + 12 + 3 + 5 + STATE_WITH_TOOL + 2 + 6; // widths + separators, excluding WORK
   return [
     ["pod", "POD", 6, "left"], ["seat", "SEAT", 12, "left"], ["runtime", "RT", 3, "left"],
-    ["context", "CTX", 5, "right"], ["status", "STATE", 9, "left"], ["queue", "Q", 2, "right"],
+    ["context", "CTX", 5, "right"], ["status", "STATE", STATE_WITH_TOOL, "left"], ["queue", "Q", 2, "right"],
     ["work", "WORK", Math.max(4, contentWidth - fixed), "left"],
   ];
 }
@@ -102,13 +106,13 @@ function instanceAgentColumns(contentWidth: number): AgentColumn[] {
   ];
   if (contentWidth >= 78) return [
     ["rig", "RIG", 10, "left"], ["pod", "POD", 6, "left"], ["seat", "SEAT", 12, "left"],
-    ["runtime", "RT", 3, "left"], ["context", "CTX", 5, "right"], ["status", "STATE", 9, "left"],
-    ["queue", "Q", 2, "right"], ["work", "WORK", Math.max(8, contentWidth - 54), "left"],
+    ["runtime", "RT", 3, "left"], ["context", "CTX", 5, "right"], ["status", "STATE", STATE_WITH_TOOL, "left"],
+    ["queue", "Q", 2, "right"], ["work", "WORK", Math.max(8, contentWidth - 54 - (STATE_WITH_TOOL - 9)), "left"],
   ];
-  const fixed = 8 + 5 + 11 + 2 + 5 + 8 + 2 + 7;
+  const fixed = 8 + 5 + 11 + 2 + 5 + STATE_WITH_TOOL + 2 + 7;
   return [
     ["rig", "RIG", 8, "left"], ["pod", "POD", 5, "left"], ["seat", "SEAT", 11, "left"],
-    ["runtime", "RT", 2, "left"], ["context", "CTX", 5, "right"], ["status", "STATE", 8, "left"],
+    ["runtime", "RT", 2, "left"], ["context", "CTX", 5, "right"], ["status", "STATE", STATE_WITH_TOOL, "left"],
     ["queue", "Q", 2, "right"], ["work", "WORK", Math.max(4, contentWidth - fixed), "left"],
   ];
 }
@@ -620,14 +624,38 @@ function toolAge(since: string, nowMs: number): string | null {
   return min % 60 === 0 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
-/** The table's NOW cell: the oldest open tool call first ("⚙ Bash 20m"; "?" when its own start is past the freshness window; "+1" for
- *  other open calls), then what the queue says the seat is on. */
-function nowCell(agent: Pick<AgentRow, "runningTool">, queueNow: string, nowMs: number): string {
+/**
+ * A running tool in `width` cells: "⚙ Bash 20m" ("?" when its own start is past the freshness window, "+1" for other open calls). One rule
+ * where it is short (workspaces-o9o.32, Jim): the space after ⚙ goes first, then the NAME shortens; the age, the "?" and the "+N" never do.
+ */
+function toolCell(tool: NonNullable<AgentRow["runningTool"]>, nowMs: number, width: number): string {
+  const age = toolAge(tool.since, nowMs);
+  const suffix = `${age ? ` ${age}` : ""}${tool.confirmed ? "" : "?"}${tool.more ? ` +${tool.more}` : ""}`;
+  const full = `⚙ ${tool.name}${suffix}`;
+  if (full.length <= width) return full;
+  const room = width - 1 - suffix.length;  // "⚙", the name, the suffix
+  if (tool.name.length <= room) return `⚙${tool.name}${suffix}`;
+  return `⚙${tool.name.slice(0, Math.max(1, room - 1))}…${suffix}`;
+}
+
+/** The table's NOW cell: the oldest open tool call first, in the cell's own width, then what the queue says the seat is on. */
+function nowCell(agent: Pick<AgentRow, "runningTool">, queueNow: string, nowMs: number, width: number): string {
   const tool = agent.runningTool;
   if (!tool) return queueNow;
-  const age = toolAge(tool.since, nowMs);
-  const cell = `⚙ ${tool.name}${age ? ` ${age}` : ""}${tool.confirmed ? "" : "?"}${tool.more ? ` +${tool.more}` : ""}`;
+  const cell = toolCell(tool, nowMs, width);
   return queueNow === "—" ? cell : `${cell} · ${queueNow}`;
+}
+
+/** The STATE cell: in a table with no NOW column a running tool is shown here, in place of the state word the seat's mark already gives. */
+function stateCellText(columns: AgentColumn[], agent: Pick<AgentRow, "runningTool">, word: string, nowMs: number): string {
+  const tool = agent.runningTool;
+  if (!tool || columns.some(([key]) => key === "now")) return word;
+  return toolCell(tool, nowMs, columns.find(([key]) => key === "status")?.[2] ?? STATE_WITH_TOOL);
+}
+
+/** How wide a table's NOW column is (0 when it has none). */
+function nowWidth(columns: AgentColumn[]): number {
+  return columns.find(([key]) => key === "now")?.[2] ?? 0;
 }
 
 function instanceContentLines(
@@ -738,10 +766,10 @@ function instanceContentLines(
           seat: `${stateCell.mark} ${seatName(pod, agent.name)}`,
           runtime: runtimeShort(agent.runtime),
           context: contextCompact(agent.context, contentWidth < 110),
-          status: stateCell.word,
+          status: stateCellText(columns, agent, stateCell.word, motion.nowMs),
           queue: queueCount(snap, queue.count),
           work: queue.work,
-          now: nowCell(agent, queue.now, motion.nowMs),
+          now: nowCell(agent, queue.now, motion.nowMs, nowWidth(columns)),
         }),
         action: { type: "drill", resource: "agent", name: agent.name, target: { host: host.name, rig: rig.name, pod } },
         zones: [{ start: 0, end: columns[0]![2], action: rigAction }],
@@ -965,10 +993,10 @@ function contentLines(state: ViewState, snap: FleetSnapshot, contentWidth: numbe
           runtime: runtimeShort(a.runtime),
           model: tableModel(a.model),
           context: contextCompact(a.context, narrowFactory),
-          status: stateCell.word,
+          status: stateCellText(agentCols, a, stateCell.word, motion.nowMs),
           queue: queueCount(snap, queue.count),
           work: queue.work,
-          now: nowCell(a, queue.now, motion.nowMs),
+          now: nowCell(a, queue.now, motion.nowMs, nowWidth(agentCols)),
           actions: actionsCell,
         }),
         action: { type: "drill", resource: "agent", name: a.name, target: { host: host.name, rig: rig.name, pod: a.pod } },

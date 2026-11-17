@@ -50,12 +50,12 @@ function fixture(seatPosture: Posture | undefined) {
     if (u.pathname === "/api/health") return Response.json({ schema: "openrig.health-list/v0alpha1", total: 0, limit: 200, records: [], truncated: false, evaluatedAt: null });
     throw Error(`Unexpected fixture route ${u.pathname}`);
   }) as typeof fetch });
-  const context = (scope: "rig" | "agent") => ({ section: "topology", viewTab: "table", drill: [
+  const context = (scope: "rig" | "agent" | "instance") => ({ section: "topology", viewTab: "table", drill: scope === "instance" ? [{ kind: "host", name: "fixture" }] : [
     { kind: "host", name: "fixture" }, { kind: "rig", name: RIG }, { kind: "pod", name: "verify" },
     ...(scope === "agent" ? [{ kind: "agent", name: SEAT }] : []),
   ] }) as ViewState;
-  const read = (scope: "rig" | "agent") => hydrateSnapshot(client, undefined, null, null, RIG, context(scope));
-  const render = (snap: FleetSnapshot, scope: "rig" | "agent", nowMs: number, cols = 160) => {
+  const read = (scope: "rig" | "agent" | "instance") => hydrateSnapshot(client, undefined, null, null, RIG, context(scope));
+  const render = (snap: FleetSnapshot, scope: "rig" | "agent" | "instance", nowMs: number, cols = 160) => {
     const state = { ...createViewState({ instanceId: "fixture", getSnapshot: () => snap }).get(), ...context(scope) };
     return renderScreen(state, snap, { cols, rows: 100, nowMs }).lines.map(stripAnsi);
   };
@@ -72,6 +72,8 @@ const hcBusy: Posture = { kind: "busy", source: "hc_status", at: new Date(START 
 const twoOpen: Posture = { ...busy, otherOpenCalls: 1, line: "busy: running Bash for 3 min (since 16:05Z) +1 more" };
 
 const seatRow = (lines: string[]) => lines.filter((l) => l.includes("sec") && l.includes("working"));
+/** The seat's table row by its name alone: at a width with no NOW column, the STATE cell carries the tool in place of "working". */
+const secRow = (lines: string[]) => lines.filter((l) => / sec\b/.test(l) && !l.includes("verify-sec"));
 
 describe("the seat table names the running tool and how long it has run (workspaces-o9o.4)", () => {
   it("a seat 20 minutes into a Bash call reads ⚙ Bash 20m?, not a bare working (the hooks have not confirmed it for 15 min)", async () => {
@@ -120,6 +122,48 @@ describe("the seat table names the running tool and how long it has run (workspa
   it.each([84, 120, 160])("at %i columns no line overflows", async (cols) => {
     const f = fixture(open);
     for (const line of f.render(await f.read("rig"), "rig", START + 20 * MIN, cols)) expect(line.length).toBeLessThanOrEqual(cols);
+  });
+});
+
+// workspaces-o9o.32, Jim's choice (both options, one rule): the tool stays in the table at every width, and when its cell is short the NAME
+// shortens, never the age, the "?" or the "+N". With NOW in the table (120 columns) it is there; without (84, 100), STATE carries it.
+describe("the running tool at every width: the name shortens, never the age or the \"?\" (workspaces-o9o.32)", () => {
+  const longOpen: Posture = { ...open, tool: "WebSearch", line: "unknown: WebSearch started 16:05Z, 18 min ago, no end recorded" };
+
+  it("at 120 columns a long name in the NOW cell keeps its age and its \"?\"", async () => {
+    const f = fixture(longOpen);
+    const row = secRow(f.render(await f.read("rig"), "rig", START + 18 * MIN, 120))[0]!;
+    expect(row).toMatch(/⚙\s?\S*… 18m\? /);
+    expect(row).not.toMatch(/WebSearc… /);
+  });
+
+  it("where only the space does not fit, the space goes and the whole name stays", async () => {
+    const f = fixture({ ...open, tool: "Write" });
+    expect(secRow(f.render(await f.read("rig"), "rig", START + 18 * MIN, 120))[0]).toContain("⚙Write 18m? ");
+  });
+
+  it.each([84, 100])("at %i columns (no NOW column) the STATE cell carries the tool, its age and its \"?\"", async (cols) => {
+    const short = fixture(open);
+    expect(secRow(short.render(await short.read("rig"), "rig", START + 20 * MIN, cols))[0]).toContain("⚙ Bash 20m?");
+    const long = fixture(longOpen);
+    expect(secRow(long.render(await long.read("rig"), "rig", START + 18 * MIN, cols))[0]).toMatch(/⚙\s?\S*… 18m\? /);
+  });
+
+  it.each([84, 100])("the instance table at %i columns, which has no NOW column, carries it in STATE too", async (cols) => {
+    const f = fixture(open);
+    expect(secRow(f.render(await f.read("instance"), "instance", START + 20 * MIN, cols))[0]).toContain("⚙ Bash 20m?");
+  });
+
+  it.each([84, 100, 120])("a seat with no open call still reads its state at %i columns", async (cols) => {
+    const f = fixture(turn);
+    const row = secRow(f.render(await f.read("rig"), "rig", START + 3 * MIN, cols))[0]!;
+    expect(row).toContain("working");
+    expect(row).not.toContain("⚙");
+  });
+
+  it.each([84, 100, 120])("at %i columns no line overflows with a long tool name", async (cols) => {
+    const f = fixture(longOpen);
+    for (const line of f.render(await f.read("rig"), "rig", START + 18 * MIN, cols)) expect(line.length).toBeLessThanOrEqual(cols);
   });
 });
 

@@ -10,7 +10,10 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
-### The agent detail's tool line and posture line name the same start (workspaces-o9o.32)
+### The running tool stays visible at every width, and the agent detail's two lines name the same start (workspaces-o9o.32)
+
+- Symptom: at 120 columns the seat table's NOW cell cut a long tool name and lost its age and the `?` that marks an unconfirmed call (`⚙ WebSearc…`); at 84 and 100 columns the table has no NOW column, so the running tool showed only in the agent detail.
+- Now, decided by Jim: a table with no NOW column shows the running tool in STATE (12 cells wide there, in place of the state word the seat's mark already gives). Wherever a tool cell is short, one rule applies: the space after `⚙` goes first, then the tool's name shortens; the age, the `?` and `+N` never do (`⚙WebS… 18m?`). This applies in the rig table and in the instance table's narrower layouts.
 
 - Symptom: the TUI's agent detail showed a running tool's start in the TUI's time zone (`since 2031-03-04 08:05:41 PST`) right above the daemon's posture line, which is UTC (`(since 16:05Z)`), so the same instant read as two different times.
 - Now the tool line also gives the start in the posture line's own UTC form: `since 2031-03-04 08:05:41 PST (16:05Z)`, with the date added once the start is on an earlier UTC day (`(03-04 16:05Z)`). The posture line stays the daemon's text, word for word.
