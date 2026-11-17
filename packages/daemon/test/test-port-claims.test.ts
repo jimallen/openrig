@@ -116,6 +116,8 @@ describe("census: no probe-then-release site outside helpers/test-ports.ts", () 
     const released = ["const srv = createServer();", "srv.listen(0, \"127.0.0.1\", () => {", "  const port = (srv.address() as any).port;", "  srv.close(() => resolve(port));", "});"].join("\n");
     const kept = ["await new Promise((r) => server.listen(0, \"127.0.0.1\", r));", "port = (server.address() as any).port;", "});", "afterAll(() => {", "  server.close();", "});"].join("\n");
     expect(probeThenRelease(released)).toEqual([2]);
+    // The one-line form delivery-review's freePort had: listen and close in one statement.
+    expect(probeThenRelease("const p = run(\"const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})\");")).toEqual([1]);
     expect(probeThenRelease(kept)).toEqual([]);
   });
 
