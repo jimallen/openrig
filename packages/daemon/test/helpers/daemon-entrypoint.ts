@@ -99,8 +99,9 @@ function canonicalSocketUnder(socket: string, home: string): boolean {
   if (folder !== realHome && !folder.startsWith(realHome + path.sep)) return false;
   try {
     if (fs.lstatSync(socket).isSymbolicLink()) return false;
-  } catch {
-    // not there yet: the daemon's core makes it
+  } catch (error) {
+    // Only ENOENT means "not there yet" (the daemon's core makes it); any other error leaves it unproven, so it is a refusal.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
   }
   return true;
 }

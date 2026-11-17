@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -216,6 +216,33 @@ describe("o9o.61: opts.env cannot route a test daemon to live state", () => {
     expect(testDaemonEnv({ home, privateHcSocket: path.join(home, "core.sock") }, 1)["HC_SOCKET"]).toBe(path.join(home, "core.sock"));
     expect(() => testDaemonEnv({ home, privateHcSocket: "/run/user/1000/herdr-core/default.sock" }, 1)).toThrow(/not under the test home/);
     expect(() => testDaemonEnv({ home, privateHcSocket: `${home}-other/core.sock` }, 1)).toThrow(/not under the test home/);
+  });
+
+  // Review of 60ffc3c45 (verify-qa): every lstat error read as "not there yet", so an existing socket whose lstat failed (EIO)
+  // was accepted. Only ENOENT means absent; any other error is a refusal. The ENOENT case is the rows' own sockets made later.
+  it("a privateHcSocket whose lstat fails with anything but ENOENT is refused", () => {
+    const home = fs.realpathSync(tempDir("o9o61-h-"));
+    const socket = path.join(home, "core.sock");
+    fs.writeFileSync(socket, "");
+    const realLstat = fs.lstatSync;
+    const spy = vi.spyOn(fs, "lstatSync").mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
+      if (String(p) === socket) throw Object.assign(new Error("EIO: i/o error, lstat"), { code: "EIO" });
+      return (realLstat as (p: fs.PathLike, ...r: unknown[]) => fs.Stats)(p, ...rest);
+    }) as typeof fs.lstatSync);
+    let refusal: unknown = null;
+    let reached = false;
+    try {
+      testDaemonEnv({ home, privateHcSocket: socket }, 1);
+    } catch (error) {
+      refusal = error;
+    } finally {
+      reached = spy.mock.calls.some((call) => String(call[0]) === socket); // read before mockRestore clears the calls
+      spy.mockRestore();
+    }
+    // Positive control: the injected failure was reached for this socket, so an acceptance is not a missed injection.
+    expect(reached, "the injected lstat was reached").toBe(true);
+    expect(String(refusal)).toMatch(/not under the test home/);
+    expect(testDaemonEnv({ home, privateHcSocket: path.join(home, "absent.sock") }, 1)["HC_SOCKET"]).toBe(path.join(home, "absent.sock"));
   });
 
   // Review of 2529eac37 (verify-qa2): the containment was lexical, so a folder inside the home that is a symlink to an outside one
