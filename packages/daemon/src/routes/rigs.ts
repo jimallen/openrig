@@ -1,5 +1,6 @@
 import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import { restoreLeaseJudge } from "./restore-lease-judge.js";
+import { fragmentRelaunchChecksRefusal } from "../domain/relaunch-checks.js";
 import { inventoryCaptureOptions, type ShadowCapture } from "../domain/shadow-capture.js";
 import { DeliveryGuardError } from "../domain/seat-delivery-guard.js";
 import { setOff } from "../domain/active-occupant.js";
@@ -799,6 +800,9 @@ rigsRoutes.post("/:rigId/expand", async (c) => {
   }
 
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  // workspaces-o9o.64: relaunch_checks are read from the recorded spec only; the normalizer would drop them, so refuse them first.
+  const relaunchRefusal = fragmentRelaunchChecksRefusal(((body["pod"] ?? {}) as Record<string, unknown>)["members"], "expansion");
+  if (relaunchRefusal) return c.json({ ok: false, code: "validation_failed", error: relaunchRefusal }, 400);
   const pod = normalizeExpansionPodFragment((body["pod"] ?? {}) as Record<string, unknown>);
   if (!pod) {
     return c.json({ error: "pod is required with id and members[]" }, 400);
@@ -845,6 +849,9 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
   if (!member || typeof member !== "object" || Array.isArray(member)) {
     return c.json({ error: "member is required (a member fragment with id, runtime, agent_ref)" }, 400);
   }
+  // workspaces-o9o.64: as expansion: relaunch_checks are read from the recorded spec only, so a member added here cannot carry them.
+  const relaunchRefusal = fragmentRelaunchChecksRefusal(member, "adding a member");
+  if (relaunchRefusal) return c.json({ ok: false, code: "validation_failed", errors: [relaunchRefusal] }, 400);
   const rigRoot = typeof body["rigRoot"] === "string" ? body["rigRoot"] : ".";
   // Optional pod-local edges (from/to are member ids within the pod). Carried
   // through to the converge op so declared topology intent is not dropped; the

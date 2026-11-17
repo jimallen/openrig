@@ -345,3 +345,16 @@ export function freshSeatLeaseRefusal(leasesOf: (seat: string) => SeatLeaseObser
   if (lease.verdict === "unknown") return { warning: `Node ${logicalId}: its leases were not judged: ${lease.cause}` };
   return null;
 }
+
+/**
+ * workspaces-o9o.64: a seat's relaunch_checks are read at launch from the rig's RECORDED spec source, never from a member fragment, so a
+ * route that takes a fragment and records no spec (expansion, add-member) refuses the field by name rather than drop it in silence. Either
+ * spelling counts. Returns the refusal, or null when no member carries the field.
+ */
+export function fragmentRelaunchChecksRefusal(members: unknown, route: string): string | null {
+  const carriers = (Array.isArray(members) ? members : [members]).filter((m): m is Record<string, unknown> =>
+    typeof m === "object" && m !== null && ("relaunch_checks" in m || "relaunchChecks" in m));
+  if (carriers.length === 0) return null;
+  const ids = carriers.map((m) => (typeof m["id"] === "string" ? m["id"] : "?")).join(", ");
+  return `relaunch_checks cannot be added by ${route} (member ${ids}): declare it in the rig's recorded spec, which the relaunch checks read at each launch`;
+}
