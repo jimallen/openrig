@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 
@@ -16,11 +17,15 @@ const PLUGIN_TABLES = ["[marketplaces.qa-market]", 'source = "https://example.in
 
 let codexHome: string;
 let configPath: string;
+let stateDir: string;
+/** As the daemon builds it: with a state dir and atomic writes, so the exact relay path OpenRig wrote is recorded (workspaces-o9o.76). */
 const adapter = (relay = RELAY_ASSET) => new CodexRuntimeAdapter({
-  tmux: {} as never, activityRelayPath: relay, codexHome,
+  tmux: {} as never, activityRelayPath: relay, codexHome, stateDir,
   fsOps: {
     readFile: (f: string) => fs.readFileSync(f, "utf8"), writeFile: (f: string, c: string) => fs.writeFileSync(f, c),
     exists: (f: string) => fs.existsSync(f), mkdirp: (d: string) => fs.mkdirSync(d, { recursive: true }), homedir: codexHome,
+    chmod: (f: string, m: number) => fs.chmodSync(f, m), removeFile: (f: string) => fs.unlinkSync(f),
+    writeFileAtomic: (f: string, c: string, mode: number) => { const t = `${f}.tmp-${process.pid}`; fs.writeFileSync(t, c, { mode }); fs.renameSync(t, f); },
   } as never,
 });
 const config = () => fs.readFileSync(configPath, "utf8");
@@ -36,6 +41,7 @@ const managedCommands = (text: string) => (text.match(/^command = 'node ".*activ
 beforeEach(() => {
   codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "o9o88-"));
   configPath = path.join(codexHome, "config.toml");
+  stateDir = path.join(codexHome, "openrig-home");
   // The block last in the file: what happens when the trust records are not written after it (the case Codex appended into).
   fs.writeFileSync(configPath, "");
 });
@@ -147,5 +153,60 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     adapter().ensureCodexActivityHooks();
     for (const record of trust.match(/^\[hooks\.state\..*\]$/gm) ?? []) expect(config()).toContain(record);
     expect(config()).toContain(PLUGIN_TABLES);
+  });
+
+  // verify-qa's review of 2492700bd, finding 1: OpenRig's stanzas are the ones running the EXACT relay path OpenRig wrote, never any script
+  // that happens to share the file name.
+  const userRelay = () => path.join(codexHome, "my-hooks", "activity-relay.cjs");
+  const userStopGroup = () => ["[[hooks.Stop]]", "[[hooks.Stop.hooks]]", 'type = "command"', `command = 'node "${userRelay()}"'`].join("\n");
+
+  it("RED (verify-qa): a person's Stop hook running their own activity-relay.cjs at another path is kept by the upsert", () => {
+    blockLast();
+    appendInsideBlock(userStopGroup());
+    adapter().ensureCodexActivityHooks();
+    const { inside, outside } = split(config());
+    expect(outside).toContain(userStopGroup());
+    expect(inside).not.toContain(userRelay());
+    expect(managedCommands(inside)).toBe(4);
+  });
+
+  it("RED (verify-qa): the strip keeps that hook too", () => {
+    blockLast();
+    appendInsideBlock(userStopGroup());
+    adapter().removeCodexActivityHooks();
+    expect(config()).toContain(userStopGroup());
+    expect(config()).not.toContain(BEGIN);
+    expect(config()).not.toContain(`node "${RELAY_ASSET}"`);
+  });
+
+  // verify-qa's review of 2492700bd, finding 2: a line that looks like a table header inside a multiline string is string content, not a
+  // header (o9o.76's lesson: a header counts only at the top level, outside any string).
+  const MCP_ARGS = 'one\n[not.a.header]\n[[nor.this]]\ntwo\n';
+  const mcpTable = () => ["[mcp_servers.qa]", 'command = "qa-server"', `args = """\n${MCP_ARGS}"""`].join("\n");
+
+  it("RED (verify-qa): a multiline string holding a header-like line keeps its value through the upsert", () => {
+    blockLast();
+    appendInsideBlock(mcpTable());
+    adapter().ensureCodexActivityHooks();
+    const parsed = parseToml(config()) as { mcp_servers?: { qa?: { args?: string } } };
+    expect(parsed.mcp_servers?.qa?.args).toBe(MCP_ARGS);
+    expect(split(config()).outside).toContain(mcpTable());
+  });
+
+  it("RED (verify-qa): and through the strip", () => {
+    blockLast();
+    appendInsideBlock(mcpTable());
+    adapter().removeCodexActivityHooks();
+    const parsed = parseToml(config()) as { mcp_servers?: { qa?: { args?: string } } };
+    expect(parsed.mcp_servers?.qa?.args).toBe(MCP_ARGS);
+    expect(config()).toContain(mcpTable());
+  });
+
+  it("a relay command line inside a multiline string of a foreign table is not taken for OpenRig's stanza", () => {
+    blockLast();
+    const table = ["[[hooks.Stop]]", "[[hooks.Stop.hooks]]", 'type = "command"', "command = 'notify-send'", `note = '''\ncommand = 'node "${RELAY_ASSET}"'\n'''`].join("\n");
+    appendInsideBlock(table);
+    adapter().ensureCodexActivityHooks();
+    expect(split(config()).outside).toContain(table);
   });
 });
