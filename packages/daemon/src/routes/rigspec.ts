@@ -270,6 +270,7 @@ rigspecImportRoutes.post("/preflight", async (c) => {
       fsOps,
       skillsRoot: podInstantiator.resolveSkillsRoot?.(),
       exec,
+      probeSeatRuntime: podInstantiator["deps"]?.probeSeatRuntime,
     });
     return c.json(result);
   }

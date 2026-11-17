@@ -16,10 +16,16 @@ const RUNTIME_COMMANDS: Record<string, string> = {
   "omp": "omp --version",
 };
 
+/** workspaces-o9o.65: the executable a seat would launch for a runtime name (its real path) and its --version output, found on
+ *  the PATH of the seat's own terminal (adapters/seat-runtime-probe.ts). Throws as exec does; `code: "ENOENT"` when not found. */
+export type SeatRuntimeProbe = (name: string) => Promise<{ path: string; output: string }>;
+
 interface RigSpecPreflightDeps {
   rigRepo: RigRepository;
   tmuxAdapter: TmuxAdapter;
   exec: ExecFn;
+  /** When given, the Pi version is the one a seat would run; without it, the daemon's own `pi --version` (and the notice says so). */
+  probeSeatRuntime?: SeatRuntimeProbe;
 }
 
 // TODO: AS-T12 — rename to LegacyRigSpecPreflight when routes are migrated
@@ -28,12 +34,14 @@ export class RigSpecPreflight {
   private rigRepo: RigRepository;
   private tmuxAdapter: TmuxAdapter;
   private exec: ExecFn;
+  private probeSeatRuntime?: SeatRuntimeProbe;
 
   constructor(deps: RigSpecPreflightDeps) {
     this.db = deps.rigRepo.db;
     this.rigRepo = deps.rigRepo;
     this.tmuxAdapter = deps.tmuxAdapter;
     this.exec = deps.exec;
+    this.probeSeatRuntime = deps.probeSeatRuntime;
   }
 
   async check(spec: RigSpec): Promise<PreflightResult> {
@@ -105,10 +113,10 @@ export class RigSpecPreflight {
       const cmd = RUNTIME_COMMANDS[node.runtime];
       if (cmd) {
         try {
-          const output = await this.exec(cmd);
-          if (node.runtime === "pi") warnings.push(piVersionNotice(output));
+          if (node.runtime === "pi") warnings.push(await piVersionWarning(this.exec, this.probeSeatRuntime));
+          else await this.exec(cmd);
         } catch (err) {
-          if (node.runtime === "pi") errors.push(...piAvailabilityFailure(err, warnings));
+          if (node.runtime === "pi") errors.push(...piAvailabilityFailure(err, warnings, !!this.probeSeatRuntime));
           else errors.push(`Runtime '${node.runtime}' not available (${cmd} failed: ${runtimeProbeFailure(err)})`);
         }
       }
@@ -201,6 +209,8 @@ export interface PreflightSpecContext {
    *  the Codex profile probe is skipped (backwards-compatible for callers that
    *  cannot provide exec, e.g. legacy sync-only test paths). */
   exec?: (cmd: string) => Promise<string>;
+  /** workspaces-o9o.65: the Pi a seat would launch, probed on the seat's PATH (see RigSpecPreflightDeps.probeSeatRuntime). */
+  probeSeatRuntime?: SeatRuntimeProbe;
   /** Managed Claude activity-hook delivery asset paths (relay + canonical manifest). Defaults to
    *  the daemon-shipped assets (same as the ClaudeCodeAdapter); tests inject fixtures. Validated
    *  via the SHARED delivery check so preflight + adapter cannot drift. */
@@ -291,7 +301,7 @@ function seatCwdPresenceError(resolvedCwd: string, ctx: PreflightSpecContext): s
  * @param input - rig spec YAML, rig root, and filesystem ops
  * @returns PreflightResult
  */
-export async function rigPreflight(input: RigPreflightInput & { exec?: (cmd: string) => Promise<string> }): Promise<PreflightResult> {
+export async function rigPreflight(input: RigPreflightInput & { exec?: (cmd: string) => Promise<string>; probeSeatRuntime?: SeatRuntimeProbe }): Promise<PreflightResult> {
   // FRONT-END (OPR.0.3.3.24): YAML is only the input adapter. Parse + validate +
   // normalize, then delegate every actual check to the structured core so
   // callers holding an already-parsed+validated spec (expand / add_member)
@@ -318,6 +328,7 @@ export async function rigPreflight(input: RigPreflightInput & { exec?: (cmd: str
     rigNameOverride: input.rigNameOverride,
     inheritedPermissionPolicy: input.inheritedPermissionPolicy,
     exec: input.exec,
+    probeSeatRuntime: input.probeSeatRuntime,
     claudeActivityAssets: input.claudeActivityAssets,
   });
 }
@@ -486,7 +497,7 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
     const profileErrors = await verifyCodexProfiles(rigSpec, preflightCtx.exec);
     errors.push(...profileErrors);
     // The daemon's PATH may differ from the pane's login-shell PATH.
-    const piErrors = await verifyPiRuntimeAvailable(rigSpec, preflightCtx.exec, warnings);
+    const piErrors = await verifyPiRuntimeAvailable(rigSpec, preflightCtx.exec, warnings, preflightCtx.probeSeatRuntime);
     errors.push(...piErrors);
     errors.push(...await verifyOmpRuntimeAvailable(rigSpec, preflightCtx.exec));
   }
@@ -518,23 +529,33 @@ export async function verifyPiRuntimeAvailable(
   rigSpec: PodRigSpec,
   exec: ExecFn,
   warnings: string[] = [],
+  probeSeatRuntime?: SeatRuntimeProbe,
 ): Promise<string[]> {
   const hasPiMember = (rigSpec.pods ?? []).some((pod: RigSpecPod) =>
     (pod.members ?? []).some((member: RigSpecPodMember) => member.runtime === "pi"),
   );
   if (!hasPiMember) return [];
   try {
-    warnings.push(piVersionNotice(await exec(RUNTIME_COMMANDS["pi"]!)));
+    warnings.push(await piVersionWarning(exec, probeSeatRuntime));
     return [];
   } catch (err) {
-    return piAvailabilityFailure(err, warnings);
+    return piAvailabilityFailure(err, warnings, !!probeSeatRuntime);
   }
 }
 
-function piAvailabilityFailure(err: unknown, warnings: string[]): string[] {
+/** The Pi version notice: from the Pi a seat would launch when a probe is given (naming its path), else from the daemon's PATH. */
+async function piVersionWarning(exec: ExecFn, probeSeatRuntime?: SeatRuntimeProbe): Promise<string> {
+  if (!probeSeatRuntime) return piVersionNotice(await exec(RUNTIME_COMMANDS["pi"]!));
+  const { path, output } = await probeSeatRuntime("pi");
+  return piVersionNotice(output, { seatExecutable: path });
+}
+
+function piAvailabilityFailure(err: unknown, warnings: string[], onSeatPath = false): string[] {
   const detail = runtimeProbeFailure(err);
   if (detail === "ENOENT" || detail.includes("executable not found on PATH")) {
-    warnings.push(`Pi was not found on the daemon's PATH ('pi --version': ${detail}). The pane's shell may have a different PATH; launch will check Pi there. If it also cannot find Pi, install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`);
+    warnings.push(onSeatPath
+      ? `Pi was not found on the PATH of a seat's login shell (${detail}); launch will check Pi again in the pane. Install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`
+      : `Pi was not found on the daemon's PATH ('pi --version': ${detail}). The pane's shell may have a different PATH; launch will check Pi there. If it also cannot find Pi, install @earendil-works/pi-coding-agent and check 'command -v pi' in that shell.`);
     return [];
   }
   warnings.push(`Pi version unknown ('pi --version' failed: ${detail}); launch continues. Check 'pi --version' in the pane's shell. If Pi is not installed, install @earendil-works/pi-coding-agent and ensure 'pi' is on PATH.`);

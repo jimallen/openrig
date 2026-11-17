@@ -818,6 +818,7 @@ export class BootstrapOrchestrator {
           fsOps: podInstantiator["deps"].fsOps,
           skillsRoot: podInstantiator.resolveSkillsRoot?.(),
           exec: execFn,
+          probeSeatRuntime: podInstantiator["deps"].probeSeatRuntime,
         });
 
         stages.push({

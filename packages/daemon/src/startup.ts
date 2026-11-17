@@ -86,6 +86,7 @@ import { InstallEngine } from "./domain/install-engine.js";
 import { InstallVerifier } from "./domain/install-verifier.js";
 import { BootstrapRepository } from "./domain/bootstrap-repository.js";
 import { RuntimeVerifier } from "./domain/runtime-verifier.js";
+import { seatRuntimeProbe } from "./adapters/seat-runtime-probe.js";
 import { RequirementsProbeRegistry } from "./domain/requirements-probe.js";
 import { ExternalInstallPlanner } from "./domain/external-install-planner.js";
 import { ExternalInstallExecutor } from "./domain/external-install-executor.js";
@@ -903,8 +904,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const podRepo = new PodRepository(db);
   const rigSpecExporter = new RigSpecExporter({ rigRepo, sessionRegistry, podRepo });
+  // workspaces-o9o.65: the Pi a seat launches is the one on its login-shell PATH, not the daemon's. A test that injects its own exec
+  // gets no probe (the daemon-PATH notice, which says so).
+  const probeSeatRuntime = opts?.tmuxExec ? undefined : seatRuntimeProbe();
   const rigSpecPreflight = new RigSpecPreflight({
-    rigRepo, tmuxAdapter, exec: opts?.tmuxExec ?? execPreflightCommand,
+    rigRepo, tmuxAdapter, exec: opts?.tmuxExec ?? execPreflightCommand, probeSeatRuntime,
   });
   const rigInstantiator = new RigInstantiator({
     db, rigRepo, sessionRegistry, eventBus, nodeLauncher, preflight: rigSpecPreflight, tmuxAdapter,
@@ -1186,6 +1190,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     agentImageLibrary,
     continuityPolicyMaterializer,
     exec: opts?.tmuxExec ?? execPreflightCommand,
+    probeSeatRuntime,
     // OPR.0.5.3.6 — shipped topology chain-file defaults install under the
     // typed topology.root at materialization (copy-if-absent).
     topologyRootResolver: () => String(new ContextPackSettingsStore().resolveOne("topology.root").value),

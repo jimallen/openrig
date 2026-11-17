@@ -8,7 +8,7 @@ const TESTED_PI_VERSION = "1.3.0";
 
 /** The daemon and pane may resolve different executables. Never turn a
  * version observation into a new launch refusal or echo arbitrary stdout. */
-export function piVersionNotice(output: string): string {
+export function piVersionNotice(output: string, probed: { seatExecutable?: string } = {}): string {
   const match = /^(?:pi\s+)?v?(\d{1,6}\.\d{1,6}\.\d{1,6})(?:[-+][\w.-]{1,40})?$/i.exec(output.trim());
   if (!match) return "Pi version unknown: 'pi --version' did not return a recognized version; launch continues. Check 'pi --version' in the pane's shell.";
   const version = match[1]!;
@@ -17,7 +17,10 @@ export function piVersionNotice(output: string): string {
   const difference = parts.map((part, i) => part - baseline[i]!).find(value => value !== 0) ?? 0;
   return difference < 0
     ? `Pi version ${version} is older than OpenRig's tested baseline ${TESTED_PI_VERSION}; compatibility is unverified and launch continues. Update with 'npm install -g @earendil-works/pi-coding-agent', then check 'command -v pi' in the pane's shell.`
-    : `Pi version ${version} answered on the daemon's PATH; this does not verify the pane's executable or provider access. Credentials are checked for the managed seat before Pi starts.`;
+    : probed.seatExecutable !== undefined
+      // workspaces-o9o.65: the executable a seat's terminal resolves, so the preview names the Pi the seat will run.
+      ? `Pi version ${version} at ${probed.seatExecutable}, the Pi a seat launches (resolved on a seat's login-shell PATH); this does not verify provider access. Credentials are checked for the managed seat before Pi starts.`
+      : `Pi version ${version} answered on the daemon's PATH; this does not verify the pane's executable or provider access. Credentials are checked for the managed seat before Pi starts.`;
 }
 
 /** The Pi version the credential table below was measured on. A launch is refused only when the seat's Pi reports exactly this. */

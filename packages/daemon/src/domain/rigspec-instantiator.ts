@@ -371,6 +371,8 @@ interface PodInstantiatorDeps {
    *  source surfaces a structured error at instantiation time. */
   agentImageLibrary?: import("./agent-images/agent-image-library-service.js").AgentImageLibraryService;
   exec?: (cmd: string) => Promise<string>;
+  /** workspaces-o9o.65: the Pi a seat would launch, probed on a seat's PATH for the preflight's version notice. */
+  probeSeatRuntime?: import("./rigspec-preflight.js").SeatRuntimeProbe;
   /** OPR.0.5.3.6 — resolves the typed topology.root so a spec's shipped
    *  `topology/` chain-file defaults install at materialization (copy-if-absent,
    *  best-effort). Absent → no defaults install (tests, legacy composition). */
@@ -588,7 +590,7 @@ export class PodRigInstantiator {
       rigNameOverride: targetRig?.rig.name,
       externalQualifiedIds: targetRig?.nodes.map((node) => node.logicalId),
       inheritedPermissionPolicy: this.inheritedPermissionPolicy(opts?.targetRigId),
-      exec: this.deps.exec,
+      exec: this.deps.exec, probeSeatRuntime: this.deps.probeSeatRuntime,
       claudeActivityAssets: this.deps.claudeActivityAssets, // §6: restore main's activity-hook asset threading
     });
     if (!preflight.ready) {
@@ -641,7 +643,7 @@ export class PodRigInstantiator {
       ...this.systemWorldResolutionContext(),
       rigNameOverride: targetRig?.rig.name,
       inheritedPermissionPolicy: this.inheritedPermissionPolicy(opts?.targetRigId),
-      exec: this.deps.exec,
+      exec: this.deps.exec, probeSeatRuntime: this.deps.probeSeatRuntime,
       claudeActivityAssets: this.deps.claudeActivityAssets, // §6: restore main's activity-hook asset threading
     });
     if (!preflight.ready) {
@@ -1117,7 +1119,7 @@ export class PodRigInstantiator {
       ...this.systemWorldResolutionContext(),
       rigNameOverride: rig.rig.name,
       inheritedPermissionPolicy: this.inheritedPermissionPolicy(rigId),
-      exec: this.deps.exec,
+      exec: this.deps.exec, probeSeatRuntime: this.deps.probeSeatRuntime,
     });
     if (!preflight.ready) {
       return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };
@@ -1308,7 +1310,7 @@ export class PodRigInstantiator {
       return refuse("Resolved model, effort, cwd or restore policy differs from the failed first start.");
     }
     const preflight = await preflightValidatedSpec(rigSpec, { rigRoot, fsOps: this.deps.fsOps, skillsRoot: this.resolveSkillsRoot(),
-      ...this.systemWorldResolutionContext(), rigNameOverride: rig.rig.name, inheritedPermissionPolicy: this.inheritedPermissionPolicy(rigId), exec: this.deps.exec });
+      ...this.systemWorldResolutionContext(), rigNameOverride: rig.rig.name, inheritedPermissionPolicy: this.inheritedPermissionPolicy(rigId), exec: this.deps.exec, probeSeatRuntime: this.deps.probeSeatRuntime });
     if (!preflight.ready) return refuse(preflight.errors.join("; "));
     const names = new Set([deriveCanonicalSessionName(pod.id, member.id, rig.rig.name),
       ...this.deps.sessionRegistry.getSessionsForRig(rigId).filter(s => s.nodeId === nodeId).map(s => s.sessionName)]);
@@ -1389,7 +1391,7 @@ export class PodRigInstantiator {
     }
 
     // 2. Preflight
-    const preflight = await rigPreflight({ rigSpecYaml, rigRoot, cwdOverride: opts?.cwdOverride, fsOps: this.deps.fsOps, skillsRoot: this.resolveSkillsRoot(), ...this.systemWorldResolutionContext(), exec: this.deps.exec, claudeActivityAssets: this.deps.claudeActivityAssets });
+    const preflight = await rigPreflight({ rigSpecYaml, rigRoot, cwdOverride: opts?.cwdOverride, fsOps: this.deps.fsOps, skillsRoot: this.resolveSkillsRoot(), ...this.systemWorldResolutionContext(), exec: this.deps.exec, probeSeatRuntime: this.deps.probeSeatRuntime, claudeActivityAssets: this.deps.claudeActivityAssets });
     if (!preflight.ready) {
       return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };
     }
@@ -2979,7 +2981,7 @@ export class PodRigInstantiator {
         cwdOverride: node.cwd ?? undefined, rigNameOverride: rig.rig.name, specDecidesSeatCwd: false,
         // A project rig's own missing workspace is made again by the launch (launchNode, same strict rule), so it is not a refusal here.
         ...(node.cwd && projectRigWorkspaceRecreatable(rig.rig.name, node.logicalId, node.cwd) ? { cwdsCreatedByLaunch: [node.cwd] } : {}),
-        inheritedPermissionPolicy: this.inheritedPermissionPolicy(input.rigId), exec: this.deps.exec,
+        inheritedPermissionPolicy: this.inheritedPermissionPolicy(input.rigId), exec: this.deps.exec, probeSeatRuntime: this.deps.probeSeatRuntime,
       },
     );
     if (!preflight.ready) {
