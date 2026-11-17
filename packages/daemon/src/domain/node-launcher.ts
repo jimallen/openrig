@@ -17,7 +17,7 @@ import { observeSolePane, paneObservationVerdict } from "./pane-binding-observat
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { ensureCodexSeatHome } from "./codex-seat-home.js";
 import type { CodexConfigWritePolicy } from "./codex-config-write-policy.js";
-import { ensureGitWorktreeShim, withWorktreeShimPath } from "./git-worktree-shim.js";
+import { ensureGitWorktreeShim, withWorktreeShimPath, type ShimFiles } from "./git-worktree-shim.js";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { OccupantKind } from "./session-registry.js";
@@ -78,6 +78,9 @@ interface NodeLauncherDeps {
   tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
   /** OF-183: whether this daemon may change the shared Codex config.toml a seat home links to. Absent = unrestricted. */
   codexConfigWritePolicy?: CodexConfigWritePolicy;
+  /** workspaces-o9o.50: the git worktree shim's file port. Absent: the seat gets no shim on PATH and nothing is written
+   *  (most unit tests). The daemon wires src/adapters/node-shim-files.ts at startup. */
+  shimFiles?: ShimFiles;
 }
 
 export class NodeLauncher {
@@ -93,6 +96,7 @@ export class NodeLauncher {
   private defaultSilenceWindowSeconds: number;
   private codexConfigWritePolicy: CodexConfigWritePolicy | null;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
+  private shimFiles: ShimFiles | undefined;
 
   constructor(deps: NodeLauncherDeps) {
     // Hard runtime invariant: all domain services must share the same db handle.
@@ -116,6 +120,7 @@ export class NodeLauncher {
     this.sessionEnv = compactEnv(deps.sessionEnv ?? {});
     this.runtimeSessionEnv = deps.runtimeSessionEnv ?? {};
     this.claudeHomeRead = deps.claudeHomeRead;
+    this.shimFiles = deps.shimFiles;
     this.defaultSilenceWindowSeconds = deps.defaultSilenceWindowSeconds ?? 3;
     this.tmuxOptionDefaults = deps.tmuxOptionDefaults ?? null;
     this.codexConfigWritePolicy = deps.codexConfigWritePolicy ?? null;
@@ -207,14 +212,17 @@ export class NodeLauncher {
     // Worktree placement law: every rig seat gets the git shim first on PATH,
     // so 'git worktree add' outside <repo>/.rig-worktrees redirects rather
     // than sprawling into ~/Code as a sibling (171-tree pileup, 2026-10-02).
-    try {
-      const shimHome = this.sessionEnv["OPENRIG_HOME"] ?? process.env["OPENRIG_HOME"] ?? path.join(os.homedir(), ".openrig");
-      await ensureGitWorktreeShim(shimHome);
-      withWorktreeShimPath(openRigEnv, shimHome);
-    } catch (err) {
-      codexSeatWarnings.push(
-        `worktree shim materialization failed (${err instanceof Error ? err.message : String(err)}); seat launches without the placement shim`,
-      );
+    const shimFiles = this.shimFiles;
+    if (shimFiles) {
+      try {
+        const shimHome = this.sessionEnv["OPENRIG_HOME"] ?? process.env["OPENRIG_HOME"] ?? path.join(os.homedir(), ".openrig");
+        await ensureGitWorktreeShim(shimHome, shimFiles);
+        withWorktreeShimPath(openRigEnv, shimHome);
+      } catch (err) {
+        codexSeatWarnings.push(
+          `worktree shim materialization failed (${err instanceof Error ? err.message : String(err)}); seat launches without the placement shim`,
+        );
+      }
     }
 
     if (node.runtime === "codex") {

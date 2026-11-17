@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { ensureGitWorktreeShim, refreshGitWorktreeShim, shimDir, withWorktreeShimPath } from "../src/domain/git-worktree-shim.js";
 import { ensureCodexSeatHome } from "../src/domain/codex-seat-home.js";
+import { nodeShimFiles } from "../src/adapters/node-shim-files.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -83,13 +84,13 @@ afterEach(async () => {
 
 describe("git-worktree-shim", () => {
   it("writes the shim once, content-addressed, and the file is executable", async () => {
-    const dir = await ensureGitWorktreeShim(tmp);
+    const dir = await ensureGitWorktreeShim(tmp, nodeShimFiles);
     expect(dir).toBe(path.join(tmp, "rig-bin"));
     const body = await fs.readFile(path.join(dir, "git"), "utf8");
     expect(body).toContain("worktree add");
     expect((await fs.lstat(path.join(dir, "git"))).mode & 0o100).toBeTruthy();
     // second call is a no-op
-    await ensureGitWorktreeShim(tmp);
+    await ensureGitWorktreeShim(tmp, nodeShimFiles);
   });
 
   // workspaces-o9o.50: one refresh for daemon start and seat launch; never through a symlink, atomic, says what it did.
@@ -101,7 +102,7 @@ describe("git-worktree-shim", () => {
       await fs.mkdir(elsewhere);
       await fs.writeFile(path.join(elsewhere, "git"), STALE, { mode: 0o755 });
       await fs.symlink(elsewhere, path.join(tmp, "rig-bin"));
-      await expect(ensureGitWorktreeShim(tmp)).rejects.toThrow(/refused .*rig-bin is a symlink/);
+      await expect(ensureGitWorktreeShim(tmp, nodeShimFiles)).rejects.toThrow(/refused .*rig-bin is a symlink/);
       expect(await fs.readFile(path.join(elsewhere, "git"), "utf8")).toBe(STALE);
       expect(await fs.readdir(elsewhere)).toEqual(["git"]);
     });
@@ -111,17 +112,17 @@ describe("git-worktree-shim", () => {
       await fs.writeFile(target, STALE, { mode: 0o755 });
       await fs.mkdir(path.join(tmp, "rig-bin"));
       await fs.symlink(target, path.join(tmp, "rig-bin", "git"));
-      await expect(ensureGitWorktreeShim(tmp)).rejects.toThrow(/refused .*rig-bin\/git is a symlink/);
+      await expect(ensureGitWorktreeShim(tmp, nodeShimFiles)).rejects.toThrow(/refused .*rig-bin\/git is a symlink/);
       expect(await fs.readFile(target, "utf8")).toBe(STALE);
       expect(await fs.readlink(path.join(tmp, "rig-bin", "git"))).toBe(target);
     });
 
     it("rig-bin that is a file, or git that is a directory, is refused, not replaced", async () => {
       await fs.writeFile(path.join(tmp, "rig-bin"), "x");
-      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "refused", path: path.join(tmp, "rig-bin", "git"), reason: `${path.join(tmp, "rig-bin")} is not a directory` });
+      expect(await refreshGitWorktreeShim(tmp, nodeShimFiles)).toEqual({ kind: "refused", path: path.join(tmp, "rig-bin", "git"), reason: `${path.join(tmp, "rig-bin")} is not a directory` });
       await fs.rm(path.join(tmp, "rig-bin"));
       await fs.mkdir(path.join(tmp, "rig-bin", "git"), { recursive: true });
-      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "refused", path: path.join(tmp, "rig-bin", "git"), reason: `${path.join(tmp, "rig-bin", "git")} is not a regular file` });
+      expect(await refreshGitWorktreeShim(tmp, nodeShimFiles)).toEqual({ kind: "refused", path: path.join(tmp, "rig-bin", "git"), reason: `${path.join(tmp, "rig-bin", "git")} is not a regular file` });
       expect((await fs.lstat(path.join(tmp, "rig-bin", "git"))).isDirectory()).toBe(true);
     });
 
@@ -131,7 +132,7 @@ describe("git-worktree-shim", () => {
       await fs.writeFile(path.join(dir, "git"), STALE, { mode: 0o755 });
       await fs.chmod(dir, 0o555);
       try {
-        await expect(refreshGitWorktreeShim(tmp)).rejects.toThrow(/EACCES/);
+        await expect(refreshGitWorktreeShim(tmp, nodeShimFiles)).rejects.toThrow(/EACCES/);
       } finally {
         await fs.chmod(dir, 0o755);
       }
@@ -145,7 +146,7 @@ describe("git-worktree-shim", () => {
       await fs.writeFile(path.join(dir, "git"), STALE, { mode: 0o755 });
       const rename = vi.spyOn(fs, "rename").mockRejectedValueOnce(Object.assign(new Error("EXDEV: simulated"), { code: "EXDEV" }));
       try {
-        await expect(refreshGitWorktreeShim(tmp)).rejects.toThrow(/EXDEV: simulated/);
+        await expect(refreshGitWorktreeShim(tmp, nodeShimFiles)).rejects.toThrow(/EXDEV: simulated/);
         expect(rename).toHaveBeenCalledOnce();
         expect(path.dirname(String(rename.mock.calls[0]![0]))).toBe(dir);
       } finally {
@@ -158,7 +159,7 @@ describe("git-worktree-shim", () => {
     it("under a 077 umask the shim is still written 0755 (the mode is set, not left to the umask)", async () => {
       const old = process.umask(0o077);
       try {
-        await refreshGitWorktreeShim(tmp);
+        await refreshGitWorktreeShim(tmp, nodeShimFiles);
       } finally {
         process.umask(old);
       }
@@ -167,17 +168,17 @@ describe("git-worktree-shim", () => {
 
     it("created, then unchanged, then replaced, then mode-fixed: each says what it did, with hashes", async () => {
       const file = path.join(tmp, "rig-bin", "git");
-      const created = await refreshGitWorktreeShim(tmp);
+      const created = await refreshGitWorktreeShim(tmp, nodeShimFiles);
       expect(created).toMatchObject({ kind: "created", path: file });
       const want = (created as { sha256: string }).sha256;
       expect(want).toMatch(/^[0-9a-f]{64}$/);
-      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "unchanged", path: file, sha256: want });
+      expect(await refreshGitWorktreeShim(tmp, nodeShimFiles)).toEqual({ kind: "unchanged", path: file, sha256: want });
       await fs.writeFile(file, STALE);
-      const replaced = await refreshGitWorktreeShim(tmp);
+      const replaced = await refreshGitWorktreeShim(tmp, nodeShimFiles);
       expect(replaced).toMatchObject({ kind: "replaced", path: file, toSha256: want });
       expect((replaced as { fromSha256: string }).fromSha256).not.toBe(want);
       await fs.chmod(file, 0o700);
-      expect(await refreshGitWorktreeShim(tmp)).toEqual({ kind: "mode-fixed", path: file, fromMode: 0o700, toMode: 0o755 });
+      expect(await refreshGitWorktreeShim(tmp, nodeShimFiles)).toEqual({ kind: "mode-fixed", path: file, fromMode: 0o700, toMode: 0o755 });
       expect((await fs.stat(file)).mode & 0o777).toBe(0o755);
       expect(await fs.readdir(path.join(tmp, "rig-bin"))).toEqual(["git"]);
     });
@@ -198,7 +199,7 @@ describe("git-worktree-shim", () => {
     await fs.mkdir(path.join(repo, ".git", "info"), { recursive: true }); // the git template may have no info/ (workspaces-o9o.70)
     await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
 
-    const shimDirPath = await ensureGitWorktreeShim(tmp);
+    const shimDirPath = await ensureGitWorktreeShim(tmp, nodeShimFiles);
     const pathDirs = [shimDirPath, realGitDir(), "/usr/bin", "/bin"];
 
     // out-of-place target => redirected under <repo>/.rig-worktrees/
@@ -231,7 +232,7 @@ describe("git-worktree-shim", () => {
   // or to 'command -v git', which is the shim itself.
   describe("real_git: the first git on PATH that is not this shim", () => {
     it("an ordinary git call prints no 'command: -a: invalid option' and runs the next git on PATH", async () => {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["--version"], [shim, await prefGitDir(), "/usr/bin", "/bin"], tmp);
       expect(r.stderr).toBe("");
       expect(r.stdout).toBe("PREF --version\n");
@@ -239,7 +240,7 @@ describe("git-worktree-shim", () => {
     });
 
     it("skips the shim when it is reached again through a symlinked directory earlier on PATH (no exec loop)", async () => {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const link = path.join(tmp, "rig-bin-link");
       await fs.symlink(shim, link);
       const r = runGit(["--version"], [link, shim, await prefGitDir(), "/usr/bin", "/bin"], tmp);
@@ -253,7 +254,7 @@ describe("git-worktree-shim", () => {
     // itself until killed. Identity is the file (device and inode), not the path.
     for (const kind of ["file symlink", "hard link"] as const) {
       it(`skips the shim when another PATH dir holds it as a ${kind} (no exec loop)`, async () => {
-        const shim = await ensureGitWorktreeShim(tmp);
+        const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
         const alias = path.join(tmp, "alias-dir");
         await fs.mkdir(alias);
         if (kind === "file symlink") await fs.symlink(path.join(shim, "git"), path.join(alias, "git"));
@@ -266,7 +267,7 @@ describe("git-worktree-shim", () => {
     }
 
     it("with no git on PATH but the shim, fails at once with 127 and never runs a git off PATH", async () => {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["--version"], [shim, await toolsDir("bash", "dirname")], tmp);
       expect(r.signal, "the shim did not exec itself until the timeout").toBeNull();
       expect(r.status).toBe(127);
@@ -275,7 +276,7 @@ describe("git-worktree-shim", () => {
     });
 
     it("'git worktree' with no further argument passes through instead of dying on $2 under set -u", async () => {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["worktree"], [shim, await prefGitDir(), "/usr/bin", "/bin"], tmp);
       expect(r.stderr).toBe("");
       expect(r.stdout).toBe("PREF worktree\n");
@@ -283,7 +284,7 @@ describe("git-worktree-shim", () => {
     });
 
     it("'git worktree add' with no path passes through instead of dying on args[0] under set -u", async () => {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["worktree", "add"], [shim, await prefGitDir(), "/usr/bin", "/bin"], tmp);
       expect(r.stderr).toBe("");
       expect(r.stdout).toBe("PREF worktree add\n");
@@ -296,7 +297,7 @@ describe("git-worktree-shim", () => {
       it.skipIf(!dockerImagePresent(image))(
         `${image} with no /usr/bin/git: resolves the next git on PATH, no stderr, no exec loop (NOT RUN without docker and the ${image} image)`,
         async () => {
-          const shim = await ensureGitWorktreeShim(tmp);
+          const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
           const pref = await prefGitDir();
           const r = spawnSync("docker", [
             // --init: a looping shim must not be PID 1, which ignores the timeout's signal and hangs the row.
@@ -320,7 +321,7 @@ describe("git-worktree-shim", () => {
         it.skipIf(!dockerImagePresent(image))(
           `${image}: skips the shim held as a ${kind} in another PATH dir, no exec loop (NOT RUN without docker and the ${image} image)`,
           async () => {
-            const shim = await ensureGitWorktreeShim(tmp);
+            const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
             const pref = await prefGitDir();
             const r = spawnSync("docker", [
               "run", "--rm", "--init", "--network", "none",
@@ -358,7 +359,7 @@ describe("git-worktree-shim", () => {
     }
 
     async function setup() {
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const top = path.join(tmp, "top");
       await fs.mkdir(top, { recursive: true });
       const realTop = await fs.realpath(top);
@@ -433,7 +434,7 @@ describe("git-worktree-shim", () => {
       const { top, realTop } = await setup();
       const linked = path.join(tmp, "linked-top");
       await fs.symlink(realTop, linked);
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       // A shell that cd'd through the symlink exports the logical PWD; without it bash falls back to the
       // physical getcwd() and the symlink is never seen.
       const r = runGit(["worktree", "add", "-b", "feat", ".rig-worktrees/in"], [shim, await recordingGitDir(), "/usr/bin", "/bin"], linked, { PWD: linked });
@@ -455,7 +456,7 @@ describe("git-worktree-shim", () => {
     it.skipIf(!dockerImagePresent("bash:3.2"))(
       "bash:3.2: a relative './' inside path is unchanged and '-b feat <outside>' keeps -b (NOT RUN without docker and the bash:3.2 image)",
       async () => {
-        const shim = await ensureGitWorktreeShim(tmp);
+        const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
         const rec = await recordingGitDir();
         const r = spawnSync("docker", [
           "run", "--rm", "--init", "--network", "none",
@@ -481,7 +482,7 @@ describe("git-worktree-shim", () => {
       expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
       await fs.mkdir(path.join(repo, ".git", "info"), { recursive: true }); // the git template may have no info/ (workspaces-o9o.70)
       await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["worktree", "add", "-b", "feat", path.join(tmp, "outside-b")], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
       expect(r.status, r.stderr).toBe(0);
       const wt = path.join(repo, ".rig-worktrees", "outside-b");
@@ -506,7 +507,7 @@ describe("git-worktree-shim", () => {
       const portalTarget = path.join(tmp, "portal-target");
       await fs.mkdir(portalTarget);
       await fs.symlink(portalTarget, path.join(realRepoDir, ".rig-worktrees", "portal"));
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const run = (args: string[]) => runGit(["worktree", "add", ...args], [shim, realGitDir(), "/usr/bin", "/bin"], realRepoDir);
       return { repo: realRepoDir, git, portalTarget, run };
     }
@@ -542,7 +543,7 @@ describe("git-worktree-shim", () => {
       const outside = path.join(tmp, "root-target");
       await fs.mkdir(outside);
       await fs.symlink(outside, path.join(repo, ".rig-worktrees"));
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["worktree", "add", "-b", "escape", path.join(tmp, "outside2", "asked")], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
       expect(r.status).toBe(128);
       expect(r.stderr).toMatch(/^openrig git shim: refusing worktree path [^\n]*\n$/);
@@ -617,7 +618,7 @@ describe("git-worktree-shim", () => {
     it.skipIf(!dockerImagePresent("bash:3.2"))(
       "bash:3.2: '..' and a symlink portal are redirected, '.' is refused, a trailing newline is kept, the diagnostic is one line (NOT RUN without docker and the bash:3.2 image)",
       async () => {
-        const shim = await ensureGitWorktreeShim(tmp);
+        const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
         const rec = await recordingGitDir();
         const r = spawnSync("docker", [
           "run", "--rm", "--init", "--network", "none",
@@ -652,7 +653,7 @@ describe("git-worktree-shim", () => {
       expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
       const other = path.join(tmp, "other");
       await fs.mkdir(other);
-      const shim = await ensureGitWorktreeShim(tmp);
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const r = runGit(["worktree", "add", "-b", "dot", other + "/."], [shim, realGitDir(), "/usr/bin", "/bin"], repo);
       expect(r.status).toBe(128);
       const list = spawnSync(git, ["-C", repo, "worktree", "list", "--porcelain"]).stdout.toString();
@@ -982,6 +983,7 @@ describe("git-worktree-shim", () => {
     const launcher = new NodeLauncher({
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
       sessionEnv: { OPENRIG_HOME: openrigHome, PATH: process.env.PATH },
+      shimFiles: nodeShimFiles,
     });
 
     const r1 = await launcher.launchNode(rig.id, "exec-cos");

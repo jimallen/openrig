@@ -119,7 +119,6 @@ src/domain/gateway/spawn-gateway.ts node:child_process value upstream
 src/domain/gateway/transport.ts node:net value upstream
 src/domain/generated-file-hygiene.ts node:child_process value upstream
 src/domain/generated-file-hygiene.ts node:fs value upstream
-src/domain/git-worktree-shim.ts node:fs value fork
 src/domain/hc-unsettled-sweep.ts src/adapters/hc-delivery.js type fork
 src/domain/hc-untested-version-health.ts src/adapters/hc-version.js value fork
 src/domain/health-checkpoints.ts node:fs value upstream

@@ -1,5 +1,4 @@
-import { constants as fsConstants, promises as fs } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import * as path from "node:path";
 
 /**
@@ -183,78 +182,66 @@ export type ShimRefresh =
   | { kind: "unchanged"; path: string; sha256: string }
   | { kind: "refused"; path: string; reason: string };
 
-const sha256 = (body: string | Buffer) => createHash("sha256").update(body).digest("hex");
+/** What sits at a path, seen without following a symlink. */
+export type ShimEntry = "file" | "directory" | "symlink" | "other" | "absent";
 
-async function kindAt(p: string): Promise<"file" | "directory" | "symlink" | "other" | null> {
-  try {
-    const st = await fs.lstat(p);
-    return st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : st.isFile() ? "file" : "other";
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
+/**
+ * The port: the file effects a shim refresh needs, in the shim's own words. The domain decides what to do; the adapter
+ * (src/adapters/node-shim-files.ts, wired in startup.ts) does it. Every operation is on one name and never follows a
+ * symlink at that name.
+ */
+export interface ShimFiles {
+  /** What is at this path (lstat), or "absent". */
+  entryAt(p: string): Promise<ShimEntry>;
+  /** Create this folder, and any missing parents. */
+  makeFolder(p: string): Promise<void>;
+  /** The bytes and permission bits (mode & 0o777) of the regular file at this path, refusing a symlink at the name. */
+  readShim(p: string): Promise<{ body: Uint8Array; mode: number }>;
+  /**
+   * Put body at file with exactly this mode, atomically: a fresh temp in folder (never an existing name), its mode set
+   * (not left to the umask), renamed over file (rename replaces the name, never a link's target). On any failure the
+   * temp is removed and file is left as it was.
+   */
+  writeAtomically(folder: string, file: string, body: string, mode: number): Promise<void>;
 }
+
+const sha256 = (body: string | Uint8Array) => createHash("sha256").update(body).digest("hex");
 
 /**
  * Make <OPENRIG_HOME>/rig-bin/git the package's shim, byte for byte and mode 0755, and say what that took. Called at
  * daemon start (so a deploy reaches running seats, which exec this file on every git call) and at every seat launch.
  *
  * Never through a symlink: rig-bin or rig-bin/git being a symlink (or not a directory / not a regular file) refuses the
- * refresh and nothing is written. The current file is read with O_NOFOLLOW. A write is atomic: an O_EXCL temp in rig-bin,
- * its mode set, renamed over git (rename replaces the name itself, never a link's target); a failed write removes the
- * temp and leaves the old file whole, so a seat mid-exec never sees a torn script. OPENRIG_HOME itself is not checked,
- * the same anchor rule as the openrig-core refresh. Residual, accepted by Jim on 2026-11-16 for that refresh (o9o.17):
- * rig-bin swapped for a symlink between the lstat and the mkdir, open or rename that follows; Node has no openat or
- * renameat on a folder handle, and it takes a concurrent process of the same user that could write the shim directly.
+ * refresh and nothing is written. The current file is read without following a link, and a write is atomic
+ * (ShimFiles.writeAtomically), so a seat mid-exec never sees a torn script. OPENRIG_HOME itself is not checked, the same
+ * anchor rule as the openrig-core refresh. Residual, accepted by Jim on 2026-11-16 for that refresh (o9o.17): rig-bin
+ * swapped for a symlink between the check and the mkdir, open or rename that follows; Node has no openat or renameat on
+ * a folder handle, and it takes a concurrent process of the same user that could write the shim directly.
  */
-export async function refreshGitWorktreeShim(openrigHome: string): Promise<ShimRefresh> {
+export async function refreshGitWorktreeShim(openrigHome: string, files: ShimFiles): Promise<ShimRefresh> {
   const dir = shimDir(openrigHome);
   const file = shimPath(openrigHome);
-  const dirKind = await kindAt(dir);
-  if (dirKind === "symlink") return { kind: "refused", path: file, reason: `${dir} is a symlink` };
-  if (dirKind !== null && dirKind !== "directory") return { kind: "refused", path: file, reason: `${dir} is not a directory` };
-  if (dirKind === null) await fs.mkdir(dir, { recursive: true });
+  const dirEntry = await files.entryAt(dir);
+  if (dirEntry === "symlink") return { kind: "refused", path: file, reason: `${dir} is a symlink` };
+  if (dirEntry !== "absent" && dirEntry !== "directory") return { kind: "refused", path: file, reason: `${dir} is not a directory` };
+  if (dirEntry === "absent") await files.makeFolder(dir);
 
-  const fileKind = await kindAt(file);
-  if (fileKind === "symlink") return { kind: "refused", path: file, reason: `${file} is a symlink` };
-  if (fileKind !== null && fileKind !== "file") return { kind: "refused", path: file, reason: `${file} is not a regular file` };
+  const fileEntry = await files.entryAt(file);
+  if (fileEntry === "symlink") return { kind: "refused", path: file, reason: `${file} is a symlink` };
+  if (fileEntry !== "absent" && fileEntry !== "file") return { kind: "refused", path: file, reason: `${file} is not a regular file` };
 
-  let current: { body: Buffer; mode: number } | null = null;
-  if (fileKind === "file") {
-    const fh = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    try {
-      current = { body: await fh.readFile(), mode: (await fh.stat()).mode & 0o777 };
-    } finally {
-      await fh.close();
-    }
-  }
+  const current = fileEntry === "file" ? await files.readShim(file) : null;
   const want = sha256(SHIM_BODY);
-  if (current && current.body.equals(Buffer.from(SHIM_BODY, "utf8"))) {
+  const have = current ? sha256(current.body) : null;
+  if (current && have === want) {
     if (current.mode === SHIM_MODE) return { kind: "unchanged", path: file, sha256: want };
-    await installShim(dir, file);
+    await files.writeAtomically(dir, file, SHIM_BODY, SHIM_MODE);
     return { kind: "mode-fixed", path: file, fromMode: current.mode, toMode: SHIM_MODE };
   }
-  await installShim(dir, file);
-  return current
-    ? { kind: "replaced", path: file, fromSha256: sha256(current.body), toSha256: want }
+  await files.writeAtomically(dir, file, SHIM_BODY, SHIM_MODE);
+  return have !== null
+    ? { kind: "replaced", path: file, fromSha256: have, toSha256: want }
     : { kind: "created", path: file, sha256: want };
-}
-
-async function installShim(dir: string, file: string): Promise<void> {
-  const tmp = path.join(dir, `.git.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
-  const fh = await fs.open(tmp, "wx", SHIM_MODE);
-  try {
-    try {
-      await fh.writeFile(SHIM_BODY, "utf8");
-      await fh.chmod(SHIM_MODE);
-    } finally {
-      await fh.close();
-    }
-    await fs.rename(tmp, file);
-  } catch (err) {
-    await fs.rm(tmp, { force: true });
-    throw err;
-  }
 }
 
 /** One log line for a refresh; the caller picks the stream (a refusal is an error). */
@@ -274,8 +261,8 @@ export function describeShimRefresh(r: ShimRefresh): string {
  * The seat-launch form: refresh, and throw on a refusal so the launch goes ahead without the shim on PATH (the
  * launcher's warning says so). Returns the rig-bin dir.
  */
-export async function ensureGitWorktreeShim(openrigHome: string): Promise<string> {
-  const r = await refreshGitWorktreeShim(openrigHome);
+export async function ensureGitWorktreeShim(openrigHome: string, files: ShimFiles): Promise<string> {
+  const r = await refreshGitWorktreeShim(openrigHome, files);
   if (r.kind === "refused") throw new Error(describeShimRefresh(r));
   return shimDir(openrigHome);
 }

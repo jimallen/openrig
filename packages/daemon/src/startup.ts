@@ -29,6 +29,7 @@ import { EventBus } from "./domain/event-bus.js";
 import { NodeLauncher } from "./domain/node-launcher.js";
 import { seatRestartEnv } from "./domain/seat-restart-env.js";
 import { describeShimRefresh, refreshGitWorktreeShim } from "./domain/git-worktree-shim.js";
+import { nodeShimFiles } from "./adapters/node-shim-files.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
@@ -666,7 +667,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // exec <OPENRIG_HOME>/rig-bin/git on every git call, so without this a deploy reaches them only when some seat launches
   // on that host (stu and mbp ran the pre-o9o.2 shim after releases 1 and 2). Same OPENRIG_HOME the seats get.
   try {
-    const shimRefresh = await refreshGitWorktreeShim(launchSessionEnv["OPENRIG_HOME"]!);
+    const shimRefresh = await refreshGitWorktreeShim(launchSessionEnv["OPENRIG_HOME"]!, nodeShimFiles);
     if (shimRefresh.kind === "refused") {
       console.error(`[openrig] ${describeShimRefresh(shimRefresh)}; running seats keep whatever is there`);
     } else {
@@ -724,6 +725,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     tmuxOptionDefaults,
     // workspaces-o9o.10: read-only, for the warning when a seat's own Claude home sets no model.
     claudeHomeRead: { exists: (p) => fs.existsSync(p), isDirectory: (p) => fs.statSync(p).isDirectory(), readFile: (p) => fs.readFileSync(p, "utf8") },
+    // workspaces-o9o.50: the git worktree shim's file port (the same adapter as the daemon-start refresh above).
+    shimFiles: nodeShimFiles,
     codexConfigWritePolicy,
   });
 

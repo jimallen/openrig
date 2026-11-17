@@ -14,7 +14,8 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { codexSeatHomePath } from "../src/domain/codex-seat-home.js";
-import { shimDir } from "../src/domain/git-worktree-shim.js";
+import { shimDir, type ShimFiles } from "../src/domain/git-worktree-shim.js";
+import { nodeShimFiles } from "../src/adapters/node-shim-files.js";
 import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaults.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { PersistedEvent } from "../src/domain/types.js";
@@ -82,6 +83,7 @@ describe("NodeLauncher", () => {
     tmux?: TmuxAdapter,
     sessionEnv?: Record<string, string | undefined>,
     tmuxOptionDefaults?: TmuxOptionDefaultsApplier,
+    shimFiles?: ShimFiles,
   ) {
     return new NodeLauncher({
       db,
@@ -91,6 +93,7 @@ describe("NodeLauncher", () => {
       tmuxAdapter: tmux ?? mockTmuxAdapter(),
       sessionEnv,
       tmuxOptionDefaults,
+      shimFiles,
     });
   }
 
@@ -714,7 +717,7 @@ describe("NodeLauncher", () => {
     function launchWith(runtime: "codex" | "claude-code", home: string, createSession?: () => Promise<TmuxResult>) {
       const rig = rigRepo.createRig(`warn-${runtime}`);
       rigRepo.addNode(rig.id, "seat-a", { role: "worker", runtime });
-      const launcher = createLauncher(mockTmuxAdapter(createSession ? { createSession } : undefined), { OPENRIG_HOME: home });
+      const launcher = createLauncher(mockTmuxAdapter(createSession ? { createSession } : undefined), { OPENRIG_HOME: home }, undefined, nodeShimFiles);
       return launcher.launchNode(rig.id, "seat-a");
     }
 

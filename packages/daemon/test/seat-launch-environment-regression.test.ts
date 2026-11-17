@@ -140,7 +140,8 @@ it.each(["nu", "nu.exe", "fish", "csh", "", "unknown"])("Pi preserves its existi
 it.each(["claude-code", "pi", "codex"] as const)("E: %s launched through the seat launch environment resolves git to the worktree shim ahead of the user's own git", async runtime => {
   const f = fixture();
   const { ensureGitWorktreeShim } = await import("../src/domain/git-worktree-shim.js");
-  const shimDir = await ensureGitWorktreeShim(f.env.OPENRIG_HOME);
+  const { nodeShimFiles } = await import("../src/adapters/node-shim-files.js");
+  const shimDir = await ensureGitWorktreeShim(f.env.OPENRIG_HOME, nodeShimFiles);
   const probe = "/bin/sh -c 'command -v git; command -v rig'";
   // Codex: the probed executable (here a POSIX script on the daemon PATH) runs the same probe as its child tool would.
   if (runtime === "codex") f.exe(path.join(f.shared, "codex"), `#!/bin/sh\nexec ${probe}\n`);
