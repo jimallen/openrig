@@ -280,7 +280,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const configPath = this.resolveCodexConfigPath();
     if (!this.mayChangeConfig(configPath)) return;
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
-    const withHooks = upsertCodexActivityHooks(existing, relay);
+    const withHooks = upsertCodexActivityHooks(existing, relay, this.recordedManagedRelay());
     if (withHooks !== existing) {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, withHooks);
@@ -298,6 +298,20 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       this.fs.writeFile(configPath, trusted);
     }
     this.recordManagedRelay(relay);
+  }
+
+  /** workspaces-o9o.88: the relay path OpenRig last recorded writing into the managed block (workspaces-o9o.76), or null when there is no
+   *  readable record. With the current relay path, it is how OpenRig tells its own stanzas from a person's: by the exact path, never by name. */
+  private recordedManagedRelay(): string | null {
+    if (!this.stateDir) return null;
+    const record = nodePath.join(this.stateDir, ...CODEX_MANAGED_RELAY_RECORD);
+    try {
+      if (!this.fs.exists(record)) return null;
+      const recorded = this.fs.readFile(record).trim();
+      return recorded.length > 0 ? recorded : null;
+    } catch {
+      return null;
+    }
   }
 
   /** workspaces-o9o.76: record the exact relay path the managed block runs, mode 0600 in a 0700 directory, written atomically. Without the
@@ -354,7 +368,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!this.mayChangeConfig(configPath)) return;
     if (!this.fs.exists(configPath)) return;
     const existing = this.fs.readFile(configPath);
-    const updated = stripCodexActivityHooks(existing);
+    const updated = stripCodexActivityHooks(existing, [this.activityRelayPath, this.recordedManagedRelay()]);
     if (updated !== existing) {
       this.fs.writeFile(configPath, updated);
     }
@@ -1503,7 +1517,7 @@ const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"
  * runs the hook under. No matcher (verified on 0.139: no-matcher fires for every
  * turn-scope event).
  */
-export function upsertCodexActivityHooks(content: string, relayPath: string): string {
+export function upsertCodexActivityHooks(content: string, relayPath: string, recordedRelayPath: string | null = null): string {
   const command = `'node "${relayPath}"'`;
   const stanzas = OPENRIG_ACTIVITY_HOOK_EVENTS
     .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5`)
@@ -1519,7 +1533,7 @@ export function upsertCodexActivityHooks(content: string, relayPath: string): st
   const existing = pattern.exec(next);
   if (existing) {
     // workspaces-o9o.88: what Codex (or a person) put inside the sentinels that is not OpenRig's goes on, just after the block.
-    const { before, after } = foreignTablesInManagedBlock(existing[0]);
+    const { before, after } = foreignTablesInManagedBlock(existing[0], [relayPath, recordedRelayPath]);
     return next.replace(pattern, () => `${before ? `${before}\n` : ""}${block}${after ? `\n${after}` : ""}`); // literal: no `$` expansion
   }
   const prefix = next.replace(/\n*$/, "");
@@ -1532,14 +1546,14 @@ export function upsertCodexActivityHooks(content: string, relayPath: string): st
  * leaves all other content — user-owned hooks, [features], project trust — untouched. Returns the
  * input unchanged when the block is absent.
  */
-function stripCodexActivityHooks(content: string): string {
+function stripCodexActivityHooks(content: string, ownRelayPaths: ReadonlyArray<string | null>): string {
   const pattern = new RegExp(
     `\\n*${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_BEGIN)}[\\s\\S]*?${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_END)}[ \\t]*\\n?`,
     "m"
   );
   const existing = pattern.exec(content);
   if (!existing) return content;
-  const { before, after } = foreignTablesInManagedBlock(existing[0]);
+  const { before, after } = foreignTablesInManagedBlock(existing[0], ownRelayPaths);
   const kept = [before, after].filter((part) => part.length > 0).join("\n");
   return content.replace(pattern, () => (kept ? `\n${kept}` : "\n"));
 }
@@ -1549,32 +1563,43 @@ function stripCodexActivityHooks(content: string): string {
  * appends its [marketplaces.*] and [plugins."<plugin>@<market>"] tables just before the closing sentinel when the block is last in the file,
  * and replacing the whole BEGIN..END range deleted them. Returns, in order, every table found between the sentinels that is not OpenRig's:
  * any table other than a hooks group, and any [[hooks.<Event>]] group (with its [[hooks.<Event>.hooks]] tables) whose command does not run
- * an activity-relay.cjs, split into what came before OpenRig's first stanza and what came after it (order matters: Codex keys a hook's trust
- * by its group's position within its event), each empty when there is none. Blank lines and comments before the first table are the block's own.
+ * exactly a relay path OpenRig wrote, split into what came before OpenRig's first stanza and what came after it (order matters: Codex keys a
+ * hook's trust by its group's position within its event), each empty when there is none. Blank lines and comments before the first table are
+ * the block's own.
+ *
+ * verify-qa's review of 2492700bd: OpenRig's stanzas are those whose command is exactly `node "<path>"` for a path in `ownRelayPaths` (the
+ * current relay and the one OpenRig recorded writing), never any script that shares the name activity-relay.cjs; and a line counts as a
+ * header, or as a command, only at the top level outside any string (lineStartsAtDocumentLevel), so a header-looking line inside a
+ * multiline string stays in its string.
  */
 const CODEX_TABLE_HEADER = /^\s*\[/;
 const CODEX_HOOK_GROUP_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/;
 const CODEX_HOOK_MEMBER_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\.hooks\]\]\s*$/;
-const OPENRIG_RELAY_COMMAND = /^\s*command\s*=\s*'node "[^"]*activity-relay\.cjs"'\s*$/;
 
-function foreignTablesInManagedBlock(blockText: string): { before: string; after: string } {
-  const body = blockText.split("\n").filter((line) => !line.includes(OPENRIG_ACTIVITY_HOOKS_BEGIN) && !line.includes(OPENRIG_ACTIVITY_HOOKS_END));
-  // Split into groups: each table starts one, except an [[hooks.<E>.hooks]] table, which belongs to the [[hooks.<E>]] group before it.
-  const groups: string[][] = [];
+function foreignTablesInManagedBlock(blockText: string, ownRelayPaths: ReadonlyArray<string | null>): { before: string; after: string } {
+  const ownCommands = new Set(ownRelayPaths.filter((p): p is string => p !== null).map((p) => `command = 'node "${p}"'`));
+  const topLevel = lineStartsAtDocumentLevel(blockText);
+  const body = blockText.split("\n")
+    .map((text, index) => ({ text, top: topLevel[index] === true }))
+    .filter(({ text, top }) => !(top && (text.includes(OPENRIG_ACTIVITY_HOOKS_BEGIN) || text.includes(OPENRIG_ACTIVITY_HOOKS_END))));
+  // Split into groups: each top-level table starts one, except an [[hooks.<E>.hooks]] table, which belongs to the [[hooks.<E>]] group before it.
+  type Line = { text: string; top: boolean };
+  const groups: Line[][] = [];
   for (const line of body) {
     const current = groups[groups.length - 1];
-    const member = CODEX_HOOK_MEMBER_HEADER.exec(line);
-    const joinsGroup = member !== null && current !== undefined && CODEX_HOOK_GROUP_HEADER.exec(current[0]!)?.[1] === member[1];
-    if (CODEX_TABLE_HEADER.test(line) && !joinsGroup) groups.push([line]);
+    const member = line.top ? CODEX_HOOK_MEMBER_HEADER.exec(line.text) : null;
+    const joinsGroup = member !== null && current !== undefined && CODEX_HOOK_GROUP_HEADER.exec(current[0]!.text)?.[1] === member[1];
+    if (line.top && CODEX_TABLE_HEADER.test(line.text) && !joinsGroup) groups.push([line]);
     else if (current !== undefined) current.push(line);
   }
-  const isOpenRigStanza = (group: string[]) => {
-    const event = CODEX_HOOK_GROUP_HEADER.exec(group[0]!)?.[1];
-    return event !== undefined && (OPENRIG_ACTIVITY_HOOK_EVENTS as readonly string[]).includes(event) && group.some((line) => OPENRIG_RELAY_COMMAND.test(line));
+  const isOpenRigStanza = (group: Line[]) => {
+    const event = CODEX_HOOK_GROUP_HEADER.exec(group[0]!.text)?.[1];
+    return event !== undefined && (OPENRIG_ACTIVITY_HOOK_EVENTS as readonly string[]).includes(event)
+      && group.some((line) => line.top && ownCommands.has(line.text.trim()));
   };
   const firstOpenRig = groups.findIndex(isOpenRigStanza);
-  const text = (part: string[][]) => {
-    const kept = part.filter((group) => !isOpenRigStanza(group)).map((group) => group.join("\n").replace(/\s+$/, ""));
+  const text = (part: Line[][]) => {
+    const kept = part.filter((group) => !isOpenRigStanza(group)).map((group) => group.map((line) => line.text).join("\n").replace(/\s+$/, ""));
     return kept.length > 0 ? `${kept.join("\n\n")}\n` : "";
   };
   if (firstOpenRig === -1) return { before: "", after: text(groups) };
