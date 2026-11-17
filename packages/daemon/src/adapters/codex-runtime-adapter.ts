@@ -1519,8 +1519,8 @@ export function upsertCodexActivityHooks(content: string, relayPath: string): st
   const existing = pattern.exec(next);
   if (existing) {
     // workspaces-o9o.88: what Codex (or a person) put inside the sentinels that is not OpenRig's goes on, just after the block.
-    const foreign = foreignTablesInManagedBlock(existing[0]);
-    return next.replace(pattern, () => (foreign ? `${block}\n${foreign}` : block)); // literal: a string would expand `$` patterns
+    const { before, after } = foreignTablesInManagedBlock(existing[0]);
+    return next.replace(pattern, () => `${before ? `${before}\n` : ""}${block}${after ? `\n${after}` : ""}`); // literal: no `$` expansion
   }
   const prefix = next.replace(/\n*$/, "");
   return prefix.length > 0 ? `${prefix}\n\n${block}` : block;
@@ -1539,8 +1539,9 @@ function stripCodexActivityHooks(content: string): string {
   );
   const existing = pattern.exec(content);
   if (!existing) return content;
-  const foreign = foreignTablesInManagedBlock(existing[0]);
-  return content.replace(pattern, () => (foreign ? `\n${foreign}` : "\n"));
+  const { before, after } = foreignTablesInManagedBlock(existing[0]);
+  const kept = [before, after].filter((part) => part.length > 0).join("\n");
+  return content.replace(pattern, () => (kept ? `\n${kept}` : "\n"));
 }
 
 /**
@@ -1548,14 +1549,15 @@ function stripCodexActivityHooks(content: string): string {
  * appends its [marketplaces.*] and [plugins."<plugin>@<market>"] tables just before the closing sentinel when the block is last in the file,
  * and replacing the whole BEGIN..END range deleted them. Returns, in order, every table found between the sentinels that is not OpenRig's:
  * any table other than a hooks group, and any [[hooks.<Event>]] group (with its [[hooks.<Event>.hooks]] tables) whose command does not run
- * an activity-relay.cjs. Empty when there is none. Blank lines and comments before the first table are the block's own.
+ * an activity-relay.cjs, split into what came before OpenRig's first stanza and what came after it (order matters: Codex keys a hook's trust
+ * by its group's position within its event), each empty when there is none. Blank lines and comments before the first table are the block's own.
  */
 const CODEX_TABLE_HEADER = /^\s*\[/;
 const CODEX_HOOK_GROUP_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/;
 const CODEX_HOOK_MEMBER_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\.hooks\]\]\s*$/;
 const OPENRIG_RELAY_COMMAND = /^\s*command\s*=\s*'node "[^"]*activity-relay\.cjs"'\s*$/;
 
-function foreignTablesInManagedBlock(blockText: string): string {
+function foreignTablesInManagedBlock(blockText: string): { before: string; after: string } {
   const body = blockText.split("\n").filter((line) => !line.includes(OPENRIG_ACTIVITY_HOOKS_BEGIN) && !line.includes(OPENRIG_ACTIVITY_HOOKS_END));
   // Split into groups: each table starts one, except an [[hooks.<E>.hooks]] table, which belongs to the [[hooks.<E>]] group before it.
   const groups: string[][] = [];
@@ -1570,8 +1572,13 @@ function foreignTablesInManagedBlock(blockText: string): string {
     const event = CODEX_HOOK_GROUP_HEADER.exec(group[0]!)?.[1];
     return event !== undefined && (OPENRIG_ACTIVITY_HOOK_EVENTS as readonly string[]).includes(event) && group.some((line) => OPENRIG_RELAY_COMMAND.test(line));
   };
-  const kept = groups.filter((group) => !isOpenRigStanza(group)).map((group) => group.join("\n").replace(/\s+$/, ""));
-  return kept.length > 0 ? `${kept.join("\n\n")}\n` : "";
+  const firstOpenRig = groups.findIndex(isOpenRigStanza);
+  const text = (part: string[][]) => {
+    const kept = part.filter((group) => !isOpenRigStanza(group)).map((group) => group.join("\n").replace(/\s+$/, ""));
+    return kept.length > 0 ? `${kept.join("\n\n")}\n` : "";
+  };
+  if (firstOpenRig === -1) return { before: "", after: text(groups) };
+  return { before: text(groups.slice(0, firstOpenRig)), after: text(groups.slice(firstOpenRig)) };
 }
 
 /** Ensure `[features].hooks = true` (canonical key; not the deprecated codex_hooks alias). */

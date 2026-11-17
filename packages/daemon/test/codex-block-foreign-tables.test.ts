@@ -88,6 +88,31 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     expect(split(config()).outside).toContain(ownGroup);
   });
 
+  // From build-impl's rows for o9o.88: order matters. Codex keys a hook's trust by its group's position within its event (config.toml:stop:0:0),
+  // so a person's group that sat before OpenRig's must stay before it. Content found before OpenRig's first stanza goes above BEGIN; after, below END.
+  it("RED (order): content inside the block before OpenRig's stanzas moves above it, content after moves below it", () => {
+    blockLast();
+    fs.writeFileSync(configPath, config().replace(`${BEGIN}\n`, `${BEGIN}\n[marketplaces.first]\nsource = "a"\n\n`));
+    appendInsideBlock('[plugins."p@first"]\nenabled = true');
+    adapter().ensureCodexActivityHooks();
+    const text = config();
+    expect(text.indexOf("[marketplaces.first]")).toBeGreaterThan(-1);
+    expect(text.indexOf("[marketplaces.first]")).toBeLessThan(text.indexOf(BEGIN));
+    expect(text.indexOf('[plugins."p@first"]')).toBeGreaterThan(text.indexOf(END));
+    expect(split(text).inside).not.toContain("[marketplaces.");
+  });
+
+  it("the strip keeps that order too: before stays before, after stays after", () => {
+    blockLast();
+    fs.writeFileSync(configPath, config().replace(`${BEGIN}\n`, `${BEGIN}\n[marketplaces.first]\nsource = "a"\n\n`));
+    appendInsideBlock('[plugins."p@first"]\nenabled = true');
+    adapter().removeCodexActivityHooks();
+    const text = config();
+    expect(text.indexOf("[marketplaces.first]")).toBeGreaterThan(-1);
+    expect(text.indexOf("[marketplaces.first]")).toBeLessThan(text.indexOf('[plugins."p@first"]'));
+    expect(text).not.toContain(BEGIN);
+  });
+
   it("OpenRig's own stanzas are never kept as foreign: after an upsert the file has exactly its four, inside the block", () => {
     blockLast();
     appendInsideBlock(PLUGIN_TABLES);
