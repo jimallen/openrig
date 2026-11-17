@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { killIfRunning, spawnDaemonEntrypoint, testDaemonEnv, type EntrypointDaemon } from "./helpers/daemon-entrypoint.js";
+import { killIfRunning, spawnDaemonEntrypoint, testDaemonEnv, testDaemonUserHome, type EntrypointDaemon } from "./helpers/daemon-entrypoint.js";
 
 // workspaces-o9o.61. spawnDaemonEntrypoint spread process.env into the test daemon. Inside vitest that env has already been
 // scrubbed (test/hermetic-env.setup.ts), but a standalone tsx caller (incident 2026-11-16 ~20:50Z, build-impl4) handed the
@@ -149,11 +149,16 @@ describe("o9o.61: a test daemon started outside vitest gets none of the caller's
     expect(carried).toEqual([]);
     // Any value naming the seat's fake root at all (a derived path, a name not in the list) is a leak too.
     expect(Object.entries(childEnv).filter(([, v]) => typeof v === "string" && v.includes(root)).map(([k]) => k)).toEqual([]);
-    expect(childEnv["HOME"]?.startsWith(home + path.sep), `HOME=${childEnv["HOME"]}`).toBe(true);
+    // HOME is beside the test home, never inside it (an OpenRig home above HOME is refused, workspaces-o9o.36), and every user
+    // location is under that private HOME.
+    const userHome = testDaemonUserHome(home);
+    expect(childEnv["HOME"]).toBe(userHome);
+    expect(userHome.startsWith(home + path.sep)).toBe(false);
     // Every place the daemon's children find a server or keep state is under the test home: with no TMUX_TMPDIR, tmux's default
     // server is the operator's (/tmp/tmux-<uid>/default); with no XDG_STATE_HOME, hc's socket falls back to HOME (private too).
-    for (const name of ["TMUX_TMPDIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]) {
-      expect(childEnv[name]?.startsWith(home + path.sep), `${name}=${childEnv[name]}`).toBe(true);
+    expect(childEnv["TMUX_TMPDIR"]?.startsWith(home + path.sep), `TMUX_TMPDIR=${childEnv["TMUX_TMPDIR"]}`).toBe(true);
+    for (const name of ["XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]) {
+      expect(childEnv[name]?.startsWith(userHome + path.sep), `${name}=${childEnv[name]}`).toBe(true);
     }
     // The names the daemon needs still reach it (the allow-list is not empty).
     expect(childEnv["PATH"]).toBe(process.env["PATH"]);

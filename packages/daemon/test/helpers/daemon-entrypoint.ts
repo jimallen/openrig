@@ -113,6 +113,11 @@ export function inheritedTestEnv(parent: Record<string, string | undefined>): Re
     TEST_DAEMON_INHERITED_ENV.includes(name) || name.startsWith(INHERITED_ENV_PREFIX)));
 }
 
+/** The HOME a test daemon on OpenRig home `home` gets: `<home>-user-home`, beside it (see testDaemonEnv). */
+export function testDaemonUserHome(home: string): string {
+  return `${path.resolve(home)}-user-home`;
+}
+
 export function testDaemonEnv(
   opts: Pick<SpawnDaemonEntrypointOptions, "home" | "env" | "privateHcSocket">, port: number, parent: NodeJS.ProcessEnv = process.env,
 ): Record<string, string | undefined> {
@@ -125,7 +130,10 @@ export function testDaemonEnv(
     throw new Error(`spawnDaemonEntrypoint: privateHcSocket ${opts.privateHcSocket} is not under the test home ${opts.home} (it must be a canonical path, no link, inside the home's real path)`);
   }
   const inherited = inheritedTestEnv(parent);
-  const userHome = path.join(opts.home, "user-home");
+  // The daemon's HOME is a SIBLING of its OPENRIG_HOME, never inside it: workspaces-o9o.36 refuses an OpenRig home that is the
+  // user's home or above it ("expected instance-home, found user-home"), and <home>/user-home made <home> an ancestor of HOME.
+  // The same naming as the vitest setup's fixture homes. spawnDaemonEntrypoint removes it when its daemon exits.
+  const userHome = testDaemonUserHome(opts.home);
   return {
     ...inherited,
     ...opts.env,
@@ -176,12 +184,15 @@ export async function spawnDaemonEntrypoint(opts: SpawnDaemonEntrypointOptions):
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const port = await (opts.portSource ?? getFreeLoopbackPort)();
     const env = testDaemonEnv(opts, port);
-    // The daemon changes into HOME at start, so the private one must exist.
+    // The daemon changes into HOME at start, so the private one must exist. It is the helper's own (beside the caller's home, which
+    // the caller removes), so it goes when the daemon exits.
     fs.mkdirSync(env["HOME"]!, { recursive: true });
     const child = spawn(process.execPath, ["--import", "tsx", ...(opts.nodeArgs ?? []), DAEMON_ENTRYPOINT], {
       env: env as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    USER_HOMES.set(child, env["HOME"]!);
+    child.once("exit", () => fs.rmSync(env["HOME"]!, { recursive: true, force: true }));
     let stderr = "";
     let stdout = "";
     child.stderr!.setEncoding("utf8");
@@ -205,7 +216,13 @@ export async function spawnDaemonEntrypoint(opts: SpawnDaemonEntrypointOptions):
   throw new Error(`daemon exited before ready on ${attempts} ports (EADDRINUSE each time): ${lastStderr}`);
 }
 
-/** Terminate a spawned daemon: SIGKILL only a child that is still running. */
+/** Each test daemon's private HOME (testDaemonUserHome), removed by killIfRunning and when the daemon exits. */
+const USER_HOMES = new WeakMap<ChildProcess, string>();
+
+/** Terminate a spawned daemon: SIGKILL only a child that is still running. Its private HOME goes now, not only when the exit is
+ *  seen: a test file can end before that event arrives, and the HOME is beside the caller's own temp folder. */
 export function killIfRunning(child: ChildProcess): void {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  const userHome = USER_HOMES.get(child);
+  if (userHome !== undefined) fs.rmSync(userHome, { recursive: true, force: true });
 }
