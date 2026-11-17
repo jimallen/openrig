@@ -17,6 +17,7 @@ import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { crossHostMessageId, farSeatName } from "../src/domain/seat-messaging/far-daemon.js";
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { HC, PrivateCore, until } from "./hc-private-core.js";
+import { getFreeLoopbackPort } from "./helpers/daemon-entrypoint.js";
 
 const OLD_BUILD = "72f894b1f0f5b0b80ffec3a60b847ca5b6ade741";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,7 +31,6 @@ const TOKEN = "cross-host-token";
 const NEAR_HOST = "near-host";
 const FAR_HOST = "far-host";
 let serial = 0;
-let port = 22100 + (process.pid % 500);
 
 const gitHasOldBuild = spawnSync("git", ["-C", REPO, "cat-file", "-e", `${OLD_BUILD}^{commit}`]).status === 0;
 
@@ -59,14 +59,14 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
   afterEach(() => { for (const c of children) if (c.exitCode === null && c.signalCode === null) c.kill("SIGKILL"); children = []; });
   afterAll(() => core.stop());
 
-  /** One daemon's folder: its database, its OPENRIG_HOME, its port. */
-  function host(tag: string) {
+  /** One daemon's folder: its database, its OPENRIG_HOME, its port. The port is the OS's choice of a free loopback port (release 4's
+   *  combined suite: a port from a fixed `22100 + pid % 500` range was already taken, and the restarted daemon died on EADDRINUSE). */
+  function host(tag: string, qport: number) {
     const dir = mkdtempSync(join(core.root, `${tag}-`));
     const home = join(dir, "home"); mkdirSync(home);
     for (const f of ["seat.log", "hop.log"]) writeFileSync(join(dir, f), "");
     const db = join(dir, "d.sqlite");
     const h = createDb(db); migrate(h, ALL_MIGRATIONS); h.close();
-    const qport = ++port;
     const withDb = <T,>(fn: (c: ReturnType<typeof createDb>) => T): T => { const c = createDb(db); try { return fn(c); } finally { c.close(); } };
     return { dir, home, db, qport, withDb, name: tag === "near" ? NEAR_HOST : FAR_HOST,
       read: (id: string) => withDb((c) => c.prepare("SELECT * FROM outbox_entries WHERE outbox_id = ?").get(id) as Record<string, unknown> | undefined),
@@ -83,6 +83,8 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     const child = spawn(process.execPath, ["--import", "tsx", join(cwd, CHILD)], { cwd, stdio: ["ignore", "ignore", "pipe"], env: {
       ...core.env, PATH: `${dirname(HC)}:/usr/bin:/bin`, TMPDIR: join(core.root, "h"), OPENRIG_HOME: h.home, MPD_DB: h.db, MPD_DIR: h.dir,
       CODEX_HOME: join(core.root, "h", "codex"), DELIVERY_PORT: String(h.qport), OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN, OPENRIG_HOST_NAME: h.name,
+      // The env is built, not inherited, so VITEST is not set and createDaemon would try to boot a kernel rig; this test needs none.
+      OPENRIG_NO_KERNEL: "1",
     } });
     child.stderr?.on("data", (b: Buffer) => { err.push(b.toString()); if (err.length > 40) err.shift(); writeFileSync(join(h.dir, "stderr.log"), err.join("")); });
     child.on("exit", (code) => { if (code) writeFileSync(join(h.dir, "child-failed"), err.join("")); });
@@ -94,7 +96,13 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     const before = h.lines("hop.log").filter((l) => l === "booted").length;
     return async () => { await until(() => { failed(h); return h.lines("hop.log").filter((l) => l === "booted").length; }, (n) => n > before, `${h.name} boot`, 60_000); };
   };
-  const start = async (h: Host, opts: { build?: string } = {}) => { const up = await booted(h); const child = daemon(h, opts); await up(); return child; };
+  const start = async (h: Host, opts: { build?: string } = {}) => {
+    const up = await booted(h); const child = daemon(h, opts); await up();
+    // No kernel rig is attempted: a test daemon that tried to boot one would, with a runtime signed in, start real agents.
+    const stderr = existsSync(join(h.dir, "stderr.log")) ? readFileSync(join(h.dir, "stderr.log"), "utf8") : "";
+    expect(stderr).not.toMatch(/Kernel rig/);
+    return child;
+  };
   const kill = async (c: ChildProcess) => { expect(c.exitCode).toBeNull(); c.kill("SIGKILL"); await new Promise((r) => c.once("exit", r)); };
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const http = (h: Host, path: string, body?: unknown, sender?: string) => {
@@ -142,7 +150,7 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
   const state = (h: Host, id: string, want: string, ms = 30_000) => until(() => { failed(h); return h.read(id); }, (r) => r?.message_state === want, `${h.name} ${id} ${want}`, ms);
   const sender = (near: Host) => { const lead = `lead${++serial}@lead${serial}`; near.withDb((c) => { const rigs = new RigRepository(c); const [member, rig] = lead.split("@") as [string, string]; rigs.addNode(rigs.createRig(rig).id, member, { role: "worker", runtime: "terminal" }); }); return lead; };
   async function pair() {
-    const near = host("near"); const far = host("far");
+    const near = host("near", await getFreeLoopbackPort()); const far = host("far", await getFreeLoopbackPort());
     near.registry([{ id: "sparky", url: `http://127.0.0.1:${far.qport}` }]);
     far.registry([{ id: "laptop", url: `http://127.0.0.1:${near.qport}` }]);
     return { near, far };
