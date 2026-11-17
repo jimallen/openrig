@@ -13,7 +13,7 @@
 // What it cannot stop: a process that does not use this helper (an in-process server's own listen(0), anything outside the suites)
 // taking the number in the window. It closes the case that was measured: one test process against another.
 import { spawnSync } from "node:child_process";
-import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,26 +44,60 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
+/** How long a claim that is empty or does not hold a pid is still treated as held: what a writer paused (or crashed) mid-write leaves. */
+export const CLAIM_WRITE_GRACE_MS = 60_000;
+
+/** A claim file's state: "absent", or "held" with its owner pid, or "unreadable" (empty or not a pid) with its age in ms. */
+function claimState(file) {
+  let text;
+  let ageMs;
+  try { text = readFileSync(file, "utf8"); ageMs = Date.now() - statSync(file).mtimeMs; } catch (e) { return e.code === "ENOENT" ? { state: "absent" } : { state: "unreadable", ageMs: 0 }; }
+  const trimmed = text.trim();
+  return /^[1-9][0-9]*$/.test(trimmed) ? { state: "held", owner: Number(trimmed) } : { state: "unreadable", ageMs };
+}
+
 function ownerOf(file) {
-  try { return Number(readFileSync(file, "utf8").trim()); } catch { return Number.NaN; }
+  const seen = claimState(file);
+  return seen.state === "held" ? seen.owner : Number.NaN;
 }
 
+/** Publishes this process's claim on `file` atomically (workspaces-o9o.81, verify-qa review): the pid goes into a unique temp file, which is
+ *  then hard-linked to the claim's name; link() fails with EEXIST when a claim is there, so a claim is either absent or complete, never half
+ *  written. The temp file is removed whatever happens. */
 function create(file) {
-  try { writeFileSync(file, String(process.pid), { flag: "wx" }); return true; }
-  catch (e) { if (e.code === "EEXIST") return false; throw e; }
+  const tmp = `${file}.writing-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    writeFileSync(tmp, String(process.pid), { flag: "wx" });
+    try { linkSync(tmp, file); return true; } catch (e) { if (e.code === "EEXIST") return false; throw e; }
+  } finally {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
+  }
 }
 
-/** Claims `port` for this process; false when another live test process holds it. */
+/**
+ * Claims `port` for this process; false when another test process holds it. The states of a claim file, each with its answer:
+ *  - absent: claimed now (atomically, above);
+ *  - held by this process: false (never taken twice);
+ *  - held by a live process: false;
+ *  - held by a process that is gone: moved aside atomically and claimed (a claim made live meanwhile is put back);
+ *  - empty or not a pid (a writer mid-write, or one that crashed mid-write): held for CLAIM_WRITE_GRACE_MS, then reclaimed like a dead one.
+ * A port that is not a positive integer is refused, and no file is written for it.
+ */
 export function claimPort(port) {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return false;
   mkdirSync(TEST_PORT_CLAIMS_DIR, { recursive: true });
   const file = join(TEST_PORT_CLAIMS_DIR, String(port));
   if (create(file)) { remember(port); return true; }
-  const owner = ownerOf(file);
-  if (owner === process.pid || alive(owner)) return false;
+  const seen = claimState(file);
+  if (seen.state === "absent") return false;   // released meanwhile: the next offer will do
+  if (seen.state === "held" && (seen.owner === process.pid || alive(seen.owner))) return false;
+  if (seen.state === "unreadable" && seen.ageMs < CLAIM_WRITE_GRACE_MS) return false;
   // A dead claimant's file: move it aside first. Only one reclaimer's rename succeeds; a claim made live meanwhile is put back.
   const aside = `${file}.stale-${process.pid}-${Math.random().toString(36).slice(2)}`;
   try { renameSync(file, aside); } catch { return false; }
-  if (alive(ownerOf(aside))) { try { linkSync(aside, file); } catch { /* a newer claim is already there */ } unlinkSync(aside); return false; }
+  const moved = claimState(aside);
+  const stillHeld = (moved.state === "held" && alive(moved.owner)) || (moved.state === "unreadable" && moved.ageMs < CLAIM_WRITE_GRACE_MS);
+  if (stillHeld) { try { linkSync(aside, file); } catch { /* a newer claim is already there */ } unlinkSync(aside); return false; }
   unlinkSync(aside);
   if (create(file)) { remember(port); return true; }
   return false;

@@ -4,7 +4,9 @@ export declare const TEST_PORT_HOST: "127.0.0.1";
 export declare const TEST_PORT_CLAIMS_DIR: string;
 /** The OS's choice of a free loopback port, released at once. */
 export declare function probeFreePort(): Promise<number>;
-/** Claims `port` for this process; false when another live test process holds it. */
+/** How long a claim that is empty or does not hold a pid is still treated as held (a writer mid-write). */
+export declare const CLAIM_WRITE_GRACE_MS: number;
+/** Claims `port` for this process; false when another test process holds it, or when `port` is not a positive integer. */
 export declare function claimPort(port: number): boolean;
 /** Drops this process's claim on `port` (never another process's). */
 export declare function releasePort(port: number): void;

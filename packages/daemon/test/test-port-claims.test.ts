@@ -4,7 +4,7 @@
 // test process for real (a child node process using the same helper); the OS's offer is steered through the helper's probe seam, since the
 // OS cannot be made to repeat a port on demand. The census row keeps every new probe-then-release site on the helper.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -51,18 +51,20 @@ describe("workspaces-o9o.81: a test port is claimed, not probed and released", (
 
   it("RED: offered a claimed port and then a free one, the other process takes the free one", async () => {
     const held = await claimTestPort();
-    const spare = await probeFreePort();
     try {
-      const other = await otherProcess(`const offers = [${held}, ${spare}]; return await h.claimTestPort({ probe: async () => offers.shift() });`);
-      expect(JSON.parse(other.out)).toBe(spare);
+      // The second offer is any free port the OS gives: a fixed spare could be claimed by a third test process first (verify-qa, fix 2).
+      const other = await otherProcess(`const offers = [${held}]; return await h.claimTestPort({ probe: async () => offers.shift() ?? h.probeFreePort() });`);
+      const got = JSON.parse(other.out) as number;
+      expect(Number.isInteger(got)).toBe(true);
+      expect(got).not.toBe(held);
     } finally { releasePort(held); }
   });
 
   it("RED: a claim held by another live test process keeps this process off the port", async () => {
-    const port = await probeFreePort();
-    const holder = await otherProcess(`return h.claimPort(${port});`, { keepAlive: true });
+    const holder = await otherProcess(`return await h.claimTestPort();`, { keepAlive: true });   // the holder claims a port of its own
     try {
-      expect(JSON.parse(holder.out)).toBe(true);
+      const port = JSON.parse(holder.out) as number;
+      expect(Number.isInteger(port)).toBe(true);
       await expect(claimTestPort({ probe: async () => port, attempts: 2 })).rejects.toThrow(/no unclaimed loopback port/);
     } finally { process.kill(holder.pid, "SIGKILL"); }
   });
@@ -79,13 +81,66 @@ describe("workspaces-o9o.81: a test port is claimed, not probed and released", (
   // verify-qa FAIL of 33dcd26c0 (fix 1): the reclaim row overwrote <claims>/<port> for a port it had only probed, so it could rewrite a live
   // process's claim. It now makes only its OWN claim stale, and refuses anyone else's.
   it("RED (review): making a claim stale refuses a claim this process does not hold (a live process's claim is left alone)", async () => {
-    const port = await probeFreePort();
-    const holder = await otherProcess(`return h.claimPort(${port});`, { keepAlive: true });
+    const holder = await otherProcess(`return await h.claimTestPort();`, { keepAlive: true });   // the holder claims a port of its own
     try {
-      expect(JSON.parse(holder.out)).toBe(true);
+      const port = JSON.parse(holder.out) as number;
       expect(() => makeOwnClaimStale(port)).toThrow(/not this process's claim/);
       expect(readFileSync(join(TEST_PORT_CLAIMS_DIR, String(port)), "utf8")).toBe(String(holder.pid));
     } finally { process.kill(holder.pid, "SIGKILL"); }
+  });
+
+  // verify-qa FAIL of 49f186f65 (fix 1): a claim was an exclusive open plus a SEPARATE write, and an empty or unparseable claim read as dead.
+  // A writer paused between the two left an empty file that a second claimer reclaimed, so both believed they held the port. What a paused
+  // (or crashed) writer leaves is reproduced exactly: an empty claim file.
+  it("RED (review): an empty claim (a writer between its open and its write) is held, not reclaimed", async () => {
+    const port = await probeFreePort();
+    const file = join(TEST_PORT_CLAIMS_DIR, String(port));
+    writeFileSync(file, "", { flag: "wx" });
+    try {
+      expect(claimPort(port)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe("");
+    } finally { rmSync(file, { force: true }); }
+  });
+
+  it("RED (review): claimPort refuses a port that is not a positive integer, and writes no file for it", () => {
+    for (const bad of [undefined, null, Number.NaN, 1.5, -1, 0, "4242"] as unknown[]) {
+      expect(claimPort(bad as number), String(bad)).toBe(false);
+      expect(existsSync(join(TEST_PORT_CLAIMS_DIR, String(bad))), String(bad)).toBe(false);
+    }
+  });
+
+  it("the census of claim states, each with its answer: absent, own, held-live, held-dead, writing, unparseable (fresh and old)", async () => {
+    const aged = (file: string) => { const t = (Date.now() - 10 * 60_000) / 1000; utimesSync(file, t, t); };
+    const fresh = async () => { const p = await probeFreePort(); return { p, file: join(TEST_PORT_CLAIMS_DIR, String(p)) }; };
+    const gone = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
+    const holder = await otherProcess(`return await h.claimTestPort();`, { keepAlive: true });
+    const live = JSON.parse(holder.out) as number;
+    try {
+      const absent = await fresh();
+      expect(claimPort(absent.p), "absent").toBe(true);
+      expect(claimPort(absent.p), "own").toBe(false);
+      releasePort(absent.p);
+      expect(claimPort(live), "held by a live process").toBe(false);
+      const dead = await fresh(); writeFileSync(dead.file, gone, { flag: "wx" });
+      expect(claimPort(dead.p), "held by a process that is gone").toBe(true);
+      releasePort(dead.p);
+      const writing = await fresh(); writeFileSync(writing.file, "", { flag: "wx" });
+      expect(claimPort(writing.p), "writing (empty, fresh)").toBe(false);
+      const garbled = await fresh(); writeFileSync(garbled.file, "not a pid", { flag: "wx" });
+      expect(claimPort(garbled.p), "unparseable, fresh").toBe(false);
+      const old = await fresh(); writeFileSync(old.file, "", { flag: "wx" }); aged(old.file);
+      expect(claimPort(old.p), "empty, older than the grace").toBe(true);
+      releasePort(old.p);
+      for (const f of [writing.file, garbled.file]) rmSync(f, { force: true });
+    } finally { process.kill(holder.pid, "SIGKILL"); }
+  });
+
+  it("a claim leaves no temp file behind", async () => {
+    const before = new Set(readdirSync(TEST_PORT_CLAIMS_DIR));
+    const port = await claimTestPort();
+    releasePort(port);
+    const left = readdirSync(TEST_PORT_CLAIMS_DIR).filter((f) => !before.has(f) && f.includes(String(process.pid)));
+    expect(left).toEqual([]);
   });
 
   it("a process's claims are dropped when it exits", async () => {
