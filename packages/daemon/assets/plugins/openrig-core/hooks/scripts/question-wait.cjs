@@ -9,7 +9,7 @@
 // question with no safe answer, an answer from the human) prints nothing and leaves the dialog to the human. It never guesses.
 
 const crypto = require("node:crypto");
-const { parseJson, resolveEndpoint } = require("./activity-relay.cjs");
+const { defersToManagedCopy, hookEventOf, parseJson, resolveEndpoint } = require("./activity-relay.cjs");
 
 // Same number as QUESTION_HOOK_TIMEOUT_SECONDS (domain/seat-question-policy.ts) and this hook's `timeout` in hooks/claude.json (pinned by test).
 const HOOK_TIMEOUT_SECONDS = 1500;
@@ -82,7 +82,10 @@ async function main() {
   let data = "";
   process.stdin.setEncoding("utf8");
   for await (const chunk of process.stdin) data += chunk;
-  const decision = await run(parseJson(data));
+  const providerPayload = parseJson(data);
+  // workspaces-o9o.33: the plugin's copy steps aside where the managed copy runs, or one question is held twice under two request ids.
+  if (defersToManagedCopy(process.env, hookEventOf(providerPayload), "question-wait.cjs", __filename)) return;
+  const decision = await run(providerPayload);
   if (decision) process.stdout.write(JSON.stringify(decision) + "\n");
 }
 

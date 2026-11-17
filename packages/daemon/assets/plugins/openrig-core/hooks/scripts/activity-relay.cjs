@@ -483,8 +483,38 @@ function uid() {
   try { return typeof process.getuid === "function" ? String(process.getuid()) : "user"; } catch { return "user"; }
 }
 
+// workspaces-o9o.33: one copy of each OpenRig hook per event. OpenRig writes its managed copy into the project's .claude/settings.local.json
+// (<home>/state/claude-activity-hooks/<script>); a seat that also LOADS the openrig-core plugin runs the plugin's copy of the same hook as
+// well (measured on Claude Code 2.1.326: both run for every event, 7-27 ms apart, and only the plugin copy sees CLAUDE_PLUGIN_ROOT). Two
+// copies posted every hook twice, put one question on record as two holds, and the second seat gate blocked a socket-delivered prompt as a
+// repeat. So the plugin copy steps aside for an event whose managed copy the project's settings run. Anything it cannot read or tell keeps
+// it running: an event is never left with no copy.
+const MANAGED_HOOK_DIR = path.join("state", "claude-activity-hooks");
+
+function isInside(child, parent) {
+  try {
+    const rel = path.relative(fs.realpathSync(parent), fs.realpathSync(child));
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+function defersToManagedCopy(env, hookEvent, script, selfPath) {
+  const pluginRoot = firstString(env.CLAUDE_PLUGIN_ROOT);
+  const projectDir = firstString(env.CLAUDE_PROJECT_DIR);
+  if (!pluginRoot || !projectDir || !hookEvent || !isInside(selfPath, pluginRoot)) return false;
+  let settings;
+  try { settings = JSON.parse(fs.readFileSync(path.join(projectDir, ".claude", "settings.local.json"), "utf8")); } catch { return false; }
+  const groups = settings && typeof settings === "object" && settings.hooks && Array.isArray(settings.hooks[hookEvent]) ? settings.hooks[hookEvent] : [];
+  const managed = path.join(MANAGED_HOOK_DIR, script);
+  return groups.some((group) => group && Array.isArray(group.hooks)
+    && group.hooks.some((hook) => hook && typeof hook.command === "string" && hook.command.includes(managed)));
+}
+
 async function main() {
   const providerPayload = parseJson(await readStdin());
+  if (defersToManagedCopy(process.env, hookEventOf(providerPayload), "activity-relay.cjs", __filename)) return;
   const spooled = readSpooled(providerPayload);
   const gate = spooled ? spooled.gate : runSeatGate(providerPayload);
   if (gate !== "pass") writeBlock(gate === "repeat" ? NATIVE_DUPLICATE_BLOCK_REASON : SEAT_GATE_UNAVAILABLE_REASON);
@@ -523,6 +553,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  defersToManagedCopy,
+  hookEventOf,
   buildNativeEndpointPayload,
   buildNativeAckPayload,
   buildOpenRigPayload,
