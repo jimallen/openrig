@@ -61,6 +61,11 @@ export const BANNED_ADDITIONS = [
     pattern: /\b(?:it|test|describe|suite|bench|context)\.(?:skip|todo|only|fails)\b/,
   },
   {
+    category: "skip whose condition is a constant",
+    applies: (file) => CODE_FILE.test(file),
+    pattern: /\.(?:skipIf\(\s*(?:true|1|!0)\s*\)|runIf\(\s*(?:false|0|!1)\s*\))/,
+  },
+  {
     category: "x-prefixed test",
     applies: (file) => CODE_FILE.test(file),
     pattern: /(?<![\w.$])x(?:it|describe|test)\s*\(/,
@@ -179,12 +184,29 @@ function tierZero(context) {
   const diffCheck = spawnSyncStatus("git", ["diff", "--check", mergeBase, "HEAD"], repo);
   const diff = git(repo, ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", mergeBase, "HEAD"]);
   const findings = scanAddedLines(addedLines(diff));
+  // git diff --check prints each offending line after its location. A diff line can hold a credential, so only the
+  // location and the kind are kept; the line itself never reaches the log or the receipt.
+  const whitespace = parseDiffCheck(diffCheck.output);
   for (const finding of findings) context.log(`  ${finding.file}:${finding.line}  ${finding.category}`);
-  if (diffCheck.code !== 0) context.log(`  git diff --check failed:\n${diffCheck.output.trim()}`);
+  for (const problem of whitespace) context.log(`  ${problem.file}:${problem.line}  ${problem.kind}`);
+  if (diffCheck.code !== 0 && whitespace.length === 0) {
+    context.log(`  git diff --check failed (exit ${diffCheck.code}); its output is not shown, since it can quote diff lines`);
+  }
   return {
     ok: findings.length === 0 && diffCheck.code === 0,
-    detail: { diffCheckExit: diffCheck.code, findings },
+    detail: { diffCheckExit: diffCheck.code, diffCheck: whitespace, findings },
   };
+}
+
+/** `git diff --check` lines of the form `<file>:<line>: <kind>.`; the quoted diff lines that follow them are dropped. */
+export function parseDiffCheck(output) {
+  const problems = [];
+  for (const raw of output.split("\n")) {
+    if (raw.startsWith("+") || raw.startsWith("-") || raw.startsWith(" ")) continue;
+    const match = /^(.+?):(\d+): (.+?)\.?$/.exec(raw);
+    if (match) problems.push({ file: match[1], line: Number(match[2]), kind: match[3] });
+  }
+  return problems;
 }
 
 function spawnSyncStatus(command, args, cwd) {

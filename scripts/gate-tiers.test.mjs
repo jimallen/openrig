@@ -115,6 +115,8 @@ test("tier 0 fails on each banned addition and names where it is", async () => {
     [`${XIT}("x", () => {});`, "x-prefixed test"],
     [`// ${LINT_OFF} no-console`, "lint or type suppression"],
     [`// ${TS_OFF}`, "lint or type suppression"],
+    [`${["it", "skipIf"].join(".")}(true)("x", () => {});`, "skip whose condition is a constant"],
+    [`${["describe", "runIf"].join(".")}(false)("x", () => {});`, "skip whose condition is a constant"],
   ];
   for (const [line, category] of cases) {
     await withRepo(async ({ repo, receipts }) => {
@@ -162,6 +164,22 @@ test("tier 0 fails on a credential-shaped literal and never prints the value", a
     assert.deepEqual(receipt.detail.findings, [{ file: "docs/note.md", line: 1, category: "credential-shaped literal" }]);
     assert.ok(!ports.lines.join("\n").includes(FAKE_SLACK.slice(5)));
     assert.ok(!JSON.stringify(receipt).includes(FAKE_SLACK.slice(5)));
+  });
+});
+
+test("a credential-shaped line with trailing whitespace appears in no output and no receipt", async () => {
+  await withRepo(async ({ repo, receipts }) => {
+    write(repo, "docs/note.md", `token: "${FAKE_SLACK}"   \n`);
+    const head = commit(repo, "leak with trailing space");
+    const ports = fakePorts();
+    assert.equal((await run(repo, receipts, 0, ports)).exitCode, EXIT.failed);
+    const receipt = readReceipt(receipts, head, 0);
+    const secret = FAKE_SLACK.slice(5);
+    assert.ok(!ports.lines.join("\n").includes(secret), ports.lines.join("\n"));
+    assert.ok(!JSON.stringify(receipt).includes(secret));
+    // Both problems are still reported, by location and kind only.
+    assert.deepEqual(receipt.detail.findings, [{ file: "docs/note.md", line: 1, category: "credential-shaped literal" }]);
+    assert.deepEqual(receipt.detail.diffCheck, [{ file: "docs/note.md", line: 1, kind: "trailing whitespace" }]);
   });
 });
 

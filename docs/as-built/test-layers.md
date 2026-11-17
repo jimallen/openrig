@@ -162,7 +162,7 @@ cheapest first, and each tier refuses to start until every tier below it has pas
 
 | Tier | What runs | What it proves | Typical time |
 |---|---|---|---|
-| 0, diff hygiene | `git diff --check`, then a scan of every line the diff adds | No whitespace errors. No unconditional skip, todo, `.only`, `.fails` or `x`-prefixed test, no lint or type suppression, no loosened `tsconfig` strictness (code files), and no credential-shaped literal (any file; the scan reports where, never the value). Conditional skips such as `skipIf` pass here; the never-skip reporter checks them. | seconds |
+| 0, diff hygiene | `git diff --check`, then a scan of every line the diff adds | No whitespace errors (reported by file, line and kind; the offending line is never printed, since it can hold a credential). No unconditional skip, todo, `.only`, `.fails` or `x`-prefixed test, no skip whose condition is a constant (`skipIf(true)`, `runIf(false)`), no lint or type suppression, no loosened `tsconfig` strictness (code files), and no credential-shaped literal (any file; the scan reports where, never the value). Other conditional skips such as `skipIf(isWindows)` pass here; the never-skip reporter checks them. | seconds |
 | 1, build and types | `npm run lint` | The daemon builds and `tsc --noEmit` is clean for every package and test project | about 75 s |
 | 2, reach | `npm run test:repo`, then for each of daemon, cli and tui, `vitest run --maxWorkers=4` (under `nice`) on the files the diff reaches | The repo checks pass, and every test that imports, names or is itself a changed file passes | seconds up to about half the suite |
 | 3, full suite | the command after `--`, `npm test` by default | Everything `npm test` proves | the full suite |
