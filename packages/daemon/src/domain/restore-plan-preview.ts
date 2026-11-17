@@ -245,6 +245,9 @@ export function buildRestorePlanPreview(
   continuity: Readonly<Record<string, string>> = {},
   /** OF-135: how the plan's advice names the rig (`rigAdviceHandle`: its name while that reaches it alone, else its id). */
   adviceRig: string = rig.rig.name,
+  /** workspaces-o9o.71: the restore's own lease judgement for a seat it would start fresh (freshSeatLeaseRefusal, by logical id), so the
+   *  plan says what apply will do. Absent: no lease is judged, as restore without a lease port. */
+  leaseJudge?: (logicalId: string) => { refusal: string } | { warning: string } | null,
 ): RestorePlanPreview {
   // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own when previewing a snapshot; for the live
   // no-snapshot case, the SAME would-capture derivation SnapshotCapture uses (shared helper — the sibling paths cannot
@@ -292,6 +295,16 @@ export function buildRestorePlanPreview(
       intendedAction = "awaiting-decision";
       reason = seatCwdUnusableMessage(logicalId, input.cwd, cwdFault);
       restoreStatus = "failed";
+    }
+    // workspaces-o9o.71: a seat restore would start fresh (not resume, not skip) is judged for a held lease by restore's own function:
+    // restore reports it failed (relaunch_check_held) and starts nothing for it, so the plan says so too.
+    if (leaseJudge && intendedAction === "fresh-primed" && outcome.kind !== "skip_restoring" && outcome.kind !== "resume") {
+      const judged = leaseJudge(logicalId);
+      if (judged && "refusal" in judged) {
+        intendedAction = "awaiting-decision";
+        reason = judged.refusal;
+        restoreStatus = "failed";
+      }
     }
     // OPR.0.4.3.20 FR-6 — per-seat token state (read-only), derived from the
     // RESOLVED occupant only — never from a historical row.

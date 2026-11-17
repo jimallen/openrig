@@ -99,7 +99,7 @@ import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, freshSeatLa
 import { rigAdviceHandle, rigAdviceHandleIn } from "./rig-ref.js";
 import { registeredPaneOf } from "./binding-pane.js";
 import { redactPaneText } from "./launch-failure-report.js";
-import { describeHeld, judgeLeases, type RelaunchCheckPort } from "./relaunch-checks.js";
+import { freshSeatLeaseRefusal, type RelaunchCheckPort } from "./relaunch-checks.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -1294,19 +1294,15 @@ export class RestoreOrchestrator {
     // workspaces-o9o.71: a seat this restore starts fresh (it does not resume the saved conversation) is judged for a held lease, as
     // `rig seat launch --fresh` judges it: while the seat's own work holds one, this seat is not launched and gets its own refusal. The
     // rest of the restore goes on. Nothing has been launched for this seat yet; its state is put back as a failed launch's is.
-    if (this.seatLeases && expectedSessionName
+    if (this.seatLeases && rig
       && !snapshotSeatResumes(occupantResolution.kind === "resolved" ? occupantResolution.session : null, freshRequested)) {
       const seatLeases = this.seatLeases;
-      const lease = judgeLeases(() => seatLeases.leases(expectedSessionName!), []);
-      if (lease.verdict === "held") {
+      const judged = freshSeatLeaseRefusal((seat) => seatLeases.leases(seat), rig.rig.name, node.logicalId);
+      if (judged && "refusal" in judged) {
         this.restoreNodeState(nodeId, priorState);
-        return {
-          nodeId, logicalId: node.logicalId, status: "failed", errorCode: "relaunch_check_held",
-          error: `${node.logicalId} was not started: ${describeHeld({ lease, children: { verdict: "not_applicable", cause: "not judged by restore" } }, expectedSessionName)} `
-            + `Let the work finish, or start it anyway with rig seat launch ${expectedSessionName} --fresh --despite lease --reason "<why>".`,
-        };
+        return { nodeId, logicalId: node.logicalId, status: "failed", errorCode: "relaunch_check_held", error: judged.refusal };
       }
-      if (lease.verdict === "unknown") warnings?.push(`Node ${node.logicalId}: its leases were not judged: ${lease.cause}`);
+      if (judged) warnings?.push(judged.warning);
     }
 
     // Write transcript boundary marker BEFORE launch (before pipe-pane attaches)

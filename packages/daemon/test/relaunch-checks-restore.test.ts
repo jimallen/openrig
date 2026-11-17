@@ -79,6 +79,12 @@ describe("o9o.71: rig up --existing --fresh judges each fresh seat's leases", ()
     setup.sessionRegistry.updateResumeToken(session.id, "claude_id", "00000000-0000-4000-8000-0000000000aa", "hook");
     leases.acquire("dev-impl@resume-rig", { holder: "ui-test-host", pid: process.pid });
 
+    // The plan does not judge it either: plan and apply agree on a resumed seat.
+    const planned = JSON.stringify(await (await setup.app.request("/api/up", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceRef: rig.name, plan: true }),
+    })).json());
+    expect(planned).not.toContain("relaunch_check_held");
+
     const res = await setup.app.request("/api/up", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceRef: rig.name }),
     });
@@ -86,5 +92,32 @@ describe("o9o.71: rig up --existing --fresh judges each fresh seat's leases", ()
 
     expect(body).not.toContain("relaunch_check_held");
   });
-});
 
+  // verify-qa FAIL 2: the plan judges each fresh seat's leases with the restore's own function, so plan and apply agree. Applying a plan
+  // changes nothing, so plan then apply on one state compares them.
+  const routes: Array<[string, (rig: { id: string; name: string }, body: Record<string, unknown>) => Promise<Response>]> = [
+    ["POST /api/up", async (rig, body) => setup.app.request("/api/up", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceRef: rig.name, ...body }) })],
+    ["POST /api/rigs/:id/up", async (rig, body) => setup.app.request(`/api/rigs/${rig.id}/up`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })],
+  ];
+  it.each(routes)("%s: --plan names the leased seat's refusal, and apply on the same state refuses that seat and starts the other", async (_route, up) => {
+    const { rig } = seed(`plan-rig-${_route.length}`);
+    const leased = `dev-impl@${rig.name}`;
+    leases.acquire(leased, { holder: "ui-test-host", pid: process.pid });
+    const createSession = vi.mocked(setup.tmuxAdapter.createSession);
+
+    const plan: { nodes: Array<{ logicalId: string; intendedAction: string; reason?: string; restoreStatus?: string }> } =
+      await (await up(rig, { freshLogicalIds: ["dev.impl", "dev.qa"], plan: true })).json();
+    expect(createSession).not.toHaveBeenCalled();
+    const forecast = Object.fromEntries(plan.nodes.map((node) => [node.logicalId, node]));
+    expect(forecast["dev.impl"]).toMatchObject({ intendedAction: "awaiting-decision", restoreStatus: "failed" });
+    expect(forecast["dev.impl"]!.reason).toContain("relaunch_check_held");
+    expect(forecast["dev.impl"]!.reason).toContain("ui-test-host");
+    expect(forecast["dev.qa"]).toMatchObject({ intendedAction: "fresh-primed" });
+
+    const applied = JSON.stringify(await (await up(rig, { freshLogicalIds: ["dev.impl", "dev.qa"] })).json());
+    const started = createSession.mock.calls.map((call) => String(call[0]));
+    expect(started).not.toContain(leased);
+    expect(started).toContain(`dev-qa@${rig.name}`);
+    expect(applied).toContain("relaunch_check_held");
+  });
+});

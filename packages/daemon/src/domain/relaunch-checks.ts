@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { NativeProcessRow } from "./native-process-lineage.js";
+import { deriveCanonicalSessionName, deriveSessionName } from "./session-name.js";
 
 /**
  * Relaunch checks (workspaces-o9o.8), in the seat lifecycle context. Invariant, owned by a fresh launch that stops a live occupant:
@@ -259,4 +260,29 @@ export function checkWarnings(checks: RelaunchChecks): string[] {
   if (checks.children.verdict === "held" && checks.children.overridden) warnings.push(`Launched despite processes under the seat's agent: ${checks.children.held.map((p) => `${p.name} (pid ${p.pid})`).join(", ")}; they keep running.`);
   if (checks.lease.verdict !== "unknown" && checks.lease.stale.length > 0) warnings.push(`Stale leases ignored (their holder process is gone): ${checks.lease.stale.map((l) => `${l.holder} (pid ${l.pid})`).join(", ")}.`);
   return warnings;
+}
+
+/** The name a seat's leases are kept under: the one `rig seat lease` registers (its canonical session name for a `pod.member` id). */
+export function seatLeaseName(rigName: string, logicalId: string): string {
+  const dot = logicalId.indexOf(".");
+  return dot > 0 && dot < logicalId.length - 1
+    ? deriveCanonicalSessionName(logicalId.slice(0, dot), logicalId.slice(dot + 1), rigName)
+    : deriveSessionName(rigName, logicalId);
+}
+
+/**
+ * workspaces-o9o.71: the one judgement of a held lease for a seat a restore starts fresh (it does not resume), used by the restore and
+ * by its plan, so the two agree. `refusal`: the seat is not started, and this says why and how to start it anyway. `warning`: the leases
+ * could not be read, so the seat is started and the restore says so. null: nothing is held.
+ */
+export function freshSeatLeaseRefusal(leasesOf: (seat: string) => SeatLeaseObservation[], rigName: string, logicalId: string):
+  { refusal: string } | { warning: string } | null {
+  const seat = seatLeaseName(rigName, logicalId);
+  const lease = judgeLeases(() => leasesOf(seat), []);
+  if (lease.verdict === "held") {
+    return { refusal: `relaunch_check_held: ${logicalId} was not started: ${describeHeld({ lease, children: { verdict: "not_applicable", cause: "not judged by restore" } }, seat)} `
+      + `Let the work finish, or start it anyway with rig seat launch ${seat} --fresh --despite lease --reason "<why>".` };
+  }
+  if (lease.verdict === "unknown") return { warning: `Node ${logicalId}: its leases were not judged: ${lease.cause}` };
+  return null;
 }

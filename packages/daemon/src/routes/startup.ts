@@ -1,5 +1,6 @@
 // The TUI's selection/consent boundary. State comes from existing repositories;
 // effects remain owned by kernel materialization, restore, and seat lifecycle.
+import { restoreLeaseJudge } from "./restore-lease-judge.js";
 import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import { Hono, type Context } from "hono";
 import { createHash } from "node:crypto";
@@ -134,7 +135,7 @@ startupRoutes.get("/:rigId", async (c) => {
   const snapshot = currentSnapshot(c, rig);
   const observedByNode = new Map<string, Awaited<ReturnType<typeof observeSeat>>>();
   for (const node of rig.nodes) observedByNode.set(node.id, await observeSeat(c, rig, node));
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name));
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name), restoreLeaseJudge(c, rig.rig.name));
   const auth = await defaultProbeRuntimes();
   const history = sessions(c).getSessionsForRig(rig.rig.id);
   const seats = [];
@@ -210,7 +211,7 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
       if (!eligibility.ok) return c.json({ ok: false, code: "startup_source_unavailable", message: eligibility.blockers.join("; ") }, 409);
       snapshot = captureRehydrate(c, rig.rig.id);
     }
-    const forecast = buildRestorePlanPreview(selectedRig, snapshot, collectPreviewSessionRows(repo(c).db, selectedRig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(repo(c).db, selectedRig), rigAdviceHandleIn(repo(c).db, selectedRig.rig.id, selectedRig.rig.name)).nodes[0]!;
+    const forecast = buildRestorePlanPreview(selectedRig, snapshot, collectPreviewSessionRows(repo(c).db, selectedRig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(repo(c).db, selectedRig), rigAdviceHandleIn(repo(c).db, selectedRig.rig.id, selectedRig.rig.name), restoreLeaseJudge(c, selectedRig.rig.name)).nodes[0]!;
     if (history.length > 0 && forecast.intendedAction !== "resume-original") return c.json({ ok: false, code: "resume_unavailable", freshAllowed: forecast.freshRequired,
       message: forecast.reason ?? "The prior conversation cannot be resumed under this seat's configured policy. A fresh conversation needs a separate decision." }, 409);
     const result = await dep<RestoreOrchestrator>(c, "restoreOrchestrator").launchSingleNode(rig.rig.id, node.logicalId, {

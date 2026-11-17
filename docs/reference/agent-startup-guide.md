@@ -297,7 +297,8 @@ rig's spec as it is now, exactly as `rig seat launch --fresh` does, or replays i
 per-seat command to start it from its saved files, and nothing is started for it; its siblings are restored. A seat
 it resumes keeps its saved startup files, and so does every other seat it starts fresh (by restore policy, with no
 history, or rebuilt from a checkpoint): it comes back on its own saved setup exactly as before, without reading the
-spec and without a new refusal. A restore never writes a snapshot's older copy of the startup files over the seat's newer saved files, so restoring an
+spec, so no spec check can refuse it. The one check such a seat does meet is the lease check above: a seat started
+fresh while a lease is held on it is not started (`relaunch_check_held`), and `--plan` says so in advance. A restore never writes a snapshot's older copy of the startup files over the seat's newer saved files, so restoring an
 older snapshot after a fresh launch picked up a new release does not take the seat back to the old release. Each
 seat a restore starts fresh names its source in the restore result (`startupSource`), in the `restore.completed`
 event and under the seat in `rig up` and `rig start` output: the spec it re-read and the agent version it moved

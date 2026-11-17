@@ -4,7 +4,7 @@ import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedClaudeFields, diffRetainedPiFields, diffSeatIdentity, envNameChanges, specClaudeFields, specRetainedFields, type IdentityFieldDiff, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
 import type { NativeProcessLister, NativeProcessRow } from "./native-process-lineage.js";
-import { blockingChecks, checkWarnings, describeHeld, judgeChildren, judgeLeases, retiringOccupantHandover, RELAUNCH_CHECK_NAMES, type RelaunchCheckName, type RelaunchCheckPort, type RelaunchChecks, type SeatLeaseRegistry } from "./relaunch-checks.js";
+import { blockingChecks, checkWarnings, describeHeld, judgeChildren, judgeLeases, retiringOccupantHandover, seatLeaseName, RELAUNCH_CHECK_NAMES, type RelaunchCheckName, type RelaunchCheckPort, type RelaunchChecks, type SeatLeaseRegistry } from "./relaunch-checks.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { rigAdviceHandle, seatRefRigs } from "./rig-ref.js";
@@ -1933,7 +1933,8 @@ export class SeatLifecycleService {
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;
     if (!this.seatLeases) return { ok: false, code: "leases_unavailable", message: "This daemon has no seat lease record." };
-    const seat = deriveCanonicalFromEntry(resolved.entry) ?? deriveSessionName(resolved.entry.rigName, resolved.entry.logicalId);
+    // The one key for a seat's leases: what restore and its plan read them by (seatLeaseName, relaunch-checks.ts).
+    const seat = seatLeaseName(resolved.entry.rigName, resolved.entry.logicalId);
     if (input.release) {
       return this.seatLeases.release(seat, input.holder)
         ? { ok: true, seat, holder: input.holder, released: true }

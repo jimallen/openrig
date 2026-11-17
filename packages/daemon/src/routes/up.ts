@@ -1,4 +1,5 @@
 import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
+import { leaseJudgeOf } from "./restore-lease-judge.js";
 import nodePath from "node:path";
 import { Hono } from "hono";
 import { bootstrapFailureResponse } from "./bootstrap-failure-response.js";
@@ -89,6 +90,8 @@ function getDeps(c: { get: (key: string) => unknown }) {
     snapshotRepo: c.get("snapshotRepo" as never) as SnapshotRepository,
     snapshotCapture: c.get("snapshotCapture" as never) as SnapshotCapture,
     restoreOrchestrator: c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined,
+    // workspaces-o9o.71: the plan judges a fresh seat's leases as the restore does.
+    seatLeases: c.get("seatLeases" as never) as import("../adapters/seat-lease-store.js").SeatLeaseStore | undefined,
     runtimeAdapters: c.get("runtimeAdapters" as never) as Record<string, import("../domain/runtime-adapter.js").RuntimeAdapter> | undefined,
     podInstantiator: c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined,
     tmuxAdapter: c.get("tmuxAdapter" as never) as import("../adapters/tmux.js").TmuxAdapter | undefined,
@@ -157,7 +160,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
       refusalPredictionError = err instanceof Error ? err.message : String(err);
     }
     return c.json({
-      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals, readPreviewContinuity(snapshotRepo.db, rig), rigAdviceHandleIn(snapshotRepo.db, rig.rig.id, rig.rig.name)),
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals, readPreviewContinuity(snapshotRepo.db, rig), rigAdviceHandleIn(snapshotRepo.db, rig.rig.id, rig.rig.name), leaseJudgeOf(deps.seatLeases, rig.rig.name)),
       ...(refusalPredictionError ? { refusalPredictionError } : {}),
     }, 200);
   }
