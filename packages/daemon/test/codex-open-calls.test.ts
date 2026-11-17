@@ -75,7 +75,8 @@ describe("a rollout's open calls", () => {
     const noId = JSON.stringify({ timestamp: at(SEC), type: "response_item", payload: { type: "custom_tool_call", name: "exec" } });
     const badTime = JSON.stringify({ timestamp: "not a time", type: "response_item", payload: { type: "custom_tool_call", call_id: "c9", name: "exec" } });
     const notItem = JSON.stringify({ timestamp: at(SEC), type: "event_msg", payload: { type: "custom_tool_call", call_id: "c8", name: "exec" } });
-    expect(codexOpenCallsIn(['{"timestamp":"2031', R.turnStart(0), noId, badTime, notItem, "", "null", R.call("c1", 2 * SEC).slice(0, 40)])).toEqual([]);
+    const otherKind = JSON.stringify({ timestamp: at(SEC), type: "turn_context", payload: { type: "custom_tool_call", call_id: "c7", name: "exec" } });
+    expect(codexOpenCallsIn(['{"timestamp":"2031', R.turnStart(0), noId, badTime, notItem, otherKind, "", "null", R.call("c1", 2 * SEC).slice(0, 40)])).toEqual([]);
   });
 });
 
