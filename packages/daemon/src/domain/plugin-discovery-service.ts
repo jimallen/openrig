@@ -29,8 +29,8 @@
 // (resources.plugins[].id + profile.uses.plugins[]) is exactly what batch 1
 // produces, so post-merge the service continues to work unchanged.
 
-import { existsSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { join, basename } from "node:path";
+import { existsSync, lstatSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { join, basename, dirname, isAbsolute, relative, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { checkGuardedFile, PLUGIN_JSON_KIND, SPEC_FILE_KIND } from "./culture-file-guard.js";
 
@@ -179,7 +179,24 @@ export interface PluginDiscoveryServiceOpts {
   cwdScanRoots?: string[];
   /** Where a plugin folder the service ignores is reported (default: console.warn). */
   warn?: (message: string) => void;
+  /** The vendored-plugin folder scan (an adapter: adapters/vendored-plugin-folders.ts). Without it no folder is ignored. */
+  scanVendoredPluginFolders?: VendoredPluginFolderScan;
 }
+
+/** One folder of the vendored plugins dir, as the selection rule needs it: its name, its manifests' declared names and
+ *  every hook it registers. Read by an adapter; the rule never touches the filesystem. */
+export interface VendoredPluginFolder {
+  entry: string;
+  pluginPath: string;
+  manifestNames: string[];
+  hooks: Array<{ identity: string; hooksPath: string }>;
+}
+
+/** The port the duplicate rule reads folders through. Must not throw on what it finds. */
+export type VendoredPluginFolderScan = (pluginsDir: string) => VendoredPluginFolder[];
+
+/** The folder seats load (spec `source.path: openrig-home:plugins/openrig-core`): it wins every hook conflict. */
+export const CANONICAL_CORE_PLUGIN = "openrig-core";
 
 /** A folder in the vendored plugins dir that is not loaded, because another folder already provides its hooks. */
 export interface IgnoredVendoredPlugin {
@@ -221,7 +238,7 @@ export class PluginDiscoveryService {
     this.opts = opts;
     this.retireObsoleteLabRefocusHooks();
     const dir = this.opts.openrigPluginsDir;
-    for (const ignored of findIgnoredVendoredPlugins(dir)) {
+    for (const ignored of this.ignoredVendoredPlugins()) {
       this.warn(
         `[openrig] plugin folder ${ignored.path} ignored: ${ignored.reason}. ${ignored.keptPath} is used instead. `
         + `Nothing was moved or deleted; move ${ignored.path} out of ${dir} to clear this.`,
@@ -233,12 +250,21 @@ export class PluginDiscoveryService {
     (this.opts.warn ?? console.warn)(message);
   }
 
+  private ignoredVendoredPlugins(): IgnoredVendoredPlugin[] {
+    try {
+      return selectIgnoredVendoredPlugins(this.opts.scanVendoredPluginFolders?.(this.opts.openrigPluginsDir) ?? []);
+    } catch (err) {
+      this.warn(`[openrig] could not scan ${this.opts.openrigPluginsDir} for duplicate plugin folders: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
   listPlugins(filterOpts: ListPluginsOpts = {}): PluginEntry[] {
     const out: PluginEntry[] = [];
 
     // 1. Vendored OpenRig plugins, less any folder whose hooks another folder already provides.
     if (existsSync(this.opts.openrigPluginsDir)) {
-      const ignored = new Set(findIgnoredVendoredPlugins(this.opts.openrigPluginsDir).map((i) => i.path));
+      const ignored = new Set(this.ignoredVendoredPlugins().map((i) => i.path));
       for (const entry of safeReaddir(this.opts.openrigPluginsDir)) {
         const pluginPath = join(this.opts.openrigPluginsDir, entry);
         if (!isDir(pluginPath) || ignored.has(pluginPath)) continue;
@@ -452,9 +478,13 @@ export class PluginDiscoveryService {
       // A folder the daemon cannot write (read-only, another owner) must not stop it starting: the lab copy
       // then keeps its refocus hook, and the duplicate rule below ignores the whole folder instead.
       try {
+        // Never write through a symlink (workspaces-o9o.44, verify-qa review; the o9o.17 rule): a linked plugin folder,
+        // hooks file or ancestor would carry the write outside OPENRIG_HOME.
+        refuseSymlinkOnPath(dirname(this.opts.openrigPluginsDir), hooksPath);
         writeJsonAtomically(hooksPath, registry);
         if (!hasHookRegistrations(registry)) {
           delete manifest.raw["hooks"];
+          refuseSymlinkOnPath(dirname(this.opts.openrigPluginsDir), manifestPath);
           writeJsonAtomically(manifestPath, manifest.raw);
         }
       } catch (err) {
@@ -700,22 +730,20 @@ function hasHookRegistrations(registry: Record<string, unknown>): boolean {
 
 /**
  * The folders in the vendored plugins dir that are not loaded because another folder already registers one of their
- * hooks: the same hook from two providers would fire twice. Which one stays is deterministic: a folder whose manifest
- * names the folder (openrig-core/ declaring "openrig-core") comes before a copy that does not
- * (openrig-core.bak-.../), then folder order. A folder is kept or ignored whole. Reads only; never throws on what it
- * finds. Cache entries are not considered: several cached versions are inventory, not simultaneous providers.
- * Shared by the daemon's discovery service and `rig doctor`, so both name the same folders.
+ * hooks: the same hook from two providers would fire twice. Which one stays is deterministic: the canonical
+ * openrig-core folder (the one seats load) always wins; then a folder whose manifest names the folder (an own plugin,
+ * not a copy) comes before one that does not (openrig-core.bak-.../); folder order breaks the remaining ties. A folder
+ * is kept or ignored whole. Pure: the folders come from the scan port. Shared by the daemon's discovery service and
+ * `rig doctor` (through the adapter), so both name the same folders.
  */
-export function findIgnoredVendoredPlugins(pluginsDir: string): IgnoredVendoredPlugin[] {
-  const folders = safeReaddir(pluginsDir)
-    .filter((entry) => isDir(join(pluginsDir, entry)))
-    .map((entry) => ({ entry, pluginPath: join(pluginsDir, entry), hooks: vendoredHookIdentities(join(pluginsDir, entry)) }))
-    .map((folder) => ({ ...folder, namesItself: manifestNames(folder.pluginPath).includes(folder.entry) }))
-    .sort((a, b) => Number(b.namesItself) - Number(a.namesItself) || (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+export function selectIgnoredVendoredPlugins(folders: readonly VendoredPluginFolder[]): IgnoredVendoredPlugin[] {
+  const rank = (folder: VendoredPluginFolder): number =>
+    folder.entry === CANONICAL_CORE_PLUGIN ? 0 : folder.manifestNames.includes(folder.entry) ? 1 : 2;
+  const ordered = [...folders].sort((a, b) => rank(a) - rank(b) || (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
 
   const claimed = new Map<string, { pluginPath: string; hooksPath: string }>();
   const ignored: IgnoredVendoredPlugin[] = [];
-  for (const folder of folders) {
+  for (const folder of ordered) {
     const clash = folder.hooks.find((hook) => claimed.has(hook.identity));
     if (clash) {
       const kept = claimed.get(clash.identity)!;
@@ -731,29 +759,24 @@ export function findIgnoredVendoredPlugins(pluginsDir: string): IgnoredVendoredP
   return ignored;
 }
 
-/** Every hook a vendored plugin folder registers, through either runtime's manifest. */
-function vendoredHookIdentities(pluginPath: string): Array<{ identity: string; hooksPath: string }> {
-  const out: Array<{ identity: string; hooksPath: string }> = [];
-  for (const [runtime, manifestRel] of [["claude", CLAUDE_MANIFEST_REL], ["codex", CODEX_MANIFEST_REL]] as const) {
-    const hooksRef = readManifest(join(pluginPath, manifestRel))?.raw["hooks"];
-    if (typeof hooksRef !== "string" || !hooksRef.trim()) continue;
-    const hooksPath = join(pluginPath, hooksRef);
-    for (const identity of extractHookIdentities(hooksPath, runtime, pluginPath)) out.push({ identity, hooksPath });
+/** Throws unless every component below `anchor` (OPENRIG_HOME) down to `target` is a real, non-symlink entry: the
+ *  o9o.17 walk (PluginVendorService.unsafe), which likewise trusts the anchor itself. Residual, as there (accepted by
+ *  Jim, 2026-11-16): a component swapped for a link between this walk and the write that follows; that needs a
+ *  concurrent same-user writer inside the tree. */
+function refuseSymlinkOnPath(anchor: string, target: string): void {
+  const rel = relative(anchor, target);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${target} is outside ${anchor}; not written`);
+  let current = anchor;
+  for (const part of rel.split(sep)) {
+    current = join(current, part);
+    if (lstatSync(current).isSymbolicLink()) throw new Error(`${current} is a symlink; nothing was written through it`);
   }
-  return out;
-}
-
-/** The plugin names a folder's manifests declare. */
-function manifestNames(pluginPath: string): string[] {
-  return [CLAUDE_MANIFEST_REL, CODEX_MANIFEST_REL]
-    .map((rel) => readManifest(join(pluginPath, rel))?.name)
-    .filter((name): name is string => typeof name === "string");
 }
 
 function writeJsonAtomically(path: string, value: Record<string, unknown>): void {
   const tempPath = `${path}.openrig-migration-${process.pid}-${Date.now()}.tmp`;
   const mode = statSync(path).mode & 0o777;
-  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode });
+  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode, flag: "wx" });
   renameSync(tempPath, path);
 }
 
@@ -767,35 +790,40 @@ function extractHookIdentities(
   pluginPath: string,
 ): string[] {
   try {
-    const data = readGuardedJson(hooksJsonPath) as { hooks?: Record<string, unknown> };
-    if (!data.hooks || typeof data.hooks !== "object") return [];
-
-    const identities: string[] = [];
-    for (const [event, rawGroups] of Object.entries(data.hooks)) {
-      const groups = Array.isArray(rawGroups) ? rawGroups : [rawGroups];
-      for (const rawGroup of groups) {
-        if (!rawGroup || typeof rawGroup !== "object") continue;
-        const group = rawGroup as Record<string, unknown>;
-        const matcher = typeof group.matcher === "string" ? group.matcher : "";
-        const rawHooks = Array.isArray(group.hooks) ? group.hooks : [group];
-        for (const rawHook of rawHooks) {
-          if (!rawHook || typeof rawHook !== "object") continue;
-          const hook = rawHook as Record<string, unknown>;
-          if (typeof hook.command !== "string") continue;
-          const type = typeof hook.type === "string" ? hook.type : "command";
-          const command = hook.command
-            .split(pluginPath).join("<plugin-root>")
-            .replace(/\$\{(?:CLAUDE_)?PLUGIN_ROOT\}/g, "<plugin-root>")
-            .replace(/\s+/g, " ")
-            .trim();
-          identities.push(JSON.stringify([runtime, event, matcher, type, command]));
-        }
-      }
-    }
-    return identities;
+    return hookIdentitiesOf(readGuardedJson(hooksJsonPath), runtime, pluginPath);
   } catch {
     return [];
   }
+}
+
+/** The identity of every hook a parsed hooks registry declares, with the plugin root normalised. Pure. */
+export function hookIdentitiesOf(registry: unknown, runtime: PluginRuntime, pluginPath: string): string[] {
+  const data = registry as { hooks?: Record<string, unknown> } | null;
+  if (!data || typeof data !== "object" || !data.hooks || typeof data.hooks !== "object") return [];
+
+  const identities: string[] = [];
+  for (const [event, rawGroups] of Object.entries(data.hooks)) {
+    const groups = Array.isArray(rawGroups) ? rawGroups : [rawGroups];
+    for (const rawGroup of groups) {
+      if (!rawGroup || typeof rawGroup !== "object") continue;
+      const group = rawGroup as Record<string, unknown>;
+      const matcher = typeof group.matcher === "string" ? group.matcher : "";
+      const rawHooks = Array.isArray(group.hooks) ? group.hooks : [group];
+      for (const rawHook of rawHooks) {
+        if (!rawHook || typeof rawHook !== "object") continue;
+        const hook = rawHook as Record<string, unknown>;
+        if (typeof hook.command !== "string") continue;
+        const type = typeof hook.type === "string" ? hook.type : "command";
+        const command = hook.command
+          .split(pluginPath).join("<plugin-root>")
+          .replace(/\$\{(?:CLAUDE_)?PLUGIN_ROOT\}/g, "<plugin-root>")
+          .replace(/\s+/g, " ")
+          .trim();
+        identities.push(JSON.stringify([runtime, event, matcher, type, command]));
+      }
+    }
+  }
+  return identities;
 }
 
 interface AgentYamlCandidate {

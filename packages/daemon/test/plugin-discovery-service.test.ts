@@ -29,6 +29,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, linkSync }
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PluginDiscoveryService } from "../src/domain/plugin-discovery-service.js";
+import { scanVendoredPluginFolders } from "../src/adapters/vendored-plugin-folders.js";
 
 interface TempDirs {
   root: string;
@@ -201,6 +202,7 @@ describe("PluginDiscoveryService", () => {
         codexCacheDir: dirs.codexCacheDir,
         specLibraryDir: dirs.specLibraryDir,
         warn: (message) => warnings.push(message),
+        scanVendoredPluginFolders,
       });
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatch(new RegExp(`${rogue} ignored: .*${rogue}/hooks/claude\\.json.*${core}/hooks/claude\\.json`));
@@ -222,6 +224,7 @@ describe("PluginDiscoveryService", () => {
         codexCacheDir: dirs.codexCacheDir,
         specLibraryDir: dirs.specLibraryDir,
         warn: (message) => warnings.push(message),
+        scanVendoredPluginFolders,
       });
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatch(new RegExp(`${rogue} ignored: .*${rogue}/hooks/codex\\.json.*${core}/hooks/codex\\.json`));

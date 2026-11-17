@@ -167,6 +167,7 @@ import { SpecReviewService } from "./domain/spec-review-service.js";
 import { SpecLibraryService } from "./domain/spec-library-service.js";
 // Phase 3a slice 3.3 — plugin discovery service.
 import { PluginDiscoveryService } from "./domain/plugin-discovery-service.js";
+import { scanVendoredPluginFolders } from "./adapters/vendored-plugin-folders.js";
 // Slice 28 Checkpoint C-3 — skill-library discovery (SC-29 #11 cumulative).
 import { SkillLibraryDiscoveryService } from "./domain/skill-library-discovery.js";
 import { ContextPackLibraryService } from "./domain/context-packs/context-pack-library-service.js";
@@ -1742,6 +1743,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // Provider caches belong to their selected provider homes, not OPENRIG_HOME.
     pluginDiscoveryService: new PluginDiscoveryService({
       openrigPluginsDir: getDefaultOpenRigPath("plugins"),
+      scanVendoredPluginFolders,
       claudeCacheDir: nodePath.join(os.homedir(), ".claude", "plugins", "cache"),
       codexCacheDir: nodePath.join(codexHome, "plugins", "cache"),
       specLibraryDir: userSpecLibraryRoot,

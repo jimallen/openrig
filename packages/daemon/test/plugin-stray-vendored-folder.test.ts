@@ -10,7 +10,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
 import { createHash } from "node:crypto";
-import { PluginDiscoveryService, findIgnoredVendoredPlugins } from "../src/domain/plugin-discovery-service.js";
+import { PluginDiscoveryService } from "../src/domain/plugin-discovery-service.js";
+import { findIgnoredVendoredPlugins, scanVendoredPluginFolders } from "../src/adapters/vendored-plugin-folders.js";
 import { killIfRunning, spawnDaemonEntrypoint, type EntrypointDaemon } from "./helpers/daemon-entrypoint.js";
 
 const PACKAGE_CORE = nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core");
@@ -68,6 +69,7 @@ function discovery(pluginsDir: string, warnings: string[]): PluginDiscoveryServi
     codexCacheDir: nodePath.join(root, "codex-cache"),
     specLibraryDir: nodePath.join(root, "specs"),
     warn: (message: string) => warnings.push(message),
+    scanVendoredPluginFolders,
   });
 }
 

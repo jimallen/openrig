@@ -211,15 +211,21 @@ and profile references. These references describe authored specs, not proof of a
 harness loading a plugin.
 
 The service constructor is not read-only: it retires obsolete refocus hook registrations
-from the older bundled plugin. A folder it cannot write is reported and left as it is.
+from the older bundled plugin. A folder it cannot write is reported and left as it is, and
+so is one it reaches through a symlink: the openrig-lab folder, its hooks file or manifest,
+or `OPENRIG_HOME/plugins` itself (the o9o.17 walk below `OPENRIG_HOME`).
 Startup builds the service while it builds the daemon's dependencies, so nothing the
 constructor finds in the plugins folder may throw (workspaces-o9o.44: one backup copy of
 openrig-core crash-looped Sparky's daemon 55 times).
 
-When two vendored folders register the same hook, `findIgnoredVendoredPlugins()` keeps one
-and ignores the other, whole. A folder whose manifest names the folder (`openrig-core/`
-declaring `openrig-core`) is kept before a copy that does not (`openrig-core.bak-.../`);
-after that, folder order decides. The constructor logs each ignored folder, the hook the
+When two vendored folders register the same hook, the pure domain rule
+`selectIgnoredVendoredPlugins()` keeps one and ignores the other, whole. The canonical
+`openrig-core/` folder, the one seats load, always wins. Among the other folders, one whose
+manifest names the folder is kept before a copy that does not (`openrig-core.bak-.../`), and
+after that folder order decides. The folders come through a scan port,
+`VendoredPluginFolderScan`; the adapter `adapters/vendored-plugin-folders.ts`
+(`scanVendoredPluginFolders`, `findIgnoredVendoredPlugins`) reads the disk, and
+`startup.ts` injects it. The constructor logs each ignored folder, the hook the
 two share, and the folder kept. `listPlugins()` leaves ignored folders out. Nothing is
 moved or deleted. Cached plugin versions are not considered. `rig doctor` reports the same
 folders through the `@openrig/daemon/vendored-plugin-conflicts` surface (check
