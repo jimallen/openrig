@@ -15,7 +15,7 @@ const restamped = (from: string, reply: string, text = "hello") => [`From: ${fro
 describe("the bead's four strings", () => {
   it.each([
     ["(a) a seat, host named", named, { host: STU, seat: "build-impl@openrig", label: null }, "build-impl@openrig@stu", "↩ Reply: rig send build-impl@openrig@stu '...'"],
-    ["(b) a seat, host not named", unnamed, { host: STU, seat: "build-impl@openrig", label: null }, `build-impl@openrig@${STU}`, `↩ No reply path from this host: ${STU} is not in this host's registry (rig host ls)`],
+    ["(b) a seat, host not named", unnamed, { host: STU, seat: "build-impl@openrig", label: null }, `build-impl@openrig@${STU}`, `↩ No reply path from this host: ${STU} is not in this host's registry ('rig host ls')`],
     ["(c) a labelled shell, host named", named, { host: STU, seat: null, label: "openrig-23" }, "openrig-23 (a shell on stu)", "↩ No reply path: openrig-23 is a shell on stu, not a seat; no rig address answers it"],
     ["(c) a labelled shell, host not named", unnamed, { host: STU, seat: null, label: "openrig-23" }, `openrig-23 (a shell on ${STU})`, `↩ No reply path: openrig-23 is a shell on ${STU}, not a seat; no rig address answers it`],
     ["(d) a shell with no label", named, { host: STU, seat: null, label: null }, "a shell on stu", "↩ No reply path: a shell on stu is not a seat; no rig address answers it"],

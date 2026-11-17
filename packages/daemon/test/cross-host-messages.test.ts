@@ -253,7 +253,7 @@ describe("an arrival from another host", () => {
 
   it("(b) a seat on a host this registry cannot name: the reply line says there is no path, and why", async () => {
     expect(await arrive(unnamed, `build-impl@openrig@${STU}`, `build-impl@openrig@${STU}`))
-      .toBe(lines(`build-impl@openrig@${STU}`, `↩ No reply path from this host: ${STU} is not in this host's registry (rig host ls)`));
+      .toBe(lines(`build-impl@openrig@${STU}`, `↩ No reply path from this host: ${STU} is not in this host's registry ('rig host ls')`));
   });
 
   it("(c) a shell with a label: From says it is a shell on that host, and no rig address answers it", async () => {

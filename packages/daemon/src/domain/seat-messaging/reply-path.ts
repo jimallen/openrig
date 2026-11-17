@@ -8,6 +8,9 @@
  * Trust: the origin host is asserted by the sending daemon and the label is the sender's own claim, as before. This host only adds what it knows.
  */
 
+import { wrapPaneEnvelope } from "../../lib/pane-envelope.js";
+import { setOff } from "../active-occupant.js";
+
 /** The outbound port: this host's name for another host, by that host's own id. Null when this host cannot name it. */
 export interface HostDirectory {
   nameFor(hostId: string): string | null;
@@ -39,8 +42,9 @@ export function originOf(host: unknown, sender: unknown, body: string): Origin |
   return seat && seat[2] === host ? { host, seat: seat[1]!, label: envelopeLabel(body) } : null;
 }
 
-/** The CLI's marker for a send with no sender (wrapSendBody / wrapPaneEnvelope). It names nobody, so it is never a label. */
-const NO_SENDER = "<unknown sender>";
+/** The envelope's marker for a send with no sender, read off the daemon twin (wrapPaneEnvelope) so it is defined in one place. It names nobody,
+ *  so it is never a label. */
+const NO_SENDER = wrapPaneEnvelope(undefined, "", "").split("\n")[0]!.replace(/^From: /, "");
 const FROM = "From: ";
 const REPLY = "↩ Reply";
 const RULE = "---";
@@ -57,7 +61,7 @@ export function replyPathFor(origin: Origin, hosts: HostDirectory): ReplyPath {
   if (origin.seat) {
     return name
       ? { kind: "reachable", command: `rig send ${origin.seat}@${name} '...'` }
-      : { kind: "none", reason: `${origin.host} is not in this host's registry (rig host ls)` };
+      : { kind: "none", reason: `${origin.host} is not in this host's registry (${setOff("rig host ls")})` };
   }
   const shell = `a shell on ${name ?? origin.host}`;
   return { kind: "none", reason: origin.label ? `${origin.label} is ${shell}, not a seat; no rig address answers it` : `${shell} is not a seat; no rig address answers it` };
