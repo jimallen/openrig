@@ -191,7 +191,9 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
   const lines = (s: Seat, prefix: string) => s.log().filter((l) => l.startsWith(prefix));
   const agentOnce = (s: Seat, id: string) => expect(lines(s, `agent ${id} `)).toHaveLength(1);
   /** A restart of the core with the seat alive: the terminal survives in its holder. */
-  const restartCore = () => spawnSync(HC, ["server", "restart"], { env: core.env, stdio: "ignore", timeout: 20_000 });
+  // Through the harness (workspaces-o9o.80): hc's start-budget miss under load is recovered, and any other failure throws, where this
+  // used to ignore the result and run on against a core that might not have come back.
+  const restartCore = () => core.restart();
 
   describe("the daemon dies", () => {
     it("P0, after the claim and before a byte: the restart resends, once", async () => {

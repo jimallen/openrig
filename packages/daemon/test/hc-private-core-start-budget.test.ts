@@ -5,7 +5,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PrivateCore } from "./hc-private-core.js";
 
 const BUDGET = '{"error":{"hint":"check the core log in the state directory","kind":"unavailable","message":"core did not start within 5 s"}}';
@@ -80,5 +81,30 @@ describe("PrivateCore: hc's 5 s start budget missed under load", () => {
     const { core, calls } = coreWith(["0"]);
     core.restart();
     expect(calls()).toEqual(["server restart"]);
+  });
+});
+
+// workspaces-o9o.80 (CoS): the files that started or restarted their private core with a bare spawn now go through the harness, so a
+// start budget missed under a release suite's load cannot take their core either. A text scan of each file: no `["server", "start"]`
+// or `["server", "restart"]` spawn of its own, and the harness call that replaced it.
+describe("private-core starts and restarts go through hcServerUntilUp", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const source = (file: string) => readFileSync(join(here, file), "utf8");
+  const bareServerSpawn = /\[\s*"server",\s*"(?:start|restart)"\s*\]/;
+
+  it.each([
+    ["hc-viewer.real.test.ts", /\bcore\.restart\(\)/],
+    ["message-pump-census.real.test.ts", /const restartCore = \(\) => core\.restart\(\);/],
+    ["hc-input.real.test.ts", /hcServerUntilUp\(HC, env, "start"\)[\s\S]*hcServerUntilUp\(HC, env, "restart"\)/],
+    ["helpers/hc-private-core.ts", /hcServerUntilUp\(HC, this\.env, "start"\)[\s\S]*hcServerUntilUp\(HC, this\.env, "restart"\)/],
+  ])("%s spawns no hc server start or restart of its own, and calls the harness", (file, harnessCall) => {
+    const text = source(file);
+    expect(text).not.toMatch(bareServerSpawn);
+    expect(text).toMatch(harnessCall);
+  });
+
+  it("control: the scan sees a bare spawn where one is (the harness itself spawns `server` through its argument list)", () => {
+    expect('execFileSync(HC, ["server", "restart"], { env })').toMatch(bareServerSpawn);
+    expect(source("hc-private-core.ts")).toMatch(/const args = \["server", attempt === 1 \? verb : "start"\];/);
   });
 });

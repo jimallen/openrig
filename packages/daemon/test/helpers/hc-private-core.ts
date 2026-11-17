@@ -1,10 +1,11 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../../src/adapters/hc-host.js";
 import { hcCountedSocketBytes, hcScratchBase, hcScratchFallback, hcSocketFits, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
+import { hcServerUntilUp } from "../hc-private-core.js";
 
 /** The `hc` on PATH, or "" when there is none (the real-core suites skip). */
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
@@ -28,8 +29,13 @@ export class PrivateCore {
     const socket = resolveHcSocket(this.env, this.env.HOME);
     // Measured as hc measures it (the socket plus HC_SOCKET_PATH_RESERVE), so a root hc would refuse is refused here first.
     if (!hcSocketFits(socket)) throw new Error(`hc private core: the socket path would be ${hcCountedSocketBytes(socket)} bytes as hc counts it (limit ${HC_SOCKET_PATH_LIMIT}): ${socket}`);
-    execFileSync(HC, ["server", "start"], { env: this.env, stdio: "ignore" });
+    hcServerUntilUp(HC, this.env, "start");
     this.client = new HcClient(socket);
+  }
+
+  /** `hc server restart`, with the start-budget recovery (workspaces-o9o.80). */
+  restart(): void {
+    hcServerUntilUp(HC, this.env, "restart");
   }
 
   stop(): void {

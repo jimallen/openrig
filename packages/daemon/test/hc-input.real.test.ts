@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +43,7 @@ while True:
     log.write(b.hex().encode() + b"\\n")
 `;
 import { mkHcTestRoot } from "./helpers/hc-scratch.js";
+import { hcServerUntilUp } from "./hc-private-core.js";
 
 describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
   const root = mkHcTestRoot("hci-");
@@ -59,7 +60,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
 
   beforeAll(() => {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
-    execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
+    hcServerUntilUp(HC, env, "start");  // with the start-budget recovery (workspaces-o9o.80)
     const socket = resolveHcSocket(env, env.HOME);
     client = new HcClient(socket);
     attach = new HcAttach(socket);
@@ -333,7 +334,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const stub = await launch("plain");
       const ends: HcAttachEnd[] = [];
       await attach.open({ terminal: stub.address, cols: 100, rows: 30, observe: true }, { onData: () => {}, onEnd: (e) => ends.push(e) });
-      execFileSync(HC, ["server", "restart"], { env, stdio: "ignore" });
+      hcServerUntilUp(HC, env, "restart");  // with the start-budget recovery (workspaces-o9o.80)
       await expect.poll(() => ends, { timeout: 10_000 }).toEqual([{ reason: "core_lost" }]);
       await expect.poll(async () => (await client.call<HcTerminal>("terminal.get", { terminal: stub.address })).state, { timeout: 10_000 }).toBe("live");
     });

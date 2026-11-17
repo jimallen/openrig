@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HcAttach } from "../src/adapters/hc-attach.js";
@@ -162,7 +161,7 @@ describe.skipIf(!HC)("HcViewer and the stream broker against a private hc core",
       await waitUntil(async () => text(), (t) => /tick \d/.test(t), "first ticks");
       const pid = (await get("ticker@rig")).pid;
       const before = log.bytes.length;
-      execFileSync(HC, ["server", "restart"], { env: core.env, stdio: "ignore" });
+      core.restart();  // through the harness: hc's start-budget miss under load is recovered (workspaces-o9o.80)
       await waitUntil(async () => log.paints, (n) => n >= 2, "the second paint", 30_000);
       await waitUntil(async () => log.bytes.length, (n) => n > before + 1, "bytes after the restart", 30_000);
       expect(log.ends).toEqual([]);

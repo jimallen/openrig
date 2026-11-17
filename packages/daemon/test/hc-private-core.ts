@@ -50,15 +50,7 @@ export class PrivateCore {
    * followed by `server start`, at most 3 times; any other failure throws with hc's own message, as it always threw.
    */
   private serverUntilUp(verb: "start" | "restart"): void {
-    for (let attempt = 1; ; attempt++) {
-      const args = ["server", attempt === 1 ? verb : "start"];
-      const r = spawnSync(this.hc, args, { env: this.env, encoding: "utf8" });
-      if (r.status === 0) return;
-      const said = `${r.stderr ?? ""}${r.stdout ?? ""}`.trim();
-      if (r.status !== 5 || !/did not start within/.test(said) || attempt > 3) {
-        throw new Error(`hc ${args.join(" ")} failed (exit ${r.status ?? r.signal}, attempt ${attempt}): ${said || r.error?.message || "no output"}`);
-      }
-    }
+    hcServerUntilUp(this.hc, this.env, verb);
   }
 
   stop(): void {
@@ -110,6 +102,20 @@ export class PrivateCore {
     const status = await this.client.call<{ holder: { pid: number } | null }>("server.status");
     if (!status.holder) throw new Error("no holder");
     return status.holder.pid;
+  }
+}
+
+/** `hc server start|restart` on a private core's env, with the start-budget recovery PrivateCore.serverUntilUp describes. Every
+ *  test that starts or restarts a private core itself goes through this, not a bare spawn (workspaces-o9o.80). */
+export function hcServerUntilUp(hc: string, env: NodeJS.ProcessEnv, verb: "start" | "restart"): void {
+  for (let attempt = 1; ; attempt++) {
+    const args = ["server", attempt === 1 ? verb : "start"];
+    const r = spawnSync(hc, args, { env, encoding: "utf8" });
+    if (r.status === 0) return;
+    const said = `${r.stderr ?? ""}${r.stdout ?? ""}`.trim();
+    if (r.status !== 5 || !/did not start within/.test(said) || attempt > 3) {
+      throw new Error(`hc ${args.join(" ")} failed (exit ${r.status ?? r.signal}, attempt ${attempt}): ${said || r.error?.message || "no output"}`);
+    }
   }
 }
 
