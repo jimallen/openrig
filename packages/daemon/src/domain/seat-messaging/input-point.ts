@@ -1,4 +1,4 @@
-import { pickLatestByOrdering } from "../agent-activity-store.js";
+import { ACTIVITY_SCAN_ROWS, pickLatestByOrdering } from "../agent-activity-store.js";
 import type { AgentActivity } from "../types.js";
 
 /** Whether a Claude seat has passed a point where it takes input since a time (OF-285).
@@ -12,8 +12,6 @@ export type InputPoint = "passed" | "pending" | "unknown";
  *  permission or an answered AskUserQuestion ends in PostToolUse. A denied permission fires no hook (measured, 2.1.314), so the next
  *  tool end or Stop is its input point. */
 export const INPUT_POINT_EVENTS: readonly string[] = ["PostToolUse", "PostToolUseFailure", "Stop", "UserPromptSubmit", "SessionStart"];
-
-const LATEST_ROWS = 20;
 
 /** The two reads this needs of the daemon's database, named here so the domain does not import the driver (the hexagonal ratchet). */
 export interface InputPointDb {
@@ -29,7 +27,7 @@ export function seatInputPoint(db: InputPointDb, nodeId: string, sinceMs: number
       AND json_extract(payload, '$.activity.rawEvent') IN (${INPUT_POINT_EVENTS.map(() => "?").join(", ")})
       AND json_extract(payload, '$.activity.eventAt') > ? LIMIT 1`).get(nodeId, ...INPUT_POINT_EVENTS, new Date(sinceMs).toISOString());
     if (after !== undefined) return "passed";
-    const rows = db.prepare(`SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${LATEST_ROWS}`).all(nodeId) as Array<{ payload: string }>;
+    const rows = db.prepare(`SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${ACTIVITY_SCAN_ROWS}`).all(nodeId) as Array<{ payload: string }>;
     const latest = pickLatestByOrdering(rows.map((row) => JSON.parse(row.payload) as { activity?: AgentActivity }))?.activity;
     if (!latest) return "unknown";
     // Nothing since the write. A seat last seen running or asking is still inside what it was doing; one last seen idle is at its prompt.

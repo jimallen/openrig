@@ -228,7 +228,7 @@ describe("F3: a late-stamped async hook never hides a prompt; the real relay sta
     expect((await row(31_000)).seatPosture).toMatchObject({ kind: "busy", tool: "Bash" });
   });
 
-  // The latest read looks at the newest 20 rows; the question's calls are read from the whole turn (up to 200 rows).
+  // The question's calls are read from the whole turn (up to 200 rows; the latest read used to look at only the newest 20, workspaces-o9o.57).
   it("the question's own start more than 20 rows back (other calls' hooks arrived between it and the dialog) still lets its end clear it", async () => {
     const { fire, fireViaRelay, relayed, row } = seat("claude-code");
     fire("UserPromptSubmit", null, 0);

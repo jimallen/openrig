@@ -184,15 +184,15 @@ export class AgentActivityStore {
     return this._pickLatest(nodeId)?.activity ?? null;
   }
 
-  /** The latest activity of a node (pickLatestByOrdering over its newest LATEST_SCAN_ROWS rows), with the question calls of its current turn
-   *  read from the wider open-call scan (workspaces-o9o.4 F3: the question's own start can sit further back than the latest's window). */
+  /** The latest activity of a node: pickLatestByOrdering over its newest ACTIVITY_SCAN_ROWS rows, with the question calls of its current turn
+   *  read from the same rows (workspaces-o9o.4 F3: the question's own start can sit far back; workspaces-o9o.57: so can the prompt itself). */
   private _pickLatest(nodeId: string): ReturnType<typeof parseActivityPayload> | null {
     const rows = this.db.prepare(
-      `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${OPEN_CALL_SCAN_ROWS}`
+      `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${ACTIVITY_SCAN_ROWS}`
     ).all(nodeId) as EventPayloadRow[];
     if (rows.length === 0) return null;
     const parsed = rows.map((r) => parseActivityPayload(r.payload));
-    return pickLatestByOrdering(parsed.slice(0, LATEST_SCAN_ROWS), questionCallsIn(parsed));
+    return pickLatestByOrdering(parsed, questionCallsIn(parsed));
   }
 
   /** workspaces-o9o.4 F2: the seat's tool calls still open in its current turn, oldest first (openToolCallsIn). Never throws. */
@@ -201,7 +201,7 @@ export class AgentActivityStore {
       const nodeId = input.nodeId ?? (input.sessionName ? this._resolveSession({ sessionName: input.sessionName })?.node_id : null);
       if (!nodeId) return [];
       const rows = this.db.prepare(
-        `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${OPEN_CALL_SCAN_ROWS}`
+        `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${ACTIVITY_SCAN_ROWS}`
       ).all(nodeId) as EventPayloadRow[];
       const parsed = rows.map((r) => parseActivityPayload(r.payload));
       if (input.sessionName && parsed[0]?.sessionName !== undefined && parsed[0]?.sessionName !== input.sessionName) return [];
@@ -411,8 +411,6 @@ export class AgentActivityStore {
  *  with their own eventAt, and the same rule holds for them. They are also the events that carry a tool call id. */
 const TOOL_CALL_EVENTS: ReadonlySet<string> = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
 const ASYNC_RELAYED_EVENTS = TOOL_CALL_EVENTS;
-/** How many of a node's newest activity rows the latest-hook read looks through to order async events by eventAt. */
-const LATEST_SCAN_ROWS = 20;
 /** workspaces-o9o.4 F3: a plain permission prompt (Notification/permission_prompt) names no tool and carries no call id (Claude Code
  *  2.1.319 and 2.1.325, measured), so an async tool end clears it only when stamped more than this after it. Measured relay stamp lag:
  *  13-27 ms idle (n=20) and 13-28 ms during a full suite under heavy.lock (n=30, load 5.5 on 20 cores). Lag above this under heavier load
@@ -498,8 +496,11 @@ function isTurnBoundary(activity: Pick<OrderingActivity, "rawEvent" | "rawSubtyp
     || (e === "active" && (activity.rawSubtype === "agent_start" || activity.rawSubtype === "run_start"));
 }
 
-/** How many of a node's newest rows the open-call read looks through for the current turn. */
-const OPEN_CALL_SCAN_ROWS = 200;
+/** How many of a node's newest activity rows a read looks through: the latest-hook read (to find the newest synchronous row and order the
+ *  async rows after it by eventAt), the open-call read and the socket input point (seat-messaging/input-point). One window for all of them
+ *  (workspaces-o9o.57): the latest read used to look at 20, so a prompt followed by 20 or more async rows (parallel tool calls relayed late)
+ *  fell out of it and the seat read busy while it waited. A prompt behind more than this many async rows still falls out. */
+export const ACTIVITY_SCAN_ROWS = 200;
 
 /** workspaces-o9o.4 F2: the calls of the current turn that started and have not ended, oldest first, from the rows that carry a call id
  *  (rows without one are left to the newest-event rule). The rows newer than the last turn boundary in the newest generation are read
