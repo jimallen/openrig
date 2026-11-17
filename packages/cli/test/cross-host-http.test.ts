@@ -236,6 +236,49 @@ describe("send --host (http branch)", () => {
     expect(body.actorSession).toBe("relay@my-rig");
   });
 
+  // workspaces-o9o.16: the direct path states the origin the far daemon's accept takes, so the far end can name this host and say whether a
+  // reply works. The origin is this host's own id, read from its own durable store, never the target's.
+  describe("states its origin (workspaces-o9o.16)", () => {
+    let home = "";
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), "o9o16-origin-"));
+      vi.stubEnv("OPENRIG_DB", join(home, "origin.sqlite"));
+      const db = new Database(process.env.OPENRIG_DB!);
+      db.exec("CREATE TABLE self_host_identity (singleton INTEGER PRIMARY KEY, host_id TEXT); INSERT INTO self_host_identity VALUES (1, 'origin-host')");
+      db.close();
+    });
+    afterEach(() => { rmSync(home, { recursive: true, force: true }); });
+    const withSelf = (h: MockClientHarness) => httpDeps(h);
+
+    it("a shell: origin is this host with sender unknown, and the From line keeps its label", async () => {
+      vi.stubEnv("OPENRIG_SESSION_NAME", "");
+      vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "openrig-23");
+      const h = mockClient(() => ({ status: 200, data: { ok: true } }));
+      await sendCommand(withSelf(h)).parseAsync(["--host", "vps-b", "dev-impl@my-rig", "hello"], { from: "user" });
+      const body = h.calls.find((c) => c.path === "/api/transport/send")!.body as Record<string, unknown>;
+      expect(body.origin).toEqual({ host: "origin-host", sender: "unknown" });
+      expect(String(body.text)).toContain("From: openrig-23");
+    });
+
+    it("a seat: origin names the seat on this host, the triple its From line carries", async () => {
+      const h = mockClient(() => ({ status: 200, data: { ok: true } }));  // OPENRIG_SESSION_NAME is relay@my-rig (beforeEach)
+      await sendCommand(withSelf(h)).parseAsync(["--host", "vps-b", "dev-impl@my-rig", "hello"], { from: "user" });
+      const body = h.calls.find((c) => c.path === "/api/transport/send")!.body as Record<string, unknown>;
+      expect(body.origin).toEqual({ host: "origin-host", sender: "relay@my-rig@origin-host" });
+      expect(String(body.text)).toContain("From: relay@my-rig@origin-host");
+    });
+
+    it("raw text, or no id for this host, states no origin: the far end then shows the text as written", async () => {
+      const raw = mockClient(() => ({ status: 200, data: {} }));
+      await sendCommand(withSelf(raw)).parseAsync(["--host", "vps-b", "dev-impl@my-rig", "/compact", "--raw"], { from: "user" });
+      expect(raw.calls.find((c) => c.path === "/api/transport/send")!.body).not.toHaveProperty("origin");
+      vi.stubEnv("OPENRIG_DB", join(home, "absent.sqlite"));
+      const noSelf = mockClient(() => ({ status: 200, data: { ok: true } }));
+      await sendCommand(httpDeps(noSelf)).parseAsync(["--host", "vps-b", "dev-impl@my-rig", "hello"], { from: "user" });
+      expect(noSelf.calls.find((c) => c.path === "/api/transport/send")!.body).not.toHaveProperty("origin");
+    });
+  });
+
   // S3 wave-1 fix round 1 (r2 F2): the http cross-host leg cannot run the
   // pane-effect check from the origin host — with --verify it must say so
   // honestly instead of echoing the remote transport verdict as if verified.

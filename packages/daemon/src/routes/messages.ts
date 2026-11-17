@@ -4,6 +4,7 @@ import { crossHostMessageId, farSeatName, isCrossHostMessageId, MESSAGE_NOT_FOUN
 import { mintMessageId } from "../domain/seat-messaging/message-ledger.js";
 import { MessageStore } from "../domain/seat-messaging/message-store.js";
 import { messageId } from "../domain/seat-messaging/ports.js";
+import { arrivalBody, originOf, type HostDirectory } from "../domain/seat-messaging/reply-path.js";
 import { HANDED_TO_PUMP, isPumpableText, MESSAGE_MAX_BYTES, type SessionTransport } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSeatMessageId, refusedMessageId } from "./transport.js";
@@ -49,7 +50,9 @@ function refusedAccept(body: AcceptBody): string | null {
  * is the sender's half: `rig send --host` posts here, to its own daemon, and the local pump owns the one hop. Gated like `/api/transport`: the same
  * terminal bearer, since this is the same power of putting text in front of a seat.
  */
-export function messageRoutes(opts?: { bearerToken?: string | null; far?: FarDaemons }): Hono {
+/** The From line of a content arrival names its host as this host knows it, and its reply line is a command that works here or says there is none
+ *  (workspaces-o9o.16). `hosts` is this host's registry; without one, an arrival rides exactly as the sender wrote it. */
+export function messageRoutes(opts?: { bearerToken?: string | null; far?: FarDaemons; hosts?: HostDirectory }): Hono {
   const router = new Hono();
   router.use("*", authBearerTokenMiddleware({ expectedToken: opts?.bearerToken ?? null }));
 
@@ -78,7 +81,7 @@ export function messageRoutes(opts?: { bearerToken?: string | null; far?: FarDae
     const seat = resolved.sessions[0]!.sessionName;
     if (!handOff.takes(seat)) return c.json({ error: `${SEAT_NOT_GATED}: ${seat} has no gate, so nothing could confirm a message to it.`, code: SEAT_NOT_GATED }, 409);
     const id = crossHostMessageId(accept.origin.host, accept.id);
-    const result = await transport.send(seat, accept.body, {
+    const result = await transport.send(seat, arrivedText(c, id, accept, opts?.hosts), {
       deliveryId: id, actorSession: accept.origin.sender, messageClass: accept.class, lane: 2, auditPointer: `cross-host:${accept.origin.host}:${accept.id}`,
     });
     if (result.reason === HANDED_TO_PUMP || result.reason === "message_already_ended") return c.json({ ok: true, id });
@@ -128,4 +131,12 @@ export function messageRoutes(opts?: { bearerToken?: string | null; far?: FarDae
   });
 
   return router;
+}
+
+/** A content arrival restamped for this host; a nudge, or a daemon with no registry port, keeps the sender's text. */
+function arrivedText(c: Context, id: string, accept: { body: string; class: "content" | "nudge"; origin: { host: string; sender: string } }, hosts: HostDirectory | undefined): string {
+  if (!hosts || accept.class !== "content") return accept.body;
+  const origin = originOf(accept.origin.host, accept.origin.sender, accept.body);
+  if (!origin) return accept.body;
+  return arrivalBody((c.get("outboxHandler" as never) as OutboxHandler | undefined)?.getById(id)?.body, accept.body, origin, hosts);
 }

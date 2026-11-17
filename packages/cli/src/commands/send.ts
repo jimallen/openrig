@@ -996,9 +996,12 @@ async function runHttpHostSend(
   if (local.kind === "done") return;
   const atMostOnce = local.kind === "direct" ? local.reason : undefined;
 
+  // workspaces-o9o.16: enveloped text states its origin as the far daemon's accept takes it (this host's own id, and the seat or `unknown`), so
+  // the far end names this host and says whether a reply works from there. A far daemon that predates the field ignores it.
+  const origin = !raw && selfHostId ? { host: selfHostId, sender: originSender?.split("@").length === 3 ? originSender : "unknown" } : undefined;
   const result = await runRemoteHttpOp(host.id, "POST", "/api/transport/send", {
     session, text: outboundText, deliveryId: opts.id ?? randomUUID(), verify: opts.verify, force: opts.force, waitForIdleMs,
-    dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null,
+    dangerouslyInteract: opts.dangerouslyInteract, reason: opts.reason, actorSession: senderSession ?? null, ...(origin ? { origin } : {}),
   }, deps, { timeoutMs: transportSendBudgetMs(waitForIdleMs) });
 
   // A send that may have reached the remote is unconfirmed, not unreachable: it may have been delivered, and a

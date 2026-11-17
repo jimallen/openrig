@@ -28,6 +28,8 @@ import { OutboxHandler, labelForTmuxSend } from "../src/domain/outbox-handler.js
 import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
 import { outboxOutcomeLabelSchema } from "../src/db/migrations/117_outbox_outcome_label.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import type { HostDirectory } from "../src/domain/seat-messaging/reply-path.js";
+import { wrapPaneEnvelope } from "../src/lib/pane-envelope.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -61,7 +63,7 @@ function mockTmux(overrides?: Partial<{
   } as unknown as TmuxAdapter;
 }
 
-function createApp(deps: { sessionTransport: SessionTransport; outboxHandler?: OutboxHandler; operatorSeatName?: string }): Hono {
+function createApp(deps: { sessionTransport: SessionTransport; outboxHandler?: OutboxHandler; operatorSeatName?: string; hosts?: HostDirectory }): Hono {
   const app = new Hono();
   app.use("*", async (c, next) => {
     c.set("sessionTransport" as never, deps.sessionTransport);
@@ -71,7 +73,7 @@ function createApp(deps: { sessionTransport: SessionTransport; outboxHandler?: O
     if (deps.outboxHandler) c.set("outboxHandler" as never, deps.outboxHandler);
     await next();
   });
-  app.route("/api/transport", transportRoutes());
+  app.route("/api/transport", transportRoutes(deps.hosts ? { hosts: deps.hosts } : undefined));
   return app;
 }
 
@@ -213,6 +215,70 @@ describe("transport routes", () => {
     });
     const vbody = (await verified.json()) as { outcome?: string };
     expect([verified.status, vbody.outcome, outboxRows()[1]!["ack_evidence"]]).toEqual([200, "rendered-unconfirmed", "render_unconfirmed"]);
+  });
+
+  // workspaces-o9o.16: the CLI's direct cross-host send (verify, force, wait-for-idle, or a far daemon with no accept route) states its origin;
+  // the far end names the host and says whether a reply works, exactly as on /api/messages/accept.
+  describe("a send from another host that states its origin", () => {
+    const STU = "host-148dbc2f";
+    const SENT = "2026-11-16T09:44:00.000Z";
+    const named: HostDirectory = { nameFor: (id) => (id === STU ? "stu" : null) };
+    const envelope = (from: string | undefined) => wrapPaneEnvelope(from, "dev-impl@my-rig", "hello", { stampISO: SENT });
+    const lines = (from: string, reply: string) => [`From: ${from}`, "To: dev-impl@my-rig", "Sent: 11-16 09:44Z", "---", "hello", "---", reply].join("\n");
+    function arrivalApp(pasted: string[], hosts: HostDirectory | null = named) {
+      migrate(db, [outboxEntriesSchema]);
+      if (!(db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "identity_provenance")) {
+        db.exec("ALTER TABLE outbox_entries ADD COLUMN identity_provenance TEXT");
+      }
+      const tmux = mockTmux({ sendText: async (_target, text) => { pasted.push(text); return { ok: true as const }; } });
+      return createApp({ sessionTransport: new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux }), outboxHandler: new OutboxHandler(db), hosts: hosts ?? undefined });
+    }
+    const send = (app: Hono, body: Record<string, unknown>) => app.request("/api/transport/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session: "dev-impl@my-rig", ...body }) });
+
+    it("a shell with no label: the pane and the row say it is a shell on stu, with no reply path", async () => {
+      seedRig();
+      const pasted: string[] = [];
+      const res = await send(arrivalApp(pasted), { text: envelope(undefined), deliveryId: "o9o16-a", origin: { host: STU, sender: "unknown" } });
+      expect(res.status).toBe(200);
+      const want = lines("a shell on stu", "↩ No reply path: a shell on stu is not a seat; no rig address answers it");
+      expect(outboxRows().map((r) => r["body"])).toEqual([want]);
+      expect(pasted.join("")).toContain(want.split("\n")[0]);
+      expect(pasted.join("")).not.toContain("<unknown sender>");
+    });
+
+    it("a seat of the origin host: the reply line is a command that reaches it from here", async () => {
+      seedRig();
+      await send(arrivalApp([]), { text: envelope(`build-impl@openrig@${STU}`), deliveryId: "o9o16-b", origin: { host: STU, sender: `build-impl@openrig@${STU}` } });
+      expect(outboxRows().map((r) => r["body"])).toEqual([lines("build-impl@openrig@stu", "↩ Reply: rig send build-impl@openrig@stu '...'")]);
+    });
+
+    it("a driven prompt rides as written even when it states an origin", async () => {
+      seedRig();
+      const pasted: string[] = [];
+      await send(arrivalApp(pasted), { text: envelope(undefined), dangerouslyInteract: true, reason: "o9o16 row", origin: { host: STU, sender: "unknown" } });
+      expect(pasted.join("")).toContain("From: <unknown sender>");
+      expect(pasted.join("")).not.toContain("a shell on stu");
+    });
+
+    it("a resend under the id after this host learned the origin's name is the same message", async () => {
+      seedRig();
+      let name: string | null = null;
+      const app = arrivalApp([], { nameFor: () => name });
+      expect((await send(app, { text: envelope(undefined), deliveryId: "o9o16-r", origin: { host: STU, sender: "unknown" } })).status).toBe(200);
+      name = "stu";
+      const again = await send(app, { text: envelope(undefined), deliveryId: "o9o16-r", origin: { host: STU, sender: "unknown" } });
+      expect(again.status).not.toBe(409);
+      expect(outboxRows().map((r) => r["body"])).toEqual([lines(`a shell on ${STU}`, `↩ No reply path: a shell on ${STU} is not a seat; no rig address answers it`)]);
+    });
+
+    it("no origin, an origin that does not hold together, or no registry port: the text rides as the sender wrote it", async () => {
+      seedRig();
+      const app = arrivalApp([]);
+      await send(app, { text: envelope(undefined), deliveryId: "o9o16-c" });
+      await send(app, { text: envelope(undefined), deliveryId: "o9o16-d", origin: { host: STU, sender: "build-impl@openrig@host-other" } });
+      await send(arrivalApp([], null), { text: envelope(undefined), deliveryId: "o9o16-e", origin: { host: STU, sender: "unknown" } });
+      expect(outboxRows().map((r) => r["body"])).toEqual([envelope(undefined), envelope(undefined), envelope(undefined)]);
+    });
   });
 
   it("OF-74 — N successful single sends leave ZERO pending rows (the live-DB symptom: pending rows accruing per send)", async () => {

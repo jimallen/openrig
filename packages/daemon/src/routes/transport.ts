@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
@@ -6,6 +6,7 @@ import { DAEMON_OUTBOX_ID_PREFIXES, OutboxHandlerError, type OutboxHandler } fro
 import { mintMessageId } from "../domain/seat-messaging/message-ledger.js";
 import { MessageStore } from "../domain/seat-messaging/message-store.js";
 import { messageId } from "../domain/seat-messaging/ports.js";
+import { arrivalBody, originOf, type HostDirectory } from "../domain/seat-messaging/reply-path.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
@@ -49,7 +50,8 @@ function operatorSeatName(c: { get: (key: never) => unknown }): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
+/** `hosts` names other hosts for a cross-host send that states its origin (workspaces-o9o.16); without it, text rides as the sender wrote it. */
+export function transportRoutes(opts?: { bearerToken?: string | null; hosts?: HostDirectory }): Hono {
   const router = new Hono();
 
   const terminalToken = opts?.bearerToken ?? null;
@@ -70,6 +72,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       submitOnly?: boolean;
       expectedStagedText?: string;
       expectedStagedLineCount?: number;
+      /** A cross-host send's origin, as `/api/messages/accept` takes it: the sending host's own id and its seat, or `unknown`. */
+      origin?: { host?: unknown; sender?: unknown } | null;
     }>();
 
     // submitOnly (mechanics-gate fix d9b3989a) sends NO text — the Enter-only retry for staged
@@ -132,7 +136,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     // The row commits inside transport.send, before any write, and every send from here is settled there. The id is the answer's:
     // a repeat under it is the same message.
     const messageId = body.submitOnly ? undefined : body.deliveryId ?? mintMessageId();
-    const result = await transport.send(body.session, body.text ?? "", {
+    const result = await transport.send(body.session, arrivalText(c, opts?.hosts, messageId, body), {
       deliveryId: messageId,
       verify: body.verify,
       force: body.force,
@@ -376,4 +380,13 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
   });
 
   return router;
+}
+
+/** A send from another host names that host and says whether a seat here can answer it (workspaces-o9o.16). Only a send that states its
+ *  origin is restamped, and the CLI states it only for enveloped text; raw text, a driven prompt and a bare Enter ride as written. */
+function arrivalText(c: Context, hosts: HostDirectory | undefined, id: string | undefined, body: { text?: string; dangerouslyInteract?: boolean; origin?: { host?: unknown; sender?: unknown } | null }): string {
+  const text = body.text ?? "";
+  if (!hosts || !id || !text || body.dangerouslyInteract || !body.origin) return text;
+  const origin = originOf(body.origin.host, body.origin.sender, text);
+  return origin ? arrivalBody((c.get("outboxHandler" as never) as OutboxHandler | undefined)?.getById(id)?.body, text, origin, hosts) : text;
 }

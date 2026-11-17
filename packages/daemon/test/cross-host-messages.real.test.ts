@@ -298,6 +298,52 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     expect(agentCopies(far, farId).length).toBe(1);
   }, 240_000);
 
+  // workspaces-o9o.16: the far end names the sending host by its own registry, and its reply line is a command that works there, or says none does.
+  it("a shell's send shows the far seat which host it came from, and that no rig address answers a shell", async () => {
+    const { near, far } = await pair();
+    const s = seat(far);
+    await start(far); await start(near);
+    await s.launch();
+    far.registry([{ id: "laptop", url: `http://127.0.0.1:${near.qport}` }]);
+    const unnamed = rigSend(near, s.name, "from a shell", "", ["--id", "o9o16-shell-1"]);
+    expect(unnamed.status).toBe(0);
+    const id = nearId(near);
+    await state(far, crossHostMessageId(id, "o9o16-shell-1"), "received");
+    const before = String(far.read(crossHostMessageId(id, "o9o16-shell-1"))?.body).split("\n");
+    expect([before[0], before[before.length - 1]]).toEqual([`From: a shell on ${id}`, `↩ No reply path: a shell on ${id} is not a seat; no rig address answers it`]);
+    // The far host learns the near host's id; the next arrival names it, read from the registry as it is now, with no restart.
+    writeFileSync(join(far.home, "hosts.yaml"), `hosts:\n  - id: laptop\n    transport: http\n    url: http://127.0.0.1:${near.qport}\n    hostId: ${id}\n`);
+    expect(rigSend(near, s.name, "from a shell again", "", ["--id", "o9o16-shell-2"]).status).toBe(0);
+    await state(far, crossHostMessageId(id, "o9o16-shell-2"), "received");
+    const after = String(far.read(crossHostMessageId(id, "o9o16-shell-2"))?.body).split("\n");
+    expect([after[0], after[after.length - 1]]).toEqual(["From: a shell on laptop", "↩ No reply path: a shell on laptop is not a seat; no rig address answers it"]);
+    expect(after.join("\n")).not.toContain("<unknown sender>");
+  }, 120_000);
+
+  it("a seat's send: the far seat's reply line names the sender by the far registry, and that command delivers the answer to it", async () => {
+    const { near, far } = await pair();
+    const s = seat(far); const back = seat(near); const lead = back.name;
+    await start(far); await start(near);
+    await s.launch(); await back.launch();
+    const id = nearId(near);
+    writeFileSync(join(far.home, "hosts.yaml"), `hosts:\n  - id: laptop\n    transport: http\n    url: http://127.0.0.1:${near.qport}\n    hostId: ${id}\n`);
+    expect(rigSend(near, s.name, "from a seat", lead, ["--id", "o9o16-seat-1"]).status).toBe(0);
+    const farId = crossHostMessageId(id, "o9o16-seat-1");
+    await state(far, farId, "received");
+    const lines = String(far.read(farId)?.body).split("\n");
+    expect([lines[0], lines[lines.length - 1]]).toEqual([`From: ${lead}@laptop`, `↩ Reply: rig send ${lead}@laptop '...'`]);
+    // Run the reply line, as the far seat would: the CLI on the far host resolves the address to the near host and takes it there.
+    const reply = spawnSync(process.execPath, ["--import", "tsx", CLI, "send", `${lead}@laptop`, "the answer", "--id", "o9o16-reply"], { cwd: DAEMON_PACKAGE, encoding: "utf8", env: {
+      PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(core.root, "h"), OPENRIG_HOME: far.home, TMPDIR: join(core.root, "h"), OPENRIG_URL: `http://127.0.0.1:${far.qport}`, OPENRIG_SESSION_NAME: s.name,
+    } });
+    const out = `${reply.stdout}${reply.stderr}`;
+    expect(out).toMatch(/Held by laptop \(o9o16-reply\)|Delivered to .* on laptop \(o9o16-reply\)/);
+    expect(reply.status).toBe(0);
+    const answer = crossHostMessageId(String(http(far, "/healthz").json["selfHostId"]), "o9o16-reply");
+    await state(near, answer, "received");
+    await until(() => agentCopies(near, answer), (l) => l.length > 0, "the sender's copy of the answer");
+  }, 120_000);
+
   it("decision 36: undeliverable at the far end ends the sender's row, and its own daemon tells it, once", async () => {
     const { near, far } = await pair();
     const s = seat(far); const lead = sender(near);

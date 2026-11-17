@@ -59,6 +59,8 @@ import { transcriptRoutes } from "./routes/transcripts.js";
 import { transportRoutes } from "./routes/transport.js";
 import { messageRoutes } from "./routes/messages.js";
 import { MESSAGING_CAPABILITY, type FarDaemons } from "./domain/seat-messaging/far-daemon.js";
+import type { HostDirectory } from "./domain/seat-messaging/reply-path.js";
+import { RegistryHostDirectory } from "./adapters/registry-host-directory.js";
 import { compactionRoutes } from "./routes/compaction.js";
 import type { ClaudeCompactionEnforcer } from "./domain/claude-compaction-enforcer.js";
 import { activityRoutes } from "./routes/activity.js";
@@ -208,6 +210,8 @@ export interface AppDeps {
   sessionTransport?: SessionTransport;
   /** Seat Messaging across hosts: the client of the far daemons, shared with the pump's far ports. */
   farDaemons?: FarDaemons;
+  /** This host's names for other hosts, for the From and reply lines of a cross-host arrival (workspaces-o9o.16). Default: this host's registry. */
+  hostDirectory?: HostDirectory;
   askService?: AskService;
   wakeResolveService?: WakeResolveService;
   chatRepo?: ChatRepository;
@@ -769,8 +773,9 @@ export function createApp(deps: CreateAppDeps): Hono {
   app.route("/api/kernel", kernelStatusRoutes);
   app.route("/api/startup", startupRoutes);
   app.route("/api/transcripts", transcriptRoutes());
-  app.route("/api/transport", transportRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
-  app.route("/api/messages", messageRoutes({ bearerToken: deps.terminalBearerToken ?? null, far: deps.farDaemons }));
+  const hosts = deps.hostDirectory ?? new RegistryHostDirectory();
+  app.route("/api/transport", transportRoutes({ bearerToken: deps.terminalBearerToken ?? null, hosts }));
+  app.route("/api/messages", messageRoutes({ bearerToken: deps.terminalBearerToken ?? null, far: deps.farDaemons, hosts }));
   // OPR.0.4.3.14 — manual compaction trigger (same terminal-bearer posture as
   // transport, since it drives a send into the target seat).
   app.route("/api/compaction", compactionRoutes({ bearerToken: deps.terminalBearerToken ?? null }));

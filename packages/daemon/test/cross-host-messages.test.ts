@@ -25,6 +25,8 @@ import { messageRoutes } from "../src/routes/messages.js";
 import { createTestApp } from "./helpers/test-app.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
 import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
+import type { HostDirectory } from "../src/domain/seat-messaging/reply-path.js";
+import { wrapPaneEnvelope } from "../src/lib/pane-envelope.js";
 
 const FAR_SEAT = "dev@far";
 const LOCAL_SENDER = "lead@near";
@@ -42,7 +44,7 @@ const post = (app: Hono, path: string, body: unknown, headers: Record<string, st
 interface Side { db: Database.Database; app: Hono; store: MessageStore; hopCalls: string[]; pump: MessagePump; seen: Set<string> }
 
 /** One daemon. `seatPorts` is what its own seats get; `far` adds the far seats, as startup does. */
-function side(opts: { gated: boolean; pumpOff?: boolean; far?: FarDaemons; senders?: SenderReturn; seatTakes?: boolean }): Side {
+function side(opts: { gated: boolean; pumpOff?: boolean; far?: FarDaemons; senders?: SenderReturn; seatTakes?: boolean; hosts?: HostDirectory }): Side {
   const db = createDb();
   migrate(db, ALL_MIGRATIONS);
   const rigRepo = new RigRepository(db);
@@ -75,7 +77,7 @@ function side(opts: { gated: boolean; pumpOff?: boolean; far?: FarDaemons; sende
   const app = new Hono();
   app.use("*", async (c, next) => { c.set("sessionTransport" as never, transport as never); c.set("outboxHandler" as never, new OutboxHandler(db) as never); await next(); });
   app.get("/healthz", (c) => c.json({ status: "ok", ...(transport.messageHandOff ? { messaging: 1 } : {}) }));
-  app.route("/api/messages", messageRoutes({ bearerToken: null, far: opts.far }));
+  app.route("/api/messages", messageRoutes({ bearerToken: null, far: opts.far, hosts: opts.hosts }));
   return { db, app, store, hopCalls, pump, seen };
 }
 
@@ -225,6 +227,71 @@ describe("the far daemon's accept", () => {
     expect(await (await far.app.fetch(new Request("http://far/api/messages/takes?seat=ghost%40far"))).json()).toEqual({ takes: false });
     const ungated = side({ gated: false });
     expect(await (await ungated.app.fetch(new Request(`http://far/api/messages/takes?seat=${encodeURIComponent(FAR_SEAT)}`))).json()).toEqual({ takes: false });
+  });
+});
+
+// workspaces-o9o.16: a message from another host names that host, and its reply line is a command that works here or says there is none.
+// The envelope is the one the sending CLI writes (wrapPaneEnvelope is its byte-identical twin); only this host's registry knows the origin's name.
+describe("an arrival from another host", () => {
+  const STU = "host-148dbc2f";
+  const SENT = "2026-11-16T09:31:00.000Z";
+  const named: HostDirectory = { nameFor: (id) => (id === STU ? "stu" : null) };
+  const unnamed: HostDirectory = { nameFor: () => null };
+  const envelope = (from: string | undefined, text = "hello") => wrapPaneEnvelope(from, FAR_SEAT, text, { stampISO: SENT });
+  const arrive = async (hosts: HostDirectory, from: string | undefined, sender: string, over: Record<string, unknown> = {}) => {
+    const far = side({ gated: true, hosts });
+    const res = await post(far.app, "/api/messages/accept", { id: "m1", seat: FAR_SEAT, body: envelope(from), class: "content", origin: { host: STU, sender }, ...over });
+    expect(res.status).toBe(200);
+    return String(rowOf(far.db, crossHostMessageId(STU, "m1"))?.body);
+  };
+  const lines = (from: string, reply: string, text = "hello") => [`From: ${from}`, `To: ${FAR_SEAT}`, "Sent: 11-16 09:31Z", "---", text, "---", reply].join("\n");
+
+  it("(a) a seat on a host this registry names: From names it, and the reply is a command that reaches it", async () => {
+    expect(await arrive(named, `build-impl@openrig@${STU}`, `build-impl@openrig@${STU}`))
+      .toBe(lines("build-impl@openrig@stu", "↩ Reply: rig send build-impl@openrig@stu '...'"));
+  });
+
+  it("(b) a seat on a host this registry cannot name: the reply line says there is no path, and why", async () => {
+    expect(await arrive(unnamed, `build-impl@openrig@${STU}`, `build-impl@openrig@${STU}`))
+      .toBe(lines(`build-impl@openrig@${STU}`, `↩ No reply path from this host: ${STU} is not in this host's registry (rig host ls)`));
+  });
+
+  it("(c) a shell with a label: From says it is a shell on that host, and no rig address answers it", async () => {
+    expect(await arrive(named, "openrig-23", "unknown"))
+      .toBe(lines("openrig-23 (a shell on stu)", "↩ No reply path: openrig-23 is a shell on stu, not a seat; no rig address answers it"));
+    expect(await arrive(unnamed, "openrig-23", "unknown"))
+      .toBe(lines(`openrig-23 (a shell on ${STU})`, `↩ No reply path: openrig-23 is a shell on ${STU}, not a seat; no rig address answers it`));
+  });
+
+  it("(d) a shell with no label (the 09:31Z symptom): never '<unknown sender>', and never a reply command that names nobody", async () => {
+    const body = await arrive(named, undefined, "unknown");
+    expect(body).toBe(lines("a shell on stu", "↩ No reply path: a shell on stu is not a seat; no rig address answers it"));
+    expect(body).not.toContain("<unknown sender>");
+  });
+
+  it("only the From line and the closing reply line change: a body line that looks like either rides as written", async () => {
+    const text = "From: someone else\n↩ Reply: rig send x@y '...'";
+    const far = side({ gated: true, hosts: named });
+    await post(far.app, "/api/messages/accept", { id: "m1", seat: FAR_SEAT, body: envelope(undefined, text), class: "content", origin: { host: STU, sender: "unknown" } });
+    expect(rowOf(far.db, crossHostMessageId(STU, "m1"))?.body).toBe(lines("a shell on stu", "↩ No reply path: a shell on stu is not a seat; no rig address answers it", text));
+  });
+
+  it("text that is not an envelope, and a nudge, ride as written", async () => {
+    expect(await arrive(named, undefined, "unknown", { body: "plain words" })).toBe("plain words");
+    expect(await arrive(named, undefined, "unknown", { class: "nudge" })).toBe(envelope(undefined));
+  });
+
+  it("a repeat after the registry learned the host is the same message, not a conflict; another text under the id still is one", async () => {
+    let name: string | null = null;
+    const far = side({ gated: true, hosts: { nameFor: () => name } });
+    const accept = (body: string) => post(far.app, "/api/messages/accept", { id: "m1", seat: FAR_SEAT, body, class: "content", origin: { host: STU, sender: "unknown" } });
+    expect((await accept(envelope(undefined))).status).toBe(200);
+    name = "stu";
+    expect((await accept(envelope(undefined))).status).toBe(200);
+    expect(rowOf(far.db, crossHostMessageId(STU, "m1"))?.body).toBe(lines(`a shell on ${STU}`, `↩ No reply path: a shell on ${STU} is not a seat; no rig address answers it`));
+    const other = await accept(envelope(undefined, "other words"));
+    expect(other.status).toBe(409);
+    expect(rowCount(far.db)).toBe(1);
   });
 });
 
@@ -565,6 +632,29 @@ describe("the daemon's real app", () => {
   it("/healthz says `messaging` only when the pump runs", async () => {
     expect(await (await app({ messageHandOff: handOff }).fetch(new Request("http://x/healthz"))).json()).toMatchObject({ messaging: 1 });
     expect(await (await app({ messageHandOff: undefined }).fetch(new Request("http://x/healthz"))).json()).not.toHaveProperty("messaging");
+  });
+
+  // workspaces-o9o.16: the app gives both arrival routes this host's names for other hosts, and by default its own registry.
+  it("both arrival routes name the origin host: with the given directory, and by default from this host's registry", async () => {
+    const STU = "host-148dbc2f";
+    const raw = wrapPaneEnvelope(undefined, FAR_SEAT, "hello", { stampISO: "2026-11-16T09:31:00.000Z" });
+    const arrivals = async (hostDirectory?: HostDirectory) => {
+      const sent: string[] = [];
+      const transport = {
+        messageHandOff: { takes: () => true },
+        resolveSessions: async () => ({ ok: true, sessions: [{ sessionName: FAR_SEAT }] }),
+        send: async (_seat: string, text: string) => { sent.push(text); return { ok: true, reason: "handed_to_pump" }; },
+      };
+      const db = createDb();
+      migrate(db, ALL_MIGRATIONS);
+      const real = createTestApp(db, { appDeps: { sessionTransport: transport as never, ...(hostDirectory ? { hostDirectory } : {}) } as never }).app;
+      const ask = (path: string, body: unknown) => real.fetch(new Request(`http://x${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+      expect((await ask("/api/messages/accept", { id: "m1", seat: FAR_SEAT, body: raw, class: "content", origin: { host: STU, sender: "unknown" } })).status).toBe(200);
+      expect((await ask("/api/transport/send", { session: FAR_SEAT, text: raw, deliveryId: "o9o16-app", origin: { host: STU, sender: "unknown" } })).status).toBe(200);
+      return sent.map((t) => t.split("\n")[0]);
+    };
+    expect(await arrivals({ nameFor: (id) => (id === STU ? "stu" : null) })).toEqual(["From: a shell on stu", "From: a shell on stu"]);
+    expect(await arrivals()).toEqual([`From: a shell on ${STU}`, `From: a shell on ${STU}`]);  // the test home has no hosts.yaml
   });
 
   it.each(["/api/messages/accept", "/api/messages/send-far"])("%s takes the terminal bearer, like /api/transport", async (path) => {
