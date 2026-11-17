@@ -219,7 +219,7 @@ function skillsDriftLine(drift: NonNullable<SeatStatusResponse["skills_drift"]> 
   return `${parts.join("; ")} (spec ${drift.specSource}; seen ${drift.observedAt} after a launch from ${from}). To bring them in line with the spec, run: ${drift.fix}`;
 }
 
-function printHumanHandoverPlan(plan: SeatHandoverPlan): void {
+function printHumanHandoverPlan(plan: SeatHandoverPlan & { blockers?: Array<{ code: string; message: string; guidance?: string }>; warnings?: string[] }): void {
   console.log(`Seat handover dry run: ${plan.seat.ref}`);
   console.log(`Rig: ${plan.seat.rigName}`);
   console.log(`Logical ID: ${plan.seat.logicalId}`);
@@ -234,6 +234,12 @@ function printHumanHandoverPlan(plan: SeatHandoverPlan): void {
       console.log(`  - ${step.title}`);
     }
   }
+  // workspaces-o9o.93: what the handover would be refused for, and the relaunch checks' warnings.
+  for (const blocker of plan.blockers ?? []) {
+    console.log(`Would be refused: ${blocker.message}`);
+    if (blocker.guidance) console.log(`  ${blocker.guidance}`);
+  }
+  for (const warning of plan.warnings ?? []) console.log(`Warning: ${warning}`);
   console.log("No changes were made.");
 }
 
@@ -494,6 +500,7 @@ Examples:
     .option("--reason <reason>", "Why the handover is happening")
     .option("--operator <address>", "Operator initiating the handover")
     .option("--dry-run", "Plan the handover without changing topology")
+    .option("--despite <check>", "Hand over even though this relaunch check is held: lease (the seat's work holds a lease, see rig seat lease) or children (the seat's agent is still running processes other than MCP servers, language servers and caffeinate). Repeat for both; the --reason is recorded", (value: string, previous: string[]) => [...previous, value], [] as string[])
     .option("--json", "JSON output for agents")
     .description("Hand a seat to a successor (two-phase). Pass --dry-run to plan without changing topology.")
     .addHelpText("after", `
@@ -501,7 +508,13 @@ Examples:
   rig seat handover spec-writer@openrig-pm --reason context-wall --dry-run
   rig seat handover spec-writer@openrig-pm --source rebuild --reason context-wall --dry-run --json
   rig seat handover spec-writer@openrig-pm --source fork:0b0165d7 --reason successor-test --operator orch-lead@openrig-pm --dry-run
-  rig seat handover spec-writer@openrig-pm --source discovered:01H... --reason mvp-proof --json`)
+  rig seat handover spec-writer@openrig-pm --source discovered:01H... --reason mvp-proof --json
+  rig seat handover spec-writer@openrig-pm --reason context-wall --despite children
+
+A fresh, fork or rebuild handover replaces the seat's live occupant in its pane, so it is refused, before anything is stopped, while
+the seat's work holds a lease or its agent still runs work of its own (the checks rig seat launch --fresh --stop makes). Name the
+check to hand over anyway: --despite lease / --despite children. A check that cannot be read only warns. A discovered handover
+stops nothing and is not judged.`)
     .action((seat: string, opts: HandoverActionOpts) => runSeatHandover(seat, opts, getDeps()));
 
   // OPR.0.4.3.26 — seat-recovery VIEW retarget. Points an already-attached tmux
@@ -1335,6 +1348,8 @@ interface HandoverActionOpts {
   reason?: string;
   operator?: string;
   dryRun?: boolean;
+  /** workspaces-o9o.93: the relaunch checks to override by name. */
+  despite?: string[];
   json?: boolean;
 }
 
@@ -1367,6 +1382,7 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
     reason: opts.reason,
     operator: opts.operator,
     dryRun: opts.dryRun === true,
+    ...(opts.despite && opts.despite.length > 0 ? { despite: opts.despite } : {}),
   };
   let res;
   try {
@@ -1428,6 +1444,7 @@ export function handoverCommand(depsOverride?: SeatDeps): Command {
     .option("--reason <reason>", "Why the handover is happening")
     .option("--operator <address>", "Operator initiating the handover")
     .option("--dry-run", "Plan the handover without changing topology")
+    .option("--despite <check>", "Hand over even though this relaunch check is held: lease (the seat's work holds a lease, see rig seat lease) or children (the seat's agent is still running processes other than MCP servers, language servers and caffeinate). Repeat for both; the --reason is recorded", (value: string, previous: string[]) => [...previous, value], [] as string[])
     .option("--json", "JSON output for agents")
     .description("Hand a seat to a successor: create -> deliver context -> verify continuity -> rebind")
     .addHelpText("after", `
@@ -1444,7 +1461,11 @@ Examples:
   rig handover spec-writer@openrig-pm --source fresh --reason context-wall
   rig handover spec-writer@openrig-pm --source fork:spec-writer@openrig-pm --reason context-wall
   rig handover spec-writer@openrig-pm --source rebuild --reason degraded-incumbent
-  rig handover spec-writer@openrig-pm --source discovered:01H... --reason mvp-proof --json`)
+  rig handover spec-writer@openrig-pm --source discovered:01H... --reason mvp-proof --json
+  rig handover spec-writer@openrig-pm --reason context-wall --despite lease
+
+A fresh, fork or rebuild handover is refused, before anything is stopped, while the seat's work holds a lease or its agent still
+runs work of its own; --despite lease / --despite children hands over anyway. A discovered handover is not judged.`)
     .action((seat: string, opts: HandoverActionOpts) => runSeatHandover(seat, opts, getDeps()));
 }
 

@@ -387,6 +387,31 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     } finally { seat.cleanup(); }
   });
 
+  // workspaces-o9o.93: a handover's successor replaces the live occupant, so it asks the same judgement through judgeReplacement.
+  it("o9o.93: judgeReplacement judges the live occupant's children with the seat's own settings", async () => {
+    const seat = withSeatSpec("        relaunch_checks:\n          ignore_children: [sccache]\n");
+    try {
+      processes = [AGENT, row(5001, PANE_PID, "sccache", "sccache --start-server")];
+      expect(await seat.service.judgeReplacement({ seatRef: SEAT, despite: [] })).toMatchObject({
+        checks: { settings: "spec", children: { verdict: "clear", ignored: [{ pid: 5001, kind: "seat_spec" }] } },
+      });
+      processes = [AGENT, row(5002, PANE_PID, "node", "node build.js")];
+      expect(await seat.service.judgeReplacement({ seatRef: SEAT, despite: [] })).toMatchObject({ checks: { children: { verdict: "held" } } });
+    } finally { seat.cleanup(); }
+  });
+
+  it("o9o.93: judgeReplacement takes the operator's despite", async () => {
+    leases = [{ holder: "ui-test-host", pid: 9001, liveness: "alive" }];
+    expect(await service.judgeReplacement({ seatRef: SEAT, despite: [] })).toMatchObject({ checks: { lease: { verdict: "held", overridden: false } } });
+    expect(await service.judgeReplacement({ seatRef: SEAT, despite: ["lease"] })).toMatchObject({ checks: { lease: { verdict: "held", overridden: true } } });
+  });
+
+  it("o9o.93: judgeReplacement of a seat it cannot find says so, and a daemon with no checks wired judges nothing", async () => {
+    expect(await service.judgeReplacement({ seatRef: "nobody@nowhere", despite: [] })).toMatchObject({ checks: null, warnings: [expect.stringContaining("not run")] });
+    const unwired = new SeatLifecycleService({ ...deps, relaunchChecks: undefined });
+    expect(await unwired.judgeReplacement({ seatRef: SEAT, despite: [] })).toBeNull();
+  });
+
   it("o9o.64 SV2: the seat's handover_file names its handover; HANDOVER.md is then not it", async () => {
     const seat = withSeatSpec("        relaunch_checks:\n          handover_file: \"NOTES-*.md\"\n");
     try {

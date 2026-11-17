@@ -24,6 +24,8 @@ import { DefaultOccupantInvalidator, type OccupantInvalidator } from "../src/dom
 import type { SeatCwdFault } from "../src/domain/cwd-resolution.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 import { nodeShimFiles } from "../src/adapters/node-shim-files.js";
+import { SeatLeaseStore } from "../src/adapters/seat-lease-store.js";
+import { judgeLeases, type RelaunchCheckName, type RelaunchChecks } from "../src/domain/relaunch-checks.js";
 
 describe("SeatHandoverService", () => {
   let db: Database.Database;
@@ -105,8 +107,10 @@ describe("SeatHandoverService", () => {
     return { runtime, launchHarness, checkReady } as unknown as RuntimeAdapter;
   }
 
-  function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }, seatCwdFault: () => SeatCwdFault | null = () => null): SeatHandoverService {
+  function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }, seatCwdFault: () => SeatCwdFault | null = () => null,
+    extra: Record<string, unknown> = {}): SeatHandoverService {
     return new SeatHandoverService({
+      ...extra,
       db,
       rigRepo,
       sessionRegistry,
@@ -206,6 +210,108 @@ describe("SeatHandoverService", () => {
       const outcome = await newService(hcTmux()).handover({ seatRef: "dev-impl@seat-rig", reason: "hc", source: `discovered:${discovered.id}`, operator: "orch-lead@seat-rig" });
       expect(outcome).toMatchObject({ ok: false, code: "handover_commit_failed", message: expect.stringContaining("names no terminal") });
       expect(db.prepare("SELECT * FROM bindings WHERE node_id = ?").get(node.id)).toEqual(before);
+    });
+  });
+
+  // workspaces-o9o.93: a handover that launches its successor into the retiree's pane (fresh, fork, rebuild) force-replaces a live
+  // occupant, the act o9o.8's relaunch checks govern. Reported: "a held lease (a UI test host, say) does not stop it". The port here judges
+  // with the real judgeLeases over a real lease store, its lease held by this test's own live process.
+  describe("a handover judges the seat's lease and live children before it replaces the retiree (o9o.93)", () => {
+    const SEAT = "dev-impl@seat-rig";
+    let leaseRoot = "";
+    let leases: SeatLeaseStore;
+    let asked: Array<readonly RelaunchCheckName[]>;
+    beforeEach(() => {
+      leaseRoot = mkdtempSync(`${tmpdir()}/o9o93-leases-`);
+      leases = new SeatLeaseStore(leaseRoot);
+      asked = [];
+    });
+    afterEach(() => { rmSync(leaseRoot, { recursive: true, force: true }); });
+    const clearChildren: RelaunchChecks["children"] = { verdict: "clear", ignored: [] };
+    /** The port, judging the real lease store; `children` stands for the process table's verdict. */
+    const port = (children: (despite: readonly RelaunchCheckName[]) => RelaunchChecks["children"] = () => clearChildren, warnings: string[] = []) => ({
+      judgeReplacement: async (input: { seatRef: string; despite: readonly RelaunchCheckName[] }) => {
+        asked.push(input.despite);
+        return { checks: { lease: judgeLeases(() => leases.leases(SEAT), input.despite), children: children(input.despite) }, warnings };
+      },
+    });
+    const heldLease = () => expect(leases.acquire(SEAT, { holder: "ui-test-host", pid: process.pid, reason: "UI tests" }).ok).toBe(true);
+    const handover = (svc: SeatHandoverService, extra: Record<string, unknown> = {}) =>
+      svc.handover({ seatRef: SEAT, reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig", ...extra } as never);
+
+    it("a held lease refuses a fresh handover before anything is captured or replaced", async () => {
+      seedSeat({ runtime: "codex" });
+      heldLease();
+      const result = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port() }));
+      expect(result).toMatchObject({ ok: false, code: "relaunch_check_held" });
+      expect((result as { message: string }).message).toContain("ui-test-host");
+      expect((result as { guidance: string }).guidance).toContain("--despite lease");
+      expect(capturePaneScreen).not.toHaveBeenCalled();
+      expect(respawnPane).not.toHaveBeenCalled();
+      expect(launchHarness).not.toHaveBeenCalled();
+    });
+
+    it("--despite lease hands over anyway, and the override reaches the judgement", async () => {
+      seedSeat({ runtime: "codex" });
+      heldLease();
+      const result = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port() }), { despite: ["lease"] });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(asked).toEqual([["lease"]]);
+      expect(launchHarness).toHaveBeenCalledTimes(1);
+    });
+
+    it("live children of the retiree refuse it too, and --despite children overrides", async () => {
+      seedSeat({ runtime: "codex" });
+      const children = (despite: readonly RelaunchCheckName[]): RelaunchChecks["children"] =>
+        ({ verdict: "held", held: [{ pid: 4242, name: "node", command: "node build.js" }], ignored: [], overridden: despite.includes("children") });
+      const refused = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port(children) }));
+      expect(refused).toMatchObject({ ok: false, code: "relaunch_check_held" });
+      expect((refused as { guidance: string }).guidance).toContain("--despite children");
+      expect(launchHarness).not.toHaveBeenCalled();
+      const overridden = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port(children) }), { despite: ["children"] });
+      expect(overridden.ok, JSON.stringify(overridden)).toBe(true);
+    });
+
+    it("a check that cannot be read warns and never refuses", async () => {
+      seedSeat({ runtime: "codex" });
+      const unknown = () => ({ verdict: "unknown" as const, cause: "the process table could not be read" });
+      const result = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port(unknown, ["children check skipped: the process table could not be read"]) }));
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      const warnings = (result as { result: { warnings?: string[] } }).result.warnings ?? [];
+      expect(warnings.join(" ")).toContain("process table could not be read");
+    });
+
+    it("a rebuild handover is judged the same way", async () => {
+      seedSeat({ runtime: "codex" });
+      heldLease();
+      const result = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port() }), { source: "rebuild" });
+      expect(result).toMatchObject({ ok: false, code: "relaunch_check_held" });
+      expect(launchHarness).not.toHaveBeenCalled();
+    });
+
+    it("a discovered handover stops nothing, so it is not judged", async () => {
+      seedSeat();
+      const discovered = seedDiscovery();
+      const never = { judgeReplacement: async () => { throw new Error("a discovered handover was judged"); } };
+      const result = await newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: never })
+        .handover({ seatRef: SEAT, reason: "mvp-proof", source: `discovered:${discovered.id}`, operator: "orch-lead@seat-rig" });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+    });
+
+    it("a dry run shows the held lease as a blocker and changes nothing", async () => {
+      seedSeat({ runtime: "codex" });
+      heldLease();
+      const result = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port() }), { dryRun: true });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(result).toMatchObject({ blockers: [{ code: "relaunch_check_held", message: expect.stringContaining("ui-test-host") }] });
+      expect(launchHarness).not.toHaveBeenCalled();
+    });
+
+    it("an unknown check name is refused before anything is judged", async () => {
+      seedSeat({ runtime: "codex" });
+      const result = await handover(newService(tmux(), { invalidateRetiringOccupant }, () => null, { replacementChecks: port() }), { despite: ["leases"] });
+      expect(result).toMatchObject({ ok: false, code: "invalid_despite" });
+      expect(asked).toEqual([]);
     });
   });
 

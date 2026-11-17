@@ -1973,6 +1973,23 @@ export class SeatLifecycleService {
       : { settings: DEFAULT_RELAUNCH_CHECK_SETTINGS, warning: `The seat's relaunch_checks are malformed, so the defaults apply: ${parsed.errors.join("; ")}` };
   }
 
+  /**
+   * workspaces-o9o.93 (OccupantReplacementChecks): the relaunch checks for replacing this seat's LIVE occupant by another act, a handover's
+   * successor in its pane. The same judgement a fresh launch that stops the occupant makes, with the seat's own settings (o9o.64).
+   */
+  async judgeReplacement(input: { seatRef: string; despite: readonly RelaunchCheckName[] }): Promise<{ checks: RelaunchChecks | null; warnings: string[] } | null> {
+    if (!this.relaunchCheckPort) return null;
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return { checks: null, warnings: [`The relaunch checks were not run: ${resolved.message}`] };
+    const seat = this.describe(resolved);
+    const node = this.rigRepo.getRig(seat.rigId)?.nodes.find((candidate) => candidate.id === seat.nodeId);
+    if (!node) return { checks: null, warnings: [`The relaunch checks were not run: seat "${input.seatRef}" no longer exists.`] };
+    const sessionName = deriveCanonicalFromEntry(resolved.entry) ?? deriveSessionName(seat.rigName, seat.logicalId);
+    const seatSettings = this.seatRelaunchSettings(seat, node);
+    const checks = await this.relaunchChecks(this.relaunchCheckPort, sessionName, node.runtime ?? null, input.despite, true, seatSettings.settings);
+    return { checks, warnings: [...checkWarnings(checks), ...(seatSettings.warning ? [seatSettings.warning] : [])] };
+  }
+
   /** workspaces-o9o.8: the leases and agent children of the seat whose live occupant is about to be stopped. */
   private async relaunchChecks(port: RelaunchCheckPort, sessionName: string, runtime: string | null, despite: readonly RelaunchCheckName[], livePane: boolean,
     settings: RelaunchCheckSettings): Promise<RelaunchChecks> {

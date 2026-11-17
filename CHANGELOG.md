@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A seat handover is refused while the seat's work holds a lease or still runs (workspaces-o9o.93)
+
+- Symptom: `rig seat handover` (and `rig handover`) with the fresh, fork or rebuild source launches the successor into the retiring occupant's own pane, which ends the live occupant, but it never ran the checks `rig seat launch --fresh --stop` runs first. So a lease the seat's work held (a UI test host, say) did not stop it, and a build the agent was running was ended with it.
+- Now those handovers run the same checks before anything is captured or stopped, with the seat's own `relaunch_checks` settings: a lease that is held, or a process the agent runs beyond its MCP servers, language servers, caffeinate and the seat's `ignore_children`, refuses the handover (`relaunch_check_held`, naming the holder or the process). `--despite lease` and `--despite children` hand over anyway; the handover's `--reason` is recorded. A check that cannot be read warns and never refuses. `--dry-run` shows what the handover would be refused for.
+- A `discovered:<id>` handover adopts a successor the operator already made and stops nothing, so it is not judged.
+
 ### The running install's own bundled specs are trusted inside Homebrew's git checkout (workspaces-o9o.91)
 
 - Symptom: on stu, `rig doctor` failed `/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs` as "inside the /opt/homebrew git work tree". Measured on a fake Homebrew-style prefix: with a `.git` at the prefix, the spec-source judge refused the install's own kernel spec, both recording and reading it back (`spec_untrusted`); without the `.git`, the same install passed. The kernel boot records that bundled spec as the kernel's source, so a fresh relaunch of a kernel seat from it (`rig seat launch --fresh`, a `--fresh` restore), `rig seat set-mcp` and `rig spec-source set` were refused (`startup_source_untrusted`). First launches and `--startup-from stored` replays were not judged, which is why rigs still started.

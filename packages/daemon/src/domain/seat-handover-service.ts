@@ -30,6 +30,7 @@ import { inertPacketText } from "./packet-text.js";
 import { handoverTextId } from "./seat-messaging/long-message.js";
 import { PUMP_PAUSE_RECHECK_MS } from "./seat-messaging/message-pump.js";
 import { messageId } from "./seat-messaging/ports.js";
+import { blockingChecks, describeHeld, RELAUNCH_CHECK_NAMES, type OccupantReplacementChecks, type RelaunchCheckName, type RelaunchChecks } from "./relaunch-checks.js";
 
 /**
  * How long a handover waits for the gate to record its packet. Under the pump's pause recheck on purpose: a typed attempt from the pump's
@@ -105,8 +106,14 @@ export interface SeatHandoverMutationResult {
   warnings?: string[];
 }
 
+/** workspaces-o9o.93: the handover sources that launch the successor INTO the retiree's pane, force-replacing the live occupant. A discovered
+ *  successor is one the operator already made; that handover stops nothing. */
+const REPLACES_RETIREE: ReadonlySet<string> = new Set(["fresh", "fork", "rebuild"]);
+
 export type SeatHandoverResult =
-  | { ok: true; plan: SeatHandoverPlan }
+  | { ok: true; plan: SeatHandoverPlan; blockers?: Array<{ code: string; message: string; guidance?: string }>; warnings?: string[] }
+  | { ok: false; code: "invalid_despite"; message: string; guidance: string }
+  | { ok: false; code: "relaunch_check_held"; message: string; guidance: string; relaunchChecks: RelaunchChecks }
   | { ok: true; result: SeatHandoverMutationResult }
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found" | "handover_unsupported_runtime"; message: string; guidance: string }
   | { ok: false; code: "current_occupant_required" | "adopted_occupant" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
@@ -157,6 +164,9 @@ interface SeatHandoverServiceDeps {
   eventBus: EventBus;
   tmuxAdapter: TmuxAdapter;
   successorLauncher?: SuccessorSessionLauncher;
+  /** workspaces-o9o.93: judges replacing the live retiree (the seat's leases and the agent's children), as a fresh launch that stops it does.
+   *  Absent: nothing is judged (as before). */
+  replacementChecks?: OccupantReplacementChecks;
   /** Passed to the default successor launcher: what is wrong with the seat folder it would hand tmux (tests inject a fake). */
   seatCwdFault?: (cwd: string) => import("./cwd-resolution.js").SeatCwdFault | null;
   now?: () => Date;
@@ -254,6 +264,7 @@ export class SeatHandoverService {
   private eventBus: EventBus;
   private tmuxAdapter: TmuxAdapter;
   private successorLauncher: SuccessorSessionLauncher;
+  private replacementChecks: OccupantReplacementChecks | null;
   private captureDeps: ResumeTokenCaptureDeps;
   private occupantInvalidator: OccupantInvalidator | null;
   private predecessorRecapResolver: PredecessorRecapResolver | null;
@@ -293,6 +304,7 @@ export class SeatHandoverService {
     this.statusService = new SeatStatusService({ rigRepo: deps.rigRepo });
     this.planner = new SeatHandoverPlanner({ rigRepo: deps.rigRepo });
     this.seatCwdFault = deps.seatCwdFault ?? ((cwd) => getSeatCwdFault(cwd));
+    this.replacementChecks = deps.replacementChecks ?? null;
     this.successorLauncher = deps.successorLauncher ?? new SuccessorSessionLauncher(deps.tmuxAdapter, deps.discoveryRepo, {
       sessionEnv: deps.sessionEnv,
       runtimeSessionEnv: deps.runtimeSessionEnv,
@@ -321,12 +333,20 @@ export class SeatHandoverService {
     source?: string | null;
     operator?: string | null;
     dryRun?: boolean;
+    /** workspaces-o9o.93: the relaunch checks the operator overrides by name (lease, children). */
+    despite?: readonly string[];
   }): Promise<SeatHandoverResult> {
     // pda L2a (design D4 site 4, census row 15): every handover source puts a new conversation in the seat (fresh,
     // fork, rebuild, a discovered session). A runtime with no fresh start has none to give: refuse before anything,
     // the dry-run plan included, so the plan never promises what the handover refuses.
     const unsupported = this.refuseRuntimeWithoutSuccessor(input.seatRef);
     if (unsupported) return unsupported;
+    const unknownDespite = (input.despite ?? []).filter((name) => !(RELAUNCH_CHECK_NAMES as readonly string[]).includes(name));
+    if (unknownDespite.length > 0) {
+      return { ok: false, code: "invalid_despite", message: `--despite takes ${RELAUNCH_CHECK_NAMES.join(" or ")} (got "${unknownDespite.join(", ")}").`,
+        guidance: "Name the check to override: --despite lease, --despite children." };
+    }
+    const despite = (input.despite ?? []) as readonly RelaunchCheckName[];
     if (input.dryRun) {
       const planResult = this.planner.plan({ ...input, dryRun: true });
       if (planResult.ok) {
@@ -334,7 +354,15 @@ export class SeatHandoverService {
         // does), and OF-131: nor one it refuses for the seat's folder.
         const occupant = this.departingOccupant(input.seatRef, planResult.plan.source);
         if (!occupant.ok) return occupant.refusal;
-        return this.foreseeSeatCwdRefusal(input.seatRef, planResult.plan.source.mode) ?? { ok: true, plan: planResult.plan };
+        const cwdRefusal = this.foreseeSeatCwdRefusal(input.seatRef, planResult.plan.source.mode);
+        if (cwdRefusal) return cwdRefusal;
+        // workspaces-o9o.93: the dry run shows what the handover would be refused for, as `rig seat launch --fresh --plan` does.
+        const judged = REPLACES_RETIREE.has(planResult.plan.source.mode) ? await this.judgeReplacement(input.seatRef, despite) : null;
+        return {
+          ok: true, plan: planResult.plan,
+          ...(judged?.refusal ? { blockers: [{ code: judged.refusal.code, message: judged.refusal.message, guidance: judged.refusal.guidance }] } : {}),
+          ...(judged?.warnings.length ? { warnings: judged.warnings } : {}),
+        };
       }
       switch (planResult.code) {
         case "mutation_disabled":
@@ -431,6 +459,12 @@ export class SeatHandoverService {
     // the durable wake target). (fork/rebuild were rejected above; discovered was finalized above.)
 
     // 1. Capture the departing seat's context BEFORE the respawn replaces it.
+    // workspaces-o9o.93: the successor force-replaces the live retiree, so the seat's own unfinished work is judged first, before anything is
+    // captured or touched: a held lease or a live child of the agent refuses, unless the operator names it (--despite).
+    const judged = REPLACES_RETIREE.has(parsed.source.mode) ? await this.judgeReplacement(input.seatRef, despite) : null;
+    if (judged?.refusal) return judged.refusal;
+    const replacementWarnings = judged?.warnings ?? [];
+
     const capturedContext = await this.captureDepartingContext(latestSession.session_name);
     const predecessorGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid;
 
@@ -630,10 +664,30 @@ export class SeatHandoverService {
       sourceOutcome,
       cleanup: () => this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId),
     });
-    // The launch's warnings reach the operator through the result (they were dropped here before workspaces-o9o.10).
-    return launch.warnings?.length && finalized.ok && "result" in finalized
-      ? { ...finalized, result: { ...finalized.result, warnings: launch.warnings } }
+    // The launch's warnings reach the operator through the result (they were dropped here before workspaces-o9o.10), and so do the relaunch
+    // checks' (workspaces-o9o.93: a check that could not be read warns and never refuses).
+    const warnings = [...replacementWarnings, ...(launch.warnings ?? [])];
+    return warnings.length && finalized.ok && "result" in finalized
+      ? { ...finalized, result: { ...finalized.result, warnings } }
       : finalized;
+  }
+
+  /** workspaces-o9o.93: the relaunch checks for replacing the live retiree, and the refusal when one is held that the operator did not name. */
+  private async judgeReplacement(seatRef: string, despite: readonly RelaunchCheckName[]): Promise<{
+    refusal: Extract<SeatHandoverResult, { code: "relaunch_check_held" }> | null; warnings: string[];
+  }> {
+    const judged = this.replacementChecks ? await this.replacementChecks.judgeReplacement({ seatRef, despite }) : null;
+    if (!judged) return { refusal: null, warnings: [] };
+    const blocking = judged.checks ? blockingChecks(judged.checks) : [];
+    if (!judged.checks || blocking.length === 0) return { refusal: null, warnings: judged.warnings };
+    return {
+      refusal: {
+        ok: false, code: "relaunch_check_held", relaunchChecks: judged.checks,
+        message: `Handover refused before anything was stopped: ${describeHeld(judged.checks, seatRef)}`,
+        guidance: `Let the work finish, or hand over anyway with --despite ${blocking.join(" --despite ")} (the --reason is recorded).`,
+      },
+      warnings: judged.warnings,
+    };
   }
 
   /**

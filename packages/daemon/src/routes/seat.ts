@@ -208,20 +208,29 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     // declareOccupantSwap and the successor never inherits the retiree's evidence or
     // promoted rung authority. Optional in the deps contract; ALWAYS wired here.
     activityOracle: (c.get("seatActivityService" as never) as import("../domain/seat-activity-service.js").SeatActivityService | undefined) ?? undefined,
+    // workspaces-o9o.93: the successor replaces the live retiree, so the seat's leases and the agent's children are judged as a fresh launch
+    // that stops it judges them: the same service, with the same lease store, process lister and per-seat settings.
+    replacementChecks: seatLifecycleService(c),
   });
+  // The same rule as launch: a list of check names, or 400 before the service is asked.
+  const despite = despiteOf(body);
+  if (despite === null) return c.json(INVALID_DESPITE, 400);
   const result = await service.handover({
     seatRef: c.req.param("seatRef")!,
     reason: typeof body["reason"] === "string" ? body["reason"] : null,
     source: typeof body["source"] === "string" ? body["source"] : null,
     operator: typeof body["operator"] === "string" ? body["operator"] : null,
     dryRun: body["dryRun"] === true,
+    despite,
   });
 
   if (result.ok) {
-    return c.json("plan" in result ? result.plan : result.result);
+    // workspaces-o9o.93: a dry run carries what the handover would be refused for, and the checks' warnings, beside the plan.
+    if ("plan" in result) return c.json({ ...result.plan, ...(result.blockers ? { blockers: result.blockers } : {}), ...(result.warnings ? { warnings: result.warnings } : {}) });
+    return c.json(result.result);
   }
 
-  if (result.code === "missing_reason" || result.code === "invalid_source") {
+  if (result.code === "missing_reason" || result.code === "invalid_source" || result.code === "invalid_despite") {
     return c.json(result, 400);
   }
   if (result.code === "seat_ambiguous") {
@@ -241,7 +250,8 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     result.code === "successor_already_managed" ||
     result.code === "successor_is_current" ||
     result.code === "runtime_mismatch" ||
-    result.code === "handover_unsupported_runtime") {
+    result.code === "handover_unsupported_runtime" ||
+    result.code === "relaunch_check_held") {
     return c.json(result, 409);
   }
   if (result.code === "seat_ref_required") {

@@ -538,6 +538,37 @@ describe("rig seat status", () => {
     expect(output).toContain("No changes were made.");
   });
 
+  // workspaces-o9o.93: a handover that replaces the live retiree is judged like a fresh launch that stops it; --despite names a check.
+  it.each([["seat", "handover"], ["handover"]])("rig %s ... --despite sends each named check to the daemon", async (...verb) => {
+    const bodies: unknown[] = [];
+    const deps = makeDeps({ status: 200, data: HANDOVER_PLAN }, [], bodies);
+    await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", ...verb, "dev-impl@seat-rig", "--reason", "context-wall", "--despite", "lease", "--despite", "children", "--dry-run"]);
+    });
+    expect(bodies).toEqual([expect.objectContaining({ despite: ["lease", "children"] })]);
+  });
+
+  it("handover without --despite sends no despite", async () => {
+    const bodies: unknown[] = [];
+    await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: HANDOVER_PLAN }, [], bodies)).parseAsync(["node", "rig", "seat", "handover", "dev-impl@seat-rig", "--reason", "context-wall", "--dry-run"]);
+    });
+    expect(bodies[0]).not.toHaveProperty("despite");
+  });
+
+  it("a human dry run says what the handover would be refused for, and the checks' warnings", async () => {
+    const plan = { ...HANDOVER_PLAN, blockers: [{ code: "relaunch_check_held", message: "Handover refused before anything was stopped: dev-impl@seat-rig holds a lease (ui-test-host)",
+      guidance: "Let the work finish, or hand over anyway with --despite lease (the --reason is recorded)." }], warnings: ["children not checked: the process table could not be read"] };
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: plan }, [])).parseAsync(["node", "rig", "seat", "handover", "dev-impl@seat-rig", "--reason", "context-wall", "--dry-run"]);
+    });
+    const output = logs.join("\n");
+    expect(output).toContain("Would be refused: Handover refused before anything was stopped: dev-impl@seat-rig holds a lease (ui-test-host)");
+    expect(output).toContain("  Let the work finish, or hand over anyway with --despite lease");
+    expect(output).toContain("Warning: children not checked: the process table could not be read");
+    expect(output).toContain("No changes were made.");
+  });
+
   it("handover requires --reason before contacting the daemon", async () => {
     const paths: string[] = [];
     const deps = makeDeps({ status: 200, data: HANDOVER_PLAN }, paths);

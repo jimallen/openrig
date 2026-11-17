@@ -9,6 +9,7 @@ import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import { SeatLeaseStore } from "../src/adapters/seat-lease-store.js";
+import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 
 describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
@@ -77,7 +78,9 @@ describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
     db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'claude-code')").run(node.id);
     const tmux = setup.tmuxAdapter;
     const killSession = vi.fn(async () => ({ ok: true as const }));
+    const respawnPane = vi.fn(async () => ({ ok: true as const }));
     Object.assign(tmux, {
+      respawnPane,
       probeSession: vi.fn(async () => ({ state: "present" as const })),
       hasSession: vi.fn(async () => true),
       killSession,
@@ -86,7 +89,7 @@ describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
       listWindows: vi.fn(async () => []),
       listPanes: vi.fn(async () => [{ id: "%1", index: 0, cwd: seatDir, width: 80, height: 24, active: true }]),
     });
-    return { seatDir, killSession };
+    return { seatDir, killSession, respawnPane };
   }
 
   it("the launch's checks read the same store: a real launch through the route refuses under the lease the route registered, before anything is stopped", async () => {
@@ -115,6 +118,63 @@ describe("o9o.8: POST /api/seat/lease and the launch's despite", () => {
     const spy = vi.spyOn(SeatLifecycleService.prototype, method).mockResolvedValueOnce({ ok: false, code: "no_session", message: "fixture" } as never);
     await post(route, "dev.impl", { fresh: true, reason: "r", stop: true, despite: ["lease", "children"] });
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ despite: ["lease", "children"] }));
+  });
+
+  // workspaces-o9o.93: a handover's successor replaces the live retiree in its pane, so the route's real handover is judged by the same
+  // lifecycle service, lease store and process lister as a launch.
+  it("a handover through the route refuses under the lease the route registered, before anything is replaced", async () => {
+    const { seatDir, respawnPane } = liveSeat(null);
+    await post("lease", "dev.live", { holder: "ui-test-host", pid: process.pid });
+    const res = await post("handover", "dev-live@live-rig", { reason: "context-wall", source: "fresh" });
+    const body: { code?: string; message?: string; guidance?: string } = await res.json();
+    expect(res.status).toBe(409);
+    expect(body).toMatchObject({ ok: false, code: "relaunch_check_held" });
+    expect(body.message).toContain("ui-test-host");
+    expect(body.guidance).toContain("--despite lease");
+    expect(respawnPane).not.toHaveBeenCalled();
+    fs.rmSync(seatDir, { recursive: true, force: true });
+  });
+
+  it("a handover dry run through the route carries the held lease as a blocker", async () => {
+    const { seatDir, respawnPane } = liveSeat(null);
+    await post("lease", "dev.live", { holder: "ui-test-host", pid: process.pid });
+    const res = await post("handover", "dev-live@live-rig", { reason: "context-wall", source: "fresh", dryRun: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ blockers: [{ code: "relaunch_check_held", message: expect.stringContaining("ui-test-host") }] });
+    expect(respawnPane).not.toHaveBeenCalled();
+    fs.rmSync(seatDir, { recursive: true, force: true });
+  });
+
+  it("the route's real judgement takes the handover's despite: a held lease named in it is no blocker", async () => {
+    const { seatDir } = liveSeat(null);
+    await post("lease", "dev.live", { holder: "ui-test-host", pid: process.pid });
+    const res = await post("handover", "dev-live@live-rig", { reason: "context-wall", source: "fresh", dryRun: true, despite: ["lease"] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty("blockers");
+    fs.rmSync(seatDir, { recursive: true, force: true });
+  });
+
+  it("the route's real judgement reads the retiree's live pane: one the process table does not show is warned about", async () => {
+    const { seatDir } = liveSeat(2 ** 22 + 12345);
+    const res = await post("handover", "dev-live@live-rig", { reason: "context-wall", source: "fresh", dryRun: true });
+    const plan: { warnings?: string[]; blockers?: unknown } = await res.json();
+    expect(plan.blockers).toBeUndefined();
+    expect((plan.warnings ?? []).join(" ")).toContain("does not show the seat's pane process");
+    fs.rmSync(seatDir, { recursive: true, force: true });
+  });
+
+  it("the handover route forwards despite to the service", async () => {
+    const spy = vi.spyOn(SeatHandoverService.prototype, "handover").mockResolvedValueOnce({ ok: false, code: "missing_reason", message: "fixture", guidance: "" } as never);
+    await post("handover", "dev-impl@seat-rig", { reason: "r", source: "fresh", despite: ["lease", "children"] });
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ despite: ["lease", "children"] }));
+  });
+
+  it.each([["lease"], [["all"]], [[1]], [null]])("the handover route refuses a despite that is not a list of check names (%j) with 400, without calling the service", async (despite) => {
+    const spy = vi.spyOn(SeatHandoverService.prototype, "handover");
+    const res = await post("handover", "dev-impl@seat-rig", { reason: "r", source: "fresh", despite });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ ok: false, code: "invalid_despite" });
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it.each([["lease"], [["all"]], [[1]], [null]])("launch refuses a despite that is not a list of check names (%j) with 400, without calling the service", async (despite) => {

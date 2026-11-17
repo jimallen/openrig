@@ -121,6 +121,16 @@ export interface RelaunchCheckPort {
   folderFiles(dir: string): Array<{ name: string; modifiedAt: string }>;
 }
 
+/**
+ * Outbound port of an act that replaces a seat's LIVE occupant without a fresh launch (workspaces-o9o.93: a seat handover, whose successor is
+ * launched into the retiree's own pane). It judges the replacement as a fresh launch that stops the occupant would: the seat's leases and the
+ * live agent's children, with the seat's own settings and the operator's `despite`. Null: this daemon wires no relaunch checks. `checks` null:
+ * they could not be run, and `warnings` says why.
+ */
+export interface OccupantReplacementChecks {
+  judgeReplacement(input: { seatRef: string; despite: readonly RelaunchCheckName[] }): Promise<{ checks: RelaunchChecks | null; warnings: string[] } | null>;
+}
+
 /** Outbound port: where `rig seat lease` registers and releases a seat's leases. */
 export interface SeatLeaseRegistry {
   acquire(seat: string, lease: { holder: string; pid: number; reason?: string }):
