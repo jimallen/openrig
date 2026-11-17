@@ -189,11 +189,15 @@ describe("OF-103 judgeSpecSource: one judgement for record and read", () => {
   describe("production wiring (startup.ts)", () => {
     const startup = fs.readFileSync(path.resolve(import.meta.dirname, "../src/startup.ts"), "utf-8");
     it("hands PodRigInstantiator the MCP spec roots as its recorded-source trust", () => {
-      expect(startup).toMatch(/new PodRigInstantiator\(\{[\s\S]*?specSourceTrust: specSourceTrustOf\(\{ specRoots: \(\) => mcpTrust\.specRoots\(\) \}\)/);
+      // o9o.91: the same trust carries the running install's daemon folder.
+      expect(startup).toMatch(/new PodRigInstantiator\(\{[\s\S]*?specSourceTrust: specSourceTrustOf\(\{ specRoots: \(\) => mcpTrust\.specRoots\(\), runningInstall: \(\) => mcpTrust\.runningInstall\(\) \}\)/);
     });
     it("passes the same mcpTrust to the app deps (SeatLifecycleService, the spec-source route)", () => {
       expect(startup).toMatch(/\n    mcpTrust,\n/);
-      expect(startup).toMatch(/const mcpTrust = \{ specRoots: \(\) => mcpSpecRoots\(\{ home: daemonHome,/);
+      expect(startup).toMatch(/const mcpTrust = \{\n    specRoots: \(\) => mcpSpecRoots\(\{ home: daemonHome,/);
+      // o9o.91: the running install is the folder holding the running specs root, the one the spec roots already name.
+      expect(startup).toMatch(/const runningSpecs = runningShippedSpecsRoot\(\);/);
+      expect(startup).toMatch(/runningInstall: \(\) => nodePath\.dirname\(runningSpecs\),/);
     });
   });
 

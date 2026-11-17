@@ -196,28 +196,34 @@ export const DEFAULT_PATH_JUDGE_IO: PathJudgeIo = {
  * Every component of BOTH chains is examined: the written chain with lstat (a link is judged by its owner
  * and by the directory holding it, so a link in a 0777 directory is refused), the resolved chain with stat.
  * There is no sticky-bit exemption: a sandboxed seat can write the sticky temp roots.
- * Returns null when trusted; `missing` when the path does not resolve.
+ * workspaces-o9o.91: `runningInstall` names the running OpenRig install's daemon folder (the folder holding the dist the
+ * daemon runs and its bundled specs). A git work tree or `.workspaces` directory found AT OR ABOVE that folder does not make a
+ * path inside it untrusted: whatever could change files there could change the code the daemon runs. The folder is matched
+ * by identity (dev:ino, links not followed on the written chain), a tree INSIDE it still counts, and every other rule stays.
+ * Returns null when trusted; `missing` when the path does not resolve. An untrusted answer names the rule it broke.
  */
+export type UntrustedRule = "location" | "owner" | "mode" | "inspect";
+
 export function untrustedPathProblem(
   file: string,
   what: string,
-  roots: { seatCwd?: string | null; specDir?: string | null },
+  roots: { seatCwd?: string | null; specDir?: string | null; runningInstall?: string | null },
   io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO,
-): { kind: "missing" } | { kind: "untrusted"; why: string } | null {
+): { kind: "missing" } | { kind: "untrusted"; why: string; rule: UntrustedRule } | null {
   const written = nodePath.resolve(file);
   let real: string;
   try { real = io.realpath(file); } catch { return { kind: "missing" }; }
   const located = deniedLocation([written, real], file, what, roots, io);
-  if (located) return { kind: "untrusted", why: located };
+  if (located) return { kind: "untrusted", why: located, rule: "location" };
   const uid = io.uid();
   if (uid !== undefined) {
     for (const [chain, read] of [[written, (p: string) => io.lstat(p)], [real, (p: string) => io.stat(p)]] as const) {
       let p = chain;
       for (;;) {
         let st: Stats;
-        try { st = read(p); } catch { return { kind: "untrusted", why: `${what} ${file}: ${p} cannot be inspected` }; }
-        if (st.uid !== uid && st.uid !== 0) return { kind: "untrusted", why: `${what} ${file} is not protected: ${p} is owned by uid ${st.uid}, not by you or root` };
-        if (!st.isSymbolicLink() && (st.mode & 0o022) !== 0) return { kind: "untrusted", why: `${what} ${file} is not protected: ${p} is writable by group or others` };
+        try { st = read(p); } catch { return { kind: "untrusted", why: `${what} ${file}: ${p} cannot be inspected`, rule: "inspect" }; }
+        if (st.uid !== uid && st.uid !== 0) return { kind: "untrusted", why: `${what} ${file} is not protected: ${p} is owned by uid ${st.uid}, not by you or root`, rule: "owner" };
+        if (!st.isSymbolicLink() && (st.mode & 0o022) !== 0) return { kind: "untrusted", why: `${what} ${file} is not protected: ${p} is writable by group or others`, rule: "mode" };
         const up = nodePath.dirname(p);
         if (up === p) break;
         p = up;
@@ -267,7 +273,7 @@ export function mcpServerPlacementProblem(
  * dev/ino is among them. `.workspaces` is matched case-insensitively and `.git` by existence, both of which
  * hold under any spelling of the ancestors.
  */
-function deniedLocation(paths: string[], file: string, what: string, roots: { seatCwd?: string | null; specDir?: string | null }, io: PathJudgeIo): string | null {
+function deniedLocation(paths: string[], file: string, what: string, roots: { seatCwd?: string | null; specDir?: string | null; runningInstall?: string | null }, io: PathJudgeIo): string | null {
   const ids = new Set<string>();
   for (const p of paths) for (const id of ancestorIdentities(p, io)) ids.add(id);
   const chooses = what === "its command" ? "the program" : "what runs";
@@ -281,11 +287,17 @@ function deniedLocation(paths: string[], file: string, what: string, roots: { se
     const id = identityOf(temp, io);
     if (id && ids.has(id)) return `${what} ${file} lies inside the temporary directory ${temp}, which a sandboxed seat can write`;
   }
+  const installId = roots.runningInstall ? identityOf(roots.runningInstall, io) : null;
   for (const p of paths) {
-    const tree = controlledTree(p);
+    const tree = controlledTree(p, installId, io);
     if (tree) return `${what} ${file} lies inside ${tree}, so content there could choose ${chooses}`;
   }
   return null;
+}
+
+/** "dev:ino" of the entry itself (a link is not followed); null when it cannot be lstat'ed. */
+function unfollowedIdentityOf(p: string, io: PathJudgeIo): string | null {
+  try { const st = io.lstat(p); return `${st.dev}:${st.ino}`; } catch { return null; }
 }
 
 /** "dev:ino" of a path (links followed); null when it cannot be stat'ed. */
@@ -307,10 +319,13 @@ function ancestorIdentities(p: string, io: PathJudgeIo): string[] {
   }
 }
 
-/** The nearest enclosing git work tree or `.workspaces` directory (any letter case) of a path; null when none. */
-function controlledTree(p: string): string | null {
+/** The nearest enclosing git work tree or `.workspaces` directory (any letter case) of a path; null when none. The walk stops at
+ *  the running install's daemon folder (`installId`, its dev:ino): what encloses the install does not count (o9o.91). The folder
+ *  is compared with lstat, so a link elsewhere that leads into the install is not the install. */
+function controlledTree(p: string, installId: string | null = null, io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO): string | null {
   let d = nodePath.dirname(p);
   for (;;) {
+    if (installId !== null && unfollowedIdentityOf(d, io) === installId) return null;
     if (nodePath.basename(d).toLowerCase() === ".workspaces") return `the seat workspaces directory ${d}`;
     if (existsSync(nodePath.join(d, ".git"))) return `the git work tree ${d}`;
     const up = nodePath.dirname(d);
@@ -334,6 +349,7 @@ export function specFileTrustProblem(
   trustedRoots: string[],
   seatCwd: string | null,
   io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO,
+  opts: { runningInstall?: string | null } = {},
 ): string | null {
   let real: string;
   let st: Stats;
@@ -349,7 +365,7 @@ export function specFileTrustProblem(
     if (other) return `the spec file ${file} lies in the bundled specs of another OpenRig install (${other}); only the running install's bundled specs (${runningShippedSpecsRoot()}) and the other trusted spec roots (${trustedRoots.join(", ") || "none configured"}) are trusted`;
     return `the spec file ${file} is not under a trusted spec root (${trustedRoots.join(", ") || "none configured"})`;
   }
-  const judged = untrustedPathProblem(file, "the spec file", { seatCwd }, io);
+  const judged = untrustedPathProblem(file, "the spec file", { seatCwd, runningInstall: opts.runningInstall ?? null }, io);
   return judged?.kind === "untrusted" ? judged.why : null;
 }
 

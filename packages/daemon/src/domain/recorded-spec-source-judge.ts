@@ -27,15 +27,20 @@ export interface SpecSourceTrust {
   /** A root that takes EXACTLY <root>/<name>/rig.yaml by real location and nothing deeper: the shared-docs rigs folder,
    *  whose <rig>/state/<pod> subfolders are writable roots of sandboxed Codex seats (OF-102 review R6). */
   exactDepthRoot?: () => string;
+  /** workspaces-o9o.91: the running install's daemon folder (holding its dist and bundled specs). A git work tree that encloses
+   *  it does not make its specs untrusted, since it encloses the code the daemon runs too; null or absent waives nothing. A launch
+   *  reads a packaged spec from this install's specs folder. */
+  runningInstall?: () => string | null;
   io?: PathJudgeIo;
 }
 
 /** The trust the daemon applies to a recorded spec source, built from the MCP trust it already carries. The shared-docs
  *  rigs folder is the daemon's own and never comes from a caller. */
-export function specSourceTrustOf(mcp: { specRoots?: () => string[]; io?: PathJudgeIo } | undefined, exactDepthRoot?: () => string): SpecSourceTrust {
+export function specSourceTrustOf(mcp: { specRoots?: () => string[]; io?: PathJudgeIo; runningInstall?: () => string | null } | undefined, exactDepthRoot?: () => string): SpecSourceTrust {
   return {
     roots: () => [...(mcp?.specRoots?.() ?? [])],
     exactDepthRoot: exactDepthRoot ?? resolveSharedDocsRigsRoot,
+    ...(mcp?.runningInstall ? { runningInstall: mcp.runningInstall } : {}),
     ...(mcp?.io ? { io: mcp.io } : {}),
   };
 }
@@ -110,11 +115,14 @@ export function judgeSpecSource(input: {
   trust: SpecSourceTrust;
 }): SpecSourceJudgement {
   const io = input.trust.io ?? DEFAULT_PATH_JUDGE_IO;
+  const runningInstall = input.trust.runningInstall?.() ?? null;
+  // The running install's specs folder: where a launch reads a packaged spec from (the default is the daemon's own).
+  const specsRoot = runningInstall ? nodePath.join(runningInstall, "specs") : undefined;
   // Lexical clean-up only: a link spelling stays a link (OF-32/OF-99).
   const written = nodePath.resolve(input.specSource);
   const record = input.use === "record";
   // A launch reads the re-anchored path, so a read judges that one; a record judges exactly what it records.
-  const readPath = record ? written : reanchorShippedSpecPath(written);
+  const readPath = record ? written : reanchorShippedSpecPath(written, specsRoot);
   try { io.realpath(readPath); } catch {
     return { ok: false, code: "spec_unreadable", message: record
       ? `${written} does not exist as typed (a missing path is not re-anchored when recording; name the real file).`
@@ -123,7 +131,7 @@ export function judgeSpecSource(input: {
   if (record) {
     // OF-104: a packaged-install-shaped path is always read from the RUNNING install, so a path outside it would be judged
     // here and then read from a different file.
-    const anchored = reanchorShippedSpecPath(written);
+    const anchored = reanchorShippedSpecPath(written, specsRoot);
     if (anchored !== written && !sameFile(anchored, written, io)) {
       return { ok: false, code: "spec_packaged_elsewhere", message: `${written} lies in an OpenRig install other than the running one, and a launch always reads a packaged spec from the running install (${anchored}), a different file from the one judged here. Name the file in the running install, or a released copy under ~/.agents-release.` };
     }
@@ -131,7 +139,7 @@ export function judgeSpecSource(input: {
   const seatFolders = [...new Set(input.seatFolders)];
   const judge = (roots: string[]): string | null => {
     for (const seatCwd of seatFolders.length > 0 ? seatFolders : [null]) {
-      const problem = specFileTrustProblem(readPath, roots, seatCwd, io);
+      const problem = specFileTrustProblem(readPath, roots, seatCwd, io, { runningInstall });
       if (problem) return problem;
     }
     return null;

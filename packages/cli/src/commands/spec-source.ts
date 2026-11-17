@@ -77,7 +77,8 @@ This decides what the rig's seats are started from, so the spec file must be one
 it has to lie (by its real location, links followed) under the shared-docs rigs folder (<OPENRIG_HOME>/shared-docs/rigs, or
 $OPENRIG_SHARED_DOCS_ROOT/rigs when that is set), the released copies
 (~/.agents-release) or the spec library, be a regular file with one link, and sit on a path owned by you or root
-and not writable by group or others. A spec in a temp folder, a git work tree or a seat's folder is refused.
+and not writable by group or others. A spec in a temp folder, a git work tree or a seat's folder is refused; a git work
+tree that encloses the running OpenRig install itself (Homebrew's prefix is one) does not count against that install's own specs.
 The same rules are applied again every time the recorded source is READ (a fresh launch, a --fresh restore and its
 restore-check, "rig seat set-mcp"), including for a source recorded by "rig up" before this command existed: a source
 that no longer qualifies refuses that seat's launch with startup_source_untrusted (nothing is stopped, and it never

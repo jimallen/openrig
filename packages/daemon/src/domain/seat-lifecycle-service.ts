@@ -79,6 +79,8 @@ export interface SeatLifecycleDeps {
     specRoots?: () => string[]; io?: import("./codex-mcp-servers.js").PathJudgeIo;
     /** The shared-docs rigs folder a recorded spec source may sit in (exactly <name>/rig.yaml). Default: the daemon's own. */
     exactDepthRoot?: () => string;
+    /** workspaces-o9o.91: the running install's daemon folder, whose enclosing git tree does not make its specs untrusted. */
+    runningInstall?: () => string | null;
   };
   db: Database.Database;
   rigRepo: RigRepository;
@@ -604,6 +606,7 @@ export class SeatLifecycleService {
         trustedSpecRoots: this.mcpTrust?.specRoots?.() ?? [],
         ...(this.mcpTrust?.io ? { io: this.mcpTrust.io } : {}),
         ...(this.mcpTrust?.exactDepthRoot ? { recordedExactDepthRoot: this.mcpTrust.exactDepthRoot } : {}),
+        ...(this.mcpTrust?.runningInstall ? { runningInstall: this.mcpTrust.runningInstall } : {}),
         node: { logicalId: seat.logicalId, runtime: node.runtime, agentRef: node.agent_ref, profile: node.profile, cwd: node.cwd },
         now: () => new Date().toISOString(),
       });
@@ -699,6 +702,7 @@ export class SeatLifecycleService {
       trustedSpecRoots: this.mcpTrust?.specRoots?.() ?? [],
       ...(this.mcpTrust?.io ? { io: this.mcpTrust.io } : {}),
       ...(this.mcpTrust?.exactDepthRoot ? { recordedExactDepthRoot: this.mcpTrust.exactDepthRoot } : {}),
+      ...(this.mcpTrust?.runningInstall ? { runningInstall: this.mcpTrust.runningInstall } : {}),
     });
     if (!read.ok) return { ok: false, code: APPLY_SPEC_REFUSAL_CODE[read.kind], message: read.message };
     const { member, pod, specPath, specSha256 } = read;

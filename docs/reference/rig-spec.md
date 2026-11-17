@@ -482,6 +482,8 @@ mcp_servers:
 
   The seat folder, spec folder and temporary directories are compared by identity, not by path text. It is also refused when any component of either path is not owned by you or root, or a non-link component is writable by group or others. There is no sticky-bit exemption.
 
+  One exception, for spec files only: a git work tree or `.workspaces` directory that *encloses* the running OpenRig install's own daemon folder does not count. Homebrew's prefix (`/opt/homebrew`) is a git checkout, so without it the install's bundled specs, such as the kernel's, would be refused. The daemon runs code from that same folder, so whatever could change its specs could change the code it runs. The folder is matched by identity, a git work tree *inside* it still counts, and every other rule (ownership, modes, temporary directories, the seat's folder) still applies.
+
 The rig-name check on a `--spec` file is a typo guard, **not** a security boundary. A `project_rig: true` spec matches any seat of a project it could be launched into, and a plain spec's `name` is whatever the file says. Do not rely on the name match to decide whether a spec is trustworthy.
 
 ### Pi (`runtime: pi`)

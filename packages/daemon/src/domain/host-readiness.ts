@@ -7,7 +7,7 @@
 // judges a launch applies. This module is the domain core: what a probe found becomes rows, with no I/O. The probe
 // runs through `SeatShellProbeTerminal` and the daemon-side reads through `HostReadinessIo`, both ports declared here.
 import nodePath from "node:path";
-import { untrustedPathProblem, type PathJudgeIo } from "./codex-mcp-servers.js";
+import { untrustedPathProblem, type PathJudgeIo, type UntrustedRule } from "./codex-mcp-servers.js";
 import type { SpecSourceTrust } from "./recorded-spec-source-judge.js";
 import type { SeatRuntimeProbe } from "./rigspec-preflight.js";
 
@@ -233,12 +233,15 @@ export async function sightRuntimes(probe: SeatRuntimeProbe, shell: RuntimeSight
 export function judgeSpecRoots(trust: SpecSourceTrust, io: PathJudgeIo): HostReadinessRow {
   const name = "spec_source_folders";
   const roots = [...new Set([...trust.roots(), ...(trust.exactDepthRoot ? [trust.exactDepthRoot()] : [])])];
+  // The running install's own folder is judged as a launch judges it: an enclosing git tree does not count (o9o.91).
+  const runningInstall = trust.runningInstall?.() ?? null;
   const problems: string[] = [];
+  const rules = new Set<UntrustedRule>();
   let present = 0;
   for (const root of roots) {
-    const judged = untrustedPathProblem(root, "the spec folder", {}, io);
+    const judged = untrustedPathProblem(root, "the spec folder", { runningInstall }, io);
     if (judged === null) present += 1;
-    else if (judged.kind === "untrusted") { present += 1; problems.push(judged.why); }
+    else if (judged.kind === "untrusted") { present += 1; problems.push(judged.why); rules.add(judged.rule); }
   }
   if (problems.length > 0) {
     return {
@@ -246,11 +249,20 @@ export function judgeSpecRoots(trust: SpecSourceTrust, io: PathJudgeIo): HostRea
       status: "fail",
       message: `${problems.length} of the ${roots.length} spec folders is not protected, so a launch refuses a spec source under it (startup_source_untrusted).`,
       reason: problems.join("\n"),
-      fix: "Remove group and other write access from each folder named (chmod go-w <folder>), or make it owned by you, then run `rig doctor` again. Folders under the OpenRig home are also tightened at each daemon start; one created since keeps the login umask, and folders outside the home (such as ~/.agents-release) never are.",
+      fix: [...rules].map((rule) => SPEC_FOLDER_FIX[rule]).join(" ") + " Then run `rig doctor` again.",
     };
   }
   return { name, status: "pass", message: `${present} of the ${roots.length} spec folders exist, and none is writable by group or others.` };
 }
+
+/** The remedy for each kind of finding. A location finding (a git work tree, a seat workspaces folder, temp) is never answered
+ *  with chmod or chown: modes are not the problem, and the folder may be another tool's (Homebrew's prefix, say). */
+const SPEC_FOLDER_FIX: Record<UntrustedRule, string> = {
+  location: "Keep spec folders outside git work trees, seat workspaces folders and temporary directories: move the folder named, or record a reviewed copy in ~/.agents-release or the spec library with `rig spec-source set`. (The running OpenRig install's own folder is exempt from the git work tree rule.)",
+  mode: "Remove group and other write access from each folder named (chmod go-w <folder>). Folders under the OpenRig home are also tightened at each daemon start; one created since keeps the login umask, and folders outside the home (such as ~/.agents-release) never are.",
+  owner: "Each folder named must be owned by you or root; a folder another user owns can be changed by that user.",
+  inspect: "Each folder named must be readable by you, along its whole path.",
+};
 
 /** The probe terminal's port: a seat-shaped login shell, a typed command, the screen, and its removal. */
 export interface SeatShellProbeTerminal {

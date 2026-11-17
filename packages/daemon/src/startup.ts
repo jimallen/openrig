@@ -220,6 +220,7 @@ import { readSeatMcpServers } from "./domain/seat-mcp-servers.js";
 import { DEFAULT_PATH_JUDGE_IO, codexConfigLayerFiles, codexConfigServerNames, mcpSpecRoots } from "./domain/codex-mcp-servers.js";
 import { piRetainedFieldLookups } from "./adapters/pi-retained-field-lookups.js";
 import { specSourceTrustOf } from "./domain/recorded-spec-source-judge.js";
+import { runningShippedSpecsRoot } from "./domain/builtin-startup-files.js";
 import { redactPaneText } from "./domain/launch-failure-report.js";
 import { codexSeatHomePath } from "./domain/codex-seat-home.js";
 import {
@@ -1211,7 +1212,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     db, rigRepo, podRepo,
     // OF-103: a recorded spec source is judged again at every fresh-launch read, against the same roots as MCP (lazy:
     // the spec library roots are captured further down, before the library initializer runs).
-    specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots() }),
+    specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots(), runningInstall: () => mcpTrust.runningInstall() }),
     sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
     fsOps: { ...guardedAgentRefFsOps, agentsReleaseRoot: deployedAgentsReleaseRoot(), readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
     adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
@@ -1525,12 +1526,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Per-seat Codex MCP servers: an operator-named spec (rig seat set-mcp --spec) must lie under the released spec
   // copies (~/.agents-release) or a spec library root; the rig's recorded spec directory is added per request. The
   // same roots judge a rig's recorded spec source at every read (OF-103).
-  const mcpTrust = { specRoots: () => mcpSpecRoots({ home: daemonHome, specLibraryRoots: [userSpecLibraryRoot, compatibleSpecLibraryRoot, nodePath.resolve(import.meta.dirname, "../specs")] }) };
+  // The running install's bundled specs, and (o9o.91) its daemon folder: an enclosing git tree (Homebrew's prefix is one) does
+  // not make the install's own specs untrusted, since it encloses the code this daemon runs too.
+  // One definition of the running install, shared with shipped: refs and re-anchoring (builtin-startup-files.ts).
+  const runningSpecs = runningShippedSpecsRoot();
+  const mcpTrust = {
+    specRoots: () => mcpSpecRoots({ home: daemonHome, specLibraryRoots: [userSpecLibraryRoot, compatibleSpecLibraryRoot, runningSpecs] }),
+    runningInstall: () => nodePath.dirname(runningSpecs),
+  };
   // workspaces-o9o.11: `rig doctor`'s host rows. The probe terminal is the metadata probe's door (a seat-shaped login shell);
   // spec folders are judged against the same trust a fresh launch applies to a recorded spec source.
   const hostReadiness = new HostReadinessService({
     terminal: tmuxAdapter,
-    specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots() }),
+    specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots(), runningInstall: () => mcpTrust.runningInstall() }),
     pathJudgeIo: DEFAULT_PATH_JUDGE_IO,
     homeDir: daemonHome,
     seatRuntimeProbeOn: (path: string) => seatRuntimeProbe({ seatPath: async () => path }),

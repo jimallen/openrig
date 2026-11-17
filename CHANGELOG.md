@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The running install's own bundled specs are trusted inside Homebrew's git checkout (workspaces-o9o.91)
+
+- Symptom: on stu, `rig doctor` failed `/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs` as "inside the /opt/homebrew git work tree". Measured on a fake Homebrew-style prefix: with a `.git` at the prefix, the spec-source judge refused the install's own kernel spec, both recording and reading it back (`spec_untrusted`); without the `.git`, the same install passed. The kernel boot records that bundled spec as the kernel's source, so a fresh relaunch of a kernel seat from it (`rig seat launch --fresh`, a `--fresh` restore), `rig seat set-mcp` and `rig spec-source set` were refused (`startup_source_untrusted`). First launches and `--startup-from stored` replays were not judged, which is why rigs still started.
+- Now a git work tree or `.workspaces` directory that encloses the running install's daemon folder does not count against a spec inside that folder. The daemon runs code from that folder, so whatever could change its specs could change the code it runs. The folder is matched by identity (dev:ino; a link elsewhere that leads into the install is not the install), a git work tree inside it still counts, and every other rule stays: owned by you or root, nothing writable by group or others, not in a temporary directory, not in a seat's folder. Only this one location rule is waived.
+- `rig doctor`'s spec-folder row judges the running install the same way, and its fix line now matches the kind of finding: a git work tree or temporary-directory finding says to move the folder or record a reviewed copy, never `chmod` or `chown`; a mode finding keeps `chmod go-w`.
+- Residual: an install owned by another user, or one that is group-writable, is still refused by the ownership or mode rule. That would be Linuxbrew's own user, say, or an older Homebrew under a group-writable `/usr/local`. Whether any host installs OpenRig that way has not been measured.
+
 ### A plain permission prompt is cleared by its own tool's end (workspaces-o9o.37)
 
 - Symptom: a plain permission prompt (a seat not in bypass mode asking to run a tool) names no tool, so the daemon cleared it with any tool end stamped more than 2 s after it. An end of an earlier call that was relayed late could clear a prompt still waiting for its answer.

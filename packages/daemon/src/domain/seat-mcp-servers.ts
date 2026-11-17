@@ -138,6 +138,8 @@ export function readTrustedSeatSpec(input: {
   trustedSpecRoots?: string[];
   io?: PathJudgeIo;
   recordedExactDepthRoot?: () => string;
+  /** workspaces-o9o.91: the running install's daemon folder (SpecSourceTrust.runningInstall). */
+  runningInstall?: () => string | null;
 }): TrustedSeatSpecRead {
   const operator = input.operatorSpecFile !== undefined;
   const specSource = operator ? input.operatorSpecFile! : input.specSource;
@@ -155,7 +157,8 @@ export function readTrustedSeatSpec(input: {
   // it decides what runs just as an operator-named file does (a value recorded by `rig up`, or a file or link changed
   // after `set`, is not trusted for having been recorded). An operator-named file is read with the recorded directory as a
   // root only when the recorded source itself passes.
-  const trust = specSourceTrustOf({ specRoots: () => input.trustedSpecRoots ?? [], ...(input.io ? { io: input.io } : {}) }, input.recordedExactDepthRoot);
+  const trust = specSourceTrustOf({ specRoots: () => input.trustedSpecRoots ?? [], ...(input.io ? { io: input.io } : {}), ...(input.runningInstall ? { runningInstall: input.runningInstall } : {}) }, input.recordedExactDepthRoot);
+  const runningInstall = input.runningInstall?.() ?? null;
   let recordedPasses = false;
   if (input.specSource && nodePath.isAbsolute(input.specSource)) {
     const judged = judgeSpecSource({ specSource: input.specSource, use: "read", rigName: input.rigName, seatFolders: input.node.cwd ? [input.node.cwd] : [], trust });
@@ -165,15 +168,15 @@ export function readTrustedSeatSpec(input: {
     }
   }
   if (operator) {
-    let problem = specFileTrustProblem(specSource, input.trustedSpecRoots ?? [], input.node.cwd, input.io);
+    let problem = specFileTrustProblem(specSource, input.trustedSpecRoots ?? [], input.node.cwd, input.io, { runningInstall });
     if (problem && input.specSource && recordedPasses) {
       // The recorded spec's own folder is a root for a SIBLING file only (a spec file directly beside it), never for what lies
       // deeper: when the recorded source sits in the shared-docs rigs folder (<rig>/rig.yaml), the folders below it
       // (<rig>/state/<pod>) are Codex state folders a sandboxed seat can write.
       try {
-        const recordedDir = nodePath.dirname(fs.realpathSync(reanchorShippedSpecPath(input.specSource)));
+        const recordedDir = nodePath.dirname(fs.realpathSync(reanchorShippedSpecPath(input.specSource, runningInstall ? nodePath.join(runningInstall, "specs") : undefined)));
         const operatorDir = nodePath.dirname(fs.realpathSync(specSource));
-        if (operatorDir === recordedDir) problem = specFileTrustProblem(specSource, [recordedDir], input.node.cwd, input.io);
+        if (operatorDir === recordedDir) problem = specFileTrustProblem(specSource, [recordedDir], input.node.cwd, input.io, { runningInstall });
       } catch { /* unreadable: not a root */ }
     }
     if (problem) {
@@ -238,6 +241,8 @@ export function readDeclaredMcpServer(input: {
   io?: PathJudgeIo;
   /** The shared-docs rigs folder the recorded source may sit in (exactly <name>/rig.yaml). Default: the daemon's own. */
   recordedExactDepthRoot?: () => string;
+  /** workspaces-o9o.91: the running install's daemon folder (SpecSourceTrust.runningInstall). */
+  runningInstall?: () => string | null;
 }): DeclaredServerRead {
   const read = readTrustedSeatSpec({
     specSource: input.specSource, rigName: input.rigName, node: input.node, purpose: "MCP servers",
@@ -245,6 +250,7 @@ export function readDeclaredMcpServer(input: {
     ...(input.trustedSpecRoots ? { trustedSpecRoots: input.trustedSpecRoots } : {}),
     ...(input.io ? { io: input.io } : {}),
     ...(input.recordedExactDepthRoot ? { recordedExactDepthRoot: input.recordedExactDepthRoot } : {}),
+    ...(input.runningInstall ? { runningInstall: input.runningInstall } : {}),
   });
   if (!read.ok) return { ok: false, code: MCP_REFUSAL_CODE[read.kind], message: read.message };
   const { specPath, specSha256, operator, pod, member } = read;
