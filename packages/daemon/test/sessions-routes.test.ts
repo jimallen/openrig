@@ -802,7 +802,8 @@ describe("Session routes", () => {
     const tmpDir = path.join(os.tmpdir(), `rigged-test-transcript-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
 
-    const transcriptStore = new TranscriptStore(tmpDir);
+    const { nodeTranscriptFiles } = await import("../src/adapters/node-transcript-files.js");
+    const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
     const { createApp } = await import("../src/server.js");
     const setup = createTestApp(db);
     const rig = setup.rigRepo.createRig("test-rig");
@@ -815,8 +816,7 @@ describe("Session routes", () => {
     const res = await appWithTranscript.request(`/api/rigs/${rig.id}/nodes/${encodeURIComponent("dev.impl")}`);
     const body = await res.json();
     expect(body.transcript.enabled).toBe(true);
-    expect(body.transcript.path).toContain("test-rig");
-    expect(body.transcript.path).toContain("dev-impl@test-rig");
+    expect(body.transcript.path).toBe(path.join(tmpDir, "test-rig", "dev-impl@test-rig.log"));
     expect(body.transcript.tailCommand).toBe("rig transcript dev-impl@test-rig --tail 100");
 
     // Cleanup

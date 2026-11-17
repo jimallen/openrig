@@ -1,5 +1,5 @@
 import { redactTranscriptContent } from "./transcript-redaction.js";
-import type { TranscriptFiles, TranscriptReader } from "./transcript-files.js";
+import { requireTranscriptFiles, type TranscriptFiles, type TranscriptReader } from "./transcript-files.js";
 import { join, dirname, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getCompatibleOpenRigPath } from "../openrig-compat.js";
@@ -209,7 +209,7 @@ export class TranscriptStore {
   readonly files: TranscriptFiles;
 
   constructor(opts: TranscriptStoreOpts) {
-    this.files = opts.files;
+    this.files = requireTranscriptFiles(opts?.files, "TranscriptStore");
     this.root = opts.transcriptsRoot ?? DEFAULT_ROOT;
     this._enabled = opts.enabled ?? true;
     this.staleAfterMs = opts.staleAfterMs ?? DEFAULT_TRANSCRIPT_STALE_AFTER_MS;

@@ -133,7 +133,6 @@
   "test/session-source-fork.test.ts": 5,
   "test/session-source-rebuild.test.ts": 1,
   "test/session-transport.test.ts": 4,
-  "test/sessions-routes.test.ts": 1,
   "test/skill-refs-membership-chain.test.ts": 1,
   "test/slack-sweep-selection.test.ts": 3,
   "test/slow-op-recorder-stage-threshold.test.ts": 1,

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
-import { clearAllTranscriptRotationsForTest, startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
+import { clearAllTranscriptRotationsForTest, getActiveRotationCount, startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
 import type { TranscriptFiles, TranscriptReader } from "../src/domain/transcript-files.js";
 
 // workspaces-o9o.69: transcript storage is a domain decision (what to read and write, which modes, replace through a temp
@@ -136,5 +136,48 @@ describe("o9o.69: transcript rotation through the TranscriptFiles port", () => {
     await new Promise((r) => setImmediate(r));
     stopTranscriptRotation("seat@rig");
     expect(files.ops).toEqual([]);
+  });
+});
+
+// Review of 774828445 (verify-qa): a store built without the port only stored `undefined`, and its methods catch, so every
+// call silently answered false or null (sessions-routes.test.ts built one from a bare path). Without the port nothing can
+// work, so construction refuses, and so does starting a rotation. Built through Reflect so the call can omit the port.
+describe("o9o.69: no TranscriptFiles port is refused at the start, never a silent no-op", () => {
+  it.each([
+    ["options without files", { transcriptsRoot: "/transcripts", enabled: true }],
+    ["a bare root path", "/transcripts"],
+    ["no options", undefined],
+  ])("a TranscriptStore from %s throws, naming the port", (_label, arg) => {
+    expect(() => Reflect.construct(TranscriptStore, arg === undefined ? [] : [arg])).toThrow(/TranscriptFiles port/);
+  });
+
+  it("an object that is not a port is refused", () => {
+    expect(() => Reflect.construct(TranscriptStore, [{ files: {}, transcriptsRoot: "/transcripts" }])).toThrow(/TranscriptFiles port/);
+  });
+
+  // Written out here, not imported from the module under test.
+  it.each(["exists", "stat", "makeFolder", "append", "readText", "write", "rename", "openRead"])("a port without %s is refused", (op) => {
+    const partial: Record<string, unknown> = { ...memoryFiles() };
+    delete partial[op];
+    expect(() => Reflect.construct(TranscriptStore, [{ files: partial, transcriptsRoot: "/transcripts" }])).toThrow(/TranscriptFiles port/);
+    expect(() => new TranscriptStore({ files: memoryFiles(), transcriptsRoot: "/transcripts" })).not.toThrow();
+  });
+
+  it("starting a rotation without a port throws and leaves no rotation running", () => {
+    const host = { capturePaneContent: vi.fn(async () => "x\n") };
+    expect(() => Reflect.apply(startTranscriptRotation, undefined, [undefined, host, "seat@rig", "/transcripts/rig/seat@rig.log", { lines: 1, pollIntervalMs: 60_000 }]))
+      .toThrow(/TranscriptFiles port/);
+    expect(getActiveRotationCount()).toBe(0);
+    expect(host.capturePaneContent).not.toHaveBeenCalled();
+  });
+
+  it("a refused start leaves the session's running rotation alone", () => {
+    const host = { capturePaneContent: vi.fn(async () => "x\n") };
+    startTranscriptRotation(memoryFiles(), host, "seat@rig", "/transcripts/rig/seat@rig.log", { lines: 1, pollIntervalMs: 60_000 });
+    expect(getActiveRotationCount()).toBe(1);
+    expect(() => Reflect.apply(startTranscriptRotation, undefined, [undefined, host, "seat@rig", "/transcripts/rig/seat@rig.log", { lines: 1, pollIntervalMs: 60_000 }]))
+      .toThrow(/TranscriptFiles port/);
+    expect(getActiveRotationCount()).toBe(1);
+    stopTranscriptRotation("seat@rig");
   });
 });

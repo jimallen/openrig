@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { CAPTURE_BATCH, type TmuxAdapter } from "../adapters/tmux.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
-import type { TranscriptFiles } from "./transcript-files.js";
+import { requireTranscriptFiles, type TranscriptFiles } from "./transcript-files.js";
 
 /**
  * What a rotation needs of a seat host: tmux's adapter, or HcAdapter. Captures are requests, not promises. On hc a terminal that is
@@ -239,6 +239,7 @@ export function startTranscriptRotation(
   opts: TranscriptRotationOptions,
   resolveOptions?: () => TranscriptRotationOptions,
 ): void {
+  requireTranscriptFiles(files, "startTranscriptRotation");
   stopTranscriptRotation(sessionName);
 
   const myGeneration = ++rotationGeneration;

@@ -32,3 +32,20 @@ export interface TranscriptReader {
   read(buffer: Buffer, offset: number, length: number, position: number): number;
   close(): void;
 }
+
+const OPERATIONS = ["exists", "stat", "makeFolder", "append", "readText", "write", "rename", "openRead"] as const;
+
+/** The port itself, or a throw naming who needed it. Every transcript call catches its I/O errors and answers false or
+ * null, so a missing port must be refused where it is handed over, never discovered as a silent no-op on each call
+ * (review of 774828445: a store built from a bare path answered false and null to everything). */
+export function requireTranscriptFiles(files: unknown, needer: string): TranscriptFiles {
+  if (!isTranscriptFiles(files)) {
+    throw new TypeError(`${needer} needs a TranscriptFiles port (src/adapters/node-transcript-files.ts in the daemon)`);
+  }
+  return files;
+}
+
+function isTranscriptFiles(files: unknown): files is TranscriptFiles {
+  return typeof files === "object" && files !== null
+    && OPERATIONS.every((op) => typeof Reflect.get(files, op) === "function");
+}
