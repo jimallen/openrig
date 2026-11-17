@@ -47,6 +47,21 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(codexHome, { recursive: true, force: true }));
 
+/** An older daemon's relay at the path shape OpenRig writes (`<root>/<parent>/daemon/assets/plugins/openrig-core/hooks/scripts/...`). */
+function olderInstall(root: string[] = ["old-prefix", "@openrig", "cli"]): string {
+  const older = path.join(codexHome, ...root, "daemon", "assets", "plugins", "openrig-core", "hooks", "scripts", "activity-relay.cjs");
+  fs.mkdirSync(path.dirname(older), { recursive: true }); fs.copyFileSync(RELAY_ASSET, older);
+  return older;
+}
+
+/** That older daemon's block, last in the file, with no record of what it wrote (a daemon older than the record). */
+function olderBlockWithoutRecord(older: string): void {
+  adapter(older).ensureCodexActivityHooks();
+  const text = config();
+  fs.writeFileSync(configPath, text.slice(0, text.indexOf(END) + END.length) + "\n");
+  fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+}
+
 /** The managed block written alone, last in the file (no trust records after it), as the probe and verify-qa's repro had it. */
 function blockLast(): void {
   adapter().ensureCodexActivityHooks();
@@ -233,17 +248,100 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
   });
 
   it("no record and a changed relay path (an older daemon's block): its stanzas are replaced, and a person's same-named relay stays", () => {
-    const older = path.join(codexHome, "older", "activity-relay.cjs");
-    fs.mkdirSync(path.dirname(older), { recursive: true }); fs.copyFileSync(RELAY_ASSET, older);
-    adapter(older).ensureCodexActivityHooks();
-    const text = config();
-    fs.writeFileSync(configPath, text.slice(0, text.indexOf(END) + END.length) + "\n");
+    const older = olderInstall();
+    olderBlockWithoutRecord(older);
     appendInsideBlock(userStopGroup());
-    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
     adapter().ensureCodexActivityHooks();
     expect(config()).not.toContain(older);
     expect(managedCommands(split(config()).inside)).toBe(4);
     expect(split(config()).outside).toContain(userStopGroup());
+  });
+
+  // verify-qa's re-review of 6ff4e523a, and the CoS's ruling: with no record, OpenRig's older stanzas are known by the one relay path shape
+  // OpenRig has ever written (an installed CLI's .../@openrig/cli/daemon/assets/..., a checkout's .../packages/daemon/assets/...), never by
+  // position, and never by the file name alone.
+  const userSessionStart = () => ["[[hooks.SessionStart]]", "[[hooks.SessionStart.hooks]]", 'type = "command"', `command = 'node "${userRelay()}"'`].join("\n");
+  const putFirstInside = (text: string) => fs.writeFileSync(configPath, config().replace(`${BEGIN}\n`, `${BEGIN}\n${text}\n\n`));
+
+  it("RED (verify-qa): no record, a person's SessionStart group first inside the block is kept by the upsert", () => {
+    blockLast();
+    putFirstInside(userSessionStart());
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().ensureCodexActivityHooks();
+    const { inside, outside } = split(config());
+    expect(outside).toContain(userSessionStart());
+    expect(inside).not.toContain(userRelay());
+    expect(managedCommands(inside)).toBe(4);
+  });
+
+  it("RED (verify-qa): and by the strip", () => {
+    blockLast();
+    putFirstInside(userSessionStart());
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().removeCodexActivityHooks();
+    expect(config()).toContain(userSessionStart());
+    expect(config()).not.toContain(`node "${RELAY_ASSET}"`);
+  });
+
+  it("RED (verify-qa): no record, a person's group first then an older daemon's four stanzas: all four old ones go, the person's stays", () => {
+    const older = olderInstall();
+    olderBlockWithoutRecord(older);
+    putFirstInside(userSessionStart());
+    const before = config();
+    adapter().ensureCodexActivityHooks();
+    expect(config()).not.toContain(older);
+    expect(managedCommands(split(config()).inside)).toBe(4);
+    expect(split(config()).outside).toContain(userSessionStart());
+    fs.writeFileSync(configPath, before);
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().removeCodexActivityHooks();
+    expect(config()).not.toContain(older);
+    expect(config()).not.toContain(BEGIN);
+    expect(config()).toContain(userSessionStart());
+  });
+
+  it("a checkout's daemon path is the same shape: with no record, its older stanzas are OpenRig's too", () => {
+    const older = olderInstall(["checkout", "packages"]);
+    olderBlockWithoutRecord(older);
+    adapter().ensureCodexActivityHooks();
+    expect(config()).not.toContain(older);
+    expect(managedCommands(config())).toBe(4);
+  });
+
+  it("a record that cannot be read is unknown: an older daemon's stanzas are kept, never claimed by their path shape", () => {
+    const older = olderInstall();
+    olderBlockWithoutRecord(older);
+    const record = path.join(stateDir, "state", "codex-activity-hooks", "relay-path");
+    fs.mkdirSync(path.dirname(record), { recursive: true });
+    fs.writeFileSync(record, `${older}\n`, { mode: 0o000 });
+    expect(() => fs.readFileSync(record, "utf8")).toThrow();   // the row's premise: the record really cannot be read here
+    adapter().ensureCodexActivityHooks();
+    expect(split(config()).outside).toContain(`node "${older}"`);
+    expect(managedCommands(split(config()).inside)).toBe(4);
+  });
+
+  it("an empty record is unknown too: an older daemon's stanzas are kept", () => {
+    const older = olderInstall();
+    olderBlockWithoutRecord(older);
+    const record = path.join(stateDir, "state", "codex-activity-hooks", "relay-path");
+    fs.mkdirSync(path.dirname(record), { recursive: true });
+    fs.writeFileSync(record, "");
+    adapter().ensureCodexActivityHooks();
+    expect(split(config()).outside).toContain(`node "${older}"`);
+  });
+
+  it("with a record that cannot be read, the stanzas running the current relay are still OpenRig's: upsert and strip", () => {
+    blockLast();
+    const record = path.join(stateDir, "state", "codex-activity-hooks", "relay-path");
+    fs.chmodSync(record, 0o000);
+    expect(() => fs.readFileSync(record, "utf8")).toThrow();
+    const before = config();
+    adapter().ensureCodexActivityHooks();
+    expect(managedCommands(config())).toBe(4);
+    fs.writeFileSync(configPath, before);
+    fs.chmodSync(record, 0o000);
+    adapter().removeCodexActivityHooks();
+    expect(managedCommands(config())).toBe(0);
   });
 
   it("with a record, a person's SessionStart group placed first inside the block is theirs, not OpenRig's", () => {
