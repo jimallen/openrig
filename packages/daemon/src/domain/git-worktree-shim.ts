@@ -48,9 +48,14 @@ real="\$(real_git)" || exit \$?
 # git again comes back here, and the two would run each other without end (a forking one made 44,000 processes on
 # 2026-11-17). Each pass counts one level in the environment the next git inherits; ordinary nesting (a hook or an alias
 # running git) stays low, a loop reaches the limit at once. A value that is not a number counts as 0.
+# The value is judged as a string before any arithmetic (verify-sec, review of e1b3fa061): leading zeros are dropped (so
+# 08 is never read as octal), and more than 2 digits is at or over the limit, so a number too large for the shell's
+# integers refuses instead of making the compare error and running on past this guard.
 depth="\${OPENRIG_GIT_SHIM_DEPTH:-0}"
 case "\$depth" in ''|*[!0-9]*) depth=0 ;; esac
-if [ "\$depth" -ge 8 ]; then
+depth="\${depth#"\${depth%%[!0]*}"}"
+[ -n "\$depth" ] || depth=0
+if [ "\${#depth}" -gt 2 ] || [ "\$depth" -ge 8 ]; then
   printf 'openrig git shim: %s nested calls; %s runs git back into this shim (a git wrapper on PATH loops); refusing\n' "\$depth" "\$real" >&2
   exit 125
 fi

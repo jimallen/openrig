@@ -261,6 +261,29 @@ describe("git-worktree-shim", () => {
       expect(runGit(["status"], [shim, echo, "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "x7" }).stdout, "not a number counts as 0").toBe("depth=1\n");
     });
 
+    // verify-sec review of e1b3fa061: a value too large for the shell's integers passed the digits check, made the integer
+    // compare error, and the shim ran on past the guard. The value is judged as a string first: leading zeros dropped, and
+    // more than 2 digits is at or over the limit.
+    it("a 100-digit depth refuses with 125 and runs no git", async () => {
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
+      const r = runGit(["--version"], [shim, await prefGitDir(), "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "9".repeat(100) });
+      expect(r.signal).toBeNull();
+      expect(r.status).toBe(125);
+      expect(r.stdout, "the next git never ran").toBe("");
+    });
+
+    it("leading zeros are dropped: 0007 counts as 7 and 008 refuses", async () => {
+      const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
+      const echo = await gitDir("echo-depth-zeros", 'echo "depth=$OPENRIG_GIT_SHIM_DEPTH"');
+      expect(runGit(["status"], [shim, echo, "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "0007" }).stdout).toBe("depth=8\n");
+      const zeros = runGit(["status"], [shim, echo, "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "000" });
+      expect(zeros.stdout, "all zeros count as 0").toBe("depth=1\n");
+      expect(zeros.stderr, "and no shell error on the way").toBe("");
+      const refused = runGit(["status"], [shim, echo, "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "008" });
+      expect(refused.status).toBe(125);
+      expect(refused.stdout).toBe("");
+    });
+
     it("nesting under the limit runs through; at the limit it refuses", async () => {
       const shim = await ensureGitWorktreeShim(tmp, nodeShimFiles);
       const under = runGit(["--version"], [shim, await prefGitDir(), "/usr/bin", "/bin"], tmp, { OPENRIG_GIT_SHIM_DEPTH: "7" });
