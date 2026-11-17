@@ -37,6 +37,11 @@ const TOKEN_SEAT = "cx2@o87-rig";
 const CURRENT_THREAD = "019a0000-0000-7000-8000-000000cur087";
 const TOKEN_MESSAGE = "o87-msg-2";
 const TOKEN_NONCE = "b2c3d4e5f6a10087";
+/** o9o.87 review F1 (verify-qa): a live seat with no token yet, and a LATER archived rig's row reusing the same session name with the old thread's
+ *  token (the live-first shape latest-row-live-first.test.ts pins). The newest row by name alone is the archived one. */
+const LIVE_FIRST_SEAT = "cx3@o87-rig";
+const LIVE_FIRST_MESSAGE = "o87-msg-3";
+const LIVE_FIRST_NONCE = "c3d4e5f6a1b20087";
 
 /** A user prompt record carrying `text`, in the shape the Codex gate reads (codexRolloutMarkers). */
 const prompt = (text: string) => JSON.stringify({ timestamp: new Date().toISOString(), type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
@@ -64,6 +69,8 @@ describe.skipIf(!HC)("a Codex seat's message gate reads its current session's ro
     const state = new Database(join(codexHome, "state_5.sqlite"));
     state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, source TEXT)");
     state.prepare("INSERT INTO threads (id, rollout_path, source) VALUES (?, ?, 'cli')").run(OLD_THREAD, oldRollout);
+    const liveFirstRollout = join(codexHome, "rollout-cx3-current.jsonl");
+    writeFileSync(liveFirstRollout, `${prompt(`hello\n[openrig-msg ${LIVE_FIRST_MESSAGE}:${LIVE_FIRST_NONCE}]`)}\n`);
     const tokenRollout = join(codexHome, "rollout-cx2.jsonl");
     writeFileSync(tokenRollout, `${prompt(`hello\n[openrig-msg ${TOKEN_MESSAGE}:${TOKEN_NONCE}]`)}\n`);
     state.prepare("INSERT INTO threads (id, rollout_path, source) VALUES (?, ?, 'cli')").run(CURRENT_THREAD, tokenRollout);
@@ -93,9 +100,23 @@ describe.skipIf(!HC)("a Codex seat's message gate reads its current session's ro
       argv: ["/bin/sh", "-c", "sleep 600"], name: hcTerminalName(TOKEN_SEAT), labels: { "openrig.seat": TOKEN_SEAT }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir,
     });
     sessions.updateBinding(node2.id, { attachmentType: "hc", tmuxSession: TOKEN_SEAT, terminalAddress: terminal2.id });
+    // The live seat with no token yet, then a later archived rig reusing its session name with the old thread's token.
+    const node3 = repo.addNode(rig.id, "cx3", { role: "worker", runtime: "codex", cwd: dir });
+    const live3 = sessions.registerSession(node3.id, LIVE_FIRST_SEAT);
+    sessions.updateStatus(live3.id, "running");
+    const terminal3 = await core.client.call<{ id: string }>("terminal.run", {
+      argv: ["/bin/sh", "-c", "sleep 600"], name: hcTerminalName(LIVE_FIRST_SEAT), labels: { "openrig.seat": LIVE_FIRST_SEAT }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir,
+    });
+    sessions.updateBinding(node3.id, { attachmentType: "hc", tmuxSession: LIVE_FIRST_SEAT, terminalAddress: terminal3.id });
+    const oldRig = repo.createRig("o87-old");
+    const oldNode = repo.addNode(oldRig.id, "cx3", { role: "worker", runtime: "codex", cwd: dir });
+    const archivedRow = sessions.registerSession(oldNode.id, LIVE_FIRST_SEAT);
+    expect(sessions.updateResumeToken(archivedRow.id, "codex", OLD_THREAD, "operator")).toBe(true);
+    expect(repo.archiveRig(oldRig.id)).toBe(true);
+    expect(archivedRow.id > live3.id).toBe(true);  // fixture control: by name alone, the archived row is the newest
     // Each message, already ended (so the daemon's pump leaves it alone), with the nonce its marker carries.
     const store = new MessageStore(handle);
-    for (const [id, seat, nonce] of [[MESSAGE, SEAT, NONCE], [TOKEN_MESSAGE, TOKEN_SEAT, TOKEN_NONCE]] as const) {
+    for (const [id, seat, nonce] of [[MESSAGE, SEAT, NONCE], [TOKEN_MESSAGE, TOKEN_SEAT, TOKEN_NONCE], [LIVE_FIRST_MESSAGE, LIVE_FIRST_SEAT, LIVE_FIRST_NONCE]] as const) {
       store.accept({ id: messageId(id), seat, sender: "lead@o87-rig", body: "hello", messageClass: "content" });
       handle.prepare("UPDATE outbox_entries SET native_nonce = ?, message_state = 'received' WHERE outbox_id = ?").run(nonce, id);
     }
@@ -103,6 +124,9 @@ describe.skipIf(!HC)("a Codex seat's message gate reads its current session's ro
     const gateDir2 = join(seatGateRoot(home), seatGateFolder(TOKEN_SEAT));
     mkdirSync(gateDir2, { recursive: true });
     writeFileSync(join(gateDir2, "gate.json"), JSON.stringify({ version: 3 }));
+    const gateDir3 = join(seatGateRoot(home), seatGateFolder(LIVE_FIRST_SEAT));
+    mkdirSync(gateDir3, { recursive: true });
+    writeFileSync(join(gateDir3, "gate.json"), JSON.stringify({ version: 3, transcriptPath: liveFirstRollout }));
     // What the relay writes at the current session's SessionStart: this seat's gate, and the file its prompts land in.
     const gateDir = join(seatGateRoot(home), seatGateFolder(SEAT));
     mkdirSync(gateDir, { recursive: true });
@@ -132,6 +156,12 @@ describe.skipIf(!HC)("a Codex seat's message gate reads its current session's ro
   it("a seat relaunched fresh, its token not yet known: a message in its current rollout reads seen, not the previous thread's not seen", async () => {
     const result = await ask(SEAT, MESSAGE);
     expect(result.hasGate, "startup built a gate for the Codex seat").toBe(true);
+    expect(result.answer).toMatchObject({ kind: "seen" });
+  }, 120_000);
+
+  it("o9o.87 review F1: a later archived rig's row with the same name and an old token is not the live seat's current session", async () => {
+    const result = await ask(LIVE_FIRST_SEAT, LIVE_FIRST_MESSAGE);
+    expect(result.hasGate).toBe(true);
     expect(result.answer).toMatchObject({ kind: "seen" });
   }, 120_000);
 

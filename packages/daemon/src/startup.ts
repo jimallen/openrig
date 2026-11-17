@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { CodexRolloutOpenCalls } from "./adapters/codex-rollout-open-calls.js";
 import { wirePostRestartPrompt, type PostRestartWiringOptions } from "./domain/post-restart-wiring.js";
 import { resolveSessionNodeId } from "./domain/queue-owner.js";
-import { isSessionNameRunning, resolveRunningSeat } from "./domain/latest-session-name-match.js";
+import { findLatestSessionNameMatch, isSessionNameRunning, resolveRunningSeat } from "./domain/latest-session-name-match.js";
 import { listWakeSessionsBySeat } from "./domain/wake-resolve-service.js";
 import { discoverTailscaleSelfNames } from "./middleware/browser-boundary.js";
 import { configureShadowCapture } from "./domain/shadow-capture.js";
@@ -1368,7 +1368,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
    *  never an earlier session's thread (workspaces-o9o.31 review FIX 1, workspaces-o9o.87). The one lookup for the seat's message gate, which then
    *  falls back to the gate.json its current occupant declared, and for its open-call read. */
   const currentSessionCodexRollout = (seat: string): string | null => {
-    const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string | null } | undefined;
+    // The current row is the live-first one (o9o.87 review F1): a later archived rig that reused the name must not answer for the live seat.
+    const current = findLatestSessionNameMatch(db, seat);
+    if (!current) return null;
+    const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE id = ?").get(current.id) as { token: string | null } | undefined;
     return row?.token ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
   };
   /** workspaces-o9o.31: Codex relays no tool hook, so a Codex seat's running tool is read from its rollout. */
