@@ -3,7 +3,8 @@
 // (name `exec`) with a call_id, closed by a `custom_tool_call_output` with the same call_id, inside `task_started` .. `task_complete`.
 // The consumers are driven through the real relay (its Codex UserPromptSubmit), the real AgentActivityStore and the real adapter on a file.
 import { createRequire } from "node:module";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,8 +17,8 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { attachAgentActivity } from "../src/domain/node-inventory.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
-import { codexOpenCallsIn, type SeatOpenCallsSource } from "../src/domain/codex-open-calls.js";
-import { CodexRolloutOpenCalls } from "../src/adapters/codex-rollout-open-calls.js";
+import { openCallsIn, type SeatOpenCallsSource, type SeatTurnEvent } from "../src/domain/codex-open-calls.js";
+import { CodexRolloutOpenCalls, codexRolloutEvent } from "../src/adapters/codex-rollout-open-calls.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
 
@@ -30,6 +31,9 @@ const T0 = Date.parse("2031-03-04T16:04:41.008Z");
 const SEC = 1_000;
 const SEAT = "cx1@eztrack";
 const at = (ms: number, base = T0) => new Date(base + ms).toISOString();
+
+/** The adapter's translation of each line, folded by the domain: what the seat status sees for these rollout lines. */
+const codexOpenCallsIn = (lines: string[]) => openCallsIn(lines.map(codexRolloutEvent).filter((e): e is SeatTurnEvent => e !== null));
 
 /** Rollout records, in the measured shape. */
 const R = {
@@ -75,6 +79,26 @@ describe("a rollout's open calls", () => {
   });
 });
 
+// o9o.31 review FIX 5: the domain folds events and knows no Codex label; FIX 4: an end recorded before its start still ends the call.
+describe("the domain fold of a seat's turn events", () => {
+  const started = (callId: string, s: number): SeatTurnEvent => ({ kind: "call_started", callId, tool: "exec", at: at(s * SEC) });
+
+  it("an end recorded before its start ends the call", () => {
+    expect(openCallsIn([{ kind: "turn_started" }, { kind: "call_ended", callId: "c1" }, started("c1", 1)])).toEqual([]);
+    expect(codexOpenCallsIn([R.turnStart(0), R.output("c1", 2 * SEC), R.call("c1", SEC)])).toEqual([]);
+  });
+
+  it("an end from an earlier turn does not end a later turn's call of the same id", () => {
+    expect(openCallsIn([{ kind: "turn_started" }, { kind: "call_ended", callId: "c1" }, { kind: "turn_started" }, started("c1", 5)]).map((c) => c.callId)).toEqual(["c1"]);
+  });
+
+  it("the translation: each measured record kind is its event, and everything else is none", () => {
+    expect([R.turnStart(0), R.turnEnd(0), R.call("c1", SEC), R.output("c1", SEC), R.call("f1", SEC, T0, "function_call", "shell"), R.output("f1", SEC, T0, "function_call_output"), R.message(SEC)].map(codexRolloutEvent))
+      .toEqual([{ kind: "turn_started" }, { kind: "turn_ended" }, { kind: "call_started", callId: "c1", tool: "exec", at: at(SEC) }, { kind: "call_ended", callId: "c1" },
+        { kind: "call_started", callId: "f1", tool: "shell", at: at(SEC) }, { kind: "call_ended", callId: "f1" }, null]);
+  });
+});
+
 describe("the rollout adapter", () => {
   let dir = "";
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = ""; });
@@ -100,6 +124,37 @@ describe("the rollout adapter", () => {
     const window = Buffer.byteLength(`${R.call("edge", 30 * SEC)}\n`);  // exactly the last line
     expect(new CodexRolloutOpenCalls(() => path, window).openToolCalls({ sessionName: SEAT }).map((c) => c.callId)).toEqual(["edge"]);
   });
+
+  // o9o.31 review FIX 2: the path comes from a database another program writes. Opening a FIFO with no writer blocks the daemon.
+  it("a FIFO, a directory or a symlink at the rollout path has no open calls, and the FIFO is never waited on", () => {
+    const real = rollout([R.turnStart(0), R.call("c1", SEC)]);
+    const fifo = join(dir, "rollout.fifo"); execFileSync("mkfifo", [fifo]);
+    const folder = join(dir, "rollout.d"); mkdirSync(folder);
+    const link = join(dir, "rollout.link"); symlinkSync(real, link);
+    const t0 = Date.now();
+    for (const path of [fifo, folder, link]) expect(new CodexRolloutOpenCalls(() => path).openToolCalls({ sessionName: SEAT }), path).toEqual([]);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(new CodexRolloutOpenCalls(() => real).openToolCalls({ sessionName: SEAT }).map((c) => c.callId)).toEqual(["c1"]);
+  });
+
+  it("a path swapped after its lstat: the open neither follows a link nor waits on a FIFO (in a child, so a block cannot hang this run)", () => {
+    const real = rollout([R.turnStart(0), R.call("c1", SEC)]);
+    const fifo = join(dir, "swap.fifo"); execFileSync("mkfifo", [fifo]);
+    const link = join(dir, "swap.link"); symlinkSync(real, link);
+    // The child reports what the adapter returns when lstat (the check before the open) is made to say "regular file" for every path.
+    const probe = (path: string) => spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import fs from "node:fs";
+      fs.lstatSync = () => ({ isFile: () => true });
+      const { CodexRolloutOpenCalls } = await import(${JSON.stringify(new URL("../src/adapters/codex-rollout-open-calls.ts", import.meta.url).pathname)});
+      process.stdout.write(JSON.stringify(new CodexRolloutOpenCalls(() => ${JSON.stringify(path)}).openToolCalls({ sessionName: "s" })));
+    `], { encoding: "utf8", timeout: 5_000, cwd: new URL("..", import.meta.url).pathname });
+    for (const path of [fifo, link]) {
+      const run = probe(path);
+      expect(run.signal, `${path} must not block`).toBeNull();
+      expect(run.stdout, `${path}: ${run.stderr.slice(0, 400)}`).toBe("[]");
+    }
+    expect(probe(real).stdout).toContain('"callId":"c1"');
+  }, 20_000);
 
   it("no seat, no rollout, a missing file or a lookup that throws: no open calls, never an error", () => {
     expect(new CodexRolloutOpenCalls(() => "/nonexistent/o9o31/rollout.jsonl").openToolCalls({ sessionName: SEAT })).toEqual([]);

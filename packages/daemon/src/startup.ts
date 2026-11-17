@@ -1367,8 +1367,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? AND resume_token IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string } | undefined;
     return row ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
   };
-  /** workspaces-o9o.31: Codex relays no tool hook, so a Codex seat's running tool is read from its rollout. */
-  const codexOpenCalls = new CodexRolloutOpenCalls(codexRolloutOf);
+  /** workspaces-o9o.31: Codex relays no tool hook, so a Codex seat's running tool is read from its rollout. Only the seat's CURRENT session
+   *  row counts (review FIX 1): a new session whose token is not yet known has no rollout, never an earlier session's thread and its calls. */
+  const codexOpenCalls = new CodexRolloutOpenCalls((seat) => {
+    const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string | null } | undefined;
+    return row?.token ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
+  });
   const localSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
     db, rows: seatMessages, hookStore: new HookSeenStore(seatGateRoot(OPENRIG_HOME)), stateRoots: { pi: piStateRoot, omp: ompStateRoot },
     foregroundGroup: foregroundGroupPrograms, client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: transcriptHasPrompt,

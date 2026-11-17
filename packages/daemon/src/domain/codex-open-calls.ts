@@ -1,15 +1,9 @@
 /**
- * workspaces-o9o.31: a Codex seat's tool calls still open in its current turn, read from its rollout, because Codex relays no tool hook
- * (hooks/codex.json: SessionStart, UserPromptSubmit, Stop, PostCompact, PermissionRequest).
+ * workspaces-o9o.31: a Codex seat's tool calls still open in its current turn. Codex relays no tool hook (hooks/codex.json: SessionStart,
+ * UserPromptSubmit, Stop, PostCompact, PermissionRequest), so the seat's status reads them from what the seat's own record says happened.
  *
- * The rollout's shape, measured (structure only) on this host's rollouts from codex-cli 0.137 to 0.158 and on one 0.166.0 turn:
- * - a call is a `response_item` whose payload type is `custom_tool_call` (every one seen; name `exec`) or `function_call` (the Responses API's
- *   name for the same item, kept so either spelling counts), with a `call_id`;
- * - it ends with a `*_output` item that carries the same `call_id`;
- * - a turn starts with `event_msg` `task_started` and ends with `event_msg` `task_complete`;
- * - the call's record is written when the call starts: in 0.158 rollouts its `timestamp` precedes its output's by the call's run time (15 calls of
- *   5 to 30 s). That is argued from 0.158 files; on 0.166.0 it is not measured (the one turn's call ended in 84 ms).
- * Pure: the caller hands it the rollout's lines, oldest first.
+ * The domain knows only the events: a turn started or ended, a call started (with its tool and when) or ended. Which records of a Codex
+ * rollout are which event is the adapter's translation (adapters/codex-rollout-open-calls.ts), so no Codex wire label lives here.
  */
 import type { OpenToolCall } from "./agent-activity-store.js";
 
@@ -18,31 +12,29 @@ export interface SeatOpenCallsSource {
   openToolCalls(input: { sessionName?: string | null }): OpenToolCall[];
 }
 
-const CALL_STARTS = new Set(["custom_tool_call", "function_call"]);
-const CALL_ENDS = new Set(["custom_tool_call_output", "function_call_output"]);
+/** What a seat's record says happened, in the order it was recorded. */
+export type SeatTurnEvent =
+  | { kind: "turn_started" }
+  | { kind: "turn_ended" }
+  | { kind: "call_started"; callId: string; tool: string; at: string }
+  | { kind: "call_ended"; callId: string };
 
-interface RolloutRecord {
-  timestamp?: unknown;
-  type?: unknown;
-  payload?: { type?: unknown; call_id?: unknown; name?: unknown } | null;
-}
-
-/** The calls of the current turn that have no output yet, oldest first. A turn that has ended has none. Lines that do not parse are skipped:
- *  a tail read starts mid-line, and a line still being written ends mid-line. */
-export function codexOpenCallsIn(lines: readonly string[]): OpenToolCall[] {
+/**
+ * The calls of the current turn that have not ended, oldest first. A turn boundary forgets the last turn's calls. A call whose end is
+ * recorded before its start (o9o.31 review FIX 4: the order a writer flushes in is not promised) is ended all the same.
+ */
+export function openCallsIn(events: readonly SeatTurnEvent[]): OpenToolCall[] {
   const open = new Map<string, OpenToolCall>();
-  for (const line of lines) {
-    let record: RolloutRecord;
-    try { record = JSON.parse(line) as RolloutRecord; } catch { continue; }
-    if (!record || typeof record !== "object") continue;
-    const payload = record.payload && typeof record.payload === "object" ? record.payload : null;
-    const kind = payload?.type;
-    if (record.type === "event_msg" && (kind === "task_started" || kind === "task_complete")) { open.clear(); continue; }
-    if (record.type !== "response_item" || typeof kind !== "string" || typeof payload?.call_id !== "string" || !payload.call_id) continue;
-    if (CALL_STARTS.has(kind) && typeof record.timestamp === "string" && Number.isFinite(Date.parse(record.timestamp))) {
-      open.set(payload.call_id, { tool: typeof payload.name === "string" && payload.name ? payload.name : "a tool", callId: payload.call_id, startedAt: record.timestamp });
-    } else if (CALL_ENDS.has(kind)) {
-      open.delete(payload.call_id);
+  const ended = new Set<string>();
+  for (const event of events) {
+    if (event.kind === "turn_started" || event.kind === "turn_ended") {
+      open.clear();
+      ended.clear();
+    } else if (event.kind === "call_ended") {
+      open.delete(event.callId);
+      ended.add(event.callId);
+    } else if (!ended.has(event.callId)) {
+      open.set(event.callId, { tool: event.tool, callId: event.callId, startedAt: event.at });
     }
   }
   return [...open.values()].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));

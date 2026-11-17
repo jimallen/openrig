@@ -264,6 +264,12 @@
   "when": "process.platform === \"darwin\""
  },
  {
+  "file": "packages/daemon/test/codex-open-calls-startup.real.test.ts",
+  "kind": "skipIf",
+  "task": "a Codex seat's running tool, through the real createDaemon",
+  "when": "!HC"
+ },
+ {
   "file": "packages/daemon/test/codex-paste-hop.real.test.ts",
   "kind": "skipIf",
   "task": "the Codex hop on a real core, stub Codex",

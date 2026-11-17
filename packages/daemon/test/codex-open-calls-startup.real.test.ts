@@ -26,6 +26,8 @@ import { HC, PrivateCore, until } from "./hc-private-core.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const CHILD = resolve(here, "helpers/seat-posture-startup-daemon.ts");
 const SEAT = "cx1@o31-rig";
+/** o9o.31 review FIX 1: a seat relaunched fresh. Its earlier session's token names the thread with the open exec; its current one has none yet. */
+const FRESH_SEAT = "cx2@o31-rig";
 const THREAD = "019a0000-0000-7000-8000-00000000o931";
 
 interface Answers { viaTransport: { kind: string; tool: string | null; line: string } | null; viaRoute: { kind: string; tool: string | null } | null }
@@ -61,27 +63,36 @@ describe.skipIf(!HC)("a Codex seat's running tool, through the real createDaemon
     const sessions = new SessionRegistry(handle);
     const rig = repo.createRig("o31-rig");
     rigId = rig.id;
-    const node = repo.addNode(rig.id, "cx1", { role: "worker", runtime: "codex", cwd: dir });
-    const session = sessions.registerSession(node.id, SEAT);
-    sessions.updateStatus(session.id, "running");
-    // A live terminal for the seat on the private core, silent, as OF-267's row binds its seat.
-    const terminal = await core.client.call<{ id: string }>("terminal.run", {
-      argv: ["/bin/sh", "-c", "sleep 600"], name: hcTerminalName(SEAT), labels: { "openrig.seat": SEAT }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir,
-    });
-    sessions.updateBinding(node.id, { attachmentType: "hc", tmuxSession: SEAT, terminalAddress: terminal.id });
-    expect(sessions.updateResumeToken(session.id, "codex", THREAD, "operator")).toBe(true);
-    const generation = sessions.currentOccupantTenure(node.id)!.generationUuid;
     const store = new AgentActivityStore({ db: handle, eventBus: new EventBus(handle) });
-    expect(store.recordHookEvent({ sessionName: SEAT, runtime: "codex", hookEvent: "UserPromptSubmit", subtype: null, occurredAt: new Date(now - 90_000).toISOString(), generation }).ok).toBe(true);
+    /** A running Codex seat on a live, silent terminal of the private core (as OF-267's row binds its seat), whose turn the relay opened. */
+    const codexSeat = async (member: string, seat: string, tokens: Array<string | null>) => {
+      const node = repo.addNode(rig.id, member, { role: "worker", runtime: "codex", cwd: dir });
+      let current = null as ReturnType<typeof sessions.registerSession> | null;
+      for (const [i, token] of tokens.entries()) {
+        if (current) sessions.updateStatus(current.id, "exited");
+        current = sessions.registerSession(node.id, seat, i === 0 ? "initial" : "fresh");
+        if (token) expect(sessions.updateResumeToken(current.id, "codex", token, "operator")).toBe(true);
+      }
+      sessions.updateStatus(current!.id, "running");
+      const terminal = await core.client.call<{ id: string }>("terminal.run", {
+        argv: ["/bin/sh", "-c", "sleep 600"], name: hcTerminalName(seat), labels: { "openrig.seat": seat }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir,
+      });
+      sessions.updateBinding(node.id, { attachmentType: "hc", tmuxSession: seat, terminalAddress: terminal.id });
+      const generation = sessions.currentOccupantTenure(node.id)!.generationUuid;
+      expect(store.recordHookEvent({ sessionName: seat, runtime: "codex", hookEvent: "UserPromptSubmit", subtype: null, occurredAt: new Date(now - 90_000).toISOString(), generation }).ok).toBe(true);
+    };
+    await codexSeat("cx1", SEAT, [THREAD]);
+    await codexSeat("cx2", FRESH_SEAT, [THREAD, null]);
     handle.close();
   }, 60_000);
   afterAll(() => core.stop());
 
-  it("the daemon's own transport and node list name the open exec", async () => {
-    const out = join(dir, "answers.json");
+  /** What the real daemon (transport and node list) answers about `seat`. */
+  async function ask(seat: string): Promise<Answers> {
+    const out = join(dir, `answers-${seat}.json`);
     const env: NodeJS.ProcessEnv = {
       ...core.env, PATH: `${dirname(HC)}:/usr/bin:/bin`, TMPDIR: join(core.root, "h"), OPENRIG_HOME: join(core.root, "h", "openrig"), OPENRIG_NO_KERNEL: "1",
-      CODEX_HOME: codexHome, SPS_DB: db, SPS_OUT: out, SPS_SEAT: SEAT, SPS_RIG: rigId,
+      CODEX_HOME: codexHome, SPS_DB: db, SPS_OUT: out, SPS_SEAT: seat, SPS_RIG: rigId,
     };
     const stderr: string[] = [];
     const child = spawn(process.execPath, ["--import", "tsx", CHILD], { cwd: resolve(here, ".."), env, stdio: ["ignore", "ignore", "pipe"] });
@@ -92,9 +103,20 @@ describe.skipIf(!HC)("a Codex seat's running tool, through the real createDaemon
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
-    const answers = JSON.parse(readFileSync(out, "utf8")) as Answers;
+    return JSON.parse(readFileSync(out, "utf8")) as Answers;
+  }
+
+  it("the daemon's own transport and node list name the open exec", async () => {
+    const answers = await ask(SEAT);
     expect(answers.viaTransport, "startup hands the source to the SessionTransport").toMatchObject({ kind: "busy", tool: "exec" });
     expect(answers.viaTransport!.line).toMatch(/^busy: running exec for \d+ s \(since \d\d:\d\dZ\)$/);
     expect(answers.viaRoute, "the node list route sees it through the server's context").toMatchObject({ kind: "busy", tool: "exec" });
+  }, 120_000);
+
+  it("a seat relaunched fresh, its token not yet known, shows no earlier session's call", async () => {
+    const answers = await ask(FRESH_SEAT);
+    expect(answers.viaTransport).toMatchObject({ kind: "busy", tool: null });
+    expect(answers.viaTransport!.line).toMatch(/^busy: turn running, last hook UserPromptSubmit /);
+    expect(answers.viaRoute).toMatchObject({ kind: "busy", tool: null });
   }, 120_000);
 });
