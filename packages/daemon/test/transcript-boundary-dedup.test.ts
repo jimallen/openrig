@@ -7,6 +7,7 @@ import { HcClient } from "../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 /** The real client to the private core, counting the reads a capture makes. */
 class CountingClient extends HcClient {
@@ -42,7 +43,7 @@ describe.skipIf(!findHc())("hc transcript boundary replay", () => {
       expect(await adapter.capturePaneContent(sessionName, 20)).toContain(echoedBoundary);
       fs.writeFileSync(outputPath, `${oldBoundary}\n${echoedBoundary}\n`);
       client.reads = 0;
-      startTranscriptRotation(adapter, sessionName, outputPath, { lines: 20, pollIntervalMs: 30 });
+      startTranscriptRotation(nodeTranscriptFiles(), adapter, sessionName, outputPath, { lines: 20, pollIntervalMs: 30 });
       const captureDeadline = Date.now() + 5000;
       while (client.reads < 4 && Date.now() < captureDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
       expect(client.reads).toBeGreaterThanOrEqual(4);

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 function expectContained(root: string, candidate: string): void {
   const rel = relative(root, candidate);
@@ -16,7 +17,7 @@ describe("TranscriptStore unsafe fallback path", () => {
   it("contains POSIX traversal in the _unsafe directory", () => {
     const root = mkdtempSync(join(tmpdir(), "transcript-path-posix-"));
     try {
-      const store = new TranscriptStore({ transcriptsRoot: root });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root });
       const path = store.getTranscriptPath("..", "../../escape");
 
       expect(path).toBe(join(root, "_unsafe", ".._.._escape.log"));
@@ -29,7 +30,7 @@ describe("TranscriptStore unsafe fallback path", () => {
   it("flattens POSIX separators in an unsafe session name", () => {
     const root = mkdtempSync(join(tmpdir(), "transcript-path-posix-sep-"));
     try {
-      const store = new TranscriptStore({ transcriptsRoot: root });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root });
       const path = store.getTranscriptPath("..", "nested/session");
 
       expect(path).toBe(join(root, "_unsafe", "nested_session.log"));
@@ -42,7 +43,7 @@ describe("TranscriptStore unsafe fallback path", () => {
   it("contains Windows-style traversal in the _unsafe directory", () => {
     const root = mkdtempSync(join(tmpdir(), "transcript-path-win-"));
     try {
-      const store = new TranscriptStore({ transcriptsRoot: root });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root });
       const path = store.getTranscriptPath("..", "..\\..\\escape");
 
       expect(path).toBe(join(root, "_unsafe", ".._.._escape.log"));
@@ -55,7 +56,7 @@ describe("TranscriptStore unsafe fallback path", () => {
   it("flattens Windows separators in an unsafe session name", () => {
     const root = mkdtempSync(join(tmpdir(), "transcript-path-win-sep-"));
     try {
-      const store = new TranscriptStore({ transcriptsRoot: root });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root });
       const path = store.getTranscriptPath("..", "nested\\session");
 
       expect(path).toBe(join(root, "_unsafe", "nested_session.log"));

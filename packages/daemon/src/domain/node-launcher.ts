@@ -279,6 +279,7 @@ export class NodeLauncher {
       if (dirOk) {
         const transcriptPath = this.transcriptStore.getTranscriptPath(rig.rig.name, sessionName);
         startTranscriptRotation(
+          this.transcriptStore.files,
           this.tmuxAdapter,
           sessionName,
           transcriptPath,

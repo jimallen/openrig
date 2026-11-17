@@ -15,6 +15,7 @@ import { SeatStructuralActivityService } from "../src/domain/seat-structural-act
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation } from "../src/domain/transcript-rotation.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 interface Window { session: string; active: boolean; stamp: string; target?: string }
 
@@ -271,7 +272,7 @@ describe("transcript rotation's activity hint (review F2)", () => {
         if (argv[1] === "capture-pane") return "a@r text\n";
         throw new Error(`unexpected tmux ${argv[1]}`);
       });
-      startTranscriptRotation(adapter, "a@r", file, { lines: 20, pollIntervalMs: 500 });
+      startTranscriptRotation(nodeTranscriptFiles(), adapter, "a@r", file, { lines: 20, pollIntervalMs: 500 });
       for (let i = 0; i < 60 && !fs.existsSync(file); i++) await new Promise((resolve) => setTimeout(resolve, 50));
       expect(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null).toBe("a@r text\n");
     } finally {

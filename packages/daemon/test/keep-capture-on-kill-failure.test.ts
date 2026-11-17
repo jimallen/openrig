@@ -17,6 +17,7 @@ import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 /** The real client to the private core, except that the core cannot be reached for a kill while `failKill` is set. */
 class KillFailingClient extends HcClient {
@@ -52,7 +53,7 @@ describe.skipIf(!findHc())("hc failed-kill transcript continuity", () => {
         snapshotRepo: new SnapshotRepository(db), checkpointStore: new CheckpointStore(db) });
       const orchestrator = new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotCapture, tmuxAdapter: hc });
       const outputPath = path.join(temp, "transcript.log");
-      startTranscriptRotation(hc, sessionName, outputPath, { lines: 20, pollIntervalMs: 30 });
+      startTranscriptRotation(nodeTranscriptFiles(), hc, sessionName, outputPath, { lines: 20, pollIntervalMs: 30 });
       const deadline = Date.now() + 5000;
       while (getLastCaptureAt(sessionName) === undefined && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       expect(fs.existsSync(outputPath)).toBe(true);

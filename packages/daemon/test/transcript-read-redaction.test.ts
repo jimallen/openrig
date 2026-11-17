@@ -18,6 +18,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { transcriptRoutes } from "../src/routes/transcripts.js";
 import { HistoryQuery, type ExecDep } from "../src/domain/history-query.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 /** A fake key the shared policy redacts (`sk-` and 16+ word characters), assembled so the source holds no such literal. */
 const SECRET = ["s", "k-"].join("") + "o9o47fixture" + "Q".repeat(12);
@@ -48,7 +49,7 @@ describe("workspaces-o9o.47: transcript text leaves the daemon redacted", () => 
     const node = rigRepo.addNode(rig.id, "dev-impl", { role: "worker", runtime: "claude-code" });
     const session = sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
     sessionRegistry.updateStatus(session.id, "running");
-    const store = new TranscriptStore({ transcriptsRoot: join(root, "transcripts"), enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: join(root, "transcripts"), enabled: true });
     store.ensureTranscriptDir("my-rig");
     writeFileSync(store.getTranscriptPath("my-rig", "dev-impl@my-rig"), `starting deploy\n${LINE}\ndeploy finished\n`);
     app = new Hono();
@@ -103,7 +104,7 @@ describe("workspaces-o9o.47: transcript text leaves the daemon redacted", () => 
 
   describe("GET /grep on a transcript whose last line has no newline (the store's final-chunk path)", () => {
     beforeEach(() => {
-      const store = new TranscriptStore({ transcriptsRoot: join(root, "transcripts"), enabled: true });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: join(root, "transcripts"), enabled: true });
       writeFileSync(store.getTranscriptPath("my-rig", "dev-impl@my-rig"), `starting deploy\n${LINE}`);
     });
 

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { startTranscriptRotation, clearAllTranscriptRotationsForTest, getLastCaptureAt, getTranscriptCaptureStats } from "../src/domain/transcript-rotation.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "adaptive-capture-")); vi.useFakeTimers(); });
@@ -22,7 +23,7 @@ function fixture() {
 
 function start(adapter: object, session = "seat", resolve?: () => { lines: number; pollIntervalMs: number }) {
   const file = path.join(root, session);
-  startTranscriptRotation(adapter as TmuxAdapter, session, file, { lines: 1000, pollIntervalMs: 2000 }, resolve);
+  startTranscriptRotation(nodeTranscriptFiles(), adapter as TmuxAdapter, session, file, { lines: 1000, pollIntervalMs: 2000 }, resolve);
   return file;
 }
 
@@ -141,9 +142,9 @@ describe("adaptive capture", () => {
       await new Promise((resolve) => setTimeout(resolve, ++calls === 5 ? 4200 : 10));
       return "unchanged\n";
     });
-    const store = new TranscriptStore({ transcriptsRoot: root });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root });
     const file = store.getTranscriptPath("rig", "seat");
-    startTranscriptRotation(adapter as TmuxAdapter, "seat", file, { lines: 1000, pollIntervalMs: 2000 }, () => ({ lines: 1000, pollIntervalMs: 2000 }));
+    startTranscriptRotation(nodeTranscriptFiles(), adapter as TmuxAdapter, "seat", file, { lines: 1000, pollIntervalMs: 2000 }, () => ({ lines: 1000, pollIntervalMs: 2000 }));
     await vi.advanceTimersByTimeAsync(8000);
     for (let n = 0; n < 300; n++) {
       await vi.advanceTimersByTimeAsync(100);

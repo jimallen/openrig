@@ -24,6 +24,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
 import { vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 function setupDb(): Database.Database {
   const db = createDb();
@@ -75,7 +76,7 @@ describe("transcript routes", () => {
     const session = sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
     sessionRegistry.updateStatus(session.id, "running");
 
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     store.ensureTranscriptDir("my-rig");
     const filePath = store.getTranscriptPath("my-rig", "dev-impl@my-rig");
     writeFileSync(filePath, content);
@@ -135,7 +136,7 @@ describe("transcript routes", () => {
   });
 
   it("GET /tail with unknown session returns 404 with guidance", async () => {
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
 
     const res = await app.request("/api/transcripts/nonexistent-session/tail");
@@ -151,7 +152,7 @@ describe("transcript routes", () => {
     const node = rigRepo.addNode(rig.id, "dev-impl", { role: "worker", runtime: "claude-code" });
     sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
 
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/tail");
@@ -172,7 +173,7 @@ describe("transcript routes", () => {
     sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
     sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@my-rig" });
 
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     vi.spyOn(store, "ensureTranscriptDir").mockReturnValue(true);
     // V1 pre-release Item 1: capture-pane returns null (no terminal
     // content yet) so the rotation tick is a no-op write — the
@@ -207,7 +208,7 @@ describe("transcript routes", () => {
     sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
     sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@my-rig" });
 
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     vi.spyOn(store, "ensureTranscriptDir").mockReturnValue(true);
     const capturePaneSpy = vi.fn(async () => "READY\n");
     const app = createApp({
@@ -235,7 +236,7 @@ describe("transcript routes", () => {
       sessionRegistry.registerSession(node.id, session);
       sessionRegistry.updateBinding(node.id, { attachmentType, tmuxSession: session });
     }
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     vi.spyOn(store, "ensureTranscriptDir").mockReturnValue(true);
     const capturePaneSpy = vi.fn(async () => "READY\n");
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store, tmuxAdapter: tmuxStub({ capturePaneContent: capturePaneSpy }) });
@@ -266,7 +267,7 @@ describe("transcript routes", () => {
 
   it("GET /tail with transcripts disabled returns 404 with guidance", async () => {
     seedRigWithTranscript("content");
-    const disabledStore = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: false });
+    const disabledStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: false });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: disabledStore });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/tail");
@@ -308,7 +309,7 @@ describe("transcript routes", () => {
     const node2 = rigRepo.addNode(rig2.id, "dev-impl2", { role: "worker", runtime: "claude-code" });
     sessionRegistry.registerSession(node2.id, "dev-impl@my-rig");
 
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/tail");
@@ -324,7 +325,7 @@ describe("transcript routes", () => {
       sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
       return { rig, node };
     });
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
 
     for (const route of ["tail", "grep?pattern=x", "full"]) {
@@ -386,7 +387,7 @@ describe("transcript routes", () => {
   it("GET /full with unknown session returns 404 (session-resolution failure; reframe per orch)", async () => {
     // Orch reframe: session-scoped denial replaced with session-resolution
     // failure since no caller-identity/session-scope primitive exists.
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
 
     const res = await app.request("/api/transcripts/nonexistent-session/full");
@@ -427,7 +428,7 @@ describe("transcript routes", () => {
 
   it("GET /full with transcripts disabled returns 404 with guidance (disabled case)", async () => {
     seedRigWithTranscript("content");
-    const disabledStore = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: false });
+    const disabledStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: false });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: disabledStore });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/full");
@@ -442,7 +443,7 @@ describe("transcript routes", () => {
     const node = rigRepo.addNode(rig.id, "dev-impl", { role: "worker", runtime: "claude-code" });
     sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
 
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/full");
@@ -461,7 +462,7 @@ describe("transcript routes", () => {
     const node2 = rigRepo.addNode(rig2.id, "dev-impl2", { role: "worker", runtime: "claude-code" });
     sessionRegistry.registerSession(node2.id, "dev-impl@my-rig");
 
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
 
     const res = await app.request("/api/transcripts/dev-impl@my-rig/full");
@@ -484,7 +485,7 @@ describe("transcript routes: archived rigs do not compete with a live rig for a 
     rigRepo = new RigRepository(db);
     sessionRegistry = new SessionRegistry(db);
     tmpDir = mkdtempSync(join(tmpdir(), "transcript-routes-archived-"));
-    store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
   });
 
   afterEach(() => {

@@ -10,6 +10,7 @@ import { HcClient } from "../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation } from "../src/domain/transcript-rotation.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -57,7 +58,7 @@ describe.skipIf(!findHc())("hc batched transcript capture (#161)", () => {
         });
       }
       for (const n of names) await expect.poll(async () => (await adapter.capturePaneContent(n, 1000)) ?? "", { timeout: 15_000 }).toContain(`${n} line 39`);
-      for (const n of names) startTranscriptRotation(rotation, n, file(n), { lines: 1000, pollIntervalMs: 2000 }, () => ({ lines: 1000, pollIntervalMs: 2000 }));
+      for (const n of names) startTranscriptRotation(nodeTranscriptFiles(), rotation, n, file(n), { lines: 1000, pollIntervalMs: 2000 }, () => ({ lines: 1000, pollIntervalMs: 2000 }));
       expect(await converged(names, 15_000)).toEqual([]);
 
       // Busy rounds: every session prints. A session is read once per 2 s cadence step, so the reads in the window stay within

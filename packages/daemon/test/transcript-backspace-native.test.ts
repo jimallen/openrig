@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -17,7 +18,7 @@ it.each([
 ])("normalizes consecutive and Unicode backspaces from owned transcript bytes", (raw, expected) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "transcript-backspace-"));
   roots.push(root);
-  const store = new TranscriptStore({ transcriptsRoot: root });
+  const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root });
   expect(store.ensureTranscriptDir("owned-rig")).toBe(true);
   fs.writeFileSync(store.getTranscriptPath("owned-rig", "owned-seat"), raw);
   expect(store.readTail("owned-rig", "owned-seat", 10)).toBe(expected);

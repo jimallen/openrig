@@ -103,6 +103,7 @@ import { ContextUsageStore } from "../../src/domain/context-usage-store.js";
 import { HealthProjectionService, LiveContextHealthSource } from "../../src/domain/health-detectors.js";
 import { WhoamiService } from "../../src/domain/whoami-service.js";
 import { TranscriptStore } from "../../src/domain/transcript-store.js";
+import { nodeTranscriptFiles } from "../../src/adapters/node-transcript-files.js";
 import { RigLifecycleService } from "../../src/domain/rig-lifecycle-service.js";
 import { RigRepository } from "../../src/domain/rig-repository.js";
 import { SessionRegistry } from "../../src/domain/session-registry.js";
@@ -314,7 +315,7 @@ export function createTestApp(
   const queueRepo = new QueueRepository(db, eventBus);
   const tmux = opts?.tmux ?? mockTmuxAdapter();
   // Default root: resolves through OPENRIG_HOME to the hermetic per-run test home (test/hermetic-env.setup.ts).
-  const transcriptStore = new TranscriptStore();
+  const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles() });
   const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const snapshotRepo = new SnapshotRepository(db);
   const checkpointStore = new CheckpointStore(db);

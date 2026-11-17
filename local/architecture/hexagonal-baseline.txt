@@ -403,9 +403,7 @@ src/domain/topology-defaults-installer.ts node:fs value upstream
 src/domain/topology/topology-manifest.ts node:fs value upstream
 src/domain/transcript-capture.ts better-sqlite3 type upstream
 src/domain/transcript-capture.ts src/adapters/tmux.js type upstream
-src/domain/transcript-rotation.ts node:fs value upstream
 src/domain/transcript-rotation.ts src/adapters/tmux.js value upstream
-src/domain/transcript-store.ts node:fs value upstream
 src/domain/types.ts src/adapters/pda-runner-protocol.js type fork
 src/domain/usage-samples-store.ts better-sqlite3 type upstream
 src/domain/usage-series.ts better-sqlite3 type upstream

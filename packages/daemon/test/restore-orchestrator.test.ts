@@ -46,6 +46,7 @@ import { ServiceOrchestrator } from "../src/domain/service-orchestrator.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 import { GUARD_FLAG } from "./helpers/claude-guard.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORK_DIR = existingRigRoot("work");
 
@@ -4321,7 +4322,7 @@ describe("RestoreOrchestrator", () => {
 
     const { TranscriptStore } = await import("../src/domain/transcript-store.js");
     const tmpDir = mkTemp(path.join(os.tmpdir(), "restore-transcript-"));
-    const transcriptStore = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: true });
 
     const tmux = mockTmux();
     // V1 pre-release Item 1: capture is via the rotation module, whose

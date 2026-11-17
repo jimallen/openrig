@@ -27,6 +27,7 @@ export async function startTmuxTranscriptCapture(
   // and never blocks launch (the prior pipe-pane site treated failure
   // as launch-warning, not launch-blocker, so behavior stays).
   startTranscriptRotation(
+    transcriptStore.files,
     tmuxAdapter,
     sessionName,
     transcriptPath,

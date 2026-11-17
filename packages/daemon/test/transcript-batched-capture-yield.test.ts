@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { startTranscriptRotation, clearAllTranscriptRotationsForTest } from "../src/domain/transcript-rotation.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "batched-yield-"));
 afterEach(() => { clearAllTranscriptRotationsForTest(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -17,7 +18,7 @@ it("writes one batched transcript per event-loop turn", async () => {
     // Each chained pane: its marker line, then its text.
     return argv.filter((a) => a.startsWith("__openrig_capture_")).map((m, k) => `${m}\n${names[k]} text\n`).join("");
   });
-  for (const n of names) startTranscriptRotation(adapter, n, path.join(root, n), { lines: 20, pollIntervalMs: 60_000 });
+  for (const n of names) startTranscriptRotation(nodeTranscriptFiles(), adapter, n, path.join(root, n), { lines: 20, pollIntervalMs: 60_000 });
   const written = () => names.filter((n) => fs.existsSync(path.join(root, n))).length;
   const perTurn: number[] = [];
   for (let turn = 0; turn < 50 && written() < names.length; turn++) {

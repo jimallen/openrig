@@ -21,6 +21,7 @@ import { WhoamiService } from "../src/domain/whoami-service.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import type { SeatIdentityVerdict } from "../src/domain/types.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -37,7 +38,7 @@ describe("WhoamiService", () => {
     db = setupDb();
     rigRepo = new RigRepository(db);
     sessionRegistry = new SessionRegistry(db);
-    transcriptStore = new TranscriptStore({ transcriptsRoot: "/tmp/transcripts", enabled: true });
+    transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: "/tmp/transcripts", enabled: true });
     svc = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore });
   });
 

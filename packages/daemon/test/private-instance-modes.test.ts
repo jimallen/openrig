@@ -17,6 +17,7 @@ import { securePrivateDb, securePrivateRoot } from "../src/domain/instance-priva
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
 import { mockTmuxAdapter } from "./helpers/test-app.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 // workspaces-o9o.36: a seat's conversation (Pi session files, Codex rollouts, pane transcripts) holds full tool
 // output, and on 2026-11-16 that output held a database password. Measured on Sparky that day: ~/.openrig 0755,
@@ -204,7 +205,7 @@ describe("an OpenRig instance is private to its owner (workspaces-o9o.36)", () =
 describe("a pane transcript is private to its owner under a loose umask (workspaces-o9o.36)", () => {
   it("a transcript root configured outside the instance is created 0700 with its rig directory, and the boundary-marked transcript 0600", () => {
     const root = join(freshRoot(), "elsewhere", "transcripts");
-    const store = new TranscriptStore({ transcriptsRoot: root, enabled: true });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root, enabled: true });
     expect(store.ensureTranscriptDir("openrig")).toBe(true);
     expect(store.writeBoundaryMarker("openrig", "verify-ops@openrig", "launch")).toBe(true);
     expect({
@@ -232,7 +233,7 @@ describe("a pane transcript is private to its owner under a loose umask (workspa
   it("the captured pane text the rotation writes is 0600 in a 0700 directory", async () => {
     const outputPath = join(freshRoot(), "rig", "verify-ops@openrig.log");
     const tmux = Object.assign(mockTmuxAdapter(), { capturePaneContent: async () => "captured pane text\n" });
-    startTranscriptRotation(tmux, "verify-ops@openrig", outputPath, { lines: 100, pollIntervalMs: 60_000 });
+    startTranscriptRotation(nodeTranscriptFiles(), tmux, "verify-ops@openrig", outputPath, { lines: 100, pollIntervalMs: 60_000 });
     for (let i = 0; i < 50 && !existsSync(outputPath); i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }

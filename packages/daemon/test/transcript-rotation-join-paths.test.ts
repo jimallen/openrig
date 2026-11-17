@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { PaneCapture } from "../src/adapters/tmux.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation, type TranscriptHost } from "../src/domain/transcript-rotation.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const waitFor = async (cond: () => boolean) => {
   for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
@@ -33,8 +34,8 @@ describe("transcript rotation: the unlisted per-target read joins wrapped rows t
       // NEXT tick of a rotation still running takes the unlisted path.
       const opts = { lines: 50, pollIntervalMs: 20 };
       // Two sessions in one tick share a batch, which marks both missing.
-      startTranscriptRotation(host, "o9o28-x", path.join(dir, "x.log"), opts);
-      startTranscriptRotation(host, "o9o28-y", path.join(dir, "y.log"), opts);
+      startTranscriptRotation(nodeTranscriptFiles(), host, "o9o28-x", path.join(dir, "x.log"), opts);
+      startTranscriptRotation(nodeTranscriptFiles(), host, "o9o28-y", path.join(dir, "y.log"), opts);
       await waitFor(() => batched.length >= 1);
       expect(single).toEqual([]);
 

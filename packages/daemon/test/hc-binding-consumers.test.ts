@@ -33,6 +33,7 @@ import { clearAllTranscriptRotationsForTest } from "../src/domain/transcript-rot
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const databases: Database.Database[] = [];
 const dirs: string[] = [];
@@ -242,7 +243,7 @@ describe("polling loops sample a running hc seat as they sample a tmux one", () 
     dirs.push(root);
     const capture = vi.fn(async () => "recent work\n");
 
-    const resumed = await resumeRunningTranscriptCaptures(db, tmuxStub({ capturePaneContent: capture }), new TranscriptStore({ transcriptsRoot: root, enabled: true }));
+    const resumed = await resumeRunningTranscriptCaptures(db, tmuxStub({ capturePaneContent: capture }), new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root, enabled: true }));
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(resumed).toBe(1);

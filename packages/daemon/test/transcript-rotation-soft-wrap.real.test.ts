@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation, type TranscriptHost } from "../src/domain/transcript-rotation.js";
 import { redactTranscriptContent } from "../src/domain/transcript-redaction.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const HAS_TMUX = (() => { try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); return true; } catch { return false; } })();
 
@@ -69,7 +70,7 @@ describe.skipIf(!HAS_TMUX || process.platform === "win32")("transcript rotation 
 
   const rotateAndRead = async (host: TranscriptHost, sessions: string[]): Promise<string[]> => {
     const files = sessions.map((s) => join(base!, `${s}.log`));
-    sessions.forEach((s, i) => startTranscriptRotation(host, s, files[i]!, { lines: 50, pollIntervalMs: 60_000 }));
+    sessions.forEach((s, i) => startTranscriptRotation(nodeTranscriptFiles(), host, s, files[i]!, { lines: 50, pollIntervalMs: 60_000 }));
     for (let i = 0; i < 100 && !files.every((f) => existsSync(f)); i++) await new Promise((r) => setTimeout(r, 50));
     return files.map((f) => readFileSync(f, "utf8"));
   };

@@ -22,6 +22,7 @@ import type { PersistedEvent } from "../src/domain/types.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { hostCodexWithTrustedHook, secondDaemonPolicyFor, type HostCodexFixture } from "./helpers/codex-shared-config-fixture.js";
 import type { CodexConfigWritePolicy } from "../src/domain/codex-config-write-policy.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -640,7 +641,7 @@ describe("NodeLauncher", () => {
       });
 
       const { TranscriptStore } = await import("../src/domain/transcript-store.js");
-      const transcriptStore = new TranscriptStore({ transcriptsRoot: "/tmp/test-transcripts", enabled: true });
+      const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: "/tmp/test-transcripts", enabled: true });
       vi.spyOn(transcriptStore, "ensureTranscriptDir").mockReturnValue(true);
 
       const launcher = new NodeLauncher({
@@ -664,7 +665,7 @@ describe("NodeLauncher", () => {
       });
 
       const { TranscriptStore } = await import("../src/domain/transcript-store.js");
-      const transcriptStore = new TranscriptStore({ transcriptsRoot: "/tmp/test-transcripts", enabled: true });
+      const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: "/tmp/test-transcripts", enabled: true });
       vi.spyOn(transcriptStore, "ensureTranscriptDir").mockReturnValue(false);
 
       const launcher = new NodeLauncher({

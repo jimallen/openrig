@@ -10,6 +10,7 @@ import { hcTerminalName } from "../src/adapters/hc-host.js";
 import type { TerminalModes } from "../src/adapters/hc-viewer.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation, type TranscriptHost } from "../src/domain/transcript-rotation.js";
 import { FakeHc } from "./helpers/hc-fake-client.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const PLAIN: TerminalModes = { altScreen: false, mouse: false };
 const MOUSE: TerminalModes = { altScreen: true, mouse: true };
@@ -50,7 +51,7 @@ function seatHost(seats: Record<string, TerminalModes>) {
 const live = { lines: 1000, pollIntervalMs: POLL };
 const file = (seat: string) => path.join(root, `${seat}.log`);
 const startAll = async (host: TranscriptHost, seats: string[]) => {
-  for (const seat of seats) startTranscriptRotation(host, seat, file(seat), { ...live }, () => live);
+  for (const seat of seats) startTranscriptRotation(nodeTranscriptFiles(), host, seat, file(seat), { ...live }, () => live);
   await advance(0);
 };
 

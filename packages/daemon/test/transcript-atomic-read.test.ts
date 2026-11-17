@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -13,7 +14,7 @@ describe("transcript reads during atomic capture publication", () => {
   it.each(["tail", "grep"] as const)("%s reads one complete published file", async (mode) => {
     const root = mkdtempSync(join(tmpdir(), "openrig-transcript-reader-"));
     roots.push(root);
-    const store = new TranscriptStore({ transcriptsRoot: root });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: root });
     mkdirSync(join(root, "fixture"));
     const target = store.getTranscriptPath("fixture", "seat@fixture");
     const large = Array.from({ length: 300 }, (_, index) => `ALINE${index}`).join("\n") + "\n";

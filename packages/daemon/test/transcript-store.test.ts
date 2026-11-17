@@ -9,6 +9,7 @@ import {
   clearAllTranscriptRotationsForTest,
 } from "../src/domain/transcript-rotation.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 describe("TranscriptStore", () => {
   let tmpDir: string;
@@ -23,7 +24,7 @@ describe("TranscriptStore", () => {
 
   describe("getTranscriptPath", () => {
     it("returns deterministic {root}/{rigName}/{sessionName}.log", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const path = store.getTranscriptPath("my-rig", "dev-impl@my-rig");
       expect(path).toBe(join(tmpDir, "my-rig", "dev-impl@my-rig.log"));
     });
@@ -31,7 +32,7 @@ describe("TranscriptStore", () => {
 
   describe("ensureTranscriptDir", () => {
     it("creates nested directory structure and returns true", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const result = store.ensureTranscriptDir("my-rig");
       expect(result).toBe(true);
       expect(existsSync(join(tmpDir, "my-rig"))).toBe(true);
@@ -41,7 +42,7 @@ describe("TranscriptStore", () => {
       const readonlyDir = join(tmpDir, "readonly");
       mkdirSync(readonlyDir);
       chmodSync(readonlyDir, 0o444);
-      const store = new TranscriptStore({ transcriptsRoot: join(readonlyDir, "nested") });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: join(readonlyDir, "nested") });
       const result = store.ensureTranscriptDir("my-rig");
       expect(result).toBe(false);
       // Restore permissions for cleanup
@@ -51,7 +52,7 @@ describe("TranscriptStore", () => {
 
   describe("writeBoundaryMarker", () => {
     it("appends marker with ISO timestamp to file and returns true", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       // Create an existing transcript file with prior content
       const filePath = store.getTranscriptPath("my-rig", "dev-impl@my-rig");
@@ -74,7 +75,7 @@ describe("TranscriptStore", () => {
       // platform without permission-quirk tricks.
       const collisionPath = join(tmpDir, "rig-name-collision");
       writeFileSync(collisionPath, "regular file in the way");
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const result = store.writeBoundaryMarker("rig-name-collision", "dev-impl@my-rig", "test");
       expect(result).toBe(false);
     });
@@ -82,7 +83,7 @@ describe("TranscriptStore", () => {
 
   describe("stripAnsi", () => {
     it("removes ANSI escape sequences from spike doc examples", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const raw = "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m  \x1b[0m\x1b[27m\x1b[24m\x1b[Juser@example.test /tmp % \x1b[K\x1b[?2004hecho 'test'\x1b[?2004l";
       const stripped = store.stripAnsi(raw);
       expect(stripped).not.toContain("\x1b[");
@@ -91,7 +92,7 @@ describe("TranscriptStore", () => {
     });
 
     it("preserves readability for real TUI cursor-motion output", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const raw = "\x1b[38;5;231m⏺\x1b[1C\x1b[39mTRANSCRIPT PROBE\x1b[1CACK\x1b[1C2026-03-31\r\x1b[2B\x1b[38;5;174m✳\x1b[39m \x1b[38;5;174mSchlepping… \x1b[39m                                                                   \r\x1b[1B   \r\x1b[2B\x1b[38;5;246m❯\u00a0\x1b[39m\x1b[7m \x1b[27m               \r\n\x1b]0;✳ Restore protocol start and read inventory\u0007\r\n\x1b[2C\x1b[38;5;246mesc\x1b[1Cto\x1b[1Cinterrupt\x1b[39m";
       const stripped = store.stripAnsi(raw);
       expect(stripped).toContain("TRANSCRIPT PROBE ACK 2026-03-31");
@@ -101,7 +102,7 @@ describe("TranscriptStore", () => {
     });
 
     it("removes shell redraw noise from real transcript capture", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const raw = "printf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m                                                                               \r  \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Juser@example.test rigged % \x1b[K\x1b[?2004hp\bprintf 'TRACK_A_SMOKE_LINE\\nPNS-T06 marker\\n'";
       const stripped = store.stripAnsi(raw);
       expect(stripped).toContain("user@example.test rigged %");
@@ -114,7 +115,7 @@ describe("TranscriptStore", () => {
 
   describe("enabled: false", () => {
     it("skips write operations but path resolution still works", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: false });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, enabled: false });
       expect(store.enabled).toBe(false);
       // Path resolution still works
       expect(store.getTranscriptPath("my-rig", "dev@my-rig")).toBe(join(tmpDir, "my-rig", "dev@my-rig.log"));
@@ -128,14 +129,14 @@ describe("TranscriptStore", () => {
 
   describe("path traversal safety", () => {
     it("rig name '..' does not resolve outside transcript root", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const path = store.getTranscriptPath("..", "dev@rig");
       // Path must stay under the root, not resolve to parent
       expect(path.startsWith(tmpDir + "/")).toBe(true);
     });
 
     it("ensureTranscriptDir with '..' rig name returns false", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const result = store.ensureTranscriptDir("..");
       expect(result).toBe(false);
     });
@@ -143,13 +144,13 @@ describe("TranscriptStore", () => {
 
   describe("readTail", () => {
     it("returns null on missing file without throwing", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const result = store.readTail("my-rig", "nonexistent-session", 10);
       expect(result).toBeNull();
     });
 
     it("returns last N lines with ANSI stripped", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(filePath, "line1\nline2\nline3\n\x1b[1mline4\x1b[0m\nline5\n");
@@ -164,7 +165,7 @@ describe("TranscriptStore", () => {
     });
 
     it("strips shell prompt prefixes from tailed transcript lines", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -178,7 +179,7 @@ describe("TranscriptStore", () => {
     });
 
     it("drops bare shell prompt lines from tailed transcript output", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -192,7 +193,7 @@ describe("TranscriptStore", () => {
     });
 
     it("preserves terse legitimate output lines during tail cleanup", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -206,7 +207,7 @@ describe("TranscriptStore", () => {
     });
 
     it("normalizes carriage-return prompt redraws before filtering shell prompt lines", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -220,7 +221,7 @@ describe("TranscriptStore", () => {
     });
 
     it("removes prompt redraw duplicates after filtering status lines", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       writeFileSync(
         store.getTranscriptPath("my-rig", "dev@my-rig"),
@@ -231,7 +232,7 @@ describe("TranscriptStore", () => {
     });
 
     it("preserves percent-ending output when an earlier line matches its prefix", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       writeFileSync(
         store.getTranscriptPath("my-rig", "dev@my-rig"),
@@ -242,7 +243,7 @@ describe("TranscriptStore", () => {
     });
 
     it("drops TUI chrome and redraw fragments from transcript tails", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -292,7 +293,7 @@ describe("TranscriptStore", () => {
     });
 
     it("removes orphaned cursor-motion fragments that survive without the ESC byte", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -320,7 +321,7 @@ describe("TranscriptStore", () => {
     });
 
     it("drops repeated model status overlays from transcript tails", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -348,7 +349,7 @@ describe("TranscriptStore", () => {
     });
 
     it("preserves legitimate transcript sentences that mention overlay phrases", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -368,7 +369,7 @@ describe("TranscriptStore", () => {
     });
 
     it("drops startup splash/header lines from Claude Code and Codex sessions", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -403,7 +404,7 @@ describe("TranscriptStore", () => {
     });
 
     it("preserves legitimate sentences that mention startup splash strings", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -423,7 +424,7 @@ describe("TranscriptStore", () => {
     });
 
     it("preserves standalone model/directory output lines without box-drawing wrappers", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -445,7 +446,7 @@ describe("TranscriptStore", () => {
     });
 
     it("preserves literal cursor-fragment tokens when they are mentioned as data", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -465,7 +466,7 @@ describe("TranscriptStore", () => {
 
   describe("grep", () => {
     it("returns matching lines with ANSI stripped", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(filePath, "hello world\n\x1b[1mdecision made\x1b[0m\nfoo bar\ndecision final\n");
@@ -478,7 +479,7 @@ describe("TranscriptStore", () => {
     });
 
     it("matches against stripped logical lines from noisy shell capture", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("my-rig");
       const filePath = store.getTranscriptPath("my-rig", "dev@my-rig");
       writeFileSync(
@@ -491,7 +492,7 @@ describe("TranscriptStore", () => {
     });
 
     it("returns null on missing file without throwing", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       const result = store.grep("my-rig", "nonexistent", "pattern");
       expect(result).toBeNull();
     });
@@ -511,7 +512,7 @@ describe("TranscriptStore", () => {
     }
 
     it("readTail returns enough lines even when most raw lines are prompt noise", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("noisy-rig");
       const filePath = store.getTranscriptPath("noisy-rig", "dev@noisy-rig");
       // 8 prompt noise lines + 2 real lines
@@ -534,7 +535,7 @@ describe("TranscriptStore", () => {
     });
 
     it.each(["\n", ""])("readTail keeps a complete long line before prompt noise (ending %j)", (ending) => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("long-rig");
       const filePath = store.getTranscriptPath("long-rig", "dev@long-rig");
       const output = JSON.stringify({ result: "é".repeat(10_000) });
@@ -546,7 +547,7 @@ describe("TranscriptStore", () => {
     });
 
     it("readTail handles multibyte UTF-8 characters at chunk boundaries", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("utf8-rig");
       const filePath = store.getTranscriptPath("utf8-rig", "dev-tail@utf8-rig");
       // Write enough padding to push the multibyte char near a chunk boundary
@@ -559,7 +560,7 @@ describe("TranscriptStore", () => {
     });
 
     it("grep matches multibyte UTF-8 characters correctly", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("utf8-rig");
       const filePath = store.getTranscriptPath("utf8-rig", "dev@utf8-rig");
       // Write lines with multibyte characters
@@ -571,7 +572,7 @@ describe("TranscriptStore", () => {
     });
 
     it("readTail on large file returns correct last N lines without reading entire file", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("big-rig");
       const filePath = store.getTranscriptPath("big-rig", "dev@big-rig");
       writeLargeTranscript(filePath, 50000, 10000);
@@ -586,7 +587,7 @@ describe("TranscriptStore", () => {
     });
 
     it("grep on large file returns only matching lines without loading entire file", () => {
-      const store = new TranscriptStore({ transcriptsRoot: tmpDir });
+      const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir });
       store.ensureTranscriptDir("big-rig");
       const filePath = store.getTranscriptPath("big-rig", "dev@big-rig");
       writeLargeTranscript(filePath, 50000, 10000);
@@ -618,7 +619,7 @@ describe("TranscriptStore.getIngestHealth — liveness decoupled from mtime", ()
   });
 
   it("reports capture_fresh for an idle seat whose write was suppressed but capture is still live", async () => {
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, staleAfterMs: 1000 });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, staleAfterMs: 1000 });
     const rig = "hrig";
     const session = "dev@hrig";
     store.ensureTranscriptDir(rig);
@@ -626,7 +627,7 @@ describe("TranscriptStore.getIngestHealth — liveness decoupled from mtime", ()
     const adapter = { capturePaneContent: vi.fn(async () => "static-pane\n") };
 
     // Tick 1: writes the file and records liveness.
-    startTranscriptRotation(adapter as unknown as TmuxAdapter, session, outputPath, {
+    startTranscriptRotation(nodeTranscriptFiles(), adapter as unknown as TmuxAdapter, session, outputPath, {
       lines: 1000,
       pollIntervalMs: 60_000,
     });
@@ -639,7 +640,7 @@ describe("TranscriptStore.getIngestHealth — liveness decoupled from mtime", ()
 
     // Tick 2: identical capture -> write SUPPRESSED (mtime stays 60s old),
     // but liveness is refreshed to ~now.
-    startTranscriptRotation(adapter as unknown as TmuxAdapter, session, outputPath, {
+    startTranscriptRotation(nodeTranscriptFiles(), adapter as unknown as TmuxAdapter, session, outputPath, {
       lines: 1000,
       pollIntervalMs: 60_000,
     });
@@ -656,7 +657,7 @@ describe("TranscriptStore.getIngestHealth — liveness decoupled from mtime", ()
   });
 
   it("falls back to mtime (capture_stale) when no rotation is recording for the session", () => {
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, staleAfterMs: 1000 });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, staleAfterMs: 1000 });
     const rig = "hrig";
     const session = "orphan@hrig";
     store.ensureTranscriptDir(rig);
@@ -672,13 +673,13 @@ describe("TranscriptStore.getIngestHealth — liveness decoupled from mtime", ()
   });
 
   it("still reports capture_stale once rotation has STOPPED (liveness record dropped)", async () => {
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, staleAfterMs: 1000 });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, staleAfterMs: 1000 });
     const rig = "hrig";
     const session = "gone@hrig";
     store.ensureTranscriptDir(rig);
     const outputPath = store.getTranscriptPath(rig, session);
     const adapter = { capturePaneContent: vi.fn(async () => "content\n") };
-    startTranscriptRotation(adapter as unknown as TmuxAdapter, session, outputPath, {
+    startTranscriptRotation(nodeTranscriptFiles(), adapter as unknown as TmuxAdapter, session, outputPath, {
       lines: 1000,
       pollIntervalMs: 60_000,
     });
@@ -695,7 +696,7 @@ describe("TranscriptStore.getIngestHealth — liveness decoupled from mtime", ()
   // freshness over the stale on-disk bytes. Liveness is recorded only for a
   // completed healthy tick (after rename / on the unchanged early-return).
   it("does NOT report capture_fresh when capture succeeds but the required write fails", async () => {
-    const store = new TranscriptStore({ transcriptsRoot: tmpDir, staleAfterMs: 1000 });
+    const store = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir, staleAfterMs: 1000 });
     const rig = "hrig";
     const session = "diskfull@hrig";
     store.ensureTranscriptDir(rig);
@@ -710,7 +711,7 @@ describe("TranscriptStore.getIngestHealth — liveness decoupled from mtime", ()
     try {
       // Capture returns CHANGED content -> not suppressed -> write attempted -> throws.
       const adapter = { capturePaneContent: vi.fn(async () => "new-content\n") };
-      startTranscriptRotation(adapter as unknown as TmuxAdapter, session, outputPath, {
+      startTranscriptRotation(nodeTranscriptFiles(), adapter as unknown as TmuxAdapter, session, outputPath, {
         lines: 1000,
         pollIntervalMs: 60_000,
       });

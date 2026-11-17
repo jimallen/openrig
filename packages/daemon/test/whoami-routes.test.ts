@@ -18,6 +18,7 @@ import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { WhoamiService } from "../src/domain/whoami-service.js";
 import { whoamiRoutes } from "../src/routes/whoami.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -37,7 +38,7 @@ describe("whoami routes", () => {
   afterEach(() => { db.close(); });
 
   function createApp(permissionDriftObserver?: { diagnose(nodeId: string): unknown }) {
-    const transcriptStore = new TranscriptStore({ transcriptsRoot: "/tmp/transcripts", enabled: true });
+    const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: "/tmp/transcripts", enabled: true });
     const svc = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore });
     const app = new Hono();
     app.use("*", async (c, next) => {

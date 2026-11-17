@@ -26,6 +26,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { WhoamiService } from "../src/domain/whoami-service.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 let db: Database.Database;
 let rigRepo: RigRepository;
@@ -49,7 +50,7 @@ function makeFixture(withWorkspaceMigration: boolean): void {
   migrate(db, migs);
   rigRepo = new RigRepository(db);
   const sessionRegistry = new SessionRegistry(db);
-  const transcriptStore = new TranscriptStore({ enabled: false, baseDir: "/tmp" });
+  const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), enabled: false, baseDir: "/tmp" });
   whoami = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore });
 }
 

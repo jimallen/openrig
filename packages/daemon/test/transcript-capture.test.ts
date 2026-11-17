@@ -20,6 +20,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { clearAllTranscriptRotationsForTest } from "../src/domain/transcript-rotation.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 describe("transcript capture boot recovery", () => {
   let db: Database.Database;
@@ -69,7 +70,7 @@ describe("transcript capture boot recovery", () => {
     const resumed = await resume(
       db,
       { capturePaneContent } as unknown as TmuxAdapter,
-      new TranscriptStore({ transcriptsRoot: tmpDir }),
+      new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: tmpDir }),
     );
     await new Promise((resolve) => setImmediate(resolve));
 

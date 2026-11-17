@@ -12,11 +12,11 @@
 //
 // SC-29 EXCEPTION #4 declared in pre-release CLI/daemon ACK §5.
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { CAPTURE_BATCH, type TmuxAdapter } from "../adapters/tmux.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
+import type { TranscriptFiles } from "./transcript-files.js";
 
 /**
  * What a rotation needs of a seat host: tmux's adapter, or HcAdapter. Captures are requests, not promises. On hc a terminal that is
@@ -232,6 +232,7 @@ export function getLastCaptureAt(sessionName: string): number | undefined {
  *  first tick fires immediately unless an old capture for this session is
  *  still pending; replacement then waits for a scheduled tick after it settles. */
 export function startTranscriptRotation(
+  files: TranscriptFiles,
   tmuxAdapter: TranscriptHost,
   sessionName: string,
   outputPath: string,
@@ -345,8 +346,8 @@ export function startTranscriptRotation(
       let header = "";
       let prevContent: string | null = null;
       try {
-        if (fs.existsSync(outputPath)) {
-          const prev = fs.readFileSync(outputPath, "utf8");
+        if (files.exists(outputPath)) {
+          const prev = files.readText(outputPath);
           prevContent = prev;
           // A pane may echo a boundary marker (for example while inspecting a
           // transcript). Retain each structural marker once so repeated captures
@@ -380,10 +381,10 @@ export function startTranscriptRotation(
       }
 
       // A transcript is the seat's conversation: private to its owner whatever the umask (workspaces-o9o.36).
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+      files.makeFolder(path.dirname(outputPath), 0o700);
       const tmpPath = `${outputPath}.tmp.${process.pid}`;
-      fs.writeFileSync(tmpPath, payload, { mode: 0o600 });
-      fs.renameSync(tmpPath, outputPath);
+      files.write(tmpPath, payload, 0o600);
+      files.rename(tmpPath, outputPath);
       // Persistence succeeded — only NOW is the tick healthy, so record liveness.
       // A throw above jumps to the catch and never reaches here, so a failed
       // required write leaves liveness un-advanced and getIngestHealth reads the

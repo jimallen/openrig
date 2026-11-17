@@ -10,6 +10,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import {
   startTranscriptRotation, stopTranscriptRotation, clearAllTranscriptRotationsForTest, getLastCaptureAt, getTranscriptCaptureStats,
 } from "../src/domain/transcript-rotation.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 /** The production exec's stdout bound, which every tmux call shares. */
 const TMUX_MAX_BUFFER = 64 * 1024 * 1024;
@@ -91,7 +92,7 @@ let root: string;
 const live = { lines: 1000, pollIntervalMs: 2000 };
 const resolve = () => live;
 const file = (name: string) => path.join(root, `${name}.log`);
-const start = (t: ReturnType<typeof fakeTmux>, name: string) => startTranscriptRotation(t.adapter, name, file(name), { ...live }, resolve);
+const start = (t: ReturnType<typeof fakeTmux>, name: string) => startTranscriptRotation(nodeTranscriptFiles(), t.adapter, name, file(name), { ...live }, resolve);
 const names = (n: number, prefix = "seat") => Array.from({ length: n }, (_, i) => `${prefix}-${i}@rig`);
 
 beforeEach(() => {
@@ -190,7 +191,7 @@ describe("batched transcript capture (#161)", () => {
     t.hold();
     await advance(2000);
     const replaced = path.join(root, "replaced.log");
-    startTranscriptRotation(t.adapter, all[0]!, replaced, { ...live }, resolve);
+    startTranscriptRotation(nodeTranscriptFiles(), t.adapter, all[0]!, replaced, { ...live }, resolve);
     await advance(3000);
     expect(fs.existsSync(replaced)).toBe(false);
     t.write(all[0]!, `${all[0]} new\n`);
@@ -471,7 +472,7 @@ describe("batched transcript capture: generative", () => {
           for (const n of all) {
             const roll = random();
             if (roll < 0.08) { stopTranscriptRotation(n); running.delete(n); }
-            else if (roll < 0.2 && !running.has(n)) { startTranscriptRotation(adapter, n, file(n), { ...live }, resolve); running.add(n); }
+            else if (roll < 0.2 && !running.has(n)) { startTranscriptRotation(nodeTranscriptFiles(), adapter, n, file(n), { ...live }, resolve); running.add(n); }
             else if (roll < 0.5) t.write(n, `${n} ${step}\n`);
           }
           await advance(Math.floor(random() * 4) * 250);

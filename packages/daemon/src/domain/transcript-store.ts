@@ -1,11 +1,13 @@
 import { redactTranscriptContent } from "./transcript-redaction.js";
-import { mkdirSync, appendFileSync, existsSync, openSync, readSync, closeSync, statSync, fstatSync, readFileSync } from "node:fs";
+import type { TranscriptFiles, TranscriptReader } from "./transcript-files.js";
 import { join, dirname, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getCompatibleOpenRigPath } from "../openrig-compat.js";
 import { getLastCaptureAt, DEFAULT_TRANSCRIPT_STALE_AFTER_MS } from "./transcript-rotation.js";
 
 export interface TranscriptStoreOpts {
+  /** The file effects (workspaces-o9o.69): src/adapters/node-transcript-files.ts in the daemon. */
+  files: TranscriptFiles;
   transcriptsRoot?: string;
   enabled?: boolean;
   staleAfterMs?: number;
@@ -128,18 +130,18 @@ const TAIL_CHUNK_SIZE = 16 * 1024;
  * Handles UTF-8 multibyte characters at chunk boundaries by adjusting
  * the read offset to avoid splitting characters.
  */
-function readTailChunked(filePath: string, rawLines: number): string | null {
-  const fd = openSync(filePath, "r");
+function readTailChunked(files: TranscriptFiles, filePath: string, rawLines: number): string | null {
+  const reader = files.openRead(filePath);
   try {
-    const stat = fstatSync(fd);
-    if (stat.size === 0) return null;
+    const size = reader.size();
+    if (size === 0) return null;
     let text = "";
-    let offset = stat.size;
+    let offset = size;
 
     while (offset > 0) {
       const readSize = Math.min(TAIL_CHUNK_SIZE, offset);
       offset -= readSize;
-      const buf = readTranscriptChunk(fd, readSize, offset);
+      const buf = readTranscriptChunk(reader, readSize, offset);
 
       // Adjust for split UTF-8 multibyte: if the first byte is a continuation
       // byte (10xxxxxx = 0x80-0xBF), we've split a character. Move the offset
@@ -173,18 +175,18 @@ function readTailChunked(filePath: string, rawLines: number): string | null {
     const tail = lines.slice(-rawLines);
     return tail.join("\n");
   } finally {
-    closeSync(fd);
+    reader.close();
   }
 }
 
 /** An opened descriptor retains the published capture across atomic replacement.
  * Do not turn a short read into fabricated NUL padding if an external writer
  * truncates that descriptor in place. Existing callers report the I/O failure. */
-function readTranscriptChunk(fd: number, size: number, offset: number): Buffer {
+function readTranscriptChunk(reader: TranscriptReader, size: number, offset: number): Buffer {
   const buffer = Buffer.alloc(size);
   let read = 0;
   while (read < size) {
-    const count = readSync(fd, buffer, read, size - read, offset + read);
+    const count = reader.read(buffer, read, size - read, offset + read);
     if (count === 0) throw new Error("Transcript changed during read");
     read += count;
   }
@@ -203,11 +205,14 @@ export class TranscriptStore {
   private readonly root: string;
   private readonly _enabled: boolean;
   private readonly staleAfterMs: number;
+  /** The port this store reads and writes through; transcript rotation writes through the same one. */
+  readonly files: TranscriptFiles;
 
-  constructor(opts?: TranscriptStoreOpts) {
-    this.root = opts?.transcriptsRoot ?? DEFAULT_ROOT;
-    this._enabled = opts?.enabled ?? true;
-    this.staleAfterMs = opts?.staleAfterMs ?? DEFAULT_TRANSCRIPT_STALE_AFTER_MS;
+  constructor(opts: TranscriptStoreOpts) {
+    this.files = opts.files;
+    this.root = opts.transcriptsRoot ?? DEFAULT_ROOT;
+    this._enabled = opts.enabled ?? true;
+    this.staleAfterMs = opts.staleAfterMs ?? DEFAULT_TRANSCRIPT_STALE_AFTER_MS;
   }
 
   get enabled(): boolean {
@@ -217,7 +222,7 @@ export class TranscriptStore {
   /** A transcript holds the seat's conversation, so a directory the store creates is private to its owner whatever
    * the umask (workspaces-o9o.36). An existing root is made private at daemon start (index.ts, securePrivateRoot). */
   private ensurePrivateDir(dir: string): void {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    this.files.makeFolder(dir, 0o700);
   }
 
   getTranscriptPath(rigName: string, sessionName: string): string {
@@ -240,10 +245,10 @@ export class TranscriptStore {
     }
     try {
       const filePath = this.getTranscriptPath(rigName, sessionName);
-      if (!existsSync(filePath)) {
+      if (!this.files.exists(filePath)) {
         return { state: "unavailable", reason: "capture_missing", lastCapturedAt: null };
       }
-      const stat = statSync(filePath);
+      const stat = this.files.stat(filePath);
       // Liveness is decoupled from the file mtime: the unchanged-content guard in
       // transcript rotation freezes mtime on an idle seat whose pane is static,
       // even though capture is still running every tick. Prefer the in-memory
@@ -292,7 +297,7 @@ export class TranscriptStore {
       // for the first restore on a fresh rig.
       this.ensurePrivateDir(dirname(filePath));
       const marker = `--- SESSION BOUNDARY: ${reason} at ${new Date().toISOString()} ---\n`;
-      appendFileSync(filePath, marker, { encoding: "utf-8", mode: 0o600 });
+      this.files.append(filePath, marker, 0o600);
       return true;
     } catch {
       return false;
@@ -324,8 +329,8 @@ export class TranscriptStore {
   readTail(rigName: string, sessionName: string, lines: number): string | null {
     try {
       const filePath = this.getTranscriptPath(rigName, sessionName);
-      if (!existsSync(filePath)) return null;
-      const fileSize = statSync(filePath).size;
+      if (!this.files.exists(filePath)) return null;
+      const fileSize = this.files.stat(filePath).size;
       if (fileSize === 0) return "";
 
       // Adaptive: start with a generous oversample, expand if cleanup filters too many
@@ -333,7 +338,7 @@ export class TranscriptStore {
       const MAX_MULTIPLIER = 64;
 
       while (rawMultiplier <= MAX_MULTIPLIER) {
-        const rawTail = readTailChunked(filePath, lines * rawMultiplier);
+        const rawTail = readTailChunked(this.files, filePath, lines * rawMultiplier);
         if (rawTail === null) return "";
 
         const cleanedTail = this.cleanupTailLines(rawTail, lines);
@@ -388,8 +393,8 @@ export class TranscriptStore {
   readFull(rigName: string, sessionName: string): string | null {
     try {
       const filePath = this.getTranscriptPath(rigName, sessionName);
-      if (!existsSync(filePath)) return null;
-      return redactTranscriptContent(readFileSync(filePath, "utf-8"));
+      if (!this.files.exists(filePath)) return null;
+      return redactTranscriptContent(this.files.readText(filePath));
     } catch {
       return null;
     }
@@ -398,7 +403,7 @@ export class TranscriptStore {
   grep(rigName: string, sessionName: string, pattern: string): string[] | null {
     try {
       const filePath = this.getTranscriptPath(rigName, sessionName);
-      if (!existsSync(filePath)) return null;
+      if (!this.files.exists(filePath)) return null;
       return this.grepSync(filePath, pattern);
     } catch {
       return null;
@@ -408,16 +413,16 @@ export class TranscriptStore {
   private grepSync(filePath: string, pattern: string): string[] {
     const regex = new RegExp(pattern);
     const matches: string[] = [];
-    const fd = openSync(filePath, "r");
+    const reader = this.files.openRead(filePath);
     const decoder = new StringDecoder("utf-8");
     try {
-      const stat = fstatSync(fd);
+      const size = reader.size();
       const CHUNK_SIZE = 64 * 1024;
       let remainder = "";
 
-      for (let offset = 0; offset < stat.size; offset += CHUNK_SIZE) {
-        const readSize = Math.min(CHUNK_SIZE, stat.size - offset);
-        const buf = readTranscriptChunk(fd, readSize, offset);
+      for (let offset = 0; offset < size; offset += CHUNK_SIZE) {
+        const readSize = Math.min(CHUNK_SIZE, size - offset);
+        const buf = readTranscriptChunk(reader, readSize, offset);
         // StringDecoder handles incomplete multibyte sequences at chunk boundaries
         const chunk = remainder + decoder.write(buf);
         const lines = chunk.split("\n");
@@ -446,7 +451,7 @@ export class TranscriptStore {
         }
       }
     } finally {
-      closeSync(fd);
+      reader.close();
     }
 
     return matches;

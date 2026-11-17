@@ -31,6 +31,7 @@ import { NodeLauncher } from "./domain/node-launcher.js";
 import { seatRestartEnv } from "./domain/seat-restart-env.js";
 import { describeShimRefresh, refreshGitWorktreeShim } from "./domain/git-worktree-shim.js";
 import { nodeShimFiles } from "./adapters/node-shim-files.js";
+import { nodeTranscriptFiles } from "./adapters/node-transcript-files.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
@@ -644,6 +645,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     omp: collectAllowlistedProviderAuthEnv(startupSettings.recoveryProviderAuthEnvAllowlistRaw, process.env, "omp"),
   };
   const transcriptStore = new TranscriptStore({
+    files: nodeTranscriptFiles(),
     enabled: transcriptsEnabled,
     transcriptsRoot: transcriptsPath,
   });

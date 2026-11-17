@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { startTranscriptRotation, clearAllTranscriptRotationsForTest, getTranscriptCaptureStats } from "../src/domain/transcript-rotation.js";
+import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const roots: string[] = [];
@@ -51,7 +52,7 @@ function start(t: ReturnType<typeof fakeTmux>, names: string[]) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "batched-steady-"));
   roots.push(root);
   const live = { lines: 1000, pollIntervalMs: 2000 };
-  for (const n of names) startTranscriptRotation(t.adapter, n, path.join(root, n), { ...live }, () => live);
+  for (const n of names) startTranscriptRotation(nodeTranscriptFiles(), t.adapter, n, path.join(root, n), { ...live }, () => live);
   return (n: string) => fs.readFileSync(path.join(root, n), "utf8");
 }
 
