@@ -1,4 +1,5 @@
 // Must stay first: pins the daemon cwd before any module evaluates a path.
+import { decideTerminalToken } from "./domain/terminal-token-policy.js";
 import "./daemon-cwd-anchor.js";
 import { serve, type ServerType } from "@hono/node-server";
 import os from "node:os";
@@ -311,20 +312,20 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   const bearerToken = process.env.OPENRIG_AUTH_BEARER_TOKEN ?? null;
 
   let bindHosts: string[];
-  const terminalTokenEnv = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
-  let terminalBearerToken: string | null = terminalTokenEnv || null;
+  let explicitUntrusted = false;
   if (explicitHost) {
     // Operator opt-in path — invariant enforces bearer requirement for
     // genuinely public/LAN binds; loopback/tailscale binds short-circuit.
     await assertBindAuthInvariant({ host: explicitHost, bearerToken });
-    if (!terminalBearerToken && !(await isTrustedLocalOrTailnetBind(explicitHost))) {
-      terminalBearerToken = bearerToken;
-    }
+    explicitUntrusted = !(await isTrustedLocalOrTailnetBind(explicitHost));
     bindHosts = [explicitHost];
   } else {
     // Default path — the plan already computed loopback + tailscale-when-active.
     bindHosts = bindPlan.hosts;
   }
+  const terminalBearerToken = decideTerminalToken({
+    bindHosts, envToken: process.env.OPENRIG_TERMINAL_BEARER_TOKEN, operatorToken: bearerToken, explicitUntrusted,
+  });
 
   // OF-220: dates processes by the OS boot clock where there is one (Linux), so a stored start time names the true second.
   installProcessStartClock(createProcessStartClock(process.platform, new FileBootInstantStore(path.join(OPENRIG_HOME, BOOT_INSTANT_FILE))));
