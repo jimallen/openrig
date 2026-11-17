@@ -72,6 +72,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - The web UI gets the token only when opened on the daemon's own machine (at `/`, `/index.html` or any deep link). Opened from another device, its terminal features (attach, send, transcripts) answer 401.
 - A listener that comes up beyond loopback with no token stops the daemon, rather than serving those routes openly.
 
+### OpenRig's Codex hook block keeps Codex's plugin tables and a person's own hooks (workspaces-o9o.88)
+
+- Symptom: measured on Codex 0.166.0, `codex plugin add` appended its `[marketplaces.*]` and `[plugins."<plugin>@<market>"]` tables inside OpenRig's managed block in `CODEX_HOME/config.toml` (between `# BEGIN/END OPENRIG MANAGED ACTIVITY HOOKS`) when the block was last in the file. OpenRig's next hook write, or turning its hooks off, replaced the whole block and deleted the plugin's registration.
+- Now the block owns only OpenRig's own four hook stanzas: the `[[hooks.<event>]]` groups whose command runs exactly the relay path OpenRig wrote (the current one, or the one it recorded under `$OPENRIG_HOME/state/codex-activity-hooks/relay-path`), never any script that only shares the name `activity-relay.cjs`. Everything else between the sentinels is kept in its order: what came before OpenRig's stanzas moves above the block, what came after moves below it. Turning the hooks off leaves it in place. A header counts only at the top level of the file, so a header-looking line inside a multiline string (an MCP server's `args`, say) stays part of its string.
+- A block written by a daemon older than the record (no record yet) still counts its first SessionStart stanza as OpenRig's, so a changed relay path replaces OpenRig's hooks instead of adding a second set.
+- Residual: the block is still found by its sentinel text, so that text inside a TOML string would be taken for the block. Codex does not write it there.
+
 ### The running install's own bundled specs are trusted inside Homebrew's git checkout (workspaces-o9o.91)
 
 - Symptom: on stu, `rig doctor` failed `/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs` as "inside the /opt/homebrew git work tree". Measured on a fake Homebrew-style prefix: with a `.git` at the prefix, the spec-source judge refused the install's own kernel spec, both recording and reading it back (`spec_untrusted`); without the `.git`, the same install passed. The kernel boot records that bundled spec as the kernel's source, so a fresh relaunch of a kernel seat from it (`rig seat launch --fresh`, a `--fresh` restore), `rig seat set-mcp` and `rig spec-source set` were refused (`startup_source_untrusted`). First launches and `--startup-from stored` replays were not judged, which is why rigs still started.
