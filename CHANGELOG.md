@@ -17,7 +17,6 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: the TUI's agent detail showed a running tool's start in the TUI's time zone (`since 2031-03-04 08:05:41 PST`) right above the daemon's posture line, which is UTC (`(since 16:05Z)`), so the same instant read as two different times.
 - Now the tool line also gives the start in the posture line's own UTC form: `since 2031-03-04 08:05:41 PST (16:05Z)`, with the date added once the start is on an earlier UTC day (`(03-04 16:05Z)`). The posture line stays the daemon's text, word for word.
 
-
 ### A rig's culture_file may name a file in the running OpenRig install (`shipped:`) (workspaces-o9o.52)
 
 - Symptom: the kernel rig spec reached its culture through a symlink to an install path (`/opt/homebrew/...` on a Mac, `~/.local/...` on Linux), so each host needed its own copy of the spec. `culture_file` took only a path relative to the rig root, and `shipped:...` was read as a folder named `shipped:` there.

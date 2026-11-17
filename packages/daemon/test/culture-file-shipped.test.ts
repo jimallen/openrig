@@ -112,4 +112,3 @@ describe("a shipped: culture at delivery", () => {
     expect(() => readGuardedStartupFile({ path: "shipped:rigs/k/culture/CULTURE.md", absolutePath: target.absolutePath }, specs)).toThrow(/outside .*specs folder/);
   });
 });
-
