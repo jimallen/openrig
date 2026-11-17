@@ -161,7 +161,11 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       await until(() => s.log(), (l) => l.includes("died queued"), "the seat's death");
       await wait(600);
       expect(s.read("m1").message_state).toBe("attempting");
-      await core.client.call("terminal.rm", { terminal: s.address }).catch(() => undefined);
+      // workspaces-o9o.100: the agent runs under a launch script, so its terminal is finished only once that ends too, and under load
+      // that is after any fixed wait. Wait for hc to say so; then remove it, and a refused remove fails the row instead of letting the
+      // relaunch below meet the old terminal's name ("a live terminal is already named s-...").
+      await until(() => core.client.call<{ state: string }>("terminal.get", { terminal: s.address }), (t) => t.state === "finished", "the old terminal to finish");
+      await core.client.call("terminal.rm", { terminal: s.address });
       await s.launch();
       await state(s, "m1", "received");
       await until(() => agent(s, "m1"), (l) => l.length > 0, "the agent's copy");
