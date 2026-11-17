@@ -44,6 +44,7 @@ to `main`. In the PR description, say which layers you ran and which you could n
 | Web UI suite | `npm run test:ui` | jsdom unit tests for `packages/ui` | Real browser rendering | When you touch `packages/ui`, or a daemon API the UI reads. The web UI is in maintenance mode, so this suite is advisory locally and is not part of `npm test`. |
 | Generated files | `npm run mirror-skills:check`, `npm run generate-context-packs:check` (both part of `npm test`) | Every copy of each shipped skill matches its recorded hash, and every static context pack passes the daemon's own manifest parser and the leak scan | Whether the skill content is any good | After you edit a shipped skill: edit the same file in every copy that carries it, run `node scripts/regen-edge-digests.mjs`, then the check. The full `npm run mirror-skills` apply needs maintainer-only inputs. See "A shipped skill" in [ARCHITECTURE.md](../../ARCHITECTURE.md#a-shipped-skill). |
 | Local gate | `npm run gate` | Lint plus `npm test` on a clean tree, tied to `HEAD`, one run per machine at a time, with a JSON receipt | Anything that lint and `npm test` don't already prove | Optional. Useful when several agents share one machine, or when you want a receipt tied to a commit. |
+| Tiered gates | `node scripts/gate-tiers.mjs --tier <0-3> --base <ref>` | The same checks in order of cost, each tier refusing to start until the cheaper ones have passed at the same commit. See [Tiered gates](#tiered-gates-scriptsgate-tiersmjs). | Anything the commands it runs don't prove. Tier 2 picks tests by reach, so it is an estimate; tier 3 is the full suite. | When several agents share one machine, and before handing a commit to a reviewer. |
 | Packaging | `npm run build:package`, `npm run test:tui-package`, `bash scripts/smoke-fresh-install.sh` | The publishable `@openrig/cli` assembles, the packed TUI launches, and a fresh install starts a daemon | Behaviour beyond startup | When you touch dependencies, bin entries, build scripts, or files a package ships |
 | Stub scenarios, host mode | `node --import tsx packages/daemon/scripts/run-scenarios.mjs [scenario.yaml …]` | A scenario's steps and assertions pass against a scratch daemon, real tmux and `runtime: stub` seats | The installed package. Seeded-regression pairing. Everything under [What a stub can and cannot prove](#what-a-stub-can-and-cannot-prove). | While you write or debug a scenario |
 | Stub scenarios, installed package in a container | CI job `installed-scenario`. Before pushing: `DOCKER_HOST=ssh://<your-host> bash scripts/run-pr-scenarios.sh --remote …` | A clean Linux install starts. A claimed queue item survives a daemon restart. A planted fault is caught at the intended assertion. Two stub seats' scripted output reads back through `rig transcript` and `rig capture` (passing form only). | Native runtimes. Most command families (see [Help wanted](#help-wanted-command-families-without-a-behavioural-scenario)). | Changes that can affect daemon startup, packaging, queue durability or the scenario harness |
@@ -100,6 +101,10 @@ are not yet runnable checks.
   credentials, and outbound network blocked except to localhost (see below). A test that reads
   your real home directory, a running daemon, the network or a credential can pass on your
   machine and fail in CI.
+- **Your own `--reporter` drops the never-skip guard.** Every vitest config lists the never-skip reporter, and a
+  command line that passes `--reporter` (for example `--reporter=json --outputFile=…` to collect counts) replaces
+  that list, so the run no longer fails on a todo or an unlisted skip. Read counts from the default reporter's
+  summary instead, or list the configured reporters again beside your own.
 - **Docs location.** `check-docs-guard` fails if a tracked file under `docs/` sits outside
   `docs/as-built/`, `docs/reference/` or `docs/releases/`. `docs/DESIGN.md` is the one allowed
   exception.
@@ -147,6 +152,55 @@ repository.
 Exit codes: 0 pass, 1 a leg failed, 2 lane busy, 3 the runner itself errored.
 `OPENRIG_GATE_LANE_SMOKE=1` skips the legs to test the wiring only, and the verdict records
 `smoke: true`.
+
+## Tiered gates: `scripts/gate-tiers.mjs`
+
+The full package suites take minutes and keep a machine busy: on a 20-core Linux host, the daemon suite took
+824 s of wall time with 6 workers, and one file alone, `delivery-review.real.test.ts`, took 344 s. A full run
+that fails on a type error or a stray skip has wasted all of that. `gate-tiers` runs the checks in four tiers,
+cheapest first, and each tier refuses to start until every tier below it has passed at the same commit:
+
+| Tier | What runs | What it proves | Typical time |
+|---|---|---|---|
+| 0, diff hygiene | `git diff --check`, then a scan of every line the diff adds | No whitespace errors. No unconditional skip, todo, `.only`, `.fails` or `x`-prefixed test, no lint or type suppression, no loosened `tsconfig` strictness (code files), and no credential-shaped literal (any file; the scan reports where, never the value). Conditional skips such as `skipIf` pass here; the never-skip reporter checks them. | seconds |
+| 1, build and types | `npm run lint` | The daemon builds and `tsc --noEmit` is clean for every package and test project | about 75 s |
+| 2, reach | `npm run test:repo`, then for each of daemon, cli and tui, `vitest run --maxWorkers=4` (under `nice`) on the files the diff reaches | The repo checks pass, and every test that imports, names or is itself a changed file passes | seconds up to about half the suite |
+| 3, full suite | the command after `--`, `npm test` by default | Everything `npm test` proves | the full suite |
+
+```sh
+node scripts/gate-tiers.mjs --tier 0 --base main
+node scripts/gate-tiers.mjs --tier 1 --base main
+node scripts/gate-tiers.mjs --tier 2 --base main
+node scripts/gate-tiers.mjs --tier 3 --base main -- <your slot or lock wrapper> npm test
+node scripts/gate-tiers.mjs --tier 2 --base main --list    # print the tier-2 selection only
+```
+
+**How tier 2 picks tests.** It takes the union of three sets, per package: what `vitest list --changed <merge
+base>` reaches through the import graph; the test files that contain the name (without extension) of any changed
+file other than a test; and the changed test files themselves. The name match is there because census, guard and
+process-spawning tests read source as text or start it as a process, so no import edge leads to them. Measured on one
+diff to `pi-runner.ts`: the import graph reached 714 of the daemon's 1378 test files, and the name match found 8 more
+that it missed. A diff to three plugin-vendor files reached 51. Reach depends on which hub modules a diff touches, and
+it is an estimate, not a proof: run tier 3 before review. `--list` prints the selection and needs neither a clean
+tree nor a receipt, so a mutation battery can take its file list from it.
+
+**Receipts.** Each run writes `tier-<n>.json` for `HEAD` under `<git common dir>/openrig-gate-tiers/<sha>/` (override
+with `--receipts <dir>` or `OPENRIG_GATE_TIERS_DIR`). Every worktree of the clone shares that directory, so a
+fast-forward merge of a reviewed commit finds its receipts. A receipt records the merge base, the load average and
+core count at the start, the duration, and per tier the findings, the selection, each command's exit status and the
+vitest summary lines. A lower tier's receipt counts only when it passed, at the same `HEAD`, against the same merge
+base. Starting a tier first deletes its own receipt and every receipt above it at that `HEAD`, so a failed re-run never
+leaves an older pass for a later tier to rely on. A run refuses a dirty worktree, and a run that moves `HEAD` or leaves
+files behind fails. `--baseline-dir <dir>` also copies a tier-3 receipt to `<dir>/<sha>.json`, which gives a baseline
+for one commit of `main` that later runs can compare against instead of running the full suite at the base again.
+
+Tiers 2 and 3 run with a scratch `HOME` and `OPENRIG_HOME`, which are deleted afterwards. Tier 2 never passes
+`--reporter`, so the never-skip guard stays on (see Gotchas). Exit codes: 0 passed, 1 ran and failed, 2 refused (dirty
+tree or a missing receipt), 64 usage, 3 the script itself errored.
+
+**`npm run gate` is not tiered.** It runs tier 1 and tier 3 together (lint and `npm test`), always both, without
+stopping at the first failure, under its own machine-wide lock. It is unchanged; use it when you want its receipt.
+It does not hold or check the receipts above.
 
 ## Stub-agent scenarios
 

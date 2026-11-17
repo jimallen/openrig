@@ -28,7 +28,7 @@ export const CHECKS = [
     category: "Credential",
     why: "looks like a credential; load it from the environment or a secret store instead",
     pattern:
-      /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|pk_(?:live|test)_[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,})\b|\b(?:api[_-]?key|secret|token|password|passwd)\b["']?\s*[:=]\s*["'](?![0-9a-f]{8}-[0-9a-f]{4}-)(?=[^"']*\d)(?=[^"']*[A-Za-z])[^"'\s$<{]{16,}["']/i,
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|AIza[0-9A-Za-z_-]{35}|pk_(?:live|test)_[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,})\b|\b(?:api[_-]?key|secret|token|password|passwd)\b["']?\s*[:=]\s*["'](?![0-9a-f]{8}-[0-9a-f]{4}-)(?=[^"']*\d)(?=[^"']*[A-Za-z])[^"'\s$<{]{16,}["']/i,
   },
   {
     category: "Home path",

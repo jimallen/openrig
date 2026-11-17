@@ -28,6 +28,8 @@ function categories(text) {
 test("reports each principle's typical cases", () => {
   assert.deepEqual(categories("key = 'ghp_" + "a".repeat(36) + "'"), ["Credential"]);
   assert.deepEqual(categories("-----BEGIN OPENSSH PRIVATE KEY-----"), ["Credential"]);
+  assert.deepEqual(categories("key = '" + "glpat" + "-" + "b".repeat(20) + "'"), ["Credential"]);
+  assert.deepEqual(categories("key = '" + "npm" + "_" + "c".repeat(36) + "'"), ["Credential"]);
   assert.deepEqual(categories("see /home/bob/project"), ["Home path"]);
   assert.deepEqual(categories("cache in /private/tmp/claude-501/x"), ["Machine path"]);
   assert.deepEqual(categories("ssh 100.95.1.2"), ["Network address"]);
