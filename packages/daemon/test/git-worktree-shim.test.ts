@@ -805,6 +805,7 @@ describe("git-worktree-shim", () => {
       const git = path.join(realGitDir(), "git");
       expect(spawnSync(git, ["init", "-q", repo]).status).toBe(0);
       expect(spawnSync(git, ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
+      await fs.mkdir(path.join(repo, ".git", "info"), { recursive: true }); // the git template may have no info/ (workspaces-o9o.70)
       await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
       const shim = await ensureGitWorktreeShim(tmp);
       const r = runGit(["-C", repo, "worktree", "add", "-b", "feat", "../outside-c"], [shim, realGitDir(), "/usr/bin", "/bin"], tmp);
@@ -823,6 +824,7 @@ describe("git-worktree-shim", () => {
       await fs.mkdir(dir, { recursive: true });
       expect(spawnSync(git, ["init", "-q", dir]).status).toBe(0);
       expect(spawnSync(git, ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "init"]).status).toBe(0);
+      await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true }); // the git template may have no info/ (workspaces-o9o.70)
       await fs.appendFile(path.join(dir, ".git", "info", "exclude"), ".rig-worktrees/\n");
     }
 
