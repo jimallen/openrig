@@ -3,10 +3,10 @@
 // must stay inside it, and the file is recorded as typed under the install with the specs folder as its owner, so a moved or upgraded
 // install is followed by the existing re-anchoring.
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import nodePath from "node:path";
-import { checkCultureFile, resolveCultureFile } from "../src/domain/culture-file-guard.js";
+import { checkCultureFile, readGuardedStartupFile, resolveCultureFile } from "../src/domain/culture-file-guard.js";
 import { reanchorBuiltinStartupFile, runningShippedSpecsRoot } from "../src/domain/builtin-startup-files.js";
 import { RigSpecSchema as PodRigSpecSchema } from "../src/domain/rigspec-schema.js";
 
@@ -93,3 +93,23 @@ describe("the rig spec validator", () => {
     expect(PodRigSpecSchema.validate(spec(culture)).errors.join("\n")).toMatch(/culture_file: a shipped: culture_file/);
   });
 });
+
+// verify-sec review of o9o.52 (FIX 2): confinement is re-checked at EVERY delivery, on the real path of the file the reader opened.
+describe("a shipped: culture at delivery", () => {
+  it("reads the file while it stays inside the install's specs folder", () => {
+    const { specs } = install();
+    const target = resolveCultureFile("shipped:rigs/k/culture/CULTURE.md", "/r", specs);
+    if (!target.ok) throw new Error(target.message);
+    expect(readGuardedStartupFile({ path: "shipped:rigs/k/culture/CULTURE.md", absolutePath: target.absolutePath }, specs)).toBe("# Kernel culture\n");
+  });
+
+  it("refuses a leaf retargeted to a file outside the specs folder after it was added", () => {
+    const { base, specs } = install();
+    const target = resolveCultureFile("shipped:rigs/k/culture/CULTURE.md", "/r", specs);
+    if (!target.ok) throw new Error(target.message);
+    unlinkSync(target.absolutePath);
+    symlinkSync(nodePath.join(base, "outside.md"), target.absolutePath);
+    expect(() => readGuardedStartupFile({ path: "shipped:rigs/k/culture/CULTURE.md", absolutePath: target.absolutePath }, specs)).toThrow(/outside .*specs folder/);
+  });
+});
+

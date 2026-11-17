@@ -102,7 +102,10 @@ Examples:
       // path against its own cwd, not the operator's. Resolve both against the caller's cwd here so the
       // path means what a shell would mean by it.
       if (opts.rigRoot) body["rigRoot"] = resolvePath(process.cwd(), opts.rigRoot);
-      if (opts.culture !== undefined) body["cultureFile"] = opts.culture === "" ? opts.culture : resolvePath(process.cwd(), opts.culture);
+      // workspaces-o9o.52: a `shipped:` culture names a file in the daemon's own install, not a path on this shell's disk: it goes as written.
+      if (opts.culture !== undefined) {
+        body["cultureFile"] = opts.culture === "" || opts.culture.startsWith("shipped:") ? opts.culture : resolvePath(process.cwd(), opts.culture);
+      }
 
       const client = deps.clientFactory(getDaemonUrl(status));
 

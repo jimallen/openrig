@@ -1,4 +1,4 @@
-import { SHIPPED_CULTURE_PREFIX, shippedCultureShapeProblem } from "./culture-file-guard.js";
+import { SHIPPED_CULTURE_PREFIX, shippedCultureShapeProblem } from "./culture-file-ref.js";
 import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX, piModelOverridesErrors, normalizePiModelOverrides } from "../adapters/pi-runner-protocol.js";
 import { claudeConfigDirShapeError } from "./claude-config-dir.js";
 import type {

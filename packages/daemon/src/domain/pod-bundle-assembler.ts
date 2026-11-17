@@ -1,4 +1,4 @@
-import { SHIPPED_CULTURE_PREFIX } from "./culture-file-guard.js";
+import { SHIPPED_CULTURE_PREFIX } from "./culture-file-ref.js";
 import nodePath from "node:path";
 import { createHash } from "node:crypto";
 import { RigSpecCodec } from "./rigspec-codec.js";

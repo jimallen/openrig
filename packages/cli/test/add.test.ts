@@ -220,6 +220,15 @@ describe("rig add", () => {
       expect(capturedBody).toMatchObject({ cultureFile: "/work/caller/shared/CULTURE.md", rigRoot: "/work/caller/dir" });
     });
 
+    // workspaces-o9o.52 (verify-sec review): a shipped: culture names a file in the DAEMON's install, so it is sent as written, never
+    // resolved against this shell's cwd (which would turn it into an absolute path and lose the scheme).
+    it("a shipped: --culture is sent as written", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "shipped:rigs/launch/kernel/culture/CULTURE.md"]);
+      });
+      expect(capturedBody).toMatchObject({ cultureFile: "shipped:rigs/launch/kernel/culture/CULTURE.md" });
+    });
+
     it("absolute paths are sent unchanged", async () => {
       await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "/rigs/mine/CULTURE.md", "--rig-root", "/rigs/mine"]);

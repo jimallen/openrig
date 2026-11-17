@@ -1,6 +1,7 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import nodePath from "node:path";
 import { runningShippedSpecsRoot } from "./builtin-startup-files.js";
+import { confineShippedCulture, isShippedCulture, shippedCultureReadProblem, type CulturePathIo } from "./culture-file-ref.js";
 
 /**
  * TRUST BOUNDARY (read this before changing anything here).
@@ -171,63 +172,28 @@ export function persistedCulturePath(resolvedPath: string): string {
   try { return realpathSync(resolvedPath); } catch { return nodePath.resolve(resolvedPath); }
 }
 
-/** A culture_file that names a file in the RUNNING OpenRig install's own specs folder (workspaces-o9o.52). */
-export const SHIPPED_CULTURE_PREFIX = "shipped:";
+/** The filesystem's side of the CulturePathIo port (culture-file-ref.ts). */
+const FS_PATH_IO: CulturePathIo = { realpath: (p) => realpathSync(p) };
 
 /** Where a culture_file points, and how it is recorded as a startup file. */
 export type CultureFileTarget =
   | { ok: true; absolutePath: string; ownerRoot: string; shipped: boolean }
   | { ok: false; message: string };
 
-function isInside(root: string, p: string): boolean {
-  return p === root || p.startsWith(root.endsWith(nodePath.sep) ? root : root + nodePath.sep);
-}
-function realOrSame(p: string): string {
-  try { return realpathSync(p); } catch { return p; }
-}
-
-/**
- * The shape of a `shipped:` culture_file, with no filesystem: a non-empty relative path that does not climb out (`..`).
- * Null when it is well formed (the rig spec validator's half of resolveCultureFile).
- */
-export function shippedCultureShapeProblem(cultureFile: string): string | null {
-  const rel = cultureFile.slice(SHIPPED_CULTURE_PREFIX.length);
-  if (!rel) return `culture_file: a shipped: culture_file must name a file (got "${cultureFile}")`;
-  const normalized = rel.replace(/\\/g, "/");
-  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) {
-    return `culture_file: a shipped: culture_file must be a path relative to the installed OpenRig's specs folder (got "${cultureFile}")`;
-  }
-  if (normalized.split("/").some((seg) => seg === "..")) {
-    return `culture_file: a shipped: culture_file must stay inside the installed OpenRig's specs folder (got "${cultureFile}")`;
-  }
-  return null;
-}
-
 /**
  * Where a rig's culture_file points (workspaces-o9o.52).
  * - `shipped:<relative>`: a file in the RUNNING install's specs folder (runningShippedSpecsRoot: the daemon module's own location, never
- *   caller input), so one kernel spec serves every host whatever its install prefix. Confined like a shipped: agent_ref
- *   (agent-ref-guard.ts): the lexical AND the real target must lie inside that folder (no `..` and no symlink out). Recorded AS TYPED under
- *   the install root, with the install's specs folder as its owner, so a moved or upgraded install is followed by the existing re-anchoring
- *   (builtin-startup-files.ts), never a version-specific real path that an upgrade removes.
+ *   caller input), confined and recorded as typed by confineShippedCulture (culture-file-ref.ts), through the CulturePathIo port.
  * - anything else: relative to the rig root (or absolute, for `rig add --culture`), recorded by its real path, as before.
- * Existence and the file itself are judged later by the guarded reader (checkCultureFile), at add and at every delivery.
+ * Existence and the file itself are judged later by the guarded reader, at add and at every delivery (readGuardedStartupFile re-checks a
+ * shipped: file's confinement on the real path it reads).
  */
-export function resolveCultureFile(cultureFile: string, rigRoot: string, specsRoot: string = runningShippedSpecsRoot()): CultureFileTarget {
-  if (!cultureFile.startsWith(SHIPPED_CULTURE_PREFIX)) {
+export function resolveCultureFile(cultureFile: string, rigRoot: string, specsRoot: string = runningShippedSpecsRoot(), io: CulturePathIo = FS_PATH_IO): CultureFileTarget {
+  if (!isShippedCulture(cultureFile)) {
     return { ok: true, absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, cultureFile)), ownerRoot: rigRoot, shipped: false };
   }
-  const shape = shippedCultureShapeProblem(cultureFile);
-  if (shape) return { ok: false, message: shape };
-  const rel = cultureFile.slice(SHIPPED_CULTURE_PREFIX.length);
-  const typedRoot = nodePath.resolve(specsRoot);
-  const root = realOrSame(typedRoot);
-  const lexical = nodePath.resolve(root, rel);
-  const target = realOrSame(lexical);
-  if (!isInside(root, lexical) || !isInside(root, target)) {
-    return { ok: false, message: `culture_file "${cultureFile}" resolves to ${target}, outside ${root}, the installed OpenRig's specs folder; a shipped: culture_file must stay inside it` };
-  }
-  return { ok: true, absolutePath: nodePath.resolve(typedRoot, rel), ownerRoot: typedRoot, shipped: true };
+  const target = confineShippedCulture(cultureFile, specsRoot, io);
+  return target.ok ? { ...target, shipped: true } : target;
 }
 
 /**
@@ -235,8 +201,14 @@ export function resolveCultureFile(cultureFile: string, rigRoot: string, specsRo
  * `guardedRead` (the rig culture overlay): fresh start and restore alike. Throws with the refusal message,
  * which each adapter already records as a failed startup file (a required file then fails the delivery).
  */
-export function readGuardedStartupFile(file: { path: string; absolutePath: string }): string {
+export function readGuardedStartupFile(file: { path: string; absolutePath: string }, specsRoot: string = runningShippedSpecsRoot(), io: CulturePathIo = FS_PATH_IO): string {
   const checked = checkCultureFile(file.path, file.absolutePath);
   if (!checked.ok) throw new Error(checked.message);
+  // workspaces-o9o.52 (verify-sec review): a shipped: culture is confined again at EVERY delivery, on the real path of the file this read
+  // opened, so a link retargeted out of the install's specs folder after `rig add` / `rig up` is refused, never read.
+  if (isShippedCulture(file.path)) {
+    const problem = shippedCultureReadProblem(file.path, checked.realPath, specsRoot, io);
+    if (problem) throw new Error(problem);
+  }
   return checked.content;
 }
