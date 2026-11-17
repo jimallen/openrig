@@ -1,6 +1,6 @@
 // Spec 03: a preset or per-seat choice resolves to one checked mapping and configuration ID, and is
 // applied to an owned copy of the rig folder, never to the author's folder.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
@@ -8,6 +8,9 @@ import { parse as parseYaml } from "yaml";
 import {
   readDeclaredConfigurations, authoredMapping, resolveConfiguration, listConfigurations, checkDeclaredConfigurations, stageConfiguration, ConfigurationError,
 } from "../src/lib/bundle-configuration.js";
+
+/** The host's shared tmp, read once before any row gives itself a private one. */
+const SHARED_TMP = os.tmpdir();
 
 const RIG = `version: "0.2"
 name: openrig-dev
@@ -39,6 +42,7 @@ const RECOMMENDED = "build.impl=claude-code,build.lead=claude-code,check.qa=code
 describe("bundle configurations", () => {
   let rigDir: string;
   let staged: string[];
+  let privateTmp: string;
 
   beforeEach(() => {
     rigDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "rig-configs-"));
@@ -47,10 +51,15 @@ describe("bundle configurations", () => {
     fs.mkdirSync(nodePath.join(rigDir, "agents", "dev"), { recursive: true });
     fs.writeFileSync(nodePath.join(rigDir, "agents", "dev", "agent.yaml"), "name: dev\n");
     staged = [];
+    // workspaces-o9o.109: a private tmp for this row. stageConfiguration makes its copy under os.tmpdir(), which reads TMPDIR at each call, so
+    // the copies counted below are only this row's own, whatever another process stages in the shared tmp meanwhile.
+    privateTmp = fs.mkdtempSync(nodePath.join(SHARED_TMP, "bundle-config-tmp-"));
+    vi.stubEnv("TMPDIR", privateTmp);
   });
 
   afterEach(() => {
-    for (const dir of [rigDir, ...staged]) fs.rmSync(dir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+    for (const dir of [rigDir, privateTmp, ...staged]) fs.rmSync(dir, { recursive: true, force: true });
   });
 
   const declared = () => readDeclaredConfigurations(rigDir)!;
@@ -118,6 +127,19 @@ describe("bundle configurations", () => {
     expect(() => stageConfiguration(rigDir, nodePath.join(elsewhere, "rig.yaml"), declared(), chosen)).toThrow(/isn't inside the rig folder/);
     expect(stagingCopies()).toBe(before);
     expect(fs.readFileSync(nodePath.join(elsewhere, "rig.yaml"), "utf-8")).toBe(RIG);
+  });
+
+  // workspaces-o9o.109: the count must see only this row's own staging copies. Another process staging a configuration in the shared tmp
+  // meanwhile (another seat's suite, another copy of this file) changed it: measured, the file failed 3 of 3 runs beside such a process.
+  it("RED: another process's staging copy appearing in the shared tmp meanwhile does not change this row's count", () => {
+    fs.symlinkSync("missing.md", nodePath.join(rigDir, "dangling.md"));
+    const chosen = resolveConfiguration(declared(), authored(), { preset: "all-pi" });
+    const before = stagingCopies();
+    const foreign = fs.mkdtempSync(nodePath.join(SHARED_TMP, "rig-configuration-"));   // what another process's staging leaves for a while
+    try {
+      expect(() => stageConfiguration(rigDir, nodePath.join(rigDir, "rig.yaml"), declared(), chosen)).toThrow(/couldn't stage a copy of/);
+      expect(stagingCopies()).toBe(before);
+    } finally { fs.rmSync(foreign, { recursive: true, force: true }); }
   });
 
   it("a staging failure removes the copy and says why", () => {
