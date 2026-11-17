@@ -85,6 +85,8 @@ function StepIndicator({ currentStep, errorAtStep }: { currentStep: Step; errorA
       {STEPS.map((s, i) => {
         const isCompleted = activeNum > s.num;
         const isActive = activeNum === s.num;
+        // workspaces-o9o.118: a step not yet reached (text-foreground-muted/90) stays a little dimmer than a completed one, and
+        // readable: /30 was 1.55:1 (light) and 1.82:1 (dark); /90 is 4.86:1 and about 6.8:1 (test/install-stepper-contrast.test.ts).
 
         return (
           <div key={s.num} className="flex items-center gap-spacing-2">
@@ -97,7 +99,7 @@ function StepIndicator({ currentStep, errorAtStep }: { currentStep: Step; errorA
                 "text-label-sm uppercase tracking-[0.04em] font-mono px-spacing-2 py-spacing-1 transition-colors whitespace-nowrap",
                 isCompleted ? "text-foreground-muted" :
                 isActive ? "text-foreground bg-foreground/10" :
-                "text-foreground-muted/30"
+                "text-foreground-muted/90"
               )}
             >
               {isCompleted ? "\u2713" : ""} [ {s.num} {s.label} ]
