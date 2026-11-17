@@ -164,7 +164,8 @@ describe("Claude wrapper manual attention recovery", () => {
     const result = await f.post();
     expect(result.status).toBe(mode === "valid" ? 200 : 422);
     expect(f.startup()).toBe(mode === "valid" ? "ready" : "attention_required");
-    expect(f.store.getForNode(f.node.id)?.verdict).toBe(mode === "valid" ? "verified" : "mismatch");
+    // An unreadable process table is unknown, never a mismatch (workspaces-o9o.67); the clear is still refused.
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe(mode === "valid" ? "verified" : mode === "unavailable" ? "process_table_unavailable" : "mismatch");
     if (mode === "valid") {
       expect(result.body.evidence.kind).toBe("pane_identity_reverified");
       expect(f.listProcesses).toHaveBeenCalledTimes(2);

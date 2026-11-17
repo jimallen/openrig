@@ -308,8 +308,12 @@ export class SeatIdentityReconciler {
         if (generation !== this.generation) return;
       }
     }
+    // A process table that could not be read leaves the native proof unknown; it must never read as "no such process".
+    let processTableUnavailable = false;
     const sample = async (observations: Map<string, PaneObservation>) => {
       let snapshot: ReturnType<NativeProcessLister> | undefined;
+      const listOnce = () => snapshot ??= Promise.resolve().then(() => this.listProcesses())
+        .catch((err: unknown) => { processTableUnavailable = true; throw err; });
       // Two fresh process snapshots, each paired with its own pane observation.
       // The first uses the selection batch; the second starts after it settles.
       const tmux = Object.assign(Object.create(this.tmux) as typeof this.tmux, {
@@ -321,7 +325,7 @@ export class SeatIdentityReconciler {
       return Promise.all(nativeSeats.map((seat) => (seat.runtime === "codex" ? observeCodexPaneProcess
         : seat.resume_token !== null && seat.resume_token !== undefined ? observeClaudePaneProcess : observeClaudePaneRuntime)({
         target: seat.tmux_pane!, tmux, expectedToken: seat.resume_token, rotation: claudeResumeRotation(seat),
-        listProcesses: () => snapshot ??= this.listProcesses(),
+        listProcesses: listOnce,
       })));
     };
     const first = await sample(panes);
@@ -338,7 +342,8 @@ export class SeatIdentityReconciler {
     }
     for (const seat of seats) {
       try {
-        const verdict = await this.computeVerdict(seat, liveSessions, observedAt, nativeProofs.get(seat.node_id) ?? null, panes);
+        const verdict = await this.computeVerdict(seat, liveSessions, observedAt, nativeProofs.get(seat.node_id) ?? null, panes,
+          processTableUnavailable && nativeSeats.includes(seat));
         if (generation !== this.generation) return;
         // OF-235: while a lifecycle lease holds the seat, a missing terminal is the operation's (a respawn, `rig down`, restart, handover or restore can
         // leave it absent for far longer than two polls). Nothing is recorded and no count is kept: the lease's end restarts the two-poll rule.
@@ -387,6 +392,7 @@ export class SeatIdentityReconciler {
     observedAt: string,
     native: NativeProcessObservation | null,
     panes: Map<string, PaneObservation> | null = null,
+    processTableUnavailable = false,
   ): Promise<SeatIdentityVerdict> {
     const base = {
       nodeId: seat.node_id,
@@ -447,6 +453,13 @@ export class SeatIdentityReconciler {
         const currentPanes = await this.tmux.listPanes?.(seat.session_name).catch(() => []);
         const currentPid = await this.tmux.getPanePid(seat.tmux_pane).catch(() => null);
         verified = currentPanes?.length === 1 && currentPanes[0]?.id === seat.tmux_pane && currentPid === pid;
+      }
+      if (!verified && processTableUnavailable) {
+        // workspaces-o9o.67: the proof is unknown, not absent. Never a durable mismatch on an unread table.
+        return {
+          ...base, verdict: "process_table_unavailable", evidenceSource: "pane_process", reason: "process_table_unavailable",
+          evidence: { registeredPane: seat.tmux_pane, observedPid: pid, observedCommand: command, matchedLayer: null },
+        };
       }
       return {
         ...base, verdict: verified ? "verified" : "mismatch",

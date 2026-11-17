@@ -9,6 +9,20 @@ import { sameProcessIdentity, withTrueStartTimes } from "./process-start-clock.j
  *  about 15 times that table. Past it the read fails with ProcessTableTooLargeError, never a silent truncation. */
 export const PROCESS_TABLE_MAX_BYTES = 256 * 1024 * 1024;
 
+/** The longest one process-table read may take before `ps` is killed and the read fails (workspaces-o9o.67 review: a hung
+ *  `ps` left every caller pending). The native inbox's listers already used this bound. */
+export const PROCESS_TABLE_TIMEOUT_MS = 10_000;
+
+/** The process table could not be read (ps missing, failed, timed out or printed past the bound). It is "unavailable",
+ *  never "no processes": a consumer that judges identity, liveness or delivery from the table records unknown on it. */
+export class ProcessTableUnavailableError extends Error {
+  readonly code = "PROCESS_TABLE_UNAVAILABLE";
+  constructor(readonly site: string, readonly cause: unknown) {
+    super(`${site} could not read the process table: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "ProcessTableUnavailableError";
+  }
+}
+
 /** `ps` printed more than the bound: the table was not read, and `ps` was stopped. */
 export class ProcessTableTooLargeError extends Error {
   readonly code = "PROCESS_TABLE_TOO_LARGE";
@@ -20,7 +34,8 @@ export class ProcessTableTooLargeError extends Error {
 
 /** Runs `ps` with `args` and returns all it prints, read as a stream with no buffer smaller than `maxBytes`
  *  (default PROCESS_TABLE_MAX_BYTES). Rejects with ProcessTableTooLargeError past the bound (and stops `ps` at once),
- *  with the spawn error (ENOENT ...) when `ps` cannot start, and when `ps` exits non-zero or is killed by `timeoutMs`.
+ *  with the spawn error (ENOENT ...) when `ps` cannot start, and when `ps` exits non-zero or is killed by `timeoutMs`
+ *  (default PROCESS_TABLE_TIMEOUT_MS; SIGKILL, so a `ps` that ignores SIGTERM cannot hold the read open).
  *  The one way every full process-table listing reads `ps` (artery: native process observation). */
 export function readProcessTable(
   args: readonly string[],
@@ -28,7 +43,8 @@ export function readProcessTable(
 ): Promise<string> {
   const maxBytes = opts.maxBytes ?? PROCESS_TABLE_MAX_BYTES;
   return new Promise((resolve, reject) => {
-    const child = spawn("ps", [...args], { env: opts.env ?? process.env, stdio: ["ignore", "pipe", "pipe"], timeout: opts.timeoutMs, windowsHide: true });
+    const child = spawn("ps", [...args], { env: opts.env ?? process.env, stdio: ["ignore", "pipe", "pipe"],
+      timeout: opts.timeoutMs ?? PROCESS_TABLE_TIMEOUT_MS, killSignal: "SIGKILL", windowsHide: true });
     const chunks: Buffer[] = [];
     let bytes = 0;
     let stderr = "";
@@ -461,7 +477,9 @@ function mayBeClaudeRuntime(row: NativeProcessRow): boolean {
 }
 
 /** The same OS observation serves menu input, restore proof and periodic identity.
- * Older callers may carry only pid/ppid/command; that is insufficient positive Codex proof. */
+ * Older callers may carry only pid/ppid/command; that is insufficient positive Codex proof.
+ * Rejects with ProcessTableUnavailableError when the table cannot be read: an empty table would read as "no processes"
+ * and become a false identity verdict (workspaces-o9o.67 review). */
 export async function listNativeProcesses(): Promise<NativeProcessRow[]> {
   try {
     const output = await runAsyncSite("codex.runtime.list_processes", async () => {
@@ -487,11 +505,21 @@ export async function listNativeProcesses(): Promise<NativeProcessRow[]> {
     return rows;
   } catch (err) {
     reportProcessTableFailure("codex.runtime.list_processes", err);
-    return [];
+    throw err instanceof ProcessTableUnavailableError ? err : new ProcessTableUnavailableError("codex.runtime.list_processes", err);
   }
 }
 
 export type NativeProcessLister = () => NativeProcessRow[] | Promise<NativeProcessRow[]>;
+
+/** listNativeProcesses, but [] when the table cannot be read (the failure is still logged). Only for a consumer whose
+ *  every use of [] already means "unknown": it may refuse, wait or leave a value pending on it, never record a negative
+ *  verdict. A new consumer takes listNativeProcesses and handles ProcessTableUnavailableError (workspaces-o9o.67). */
+export async function listNativeProcessesBestEffort(): Promise<NativeProcessRow[]> {
+  try { return await listNativeProcesses(); } catch (err) {
+    if (err instanceof ProcessTableUnavailableError) return [];
+    throw err;
+  }
+}
 
 /** One OS process, by pid and `ps` start time: a reused pid has another start time. */
 export interface ClaudeLaunchedProcess { pid: number; startedAt: string }

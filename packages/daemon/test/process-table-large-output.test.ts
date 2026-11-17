@@ -127,13 +127,13 @@ describe("o9o.67: a table past the bound fails with a named error, at once, and 
     expect(lineage.PROCESS_TABLE_MAX_BYTES).toBeGreaterThanOrEqual(128 * MIB);
   });
 
-  it("listNativeProcesses warns once with the reason when the table cannot be read, and again when it can", async () => {
+  it("listNativeProcesses rejects as unavailable (never []) and warns once with the reason, and again when it can read", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), "o9o67-nops-"));
     vi.stubEnv("PATH", scratch);
 
-    expect(await lineage.listNativeProcesses()).toEqual([]);
-    expect(await lineage.listNativeProcesses()).toEqual([]);
+    await expect(lineage.listNativeProcesses()).rejects.toBeInstanceOf(lineage.ProcessTableUnavailableError);
+    await expect(lineage.listNativeProcesses()).rejects.toBeInstanceOf(lineage.ProcessTableUnavailableError);
     const failures = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("could not read the process table"));
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatch(/ENOENT/);

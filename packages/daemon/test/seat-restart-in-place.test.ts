@@ -1,6 +1,9 @@
 // OPR.0.7.0.5 — in-place restart of one Codex seat: every gate and every outcome, driven through the
 // public SeatLifecycleService surface against a fake tmux, process table, Codex launcher and OS reads.
 import { defaultTmuxFileOps, isStagedSendScriptPath } from "../src/adapters/tmux.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -26,6 +29,8 @@ const HOME = "/home/u/.codex";
 type Shape = "shell_backed" | "direct_native" | "script_backed";
 
 interface WorldOptions {
+  /** Leave listProcesses out, so the service runs on its production default (workspaces-o9o.67). */
+  productionLister?: boolean;
   shape?: Shape;
   runningArgs?: string;
   savedModel?: string | null;
@@ -239,7 +244,7 @@ function world(options: WorldOptions = {}) {
   const service = new SeatLifecycleService({
     db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
     runtimeAdapters: { codex: codex as never },
-    listProcesses: () => (options.identityFails && rows.some((row) => row.pid === 300) ? [] : rows),
+    ...(options.productionLister ? {} : { listProcesses: () => (options.identityFails && rows.some((row) => row.pid === 300) ? [] : rows) }),
     activityOracle: { declareOccupantSwap: () => {}, getSeatState: () => options.activity ?? null },
     inPlaceRestartIo: io,
     inPlaceRestartTiming: { pollMs: 1, timeoutMs: 2, sleep: async () => {} },
@@ -411,6 +416,22 @@ describe("rig seat restart --keep-conversation: gates before any signal", () => 
     expect(await other.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: false, code: "resume_binding_unverified" });
     const fresh = world({ runningArgs: "-m gpt-5.5 -s workspace-write -C /work" });
     expect(await fresh.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: false, code: "resume_binding_unverified" });
+  });
+
+  it("refuses with a structured result, not an error, when the process table cannot be read (o9o.67)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "o9o67-restart-ps-"));
+    fs.writeFileSync(path.join(dir, "ps"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    const warn = console.warn;
+    process.env.PATH = dir; console.warn = () => {};
+    try {
+      const w = world({ productionLister: true });
+      expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: false, code: "resume_binding_unverified" });
+      expect(w.calls).toEqual([]);
+    } finally {
+      process.env.PATH = savedPath; console.warn = warn;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("proves a fresh-launched Codex by its own native logs", async () => {

@@ -18,7 +18,8 @@ export async function defaultResolveHomeDirByPid(pid: number): Promise<string | 
     // BSD/macOS `ps` supports `eww` to expose the full process environment.
     // If OpenRig grows a Linux daemon target, this likely needs a /proc-based path.
     const output = (await runAsyncSite("codex_thread_id.resolve_home", async () => {
-      const { stdout } = await execFileAsync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf-8" });
+      // A finite bound: a hung `ps` must not leave the caller pending (workspaces-o9o.67); a timeout reads as unknown.
+      const { stdout } = await execFileAsync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf-8", timeout: 5_000, killSignal: "SIGKILL" });
       return stdout;
     })).trim();
     if (!output) return undefined;

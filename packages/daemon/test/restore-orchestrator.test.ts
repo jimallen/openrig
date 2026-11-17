@@ -1535,7 +1535,9 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.result.nodes[0]?.status).toBe("attention_required");
-    expect(db.prepare("SELECT verdict FROM seat_identity_verdicts WHERE node_id = ?").get(result.result.nodes[0]!.nodeId)).toEqual({ verdict: "mismatch" });
+    // An unreadable process table is unknown, never a mismatch (workspaces-o9o.67); attention is still retained.
+    expect(db.prepare("SELECT verdict FROM seat_identity_verdicts WHERE node_id = ?").get(result.result.nodes[0]!.nodeId))
+      .toEqual({ verdict: failure === "process-error" ? "process_table_unavailable" : "mismatch" });
     expect(tmux.sendKeys).not.toHaveBeenCalled();
   });
 

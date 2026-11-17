@@ -10,7 +10,7 @@ import type { SessionRegistry } from "./session-registry.js";
 import type { HarnessLaunchResult, NodeBinding } from "./runtime-adapter.js";
 import type { PersistedEvent, RigEvent } from "./types.js";
 import {
-  codexCommandResumeToken, listNativeProcesses, processArgv, verifyCodexPaneProcess,
+  codexCommandResumeToken, listNativeProcessesBestEffort, processArgv, verifyCodexPaneProcess,
   type NativeProcessLister, type NativeProcessRow,
 } from "./native-process-lineage.js";
 import { CodexThreadIdResolver, resolveCodexDbPaths } from "./codex-thread-id.js";
@@ -214,7 +214,9 @@ export class CodexInPlaceRestart {
       timeoutMs: deps.timing?.timeoutMs ?? 3_000,
       sleep: deps.timing?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     };
-    this.listProcesses = deps.listProcesses ?? listNativeProcesses;
+    // Best effort: every use here reads [] as unknown (a refusal before anything stops, or "unknown" after); an unreadable
+    // table must not turn a refusal into a 500 (workspaces-o9o.67).
+    this.listProcesses = deps.listProcesses ?? listNativeProcessesBestEffort;
     this.now = deps.now ?? (() => new Date());
     this.daemonStartedAt = deps.daemonStartedAt ?? new Date(Date.now() - process.uptime() * 1000);
   }

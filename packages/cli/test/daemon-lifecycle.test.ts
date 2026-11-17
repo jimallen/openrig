@@ -1218,6 +1218,15 @@ describe("Daemon Lifecycle", () => {
     expect(calls).toEqual([{ file: "ps", args: ["-o", "state=", "-p", "123"] }]);
   });
 
+  it("readProcessState bounds ps with a finite timeout, so a hung ps cannot hold the CLI open (o9o.67)", async () => {
+    const { readProcessState } = await import("../src/commands/daemon.js");
+    let options: { timeout?: number; killSignal?: string } | undefined;
+    readProcessState(123, "linux", (_file, _args, opts) => { options = opts; return "S\n"; });
+    expect(options?.timeout).toBeGreaterThan(0);
+    expect(options?.timeout).toBeLessThanOrEqual(10_000);
+    expect(options?.killSignal).toBe("SIGKILL");
+  });
+
   it("readProcessState returns null on POSIX when ps fails", async () => {
     const { readProcessState } = await import("../src/commands/daemon.js");
     const state = readProcessState(123, "darwin", () => {

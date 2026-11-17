@@ -39,7 +39,7 @@ import { prepareSeatMcpLaunchArgs, type PathJudgeIo, type SeatMcpSelection, type
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { unrestrictedCodexConfigWrites, type CodexConfigWritePolicy } from "../domain/codex-config-write-policy.js";
 
-import { listNativeProcesses, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
+import { listNativeProcessesBestEffort, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
 import { joinedPaneEvidence } from "../domain/pane-evidence.js";
 
 // Shared by all probes of ONE launch, never reset by a delayed screen or an
@@ -1802,8 +1802,10 @@ async function defaultProfilePreflight(profile: string, selected?: { cwd: string
 // Exported for unit test (B12-T): the REAL async sampling path — the anti-vacuity test drives
 // this default directly (every other suite injects sync stubs) and asserts the non-blocking
 // property that the pre-B12 sync implementation violated.
+// Best effort: an unreadable table leaves the fresh thread id pending, as an empty one always did; it never fails a launch
+// that already ran (workspaces-o9o.67).
 export async function defaultListProcesses(): Promise<CodexProcess[]> {
-  return listNativeProcesses();
+  return listNativeProcessesBestEffort();
 }
 
 function findCodexDescendantPids(

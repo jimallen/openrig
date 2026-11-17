@@ -100,11 +100,15 @@ export async function rebindAndVerifyPaneIdentity(input: {
     && input.requireExactResumeLineage !== true
     && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(normalizedCommand);
   const claudeProcessProof = claudeWrapper || claudeVersionLabel;
+  // workspaces-o9o.67: a process table that could not be read leaves the proof unknown, never "no such process".
+  let processTableUnavailable = false;
+  const listProcesses: NativeProcessLister = () => Promise.resolve().then(() => (input.listProcesses ?? listNativeProcesses)())
+    .catch((err: unknown) => { processTableUnavailable = true; throw err; });
   if (input.runtime === "codex") {
     // A shell/Node label describes the wrapper, not the native occupant.
     runtimeMatch = "match";
     const native = await verifyCodexPaneProcess({ target: pane.id, tmux: input.tmux,
-      listProcesses: input.listProcesses, expectedToken: expectedResumeToken,
+      listProcesses, expectedToken: expectedResumeToken,
       requireResume: input.requireExactResumeLineage === true });
     const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
     if (native?.panePid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
@@ -112,7 +116,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
     // A known token always requires exact proof. Only non-strict, tokenless
     // shell wrappers may use runtime occupancy; this never proves resume continuity.
     runtimeMatch = "match";
-    const observation = { target: pane.id, tmux: input.tmux, listProcesses: input.listProcesses };
+    const observation = { target: pane.id, tmux: input.tmux, listProcesses };
     const native = expectedResumeToken !== null
       ? await verifyClaudePaneProcess({ ...observation, expectedToken: expectedResumeToken,
         rotation: input.requireExactResumeLineage ? input.resumeRotation ?? null : storedRotation(input.db, input.nodeId, expectedResumeToken) })
@@ -124,7 +128,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
     try {
       lineageMatch = findExactNativeResumeProcess(
         // Full rows (process group, OS executable): the strict finder's launcher rules need them.
-        await (input.listProcesses ?? listNativeProcesses)(),
+        await listProcesses(),
         pid,
         input.runtime,
         expectedResumeToken!,
@@ -137,7 +141,12 @@ export async function rebindAndVerifyPaneIdentity(input: {
   const runtimeAmbiguous = input.runtime === "codex" || claudeProcessProof ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
     ? lineageMatch === null
     : input.runtime === "claude-code" && !normalizedCommand.includes("claude"));
-  const verdict: SeatIdentityVerdict = {
+  const unavailable = processTableUnavailable && pid !== null && runtimeMatch !== "mismatch" && runtimeAmbiguous;
+  const verdict: SeatIdentityVerdict = unavailable ? {
+    nodeId: input.nodeId, verdict: "process_table_unavailable", evidenceSource: "pane_process", reason: "process_table_unavailable",
+    evidence: { registeredPane: pane.id, observedPid: pid, observedCommand: command, matchedLayer: null },
+    sessionName: input.sessionName, observedAt,
+  } : {
     nodeId: input.nodeId,
     verdict: pid === null
       ? "pane_missing"
@@ -176,6 +185,9 @@ export async function rebindAndVerifyPaneIdentity(input: {
 
   if (verdict.verdict === "pane_missing") {
     return { ok: false, detail: `tmux pane '${pane.id}' has no live process` };
+  }
+  if (verdict.verdict === "process_table_unavailable") {
+    return { ok: false, detail: `the process table could not be read, so the occupant of tmux pane '${pane.id}' is unknown (not a mismatch)` };
   }
   if (verdict.verdict === "mismatch") {
     if (runtimeAmbiguous) {

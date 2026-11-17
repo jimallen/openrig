@@ -671,10 +671,12 @@ export type NodeLifecycleState = "running" | "detached" | "recoverable" | "atten
  * Computed by the periodic SeatIdentityReconciler from the pane PID/command vs
  * the registered `bindings.tmux_pane`, NEVER from queue/classifier/hook
  * heartbeats. Only `mismatch` and `pane_missing` down-rank a `running`
- * projection; `verified`, `binding_absent`, and `tmux_unavailable` (and an
- * absent verdict) leave it unchanged.
+ * projection; `verified`, `binding_absent`, `tmux_unavailable` and
+ * `process_table_unavailable` (the OS process table could not be read, so the
+ * native proof is unknown; workspaces-o9o.67) and an absent verdict leave it
+ * unchanged.
  */
-export type SeatIdentityVerdictKind = "verified" | "mismatch" | "pane_missing" | "binding_absent" | "tmux_unavailable";
+export type SeatIdentityVerdictKind = "verified" | "mismatch" | "pane_missing" | "binding_absent" | "tmux_unavailable" | "process_table_unavailable";
 
 export interface SeatIdentityVerdict {
   nodeId: string;
@@ -690,6 +692,7 @@ export interface SeatIdentityVerdict {
     | "binding_pane_missing"
     | "session_missing"
     | "tmux_unavailable"
+    | "process_table_unavailable"
     | null;
   evidence: {
     registeredPane: string | null;

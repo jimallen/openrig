@@ -66,7 +66,7 @@ export function createProcessLiveness(deps: {
   };
 }
 
-type ExecFile = (file: string, args: string[], options: { encoding: "utf-8" }) => string;
+type ExecFile = (file: string, args: string[], options: { encoding: "utf-8"; timeout?: number; killSignal?: NodeJS.Signals }) => string;
 
 // Windows has no ps(1) and no zombie state, so the signal probe alone decides liveness there.
 export function readProcessState(
@@ -76,7 +76,8 @@ export function readProcessState(
 ): string | null {
   if (platform === "win32") return "R";
   try {
-    return run("ps", ["-o", "state=", "-p", String(pid)], { encoding: "utf-8" });
+    // A finite bound: a hung `ps` must not hold the CLI open (workspaces-o9o.67); a timeout reads as unknown (null).
+    return run("ps", ["-o", "state=", "-p", String(pid)], { encoding: "utf-8", timeout: 5_000, killSignal: "SIGKILL" });
   } catch {
     return null;
   }
