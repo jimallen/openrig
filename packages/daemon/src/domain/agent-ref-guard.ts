@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import nodePath from "node:path";
 import { checkGuardedFile, type GuardedFileKind } from "./culture-file-guard.js";
 import { runningShippedSpecsRoot } from "./builtin-startup-files.js";
+import { confineUnderRoot, isInside, realOrSame } from "./confined-ref.js";
 
 /**
  * TRUST BOUNDARY (read this before changing anything here). Same decision as culture-file-guard.ts.
@@ -98,10 +99,6 @@ export type AgentRefDir =
   | { ok: true; dir: string; /** The root this persona's own `local:` imports are confined to (set for a `local:` ref only). */ importRoot?: string }
   | { ok: false; kind: "malformed" | "refused"; message: string };
 
-function realOrSame(fs: AgentRefFs, p: string): string {
-  try { return fs.realpath ? fs.realpath(p) : p; } catch { return p; }
-}
-
 /**
  * OF-99: the folder a seat's startup files are recorded under is the path AS TYPED (through any symlink), so a
  * later replay reads whatever the link points to then (`~/.agents-release/current/agents/x` follows `current`
@@ -111,11 +108,6 @@ function realOrSame(fs: AgentRefFs, p: string): string {
  */
 function asTyped(fs: AgentRefFs, typed: string, real: string): string {
   return realOrSame(fs, typed) === real ? typed : real;
-}
-
-function isInside(root: string, target: string): boolean {
-  const rel = nodePath.relative(root, target);
-  return rel === "" || (!rel.startsWith(`..${nodePath.sep}`) && rel !== ".." && !nodePath.isAbsolute(rel));
 }
 
 /** The spec tree root of a real folder: nearest ancestor (itself included) with `agents/` and `rigs/` children, if any. */
@@ -169,18 +161,15 @@ export function resolveAgentRefDir(ref: string, baseDir: string, fs: AgentRefFs,
     if (nodePath.isAbsolute(rel)) {
       return { ok: false, kind: "refused", message: `agent_ref "${ref}": a shipped: ref must be a path relative to the installed OpenRig's specs folder` };
     }
-    const typedRoot = nodePath.resolve(fs.shippedSpecsRoot ?? runningShippedSpecsRoot());
-    const root = realOrSame(fs, typedRoot);
-    const lexical = nodePath.resolve(root, rel);
-    const target = realOrSame(fs, lexical);
-    if (!isInside(root, lexical) || !isInside(root, target)) {
+    const confined = confineUnderRoot(fs.shippedSpecsRoot ?? runningShippedSpecsRoot(), rel, fs);
+    if (!confined.ok) {
       return {
         ok: false,
         kind: "refused",
-        message: `agent_ref "${ref}" resolves to ${target}, outside ${root}, the installed OpenRig's specs folder; a shipped: ref must stay inside it`,
+        message: `agent_ref "${ref}" resolves to ${confined.real}, outside ${confined.root}, the installed OpenRig's specs folder; a shipped: ref must stay inside it`,
       };
     }
-    return { ok: true, dir: asTyped(fs, nodePath.resolve(typedRoot, rel), target), importRoot: root };
+    return { ok: true, dir: asTyped(fs, confined.typed, confined.real), importRoot: confined.root };
   }
   return { ok: false, kind: "malformed", message: `Cannot resolve agent_ref "${ref}"` };
 }
