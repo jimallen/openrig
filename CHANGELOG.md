@@ -41,6 +41,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now one lookup, used by both the gate and the running-tool read (workspaces-o9o.31), takes only the seat's current session row. With no token yet there is no rollout from it, and the gate reads the file the seat's current Codex process declared at its start (the gate's existing fallback).
 - Census of every lookup of a resume token by seat: this was the only one that fell back to an earlier session. The pda binding lookups keep "the most recent session that has a token" on purpose, because that is the row a restore resumes from.
 
+### An explicit `--hand-over-since` wins over the seat's handover file (workspaces-o9o.94)
+
+- Symptom: `rig seat launch --hand-over-since <time>` was ignored when the seat's folder held an older `HANDOVER*.md`. The successor's hand-over started at the file's time, not the operator's (seen on release 5 on stu).
+- Cause: the daemon took the earliest of three times (the launch, the handover file, `--hand-over-since`), so an explicit time later than the file always lost.
+- Now an explicit `--hand-over-since` is used as given. The handover file's time and the launch time are only the default, and the earlier of those two still wins when no time is given.
+- The launch result carries `handoverFileWrittenAt` beside `handoverFile`, and the CLI says which since-time it used; when an older handover file was passed over, it names the file and its time and says it was not used.
+
 ### The running tool stays visible at every width, and the agent detail's two lines name the same start (workspaces-o9o.32)
 
 - Symptom: at 120 columns the seat table's NOW cell cut a long tool name and lost its age and the `?` that marks an unconfirmed call (`⚙ WebSearc…`); at 84 and 100 columns the table has no NOW column, so the running tool showed only in the agent detail.
