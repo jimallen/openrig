@@ -15,7 +15,6 @@ import {
   ensureDefaultWorkspace,
   ensureOpenRigInstance,
   formatInstanceInitializationConflicts,
-  instanceHomeConflict,
   nodeInstancePrivacy,
   type InitializationFsOps,
   type InitWorkspaceResult,
@@ -685,17 +684,12 @@ async function startOwnedDaemon(opts: StartOptions, deps: LifecycleDeps, lock: D
   }
   const daemonEntry = path.join(getDaemonPath(), "dist/index.js");
 
-  // workspaces-o9o.36: this writes the layout before the daemon runs, so it keeps the instance private as the daemon does: a home that
-  // is the user's home or above it is refused before anything is written, and a home its owner cannot enter (0600) is opened to 0700
-  // before the layout goes in (the same privacy port as the daemon's own start).
-  const privacy = nodeInstancePrivacy();
-  const homeConflict = instanceHomeConflict(OPENRIG_DIR, privacy);
-  if (homeConflict) {
-    throw new Error(`OpenRig instance initialization blocked: ${formatInstanceInitializationConflicts({ conflicts: [homeConflict] })}`);
-  }
+  // workspaces-o9o.36: this writes the layout before the daemon runs, so it keeps the instance private as the daemon does, with the
+  // same privacy port: a home that is the user's home or above it is refused before anything is written, and a home its owner cannot
+  // enter (0600) is opened to 0700 before the layout goes in.
   const initialization = ensureOpenRigInstance({
     home: OPENRIG_DIR,
-    privacy,
+    privacy: nodeInstancePrivacy(),
     workspaceRoot: opts.workspaceRoot,
     contextRoot: opts.contextRoot,
     skillsRoot: opts.skillsRoot,
