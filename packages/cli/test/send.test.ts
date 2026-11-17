@@ -278,6 +278,62 @@ describe("Send CLI", () => {
     expect((lastSendBody as Record<string, unknown>).actorSession).toBeNull();
   });
 
+  // workspaces-o9o.34: on the far host of an ssh relay, a SHELL's send carries the shell's own label and host (set by the relay), never this
+  // host's operator name, and states its origin so the daemon names that host.
+  describe("o9o.34: a shell's send relayed over ssh", () => {
+    const relay = (label: string | undefined, host = "laptop-1") => {
+      vi.stubEnv("RIGGED_SESSION_NAME", "");
+      vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "far-operator");
+      vi.stubEnv("OPENRIG_ORIGIN_HOST_ID", host);
+      vi.stubEnv("OPENRIG_ORIGIN_SHELL_LABEL", label ?? "");
+    };
+    const body = () => lastSendBody as Record<string, unknown>;
+
+    it("labels the envelope with the relayed shell's label and states the origin", async () => {
+      vi.stubEnv("OPENRIG_SESSION_NAME", "");
+      relay("near-operator");
+      const { exitCode } = await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]); });
+      expect(exitCode).toBeFalsy();
+      expect(String(body().text).split("\n")[0]).toBe("From: near-operator");
+      expect(body().origin).toEqual({ host: "laptop-1", sender: "unknown" });
+      expect(String(body().text)).not.toContain("far-operator");
+      expect(body().actorSession).toBeNull();
+    });
+
+    it("a relayed shell with no label is the no-sender marker, never this host's operator", async () => {
+      vi.stubEnv("OPENRIG_SESSION_NAME", "");
+      relay(undefined);
+      await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]); });
+      expect(String(body().text)).not.toContain("far-operator");
+      expect(String(body().text).split("\n")[0]).toBe("From: <unknown sender>");
+      expect(body().origin).toEqual({ host: "laptop-1", sender: "unknown" });
+    });
+
+    it("a seat identity wins: the relay env is ignored", async () => {
+      vi.stubEnv("OPENRIG_SESSION_NAME", "sender@my-rig");
+      relay("near-operator");
+      await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]); });
+      expect(String(body().text).split("\n")[0]).toBe("From: sender@my-rig");
+      expect(body()).not.toHaveProperty("origin");
+    });
+
+    it("a raw send states no origin", async () => {
+      vi.stubEnv("OPENRIG_SESSION_NAME", "");
+      relay("near-operator");
+      await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello", "--raw"]); });
+      expect(body().text).toBe("hello");
+      expect(body()).not.toHaveProperty("origin");
+    });
+
+    it("a malformed origin host id is ignored: the local rule stands", async () => {
+      vi.stubEnv("OPENRIG_SESSION_NAME", "");
+      relay("near-operator", "bad host; x");
+      await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]); });
+      expect(String(body().text).split("\n")[0]).toBe("From: far-operator");
+      expect(body()).not.toHaveProperty("origin");
+    });
+  });
+
   // OF-196: seats read `From: <unknown sender>` as a possible injection and loop on each other. A send from the operator's own shell has no seat
   // identity; its label is the configured operator seat. Only the label: the actor stays null.
   it("OF-196: an env-less send carries workspace.operator_seat_name as its From:, with a null actor", async () => {

@@ -15,6 +15,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - After o9o.3, a failed launch's pane tail reached `rig up` and restore output but not `rig seat launch --fresh` or `rig seat continue`. Both now print `pane: <last lines>` after the error, and their `--json` carries `paneTail`. The fresh start an operator accepts at `rig up` or `rig start` prints it too (`<seat> pane: ...`).
 - The tail stays transient, as in o9o.3: it rides the response only, already redacted by the shared redaction list, and no stored row gains it.
 
+
+### A shell's send over ssh is labelled with the shell's own name and host, not the far host's operator (workspaces-o9o.34)
+
+- Symptom: `rig send --host <ssh host>` from a shell (not a seat) reached the far seat as `From: <the FAR host's operator_seat_name>`. The ssh transport runs `rig send` again on the far host, and that CLI, finding no seat identity, used its own host's operator name. Measured on two real daemons with an ssh stand-in.
+- Now the relay sets `OPENRIG_ORIGIN_HOST_ID` (this host's own id) and `OPENRIG_ORIGIN_SHELL_LABEL` (the shell's own `workspace.operator_seat_name`, when set) on the far command line. The far `rig send` labels the envelope with that label and states the origin to its daemon, as the http transport does. The far seat then sees `From: <label> (a shell on <host>)` and that no rig address answers a shell, as with http (workspaces-o9o.16).
+- Unchanged: a seat's send over ssh (it carries its seat identity), raw sends, and http hosts. A far host on an older release ignores the two variables and labels as before.
 ### `rig walk` confirms a piece by its raw text, not by how it redacts (workspaces-o9o.82)
 
 - Symptom: since the generation record is served redacted (workspaces-o9o.60), `rig walk` accepted a record whose text equalled the piece once redacted. A different message holding a different secret redacts to the same text, so it could confirm, and close the turn of, a piece that was never consumed.

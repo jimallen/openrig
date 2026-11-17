@@ -205,6 +205,26 @@ describe("runCrossHostCommand", () => {
     expect(line).toBe(`sh -lc ${shellQuote(["rig", "ps"].map(shellQuote).join(" "))}`);
   });
 
+  // workspaces-o9o.34: a SHELL sender's origin rides as env on the far command line, quoted like the argv.
+  it("o9o.34 — shellOrigin prefixes OPENRIG_ORIGIN_HOST_ID and OPENRIG_ORIGIN_SHELL_LABEL, each quoted", async () => {
+    const capture: { command?: string; args?: readonly string[] } = {};
+    const spawn = mockSpawnFor({ exitCode: 0, stdout: "ok\n", capture });
+    const argv = ["rig", "send", "--", "dev@rig", "hi"];
+    await runCrossHostCommand(HOST, argv, { spawn, shellOrigin: { hostId: "laptop-1", label: "Jim's shell; rm -rf /" } });
+    const line = String(capture.args?.[capture.args.length - 1] ?? "");
+    const expectedInner = `OPENRIG_ORIGIN_HOST_ID=${shellQuote("laptop-1")} OPENRIG_ORIGIN_SHELL_LABEL=${shellQuote("Jim's shell; rm -rf /")} ${argv.map(shellQuote).join(" ")}`;
+    expect(line).toBe(`sh -lc ${shellQuote(expectedInner)}`);
+  });
+
+  it("o9o.34 — shellOrigin with no label sets only the host id", async () => {
+    const capture: { command?: string; args?: readonly string[] } = {};
+    const spawn = mockSpawnFor({ exitCode: 0, stdout: "ok\n", capture });
+    await runCrossHostCommand(HOST, ["rig", "ps"], { spawn, shellOrigin: { hostId: "laptop-1" } });
+    const line = String(capture.args?.[capture.args.length - 1] ?? "");
+    expect(line).toBe(`sh -lc ${shellQuote(`OPENRIG_ORIGIN_HOST_ID=${shellQuote("laptop-1")} ${["rig", "ps"].map(shellQuote).join(" ")}`)}`);
+    expect(line).not.toContain("OPENRIG_ORIGIN_SHELL_LABEL");
+  });
+
   it("includes -l <user> when host.user is set", async () => {
     const capture: { command?: string; args?: readonly string[] } = {};
     const spawn = mockSpawnFor({ exitCode: 0, capture });
