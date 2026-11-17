@@ -246,7 +246,7 @@ describe("polling loops sample a running hc seat as they sample a tmux one", () 
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(resumed).toBe(1);
-    expect(capture).toHaveBeenCalledWith("hc@rig", 1000);
+    expect(capture).toHaveBeenCalledWith("hc@rig", 1000, { joinWrappedLines: true });
   });
 });
 

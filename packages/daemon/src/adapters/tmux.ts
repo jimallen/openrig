@@ -1417,7 +1417,10 @@ export class TmuxAdapter {
    * fails too leaves the chunk to per-target reads. Each entry carries the time its own chunk was read (`capturedAt`), so a slow later
    * chunk can't make an earlier capture look fresh.
    */
-  async capturePanesContent(targets: string[], lines: number = 20, now: () => Date = () => new Date()): Promise<Map<string, PaneCapture> | null> {
+  async capturePanesContent(targets: string[], lines: number = 20, now: () => Date = () => new Date(), opts?: { joinWrappedLines?: boolean }): Promise<Map<string, PaneCapture> | null> {
+    // As capturePaneContent's option: `-J` joins soft-wrapped rows (workspaces-o9o.28 review), so a token wider than the
+    // pane comes back whole.
+    const joined = opts?.joinWrappedLines === true;
     // OF-176: when the poll loops' shared window snapshot answered within CAPTURE_LISTING_MAX_AGE_MS, it is the listing
     // (no fork); otherwise a `list-sessions` of its own runs beside the chain, as before.
     const shared = this.peekSessionWindowSnapshot(CAPTURE_LISTING_MAX_AGE_MS);
@@ -1433,10 +1436,10 @@ export class TmuxAdapter {
       const mark = (k: number) => `__openrig_capture_${nonce}_${k}__`;
       const argv = ["tmux", ...chunk.flatMap((t, k) => [
         ...(k > 0 ? [";"] : []),
-        "display-message", "-p", "-t", `=${t}:`, mark(k), ";", "capture-pane", "-p", "-t", `=${t}:`, "-S", `-${lines}`,
+        "display-message", "-p", "-t", `=${t}:`, mark(k), ";", "capture-pane", "-p", ...(joined ? ["-J"] : []), "-t", `=${t}:`, "-S", `-${lines}`,
       ])];
       const legacy = "tmux " + chunk.map((t, k) =>
-        `display-message -p -t ${shellQuote(`=${t}:`)} ${shellQuote(mark(k))} \\; capture-pane -p -t ${shellQuote(`=${t}:`)} -S -${lines}`,
+        `display-message -p -t ${shellQuote(`=${t}:`)} ${shellQuote(mark(k))} \\; capture-pane -p${joined ? " -J" : ""} -t ${shellQuote(`=${t}:`)} -S -${lines}`,
       ).join(" \\; ");
       let output: string;
       let capturedAt: Date;

@@ -57,7 +57,7 @@ describe("startTranscriptRotation — capture-pane invocation contract", () => {
     );
     // First tick is async; allow microtasks to flush.
     await new Promise((r) => setImmediate(r));
-    expect(adapter.capturePaneContent).toHaveBeenCalledWith("session@rig", 500);
+    expect(adapter.capturePaneContent).toHaveBeenCalledWith("session@rig", 500, { joinWrappedLines: true });
     stopTranscriptRotation("session@rig");
   });
 

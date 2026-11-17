@@ -11,13 +11,18 @@
 // (md5 sums, ids) and `sk-` keys under 16 characters. Every pattern carries the
 // `g` flag and nothing else, so a caller may rebuild it from `source` alone.
 
+/** The secret-named assignment names (see the assignment patterns in the list). One string, so the three rules agree. */
+const SECRET_NAME = String.raw`(?:(?:[A-Z0-9]+_)*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY)|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:password|passwd|secret|token|api_?key|access_?key|private_?key)|[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)*(?:Password|Passwd|Secret|Token|ApiKey|AccessKey|PrivateKey)|password|passwd)`;
+
 /** The transcript secret-pattern list. Identical to packages/cli/src/restore-packet/redaction.ts SECRET_PATTERNS. */
 export const TRANSCRIPT_SECRET_PATTERNS: readonly RegExp[] = [
   // v0 (Velocity prior art).
   /\bsk-[A-Za-z0-9_-]{16,}\b/g,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/g,
+  // The auth scheme name is case-insensitive (RFC 9110 11.1): bearer, BEARER and bEaReR are the same credential
+  // (workspaces-o9o.28 review). Spelled with letter classes, since every pattern carries the g flag and nothing else.
+  /\b[Bb][Ee][Aa][Rr][Ee][Rr]\s+[A-Za-z0-9._~+/=-]{20,}\b/g,
   // Vendor token shapes.
   /\bxox[abeposr]-[A-Za-z0-9-]{10,}/g, // Slack bot/user/app/refresh/config tokens
   /\bxapp-[A-Za-z0-9-]{10,}/g, // Slack app-level token
@@ -34,11 +39,18 @@ export const TRANSCRIPT_SECRET_PATTERNS: readonly RegExp[] = [
   // Bare "key", "token" or "secret" in lower case is prose or code ("the key: ...", "{ key: value }"),
   // and SORT_KEY / primary_key are not secret names, so none of those match. The value must be 8+
   // characters and not a reference ($VAR, ${VAR}, <placeholder>, %VAR%).
-  /(?<=(?<![A-Za-z0-9_])(?:(?:[A-Z0-9]+_)*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY)|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:password|passwd|secret|token|api_?key|access_?key|private_?key)|[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)*(?:Password|Passwd|Secret|Token|ApiKey|AccessKey|PrivateKey)|password|passwd)["']?\s*[=:]\s*["']?)(?![$<{%])[^\s"',;}]{8,}/g,
+  // A quoted value is redacted whole, up to its closing quote, spaces and all (workspaces-o9o.28 review): a phrase
+  // password otherwise leaked whole when its first word was under the floor, or kept every word after the first.
+  // These two run before the unquoted rule below.
+  new RegExp(String.raw`(?<=(?<![A-Za-z0-9_])${SECRET_NAME}["']?\s*[=:]\s*")(?![$<{%])[^"\n]{8,}(?=")`, "g"),
+  new RegExp(String.raw`(?<=(?<![A-Za-z0-9_])${SECRET_NAME}["']?\s*[=:]\s*')(?![$<{%])[^'\n]{8,}(?=')`, "g"),
+  new RegExp(String.raw`(?<=(?<![A-Za-z0-9_])${SECRET_NAME}["']?\s*[=:]\s*["']?)(?![$<{%])[^\s"',;}]{8,}`, "g"),
   // v0: any unbroken base64-shaped run of 40+ (last: the generic catch-all), EXCEPT a pure-hex run of
   // exactly 40 or 64 characters (a git sha, a sha256), which stays visible. Jim, 2026-11-16 (o9o.49):
   // "Keep shas, exempt hex 40/64". A 41-hex run, or any 40+ run with a non-hex character, is still redacted.
-  /\b(?![0-9a-fA-F]{40}(?![A-Za-z0-9+/=])|[0-9a-fA-F]{64}(?![A-Za-z0-9+/=]))[A-Za-z0-9+/]{40,}={0,2}\b/g,
+  // Only a STANDALONE hash is exempt (workspaces-o9o.28 review): a hex run joined to a prefix or a suffix by - or _
+  // (token-<40hex>, key_<64hex>, <40hex>-prod) is a token's tail, and a run may start right after an _.
+  /(?:\b|(?<=_))(?!(?<![-_])(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})(?![A-Za-z0-9+/=_-]))[A-Za-z0-9+/]{40,}={0,2}\b/g,
 ];
 
 /**

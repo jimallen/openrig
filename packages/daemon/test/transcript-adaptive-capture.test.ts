@@ -99,7 +99,7 @@ describe("adaptive capture", () => {
     await vi.advanceTimersByTimeAsync(6000);
     options = { lines: 40, pollIntervalMs: 1000 };
     await vi.advanceTimersByTimeAsync(1000);
-    expect(adapter.capturePaneContent).toHaveBeenLastCalledWith("seat", 40);
+    expect(adapter.capturePaneContent).toHaveBeenLastCalledWith("seat", 40, { joinWrappedLines: true });
     expect(getTranscriptCaptureStats().activeIntervalMs).toBe(1000);
     let release!: (value: string) => void;
     adapter.capturePaneContent.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
@@ -110,7 +110,7 @@ describe("adaptive capture", () => {
     expect(adapter.capturePaneContent).toHaveBeenCalledTimes(count);
     release("last\n");
     await vi.advanceTimersByTimeAsync(2000);
-    expect(adapter.capturePaneContent).toHaveBeenLastCalledWith("seat", 20);
+    expect(adapter.capturePaneContent).toHaveBeenLastCalledWith("seat", 20, { joinWrappedLines: true });
   });
 
   it("keeps the idle ceiling below transcript staleness with slow activity hints", async () => {

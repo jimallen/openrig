@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Transcript redaction covers more credential shapes, on both twins (workspaces-o9o.28)
+
+- Symptom: transcript text redacted only `sk-`, GitHub, `Bearer` and long base64 shapes. AWS key ids, Google keys, Slack, GitLab and npm tokens, short JWTs, URL passwords and `NAME=value` secrets passed through. So did a token wider than its tmux pane: the transcript held it as two fragments, each too short to match.
+- The daemon's `redactTranscriptContent` (transcript reads, queued-message previews, launch-failure pane tails) and the CLI's restore-packet `redact` / `hasSecretPattern` share one list, and a test fails if they drift. Added to it: Slack (`xox?-`, `xapp-`), GitLab, npm, JWT, AWS (`AKIA`, `ASIA`) and Google (`AIza`) shapes; the password in `scheme://user:password@host`; and the value of a secret-named assignment (`DB_PASSWORD=`, `"client_secret": "…"`, `accessToken:`, `password:`). A quoted value is redacted whole, spaces and all. `Bearer` matches in any letter case.
+- Kept visible: a standalone 40- or 64-character hex hash (git shas, sha256), as Jim decided on 2026-11-16 ("Keep shas, exempt hex 40/64"). A hex run joined to a prefix or a suffix by `-` or `_` (`token-<40hex>`, `<40hex>-prod`) is a token and is redacted, and so is a 40+ run right after an `_`. Prose and code (`the key: …`, `{ key: value }`, `SORT_KEY=`, `primary_key:`), variable references (`$VAR`, `${VAR}`, `<placeholder>`) and values under 8 characters are left alone.
+- Transcript rotation now captures with soft-wrapped rows joined (tmux `capture-pane -J`, batched or per session; hc reads were already joined), so a wrapped token reaches redaction whole.
+- The restore-packet validator and schema accept `redaction_policy_id: "openrig-v1"`. The writer still emits `openrig-v0`, so an older CLI never rejects a newer packet.
 ### The shared-docs tree follows OPENRIG_HOME (workspaces-o9o.46)
 
 - Symptom: a scratch daemon started with its own `OPENRIG_HOME` created `~/.openrig/shared-docs/rigs/<rig>/state/<pod>` in the operator's real home and gave that folder to a Codex seat as a writable `--add-dir`. So an instance meant to be isolated wrote into the live one's tree.

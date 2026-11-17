@@ -74,6 +74,6 @@ describe("transcript capture boot recovery", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(resumed).toBe(1);
-    expect(capturePaneContent).toHaveBeenCalledWith("dev-impl@restart-rig", 1000);
+    expect(capturePaneContent).toHaveBeenCalledWith("dev-impl@restart-rig", 1000, { joinWrappedLines: true });
   });
 });

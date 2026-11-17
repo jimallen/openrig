@@ -1356,6 +1356,12 @@
   "when": "!findHc()"
  },
  {
+  "file": "packages/daemon/test/transcript-rotation-soft-wrap.real.test.ts",
+  "kind": "skipIf",
+  "task": "transcript rotation joins soft-wrapped rows before anything redacts them (real tmux)",
+  "when": "!HAS_TMUX || process.platform === \"win32\""
+ },
+ {
   "file": "packages/daemon/test/transcript-seat-env-native.test.ts",
   "kind": "skipIf",
   "task": "hc transcript seat environment",

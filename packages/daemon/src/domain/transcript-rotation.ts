@@ -129,6 +129,11 @@ export function getTranscriptCaptureStats() {
   };
 }
 
+// Every capture joins soft-wrapped rows (workspaces-o9o.28 review): unjoined, a token wider than the pane lands in the
+// transcript file as two fragments, each too short for the redaction policy, and both survive every read that redacts.
+// On hc a read is joined already (hc-capture.ts); this is tmux's `-J`.
+const JOINED = { joinWrappedLines: true } as const;
+
 // Sessions on one timer step tick together, so the captures due in a tick can share one batched call (#161).
 const tickers = new Map<number, { timer: NodeJS.Timeout; ticks: Map<string, () => void> }>();
 const activeSteps = new Map<string, number>();
@@ -146,10 +151,10 @@ let pendingCaptures = new Map<TranscriptHost, Map<number, CaptureRequest[]>>();
 function captureSoon(adapter: TranscriptHost, sessionName: string, lines: number, isCurrent: () => boolean): Promise<string | null> {
   // The batch lists sessions by name, so pane, window and `session:window` targets read per target.
   if (typeof adapter.capturePanesContent !== "function" || /^[%@$]\d+$/.test(sessionName) || sessionName.includes(":")) {
-    return Promise.resolve().then(() => adapter.capturePaneContent(sessionName, lines));
+    return Promise.resolve().then(() => adapter.capturePaneContent(sessionName, lines, JOINED));
   }
   if (unlistedSessions.has(sessionName)) {
-    return Promise.resolve().then(() => adapter.capturePaneContent(sessionName, lines)).then((content) => {
+    return Promise.resolve().then(() => adapter.capturePaneContent(sessionName, lines, JOINED)).then((content) => {
       if (content !== null) unlistedSessions.delete(sessionName);
       return content;
     });
@@ -177,9 +182,9 @@ function flushCaptures(): void {
 
 /** One chained call, with a listing beside it. A session the batch left out reads per target. */
 async function captureBatch(adapter: TranscriptHost, lines: number, requests: CaptureRequest[]): Promise<void> {
-  const perTarget = (r: CaptureRequest) => Promise.resolve().then(() => adapter.capturePaneContent(r.sessionName, lines)).then(r.resolve, () => r.resolve(null));
+  const perTarget = (r: CaptureRequest) => Promise.resolve().then(() => adapter.capturePaneContent(r.sessionName, lines, JOINED)).then(r.resolve, () => r.resolve(null));
   if (requests.length === 1) return void perTarget(requests[0]!);
-  const panes = await Promise.resolve().then(() => adapter.capturePanesContent?.(requests.map((r) => r.sessionName), lines) ?? null).catch(() => null);
+  const panes = await Promise.resolve().then(() => adapter.capturePanesContent?.(requests.map((r) => r.sessionName), lines, undefined, JOINED) ?? null).catch(() => null);
   for (const r of requests) {
     const pane = panes?.get(r.sessionName);
     if (pane) {

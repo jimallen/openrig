@@ -64,7 +64,8 @@ function fakeTmux() {
   const captureCalls = () => calls.filter((a) => a.includes("capture-pane"));
   /** Target sessions of every capture call so far, one array per call. */
   const capturedTargets = () => captureCalls().filter((a) => a.includes("capture-pane"))
-    .map((a) => a.flatMap((x, i) => (a[i - 1] === "-t" && a[i - 3] === "capture-pane" ? [x.slice(1, -1)] : [])));
+    // The `-t` of each capture-pane (its flags, such as -J, sit between): the last command before it is capture-pane.
+    .map((a) => a.flatMap((x, i) => (a[i - 1] === "-t" && a.lastIndexOf("capture-pane", i) > a.lastIndexOf("display-message", i) ? [x.slice(1, -1)] : [])));
   let release: () => void = () => {};
   return {
     adapter, sessions, calls, fail, latency, captureCalls, capturedTargets,

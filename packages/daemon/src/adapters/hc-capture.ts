@@ -202,9 +202,11 @@ export class HcCapture {
   /**
    * Several seats' text at once, as `capturePanesContent` of the tmux adapter: a Map keyed by the target as given, each entry
    * carrying the time its own chunk was read; `missing` marks a terminal hc says is not there. A read that fails for any other reason
-   * leaves its target out, for the caller to read alone. Null when the core cannot be reached and nothing was read.
+   * leaves its target out, for the caller to read alone. Null when the core cannot be reached and nothing was read. The tmux
+   * adapter's `joinWrappedLines` option is accepted, so the two take the same arguments, and has nothing to do: an hc read is
+   * joined already (above).
    */
-  async capturePanesContent(targets: string[], lines: number = 20, now: () => Date = this.now): Promise<Map<string, PaneCapture> | null> {
+  async capturePanesContent(targets: string[], lines: number = 20, now: () => Date = this.now, _opts?: { joinWrappedLines?: boolean }): Promise<Map<string, PaneCapture> | null> {
     const out = new Map<string, PaneCapture>();
     let unreachable = false;
     const unique = [...new Set(targets)];

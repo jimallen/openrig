@@ -37,8 +37,11 @@ const JSON_SECRET = "abc" + "DEF123ghi";
 const CAMEL = "tok" + "ValueZ9q";
 const KEBAB = "kebab" + "Pass77";
 const LOWER_PW = "hunter22" + "hunter";
+const BEARER_VALUE = "o9o28" + fill(24, "AbCdEf012345");
 
 const HEX41 = fill(41, "0123456789abcdef");
+const HEX40 = fill(40, "0123456789abcdef");
+const HEX64 = fill(64, "fedcba9876543210");
 const NONHEX40 = fill(40, "0123456789abcdeg"); // a "g": 40 characters, not pure hex
 const B64_64 = fill(64, "aGVsbG8rd29ybGQv");
 
@@ -67,6 +70,26 @@ const SECRET_ROWS: SecretRow[] = [
   { shape: "camelCase secret field", text: `accessToken: ${CAMEL}`, secret: CAMEL, kept: ["accessToken: "] },
   { shape: "kebab secret field", text: `db-password = ${KEBAB}`, secret: KEBAB, kept: ["db-password = "] },
   { shape: "bare lower password", text: `password: ${LOWER_PW}`, secret: LOWER_PW, kept: ["password: "] },
+  // workspaces-o9o.28 review (2): the scheme name is case-insensitive (RFC 9110 11.1), so every casing is a credential.
+  { shape: "lower-case bearer", text: `authorization: bearer ${BEARER_VALUE}`, secret: BEARER_VALUE, kept: ["authorization: "] },
+  { shape: "upper-case BEARER", text: `Authorization: BEARER ${BEARER_VALUE}`, secret: BEARER_VALUE, kept: ["Authorization: "] },
+  { shape: "mixed-case bEaReR", text: `-H 'Authorization: bEaReR ${BEARER_VALUE}'`, secret: BEARER_VALUE, kept: ["-H 'Authorization: ", "'"] },
+  // workspaces-o9o.28 review (4): a hex tail is a hash only when it stands alone; joined to a prefix it is a token.
+  { shape: "token-<40hex>", text: `use token-${HEX40} now`, secret: HEX40, kept: ["use ", " now"] },
+  { shape: "token_<40hex>", text: `use token_${HEX40} now`, secret: HEX40, kept: ["use ", " now"] },
+  { shape: "key-<64hex>", text: `use key-${HEX64} now`, secret: HEX64, kept: ["use ", " now"] },
+  { shape: "<40hex>-suffix", text: `use ${HEX40}-prod now`, secret: HEX40, kept: ["use ", " now"] },
+];
+
+// workspaces-o9o.28 review (3): a quoted secret value with spaces is redacted whole, not only its first word (or not at
+// all, when that word is under the 8-character floor). Every word of the value must be gone.
+const PHRASE = ["correct", "horse", "battery", "staple" + "9"];
+const LONG_FIRST = ["hunter22" + "x", "more", "words"];
+const QUOTED_PHRASE_ROWS: Array<{ shape: string; text: string; words: string[]; kept: string[] }> = [
+  { shape: "double-quoted UPPER_SNAKE phrase", text: `export DB_PASSWORD="${PHRASE.join(" ")}"`, words: PHRASE, kept: ['export DB_PASSWORD="', '"'] },
+  { shape: "single-quoted phrase with a long first word", text: `API_KEY='${LONG_FIRST.join(" ")}' # set`, words: LONG_FIRST, kept: ["API_KEY='", "' # set"] },
+  { shape: "JSON field with a phrase", text: `{"client_secret": "${PHRASE.join(" ")}", "user": "jo"}`, words: PHRASE, kept: ['{"client_secret": "', '", "user": "jo"}'] },
+  { shape: "yaml-style password phrase", text: `password: "${LONG_FIRST.join(" ")}"`, words: LONG_FIRST, kept: ['password: "'] },
 ];
 
 // Legitimate transcript text the policy must leave byte-for-byte alone (over-redaction pins).
@@ -92,7 +115,11 @@ const NEGATIVE_ROWS: Array<[string, string]> = [
   ["variable reference", "API_KEY=$OPENAI_API_KEY_FROM_ENV and SECRET=${VAULT_SECRET_VALUE}"],
   ["placeholder", "GITHUB_TOKEN=<your-token-here>"],
   ["URL with port, no userinfo", "http://localhost:8080/api@x"],
-  ["bare AIza / eyJ / xox words", "AIzaSomething short, eyJhbGci only, xoxb- alone"],
+  // Bare vendor prefixes with too little after them, assembled so no prefix sits in the source as a literal.
+  ["bare AIza / eyJ / xox words", `${"AI" + "za"}Something short, ${"ey" + "J"}hbGci only, ${"xo" + "xb-"} alone`],
+  // workspaces-o9o.28 review (4): a standalone sha stays visible wherever ordinary punctuation sits beside it.
+  ["40-hex sha in parentheses and before a colon", `(${HEX40}) and ${HEX40}: done`],
+  ["two 40-hex shas as a range", `${HEX40}..${HEX40}`],
 ];
 
 const twins: Array<[string, (text: string) => string]> = [
@@ -116,6 +143,14 @@ describe("transcript redaction policy (both twins)", () => {
           expect(apply(text)).toBe(text);
         });
       }
+      for (const row of QUOTED_PHRASE_ROWS) {
+        it(`redacts every word of a ${row.shape}, keeping its name and quotes`, () => {
+          const out = apply(row.text);
+          for (const w of row.words) expect(out, `"${w}" of ${row.shape} survived`).not.toContain(w);
+          expect(out).toContain("[REDACTED]");
+          for (const k of row.kept) expect(out, `context "${k}" lost`).toContain(k);
+        });
+      }
       it("is idempotent: redacting redacted text changes nothing", () => {
         const once = apply(SECRET_ROWS.map((r) => r.text).join("\n"));
         expect(apply(once)).toBe(once);
@@ -126,6 +161,11 @@ describe("transcript redaction policy (both twins)", () => {
   describe("cli hasSecretPattern (the redacted_secrets counter)", () => {
     for (const row of SECRET_ROWS) {
       it(`detects ${row.shape}`, () => {
+        expect(hasSecretPattern(row.text)).toBe(true);
+      });
+    }
+    for (const row of QUOTED_PHRASE_ROWS) {
+      it(`detects a ${row.shape}`, () => {
         expect(hasSecretPattern(row.text)).toBe(true);
       });
     }
@@ -148,7 +188,7 @@ describe("twin parity: daemon TRANSCRIPT_SECRET_PATTERNS and cli SECRET_PATTERNS
   });
 
   it("gives the same output over a shared corpus", () => {
-    const corpus = [...SECRET_ROWS.map((r) => r.text), ...NEGATIVE_ROWS.map(([, t]) => t)];
+    const corpus = [...SECRET_ROWS.map((r) => r.text), ...QUOTED_PHRASE_ROWS.map((r) => r.text), ...NEGATIVE_ROWS.map(([, t]) => t)];
     for (const text of corpus) expect(redactTranscriptContent(text), text).toBe(redact(text));
   });
 });

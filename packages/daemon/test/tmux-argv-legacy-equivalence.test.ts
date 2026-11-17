@@ -139,6 +139,9 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.startPipePane(SESSION, "/tmp/out dir/it's.log");
   await a.stopPipePane(SESSION);
   await a.capturePanesContent([SESSION, "alpha", "missing"], 50);
+  // workspaces-o9o.28: transcript rotation's joined capture (`-J`), batched and per target.
+  await a.capturePanesContent([SESSION, "alpha"], 50, undefined, { joinWrappedLines: true });
+  await a.capturePaneContent(SESSION, 30, { joinWrappedLines: true });
   await a.capturePaneContent(SESSION, 30);
   await a.capturePaneContent(SESSION, 30, { escapeSequences: true });
   await a.capturePaneScreen(SESSION);

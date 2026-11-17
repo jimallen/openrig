@@ -243,7 +243,7 @@ describe("transcript routes", () => {
     const hc = await app.request("/api/transcripts/dev-hc@my-rig/tail");
     expect(hc.status).toBe(200);
     expect((await hc.json()).content).toBe("READY\n");
-    expect(capturePaneSpy).toHaveBeenCalledWith("dev-hc@my-rig", expect.any(Number));
+    expect(capturePaneSpy).toHaveBeenCalledWith("dev-hc@my-rig", expect.any(Number), { joinWrappedLines: true });
     expect(getActiveRotationCount()).toBeGreaterThan(0);
 
     capturePaneSpy.mockClear();
