@@ -179,6 +179,19 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     expect(config()).not.toContain(`node "${RELAY_ASSET}"`);
   });
 
+  it("with no record (an older daemon wrote the block), the stanzas running the current relay are still OpenRig's: upsert and strip", () => {
+    blockLast();
+    appendInsideBlock(PLUGIN_TABLES);
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().ensureCodexActivityHooks();
+    expect(managedCommands(config())).toBe(4);
+    expect(split(config()).outside).toContain(PLUGIN_TABLES);
+    fs.rmSync(path.join(stateDir, "state"), { recursive: true, force: true });
+    adapter().removeCodexActivityHooks();
+    expect(managedCommands(config())).toBe(0);
+    expect(config()).toContain(PLUGIN_TABLES);
+  });
+
   // verify-qa's review of 2492700bd, finding 2: a line that looks like a table header inside a multiline string is string content, not a
   // header (o9o.76's lesson: a header counts only at the top level, outside any string).
   const MCP_ARGS = 'one\n[not.a.header]\n[[nor.this]]\ntwo\n';
