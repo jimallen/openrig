@@ -1516,8 +1516,11 @@ export function upsertCodexActivityHooks(content: string, relayPath: string): st
     `${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_BEGIN)}[\\s\\S]*?${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_END)}\\n?`,
     "m"
   );
-  if (pattern.test(next)) {
-    return next.replace(pattern, () => block); // literal: a string would expand `$` patterns in the path
+  const existing = pattern.exec(next);
+  if (existing) {
+    // workspaces-o9o.88: what Codex (or a person) put inside the sentinels that is not OpenRig's goes on, just after the block.
+    const foreign = foreignTablesInManagedBlock(existing[0]);
+    return next.replace(pattern, () => (foreign ? `${block}\n${foreign}` : block)); // literal: a string would expand `$` patterns
   }
   const prefix = next.replace(/\n*$/, "");
   return prefix.length > 0 ? `${prefix}\n\n${block}` : block;
@@ -1534,8 +1537,41 @@ function stripCodexActivityHooks(content: string): string {
     `\\n*${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_BEGIN)}[\\s\\S]*?${escapeRegExp(OPENRIG_ACTIVITY_HOOKS_END)}[ \\t]*\\n?`,
     "m"
   );
-  if (!pattern.test(content)) return content;
-  return content.replace(pattern, "\n");
+  const existing = pattern.exec(content);
+  if (!existing) return content;
+  const foreign = foreignTablesInManagedBlock(existing[0]);
+  return content.replace(pattern, () => (foreign ? `\n${foreign}` : "\n"));
+}
+
+/**
+ * workspaces-o9o.88: the managed block owns OpenRig's activity-hook stanzas and nothing else. Measured on Codex 0.166.0: `codex plugin add`
+ * appends its [marketplaces.*] and [plugins."<plugin>@<market>"] tables just before the closing sentinel when the block is last in the file,
+ * and replacing the whole BEGIN..END range deleted them. Returns, in order, every table found between the sentinels that is not OpenRig's:
+ * any table other than a hooks group, and any [[hooks.<Event>]] group (with its [[hooks.<Event>.hooks]] tables) whose command does not run
+ * an activity-relay.cjs. Empty when there is none. Blank lines and comments before the first table are the block's own.
+ */
+const CODEX_TABLE_HEADER = /^\s*\[/;
+const CODEX_HOOK_GROUP_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\]\]\s*$/;
+const CODEX_HOOK_MEMBER_HEADER = /^\s*\[\[hooks\.([A-Za-z]+)\.hooks\]\]\s*$/;
+const OPENRIG_RELAY_COMMAND = /^\s*command\s*=\s*'node "[^"]*activity-relay\.cjs"'\s*$/;
+
+function foreignTablesInManagedBlock(blockText: string): string {
+  const body = blockText.split("\n").filter((line) => !line.includes(OPENRIG_ACTIVITY_HOOKS_BEGIN) && !line.includes(OPENRIG_ACTIVITY_HOOKS_END));
+  // Split into groups: each table starts one, except an [[hooks.<E>.hooks]] table, which belongs to the [[hooks.<E>]] group before it.
+  const groups: string[][] = [];
+  for (const line of body) {
+    const current = groups[groups.length - 1];
+    const member = CODEX_HOOK_MEMBER_HEADER.exec(line);
+    const joinsGroup = member !== null && current !== undefined && CODEX_HOOK_GROUP_HEADER.exec(current[0]!)?.[1] === member[1];
+    if (CODEX_TABLE_HEADER.test(line) && !joinsGroup) groups.push([line]);
+    else if (current !== undefined) current.push(line);
+  }
+  const isOpenRigStanza = (group: string[]) => {
+    const event = CODEX_HOOK_GROUP_HEADER.exec(group[0]!)?.[1];
+    return event !== undefined && (OPENRIG_ACTIVITY_HOOK_EVENTS as readonly string[]).includes(event) && group.some((line) => OPENRIG_RELAY_COMMAND.test(line));
+  };
+  const kept = groups.filter((group) => !isOpenRigStanza(group)).map((group) => group.join("\n").replace(/\s+$/, ""));
+  return kept.length > 0 ? `${kept.join("\n\n")}\n` : "";
 }
 
 /** Ensure `[features].hooks = true` (canonical key; not the deprecated codex_hooks alias). */
