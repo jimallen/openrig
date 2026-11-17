@@ -124,6 +124,15 @@ describe("workspaces-o9o.76: on a Codex seat the relay runs once per hook when t
     expect(posts("Stop")).toHaveLength(1);
   });
 
+  it("OpenRig's block present for another event only, the user's own Stop hook outside it: the plugin copy relays Stop", async () => {
+    const block = ["# BEGIN OPENRIG MANAGED ACTIVITY HOOKS", "[[hooks.SessionStart]]", "[[hooks.SessionStart.hooks]]", 'type = "command"',
+      `command = 'node "${daemonRelay}"'`, "# END OPENRIG MANAGED ACTIVITY HOOKS"].join("\n");
+    const user = ["[[hooks.Stop]]", "[[hooks.Stop.hooks]]", 'type = "command"', `command = 'node "${daemonRelay}"'`].join("\n");
+    writeFileSync(join(codexHome, "config.toml"), `${block}\n\n${user}\n`);
+    await runRelay(pluginRelay(), { hook_event_name: "Stop" }, true);
+    expect(posts("Stop")).toHaveLength(1);
+  });
+
   it("a managed block for an older relay path that is still readable counts: the plugin copy steps aside", async () => {
     const older = join(root, "older", "hooks", "scripts", "activity-relay.cjs");
     mkdirSync(dirname(older), { recursive: true }); copyFileSync(RELAY_ASSET, older);
