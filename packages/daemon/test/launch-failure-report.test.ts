@@ -7,6 +7,16 @@ import { redactTranscriptContent } from "../src/domain/transcript-redaction.js";
 /** Fakes assembled at runtime, so no credential-shaped literal sits in this file (CoS rule, 2026-11-16). */
 const SK = ["s", "k-"].join("");
 const EYJ = "ey" + "J";
+/** Secret values for the assignment and URL-password rows, assembled at runtime for the same reason (verify-sec, o9o.48). */
+const URL_PW = "hunter2" + "pass";
+const PW = "hunt" + "er2";
+const KEY6 = "abc" + "123";
+const TOK = "t" + "0k";
+const CS = "s3cr3t" + "-v4lue";
+const PHRASE = "correct" + " horse battery";
+const TWO_WORDS = "two" + " words";
+const LONG_FIRST = "hunter22x" + " more";
+const ASSIGNMENTS = `export DB_PASSWORD=${PW} MY_API_KEY=${KEY6} SESSION_TOKEN=${TOK}`;
 
 describe("paneTailQuote", () => {
   it("quotes the last four non-empty lines, joined with ' | '", () => {
@@ -37,9 +47,9 @@ describe("paneTailQuote", () => {
   });
 
   it.each([
-    ["a URL's password", "git clone https://jim:hunter2pass@example.com/repo.git", "git clone https://jim:[REDACTED]@example.com/repo.git"],
-    ["NAME=value for a secret-named variable", "export DB_PASSWORD=hunter2 MY_API_KEY=abc123 SESSION_TOKEN=t0k", "export DB_PASSWORD=[REDACTED] MY_API_KEY=[REDACTED] SESSION_TOKEN=[REDACTED]"],
-    ["NAME: value for a secret-named key", "client_secret: s3cr3t-v4lue", "client_secret: [REDACTED]"],
+    ["a URL's password", `git clone https://jim:${URL_PW}@example.com/repo.git`, "git clone https://jim:[REDACTED]@example.com/repo.git"],
+    ["NAME=value for a secret-named variable", ASSIGNMENTS, "export DB_PASSWORD=[REDACTED] MY_API_KEY=[REDACTED] SESSION_TOKEN=[REDACTED]"],
+    ["NAME: value for a secret-named key", `client_secret: ${CS}`, "client_secret: [REDACTED]"],
   ])("redacts %s", (_label, input, expected) => {
     expect(paneTailQuote(input)).toBe(expected);
   });
@@ -124,16 +134,16 @@ describe("redactPaneText is the shared transcript redaction policy", () => {
   });
 
   it("redacts a quoted phrase whole and keeps its quotes", () => {
-    expect(redactPaneText('export DB_PASSWORD="correct horse battery"')).toBe('export DB_PASSWORD="[REDACTED]"');
+    expect(redactPaneText(`export DB_PASSWORD="${PHRASE}"`)).toBe('export DB_PASSWORD="[REDACTED]"');
   });
 
   it("gives the transcript policy's output, byte for byte, over a mixed corpus", () => {
     const corpus = [
       `key ${SK}abcdefghijklmnop0123 here`,
-      "git clone https://jim:hunter2pass@example.com/repo.git",
-      "export DB_PASSWORD=hunter2 MY_API_KEY=abc123 SESSION_TOKEN=t0k",
-      "client_secret: s3cr3t-v4lue",
-      'API_KEY="two words" and password: "hunter22x more"',
+      `git clone https://jim:${URL_PW}@example.com/repo.git`,
+      ASSIGNMENTS,
+      `client_secret: ${CS}`,
+      `API_KEY="${TWO_WORDS}" and password: "${LONG_FIRST}"`,
       "the key: ensure tests pass; SORT_KEY=lastname_first",
       `auth ${EYJ}hbGciOiJIUzI1NiJ9.${EYJ}zdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk end`,
     ];
