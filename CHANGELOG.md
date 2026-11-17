@@ -18,6 +18,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - The piece is the first matching user message after walk's snapshot, and only that message's own turn can close it. A later message with the same text (the daemon marks it too) closing its turn does not close the piece's.
 - Known limit: the daemon marks every message whose raw text matches, so a caller learns how many times its own message was sent within the window. It already knows the whole message.
 
+### A Codex seat's status names the tool it is running (workspaces-o9o.31)
+
+- Symptom: while a Codex seat ran a tool, `rig ps` and the `rig send` answer said only `busy: turn running, last hook UserPromptSubmit …`, where a Claude seat says `busy: running Bash for 3 min (since 16:05Z)` (workspaces-o9o.4).
+- Cause: Codex relays no tool hook (its OpenRig hooks are SessionStart, UserPromptSubmit, Stop, PostCompact and PermissionRequest), so the daemon had no open call to name.
+- Now the daemon reads the end (256 KiB) of a Codex seat's rollout, the current thread's file it already finds by the seat's resume token, and takes the calls of the current turn that have no output yet. The line is the same as for Claude: `busy: running exec for 12 s (since 16:05Z)`, with `+N more` for parallel calls. The tool shows under Codex's own name for it (`exec`); its command is never shown.
+- The rollout shape is measured (structure only) on this host's Codex 0.137 to 0.158 rollouts and one 0.166.0 turn: a call is a `custom_tool_call` with a `call_id`, closed by a `custom_tool_call_output` with the same `call_id`, inside `task_started` … `task_complete`. The Responses API spelling (`function_call`, `function_call_output`) counts the same. That the call is written when it starts is argued from 0.158 rollouts, where a call's record comes before its output by the run time; on 0.166.0 it is not measured.
+- A call older than the window, or a rollout the daemon cannot read, shows today's `turn running` line, never a wrong tool.
+
 ### `rig doctor` checks a host before its first launch (workspaces-o9o.11)
 
 - Symptom: Sparky's first launch of a team failed four ways that no check reported beforehand: an oh-my-zsh "update? [Y/n]" question in the login shell read the typed launch as its answer; Pi was on the daemon's PATH but not on the seat's; `pi.operator_login_dir` was unset, so Pi refused for lack of a credential; and a spec folder was writable by group, so the spec source was refused.
