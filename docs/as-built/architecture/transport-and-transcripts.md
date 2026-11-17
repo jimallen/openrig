@@ -186,31 +186,27 @@ remote daemon's ordinary local routes; the cross-host logic is in the CLI.
   http-only (no ssh path exists for them); on an ssh host they fail with a
   structured error naming the transport requirement
   (`remote-host-ops.ts:47`), never a fallback.
-- **Terminal-bearer posture (`/api/transport/*` only).** The remote's
-  transport routes (send/capture/broadcast) gate on its terminal bearer
-  (`routes/transport.ts:26`; `OPENRIG_TERMINAL_BEARER_TOKEN`,
-  `packages/daemon/src/index.ts:291`). With no token configured the
-  middleware passes every request through
-  (`packages/daemon/src/middleware/auth-bearer-token.ts:99`) — the tailnet is
-  the auth boundary by design — except that a daemon bound to an explicit
-  address that is neither local nor tailnet falls back to
-  `OPENRIG_AUTH_BEARER_TOKEN`
-  (`index.ts:297`). The CLI presents the registry bearer from `hosts.yaml`
-  when one is configured; for a URL-only anonymous host the `Authorization`
-  header is omitted. A remote enforcing a different terminal bearer answers
-  401, which surfaces as the structured `permission-gate` step
-  (`packages/cli/src/host-registry.ts:53`) — never a hang, never silent.
-  Remedy: set the remote terminal bearer equal to the paired registry bearer,
-  or rely on the tailnet boundary. **The transcript read is deliberately
-  outside this class:** `/api/transcripts/*` mounts with no bearer middleware
-  (`packages/daemon/src/server.ts:748`, beside the gated `/api/transport` at
-  `:749`), and credential-shaped text is redacted on the `/full` route only
-  (`routes/transcripts.ts:292`). So a wrong terminal bearer that
-  permission-gates `send --host` does NOT gate `transcript --host` — the read
-  keeps succeeding for a Host name the remote's browser boundary accepts
-  (`server.ts:647`; it applies to every `/api/*` route), and the auth-failure
-  class is not uniform across the four verbs. The route's own comment (`routes/transcripts.ts:250`) leaves a
-  coherent transcript-read auth policy across tail/grep/full for later.
+- **Terminal-bearer posture (workspaces-o9o.78; Jim, 2026-11-17: "Token when non-loopback").** Terminal-class routes (attach,
+  type into a seat, read its screen: `/api/transport/*`, `/api/messages/*`, `/api/compaction/*`, the terminal WebSocket, the
+  `/api/sessions/:s/*` seat operations, terminal open, host readiness, `/api/transcripts/*` and `/api/ask`) require the daemon's
+  terminal token whenever it LISTENS BEYOND LOOPBACK, the tailnet included. A daemon that listens on loopback only stays tokenless.
+  One pure function decides at start from the bind plan (`domain/terminal-token-policy.ts` decideTerminalToken), and every listener's
+  actual address is checked against that decision when it comes up: a listener beyond loopback with no token stops the daemon
+  (`index.ts`, listenerTokenProblem). The token is `OPENRIG_TERMINAL_BEARER_TOKEN` when set; else, on an explicit bind that is
+  neither loopback nor the tailnet, the operator token `OPENRIG_AUTH_BEARER_TOKEN` (as before); else `<OPENRIG_HOME>/terminal-token`,
+  which the daemon makes at start when absent (64 hex characters, mode 0600; `adapters/terminal-token-file.ts`).
+  - **Same host.** The rig CLI and the TUI already send the token (`cli/src/client.ts` terminalAuthHeaders: the variable, else that
+    file), and so does `rig mcp serve`. Nothing to do.
+  - **Another host (provisioning, required before a release with this change).** Copy the daemon host's
+    `<OPENRIG_HOME>/terminal-token` to the calling host (owner-only, e.g. `~/.openrig/peers/<host-id>.token`, mode 0600) and point
+    that host's `hosts.yaml` entry at the copy: `bearer_file: ~/.openrig/peers/<host-id>.token`. Cross-host `rig send --host`, `rig
+    walk` to a remote seat, `rig doctor --host` and the daemons' own message pump all present that bearer. An http entry with no
+    bearer reaching a daemon that listens beyond loopback answers 401, and the 401 names this step. An ssh host needs nothing: the
+    remote `rig` runs on that host and reads its own file.
+  - **The web UI.** Its page is served without auth, so the token script goes only to a page loaded from the daemon's own machine
+    (a loopback peer). A web UI opened from ANOTHER device (over the tailnet) gets no token: its terminal features (attach, send,
+    transcripts) answer 401 there. Use it on the daemon's machine, or put the token into that browser's local storage
+    (`openrig.terminalBearerToken`) yourself.
 - **The 3-part form is CLI-edge sugar only.** `resolveCrossHostTarget`
   (`packages/cli/src/cross-host-target.ts:58`) strips the suffix only when it
   resolves to a registered host, or equals this host's own id, which routes

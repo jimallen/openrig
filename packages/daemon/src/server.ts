@@ -1,3 +1,5 @@
+import { getConnInfo } from "@hono/node-server/conninfo";
+import { isLoopbackAddress } from "./domain/terminal-token-policy.js";
 import { healthDiagnosisRoutes } from "./routes/health-diagnosis.js";
 import { hostReadinessRoutes } from "./routes/host-readiness.js";
 import type { HealthDiagnosisService } from "./domain/health-diagnosis.js";
@@ -909,7 +911,10 @@ export function createApp(deps: CreateAppDeps): Hono {
     }
 
     const indexHtml = fs.readFileSync(uiIndexPath, "utf-8");
-    const tokenScript = deps.terminalBearerToken
+    // workspaces-o9o.78: the page is served without auth, so the terminal token goes only to a page loaded from THIS machine (a loopback
+    // peer). A web UI opened from another device gets no token, and its terminal features answer 401 (docs: the transport-and-transcripts
+    // as-built). An unreadable peer address gets no token either.
+    const tokenScript = deps.terminalBearerToken && requestIsFromLoopback(c)
       ? `<script>if(!window.localStorage.getItem("openrig.terminalBearerToken"))window.localStorage.setItem("openrig.terminalBearerToken",${JSON.stringify(deps.terminalBearerToken)})</script>`
       : "";
     const injected = tokenScript ? indexHtml.replace("</head>", `${tokenScript}</head>`) : indexHtml;
@@ -917,6 +922,15 @@ export function createApp(deps: CreateAppDeps): Hono {
   });
 
   return app;
+}
+
+/** workspaces-o9o.78: whether the request's peer address is loopback; false when it cannot be read (fail closed). */
+function requestIsFromLoopback(c: Parameters<typeof getConnInfo>[0]): boolean {
+  try {
+    return isLoopbackAddress(getConnInfo(c).remote.address);
+  } catch {
+    return false;
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

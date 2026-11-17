@@ -1,5 +1,6 @@
 // Must stay first: pins the daemon cwd before any module evaluates a path.
-import { decideTerminalToken } from "./domain/terminal-token-policy.js";
+import { decideTerminalToken, listenerTokenProblem } from "./domain/terminal-token-policy.js";
+import { readOrCreateTerminalToken } from "./adapters/terminal-token-file.js";
 import "./daemon-cwd-anchor.js";
 import { serve, type ServerType } from "@hono/node-server";
 import os from "node:os";
@@ -323,8 +324,11 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
     // Default path — the plan already computed loopback + tailscale-when-active.
     bindHosts = bindPlan.hosts;
   }
+  // workspaces-o9o.78 (Jim, 2026-11-17: "Token when non-loopback"): beyond loopback (the tailnet included) the terminal token is required;
+  // with no OPENRIG_TERMINAL_BEARER_TOKEN it is <OPENRIG_HOME>/terminal-token, made when absent. Loopback only stays tokenless.
   const terminalBearerToken = decideTerminalToken({
     bindHosts, envToken: process.env.OPENRIG_TERMINAL_BEARER_TOKEN, operatorToken: bearerToken, explicitUntrusted,
+    readOrCreateFile: () => readOrCreateTerminalToken(OPENRIG_HOME),
   });
 
   // OF-220: dates processes by the OS boot clock where there is one (Linux), so a stored start time names the true second.
@@ -376,6 +380,12 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   const servers: ServerType[] = [];
   for (const host of bindHosts) {
     const srv = serve({ fetch: app.fetch, port: p, hostname: host }, (info) => {
+      // workspaces-o9o.78: the decision above was made from the bind plan; the address actually bound must agree (fail closed).
+      const listenProblem = listenerTokenProblem(info.address, terminalBearerToken);
+      if (listenProblem) {
+        console.error(listenProblem);
+        process.exit(1);
+      }
       console.log(`OpenRig daemon listening on http://${host}:${info.port}`);
       if (!monitorsStarted) {
         monitorsStarted = true;

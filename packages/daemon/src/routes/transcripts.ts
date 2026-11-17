@@ -1,3 +1,4 @@
+import { terminalAuthGuard } from "../middleware/terminal-auth-guard.js";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "../domain/rig-repository.js";
@@ -117,6 +118,9 @@ function transcriptIngestError(sessionName: string, health: RouteIngestHealth, s
 
 export function transcriptRoutes(): Hono {
   const router = new Hono();
+  // workspaces-o9o.78 (Jim, 2026-11-17): a transcript is a seat's screen history, so it is a terminal-class read: the terminal token is
+  // required whenever the daemon listens beyond loopback (terminalAuthGuard passes everything on a loopback-only daemon).
+  router.use("*", terminalAuthGuard());
 
   router.get("/:session/tail", async (c) => {
     const transcriptStore = c.get("transcriptStore" as never) as TranscriptStore;

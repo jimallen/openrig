@@ -9,6 +9,7 @@
 // renders the daemon's honest per-seat error, never a silent empty pane.
 
 import { useEffect, useRef, useState } from "react";
+import { terminalAuthHeaders } from "../mission-control/missionControlAuth.js";
 
 type DrillMode = "tail" | "grep" | "full";
 
@@ -26,7 +27,8 @@ async function fetchDrill(session: string, mode: DrillMode, pattern: string): Pr
     : mode === "grep" ? `${base}/grep?pattern=${encodeURIComponent(pattern)}`
     : `${base}/full`;
   try {
-    const res = await fetch(url);
+    // workspaces-o9o.78: transcripts take the terminal token when the daemon listens beyond loopback.
+    const res = await fetch(url, { headers: terminalAuthHeaders() });
     const body = (await res.json()) as { content?: string; matches?: string[]; error?: string };
     if (!res.ok) {
       // The daemon's honest per-seat error, verbatim.

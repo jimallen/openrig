@@ -65,7 +65,7 @@ const UNAUTHORIZED_COPY: Record<BearerCredential, { prefix: string; why: string;
   terminal: {
     prefix: "Terminal auth failed",
     why: "Routes that act on a seat or its terminal (put text in front of an agent, read its screen, run a shell) require the daemon's terminal bearer token.",
-    todo: "Resend the request with `Authorization: Bearer <token>`, using the terminal token the daemon was started with in OPENRIG_TERMINAL_BEARER_TOKEN. The rig CLI sends OPENRIG_TERMINAL_BEARER_TOKEN, or the contents of <OPENRIG_HOME>/terminal-token when that variable is unset. A daemon on a public bind with no OPENRIG_TERMINAL_BEARER_TOKEN uses its operator token (OPENRIG_AUTH_BEARER_TOKEN) here instead.",
+    todo: "Resend the request with `Authorization: Bearer <token>`, using this daemon's terminal token: OPENRIG_TERMINAL_BEARER_TOKEN when it was started with one, otherwise the contents of <OPENRIG_HOME>/terminal-token on the daemon's host (a daemon that listens beyond loopback, the tailnet included, makes that file at start). The rig CLI on that host sends it already. From ANOTHER host: copy that file to the calling host and point the hosts.yaml entry for this daemon at the copy with `bearer_file: <path to the copy>` (cross-host send, walk, doctor --host and the daemons' message pump all use it). A daemon on a public bind with no OPENRIG_TERMINAL_BEARER_TOKEN uses its operator token (OPENRIG_AUTH_BEARER_TOKEN) here instead.",
   },
 };
 

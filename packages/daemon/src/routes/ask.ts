@@ -1,7 +1,10 @@
 import { Hono } from "hono";
+import { terminalAuthGuard } from "../middleware/terminal-auth-guard.js";
 import type { AskService } from "../domain/ask-service.js";
 
 export const askRoutes = new Hono();
+// workspaces-o9o.78: the answer carries transcript excerpts (a seat's screen history), so it takes the terminal guard.
+askRoutes.use("*", terminalAuthGuard());
 
 askRoutes.post("/", async (c) => {
   const askService = c.get("askService" as never) as AskService;

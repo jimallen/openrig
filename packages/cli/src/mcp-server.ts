@@ -2,7 +2,7 @@ import { transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import type { DaemonClient, DaemonResponse } from "./client.js";
+import { terminalAuthHeaders, type DaemonClient, type DaemonResponse } from "./client.js";
 import { CLI_VERSION } from "./version.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
@@ -312,7 +312,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
         if (rig) body.rig = rig;
         if (pod) body.pod = pod;
         if (lines) body.lines = lines;
-        const res = await client.post("/api/transport/capture", body);
+        const res = await client.post("/api/transport/capture", body, terminalHeaders());
         return mapResult(res);
       } catch (err) {
         return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
@@ -429,6 +429,12 @@ export function createMcpServer(client: DaemonClient): McpServer {
 }
 
 /** hc-w45: the wait for a send is the shared rule (the daemon's own bound plus a margin), not the client's 5 s read default. */
-function transportSendOptions(waitForIdleMs: number | undefined): { timeoutMs: number } {
-  return { timeoutMs: transportSendBudgetMs(waitForIdleMs) };
+function transportSendOptions(waitForIdleMs: number | undefined): { timeoutMs: number; headers?: Record<string, string> } {
+  return { timeoutMs: transportSendBudgetMs(waitForIdleMs), ...terminalHeaders() };
+}
+
+/** workspaces-o9o.78: the transport routes take the terminal token whenever the daemon listens beyond loopback. */
+function terminalHeaders(): { headers?: Record<string, string> } {
+  const headers = terminalAuthHeaders();
+  return Object.keys(headers).length > 0 ? { headers } : {};
 }

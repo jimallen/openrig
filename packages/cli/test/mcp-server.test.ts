@@ -42,6 +42,26 @@ describe("MCP Server", () => {
     if (cleanup) await cleanup();
   });
 
+  // workspaces-o9o.78: the transport routes take the terminal token whenever the daemon listens beyond loopback, so the MCP server sends
+  // it on rig_send and rig_capture, as the rig CLI does (OPENRIG_TERMINAL_BEARER_TOKEN, else <OPENRIG_HOME>/terminal-token).
+  it.each([
+    ["rig_send", { session: "dev@r", text: "hi" }, "/api/transport/send"],
+    ["rig_capture", { session: "dev@r" }, "/api/transport/capture"],
+  ])("%s sends the terminal token", async (tool, args, route) => {
+    const token = "tok-" + "c".repeat(16);
+    vi.stubEnv("OPENRIG_TERMINAL_BEARER_TOKEN", token);
+    try {
+      const postFn = vi.fn(async () => ({ status: 200, data: { ok: true } }));
+      await setup({ post: postFn });
+      await mcpClient.callTool({ name: tool, arguments: args });
+      const call = postFn.mock.calls.find((c) => (c as unknown[])[0] === route) as [string, unknown, { headers?: Record<string, string> }] | undefined;
+      expect(call?.[2]?.headers).toEqual({ Authorization: `Bearer ${token}` });
+      await cleanup();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   // T1: MCP server lists all 16 tools
   it("lists all 16 tools", async () => {
     await setup();

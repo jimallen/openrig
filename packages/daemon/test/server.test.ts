@@ -28,7 +28,7 @@ function createTempUiDist() {
   return dir;
 }
 
-function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir: string) {
+function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir: string, extra: { terminalBearerToken?: string | null } = {}) {
   const fullSetup = createTestApp(db);
   return createApp({
     rigRepo: fullSetup.rigRepo,
@@ -58,8 +58,43 @@ function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir:
     podBundleSourceResolver: fullSetup.podBundleSourceResolver,
     uiDistDir,
     webUiEnabled: true,
+    ...extra,
   });
 }
+
+// workspaces-o9o.78: the web UI page is served without auth, so it carries the terminal token only to a page loaded from this machine.
+// The peer is the connection's remote address (@hono/node-server's getConnInfo reads env.incoming.socket), given here as a request env.
+describe("the web UI page hands the terminal token only to a loopback peer", () => {
+  const TOKEN = "tok-" + "b".repeat(16);
+  const page = (dir: string) => fs.writeFileSync(nodePath.join(dir, "index.html"), "<!doctype html><html><head><title>OpenRig</title></head><body></body></html>", "utf-8");
+  const peer = (address: string) => ({ incoming: { socket: { remoteAddress: address, remotePort: 50000, remoteFamily: address.includes(":") ? "IPv6" : "IPv4" } } });
+
+  it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1"])("a page loaded from %s carries the token", async (address) => {
+    const db = createFullTestDb(); const dir = createTempUiDist(); page(dir);
+    const app = createAppWithUiDist(db, dir, { terminalBearerToken: TOKEN });
+    const html = await (await app.request("/topology", {}, peer(address))).text();
+    expect(html).toContain(TOKEN);
+    fs.rmSync(dir, { recursive: true, force: true }); db.close();
+  });
+
+  it.each(["100.64.1.2", "192.168.1.9"])("a page loaded from another device (%s) carries no token", async (address) => {
+    const db = createFullTestDb(); const dir = createTempUiDist(); page(dir);
+    const app = createAppWithUiDist(db, dir, { terminalBearerToken: TOKEN });
+    const res = await app.request("/topology", {}, peer(address));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("<title>OpenRig</title>");
+    expect(html).not.toContain(TOKEN);
+    fs.rmSync(dir, { recursive: true, force: true }); db.close();
+  });
+
+  it("a page whose peer address cannot be read carries no token (fail closed)", async () => {
+    const db = createFullTestDb(); const dir = createTempUiDist(); page(dir);
+    const app = createAppWithUiDist(db, dir, { terminalBearerToken: TOKEN });
+    expect(await (await app.request("/topology")).text()).not.toContain(TOKEN);
+    fs.rmSync(dir, { recursive: true, force: true }); db.close();
+  });
+});
 
 describe("Hono server (production app)", () => {
   it("GET /healthz returns 200 with status ok", async () => {
