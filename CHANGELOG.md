@@ -47,6 +47,8 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Cause: the daemon took the earliest of three times (the launch, the handover file, `--hand-over-since`), so an explicit time later than the file always lost.
 - Now an explicit `--hand-over-since` is used as given. The handover file's time and the launch time are only the default, and the earlier of those two still wins when no time is given.
 - The launch result carries `handoverFileWrittenAt` beside `handoverFile`, and the CLI says which since-time it used; when an older handover file was passed over, it names the file and its time and says it was not used.
+- A fresh launch that fails after the old occupant was stopped has already handed its messages over. Its error output now prints the same since-time line, and names the handover file it did not use, beside the error.
+- No stub scenario covers this. No scenario step runs `rig seat launch` (the runner's restart verb restarts the daemon, `daemon: {op: restart}`), and the stub agent cannot consume a message (test-layers.md, "Consuming a message"). `relaunch-message-race.test.ts` stands in: it runs the real `launchFresh` with the real MessageStore, MessagePump and PumpHandOff.
 
 ### The running tool stays visible at every width, and the agent detail's two lines name the same start (workspaces-o9o.32)
 

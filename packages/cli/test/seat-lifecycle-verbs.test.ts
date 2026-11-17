@@ -148,6 +148,29 @@ describe("workspaces-o9o.8: seat launch --despite, the handover file, and seat l
     const out = logs.join("\n");
     expect(out).toContain("taken since 2026-11-17T13:30:00.000Z, --hand-over-since; /seat/HANDOVER.md, last written at 2026-11-15T21:00:45.000Z, was not used)");
   });
+  it("a launch that fails after the handover still prints the since it used and the handover file it did not use", async () => {
+    // workspaces-o9o.94 review (verify-sec): the handover has already happened when the fresh launch fails, and the
+    // daemon's failure answer carries it, so the operator must see it then too.
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const data = { ok: false, code: "launch_failed", message: "tmux could not start the session",
+      handOver: { since: "2026-11-17T13:30:00.000Z", sinceSource: "hand_over_since", handoverFile: "/seat/HANDOVER.md", handoverFileWrittenAt: "2026-11-15T21:00:45.000Z",
+        carried: [{ id: "m1" }], reissued: [], notHandedOver: [] } };
+    const { logs, errors, exitCode } = await captureLogs(() => makeCommand(makeDeps({ status: 500, data }, calls)).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--stop", "--hand-over-since", "2026-11-17T13:30:00Z", "--reason", "relaunch",
+    ]).then(() => {}));
+    expect(exitCode).toBe(2);
+    const out = [...logs, ...errors].join("\n");
+    expect(out).toContain("tmux could not start the session");
+    expect(out).toContain("taken since 2026-11-17T13:30:00.000Z, --hand-over-since; /seat/HANDOVER.md, last written at 2026-11-15T21:00:45.000Z, was not used): 1 re-delivered, 0 sent again.");
+  });
+  it("a launch refused before anything was stopped prints no handover", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const data = { ok: false, code: "relaunch_check_held", message: "Fresh launch refused before anything was stopped." };
+    const { logs, errors } = await captureLogs(() => makeCommand(makeDeps({ status: 409, data }, calls)).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--stop", "--reason", "relaunch",
+    ]).then(() => {}));
+    expect([...logs, ...errors].join("\n")).not.toContain("handed to the fresh occupant");
+  });
   it("a refused launch exits 1 and prints what holds the seat and how to launch anyway", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const data = { ok: false, code: "relaunch_check_held", message: "Fresh launch refused before anything was stopped: dev@fixture holds a lease: ui-test-host (pid 9001).",

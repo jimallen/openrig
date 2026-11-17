@@ -288,6 +288,32 @@ function printHumanSwitchClient(r: SeatSwitchClientResponse): void {
   console.log("View only: no routing, queue address, transcript, or seat binding was changed.");
 }
 
+interface LaunchHandOverReport {
+  since: string;
+  sinceSource: string;
+  handoverFile?: string;
+  handoverFileWrittenAt?: string;
+  carried: unknown[];
+  reissued: unknown[];
+  notHandedOver: string[];
+  skipped?: string;
+}
+
+/** The lines that say what a fresh launch handed over, and from when; none when the answer carries no handover. */
+function handOverLines(handOver: LaunchHandOverReport | undefined): string[] {
+  if (!handOver) return [];
+  // workspaces-o9o.94: an explicit --hand-over-since wins; an older handover file it overrode is named, so the operator sees it was not used.
+  const overridden = handOver.sinceSource === "hand_over_since" && handOver.handoverFile && handOver.handoverFileWrittenAt && handOver.handoverFileWrittenAt < handOver.since
+    ? `; ${handOver.handoverFile}, last written at ${handOver.handoverFileWrittenAt}, was not used` : "";
+  const sinceFrom = handOver.sinceSource === "hand_over_since" ? `--hand-over-since${overridden}`
+    : handOver.sinceSource === "handover_file" ? `when ${handOver.handoverFile ?? "the seat's handover file"} was last written`
+    : "when this launch began; pass --hand-over-since <your check's time> to reach further back";
+  const lines = [`Messages handed to the fresh occupant (taken since ${handOver.since}, ${sinceFrom}): ${handOver.carried.length} re-delivered, ${handOver.reissued.length} sent again.`];
+  if (handOver.notHandedOver.length > 0) lines.push(`Not handed over (this seat has no message pump): ${handOver.notHandedOver.join(", ")}.`);
+  if (handOver.skipped) lines.push(`Nothing handed over: ${handOver.skipped}.`);
+  return lines;
+}
+
 function printSeatError(error: SeatStatusError, fallback: string): void {
   console.error(error.message ?? error.error ?? fallback);
   // workspaces-o9o.35: what the launch pane showed, as rig up prints it.
@@ -664,6 +690,9 @@ identity remains unverified; a version number alone cannot clear it.
         }
         : res.data;
       printSeatError(error as unknown as SeatStatusError, `Seat ${path} failed (HTTP ${res.status})`);
+      // workspaces-o9o.94 review (verify-sec): a fresh launch that fails after stopping the old occupant has already
+      // handed its messages over, and its answer says so; the operator sees which since was used then too.
+      for (const line of handOverLines(res.data["handOver"] as LaunchHandOverReport | undefined)) console.error(line);
       process.exitCode = res.status >= 500 ? 2 : 1;
       return;
     }
@@ -1015,18 +1044,7 @@ Examples:
         console.log(`Startup policy: ${String(data["startupPolicyHash"])}; superseded sessions: ${superseded?.length ?? 0}.`);
         const source = data["startupSource"] as StartupSourceReport | undefined;
         if (source) console.log(describeStartupSource(source));
-        const handOver = data["handOver"] as { since: string; sinceSource: string; handoverFile?: string; handoverFileWrittenAt?: string; carried: unknown[]; reissued: unknown[]; notHandedOver: string[]; skipped?: string } | undefined;
-        if (handOver) {
-          // workspaces-o9o.94: an explicit --hand-over-since wins; an older handover file it overrode is named, so the operator sees it was not used.
-          const overridden = handOver.sinceSource === "hand_over_since" && handOver.handoverFile && handOver.handoverFileWrittenAt && handOver.handoverFileWrittenAt < handOver.since
-            ? `; ${handOver.handoverFile}, last written at ${handOver.handoverFileWrittenAt}, was not used` : "";
-          const sinceFrom = handOver.sinceSource === "hand_over_since" ? `--hand-over-since${overridden}`
-            : handOver.sinceSource === "handover_file" ? `when ${handOver.handoverFile ?? "the seat's handover file"} was last written`
-            : "when this launch began; pass --hand-over-since <your check's time> to reach further back";
-          console.log(`Messages handed to the fresh occupant (taken since ${handOver.since}, ${sinceFrom}): ${handOver.carried.length} re-delivered, ${handOver.reissued.length} sent again.`);
-          if (handOver.notHandedOver.length > 0) console.log(`Not handed over (this seat has no message pump): ${handOver.notHandedOver.join(", ")}.`);
-          if (handOver.skipped) console.log(`Nothing handed over: ${handOver.skipped}.`);
-        }
+        for (const line of handOverLines(data["handOver"] as LaunchHandOverReport | undefined)) console.log(line);
         const pointer = data["handoverPointer"] as { path: string; sent: boolean; detail?: string } | undefined;
         if (pointer) console.log(pointer.sent ? `The fresh occupant was told its predecessor's handover is at ${pointer.path}.` : `Tell the fresh occupant its predecessor's handover is at ${pointer.path} (not sent: ${pointer.detail ?? "unknown"}).`);
         console.log("No continuity source was used; siblings and durable work were preserved.");
