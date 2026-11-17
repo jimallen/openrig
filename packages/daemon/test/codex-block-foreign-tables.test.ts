@@ -145,6 +145,23 @@ describe("workspaces-o9o.88: OpenRig's Codex block keeps what is not its own", (
     expect(managedCommands(config())).toBe(0);
   });
 
+  it("after a relay path change, the recorded path finds OpenRig's older stanzas even when a person's table sits first in the block", () => {
+    const older = path.join(codexHome, "older", "activity-relay.cjs");
+    fs.mkdirSync(path.dirname(older), { recursive: true }); fs.copyFileSync(RELAY_ASSET, older);
+    adapter(older).ensureCodexActivityHooks();
+    const firstInside = () => fs.writeFileSync(configPath, config().replace(`${BEGIN}\n`, `${BEGIN}\n[marketplaces.first]\nsource = "a"\n\n`));
+    firstInside();
+    const before = config();
+    adapter().ensureCodexActivityHooks();
+    expect(config()).not.toContain(older);
+    expect(managedCommands(config())).toBe(4);
+    fs.writeFileSync(configPath, before);   // and the record as the older daemon left it: the upsert above moved it to the current path
+    fs.writeFileSync(path.join(stateDir, "state", "codex-activity-hooks", "relay-path"), `${older}\n`);
+    adapter().removeCodexActivityHooks();
+    expect(config()).not.toContain(older);
+    expect(config()).toContain("[marketplaces.first]");
+  });
+
   it("the upsert is idempotent with foreign tables moved out: a second upsert changes nothing", () => {
     blockLast();
     appendInsideBlock(PLUGIN_TABLES);
