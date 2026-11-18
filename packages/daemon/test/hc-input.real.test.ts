@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcClient, type HcTerminal, resolveHcSocket } from "../src/adapters/hc-client.js";
@@ -11,6 +11,8 @@ import { HcInput } from "../src/adapters/hc-input.js";
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const SECRET = `sv-${process.pid}-needle`;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The tmpdir every worker shares, read once before any row gives itself a private one (workspaces-o9o.174). */
+const SHARED_TMP = tmpdir();
 /** A poll that survives a loaded host: the stub reads its stdin and handles SIGWINCH on its own schedule. */
 function poll<T>(fn: () => T | Promise<T>) { return expect.poll(fn, { timeout: 8_000 }); }
 
@@ -303,6 +305,38 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
   });
 
   describe("sendShellCommand", () => {
+    // Each row stages its scripts in a tmpdir of its own, so the cleanup check counts only what this row staged.
+    let privateTmp: string;
+    beforeEach(() => {
+      privateTmp = mkdtempSync(join(SHARED_TMP, "hc-input-send-"));
+      vi.stubEnv("TMPDIR", privateTmp);
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      rmSync(privateTmp, { recursive: true, force: true });
+    });
+
+    // workspaces-o9o.174: the cleanup check below counts send scripts in the tmpdir, and a full suite's other workers stage their own
+    // there; a row that read the SHARED tmpdir counted theirs and timed out (o9o.170 gate: "expected [ …(2) ] to deeply equal []").
+    it("RED: a send script another test leaves in the shared tmpdir does not keep the row waiting", async () => {
+      const foreign = join(SHARED_TMP, `openrig-tmux-send-foreign-${process.pid}.txt`);
+      try {
+        await host.createSession("foreign@rig", root);
+        const out = join(root, "foreign-out.txt");
+        const before = new Set(readdirSync(tmpdir()).filter((f) => f.startsWith("openrig-tmux-send-")));
+        writeFileSync(foreign, "echo another test's script\n");   // staged by another worker while this row runs
+        let stagedHere: string[] = [];   // the positive control: this row's script is staged in its own tmpdir, not the shared one
+        await expect(input.sendShellCommand("foreign@rig", `echo ran > ${out}`, () => {
+          stagedHere = readdirSync(privateTmp).filter((f) => f.startsWith("openrig-tmux-send-"));
+        })).resolves.toEqual({ ok: true });
+        expect(stagedHere).toHaveLength(1);
+        await poll(() => existsSync(out)).toBe(true);
+        await poll(() => readdirSync(tmpdir()).filter((f) => f.startsWith("openrig-tmux-send-") && !before.has(f))).toEqual([]);
+      } finally {
+        rmSync(foreign, { force: true });
+      }
+    });
+
     it("runs the command from a staged script that removes itself, and keeps a secret off the pane and the argv", async () => {
       await host.createSession("shell@rig", root);
       const out = join(root, "shell-out.txt");
