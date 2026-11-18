@@ -339,7 +339,10 @@ export class DaemonClient {
   private async fetch(path: string, init: RequestInit, options?: DaemonRequestOptions, consumeResponse?: (response: Response) => Promise<void>): Promise<Response> {
     // workspaces-o9o.181: this home names no daemon. Refuse before anything is sent (so no write outcome is in doubt).
     if (this.baseUrl === NO_HOME_DAEMON_URL) {
-      throw new DaemonConnectionError(`${homeWithoutDaemonAddress() ?? "This OPENRIG_HOME names no daemon."} Nothing was sent. ${NO_HOME_DAEMON_ACTION}`);
+      // workspaces-o9o.181 with o9o.169: refused before any send, so it carries the never-sent flag every wrapper reads.
+      const refusal = new DaemonConnectionError(`${homeWithoutDaemonAddress() ?? "This OPENRIG_HOME names no daemon."} Nothing was sent. ${NO_HOME_DAEMON_ACTION}`);
+      refusal.provablyNotSent = true;
+      throw refusal;
     }
     const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
     if (options?.signal) init = { ...init, signal: options.signal };

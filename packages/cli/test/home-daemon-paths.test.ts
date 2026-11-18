@@ -17,6 +17,9 @@ import { crashCartDaemonTarget } from "../src/commands/crash-cart.js";
 import { destroyCommand } from "../src/commands/destroy.js";
 import { DESTROY_CONFIRM_TOKEN } from "../src/destroy-helpers.js";
 import { Command } from "commander";
+import { DaemonClient } from "../src/client.js";
+import { queueCommand } from "../src/commands/queue.js";
+import { runProgram } from "../src/cli-error.js";
 import { NO_HOME_DAEMON_URL } from "../src/home-daemon-address.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 import { stubConfigStore } from "./helpers/stub-config-store.js";
@@ -88,7 +91,7 @@ describe("o9o.181: doctor asks the resolver before any probe", () => {
     exec: (cmd: string) => (cmd === "hc --version" ? "hc 0.1.16\n" : ""),
     checkPort: async () => { throw new Error(PROBED); },
     configStore: stubConfigStore(doctorConfig(7433)),
-    platform: "darwin", mkdirp: () => {}, checkWritable: () => {},
+    platform: "darwin", mkdirp: () => {}, checkWritable: () => {}, readSeatProcesses: () => [],
     ...over,
   });
 
@@ -325,5 +328,35 @@ describe("o9o.181 (verify-sec re-review): no config error can ever lead rig dest
     expect(inspectListener.mock.calls.length).toBeGreaterThan(0);
     expect(inspectListener.mock.calls.every(([host, port]) => host === "127.0.0.1" && port === 28210)).toBe(true);
     expect(findListeningPid.mock.calls.every(([port]) => port === 28210)).toBe(true);
+  });
+});
+
+describe("o9o.181 with o9o.169: a request refused for a home that names no daemon was never sent, so it is never UNKNOWN", () => {
+  it("rig queue create in such a home says the command was not delivered, not an unknown outcome", async () => {
+    vi.stubEnv("OPENRIG_SESSION_NAME", "seat@rig");
+    const printed: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...line: unknown[]) => { printed.push(line.join(" ")); });
+    vi.spyOn(console, "error").mockImplementation((...line: unknown[]) => { printed.push(line.join(" ")); });
+    const program = new Command();
+    program.addCommand(queueCommand({
+      lifecycleDeps: asLifecycleDeps({ fetch: async () => ({ ok: true }), readFile: () => null, exists: () => false, isProcessAlive: () => false }),
+      clientFactory: () => new DaemonClient(), // no address given: this home's own, which is none
+    }));
+    await runProgram(program, ["node", "rig", "queue", "create", "--destination", "next@rig", "--body", "work"], {
+      out: (l) => printed.push(l), err: (l) => printed.push(l), exit: () => {},
+    });
+    const output = printed.join("\n");
+    // The status guard (the same resolver) stops it first, and says so; nothing reads as an unknown outcome.
+    expect(output).toContain("names no daemon of its own");
+    expect(output).toContain("Nothing was sent");
+    expect(output).not.toContain("UNKNOWN");
+  });
+
+  it("the client's own refusal carries the never-sent flag every o9o.169 wrapper reads, and no write outcome", async () => {
+    const send = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const error = await new DaemonClient(undefined, { fetchImpl: send }).post("/api/queue/create", { body: "x" }).then(() => null, (e: unknown) => e);
+    expect(error).toMatchObject({ name: "DaemonConnectionError", provablyNotSent: true });
+    expect((error as { writeOutcome?: unknown }).writeOutcome).toBeUndefined();
+    expect(send).not.toHaveBeenCalled();
   });
 });
