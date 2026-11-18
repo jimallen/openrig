@@ -3,7 +3,7 @@
 // A host-placed topology entry launches by POSTing the SHIPPED remote-up
 // surface: POST {host.url}/api/up with the same body shape the CLI's
 // --host path sends. Since OPR.0.4.4.15 this is a THIN CONSUMER of the
-// shared daemon→daemon transport core (domain/hosts/remote-daemon-http.ts
+// shared daemon→daemon transport core (the RemoteDaemonClient port, domain/hosts/remote-daemon-client.ts; its HTTP adapter is adapters/remote-daemon-http.ts
 // — arch cell 1: ONE copy of the security-adjacent bearer/bounded-abort/
 // classification code for the whole P3/P4 family). This module keeps its
 // shipped error-string surface byte-for-byte; only the transport plumbing

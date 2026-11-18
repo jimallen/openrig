@@ -26,6 +26,9 @@ const FLEET_MODULE = "fleet-compose.ts";
 /** Transport/registry/I-O import specifiers forbidden in the pure review
  *  domain. fanout-contract is deliberately NOT here (see header). */
 const FORBIDDEN_SPECIFIERS = [
+  // workspaces-o9o.161: the doorway to another daemon is the domain's RemoteDaemonClient port; its HTTP adapter sits in adapters/.
+  "hosts/remote-daemon-client",
+  "adapters/remote-daemon-http",
   "hosts/remote-daemon-http",
   "hosts/hosts-registry-reader",
   "hosts/read-through",
@@ -69,7 +72,7 @@ describe("MH-5 P1 — the review-domain import boundary (static audit)", () => {
 
   it("the fleet module IS the transport importer (the boundary is real, not a dead rule)", () => {
     const specs = importSpecifiers(readFileSync(path.join(REVIEW_DIR, FLEET_MODULE), "utf-8"));
-    expect(specs.some((s) => s.includes("hosts/remote-daemon-http"))).toBe(true);
+    expect(specs.some((s) => s.includes("hosts/remote-daemon-client"))).toBe(true);
     expect(specs.some((s) => s.includes("hosts/hosts-registry-reader"))).toBe(true);
   });
 
