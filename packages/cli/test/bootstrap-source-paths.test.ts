@@ -11,6 +11,12 @@ import { DaemonClient } from "../src/client.js";
 import { STATE_FILE } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
 
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
 describe("bootstrap source paths respect the daemon target", () => {
   let root: string;
   let callerDir: string;

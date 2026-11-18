@@ -4,9 +4,12 @@ import path from "node:path";
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DaemonClient, remoteDaemonClient } from "../src/client.js";
+import { NO_HOME_DAEMON_URL } from "../src/home-daemon-address.js";
 import { proofCommand } from "../src/commands/proof.js";
 import { parkedCommand } from "../src/commands/parked.js";
 import { allowFetchTarget, resetFetchAllowlist } from "./fetch-guard.js";
+
+
 
 describe("default client endpoint selection", () => {
   let root: string;
@@ -67,9 +70,12 @@ describe("default client endpoint selection", () => {
     expect(new DaemonClient().baseUrl).toBe("http://legacy-config.invalid:28005");
   });
 
-  it("uses the existing default when both state and config are absent (no network request)", () => {
+  // workspaces-o9o.181: this home is not the default ~/.openrig, so with neither state nor config it names no daemon. It used to
+  // fall back to the built-in 127.0.0.1:7433, which on a seat's host is the live daemon.
+  it("a non-default home with neither state nor config names no daemon: never the built-in 127.0.0.1:7433 (no network request)", () => {
     fs.unlinkSync(path.join(home, "config.json"));
-    expect(new DaemonClient().baseUrl).toBe("http://127.0.0.1:7433");
+    expect(new DaemonClient().baseUrl).toBe(NO_HOME_DAEMON_URL);
+    expect(new DaemonClient().baseUrl).not.toContain("127.0.0.1:7433");
   });
 
   it("keeps a live endpoint when startup host/port configuration changes", () => {

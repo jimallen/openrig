@@ -22,6 +22,12 @@ import {
 import { resolveOfflineHelpPath } from "../src/daemon-reachability.js";
 import { createProcessLiveness, signalProbe } from "../src/commands/daemon.js";
 
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
 const URL = "http://127.0.0.1:7433";
 const DOWN_ADVICE = /rig daemon start|'rig up'|if it is down/i;
 const WIDENING = /full_bypass|danger-full-access|network_access/i;

@@ -7,6 +7,7 @@ import { execSync } from "node:child_process";
 import { resolveDaemonPath } from "../daemon-lifecycle.js";
 import { formatDaemonHostForUrl, terminalAuthHeaders } from "../client.js";
 import { ConfigStore } from "../config-store.js";
+import { homeWithoutDaemonAddress } from "../home-daemon-address.js";
 import { buildWritableHomeCheck } from "../system-preflight.js";
 import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, readHcHello, type HcHelloOutcome } from "../tmux-health.js";
 import { parse as parseYaml } from "yaml";
@@ -228,6 +229,17 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
     if (available) {
       return { name: "port", status: "pass", message: `Port ${daemonHost}:${daemonPort} available.` };
     }
+    // workspaces-o9o.181: a home that names no daemon must not probe the default address to see whose daemon holds it.
+    const noHomeDaemon = homeWithoutDaemonAddress({ configStore: deps.configStore });
+    if (noHomeDaemon !== null) {
+      return {
+        name: "port",
+        status: "fail",
+        message: `Port ${daemonHost}:${daemonPort} is in use, and this OPENRIG_HOME names no daemon of its own.`,
+        reason: noHomeDaemon,
+        fix: `Give this home its own port (rig config set daemon.port <port>), or set OPENRIG_URL to the daemon you mean.`,
+      };
+    }
     // Port in use — check if it's our daemon via healthz
     try {
       const res = await fetchFn(`${daemonBase}/healthz`);
@@ -407,11 +419,13 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         // Returns null on ANY failure to read the live side. The conformance check treats null as
         // "unknown" and skips — an unreachable daemon must never read as a matching topology.
         fetchHostRows: async (input) => {
+          if (homeWithoutDaemonAddress() !== null) return null; // workspaces-o9o.181: no daemon for this home: unknown, never the default
           const cfg = new ConfigStore().resolve();
           const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
           return fetchDaemonHostRows(fetch, base, terminalAuthHeaders(), input);
         },
         fetchLiveLogicalIds: async (rigName: string): Promise<string[] | null> => {
+          if (homeWithoutDaemonAddress() !== null) return null; // workspaces-o9o.181: as above
           try {
             const cfg = new ConfigStore().resolve();
             const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;

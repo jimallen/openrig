@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
 import { DaemonClient, DaemonConnectionError, formatDaemonHostForUrl } from "../src/client.js";
+import { NO_HOME_DAEMON_URL } from "../src/home-daemon-address.js";
 
 // Lightweight test server that echoes request info as JSON
 function createEchoServer(): { server: http.Server; port: number; close: () => Promise<void> } {
@@ -168,12 +169,16 @@ describe("DaemonClient", () => {
   });
 
   // Test 5: Client uses OPENRIG_URL env, falls back to http://127.0.0.1:7433
-  it("uses OPENRIG_URL env when set, falls back to http://127.0.0.1:7433", () => {
+  // workspaces-o9o.181: the fallback half used to expect 127.0.0.1:7433 here. This runs in the hermetic fixture home, which is not
+  // the default home, and a non-default home that names no daemon no longer falls back to the built-in address (that is how a
+  // probe with a temporary OPENRIG_HOME reached the live daemon). The default home's fallback is pinned in home-daemon-address.test.ts.
+  it("uses OPENRIG_URL env when set; a non-default home naming no daemon gets the no-daemon address, never 127.0.0.1:7433", () => {
     // Default (no env)
     const saved = process.env["OPENRIG_URL"];
     delete process.env["OPENRIG_URL"];
     const defaultClient = new DaemonClient();
-    expect(defaultClient.baseUrl).toBe("http://127.0.0.1:7433");
+    expect(defaultClient.baseUrl).toBe(NO_HOME_DAEMON_URL);
+    expect(defaultClient.baseUrl).not.toContain("127.0.0.1:7433");
 
     // With env
     process.env["OPENRIG_URL"] = "http://custom:9000";

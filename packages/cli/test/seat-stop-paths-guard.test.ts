@@ -10,6 +10,12 @@ import { daemonCommand } from "../src/commands/daemon.js";
 import { stopDaemon, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import { seatDaemonControlRefusal } from "../src/seat-daemon-guard.js";
 
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
 // A seat stops the daemon by no path (review of 6f813a07, F1): `rig destroy` stops it, kills the listener and ends the seats, and
 // every caller of stopDaemon shares one refusal. HC_* names are an operator's hc terminal, not a seat's identity. Names restated, not imported.
 const SEAT_VALUE = "seat-value-that-must-not-be-printed@somerig";

@@ -8,6 +8,7 @@ import type { DaemonStartLock } from "./daemon-start-lock.js";
 import { rebaseRelativePath, rebaseRelativePathEnv } from "@openrig/daemon/daemon-path-env";
 import { DAEMON_STOP_WAIT_MS, DAEMON_SHUTDOWN_RECEIPT, type DaemonShutdownReceipt } from "@openrig/daemon/daemon-shutdown";
 import { ConfigStore } from "./config-store.js";
+import { homeWithoutDaemonAddress, NO_HOME_DAEMON_ACTION } from "./home-daemon-address.js";
 import { readLocalOrigin } from "./local-origin.js";
 import { daemonStartRefusal, seatDaemonControlRefusal } from "./seat-daemon-guard.js";
 import { OPENRIG_HOME, LEGACY_RIGGED_HOME, readOpenRigEnv } from "./openrig-compat.js";
@@ -67,6 +68,8 @@ export interface DaemonStatus {
   eventLoop?: DaemonEventLoopEvidence;
   /** #275 — the OS code behind a failed health probe (e.g. EPERM when a sandbox blocked it). */
   probeErrorCode?: string;
+  /** workspaces-o9o.181: why a non-default OPENRIG_HOME resolved no daemon (state "stopped"; nothing was probed). */
+  noHomeDaemon?: string;
 }
 
 /** "unknown": the process may exist but this shell can neither signal nor inspect it. */
@@ -117,6 +120,9 @@ export function daemonNotRunningError(): DaemonNotRunningError {
  *  what the probe KNOWS. UNVERIFIED/unhealthy = "did not respond" (down ≠ busy);
  *  stopped/stale = the plain not-running truth. Pure so every surface shares it. */
 export function statusGuardMessage(status: DaemonStatus): DaemonNotRunningError {
+  if (status.noHomeDaemon) {
+    return { fact: status.noHomeDaemon, consequence: "Nothing was sent: this command needs a daemon, and this home names none.", action: NO_HOME_DAEMON_ACTION };
+  }
   if (status.state === "stopped" || status.state === "stale") {
     return daemonNotRunningError();
   }
@@ -903,8 +909,10 @@ export async function stopDaemon(deps: LifecycleDeps): Promise<"stopped" | "no-t
   const refusal = seatDaemonControlRefusal("stop");
   if (refusal !== null) throw new Error(refusal);
   const state = readState(deps);
-  const configured = resolveConfiguredDaemonTarget();
   const explicitUrl = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");
+  // workspaces-o9o.181: a non-default home that names no daemon has nothing to stop; never probe the default address.
+  if (!state && !explicitUrl && homeWithoutDaemonAddress() !== null) return "no-target";
+  const configured = resolveConfiguredDaemonTarget();
   const stateUrl = state ? `http://${formatDaemonHostForUrl(state.host ?? DEFAULT_HOST)}:${state.port}` : undefined;
   const target = stateUrl ?? explicitUrl?.replace(/\/+$/, "") ?? `http://${formatDaemonHostForUrl(configured.host)}:${configured.port}`;
   if (stateUrl && explicitUrl && new URL(explicitUrl).origin !== new URL(stateUrl).origin) {
@@ -1041,6 +1049,15 @@ export async function getDaemonStatus(
 
   const state = readState(deps);
   if (!state) {
+    // workspaces-o9o.181: a non-default home with no daemon.json and no configured port or host names no daemon. Do not
+    // probe the built-in default address, which on a seat's host is the live daemon.
+    const noHomeDaemon = homeWithoutDaemonAddress();
+    if (noHomeDaemon !== null) {
+      // The wrong-home hint (1ae863d2) still applies, unprobed: a live sibling home or a HOME-MOVED marker keeps the status
+      // "unverified" and names both paths, as before.
+      const siblingHint = findSiblingHome(deps);
+      return siblingHint ? { state: "unverified", siblingHint, noHomeDaemon } : { state: "stopped", noHomeDaemon };
+    }
     const configured = resolveConfiguredDaemonTarget();
     try {
       const res = await probeHealthzWithSettle(deps, `http://${formatDaemonHostForUrl(configured.host)}:${configured.port}/healthz`);

@@ -27,6 +27,12 @@ import {
 } from "../src/daemon-lifecycle.js";
 import { claimTestPort } from "../../daemon/test/helpers/test-ports.js";
 
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
 afterEach(() => vi.useRealTimers());
 
 function cleanReceipt(pid: number): string {

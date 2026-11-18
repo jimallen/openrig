@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { sendCommand, type SendDeps } from "../src/commands/send.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
+import { NO_HOME_DAEMON_URL } from "../src/home-daemon-address.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
 import { must } from "./helpers/must.js";
@@ -1714,7 +1715,10 @@ describe("Send CLI", () => {
       expect(rcHolder.seen()).toBe(`http://127.0.0.1:${port}`);
     });
 
-    it("R6b RED: NO env + NO daemon state + probe-stopped -> POST attempted against the configured DEFAULT target (injected client succeeds)", async () => {
+    // workspaces-o9o.181: this row used to pin a POST to the built-in 127.0.0.1:7433 from a NON-DEFAULT home with no state and no
+    // config. That fallback is how a probe with a temporary OPENRIG_HOME reached the live daemon, so it is inverted: the client the
+    // command builds is the no-daemon address (the real client refuses it before sending; client.test.ts pins that).
+    it("R6b: NO env + NO daemon state + a non-default home with no config -> the target is the no-daemon address, never 127.0.0.1:7433", async () => {
       vi.stubEnv("OPENRIG_URL", "");
       vi.stubEnv("RIGGED_URL", "");
       // ff13bcdf finding 2 — ConfigStore maps these aliases to
@@ -1732,9 +1736,9 @@ describe("Send CLI", () => {
       const { logs } = await captureLogs(async () => {
         await makeCmd(probeFailNoStateDeps(stubFactory)).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "hello"]);
       });
-      expect(logs.join("\n")).toContain("Sent to dev-impl@my-rig");
-      expect(seenUrl).toBe("http://127.0.0.1:7433");
-      expect(postFn).toHaveBeenCalledTimes(1);
+      void logs;
+      expect(seenUrl).toBe(NO_HOME_DAEMON_URL);
+      expect(seenUrl).not.toContain("127.0.0.1:7433");
     });
 
     it("R6c RED: NO env + NO state + probe-stopped + ConfigStore CUSTOM daemon host/port -> POST attempted against the CONFIGURED-FILE target exactly (no hardcoded default)", async () => {

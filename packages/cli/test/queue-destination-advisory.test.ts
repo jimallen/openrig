@@ -1,8 +1,14 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createDaemon } from "../../daemon/src/startup.js";
 import { queueCommand, type QueueDeps } from "../src/commands/queue.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 import { must } from "./helpers/must.js";
+
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("queue destination advisory through CLI and route", () => {
   it("prints the accepted typo unchanged for create and both handoffs", async () => {

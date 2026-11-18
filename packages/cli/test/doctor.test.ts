@@ -11,6 +11,14 @@ const defaultConfig = {
   transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 },
 };
 
+// workspaces-o9o.181: the hermetic fixture home is not the default home, and there a port the config does not name is no daemon
+// address at all. These port rows are about the configured port, so their store says the port is configured (from the file).
+function configuredStore(config: typeof defaultConfig): ReturnType<typeof stubConfigStore> {
+  return Object.assign(stubConfigStore(config), {
+    resolveWithSource: (_key: string) => ({ value: config.daemon.port, source: "file" as const, defaultValue: 7433 }),
+  });
+}
+
 function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
   return {
     readSeatProcesses: () => [],  // workspaces-o9o.185: no test reads this host's processes
@@ -322,7 +330,7 @@ describe("runDoctorChecks", () => {
     const origFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => { throw new Error("refused"); }) as unknown as typeof fetch;
     try {
-      const deps = makeDeps({ checkPort: async () => false });
+      const deps = makeDeps({ checkPort: async () => false, configStore: configuredStore(defaultConfig) });
       const { portCheck } = runDoctorChecks(deps);
       const result = await portCheck;
       expect(result.status).toBe("fail");
@@ -337,7 +345,7 @@ describe("runDoctorChecks", () => {
     const origFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => ({ ok: true })) as unknown as typeof fetch;
     try {
-      const deps = makeDeps({ checkPort: async () => false });
+      const deps = makeDeps({ checkPort: async () => false, configStore: configuredStore(defaultConfig) });
       const { portCheck } = runDoctorChecks(deps);
       const result = await portCheck;
       expect(result.status).toBe("pass");

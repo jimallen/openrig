@@ -6,8 +6,14 @@
 // (2) HOME-RESOLUTION HONESTY: an empty/stale resolved OPENRIG_HOME with a LIVE
 //     sibling home (or HOME-MOVED marker) must surface BOTH paths — never assert
 //     daemon-down from the wrong home.
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getDaemonStatus, type LifecycleDeps } from "../src/daemon-lifecycle.js";
+
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 function baseDeps(over: Partial<LifecycleDeps> = {}): LifecycleDeps {
   return {

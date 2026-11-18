@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import { createProgram } from "../src/index.js";
 import http from "node:http";
@@ -10,6 +10,12 @@ import {
   type LifecycleDeps,
   type DaemonState,
 } from "../src/daemon-lifecycle.js";
+
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 function mockLifecycleDeps(overrides?: Partial<LifecycleDeps>): LifecycleDeps {
   return {

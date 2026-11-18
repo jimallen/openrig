@@ -5,6 +5,7 @@ import { getOpenRigHome, readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout, FetchTimeoutError } from "./fetch-with-timeout.js";
 import { readLocalOrigin } from "./local-origin.js";
 import { DAEMON_STATE_POLICY, readCredentialFile, readOwnFile, TERMINAL_TOKEN_POLICY } from "@openrig/daemon/credential-file";
+import { homeWithoutDaemonAddress, NO_HOME_DAEMON_ACTION, NO_HOME_DAEMON_URL } from "./home-daemon-address.js";
 
 export function terminalAuthHeaders(): Record<string, string> {
   const token = resolveTerminalToken();
@@ -283,6 +284,9 @@ export class DaemonClient {
         const localUrl = localDaemonUrl();
         if (localUrl) {
           this.baseUrl = localUrl;
+        } else if (homeWithoutDaemonAddress() !== null) {
+          // workspaces-o9o.181: a non-default home never falls back to the built-in default daemon address.
+          this.baseUrl = NO_HOME_DAEMON_URL;
         } else {
           const config = new ConfigStore().resolve(); // env > file > defaults
           this.baseUrl = `http://${formatDaemonHostForUrl(config.daemon.host)}:${config.daemon.port}`;
@@ -344,6 +348,10 @@ export class DaemonClient {
   }
 
   private async fetch(path: string, init: RequestInit, options?: DaemonRequestOptions, consumeResponse?: (response: Response) => Promise<void>): Promise<Response> {
+    // workspaces-o9o.181: this home names no daemon. Refuse before anything is sent (so no write outcome is in doubt).
+    if (this.baseUrl === NO_HOME_DAEMON_URL) {
+      throw new DaemonConnectionError(`${homeWithoutDaemonAddress() ?? "This OPENRIG_HOME names no daemon."} Nothing was sent. ${NO_HOME_DAEMON_ACTION}`);
+    }
     const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
     if (options?.signal) init = { ...init, signal: options.signal };
     if (options?.headers) {
