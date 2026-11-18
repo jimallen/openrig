@@ -9,6 +9,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { WorkflowRuntime } from "../src/domain/workflow-runtime.js";
+import type { ProjectStepResult } from "../src/domain/workflow-projector.js";
 
 const BUILD = `workflow:
   id: build-with-signoff
@@ -95,8 +96,12 @@ describe("dependency graph re-entry through a routed exit", () => {
   }
   const project = (instanceId: string, packet: string, exit: "handoff" | "done" | "failed") =>
     runtime.project({ instanceId, currentPacketId: packet, actorSession: "owner@rig", exit });
-  const packetFor = (result: { nextStepIds: string[]; nextQitemIds: string[] }, stepId: string) =>
-    result.nextQitemIds[result.nextStepIds.indexOf(stepId)]!;
+  // The packet projected for a step: a dependency-graph advance sets nextStepIds and nextQitemIds (optional on the result).
+  const packetFor = (result: ProjectStepResult, stepId: string): string => {
+    const packet = result.nextQitemIds?.[(result.nextStepIds ?? []).indexOf(stepId)];
+    if (packet === undefined) throw new Error(`no packet was projected for ${stepId}`);
+    return packet;
+  };
 
   it("re-runs both reviews and reopens the gate after the sign-off sends implement back", async () => {
     const run = await start(BUILD);

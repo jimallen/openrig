@@ -8,7 +8,7 @@ import { StartupOrchestrator, type StartupInput } from "../src/domain/startup-or
 import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile, ProjectionResult, StartupDeliveryResult, ReadinessResult, HarnessLaunchResult } from "../src/domain/runtime-adapter.js";
 import { resolveConcreteHint } from "../src/domain/runtime-adapter.js";
 import type { ProjectionPlan } from "../src/domain/projection-planner.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { StartupAction } from "../src/domain/types.js";
 import { deriveOriented, issueStartupChallenge, verifyStartupProof, STARTUP_PROOF_INSTRUCTION_LINE } from "../src/domain/startup-proof.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
@@ -53,7 +53,7 @@ function mockAdapter(overrides?: Partial<RuntimeAdapter>): RuntimeAdapter {
     deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
     checkReady: vi.fn(async () => ({ ready: true })),
     // A successful managed Claude resume returns the identity it resumed.
-    launchHarness: vi.fn(async (_binding, opts) => ({ ok: true,
+    launchHarness: vi.fn(async (_binding: NodeBinding, opts: Parameters<RuntimeAdapter["launchHarness"]>[1]): Promise<HarnessLaunchResult> => ({ ok: true,
       ...(opts.resumeToken ? { resumeToken: opts.resumeToken, resumeType: "claude_id" } : {}) })),
     ...overrides,
   };
@@ -157,7 +157,7 @@ describe("StartupOrchestrator", () => {
     const adapter = mockAdapter({
       project: vi.fn(async () => ({ projected: ["core"], skipped: [], failed: [], warnings: ["AGENTS.md is untracked"] })),
       deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [], warnings: ["plugin exclude skipped"] })),
-      launchHarness: vi.fn(async () => fails ? { ok: false, error: "controlled launch failure" } : { ok: true }),
+      launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => fails ? { ok: false, error: "controlled launch failure" } : { ok: true }),
     });
     const result = await createOrchestrator().startNode(makeInput(seed, { adapter }));
     expect(result.ok).toBe(!fails);
@@ -166,7 +166,7 @@ describe("StartupOrchestrator", () => {
 
   it("keeps a challenge-only transport failure best-effort", async () => {
     const seed = seedSession();
-    const tmux = mockTmux({ sendText: vi.fn(async () => ({ ok: false as const, message: "fixture transport failure" })) });
+    const tmux = mockTmux({ sendText: vi.fn(async (): Promise<TmuxResult> => ({ ok: false, code: "send_failed", message: "fixture transport failure" })) });
     const result = await createOrchestrator(tmux).startNode(makeInput(seed, {
       startupActions: [makeAction({ type: "startup_proof", value: "authenticated" })],
     }));
@@ -185,7 +185,7 @@ describe("StartupOrchestrator", () => {
   it("persists the authored context before a native gate and exposes only the matching continuation", async () => {
     const seed = seedSession(); const orch = createOrchestrator();
     const action = makeAction({ type: "send_text", value: "configured role and durable queue instructions" });
-    const adapter = mockAdapter({ launchHarness: vi.fn(async () => ({ ok: false, recovery: "attention_required", error: "Hook review" })) });
+    const adapter = mockAdapter({ launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: false, recovery: "attention_required", error: "Hook review" })) });
     const result = await orch.startNode(makeInput(seed, { adapter, startupActions: [action] }));
     expect(result.startupStatus).toBe("attention_required");
     expect(JSON.parse((db.prepare("SELECT startup_actions_json FROM node_startup_context WHERE node_id=?").get(seed.nodeId) as {startup_actions_json:string}).startup_actions_json)).toEqual([action]);
@@ -200,7 +200,7 @@ describe("StartupOrchestrator", () => {
     const orch = createOrchestrator();
     const role: ResolvedStartupFile = { path: "role.md", absolutePath: "/fixture/role.md", ownerRoot: "/fixture", orientation: "role", deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"] };
     const read = () => db.prepare("SELECT * FROM node_startup_context WHERE node_id=?").get(seed.nodeId) as { resolved_files_json: string; created_at: string };
-    const adapter = mockAdapter({ launchHarness: vi.fn(async () => {
+    const adapter = mockAdapter({ launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => {
       expect(JSON.parse(read().resolved_files_json)).toEqual([role]);
       return { ok: false, recovery: "attention_required", error: "Native gate" };
     }) });
@@ -268,7 +268,7 @@ describe("StartupOrchestrator", () => {
     const seed = seedSession();
     const token = "requested-native";
     const adapter = mockAdapter(mode === "missing"
-      ? { launchHarness: vi.fn(async () => ({ ok: true })) } : {});
+      ? { launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: true })) } : {});
     const t = mockTmux({ sendText: vi.fn(async () => {
       sessionRegistry.updateResumeToken(seed.sessionId, "claude_id", "other-native", "hook");
       return { ok: true as const };
@@ -294,8 +294,8 @@ describe("StartupOrchestrator", () => {
     const before = db.prepare("SELECT * FROM node_startup_context WHERE node_id=?").get(seed.nodeId);
     vi.mocked(tmux.sendText).mockClear();
     const adapter = mockAdapter(gate === "launch"
-      ? { launchHarness: vi.fn(async () => ({ ok: false, recovery: "attention_required", error: "Hook review" })) }
-      : { checkReady: vi.fn(async () => ({ ready: false, code: "hook_trust_gate", reason: "Hook review" })) });
+      ? { launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: false, recovery: "attention_required", error: "Hook review" })) }
+      : { checkReady: vi.fn(async (): Promise<ReadinessResult> => ({ ready: false, code: "hook_trust_gate", reason: "Hook review" })) });
     // RestoreOrchestrator's pod-aware exact-resume path contains replay via
     // empty files/actions, but uses isRestore:false to launch the native harness.
     const input = makeInput(seed, { adapter, isRestore: false, resumeToken: "native-original",
@@ -343,7 +343,7 @@ describe("StartupOrchestrator", () => {
     let delivered = false;
     const adapter = mockAdapter({
       runtime: "codex",
-      deliverStartup: vi.fn(async (files) => { if (files.some((file) => file.deliveryHint === "send_text")) delivered = true; return { delivered: files.length, failed: [] }; }),
+      deliverStartup: vi.fn(async (files: ResolvedStartupFile[]) => { if (files.some((file) => file.deliveryHint === "send_text")) delivered = true; return { delivered: files.length, failed: [] }; }),
       checkReady: vi.fn(async () => delivered
         ? { ready: false, code, reason: "The native runtime requires attention" }
         : { ready: true }),
@@ -406,7 +406,7 @@ describe("StartupOrchestrator", () => {
   it("records the exact adapter-returned launch effect only after successful managed launch", async () => {
     const seed = seedSession();
     const appliedLaunch = observeClaudePermission("--permission-mode acceptEdits");
-    const adapter = mockAdapter({ launchHarness: vi.fn(async () => ({ ok: true, appliedLaunch })) });
+    const adapter = mockAdapter({ launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: true, appliedLaunch })) });
     const result = await createOrchestrator().startNode(makeInput(seed, { adapter }));
     expect(result.ok).toBe(true);
     expect(new AppliedLaunchObservationStore(db).readCurrent(seed.nodeId)).toMatchObject(appliedLaunch);
@@ -471,7 +471,7 @@ describe("StartupOrchestrator", () => {
     const seed = seedSession();
     db.exec("DROP TABLE applied_launch_observations");
     const adapter = mockAdapter({
-      launchHarness: vi.fn(async () => ({ ok: true, appliedLaunch: observeClaudePermission("--permission-mode acceptEdits") })),
+      launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: true, appliedLaunch: observeClaudePermission("--permission-mode acceptEdits") })),
     });
     const result = await createOrchestrator().startNode(makeInput(seed, { adapter }));
     expect(result.ok).toBe(true);
@@ -499,7 +499,7 @@ describe("StartupOrchestrator", () => {
   // T4: action failure transitions to failed
   it("action failure transitions to failed", async () => {
     const seed = seedSession();
-    const failTmux = mockTmux({ sendText: vi.fn(async () => ({ ok: false as const, message: "session gone" })) });
+    const failTmux = mockTmux({ sendText: vi.fn(async (): Promise<TmuxResult> => ({ ok: false, code: "send_failed", message: "session gone" })) });
     const orch = createOrchestrator({ tmux: failTmux });
     const actions: StartupAction[] = [makeAction({ phase: "after_ready" })];
     const result = await orch.startNode(makeInput(seed, { startupActions: actions }));
@@ -515,7 +515,7 @@ describe("StartupOrchestrator", () => {
     const adapter = mockAdapter({
       project: vi.fn(async () => { callOrder.push("project"); return { projected: [], skipped: [], failed: [] }; }),
       deliverStartup: vi.fn(async () => { callOrder.push("deliver"); return { delivered: 1, failed: [] }; }),
-      launchHarness: vi.fn(async () => { callOrder.push("launchHarness"); return { ok: true }; }),
+      launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => { callOrder.push("launchHarness"); return { ok: true }; }),
       checkReady: vi.fn(async () => { callOrder.push("checkReady"); return { ready: true }; }),
     });
 
@@ -1118,10 +1118,10 @@ describe("StartupOrchestrator", () => {
     // (attempt 1's second action), which fails as before.
     let configureSeen = 0;
     const failTmux = mockTmux({
-      sendText: vi.fn(async (_target: string, text: string) => {
+      sendText: vi.fn(async (_target: string, text: string): Promise<TmuxResult> => {
         if (text === "/configure") {
           configureSeen++;
-          if (configureSeen === 1) return { ok: false as const, message: "second action fails" };
+          if (configureSeen === 1) return { ok: false, code: "send_failed", message: "second action fails" };
         }
         return { ok: true as const };
       }),

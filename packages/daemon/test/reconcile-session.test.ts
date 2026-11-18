@@ -195,7 +195,7 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
   it("HONEST DRIFT: reports unproven metadata separately and never claims continuity", async () => {
     // A claude-code node whose live pane command reads "zsh" cannot be proven.
     const rig = setup.rigRepo.createRig("drift-rig");
-    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: "/work/repo", podId: null });
+    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: "/work/repo" });
     const sess = setup.sessionRegistry.registerSession(node.id, "dev-impl@drift-rig");
     setup.sessionRegistry.markDetached(sess.id);
     setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@drift-rig" });
@@ -214,7 +214,7 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
     const localDb = createFullTestDb();
     const local = createTestApp(localDb, { tmux: spy.adapter });
     const rig = local.rigRepo.createRig("ghost-rig");
-    const node = local.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal", podId: null });
+    const node = local.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
     local.sessionRegistry.registerSession(node.id, "dev-impl@ghost-rig");
 
     const result = await local.sessionReconciler.reconcileSession({ sessionName: "dev-impl@ghost-rig" });
@@ -284,7 +284,7 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
   it("node_mismatch when explicit --rig/--node disagrees with the daemon's session mapping", async () => {
     const { rig, sessionName } = await seedDetachedSeat();
     // A second node in the same rig that does NOT map to this session.
-    const other = setup.rigRepo.addNode(rig.id, "infra.other", { runtime: "terminal", podId: null });
+    const other = setup.rigRepo.addNode(rig.id, "infra.other", { runtime: "terminal" });
 
     const result = await setup.sessionReconciler.reconcileSession({ sessionName, rigId: rig.id, logicalId: "infra.other" });
     expect(result.ok).toBe(false);
@@ -297,7 +297,7 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
   it("cross-runtime: claude-code, codex, and terminal nodes each reconcile", async () => {
     for (const runtime of ["claude-code", "codex", "terminal"] as const) {
       const rig = setup.rigRepo.createRig(`rt-${runtime}`);
-      const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime, podId: null });
+      const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime });
       const sess = setup.sessionRegistry.registerSession(node.id, `dev-impl@rt-${runtime}`);
       setup.sessionRegistry.markDetached(sess.id);
 
@@ -327,7 +327,7 @@ describe("reconcile_session on the converge spine (OPR.0.3.4.3)", () => {
 
   it("convergeOp dispatches reconcile_session to the claim service (on-spine, not a one-off)", async () => {
     const rig = setup.rigRepo.createRig("spine-rig");
-    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal", podId: null });
+    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
     const sess = setup.sessionRegistry.registerSession(node.id, "dev-impl@spine-rig");
     setup.sessionRegistry.markDetached(sess.id);
 
@@ -379,7 +379,7 @@ describe("POST /api/sessions/:sessionName/reconcile (OPR.0.3.4.3)", () => {
 
   it("returns 200 with the reconcile result for a live detached seat", async () => {
     const rig = setup.rigRepo.createRig("route-rig");
-    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal", podId: null });
+    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
     const sess = setup.sessionRegistry.registerSession(node.id, "dev-impl@route-rig");
     setup.sessionRegistry.markDetached(sess.id);
 
@@ -400,8 +400,8 @@ describe("POST /api/sessions/:sessionName/reconcile (OPR.0.3.4.3)", () => {
 
   it("returns 409 for a node_mismatch", async () => {
     const rig = setup.rigRepo.createRig("route-rig2");
-    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal", podId: null });
-    setup.rigRepo.addNode(rig.id, "dev.other", { runtime: "terminal", podId: null });
+    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
+    setup.rigRepo.addNode(rig.id, "dev.other", { runtime: "terminal" });
     setup.sessionRegistry.registerSession(node.id, "dev-impl@route-rig2");
 
     const res = await post("dev-impl@route-rig2", { rigId: rig.id, logicalId: "dev.other" });

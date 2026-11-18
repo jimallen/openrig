@@ -210,7 +210,7 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
 // A classic (omitted permission mode) seat types `claude` into its pane's shell, which inherits the tmux
 // server's environment, not the daemon's. The bootstrap cannot see that environment, so when the daemon
 // has CLAUDE_CONFIG_DIR it provisions both homes the classic child might read.
-function classicLaunch(f: ReturnType<typeof fixture>, childEnv: Record<string, string>) {
+function classicLaunch(f: ReturnType<typeof fixture>, childEnv: NodeJS.ProcessEnv) {
   let pending = "";
   f.tmux.sendText = async (_target, text) => { pending = text; return { ok: true }; };
   mockShellCommand(f.tmux);

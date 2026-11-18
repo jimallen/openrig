@@ -313,7 +313,7 @@ describe("Profile resolver + precedence engine", () => {
   it("restore policy narrowing from resume_if_possible to relaunch_fresh allowed", () => {
     const ctx = makeCtx({
       baseSpec: makeResolved(makeSpec({
-        defaults: { lifecycle: { executionMode: "interactive_resident", compactionStrategy: "harness_native", restorePolicy: "resume_if_possible" } },
+        defaults: { lifecycle: { executionMode: "interactive_resident", compactionStrategy: "default-compaction", restorePolicy: "resume_if_possible" } },
         profiles: { default: { uses: { skills: ["skill-a"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } } },
       })),
       member: makeMember({ restorePolicy: "relaunch_fresh" }),
@@ -328,7 +328,7 @@ describe("Profile resolver + precedence engine", () => {
   it("restore policy broadening from checkpoint_only to resume_if_possible rejected", () => {
     const ctx = makeCtx({
       baseSpec: makeResolved(makeSpec({
-        defaults: { lifecycle: { executionMode: "interactive_resident", compactionStrategy: "harness_native", restorePolicy: "checkpoint_only" } },
+        defaults: { lifecycle: { executionMode: "interactive_resident", compactionStrategy: "default-compaction", restorePolicy: "checkpoint_only" } },
         profiles: { default: { uses: { skills: ["skill-a"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } } },
       })),
       member: makeMember({ restorePolicy: "resume_if_possible" }),
@@ -402,9 +402,9 @@ describe("V0.3.0 daemon-skill-discovery — filesystem-discovered skills join th
       const baseSpec = makeSpec({
         // Note: NO `openrig-architect` in resources.skills; the only way
         // for the profile to resolve it is via filesystem discovery.
-        resources: { skills: [], guidance: [], subagents: [], hooks: [], runtimeResources: [] },
+        resources: { skills: [], guidance: [], subagents: [], plugins: [], runtimeResources: [] },
         profiles: {
-          default: { uses: { skills: ["openrig-architect"], guidance: [], subagents: [], hooks: [], runtimeResources: [] } },
+          default: { uses: { skills: ["openrig-architect"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } },
         },
       });
       const ctx = makeCtx({
@@ -426,9 +426,9 @@ describe("V0.3.0 daemon-skill-discovery — filesystem-discovered skills join th
     withFsFixture(() => {
       writeSkill(path.join(cwd, ".claude/skills/web-design-guidelines"), "web-design-guidelines", "Web design checks");
       const baseSpec = makeSpec({
-        resources: { skills: [], guidance: [], subagents: [], hooks: [], runtimeResources: [] },
+        resources: { skills: [], guidance: [], subagents: [], plugins: [], runtimeResources: [] },
         profiles: {
-          default: { uses: { skills: ["web-design-guidelines"], guidance: [], subagents: [], hooks: [], runtimeResources: [] } },
+          default: { uses: { skills: ["web-design-guidelines"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } },
         },
       });
       const ctx = makeCtx({
@@ -467,9 +467,9 @@ describe("V0.3.0 daemon-skill-discovery — filesystem-discovered skills join th
     withFsFixture(() => {
       writeSkill(path.join(homedir, ".agents/skills/openrig-architect"), "openrig-architect", "Architect rigs");
       const baseSpec = makeSpec({
-        resources: { skills: [], guidance: [], subagents: [], hooks: [], runtimeResources: [] },
+        resources: { skills: [], guidance: [], subagents: [], plugins: [], runtimeResources: [] },
         profiles: {
-          default: { uses: { skills: ["openrig-architect"], guidance: [], subagents: [], hooks: [], runtimeResources: [] } },
+          default: { uses: { skills: ["openrig-architect"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } },
         },
       });
       const ctx = makeCtx({
@@ -485,9 +485,9 @@ describe("V0.3.0 daemon-skill-discovery — filesystem-discovered skills join th
   it("preserves the existing 'skill not found' error when a profile references a skill that exists at neither the rig-local nor the discovered paths", () => {
     withFsFixture(() => {
       const baseSpec = makeSpec({
-        resources: { skills: [], guidance: [], subagents: [], hooks: [], runtimeResources: [] },
+        resources: { skills: [], guidance: [], subagents: [], plugins: [], runtimeResources: [] },
         profiles: {
-          default: { uses: { skills: ["nope-not-anywhere"], guidance: [], subagents: [], hooks: [], runtimeResources: [] } },
+          default: { uses: { skills: ["nope-not-anywhere"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } },
         },
       });
       const ctx = makeCtx({
@@ -515,9 +515,9 @@ describe("V0.3.0 daemon-skill-discovery — filesystem-discovered skills join th
       fs.writeFileSync(path.join(dir, "SKILL.md"), "no frontmatter here\n", "utf-8");
 
       const baseSpec = makeSpec({
-        resources: { skills: [], guidance: [], subagents: [], hooks: [], runtimeResources: [] },
+        resources: { skills: [], guidance: [], subagents: [], plugins: [], runtimeResources: [] },
         profiles: {
-          default: { uses: { skills: ["broken-skill"], guidance: [], subagents: [], hooks: [], runtimeResources: [] } },
+          default: { uses: { skills: ["broken-skill"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } },
         },
       });
       const ctx = makeCtx({
@@ -547,9 +547,9 @@ describe("V0.3.0 daemon-skill-discovery — filesystem-discovered skills join th
       fs.writeFileSync(path.join(dir, "SKILL.md"), "no frontmatter\n", "utf-8");
 
       const baseSpec = makeSpec({
-        resources: { skills: [], guidance: [], subagents: [], hooks: [], runtimeResources: [] },
+        resources: { skills: [], guidance: [], subagents: [], plugins: [], runtimeResources: [] },
         profiles: {
-          default: { uses: { skills: ["bar"], guidance: [], subagents: [], hooks: [], runtimeResources: [] } },
+          default: { uses: { skills: ["bar"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } },
         },
       });
       const ctx = makeCtx({

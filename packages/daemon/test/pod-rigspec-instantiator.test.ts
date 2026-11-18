@@ -19,12 +19,15 @@ import { ContinuityPolicyMaterializer } from "../src/domain/continuity-policy-ma
 import { parseWatchdogSpec } from "../src/domain/watchdog-policy-engine.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../src/domain/agent-resolver.js";
-import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import type { HarnessLaunchResult, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import type { SessionProbe, TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 import { expectCode } from "./helpers/expect-code.js";
+
+/** What the instantiator hands its skill reconciler (its constructor dependency), so a mock records typed calls. */
+type SkillReconcileInput = Parameters<NonNullable<ConstructorParameters<typeof PodRigInstantiator>[0]["skillReconciler"]>>[0];
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -46,7 +49,7 @@ function mockAdapter(runtime = "claude-code"): RuntimeAdapter {
     project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
     deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
     checkReady: vi.fn(async () => ({ ready: true })),
-    launchHarness: vi.fn(async () => ({ ok: true })),
+    launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: true })),
   };
 }
 
@@ -274,7 +277,7 @@ describe("PodRigInstantiator", () => {
       execFileSync("git", ["-C", catalog, "add", "."]);
       execFileSync("git", ["-C", catalog, "commit", "-qm", "fixture"]);
 
-      const skillReconciler = vi.fn((...args: unknown[]) => ({
+      const skillReconciler = vi.fn((_input: SkillReconcileInput) => ({
         ok: true,
         applied: false,
         freshLaunchRequired: false,
@@ -585,13 +588,19 @@ profiles:
     expect(existing.ok).toBe(true);
     if (!existing.ok) throw new Error(`instantiate failed: ${JSON.stringify(existing)}`);
 
-    const existingNodeId = existing.result.nodes[0]!.id;
+    // The node's database id, by the rig and logical id the result carries (its node entries have no id field: this read
+    // `.id` and got undefined, so both reads below matched no row and the comparison held vacuously, o9o.128).
+    const existingNode = db.prepare("SELECT id FROM nodes WHERE rig_id = ? AND logical_id = ?")
+      .get(existing.result.rigId, existing.result.nodes[0]!.logicalId) as { id: string } | undefined;
+    if (!existingNode) throw new Error("the instantiated node is not in the nodes table");
+    const existingNodeId = existingNode.id;
     const readStartup = (nodeId: string) => db.prepare(`
       SELECT projection_entries_json, resolved_files_json, startup_actions_json, runtime
         FROM node_startup_context
        WHERE node_id = ?
     `).get(nodeId) as Record<string, unknown>;
     const before = readStartup(existingNodeId);
+    expect(before, "the existing node has a stored startup context to compare").toBeDefined();
 
     onboardingEnabled = true;
     const future = await inst.instantiate(
@@ -1272,7 +1281,7 @@ profiles:
       project: vi.fn(async () => ({ projected: [], skipped: [], failed: [{ effectiveId: "x", error: "disk full" }] })),
       deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
       checkReady: vi.fn(async () => ({ ready: true })),
-      launchHarness: vi.fn(async () => ({ ok: true })),
+      launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: true })),
     };
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const fsOps = mockFs(files);
@@ -1300,7 +1309,7 @@ profiles:
     (adapter.project as ReturnType<typeof vi.fn>).mockResolvedValue({
       projected: [], skipped: [], failed: [{ effectiveId: "x", error: "disk full" }],
     });
-    tmux.probeSession = vi.fn(async () => ({ state: "absent" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "absent" }));
     tmux.killSession = vi.fn(async () => ({ ok: false, code: "guard_target_unknown", message: "ambiguous target" }));
     const prior = rigRepo.createRig("test-rig");
 
@@ -1321,10 +1330,10 @@ profiles:
     (adapter.project as ReturnType<typeof vi.fn>).mockResolvedValue({
       projected: [], skipped: [], failed: [{ effectiveId: "x", error: "disk full" }],
     });
-    tmux.probeSession = vi.fn(async () => ({
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({
       state: "transport_unavailable", cause: "no server running on /tmp/tmux-501/default",
     }));
-    tmux.killSession = vi.fn(async () => ({ ok: true }));
+    tmux.killSession = vi.fn(async (): Promise<TmuxResult> => ({ ok: true }));
     const prior = rigRepo.createRig("test-rig");
 
     const result = await inst.instantiate(RigSpecCodec.serialize(makeRigSpec()), RIG_ROOT);
@@ -1345,7 +1354,7 @@ profiles:
     (adapter.project as ReturnType<typeof vi.fn>).mockResolvedValue({
       projected: [], skipped: [], failed: [{ effectiveId: "x", error: "disk full" }],
     });
-    tmux.probeSession = vi.fn(async () => ({ state: "present" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "present" }));
     tmux.killSession = vi.fn(async () => ({
       ok: false, code: "session_not_found", message: "no server running on /tmp/tmux-501/default",
     }));

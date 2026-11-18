@@ -6,7 +6,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import type { SessionProbe, TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { CheckpointStore } from "../src/domain/checkpoint-store.js";
@@ -135,7 +135,7 @@ describe("RigTeardownOrchestrator", () => {
     sessionRegistry.updateBinding(nodeId, { tmuxSession: "r01-dev" });
     if (!live) sessionRegistry.markDetached(sessionId);
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async () => ({ state: live ? "present" : "absent" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: live ? "present" : "absent" }));
     const prepare = db.prepare.bind(db);
     const fault = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
       if (sql.includes("s.intentionally_stopped = 0")) throw new Error("fixture eligibility query failed");
@@ -160,11 +160,11 @@ describe("RigTeardownOrchestrator", () => {
     sessionRegistry.markDetached(session.id);
     const calls: string[] = [];
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async name => {
+    tmux.probeSession = vi.fn(async (name: string): Promise<SessionProbe> => {
       calls.push(`probe ${name}`);
       return { state: name === "r01-dev" ? "present" : "absent" };
     });
-    tmux.killSession = vi.fn(async name => { calls.push(`kill ${name}`); return { ok: true }; });
+    tmux.killSession = vi.fn(async (name: string): Promise<TmuxResult> => { calls.push(`kill ${name}`); return { ok: true }; });
     await buildTeardown(tmux).teardown(rigId);
     expect(calls).toEqual(["probe r01-dev", "kill r01-dev", "probe r01-old"]);
   });
@@ -186,7 +186,7 @@ describe("RigTeardownOrchestrator", () => {
     const { rigId, sessionId } = seedRig();
     sessionRegistry.updateStatus(sessionId, status);
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async () => ({ state: "absent" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "absent" }));
     expect(db.prepare("SELECT intentionally_stopped FROM sessions WHERE id = ?").get(sessionId))
       .toEqual({ intentionally_stopped: 0 });
     expect(await buildTeardown(tmux).teardown(rigId)).toMatchObject({ alreadyStopped: true, sessionsKilled: 0 });
@@ -199,7 +199,7 @@ describe("RigTeardownOrchestrator", () => {
     const { rigId, nodeId, sessionId } = seedRig();
     sessionRegistry.updateBinding(nodeId, { tmuxSession: "r01-dev", tmuxPane: "%1" });
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async () => ({ state: "absent" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "absent" }));
     const { Reconciler } = await import("../src/domain/reconciler.js");
     await new Reconciler({ db, sessionRegistry, eventBus, tmuxAdapter: tmux }).reconcile(rigId);
     expect(sessionRegistry.getBindingForNode(nodeId)).not.toBeNull();
@@ -243,7 +243,7 @@ describe("RigTeardownOrchestrator", () => {
     const { rigId, sessionId } = seedRig();
     sessionRegistry.updateStatus(sessionId, "detached");
     const tmux = mockTmux();
-    if (state !== "no-probe") tmux.probeSession = vi.fn(async () => {
+    if (state !== "no-probe") tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => {
       if (state === "throw") throw new Error("fixture unavailable");
       return state === "present" ? { state: "present" } : { state: "transport_unavailable", cause: "fixture unavailable" };
     });
@@ -257,7 +257,7 @@ describe("RigTeardownOrchestrator", () => {
     const { rigId, nodeId, sessionId } = seedRig();
     sessionRegistry.updateStatus(sessionId, "detached");
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async () => {
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => {
       sessionRegistry.updateBinding(nodeId, { tmuxSession: "new-owner", tmuxPane: "%new" });
       return { state: "absent" };
     });
@@ -275,7 +275,7 @@ describe("RigTeardownOrchestrator", () => {
     sessionRegistry.updateStatus(sessionId, "detached");
     db.prepare("UPDATE sessions SET created_at = '2000-01-01' WHERE id = ?").run(sessionId);
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async () => {
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => {
       const newer = sessionRegistry.registerSession(nodeId, "r01-new");
       sessionRegistry.updateStatus(newer.id, "running");
       return { state: "absent" };
@@ -349,7 +349,7 @@ describe("RigTeardownOrchestrator", () => {
     tmux.getPanePid = vi.fn(async () => 100);
     const refresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter: tmux,
       listProcesses: async () => { throw new Error("process discovery timed out"); } });
-    tmux.killSession = vi.fn(async () => {
+    tmux.killSession = vi.fn(async (): Promise<TmuxResult> => {
       const captured = snapshotRepo.findLatestAutoPreDown(rigId);
       expect(captured?.data.sessions.find(s => s.id === sessionId)).toMatchObject({ status: "running", resumeToken: "saved-thread" });
       expect(captured?.data.checkpoints[nodeId]).toMatchObject({ summary: "latest work", nextStep: "finish review" });
@@ -458,7 +458,7 @@ describe("RigTeardownOrchestrator", () => {
     const content = "Operator notes\n<!-- BEGIN OpenRig MANAGED BLOCK: role -->\nworking guidance\n<!-- END OpenRig MANAGED BLOCK: role -->\n";
     fs.writeFileSync(guidance, content);
     const tmux = mockTmux();
-    tmux.killSession = vi.fn(async target => target === "survivor@test-rig"
+    tmux.killSession = vi.fn(async (target: string): Promise<TmuxResult> => target === "survivor@test-rig"
       ? { ok: false, code: "kill_failed", message: "tmux error" } : { ok: true });
 
     const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
@@ -472,7 +472,7 @@ describe("RigTeardownOrchestrator", () => {
     expect(sessionRegistry.getBindingForNode(nodeId)).toBeNull();
 
     // A later successful shutdown releases the file for ordinary cleanup.
-    tmux.killSession = vi.fn(async () => ({ ok: true }));
+    tmux.killSession = vi.fn(async (): Promise<TmuxResult> => ({ ok: true }));
     await buildTeardown(tmux).teardown(rigId);
     expect(fs.readFileSync(guidance, "utf-8")).toBe("Operator notes\n");
   });
@@ -483,7 +483,7 @@ describe("RigTeardownOrchestrator", () => {
     const content = "<!-- BEGIN OpenRig MANAGED BLOCK: role -->\nworking guidance\n<!-- END OpenRig MANAGED BLOCK: role -->\n";
     fs.writeFileSync(guidance, content);
     const tmux = mockTmux({ ok: false, code: "kill_failed", message: "tmux error" });
-    if (failure === "transport_unavailable") tmux.probeSession = vi.fn(async () => ({ state: "transport_unavailable", cause: "socket unavailable" }));
+    if (failure === "transport_unavailable") tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "transport_unavailable", cause: "socket unavailable" }));
     await buildTeardown(tmux).teardown(rigId);
     expect(sessionRegistry.getSessionsForRig(rigId).find(s => s.id === sessionId)?.status).toBe("running");
     expect(db.prepare("SELECT intentionally_stopped FROM sessions WHERE id = ?").get(sessionId)).toEqual({ intentionally_stopped: 0 });
@@ -536,7 +536,7 @@ describe("RigTeardownOrchestrator", () => {
     const { rigId, nodeId } = seedRig();
     sessionRegistry.updateBinding(nodeId, { tmuxSession: "r01-dev" });
     const tmux = mockTmux({ ok: false, code: "guard_target_unknown", message: "ambiguous target" });
-    tmux.probeSession = vi.fn(async () => ({ state: "absent" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "absent" }));
 
     const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
 
@@ -560,7 +560,7 @@ describe("RigTeardownOrchestrator", () => {
     const guidance = path.join(tmpDir, "CLAUDE.md");
     fs.writeFileSync(guidance, "<!-- BEGIN OpenRig MANAGED BLOCK: role -->\nlive guidance\n<!-- END OpenRig MANAGED BLOCK: role -->\n");
     const tmux = mockTmux({ ok: false, code: "guard_target_unknown", message: "owned by live rig" });
-    tmux.probeSession = vi.fn(async () => ({ state: "present" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "present" }));
 
     const result = await buildTeardown(tmux).teardown(stale.rigId, { delete: true });
 
@@ -575,7 +575,7 @@ describe("RigTeardownOrchestrator", () => {
   it("keeps the rig when tmux cannot confirm whether a session is absent", async () => {
     const { rigId } = seedRig();
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async () => ({ state: "transport_unavailable", cause: "permission denied" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "transport_unavailable", cause: "permission denied" }));
 
     const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
 
@@ -588,7 +588,7 @@ describe("RigTeardownOrchestrator", () => {
     const { rigId, nodeId, sessionId } = seedRig();
     sessionRegistry.updateBinding(nodeId, { tmuxSession: "r01-dev" });
     const tmux = mockTmux();
-    tmux.probeSession = vi.fn(async () => ({ state: "transport_unavailable", cause: "no server running on /tmp/tmux-501/default" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "transport_unavailable", cause: "no server running on /tmp/tmux-501/default" }));
 
     const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
 
@@ -603,7 +603,7 @@ describe("RigTeardownOrchestrator", () => {
     const { rigId, nodeId, sessionId } = seedRig();
     sessionRegistry.updateBinding(nodeId, { tmuxSession: "r01-dev" });
     const tmux = mockTmux({ ok: false, code: "session_not_found", message: "no server running on /tmp/tmux-501/default" });
-    tmux.probeSession = vi.fn(async () => ({ state: "present" }));
+    tmux.probeSession = vi.fn(async (): Promise<SessionProbe> => ({ state: "present" }));
 
     const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
 
@@ -833,8 +833,8 @@ describe("RigTeardownOrchestrator", () => {
     }
     function tmuxWith(present: string[], killFails: Record<string, string> = {}) {
       const tmux = mockTmux();
-      tmux.probeSession = vi.fn(async (name: string) => ({ state: present.includes(name) ? "present" : "absent" }));
-      tmux.killSession = vi.fn(async (name: string) => killFails[name]
+      tmux.probeSession = vi.fn(async (name: string): Promise<SessionProbe> => ({ state: present.includes(name) ? "present" : "absent" }));
+      tmux.killSession = vi.fn(async (name: string): Promise<TmuxResult> => killFails[name]
         ? { ok: false, code: "kill_failed", message: killFails[name] }
         : { ok: true });
       return tmux;

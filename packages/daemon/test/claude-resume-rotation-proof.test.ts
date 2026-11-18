@@ -21,6 +21,8 @@ import { installProcessStartClock } from "../src/domain/process-start-clock.js";
 const require = createRequire(import.meta.url);
 const relay = require("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") as {
   buildSessionIdentityPayload(payload: Record<string, unknown>, env: Record<string, string>): Record<string, unknown> | null;
+  /** activity-relay.cjs:470, exported at :711: true only for the first claim of a (resume launch, generation) pair. */
+  claimFirstLaunchHook(resumeLaunch: string | null, generation: string | null, dir?: string): boolean;
 };
 
 const T1 = "00000000-0000-4000-8000-000000001077";

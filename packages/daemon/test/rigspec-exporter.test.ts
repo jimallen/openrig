@@ -21,6 +21,7 @@ import { RigSpecCodec as PodRigSpecCodec } from "../src/domain/rigspec-codec.js"
 import { PodRepository } from "../src/domain/pod-repository.js";
 import { RigNotFoundError } from "../src/domain/errors.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import type { LegacyRigSpec } from "../src/domain/types.js";
 
 function setupDb(): Database.Database {
   const db = createFullTestDb();
@@ -33,6 +34,13 @@ describe("RigSpecExporter", () => {
   let rigRepo: RigRepository;
   let sessionRegistry: SessionRegistry;
   let exporter: RigSpecExporter;
+
+  /** exportRig for a rig with no pods: its legacy spec, narrowed the way production tells the two apart ("pods" in spec). */
+  function exportLegacy(rigId: string): LegacyRigSpec {
+    const spec = exporter.exportRig(rigId);
+    if ("pods" in spec) throw new Error(`expected a legacy spec for ${rigId}, got a pod-aware one`);
+    return spec;
+  }
 
   beforeEach(() => {
     db = setupDb();
@@ -69,7 +77,7 @@ describe("RigSpecExporter", () => {
 
   it("export rig with nodes and edges -> valid RigSpec", () => {
     const { rig } = seedRig();
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
 
     expect(spec.name).toBe("r99");
     expect(spec.schemaVersion).toBe(1);
@@ -79,7 +87,7 @@ describe("RigSpecExporter", () => {
 
   it("exported spec passes schema validation", () => {
     const { rig } = seedRig();
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
 
     const result = RigSpecSchema.validate(RigSpecCodec.parse(RigSpecCodec.serialize(spec)));
     expect(result.valid).toBe(true);
@@ -87,7 +95,7 @@ describe("RigSpecExporter", () => {
 
   it("exported node ids are logical_ids (not DB PKs)", () => {
     const { rig, n1 } = seedRig();
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
 
     // Node ids should be logical_ids like "orchestrator", not ULIDs
     expect(spec.nodes[0]!.id).toBe("orchestrator");
@@ -98,7 +106,7 @@ describe("RigSpecExporter", () => {
 
   it("exported edges use logical_ids for from/to", () => {
     const { rig } = seedRig();
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
 
     expect(spec.edges[0]!.from).toBe("orchestrator");
     expect(spec.edges[0]!.to).toBe("worker");
@@ -112,7 +120,7 @@ describe("RigSpecExporter", () => {
     db.prepare("UPDATE sessions SET resume_type = ?, resume_token = ? WHERE id = ?")
       .run("claude_name", "secret-token", sess.id);
 
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
     const yaml = RigSpecCodec.serialize(spec);
 
     // None of these should appear in the exported spec
@@ -124,7 +132,7 @@ describe("RigSpecExporter", () => {
 
   it("export includes role, runtime, model, cwd, surfaceHint, packageRefs", () => {
     const { rig } = seedRig();
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
 
     const orch = spec.nodes.find((n) => n.id === "orchestrator")!;
     expect(orch.role).toBe("orchestrator");
@@ -145,7 +153,7 @@ describe("RigSpecExporter", () => {
       "INSERT INTO sessions (id, node_id, session_name, status, restore_policy, created_at) VALUES (?, ?, ?, ?, ?, ?)"
     ).run("sess-new", n1.id, "r99-orchestrator", "running", "checkpoint_only", "2026-03-23 02:00:00");
 
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
     const orch = spec.nodes.find((n) => n.id === "orchestrator")!;
     expect(orch.restorePolicy).toBe("checkpoint_only"); // newest session wins
   });
@@ -157,7 +165,7 @@ describe("RigSpecExporter", () => {
       restorePolicy: "relaunch_fresh",
     });
 
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
     expect(spec.nodes[0]!.restorePolicy).toBe("relaunch_fresh");
   });
 
@@ -173,7 +181,7 @@ describe("RigSpecExporter", () => {
       "INSERT INTO sessions (id, node_id, session_name, status, restore_policy, created_at) VALUES (?, ?, ?, ?, ?, ?)"
     ).run("s3", n2.id, "r99-worker", "idle", "resume_if_possible", "2026-03-23 02:00:00");
 
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
     const worker = spec.nodes.find((n) => n.id === "worker")!;
     expect(worker.restorePolicy).toBe("relaunch_fresh"); // s2 is newest
   });
@@ -189,7 +197,7 @@ describe("RigSpecExporter", () => {
       "INSERT INTO sessions (id, node_id, session_name, status, restore_policy, created_at) VALUES (?, ?, ?, ?, ?, ?)"
     ).run("ZZZZ_sess_second", n1.id, "r99-orchestrator", "running", "checkpoint_only", "2026-03-23 05:00:00");
 
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
     const orch = spec.nodes.find((n) => n.id === "orchestrator")!;
     // ZZZZ sorts after AAAA, so checkpoint_only should win
     expect(orch.restorePolicy).toBe("checkpoint_only");
@@ -233,7 +241,7 @@ describe("RigSpecExporter", () => {
 
   it("round-trip: export -> serialize -> parse -> validate all pass", () => {
     const { rig } = seedRig();
-    const spec = exporter.exportRig(rig.id);
+    const spec = exportLegacy(rig.id);
     const yaml = RigSpecCodec.serialize(spec);
     const parsed = RigSpecCodec.parse(yaml);
     const result = RigSpecSchema.validate(parsed);

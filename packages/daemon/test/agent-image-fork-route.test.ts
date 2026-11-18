@@ -110,7 +110,7 @@ describe("agent-images fork composer route (OPR.0.4.3.05)", () => {
 
   it("default fork → add_member(mode:fork, native_id); native id NEVER in response (driver note 2)", async () => {
     seedClaudeSource("dev-impl@src-rig", NATIVE_SECRET);
-    const addMember = vi.fn(async () => ({
+    const addMember = vi.fn(async (_rigId: string, _pod: string, _member: Record<string, unknown>, _rigRoot: string, _o?: unknown) => ({
       ok: true as const,
       result: { podId: "p1", podNamespace: "dev", node: { logicalId: "dev.forked", nodeId: "n2", status: "launched", sessionName: "forked@dst" } },
     } as unknown as AddMemberOutcome));
@@ -129,9 +129,9 @@ describe("agent-images fork composer route (OPR.0.4.3.05)", () => {
     const [rigId, pod, member] = addMember.mock.calls[0]!;
     expect(rigId).toBe("dst-rig");
     expect(pod).toBe("dev");
-    expect((member as Record<string, unknown>).runtime).toBe("claude-code");
-    expect((member as Record<string, unknown>).agent_ref).toBe("local:agents/impl");
-    expect((member as Record<string, unknown>).session_source).toEqual({
+    expect(member.runtime).toBe("claude-code");
+    expect(member.agent_ref).toBe("local:agents/impl");
+    expect(member.session_source).toEqual({
       mode: "fork",
       ref: { kind: "native_id", value: NATIVE_SECRET },
     });
@@ -190,7 +190,7 @@ describe("agent-images fork composer route (OPR.0.4.3.05)", () => {
       }),
     } as unknown as SnapshotCapturer;
 
-    const addMember = vi.fn(async () => ({
+    const addMember = vi.fn(async (_rigId: string, _pod: string, _member: Record<string, unknown>, _rigRoot: string, _o?: unknown) => ({
       ok: true as const,
       result: { podId: "p1", podNamespace: "dev", node: { logicalId: "dev.forked", nodeId: "n2", status: "launched", sessionName: "forked@dst" } },
     } as unknown as AddMemberOutcome));
@@ -213,7 +213,7 @@ describe("agent-images fork composer route (OPR.0.4.3.05)", () => {
 
     // Launch went through mode:agent_image (not a raw native id).
     const [, , member] = addMember.mock.calls[0]!;
-    expect((member as Record<string, unknown>).session_source).toEqual({
+    expect(member.session_source).toEqual({
       mode: "agent_image", ref: { kind: "image_name", value: "kept", version: "1" },
     });
   });
