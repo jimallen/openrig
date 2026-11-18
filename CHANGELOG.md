@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The queue-handoff skill says what to do when a close's outcome is unknown (workspaces-o9o.166)
+
+- Symptom: a seat whose `rig queue handoff`, `handoff-and-complete` or `update --state done` ended in a daemon error had no guidance. These verbs print "The command was not delivered." when the connection drops after the request was sent, even if the close had committed (only `queue create` marks that as an unknown outcome). In the 2026-08-05 incident, completed work was read as not done for about 5 hours.
+- Now the shipped `queue-handoff` skill has a section, "When a closing write's outcome is unknown": never redo the work, wait for the daemon, re-read the item with `rig queue show --json`, retry the close once only while it is still open, and cite the receipt (`--evidence-ref` on `update`, `--note` on a handoff, where `--evidence-ref` belongs to the new item). `openrig-user` points at it from its handoff entry.
+- A CLI test checks that every command in the section names a real subcommand with declared options.
+
 ### Low-contrast text found by the accessibility scan is readable in both themes (workspaces-o9o.155)
 
 - Symptom: the twin accessibility scan (workspaces-o9o.130) found 15 elements on 6 surfaces below WCAG AA, measured by axe in Chromium: the For You level control's header note (3.04:1 light, 1.93:1 dark) and its amber highlights (3.72:1 dark); the compaction policy form's fields and the audit history filters, browser-white with light text in dark (1.23:1, 1.07:1); the restore dialog's unselected policy option, a fixed white in dark (3.27:1); and the Open-in-terminal group labels (3.1:1 light, 4.45:1 dark).

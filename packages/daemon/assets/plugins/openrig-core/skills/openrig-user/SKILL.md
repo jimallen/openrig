@@ -104,6 +104,10 @@ rig queue handoff <qitem-id> \
   --body-file /tmp/import-report-handoff.md
 ```
 
+If a handoff or any other close ends in a daemon error ("UNKNOWN", "not delivered"), it may still have
+committed. Follow `queue-handoff` → "When a closing write's outcome is unknown": never redo the work,
+re-read the item, and retry only while it is still open.
+
 ### §1b doctrine — turn ends by passing the ball
 
 **A turn ends by passing the ball, never by going idle holding the slice waiting

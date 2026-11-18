@@ -7,6 +7,8 @@ metadata:
     - queue create
     - queue handoff
     - queue handoff-and-complete
+    - queue update
+    - queue show
   openrig:
     stage: factory-approved
     sibling_skills:
@@ -154,6 +156,40 @@ full content when needed; keep large supporting evidence in linked artifacts.
 4. Queue item is too broad and loses ownership, proof, or closure criteria.
 5. Human escalation happens in chat but not as a durable attention item.
 6. Agent pastes a large command dump (ps/nodes, big JSON, proof blob) into the qitem body, bloating the stored DATA so every full-body read is large. Link the proof PATH or summarize in prose; substantive bodies go through `--body-file`; no raw backticks inline.
+
+## When a closing write's outcome is unknown
+
+The closing verbs are `rig queue handoff`, `rig queue handoff-and-complete` and `rig queue update` to a
+terminal state. The daemon commits each close in one transaction, so it either lands whole or not at
+all. What you can lose is the reply. If the daemon stops, restarts or stalls while your close is in
+flight, the CLI prints one of these:
+
+- "The command's outcome is UNKNOWN": a timeout, or a reply it could not read.
+- "Cannot connect to the OpenRig daemon … The command was not delivered."
+
+Treat both the same way. For these verbs, "The command was not delivered." is not proof: a connection
+that drops after the request was sent prints it too, even when the close had already committed.
+
+1. **Never redo the work.** The work is done; only its record is in question. A cleanup, a merge or
+   a send that you repeat because the close looked lost is the expensive mistake here.
+2. **Wait for the daemon.** Check `rig daemon status`; if it is down, start it as that check says,
+   or tell whoever runs it.
+3. **Re-read the item** with `rig queue show <qitem-id> --json` and read `state`:
+   - `done`, `handed-off` or another terminal state: the close landed. `closureReason` and
+     `closureTarget` say how and to whom. Do not close it again.
+   - `pending`, `in-progress` or `blocked`: the close did not land. Run the same closing command
+     again, once.
+4. **Cite your receipt on the retry**, so nobody reading the queue later takes done work for undone:
+   - On `rig queue update <qitem-id> --state done --closure-reason <reason> --evidence-ref <receipt>`,
+     the receipt lands on this item.
+   - On `rig queue handoff-and-complete <qitem-id> --to <next> --note "<receipt>"`, the `--note`
+     records the receipt on the closing transition.
+   - `--evidence-ref` on a handoff belongs to the new item: it points the next owner at an
+     artifact, and does not land on the item you are closing.
+
+A handoff retry on an item that did close is refused (`qitem_already_terminal`), never turned into a
+second successor. That refusal is your answer, not an error to work around: re-read the item and
+carry on.
 
 ## Durable handoff field shape
 
