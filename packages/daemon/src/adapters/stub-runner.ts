@@ -11,6 +11,7 @@
 // {compaction, slow_output, mid_turn_death, restore} and the ctx% context sidecar are
 // later increments (A5 items 5-8) — deliberately NOT simulated here yet.
 
+import { readActivityEndpointFallback } from "./activity-endpoint-file.js";
 import { installPaneGuard } from "./runner-pane-guard.js";
 import nodeFs from "node:fs";
 import nodePath from "node:path";
@@ -261,14 +262,12 @@ export function resolveStubActivityEndpoint(env: NodeJS.ProcessEnv): { baseUrl: 
     baseUrl = `http://${formatDaemonHostForUrl(rawHost)}:${env.OPENRIG_PORT.trim()}`;
   }
   if (!baseUrl || !token) {
-    try {
-      const home = env.OPENRIG_HOME?.trim() || nodePath.join(env.HOME ?? "", ".openrig");
-      const parsed = JSON.parse(nodeFs.readFileSync(nodePath.join(home, "activity-endpoint.json"), "utf8"));
-      if (!baseUrl && typeof parsed.baseUrl === "string") baseUrl = parsed.baseUrl;
-      if (!token && typeof parsed.token === "string") token = parsed.token;
-    } catch {
-      // absent/malformed — activity POSTs no-op; the sidecar + mirror still work.
-    }
+    // workspaces-o9o.151: the file is read under the credential rule; absent, malformed or refused gives nothing, and activity
+    // POSTs no-op (the sidecar + mirror still work).
+    const home = env.OPENRIG_HOME?.trim() || nodePath.join(env.HOME ?? "", ".openrig");
+    const fallback = readActivityEndpointFallback(home);
+    if (!baseUrl && fallback.baseUrl !== undefined) baseUrl = fallback.baseUrl;
+    if (!token && fallback.token !== undefined) token = fallback.token;
   }
   return baseUrl && token ? { baseUrl, token } : null;
 }

@@ -39,7 +39,7 @@ describe("activity-relay resolveEndpoint (OPR.0.4.3.28 B1+B3)", () => {
   });
 
   it("B3: file-discovery supplies url+token for a reconcile/restored seat (no env vars)", () => {
-    fs.writeFileSync(nodePath.join(home, "activity-endpoint.json"), JSON.stringify({ baseUrl: "http://127.0.0.1:7433", token: "filetok" }));
+    fs.writeFileSync(nodePath.join(home, "activity-endpoint.json"), JSON.stringify({ baseUrl: "http://127.0.0.1:7433", token: "filetok" }), { mode: 0o600 }); // o9o.151: the daemon writes it 0600; others-readable is refused
     // Frozen env has only OPENRIG_HOME (inherited), no url/token.
     const r = relay.resolveEndpoint({ OPENRIG_HOME: home });
     expect(r.baseUrl).toBe("http://127.0.0.1:7433");
@@ -47,7 +47,7 @@ describe("activity-relay resolveEndpoint (OPR.0.4.3.28 B1+B3)", () => {
   });
 
   it("B3: file-discovery fills only the MISSING piece (env token wins, file supplies url)", () => {
-    fs.writeFileSync(nodePath.join(home, "activity-endpoint.json"), JSON.stringify({ baseUrl: "http://file:1", token: "filetok" }));
+    fs.writeFileSync(nodePath.join(home, "activity-endpoint.json"), JSON.stringify({ baseUrl: "http://file:1", token: "filetok" }), { mode: 0o600 }); // o9o.151: the daemon writes it 0600; others-readable is refused
     const r = relay.resolveEndpoint({ OPENRIG_HOME: home, OPENRIG_ACTIVITY_HOOK_TOKEN: "envtok" });
     expect(r.token).toBe("envtok"); // env token not overwritten
     expect(r.baseUrl).toBe("http://file:1");

@@ -15,7 +15,7 @@
 // Only node builtins and local runner helpers are imported, so a compiled runner entry stays runnable as
 // `node <dist>/adapters/<runner>.js` with no daemon dependencies.
 
-import fs from "node:fs";
+import { readActivityEndpointFallback } from "./activity-endpoint-file.js";
 import nodePath from "node:path";
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
@@ -264,14 +264,12 @@ export function resolveActivityEndpoint(env: NodeJS.ProcessEnv): { baseUrl: stri
     baseUrl = `http://${formatDaemonHostForUrl(rawHost)}:${env.OPENRIG_PORT.trim()}`;
   }
   if (!baseUrl || !token) {
-    try {
-      const home = env.OPENRIG_HOME?.trim() || nodePath.join(process.env.HOME ?? "", ".openrig");
-      const parsed = JSON.parse(fs.readFileSync(nodePath.join(home, "activity-endpoint.json"), "utf8"));
-      if (!baseUrl && typeof parsed.baseUrl === "string") baseUrl = parsed.baseUrl;
-      if (!token && typeof parsed.token === "string") token = parsed.token;
-    } catch {
-      // absent/malformed — activity POSTs no-op; the sidecar + mirror still work.
-    }
+    // workspaces-o9o.151: the file is read under the credential rule; absent, malformed or refused gives nothing, and activity
+    // POSTs no-op (the sidecar + mirror still work).
+    const home = env.OPENRIG_HOME?.trim() || nodePath.join(process.env.HOME ?? "", ".openrig");
+    const fallback = readActivityEndpointFallback(home);
+    if (!baseUrl && fallback.baseUrl !== undefined) baseUrl = fallback.baseUrl;
+    if (!token && fallback.token !== undefined) token = fallback.token;
   }
   return baseUrl && token ? { baseUrl, token } : null;
 }

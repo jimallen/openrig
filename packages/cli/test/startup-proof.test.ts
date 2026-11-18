@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -27,6 +27,8 @@ function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; errors:
   });
 }
 
+const ENDPOINT_JSON = JSON.stringify({ baseUrl: "http://127.0.0.1:17433", token: "tok-file" });
+
 describe("rig startup-proof", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
@@ -35,11 +37,27 @@ describe("rig startup-proof", () => {
     const root = mkdtempSync(join(tmpdir(), "openrig-startup-proof-"));
     try {
       mkdirSync(root, { recursive: true });
-      writeFileSync(join(root, "activity-endpoint.json"), JSON.stringify({ baseUrl: "http://127.0.0.1:17433", token: "tok-file" }));
+      writeFileSync(join(root, "activity-endpoint.json"), JSON.stringify({ baseUrl: "http://127.0.0.1:17433", token: "tok-file" }), { mode: 0o600 });
       expect(resolveStartupProofEndpoint({ env: { OPENRIG_HOME: root } })).toEqual({
         baseUrl: "http://127.0.0.1:17433",
         token: "tok-file",
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // workspaces-o9o.151: the file's baseUrl decides where the token goes, so it is taken only from a plain file of ours with no
+  // group/other bits (the daemon's credential rule).
+  it.each([
+    ["others can read it", (p: string) => { writeFileSync(p, ENDPOINT_JSON); chmodSync(p, 0o644); }],
+    ["the group can read it", (p: string) => { writeFileSync(p, ENDPOINT_JSON); chmodSync(p, 0o640); }],
+    ["it is a symlink to a 0600 file", (p: string) => { writeFileSync(p + ".real", ENDPOINT_JSON, { mode: 0o600 }); symlinkSync(p + ".real", p); }],
+  ])("ignores the activity endpoint file when %s", (_name, make) => {
+    const root = mkdtempSync(join(tmpdir(), "openrig-startup-proof-"));
+    try {
+      make(join(root, "activity-endpoint.json"));
+      expect(JSON.stringify(resolveStartupProofEndpoint({ env: { OPENRIG_HOME: root } }))).not.toContain("tok-file");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

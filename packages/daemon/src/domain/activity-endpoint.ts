@@ -16,14 +16,12 @@
 //   read by the relay's file-discovery fallback for reconcile/restored seats
 //   whose frozen process env carries no OpenRig activity vars (B3).
 
-import fs from "node:fs";
-import nodePath from "node:path";
-import { randomBytes } from "node:crypto";
-
 import { formatDaemonHostForUrl } from "./daemon-url.js";
 
-const TOKEN_FILE = "activity-hook-token";
-const ENDPOINT_FILE = "activity-endpoint.json";
+/** The file names under the daemon state dir; the files themselves are read and written by adapters/activity-endpoint-file.ts
+ *  under the credential rule (workspaces-o9o.151). */
+export const ACTIVITY_HOOK_TOKEN_FILE = "activity-hook-token";
+export const ACTIVITY_ENDPOINT_FILE = "activity-endpoint.json";
 const DEFAULT_DAEMON_PORT = "7433";
 
 /** OPR.0.4.3.28 B2 — derive the activity ingest URL the daemon injects into seats
@@ -40,55 +38,4 @@ export function deriveActivityUrl(host: string | undefined, port: string | undef
   const wildcard = !h || h === "0.0.0.0" || h === "::" || h === "[::]" || h === "*";
   const resolvedHost = wildcard ? "127.0.0.1" : formatDaemonHostForUrl(h);
   return `http://${resolvedHost}:${p}`;
-}
-
-/** Read the durable activity-hook token from state, or generate + persist one.
- *  Stable across restarts (so frozen-env seats keep authenticating). */
-export function ensureActivityHookToken(stateDir: string): string {
-  const tokenPath = nodePath.join(stateDir, TOKEN_FILE);
-  try {
-    const existing = fs.readFileSync(tokenPath, "utf-8").trim();
-    if (existing.length > 0) return existing;
-  } catch {
-    // not present yet — generate below
-  }
-  const token = randomBytes(32).toString("hex");
-  try {
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(tokenPath, token, { mode: 0o600 });
-    fs.chmodSync(tokenPath, 0o600); // enforce mode even if the file pre-existed
-  } catch {
-    // best-effort persist — an in-memory token still works for this daemon run,
-    // it just won't survive a restart (falls back to regenerate).
-  }
-  return token;
-}
-
-/** Snapshot the current {baseUrl, token} to activity-endpoint.json (mode 0600)
- *  for the relay file-discovery fallback (B3). Best-effort. */
-export function writeActivityEndpointFile(stateDir: string, endpoint: { baseUrl: string; token: string }): void {
-  const endpointPath = nodePath.join(stateDir, ENDPOINT_FILE);
-  try {
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(endpointPath, JSON.stringify({ baseUrl: endpoint.baseUrl, token: endpoint.token }), { mode: 0o600 });
-    fs.chmodSync(endpointPath, 0o600);
-  } catch {
-    // best-effort — reconcile/restored seats simply won't get file-discovery.
-  }
-}
-
-/** Read {baseUrl, token} from activity-endpoint.json, or null if absent/invalid.
- *  (The relay .cjs reads the file directly; this is for daemon-side use + tests.) */
-export function readActivityEndpointFile(stateDir: string): { baseUrl: string; token: string } | null {
-  const endpointPath = nodePath.join(stateDir, ENDPOINT_FILE);
-  try {
-    const parsed = JSON.parse(fs.readFileSync(endpointPath, "utf-8")) as { baseUrl?: unknown; token?: unknown };
-    if (typeof parsed.baseUrl === "string" && parsed.baseUrl.length > 0
-      && typeof parsed.token === "string" && parsed.token.length > 0) {
-      return { baseUrl: parsed.baseUrl, token: parsed.token };
-    }
-  } catch {
-    // absent or malformed
-  }
-  return null;
 }

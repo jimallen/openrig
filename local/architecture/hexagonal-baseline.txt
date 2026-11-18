@@ -3,7 +3,6 @@
 # One line per violation: <file under packages/daemon> <target> <value|type> <upstream|fork>, sorted. This file only shrinks,
 # except that the sync command adds violations in code ported from upstream (tagged upstream). Never add a line by hand.
 src/domain/active-lens-store.ts node:fs value upstream
-src/domain/activity-endpoint.ts node:fs value upstream
 src/domain/agent-activity-store.ts better-sqlite3 type upstream
 src/domain/agent-activity-store.ts src/adapters/pda-runner-protocol.js value fork
 src/domain/agent-images/agent-image-library-service.ts node:fs type upstream

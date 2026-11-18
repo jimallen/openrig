@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { ACTIVITY_ENDPOINT_POLICY, readCredentialFile } from "@openrig/daemon/credential-file";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
@@ -7,7 +7,6 @@ import { formatDaemonHostForUrl } from "../client.js";
 export interface StartupProofDeps {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
-  readFile?: (path: string) => string;
 }
 
 export interface StartupProofSubmitResult {
@@ -31,14 +30,15 @@ function first(...values: unknown[]): string | null {
 
 export function resolveStartupProofEndpoint(deps: StartupProofDeps = {}): Endpoint | null {
   const env = deps.env ?? process.env;
-  const readFile = deps.readFile ?? ((p: string) => fs.readFileSync(p, "utf8"));
   const home = first(env["OPENRIG_HOME"], env["RIGGED_HOME"]) ?? path.join(os.homedir(), ".openrig");
   let baseUrl = first(env["OPENRIG_URL"], env["RIGGED_URL"]);
   let token = first(env["OPENRIG_ACTIVITY_HOOK_TOKEN"], env["RIGGED_ACTIVITY_HOOK_TOKEN"]);
 
   if (!baseUrl || !token) {
     try {
-      const endpoint = JSON.parse(readFile(path.join(home, "activity-endpoint.json"))) as Record<string, unknown>;
+      // workspaces-o9o.151: under the daemon's credential rule; a refused file gives nothing, like an absent one.
+      const read = readCredentialFile(path.join(home, "activity-endpoint.json"), ACTIVITY_ENDPOINT_POLICY);
+      const endpoint = (read.ok ? JSON.parse(read.content) : {}) as Record<string, unknown>;
       baseUrl ??= first(endpoint["baseUrl"]);
       token ??= first(endpoint["token"]);
     } catch {

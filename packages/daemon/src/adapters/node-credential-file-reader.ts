@@ -58,3 +58,30 @@ export function readCredentialFile(path: string, policy: CredentialFilePolicy, o
 
 /** The port's production implementation. */
 export const nodeCredentialFileReader: CredentialFileReader = { read: (path, policy) => readCredentialFile(path, policy) };
+
+/**
+ * For a secret file the daemon itself owns and writes (the terminal token, the activity-hook token): the o9o.78 precedent. A link,
+ * a non-file or another user's file is refused; a plain file of ours that group or others can access is narrowed to 0600 on the
+ * opened descriptor (fchmod, so the file narrowed is the file checked, never one swapped in by name). Null when it is now fit to be
+ * read under the rule; the refusal otherwise. Call readCredentialFile after it.
+ */
+export function narrowOwnSecretFile(path: string, policy: CredentialFilePolicy, options: CredentialFileReadOptions = {}): (CredentialFileRead & { ok: false }) | null {
+  const currentUid = options.currentUid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
+  let fd: number;
+  try {
+    fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const problem: CredentialFileProblem = code === "ENOENT" ? "missing" : code === "ELOOP" || code === "EMLINK" ? "symlink" : "unreadable";
+    return { ok: false, problem, message: credentialFileRefusal(path, policy, problem) };
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    const problem: CredentialFileProblem | null = !st.isFile() ? "not_regular_file" : st.uid !== currentUid ? "wrong_owner" : null;
+    if (problem) return { ok: false, problem, message: credentialFileRefusal(path, policy, problem) };
+    if ((st.mode & 0o077) !== 0) fs.fchmodSync(fd, 0o600);
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}

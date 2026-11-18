@@ -163,6 +163,39 @@ function canonicalJson(value) {
 //      daemon writes this file at startup. Identity (session/node/runtime) still
 //      comes from env, which previously-launched-then-reconciled seats inherit
 //      from the tmux session env.
+// workspaces-o9o.151: an INLINE COPY of the daemon's credential rule (packages/daemon/src/domain/credential-file.ts, the secret
+// kind, ACTIVITY_ENDPOINT_POLICY's 16 KiB cap): this script runs in a seat and cannot import the daemon. Open the name itself with
+// O_NOFOLLOW|O_NONBLOCK (a link is refused, a FIFO cannot hang the hook), fstat the descriptor, require a plain file owned by this
+// user with no group/other bits, cap the size, read that descriptor. Any failure is null, and the caller no-ops on the file.
+// activity-endpoint-credential.test.ts runs one fixture table through this and the daemon's readers and requires the same verdicts.
+const ACTIVITY_ENDPOINT_MAX_BYTES = 16 * 1024;
+function readSecretFileSafely(fs, file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch {
+    return null;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    if (!st.isFile() || st.uid !== uid || (st.mode & 0o077) !== 0 || st.size > ACTIVITY_ENDPOINT_MAX_BYTES) return null;
+    const buf = Buffer.alloc(ACTIVITY_ENDPOINT_MAX_BYTES + 1);
+    let n = 0;
+    for (;;) {
+      const got = fs.readSync(fd, buf, n, buf.length - n, null);
+      if (got === 0) break;
+      n += got;
+      if (n > ACTIVITY_ENDPOINT_MAX_BYTES) return null;
+    }
+    return buf.subarray(0, n).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function resolveEndpoint(env = process.env) {
   let baseUrl = firstString(env.OPENRIG_URL, env.RIGGED_URL);
   let token = firstString(env.OPENRIG_ACTIVITY_HOOK_TOKEN, env.RIGGED_ACTIVITY_HOOK_TOKEN);
@@ -181,7 +214,8 @@ function resolveEndpoint(env = process.env) {
       const path = require("node:path");
       const os = require("node:os");
       const home = firstString(env.OPENRIG_HOME, env.RIGGED_HOME) || path.join(os.homedir(), ".openrig");
-      const parsed = JSON.parse(fs.readFileSync(path.join(home, "activity-endpoint.json"), "utf8"));
+      const raw = readSecretFileSafely(fs, path.join(home, "activity-endpoint.json"));
+      const parsed = raw === null ? {} : JSON.parse(raw);
       if (!baseUrl && typeof parsed.baseUrl === "string" && parsed.baseUrl.length > 0) baseUrl = parsed.baseUrl;
       if (!token && typeof parsed.token === "string" && parsed.token.length > 0) token = parsed.token;
     } catch {

@@ -4,7 +4,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
-import { ensureActivityHookToken, writeActivityEndpointFile, readActivityEndpointFile, deriveActivityUrl } from "../src/domain/activity-endpoint.js";
+import { deriveActivityUrl } from "../src/domain/activity-endpoint.js";
+import { ensureActivityHookToken, readActivityEndpointFile, writeActivityEndpointFile } from "../src/adapters/activity-endpoint-file.js";
 
 describe("activity-endpoint (OPR.0.4.3.28 B2)", () => {
   let stateDir: string;
@@ -66,9 +67,11 @@ describe("activity-endpoint (OPR.0.4.3.28 B2)", () => {
 
   it("readActivityEndpointFile returns null when absent or malformed", () => {
     expect(readActivityEndpointFile(stateDir)).toBeNull();
-    fs.writeFileSync(nodePath.join(stateDir, "activity-endpoint.json"), "{not json");
+    // 0600, so null comes from the malformed content and not from the credential rule (o9o.151).
+    fs.writeFileSync(nodePath.join(stateDir, "activity-endpoint.json"), "{not json", { mode: 0o600 });
     expect(readActivityEndpointFile(stateDir)).toBeNull();
-    fs.writeFileSync(nodePath.join(stateDir, "activity-endpoint.json"), JSON.stringify({ baseUrl: "" }));
+    fs.rmSync(nodePath.join(stateDir, "activity-endpoint.json"));
+    fs.writeFileSync(nodePath.join(stateDir, "activity-endpoint.json"), JSON.stringify({ baseUrl: "" }), { mode: 0o600 });
     expect(readActivityEndpointFile(stateDir)).toBeNull();
   });
 });
