@@ -96,49 +96,50 @@ export function CardShell({ testId, kind, title, oneLiner, expanded, drillInHref
       <CornerBracket position="bl" />
       <CornerBracket position="br" />
 
-      <div
-        role="button"
-        tabIndex={0}
-        data-testid={`${testId}-toggle`}
-        onClick={() => setOpen((o) => !o)}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((o) => !o); } }}
-        className="flex w-full min-h-[80px] cursor-pointer items-start gap-4 px-5 py-4 text-left"
-        aria-expanded={open}
-      >
-        <div className="flex-1 min-w-0">
+      {/* workspaces-o9o.152: the toggle is a real button beside the inline actions, not a role="button" around them
+          (nested-interactive). A button holds phrasing content only, so its blocks are spans; role="button" had already
+          made them presentational, so the accessibility tree keeps the same shape. */}
+      <div className="flex w-full items-start gap-4 pr-5">
+        {/* The button is the touch target and carries the card's ~80px height and its left padding (HG-8). */}
+        <button
+          type="button"
+          data-testid={`${testId}-toggle`}
+          onClick={() => setOpen((o) => !o)}
+          className="flex-1 min-w-0 min-h-[80px] cursor-pointer py-4 pl-5 text-left"
+          aria-expanded={open}
+        >
           {/* Kind tag — mono uppercase with leading colored dot. NOT a
               colored pill; the only color is the dot. */}
-          <div
+          <span
             data-testid={`${testId}-pill`}
             className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-on-surface"
           >
             <span aria-hidden="true" className={`inline-block w-1.5 h-1.5 rounded-full ${KIND_DOT[kind]}`} />
             <span>{KIND_LABEL[kind]}</span>
-          </div>
+          </span>
 
           {/* Title — display weight, sized for legibility (north star) */}
-          <h3
+          <span
             data-testid={`${testId}-title`}
             className="mt-2 flex items-center gap-2 font-headline text-[16px] font-bold leading-tight text-on-surface"
           >
             {leadingAccessory}
             <span className="truncate">{title}</span>
-          </h3>
+          </span>
 
           {/* One-liner — clear body text */}
-          <p
+          <span
             data-testid={`${testId}-one-liner`}
-            className="mt-1.5 font-body text-[12px] leading-relaxed text-on-surface line-clamp-2"
+            className="mt-1.5 block font-body text-[12px] leading-relaxed text-on-surface line-clamp-2"
           >
             {oneLiner}
-          </p>
-        </div>
+          </span>
+        </button>
 
         {inlineActions && (
           <div
             data-testid={`${testId}-inline-actions`}
-            className="flex shrink-0 items-center gap-2"
-            onClick={(e) => e.stopPropagation()}
+            className="flex shrink-0 items-center gap-2 py-4"
           >
             {inlineActions}
           </div>
@@ -323,10 +324,11 @@ export function ProgressCard({
       drillInLabel="Open mission"
       inlineActions={inlineActions}
       leadingAccessory={
-        <div
+        // A span (workspaces-o9o.152): it renders inside the card's toggle button, which holds phrasing content only.
+        <span
           data-testid={`feed-card-progress-${source.missionId}-bar`}
           data-percent={pct}
-          className="h-1.5 w-16 shrink-0 border border-outline-variant bg-surface-low overflow-hidden"
+          className="block h-1.5 w-16 shrink-0 border border-outline-variant bg-surface-low overflow-hidden"
           role="progressbar"
           aria-valuenow={pct}
           aria-valuemin={0}
@@ -334,12 +336,12 @@ export function ProgressCard({
           // The name says what is progressing; aria-valuenow says how far (a name with the percentage made it read twice).
           aria-label={`${source.title} progress`}
         >
-          <div
+          <span
             data-testid={`feed-card-progress-${source.missionId}-bar-fill`}
-            className="h-full bg-sky-500"
+            className="block h-full bg-sky-500"
             style={{ width: `${pct}%` }}
           />
-        </div>
+        </span>
       }
       expanded={
         source.activeSlice ? (

@@ -328,32 +328,35 @@ export function ProjectTreeView() {
 
   const workspaceNode = (
         <li data-testid="project-workspace-node">
-          <button
-            type="button"
-            onClick={() => toggle("workspace")}
-            className="w-full flex items-center gap-1 px-2 py-1 hover:bg-surface-low text-left"
-            data-testid="project-workspace-toggle"
-          >
-            {expanded.workspace ? (
-              <ChevronDown className="h-3 w-3 text-on-surface-variant" />
-            ) : (
-              <ChevronRight className="h-3 w-3 text-on-surface-variant" />
-            )}
-            <span
-              data-testid="project-workspace-label"
-              className="font-mono text-[11px] uppercase tracking-wide text-on-surface flex-1"
+          {/* workspaces-o9o.152: the "open" link is a sibling of the toggle, not inside it (nested-interactive). */}
+          <div className="w-full flex items-center gap-1 px-2 py-1 hover:bg-surface-low text-left">
+            <button
+              type="button"
+              onClick={() => toggle("workspace")}
+              aria-expanded={isExpanded("workspace")}
+              className="flex flex-1 min-w-0 items-center gap-1 text-left"
+              data-testid="project-workspace-toggle"
             >
-              {workspaceLabel}
-            </span>
+              {expanded.workspace ? (
+                <ChevronDown className="h-3 w-3 text-on-surface-variant" />
+              ) : (
+                <ChevronRight className="h-3 w-3 text-on-surface-variant" />
+              )}
+              <span
+                data-testid="project-workspace-label"
+                className="font-mono text-[11px] uppercase tracking-wide text-on-surface flex-1"
+              >
+                {workspaceLabel}
+              </span>
+            </button>
             <Link
               to="/project"
               data-testid="project-workspace-link"
-              onClick={(e) => e.stopPropagation()}
               className="font-mono text-[9px] uppercase tracking-wide text-on-surface-variant hover:text-on-surface"
             >
               open
             </Link>
-          </button>
+          </div>
           {isExpanded("workspace") ? (
             <ul className="ml-4 border-l border-outline-variant">
               {discovery.unavailable && discovery.hint ? (

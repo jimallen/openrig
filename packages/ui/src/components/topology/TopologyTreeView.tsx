@@ -107,22 +107,26 @@ function PodBranch({ rigId, podName, seats, activeRigId, activePodName, activeLo
   }, [shouldAutoExpand, open]);
   return (
     <li data-testid={`topology-pod-${rigId}-${podName}`}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-1 px-2 py-0.5 hover:bg-surface-low text-left"
-      >
-        {open ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
+      {/* workspaces-o9o.152: the toggle and the link are siblings in the row, not a link inside a button (nested-interactive). */}
+      <div className="w-full flex items-center gap-1 px-2 py-0.5 hover:bg-surface-low text-left">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-label={`${open ? "Collapse" : "Expand"} ${displayPodName(podName)}`}
+          aria-expanded={open}
+          className="flex h-4 w-4 items-center justify-center"
+        >
+          {open ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
+        </button>
         <Link
           to="/topology/pod/$rigId/$podName"
           params={{ rigId, podName }}
-          onClick={(e) => e.stopPropagation()}
           className="font-mono text-[11px] text-on-surface flex-1 truncate hover:underline"
         >
           {displayPodName(podName)}
         </Link>
         <span className="font-mono text-[9px] text-on-surface-variant">{seats.length}</span>
-      </button>
+      </div>
       {open ? (
         <ul className="ml-4 border-l border-outline-variant">
           {seats.map((s) => (
@@ -173,21 +177,25 @@ function RigBranch({ rigId, rigName, activeRigId, activePodName, activeLogicalId
 
   return (
     <li data-testid={`topology-rig-${rigId}`}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-1 px-2 py-1 hover:bg-surface-low text-left"
-      >
-        {open ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
+      {/* workspaces-o9o.152: the toggle and the link are siblings in the row, not a link inside a button (nested-interactive). */}
+      <div className="w-full flex items-center gap-1 px-2 py-1 hover:bg-surface-low text-left">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-label={`${open ? "Collapse" : "Expand"} ${rigName}`}
+          aria-expanded={open}
+          className="flex h-4 w-4 items-center justify-center"
+        >
+          {open ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
+        </button>
         <Link
           to="/topology/rig/$rigId"
           params={{ rigId }}
-          onClick={(e) => e.stopPropagation()}
           className="font-mono text-[11px] uppercase text-on-surface flex-1 truncate hover:underline"
         >
           {rigName}
         </Link>
-      </button>
+      </div>
       {open ? (
         <ul className="ml-4 border-l border-outline-variant">
           {pods.length === 0 ? (
@@ -287,24 +295,28 @@ function HostBranch({ hostId, label, chip, isSelected, isLocal, onSelect, rigs, 
 }) {
   return (
     <li data-testid={isLocal ? "topology-host-localhost" : `topology-host-${hostId}`} data-selected={isSelected}>
-      <button
-        type="button"
-        onClick={onSelect}
-        className="w-full flex items-center gap-1 px-2 py-1 hover:bg-surface-low text-left"
-      >
-        {isSelected ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
-        <Globe className="h-3 w-3 text-on-surface-variant" />
+      {/* workspaces-o9o.152: a selected host's name is a link, a sibling of the toggle in the row, not inside it (nested-interactive).
+          A collapsed host keeps its name in the button, which has no link then. */}
+      <div className="w-full flex items-center gap-1 px-2 py-1 hover:bg-surface-low text-left">
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-expanded={isSelected}
+          {...(isSelected ? { "aria-label": `Selected host ${label}` } : {})}
+          className={isSelected ? "flex items-center gap-1" : "flex flex-1 min-w-0 items-center gap-1 text-left"}
+        >
+          {isSelected ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
+          <Globe className="h-3 w-3 text-on-surface-variant" />
+          {isSelected ? null : <span className="font-mono text-[11px] uppercase text-on-surface flex-1 truncate">{label}</span>}
+        </button>
         {isSelected ? (
           <Link
             to="/topology"
-            onClick={(e) => e.stopPropagation()}
             className="font-mono text-[11px] uppercase text-on-surface flex-1 truncate hover:underline"
           >
             {label}
           </Link>
-        ) : (
-          <span className="font-mono text-[11px] uppercase text-on-surface flex-1 truncate">{label}</span>
-        )}
+        ) : null}
         {chip ? (
           <span
             data-testid={`topology-host-chip-${hostId}`}
@@ -319,7 +331,7 @@ function HostBranch({ hostId, label, chip, isSelected, isLocal, onSelect, rigs, 
         {isSelected ? (
           <span className="font-mono text-[9px] text-on-surface-variant">{rigs?.length ?? 0}</span>
         ) : null}
-      </button>
+      </div>
       {isSelected ? (
         <ul className="ml-5">
           {rigsError ? (
