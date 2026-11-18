@@ -1,4 +1,5 @@
-import { readFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
+import { OPENRIG_CONFIG_POLICY, readOwnFile } from "@openrig/daemon/credential-file";
+import { mkdirSync, unlinkSync, existsSync } from "node:fs";
 import { writeTextAtomically } from "./atomic-text-write.js";
 import { join, dirname, resolve, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
@@ -1126,7 +1127,7 @@ export class ConfigStore {
   private verifyPersisted(keyPath: string[], expected: unknown): void {
     let reread: Record<string, unknown>;
     try {
-      reread = JSON.parse(readFileSync(this.configPath, "utf-8")) as Record<string, unknown>;
+      reread = JSON.parse(readConfigText(this.configPath) ?? "") as Record<string, unknown>;
     } catch (e) {
       throw new Error(
         `config write did NOT persist: could not read it back at ${this.configPath} (${(e as Error).message}). ` +
@@ -1511,8 +1512,8 @@ export class ConfigStore {
 
   private readConfigFile(): Record<string, unknown> {
     let parsed: Record<string, unknown> = {};
-    if (existsSync(this.configPath)) {
-      const raw = readFileSync(this.configPath, "utf-8");
+    const raw = readConfigText(this.configPath);
+    if (raw !== null) {
       try {
         parsed = JSON.parse(raw) as Record<string, unknown>;
       } catch {
@@ -1553,4 +1554,17 @@ export function parseNamedPairs(raw: string): NamedPair[] {
     out.set(name, rawPath);
   }
   return Array.from(out.entries()).map(([name, path]) => ({ name, path }));
+}
+
+/**
+ * workspaces-o9o.160: config.json is read under the credential rule (it chooses the daemon URL the terminal token goes to). It may be
+ * a link (the writer follows one by design: atomic-text-write.ts), whose real target is judged; group/other write on that file of
+ * ours is narrowed, never refused. Null when absent; a refusal (another user's file, not a plain file, too large) throws, naming
+ * the file and the fix.
+ */
+function readConfigText(configPath: string): string | null {
+  const read = readOwnFile(configPath, OPENRIG_CONFIG_POLICY);
+  if (read.ok) return read.content;
+  if (read.problem === "missing") return null;
+  throw new Error(`refusing to read the OpenRig config: ${read.message}`);
 }

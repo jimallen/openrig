@@ -212,6 +212,9 @@ export interface LifecycleDeps {
   isPortOccupied?: (host: string, port: number) => Promise<boolean>;
   kill: (pid: number, signal: string) => boolean;
   readFile: (path: string) => string | null;
+  /** workspaces-o9o.160: daemon.json under the credential rule (production: realDeps). Optional so existing mocks keep their
+   *  readFile fake; absent = readFile. */
+  readStateFile?: (path: string) => string | null;
   fileSize?: (path: string) => number;
   readFileFrom?: (path: string, offset: number) => string | null;
   writeFile: (path: string, content: string) => void;
@@ -377,7 +380,7 @@ export function getDaemonPath(): string {
 function readState(deps: LifecycleDeps): DaemonState | null {
   const stateFile = resolveLifecycleFile(deps, "daemon.json");
   if (!deps.exists(stateFile)) return null;
-  const raw = deps.readFile(stateFile);
+  const raw = (deps.readStateFile ?? deps.readFile)(stateFile);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as DaemonState;

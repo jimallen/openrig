@@ -15,7 +15,8 @@
 // resolveWorkspacePaths) project the raw strings into structured data
 // the daemon's UEP routes + Slice Story View consume.
 
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync, lstatSync, readlinkSync, statSync, chmodSync, chownSync, openSync, closeSync, renameSync } from "node:fs";
+import { writeFileSync, mkdirSync, unlinkSync, existsSync, lstatSync, readlinkSync, statSync, chmodSync, chownSync, openSync, closeSync, renameSync, constants, fstatSync, readSync, fchmodSync, realpathSync } from "node:fs";
+import { credentialFileOpsFrom, OPENRIG_CONFIG_POLICY, readOwnFileWith } from "../credential-file.js";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -1209,7 +1210,7 @@ export class SettingsStore {
   private verifyPersisted(keyPath: string[], expected: unknown): void {
     let reread: Record<string, unknown>;
     try {
-      reread = JSON.parse(readFileSync(this.configPath, "utf-8")) as Record<string, unknown>;
+      reread = JSON.parse(readConfigText(this.configPath) ?? "") as Record<string, unknown>;
     } catch (e) {
       throw new Error(
         `config write did NOT persist: could not read it back at ${this.configPath} (${(e as Error).message}). Refusing to report success.`,
@@ -1353,8 +1354,8 @@ export class SettingsStore {
 
   private readConfigFile(): Record<string, unknown> {
     let parsed: Record<string, unknown> = {};
-    if (existsSync(this.configPath)) {
-      const raw = readFileSync(this.configPath, "utf-8");
+    const raw = readConfigText(this.configPath);
+    if (raw !== null) {
       try {
         parsed = JSON.parse(raw) as Record<string, unknown>;
       } catch {
@@ -1389,4 +1390,21 @@ export function parseNamedPairs(raw: string): NamedPair[] {
     out.set(name, rawPath);
   }
   return Array.from(out.entries()).map(([name, path]) => ({ name, path }));
+}
+
+/**
+ * workspaces-o9o.160: config.json is read under the credential rule's procedure, with the node:fs this module already imports (CoS
+ * 13:38Z option B; moving this I/O out of domain/ is o9o.161). It may be a link (the writer follows one by design), whose real
+ * target is judged; group/other write on that file of ours is narrowed, never refused. Null when absent; any other refusal throws,
+ * naming the file and the fix.
+ */
+const configFileOps = credentialFileOpsFrom(
+  { constants, openSync, fstatSync, readSync, fchmodSync, closeSync, lstatSync, realpathSync },
+  () => (typeof process.getuid === "function" ? process.getuid() : -1),
+);
+function readConfigText(configPath: string): string | null {
+  const read = readOwnFileWith(configFileOps, configPath, OPENRIG_CONFIG_POLICY);
+  if (read.ok) return read.content;
+  if (read.problem === "missing") return null;
+  throw new Error(`refusing to read the OpenRig config: ${read.message}`);
 }

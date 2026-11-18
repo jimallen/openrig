@@ -4,7 +4,7 @@ import { ConfigStore } from "./config-store.js";
 import { getOpenRigHome, readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout, FetchTimeoutError } from "./fetch-with-timeout.js";
 import { readLocalOrigin } from "./local-origin.js";
-import { readCredentialFile, TERMINAL_TOKEN_POLICY } from "@openrig/daemon/credential-file";
+import { DAEMON_STATE_POLICY, readCredentialFile, readOwnFile, TERMINAL_TOKEN_POLICY } from "@openrig/daemon/credential-file";
 
 export function terminalAuthHeaders(): Record<string, string> {
   const token = resolveTerminalToken();
@@ -202,10 +202,23 @@ interface DaemonClientOptions {
 }
 
 /** Routing state published by daemon start, not a health check or sibling-home discovery. */
+/** A refused daemon.json is said once per process (stderr), not on every client. */
+let daemonStateRefusalSaid = false;
+
 function localDaemonUrl(): string | undefined {
+  // Resolve at construction time: embedders may change OPENRIG_HOME after import.
+  // workspaces-o9o.160: daemon.json chooses where the terminal token is sent, so it is read under the credential rule: a link or
+  // another user's file is not used (said once); group/other write on our own file is narrowed. Absent: no recorded endpoint.
+  const read = readOwnFile(path.join(getOpenRigHome(), "daemon.json"), DAEMON_STATE_POLICY);
+  if (!read.ok) {
+    if (read.problem !== "missing" && !daemonStateRefusalSaid) {
+      daemonStateRefusalSaid = true;
+      process.stderr.write(`rig: not using the recorded daemon address: ${read.message}\n`);
+    }
+    return undefined;
+  }
   try {
-    // Resolve at construction time: embedders may change OPENRIG_HOME after import.
-    const state = JSON.parse(fs.readFileSync(path.join(getOpenRigHome(), "daemon.json"), "utf-8"));
+    const state = JSON.parse(read.content);
     if (!state || !Number.isSafeInteger(state.pid) || state.pid <= 0
       || !Number.isInteger(state.port) || state.port < 1 || state.port > 65535
       || (state.host !== undefined && (typeof state.host !== "string" || !state.host.trim()))) return undefined;

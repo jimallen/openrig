@@ -1,3 +1,4 @@
+import { DAEMON_STATE_POLICY, readOwnFile } from "@openrig/daemon/credential-file";
 import { Command } from "commander";
 import fs from "node:fs";
 import { createServer } from "node:net";
@@ -128,11 +129,18 @@ export function realDeps(): LifecycleDeps {
     },
     kill: (pid, signal) => { process.kill(pid, signal as NodeJS.Signals); return true; },
     readFile: (p) => { try { return fs.readFileSync(p, "utf-8"); } catch { return null; } },
+    // workspaces-o9o.160: daemon.json chooses the daemon address commands talk to; read under the credential rule.
+    readStateFile: (p) => {
+      const read = readOwnFile(p, DAEMON_STATE_POLICY);
+      if (read.ok) return read.content;
+      if (read.problem !== "missing") console.error(`Warning: not using daemon state: ${read.message}`);
+      return null;
+    },
     writeFile: (p, content) => {
       if (p !== STATE_FILE) { fs.writeFileSync(p, content, "utf-8"); return; }
       const temporary = `${p}.${randomUUID()}.tmp`;
       try {
-        fs.writeFileSync(temporary, content, { encoding: "utf-8", flag: "wx" });
+        fs.writeFileSync(temporary, content, { encoding: "utf-8", flag: "wx", mode: 0o644 }); // o9o.160: nobody else may change it
         fs.renameSync(temporary, p);
       } finally {
         try { fs.unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
