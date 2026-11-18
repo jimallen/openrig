@@ -39,7 +39,9 @@ export interface PiOperatorLoginFs {
   realpath(p: string): string;
   readlink(p: string): string;
   /** Only ever called on a seat's regular auth.json of exactly 2 bytes. */
-  readFile(p: string): string;
+  /** workspaces-o9o.151 (verify-sec2 F1): the seat's own auth.json stub, narrowed then read under the credential rule (O_NOFOLLOW
+   *  on the opened file), so a name swapped to a link after the lstat is never read through. The one read of a seat credential file. */
+  readSeatStub(p: string): CredentialFileRead;
   symlink(target: string, p: string): void;
   rename(from: string, to: string): void;
   unlink(p: string): void;
@@ -54,7 +56,7 @@ export const realPiOperatorLoginFs: PiOperatorLoginFs = {
   // lets a differently-cased spelling of a seat's own path slip past the state-root check; review N2).
   realpath: (p) => fs.realpathSync.native(p),
   readlink: (p) => fs.readlinkSync(p),
-  readFile: (p) => fs.readFileSync(p, "utf8"),
+  readSeatStub: (p) => narrowOwnSecretFile(p, PI_AUTH_POLICY) ?? readCredentialFile(p, PI_AUTH_POLICY),
   symlink: (target, p) => fs.symlinkSync(target, p),
   rename: (a, b) => fs.renameSync(a, b),
   unlink: (p) => fs.unlinkSync(p),
@@ -178,10 +180,13 @@ function linkOne(io: PiOperatorLoginFs, name: string, file: string, target: stri
     : `${name} is this seat's own file (${st.size} bytes); left alone, not linked to the operator's.` };
 }
 
-/** The one allowed read of a seat credential file: a regular file of exactly 2 bytes, parsed only to see that it is "{}". */
+/** The one allowed read of a seat credential file: a regular file of exactly 2 bytes, parsed only to see that it is "{}". Read under
+ *  the credential rule (F1): a refused file is not the stub. */
 function isEmptyObjectFile(io: PiOperatorLoginFs, file: string): boolean {
+  const read = io.readSeatStub(file);
+  if (!read.ok) return false;
   try {
-    const value: unknown = JSON.parse(io.readFile(file));
+    const value: unknown = JSON.parse(read.content);
     return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
   } catch { return false; }
 }

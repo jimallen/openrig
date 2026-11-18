@@ -58,7 +58,7 @@ describe("NodeLauncher", () => {
     // operator's real ~/.openrig / ~/.codex.
     fakeHomes = await fs.mkdtemp(path.join(os.tmpdir(), "nl-homes-"));
     await fs.mkdir(path.join(fakeHomes, "codex"), { recursive: true });
-    await fs.writeFile(path.join(fakeHomes, "codex", "auth.json"), "{}");
+    await fs.writeFile(path.join(fakeHomes, "codex", "auth.json"), "{}", { mode: 0o600 }); // o9o.151 F2: Codex writes its login 0600; others-readable is not linked
     process.env["OPENRIG_HOME"] = path.join(fakeHomes, "openrig");
     process.env["CODEX_HOME_DEFAULT"] = path.join(fakeHomes, "codex");
   });

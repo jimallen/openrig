@@ -146,7 +146,7 @@ describe("rule 2: an existing credential is left alone; only the 2-byte {} stub 
 
   it("the only file ever read is a seat's own 2-byte auth.json: the operator's files and bigger files are never opened", () => {
     const reads: string[] = [];
-    const spy: PiOperatorLoginFs = { ...realPiOperatorLoginFs, readFile: (p) => { reads.push(p); return realPiOperatorLoginFs.readFile(p); } };
+    const spy: PiOperatorLoginFs = { ...realPiOperatorLoginFs, readSeatStub: (p) => { reads.push(p); return realPiOperatorLoginFs.readSeatStub(p); } };
     putOperator();
     fs.writeFileSync(opModels(), "{}", { mode: 0o600 }); // o9o.151: an operator file others can read is not linked
     link({ fsOps: spy, linkModels: true });                              // absent seat files

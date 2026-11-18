@@ -21,7 +21,7 @@ beforeEach(async () => {
   openrigHome = path.join(tmp, ".openrig");
   shared = path.join(tmp, ".codex");
   await fs.mkdir(shared, { recursive: true });
-  await fs.writeFile(path.join(shared, "auth.json"), "{}");
+  await fs.writeFile(path.join(shared, "auth.json"), "{}", { mode: 0o600 }); // o9o.151 F2: Codex writes its login 0600; others-readable is not linked
   await fs.writeFile(path.join(shared, "config.toml"), "");
   await fs.mkdir(path.join(shared, "packages", "app-server-daemon", "releases", "0.158.0-aarch64-apple-darwin", "bin"), { recursive: true });
   await fs.writeFile(path.join(shared, "packages", "app-server-daemon", "releases", "0.158.0-aarch64-apple-darwin", "bin", "codex"), "fake");

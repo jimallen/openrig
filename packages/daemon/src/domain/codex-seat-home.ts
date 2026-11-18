@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { unrestrictedCodexConfigWrites, type CodexConfigWritePolicy } from "./codex-config-write-policy.js";
+import { CODEX_AUTH_POLICY, credentialFileRefusal, judgeOpenedCredentialFile, type CredentialFileProblem } from "./credential-file.js";
 import { codexActivityHookTrustRecords, computeCodexHandlerHash, findTomlTable, lineStartsAtDocumentLevel, upsertCodexHookTrust, upsertVerifiedCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
@@ -348,6 +349,47 @@ async function syncSeatHookTrust(home: string, log: (message: string) => void, p
   return run;
 }
 
+/** Judge a credential file without reading it, under the credential rule's verdict (domain/credential-file.ts): one O_NOFOLLOW|
+ *  O_NONBLOCK open, fstat, close. Null when it passes. */
+async function inspectCodexAuth(file: string): Promise<CredentialFileProblem | null> {
+  let handle: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    handle = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? "missing" : code === "ELOOP" || code === "EMLINK" ? "symlink" : "unreadable";
+  }
+  try {
+    const st = await handle.stat();
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    return judgeOpenedCredentialFile({ isFile: st.isFile(), uid: st.uid, mode: st.mode, size: st.size }, CODEX_AUTH_POLICY, uid);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Why the seat's auth.json must not be linked or kept, or null (F2). */
+async function seatAuthLinkRefusal(source: string, dest: string): Promise<string | null> {
+  let destStat: Awaited<ReturnType<typeof fs.lstat>> | null = null;
+  try { destStat = await fs.lstat(dest); } catch { /* absent: the link is about to be made */ }
+  if (destStat && !destStat.isSymbolicLink()) {
+    // The seat's own login (it signed in itself): held to the same rule.
+    const own = await inspectCodexAuth(dest);
+    return own ? credentialFileRefusal(dest, CODEX_AUTH_POLICY, own) : null;
+  }
+  if (destStat) {
+    let real: string;
+    let expected: string;
+    try { real = await fs.realpath(dest); } catch { real = await fs.readlink(dest).catch(() => "(unreadable)"); }
+    try { expected = await fs.realpath(source); } catch { expected = source; }
+    if (real !== expected) {
+      return `${dest} is a link to ${real}, not to the shared Codex login ${source}; OpenRig does not replace a link someone made: remove it (OpenRig links the shared login at the next launch) or point it at ${source}`;
+    }
+  }
+  const problem = await inspectCodexAuth(source);
+  return problem ? `not linking the seat to the shared Codex login: ${credentialFileRefusal(source, CODEX_AUTH_POLICY, problem)}` : null;
+}
+
 async function linkIfMissing(source: string, dest: string): Promise<boolean> {
   try {
     await fs.lstat(dest);
@@ -453,6 +495,13 @@ export async function ensureCodexSeatHome(
       continue; // absent on the shared home — skip silently
     }
     const dest = path.join(home, entry);
+    // workspaces-o9o.151 (verify-sec2 F2): the seat's auth.json is made and kept only as a link to a shared login that passes the
+    // codex-auth policy (SEAT_CREDENTIAL_LINKS codex-auth). A failing source, a link someone made to another file, or a seat's own
+    // auth.json that fails the rule refuses the launch, naming the file and the fix; a link someone made is never replaced.
+    if (entry === "auth.json") {
+      const refusal = await seatAuthLinkRefusal(source, dest);
+      if (refusal) throw new Error(`codex seat home ${home}: ${refusal}`);
+    }
     if (await linkIfMissing(source, dest)) linked.push(entry);
   }
   linked.push(...(await seedSeatPackages(home, shared)));
