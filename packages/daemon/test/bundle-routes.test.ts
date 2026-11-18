@@ -154,8 +154,7 @@ describe("Bundle API routes", () => {
         return out;
       },
     };
-    (setup.bootstrapOrchestrator as unknown as { deps: { bundleSourceResolver: LegacyBundleSourceResolver } })
-      .deps.bundleSourceResolver = new LegacyBundleSourceResolver({ fsOps: resolverFs });
+    setup.bootstrapOrchestrator["deps"].bundleSourceResolver = new LegacyBundleSourceResolver({ fsOps: resolverFs });
   });
 
   afterEach(() => {
@@ -1481,7 +1480,7 @@ describe("Bundle API routes", () => {
       const stub = opts.bootstrapThrows
         ? vi.fn().mockRejectedValue(opts.bootstrapThrows)
         : vi.fn().mockResolvedValue(opts.bootstrapResult);
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+      setup.bootstrapOrchestrator.bootstrap = stub;
 
       await app.request("/api/bundles/install", {
         method: "POST",
@@ -1499,7 +1498,7 @@ describe("Bundle API routes", () => {
       expect(body.records[0].bundlePath).toBe(bundlePath);
       return body;
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       fs.rmSync(targetRoot, { recursive: true, force: true });
     }
   }
@@ -1655,7 +1654,7 @@ describe("Bundle API routes", () => {
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -1676,7 +1675,7 @@ describe("Bundle API routes", () => {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -1730,7 +1729,7 @@ describe("Bundle API routes", () => {
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         // Critical: both override flags set — this triggered the B1 bug
         const installRes = await app.request("/api/bundles/install", {
@@ -1752,7 +1751,7 @@ describe("Bundle API routes", () => {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -1807,7 +1806,7 @@ describe("Bundle API routes", () => {
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -1828,7 +1827,7 @@ describe("Bundle API routes", () => {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -1885,7 +1884,7 @@ describe("Bundle API routes", () => {
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         // Critical: both override flags set — installMeta is null at the pre-check
         // site in this path; the plugins-routing wrapper must STILL fire
@@ -1910,7 +1909,7 @@ describe("Bundle API routes", () => {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -2396,7 +2395,7 @@ describe("Bundle API routes", () => {
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -2454,7 +2453,7 @@ describe("Bundle API routes", () => {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
@@ -2515,7 +2514,7 @@ describe("Bundle API routes", () => {
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         // Critical: both override flags set — installMeta is null at the pre-check
         // site in this path; the workflow_specs-routing wrapper must STILL fire
@@ -2539,7 +2538,7 @@ describe("Bundle API routes", () => {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
@@ -2601,7 +2600,7 @@ describe("Bundle API routes", () => {
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -2625,7 +2624,7 @@ describe("Bundle API routes", () => {
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
@@ -2700,7 +2699,7 @@ files:
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -2738,7 +2737,7 @@ files:
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       if (origContextRoot === undefined) delete process.env.OPENRIG_CONTEXT_ROOT;
@@ -2800,7 +2799,7 @@ files:
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         // Both override flags set — installMeta null at pre-check; the
         // context-packs router must STILL fire.
@@ -2821,7 +2820,7 @@ files:
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       if (origContextRoot === undefined) delete process.env.OPENRIG_CONTEXT_ROOT;
@@ -2874,7 +2873,7 @@ files:
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -2893,7 +2892,7 @@ files:
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       if (origContextRoot === undefined) delete process.env.OPENRIG_CONTEXT_ROOT;
@@ -2963,7 +2962,7 @@ files: []
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -2999,7 +2998,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -3057,7 +3056,7 @@ files: []
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -3076,7 +3075,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -3122,7 +3121,7 @@ files: []
           stages: [{ stage: "resolve_spec", status: "ok" }],
           errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -3139,7 +3138,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -3167,7 +3166,7 @@ files: []
           rigId: "01H000000000000000NOAIMG",
           stages: [], errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -3180,7 +3179,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -3208,7 +3207,7 @@ files: []
           rigId: "01H000000000000000NOCPCK",
           stages: [], errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -3221,7 +3220,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -3252,7 +3251,7 @@ files: []
           rigId: "01H000000000000000NOWFLW",
           stages: [], errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -3265,7 +3264,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       if (origSpecsRoot === undefined) delete process.env.OPENRIG_WORKSPACE_SPECS_ROOT;
@@ -3296,7 +3295,7 @@ files: []
           rigId: "01H000000000000000NOPLG01",
           stages: [], errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -3309,7 +3308,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -3337,7 +3336,7 @@ files: []
           rigId: "01H000000000000000NOSKIL01",
           stages: [], errors: [],
         });
-        (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof stub }).bootstrap = stub;
+        setup.bootstrapOrchestrator.bootstrap = stub;
 
         const installRes = await app.request("/api/bundles/install", {
           method: "POST",
@@ -3350,7 +3349,7 @@ files: []
         fs.rmSync(targetRoot, { recursive: true, force: true });
       }
     } finally {
-      (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof origBootstrap }).bootstrap = origBootstrap;
+      setup.bootstrapOrchestrator.bootstrap = origBootstrap;
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
       fs.rmSync(auditHome, { recursive: true, force: true });
@@ -3431,7 +3430,7 @@ describe("POST /api/bundles/install: pre-launch routing report", () => {
 
   it("--plan forwards --cwd to the preflight", async () => {
     const bootstrap = vi.fn().mockResolvedValue({ status: "planned", runId: "run-plan", stages: [], errors: [], warnings: [] });
-    (setup.bootstrapOrchestrator as unknown as { bootstrap: typeof bootstrap }).bootstrap = bootstrap;
+    setup.bootstrapOrchestrator.bootstrap = bootstrap;
 
     const res = await install({ plan: true, cwdOverride: "/work/openrig" });
 
@@ -3441,7 +3440,7 @@ describe("POST /api/bundles/install: pre-launch routing report", () => {
 
   it("a partial install reports its routing failures in the response and the audit", async () => {
     const failure = { kind: "contextPacks", error: "no space left on device" };
-    (setup.bootstrapOrchestrator as unknown as { bootstrap: unknown }).bootstrap = vi.fn().mockResolvedValue({
+    setup.bootstrapOrchestrator.bootstrap = vi.fn().mockResolvedValue({
       status: "partial", runId: "run-partial", rigId: "rig-partial",
       stages: [{ stage: "route_bundle_contents", status: "failed" }],
       errors: [], warnings: ["Bundle contextPacks routing failed: no space left on device"],

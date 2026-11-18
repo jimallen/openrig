@@ -35,7 +35,7 @@ import type { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import type { PiResumeAdapter } from "../src/adapters/pi-resume.js";
 import type { OmpResumeAdapter } from "../src/adapters/omp-resume.js";
 import type { ResumeResult } from "../src/adapters/claude-resume.js";
-import type { PersistedEvent, Snapshot } from "../src/domain/types.js";
+import type { PersistedEvent, RestoreOutcome, RestoreResult, Snapshot } from "../src/domain/types.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { buildRestorePlanPreview } from "../src/domain/restore-plan-preview.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
@@ -45,6 +45,7 @@ import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delive
 import { ServiceOrchestrator } from "../src/domain/service-orchestrator.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+import { stubOf } from "./helpers/tmux-stub.js";
 import { GUARD_FLAG } from "./helpers/claude-guard.js";
 import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
@@ -60,8 +61,9 @@ function setupDb(): Database.Database {
   return createFullTestDb();
 }
 
-function mockTmux(): TmuxAdapter {
-  return mockShellCommand({
+/** The stub's default methods, before any row lays its own over them. */
+function tmuxMethods(): Partial<TmuxAdapter> {
+  return {
     createSession: vi.fn(async () => ({ ok: true as const })),
     killSession: vi.fn(async () => ({ ok: true as const })),
     sendText: vi.fn(async () => ({ ok: true as const })),
@@ -73,21 +75,32 @@ function mockTmux(): TmuxAdapter {
     listWindows: async () => [],
     listPanes: async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }],
     probeSession: probeSessionFromHasSession, hasSession: async () => false,
-  } as unknown as TmuxAdapter);
+  };
+}
+
+/** A typed TmuxAdapter stub (workspaces-o9o.129): the defaults above, with a row's own methods laid over them. */
+function mockTmux(over: Partial<TmuxAdapter> = {}): TmuxAdapter {
+  return mockShellCommand(stubOf<TmuxAdapter>({ ...tmuxMethods(), ...over }));
+}
+
+/** The RestoreResult an outcome carries (a completed restore, or one refused before any change); one that carries none fails the row. */
+function carriedResult(outcome: RestoreOutcome): RestoreResult {
+  if ("result" in outcome) return outcome.result;
+  throw new Error(`restore outcome carries no result: ${JSON.stringify(outcome)}`);
 }
 
 function mockClaudeResume(result?: ResumeResult): ClaudeResumeAdapter {
-  return {
+  return stubOf<ClaudeResumeAdapter>({
     canResume: vi.fn((type: string | null) => type === "claude_name" || type === "claude_id"),
     resume: vi.fn(async () => result ?? { ok: true as const }),
-  } as unknown as ClaudeResumeAdapter;
+  });
 }
 
 function mockCodexResume(result?: ResumeResult): CodexResumeAdapter {
-  return {
+  return stubOf<CodexResumeAdapter>({
     canResume: vi.fn((type: string | null) => type === "codex_id" || type === "codex_last"),
     resume: vi.fn(async () => result ?? { ok: true as const }),
-  } as unknown as CodexResumeAdapter;
+  });
 }
 
 function nativeLineage(runtime: "claude-code" | "codex", token: string) {
@@ -601,20 +614,20 @@ describe("RestoreOrchestrator", () => {
       });
       const orch = createOrchestrator({
         ...(testCase.runtime === "claude-code"
-          ? { claude: { canResume: vi.fn(() => true), resume } as unknown as ClaudeResumeAdapter }
+          ? { claude: stubOf<ClaudeResumeAdapter>({ canResume: vi.fn(() => true), resume }) }
           : {}),
         ...(testCase.runtime === "codex"
-          ? { codex: { canResume: vi.fn(() => true), resume } as unknown as CodexResumeAdapter }
+          ? { codex: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => true), resume }) }
           : {}),
         ...(testCase.runtime === "pi"
-          ? { pi: { canResume: vi.fn(() => true), resume } as unknown as PiResumeAdapter }
+          ? { pi: stubOf<PiResumeAdapter>({ canResume: vi.fn(() => true), resume }) }
           : {}),
         ...(testCase.runtime === "omp"
-          ? { omp: { canResume: vi.fn(() => true), resume } as unknown as OmpResumeAdapter }
+          ? { omp: stubOf<OmpResumeAdapter>({ canResume: vi.fn(() => true), resume }) }
           : {}),
       });
 
-      const pending = (orch as any).attemptResume(
+      const pending = orch["attemptResume"](
         node.id,
         sessionName,
         testCase.resumeType,
@@ -650,15 +663,15 @@ describe("RestoreOrchestrator", () => {
     const claudeResume = vi.fn(async () => ({ ok: true as const }));
     const codexResume = vi.fn(async () => ({ ok: true as const }));
     const orch = createOrchestrator({
-      claude: { canResume: vi.fn(() => true), resume: claudeResume } as unknown as ClaudeResumeAdapter,
-      codex: { canResume: vi.fn(() => true), resume: codexResume } as unknown as CodexResumeAdapter,
+      claude: stubOf<ClaudeResumeAdapter>({ canResume: vi.fn(() => true), resume: claudeResume }),
+      codex: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => true), resume: codexResume }),
     });
 
     const rig = rigRepo.createRig("effort-forward-test");
     const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: WORK_DIR });
 
     // Claude forwards effort
-    await (orch as any).attemptResume(
+    await orch["attemptResume"](
       node.id,
       "claude-session",
       "claude_id",
@@ -686,8 +699,8 @@ describe("RestoreOrchestrator", () => {
 
     // Codex forwards effort; the named profile remains authoritative.
     db.prepare("UPDATE nodes SET codex_config_profile = 'profile1' WHERE id = ?").run(node.id);
-    (orch as any).claudeResume.canResume = vi.fn(() => false);
-    await (orch as any).attemptResume(
+    orch["claudeResume"].canResume = vi.fn(() => false);
+    await orch["attemptResume"](
       node.id,
       "codex-session",
       "codex_id",
@@ -713,8 +726,8 @@ describe("RestoreOrchestrator", () => {
   it("attemptResume passes a seat's switched-on Codex MCP servers to codex resume; a seat with none keeps the exact call", async () => {
     const codexResume = vi.fn(async () => ({ ok: true as const }));
     const orch = createOrchestrator({
-      claude: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as ClaudeResumeAdapter,
-      codex: { canResume: vi.fn(() => true), resume: codexResume } as unknown as CodexResumeAdapter,
+      claude: stubOf<ClaudeResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
+      codex: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => true), resume: codexResume }),
     });
     const rig = rigRepo.createRig("mcp-restore-test");
     const on = rigRepo.addNode(rig.id, "verify.ops", { runtime: "codex", cwd: WORK_DIR });
@@ -723,8 +736,8 @@ describe("RestoreOrchestrator", () => {
     db.prepare("UPDATE nodes SET codex_mcp_servers = ? WHERE id = ?")
       .run(JSON.stringify({ lsp: { declaration, specDir: "/spec", declaredIn: "/spec/rig.yaml", switchedOnAt: "t", commandPath: "/opt/mcpls", commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", argFiles: [] } }), on.id);
 
-    await (orch as any).attemptResume(on.id, "ops-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
-    await (orch as any).attemptResume(off.id, "qa-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
+    await orch["attemptResume"](on.id, "ops-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
+    await orch["attemptResume"](off.id, "qa-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
 
     expect(codexResume).toHaveBeenNthCalledWith(1, "ops-session", "codex_id", "tok", "/work", null, "full_bypass", "o3",
       "medium", false, false, true,
@@ -750,7 +763,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
     // tmux session IS alive — restore should block
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) });
     const orch = createOrchestrator({ tmux });
     const result = await orch.restore(snap.id);
 
@@ -866,7 +879,7 @@ describe("RestoreOrchestrator", () => {
     const session = sessionRegistry.registerSession(node.id, "dev-worker@wedged");
     sessionRegistry.updateStatus(session.id, "running");
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(() => new Promise<boolean>(() => { /* never settles */ })) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(() => new Promise<boolean>(() => { /* never settles */ })) });
     const orch = createOrchestrator({ tmux });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
@@ -904,7 +917,7 @@ describe("RestoreOrchestrator", () => {
       if (answer === "hang") return new Promise<boolean>(() => { /* never settles */ });
       return Promise.resolve(answer === "live");
     });
-    return { tmux: { ...mockTmux(), hasSession } as unknown as TmuxAdapter, calls };
+    return { tmux: mockTmux({ hasSession }), calls };
   }
 
   it("N-1: an unreadable tmux probe is refused with its own wording (tmux did not answer, retry), not the 'live sessions / rig down' text", async () => {
@@ -1018,7 +1031,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "pre-crash");
 
     // Simulate post-crash: tmux sessions are gone
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) });
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -1039,7 +1052,7 @@ describe("RestoreOrchestrator", () => {
     sessionRegistry.updateStatus(sess.id, "running");
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) });
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -1056,7 +1069,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
     // tmux session is dead (post-crash) — restore should proceed
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) });
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -1085,7 +1098,7 @@ describe("RestoreOrchestrator", () => {
     const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
 
     // tmux says the OLD session name IS alive
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) });
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -1104,7 +1117,7 @@ describe("RestoreOrchestrator", () => {
 
     // tmux check throws unexpected error (permission denied / socket failure)
     // — NOT a known-absence error, so hasSession rethrows instead of returning false
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => { throw new Error("error connecting to /tmp/tmux-501/default (Permission denied)"); }) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => { throw new Error("error connecting to /tmp/tmux-501/default (Permission denied)"); }) });
     const orch = createOrchestrator({ tmux });
 
     const result = await orch.restore(snap.id);
@@ -1481,7 +1494,7 @@ describe("RestoreOrchestrator", () => {
 
   it.each(["full", "subset", "existing-hook", "conflicting-hook"])("A3 proves managed Claude in %s recovery and the next identity sweep", async (mode) => {
     const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }], edges: [], resumeType: "claude_id", resumeToken: "saved-claude" });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "sh") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "sh") });
     const listProcesses = vi.fn(async () => {
       if (mode.endsWith("hook")) db.prepare("UPDATE sessions SET resume_token = ?, resume_provenance = 'hook' WHERE id = (SELECT id FROM sessions ORDER BY id DESC LIMIT 1)").run(mode === "existing-hook" ? "saved-claude" : "different-session");
       return managedClaudeRows("saved-claude");
@@ -1517,7 +1530,7 @@ describe("RestoreOrchestrator", () => {
 
   it.each(["bare", "wrong-token", "background", "unrelated", "unstable", "missing-metadata", "pane-changed", "ambiguous-pane", "process-error"])("A3 retains attention for unproved Claude: %s", async (failure) => {
     const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }], edges: [], resumeType: "claude_id", resumeToken: "saved-claude" });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "sh") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "sh") });
     let calls = 0;
     const listProcesses = async () => {
       calls++;
@@ -1553,7 +1566,7 @@ describe("RestoreOrchestrator", () => {
       { pid: 3003, ppid: 3002, pgid: 3002, tpgid: 3002, executableName: "node", command: `node /opt/bin/codex -s workspace-write -m fixture-model resume --add-dir /tmp/state ${token}`, startedAt: "Sat Jan  1 12:00:00 2000" },
       { pid: 3004, ppid: 3003, pgid: 3002, tpgid: 3002, executableName: "codex", command: `/opt/native/codex -s workspace-write -m fixture-model resume --add-dir /tmp/state ${token}`, startedAt: "Sat Jan  1 12:00:00 2000" },
     ];
-    const tmux = { ...mockTmux(), getPanePid: vi.fn(async () => 3001), getPaneCommand: vi.fn(async () => "bash") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPanePid: vi.fn(async () => 3001), getPaneCommand: vi.fn(async () => "bash") });
     const listProcesses = async () => {
       if (mode.endsWith("hook")) db.prepare("UPDATE sessions SET resume_token = ?, resume_provenance = 'hook' WHERE id = (SELECT id FROM sessions ORDER BY id DESC LIMIT 1)").run(mode === "existing-hook" ? token : "other-thread");
       return rows;
@@ -1561,7 +1574,7 @@ describe("RestoreOrchestrator", () => {
     const orch = createOrchestrator({ tmux, listProcesses });
     const result = mode !== "subset" ? await orch.restore(snap.id) : await orch.launchSingleNode(snap.rigId, "worker", { snapshotId: snap.id });
     expect(result.ok).toBe(true);
-    const nodes = "result" in result ? result.result?.nodes : (result as any).launched;
+    const nodes = "result" in result ? result.result?.nodes : ("launched" in result ? result.launched : undefined);
     if (mode === "conflicting-hook") {
       expect(nodes?.[0]?.status).toBe("attention_required");
       expect(db.prepare("SELECT verdict FROM seat_identity_verdicts WHERE node_id = ?").get(nodes![0]!.nodeId)).toEqual({ verdict: "mismatch" });
@@ -1585,7 +1598,7 @@ describe("RestoreOrchestrator", () => {
       resumeType: "codex_id",
       resumeToken,
     });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "node") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "node") });
     const codexCommand = `/opt/openrig/vendor/bin/codex --model gpt-5.6 resume --add-dir /tmp/openrig-state ${resumeToken}`;
     const result = await createOrchestrator({
       tmux,
@@ -1621,7 +1634,7 @@ describe("RestoreOrchestrator", () => {
       resumeType: "codex_id",
       resumeToken,
     });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "node") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "node") });
     const codexCommand = `/opt/openrig/vendor/bin/codex --model gpt-5.6 resume --add-dir /tmp/openrig-state ${resumeToken}`;
     const result = await createOrchestrator({
       tmux,
@@ -1647,7 +1660,7 @@ describe("RestoreOrchestrator", () => {
       resumeType: "codex_id",
       resumeToken,
     });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "node") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "node") });
     // The observer reads ps argv after the shell has removed launch quoting.
     const codexCommand = ["codex", "-p", "resume", "resume", "--add-dir", "/tmp/openrig-state", resumeToken].join(" ");
     const result = await createOrchestrator({
@@ -1679,7 +1692,7 @@ describe("RestoreOrchestrator", () => {
       resumeType: "codex_id",
       resumeToken,
     });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "node") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "node") });
     const codexCommand = ["codex", "-p", "resume", "resume", "--add-dir", "/tmp/openrig-state", "different-thread", "resume", resumeToken].join(" ");
     const result = await createOrchestrator({
       tmux,
@@ -1710,7 +1723,7 @@ describe("RestoreOrchestrator", () => {
       resumeType: "codex_id",
       resumeToken,
     });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "node") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "node") });
     const result = await createOrchestrator({
       tmux,
       codex: mockCodexResume({ ok: true }),
@@ -1739,7 +1752,7 @@ describe("RestoreOrchestrator", () => {
       resumeType: "claude_name",
       resumeToken: "tok",
     });
-    const tmux = { ...mockTmux(), listPanes: vi.fn(async () => []) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ listPanes: vi.fn(async () => []) });
     const result = await createOrchestrator({ tmux, claude: mockClaudeResume({ ok: true }) }).restore(snap.id);
 
     expect(result.ok).toBe(true);
@@ -1761,7 +1774,7 @@ describe("RestoreOrchestrator", () => {
         resumeType: "claude_name",
         resumeToken: "tok",
       });
-      const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => command) } as unknown as TmuxAdapter;
+      const tmux = mockTmux({ getPaneCommand: vi.fn(async () => command) });
       const result = await createOrchestrator({ tmux, claude: mockClaudeResume({ ok: true }) }).restore(snap.id);
 
       expect(result.ok).toBe(true);
@@ -1781,7 +1794,7 @@ describe("RestoreOrchestrator", () => {
       resumeType: "claude_name",
       resumeToken: "tok",
     });
-    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "codex") } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "codex") });
     const result = await createOrchestrator({ tmux, claude: mockClaudeResume({ ok: true }) }).restore(snap.id);
 
     expect(result.ok).toBe(true);
@@ -2047,8 +2060,8 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe("pre_restore_validation_failed");
-      expect((result as any).result.rigResult).toBe("not_attempted");
-      expect((result as any).result.blockers?.[0]).toMatchObject({
+      expect(carriedResult(result).rigResult).toBe("not_attempted");
+      expect(carriedResult(result).blockers?.[0]).toMatchObject({
         code: "checkpoint_missing_node_cwd",
         logicalId: "worker",
       });
@@ -2286,7 +2299,7 @@ describe("RestoreOrchestrator", () => {
       return "OpenAI Codex (v0.155.1)\n› Ask Codex to do anything";
     };
     let launched = false;
-    const tmux = {
+    const tmux = stubOf<TmuxAdapter>({
       ...mockTmux(),
       createSession: vi.fn(async () => { launched = true; return { ok: true as const }; }),
       probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => launched),
@@ -2295,7 +2308,7 @@ describe("RestoreOrchestrator", () => {
       getPaneCommand: vi.fn(async () => "bash"),
       capturePaneScreen: vi.fn(async () => screen()),
       capturePaneContent: vi.fn(async () => screen()),
-    } as unknown as TmuxAdapter;
+    });
     const startedAt = "Sat Jan  1 12:00:00 2000";
     const rows = [
       { pid: 3001, ppid: 1, pgid: 3001, tpgid: 3002, executableName: "zsh", command: "-zsh", startedAt },
@@ -2401,7 +2414,7 @@ describe("RestoreOrchestrator", () => {
         const observed = mode.startsWith("join-native-loss") && joinSessionId ? rows.slice(0, 2) : rows;
         return observed.map(row => ({ ...row, startedAt: mode === "replaced-process" && row.pid === 1236 && samples % 2 === 0 ? "changed" : row.startedAt }));
       });
-      const tmux = {
+      const tmux = stubOf<TmuxAdapter>({
         ...mockTmux(),
         createSession: vi.fn(async () => { launched = true; return { ok: true as const }; }),
         probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => launched),
@@ -2441,7 +2454,7 @@ describe("RestoreOrchestrator", () => {
         }),
         capturePaneContent: vi.fn(async () => screen),
         listPanes: vi.fn(async () => [{ id: mode === "replaced-pane" && samples > 0 ? "%2" : "%1", index: 0, cwd: "/fixture", width: 80, height: 24, active: true }]),
-      } as unknown as TmuxAdapter;
+      });
       const adapter = new ClaudeCodeAdapter({ tmux, listProcesses, sleep: async () => {},
         fsOps: { exists: () => false, readFile: () => "", writeFile: () => {}, mkdirp: () => {}, copyFile: () => {} },
       });
@@ -2537,7 +2550,7 @@ describe("RestoreOrchestrator", () => {
     // Claude resume spy — should NOT be called for pod-aware nodes
     const claudeResumeSpy = vi.fn(async () => ({ ok: true as const }));
     const claude = mockClaudeResume();
-    (claude as any).resume = claudeResumeSpy;
+    claude.resume = claudeResumeSpy;
 
     const orch = createOrchestrator({
       claude,
@@ -2777,7 +2790,7 @@ describe("RestoreOrchestrator", () => {
 
     // The delivery guard's lifecycle claim is re-bound for the live seat, never the vanished node id.
     const rebindLifecycle = vi.fn();
-    const tmux = { ...mockTmux(), deliveryGuard: { ownsLifecycle: () => true, lifecycle: async (_ids: string[], fn: () => unknown) => fn(), rebindLifecycle } } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ deliveryGuard: stubOf<SeatDeliveryGuard>({ ownsLifecycle: () => true, lifecycle: async <T>(_ids: string[], fn: () => Promise<T>) => fn(), rebindLifecycle }) });
     const orch = createOrchestrator({ tmux, claude: mockClaudeResume(), listProcesses: nativeLineage("claude-code", "resume-token-123") });
     const result = await orch.restore(snap.id);
 
@@ -3159,14 +3172,14 @@ describe("RestoreOrchestrator", () => {
 
     it.each(CASES)("pod-aware harness binding: %s", async (_label, liveCwd, expected) => {
       const { snap } = snapshotThenRegrow("regrown-f4-harness-rig", { cwd: SNAPSHOT_CWD, livePodId: "pod-live", startupContext: true, live: { cwd: liveCwd() } });
-      const adapter = {
+      const adapter = stubOf<RuntimeAdapter>({
         runtime: "claude-code",
         listInstalled: vi.fn(async () => []),
         project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
         deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
         checkReady: vi.fn(async () => ({ ready: true })),
         launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "resume-token-123", resumeType: "claude_id" })),
-      } as unknown as RuntimeAdapter;
+      });
 
       const result = await createOrchestrator({ claude: mockClaudeResume(), listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id, { adapters: { "claude-code": adapter } });
 
@@ -3214,7 +3227,7 @@ describe("RestoreOrchestrator", () => {
   it("a regrown seat that is in no pod now is resumed through the legacy call, though the snapshot's copy was in a pod", async () => {
     const { snap, newNode } = snapshotThenRegrow("regrown-live-nopod-rig", { podId: "pod-snapshot", live: { podId: null } });
     const claude = mockClaudeResume();
-    const adapter = { runtime: "claude-code", launchHarness: vi.fn(async () => ({ ok: true as const })) } as unknown as RuntimeAdapter;
+    const adapter = stubOf<RuntimeAdapter>({ runtime: "claude-code", launchHarness: vi.fn(async () => ({ ok: true as const })) });
 
     const result = await createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id, { adapters: { "claude-code": adapter } });
 
@@ -3228,14 +3241,14 @@ describe("RestoreOrchestrator", () => {
   it("a regrown seat that is in a pod now is resumed through the harness launch, though the snapshot's copy was in no pod", async () => {
     const { snap, newNode } = snapshotThenRegrow("regrown-live-pod-rig", { livePodId: "pod-live", startupContext: true });
     const claude = mockClaudeResume();
-    const adapter = {
+    const adapter = stubOf<RuntimeAdapter>({
       runtime: "claude-code",
       listInstalled: vi.fn(async () => []),
       project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
       deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
       checkReady: vi.fn(async () => ({ ready: true })),
       launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "resume-token-123", resumeType: "claude_id" })),
-    } as unknown as RuntimeAdapter;
+    });
 
     const result = await createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id, { adapters: { "claude-code": adapter } });
 
@@ -3315,11 +3328,11 @@ describe("RestoreOrchestrator", () => {
       const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: adapterName, cwd: "/work" });
       const resume = vi.fn(async () => ({ ok: true as const }));
       // Both adapters are present and each claims only its own token type, so the label must follow the token.
-      const pi = { canResume: vi.fn((type: string | null) => type === "pi_session_file"), resume } as unknown as PiResumeAdapter;
-      const omp = { canResume: vi.fn((type: string | null) => type === "omp_session_file"), resume } as unknown as OmpResumeAdapter;
+      const pi = stubOf<PiResumeAdapter>({ canResume: vi.fn((type: string | null) => type === "pi_session_file"), resume });
+      const omp = stubOf<OmpResumeAdapter>({ canResume: vi.fn((type: string | null) => type === "omp_session_file"), resume });
       const orch = createOrchestrator({ pi, omp });
 
-      const outcome = await (orch as any).attemptResume(node.id, `resume-label-${adapterName}-session`, resumeType, "resume-token", "/work", null, null, "floor");
+      const outcome = await orch["attemptResume"](node.id, `resume-label-${adapterName}-session`, resumeType, "resume-token", "/work", null, null, "floor");
 
       expect(outcome).toEqual({ kind: "resumed" });
       expect(resume).toHaveBeenCalledTimes(1);
@@ -3387,7 +3400,7 @@ describe("RestoreOrchestrator", () => {
     const live = sessionRegistry.registerSession(newNode.id, sessionName);
     sessionRegistry.updateStatus(live.id, "running");
     const ownsLifecycle = vi.fn(() => true);
-    const tmux = { ...mockTmux(), probeSession: probeSessionFromHasSession, hasSession: async () => true, deliveryGuard: { ownsLifecycle, lifecycle: async (_ids: string[], fn: () => unknown) => fn(), rebindLifecycle: vi.fn() } } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ probeSession: probeSessionFromHasSession, hasSession: async () => true, deliveryGuard: stubOf<SeatDeliveryGuard>({ ownsLifecycle, lifecycle: async <T>(_ids: string[], fn: () => Promise<T>) => fn(), rebindLifecycle: vi.fn() }) });
     const claude = mockClaudeResume();
 
     const result = await createOrchestrator({ tmux, claude }).launchSingleNode(rig.id, "dev.impl", { snapshotId: snap.id });
@@ -3460,7 +3473,7 @@ describe("RestoreOrchestrator", () => {
     const { rig, snap, newNode } = snapshotThenRegrow("regrown-recon-rig", { podId: "pod-recon", runtime: "claude-code", token: "chooser-token-" + "123" });
     let attemptId = 0;
     const hasSession = vi.fn(async () => false);
-    const tmux = { ...mockTmux(), hasSession, capturePaneContent: vi.fn(async () => ["Claude Code v2.1.89", "", " ❯ accept edits on", ""].join("\n")) } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ hasSession, capturePaneContent: vi.fn(async () => ["Claude Code v2.1.89", "", " ❯ accept edits on", ""].join("\n")) });
     const adapter: RuntimeAdapter = {
       runtime: "claude-code",
       listInstalled: vi.fn(async () => []),
@@ -3532,7 +3545,7 @@ describe("RestoreOrchestrator", () => {
     const { snap, newNode } = snapshotThenRegrow("removed-untouched-rig");
     removeRegrownSeat(newNode.id);
     const rebindLifecycle = vi.fn();
-    const tmux = { ...mockTmux(), deliveryGuard: { ownsLifecycle: () => true, lifecycle: async (_ids: string[], fn: () => unknown) => fn(), rebindLifecycle } } as unknown as TmuxAdapter;
+    const tmux = mockTmux({ deliveryGuard: stubOf<SeatDeliveryGuard>({ ownsLifecycle: () => true, lifecycle: async <T>(_ids: string[], fn: () => Promise<T>) => fn(), rebindLifecycle }) });
     const claude = mockClaudeResume();
 
     const result = await createOrchestrator({ tmux, claude }).restore(snap.id);
@@ -3569,7 +3582,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(result).toMatchObject({ ok: false, code: "pre_restore_validation_failed" });
     if (result.ok) return;
-    expect((result as any).result.intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
+    expect(carriedResult(result).intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
   });
 
   it("a restore whose services fail to boot records the regrown seat in its roster by the live node id", async () => {
@@ -3652,7 +3665,7 @@ describe("RestoreOrchestrator", () => {
     db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
 
     const hasSession = vi.fn(async () => false);
-    const tmux = {
+    const tmux = stubOf<TmuxAdapter>({
       ...mockTmux(),
       hasSession,
       capturePaneContent: vi.fn(async () => [
@@ -3661,7 +3674,7 @@ describe("RestoreOrchestrator", () => {
         " ❯ accept edits on",
         "",
       ].join("\n")),
-    } as unknown as TmuxAdapter;
+    });
     const adapter: RuntimeAdapter = {
       runtime: "claude-code",
       listInstalled: vi.fn(async () => []),
@@ -4366,7 +4379,7 @@ describe("RestoreOrchestrator", () => {
     const createSessionSpy = vi.fn<(name: string, cwd?: string, env?: Record<string, string>) => Promise<{ ok: true }>>()
       .mockResolvedValue({ ok: true });
     const tmux = mockTmux();
-    (tmux as unknown as Record<string, unknown>).createSession = createSessionSpy;
+    tmux.createSession = createSessionSpy;
 
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const orch = new RestoreOrchestrator({
@@ -4401,7 +4414,7 @@ describe("RestoreOrchestrator", () => {
       const createSessionSpy = vi.fn<(name: string, cwd?: string, env?: Record<string, string>) => Promise<{ ok: true }>>()
         .mockResolvedValue({ ok: true });
       const tmux = mockTmux();
-      (tmux as unknown as Record<string, unknown>).createSession = createSessionSpy;
+      tmux.createSession = createSessionSpy;
 
       const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const orch = new RestoreOrchestrator({
@@ -4595,16 +4608,16 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("pre_restore_validation_failed");
-    expect((result as any).result.rigResult).toBe("not_attempted");
-    expect((result as any).result.preRestoreSnapshotId).toBeNull();
-    expect((result as any).result.nodes).toEqual([]);
-    expect((result as any).result.blockers?.[0]).toMatchObject({
+    expect(carriedResult(result).rigResult).toBe("not_attempted");
+    expect(carriedResult(result).preRestoreSnapshotId).toBeNull();
+    expect(carriedResult(result).nodes).toEqual([]);
+    expect(carriedResult(result).blockers?.[0]).toMatchObject({
       code: "required_startup_file_missing",
       severity: "critical",
       logicalId: "agent-a",
       path: missingPath,
     });
-    expect((result as any).result.blockers?.[0]?.remediation).toContain("Restore the missing startup file");
+    expect(carriedResult(result).blockers?.[0]?.remediation).toContain("Restore the missing startup file");
   });
 
   // OPR.0.3.4.5 (behavior 09): projection-validity != session continuity.
@@ -4726,8 +4739,8 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("pre_restore_validation_failed");
-    expect((result as any).result.rigResult).toBe("not_attempted");
-    expect((result as any).result.blockers?.[0]?.code).toBe("required_startup_file_missing");
+    expect(carriedResult(result).rigResult).toBe("not_attempted");
+    expect(carriedResult(result).blockers?.[0]?.code).toBe("required_startup_file_missing");
   });
 
   it("D1/D4: checkpoint with missing node cwd blocks before checkpoint write", async () => {
@@ -4742,7 +4755,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("pre_restore_validation_failed");
-    expect((result as any).result.blockers?.[0]).toMatchObject({
+    expect(carriedResult(result).blockers?.[0]).toMatchObject({
       code: "checkpoint_missing_node_cwd",
       severity: "critical",
       logicalId: "agent-a",
@@ -4868,7 +4881,7 @@ describe("RestoreOrchestrator", () => {
 
     const tmux = mockTmux();
     const createSession = vi.fn(async () => ({ ok: true as const }));
-    (tmux as unknown as Record<string, unknown>).createSession = createSession;
+    tmux.createSession = createSession;
     const claude = mockClaudeResume();
     const orch = createOrchestrator({ tmux, claude });
     const result = await orch.restore(snap.id, {
@@ -4880,7 +4893,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect((result as any).result.rigResult).toBe("not_attempted");
+    expect(carriedResult(result).rigResult).toBe("not_attempted");
     expect(createSession).not.toHaveBeenCalled();
     expect(claude.resume).not.toHaveBeenCalled();
     expect(snapshotRepo.listSnapshots(rig.id, { kind: "pre_restore" })).toHaveLength(0);
@@ -4943,7 +4956,7 @@ describe("RestoreOrchestrator", () => {
     // can vary it. Cannot reuse `mockTmux()` because that wires hasSession as a
     // plain async function (88 existing tests depend on that shape).
     function mockTmuxForReconciler(): TmuxAdapter {
-      return mockShellCommand({
+      return mockShellCommand(stubOf<TmuxAdapter>({
         createSession: vi.fn(async () => ({ ok: true as const })),
         killSession: vi.fn(async () => ({ ok: true as const })),
         sendText: vi.fn(async () => ({ ok: true as const })),
@@ -4955,7 +4968,7 @@ describe("RestoreOrchestrator", () => {
         listSessions: async () => [],
         listWindows: async () => [],
         listPanes: async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }],
-      } as unknown as TmuxAdapter);
+      }));
     }
 
     const exactClaudeLineage = (token = "tok-abc-123") => async () => [
@@ -5561,7 +5574,7 @@ describe("RestoreOrchestrator", () => {
       });
       const nodeId = snap.data.nodes[0]!.id;
       const tmux = mockTmux();
-      const claude = {
+      const claude = stubOf<ClaudeResumeAdapter>({
         canResume: vi.fn((type: string | null) => type === "claude_name" || type === "claude_id"),
         resume: vi.fn(async () => {
           // Simulate post-launch binding data (the launched row the merge
@@ -5569,7 +5582,7 @@ describe("RestoreOrchestrator", () => {
           sessionRegistry.updateBinding(nodeId, { externalSessionName: "launched-surface" });
           return { ok: false as const, code: "resume_failed", message: "err" };
         }),
-      } as unknown as ClaudeResumeAdapter;
+      });
       const orch = createOrchestrator2(tmux, claude);
 
       const result = await orch.restore(snap.id);
@@ -5861,7 +5874,7 @@ describe("RestoreOrchestrator", () => {
     }
 
     function createdSessionNames(tmux: TmuxAdapter): string[] {
-      return (tmux.createSession as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => c[0] as string);
+      return vi.mocked(tmux.createSession).mock.calls.map((c) => c[0] as string);
     }
 
     it("legacy node: restore targets the DURABLY-BOUND name, not the re-derived name", async () => {
@@ -5902,7 +5915,7 @@ describe("RestoreOrchestrator", () => {
       const result = await orch.restore(snapId);
       expect(result.ok).toBe(true);
       expect(createdSessionNames(tmux)).toContain("r99-worker-a"); // derived fallback
-      expect((result as any).result.warnings.some((w: string) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
+      expect(carriedResult(result).warnings.some((w: string) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
     });
 
     it("OF-138: only the seat's NEWEST row decides: an older stopped row does not hide a lost binding behind a row that was not stopped", async () => {
@@ -5927,7 +5940,7 @@ describe("RestoreOrchestrator", () => {
       const result = await orch.restore(snapId);
       expect(result.ok).toBe(true);
       expect(createdSessionNames(tmux)).toContain("r99-worker-a");
-      expect((result as any).result.warnings.some((w: string) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
+      expect(carriedResult(result).warnings.some((w: string) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
     });
 
     it("invalid pinned name: falls back to the derived name with an observable invalid-pin warning", async () => {
@@ -5938,7 +5951,7 @@ describe("RestoreOrchestrator", () => {
       const result = await orch.restore(snapId);
       expect(result.ok).toBe(true);
       expect(createdSessionNames(tmux)).toContain("r99-worker-a");
-      expect((result as any).result.warnings.some((w: string) => w.includes("FR-5") && w.includes("is invalid"))).toBe(true);
+      expect(carriedResult(result).warnings.some((w: string) => w.includes("FR-5") && w.includes("is invalid"))).toBe(true);
     });
 
     it("subset launch surfaces the FR-5 fallback warning (not discarded) — API result + restore.subset_completed event", async () => {
@@ -5947,7 +5960,7 @@ describe("RestoreOrchestrator", () => {
       const orch = createOrchestrator({ tmux });
       const subsetEvents: Array<{ result?: { warnings?: string[] } }> = [];
       const unsub = eventBus.subscribe((e) => {
-        if (e.type === "restore.subset_completed") subsetEvents.push(e as unknown as { result?: { warnings?: string[] } });
+        if (e.type === "restore.subset_completed") subsetEvents.push(e);
       });
 
       const result = await orch.launchNodeSubset(rigId, ["worker-a"]);
@@ -6004,11 +6017,11 @@ describe("RestoreOrchestrator", () => {
       const snap = snapshotCapture.captureSnapshot(rig.id, "test");
       sessionRegistry.updateStatus(session.id, "exited");
       db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
-      const deliverStartup = vi.fn(async () => ({ delivered: 0, failed: [] }));
+      const deliverStartup = vi.fn<RuntimeAdapter["deliverStartup"]>(async () => ({ delivered: 0, failed: [] }));
       const adapter = {
         runtime: "claude-code",
         listInstalled: vi.fn(async () => []),
-        project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+        project: vi.fn<RuntimeAdapter["project"]>(async () => ({ projected: [], skipped: [], failed: [] })),
         deliverStartup,
         checkReady: vi.fn(async () => ({ ready: true })),
         launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "t", resumeType: "claude_id" })),
@@ -6022,7 +6035,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as Array<{ path: string; absolutePath: string; ownerRoot: string; required: boolean; appliesOn: string[]; deliveryHint: string }>);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as Array<{ path: string; absolutePath: string; ownerRoot: string; required: boolean; appliesOn: string[]; deliveryHint: string }>);
       const culture = delivered.filter((f) => f.path === "CULTURE-default.md");
       expect(culture.map((f) => f.absolutePath).sort()).toEqual([`${RUNNING_ASSETS}/guidance/CULTURE-default.md`, "/user-rig/CULTURE-default.md"].sort());
       expect(delivered.find((f) => f.path === "openrig-start.md")).toMatchObject({
@@ -6038,7 +6051,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: () => true }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as Array<{ absolutePath: string }>);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as Array<{ absolutePath: string }>);
       expect(delivered.some((f) => f.absolutePath.startsWith("/old-openrig"))).toBe(false);
       expect(delivered.some((f) => f.absolutePath === `${RUNNING_ASSETS}/guidance/CULTURE-default.md`)).toBe(true);
     });
@@ -6073,7 +6086,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const projected = adapter.project.mock.calls.flatMap((c) => (((c as unknown as unknown[])[0] as { entries: Array<{ effectiveId: string; absolutePath: string }> }).entries));
+      const projected = adapter.project.mock.calls.flatMap((c) => ((c[0] as { entries: Array<{ effectiveId: string; absolutePath: string }> }).entries));
       expect(projected.find((e) => e.effectiveId === "shared:claude-default-mcp")?.absolutePath).toBe(`${RUNNING_SPECS}/agents/shared/runtime/claude-mcp.fragment.json`);
       expect(projected.find((e) => e.effectiveId === "shared:openrig-core")?.absolutePath).toBe("/home/u/.openrig/plugins/openrig-core");
       if (result.ok) {
@@ -6095,7 +6108,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => ((c as unknown as unknown[])[0] as Array<{ absolutePath: string }>).map((f) => f.absolutePath));
+      const delivered = deliverStartup.mock.calls.flatMap((c) => (c[0] as Array<{ absolutePath: string }>).map((f) => f.absolutePath));
       expect(delivered.sort()).toEqual([`${RUNNING_SPECS}/rigs/launch/kernel/culture/CULTURE.md`, "/user-rig/CULTURE-default.md"].sort());
     });
 
@@ -6114,7 +6127,7 @@ describe("RestoreOrchestrator", () => {
         fsOps: { exists: (p) => p.startsWith(RUNNING_SPECS) ? fs.existsSync(p) : notOld(p) },
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as Array<typeof culture>);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as Array<typeof culture>);
       expect(delivered).toEqual([{
         ...culture, absolutePath: `${RUNNING_SPECS}/rigs/launch/first-project/CULTURE.md`,
         ownerRoot: `${RUNNING_SPECS}/rigs/launch/first-project`,
@@ -6127,7 +6140,7 @@ describe("RestoreOrchestrator", () => {
       const orch = createOrchestrator({ listProcesses: nativeLineage("claude-code", "resume-token-261") });
       const result = await orch.restore(snap.id, { adapters: { "claude-code": adapter }, fsOps: { exists: notOld } });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as unknown[]);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as unknown[]);
       expect(delivered).toEqual([]);
     });
   });
@@ -6158,7 +6171,7 @@ describe("RestoreOrchestrator", () => {
     }
 
     function throwingLauncherFor(orch: RestoreOrchestrator, logicalId: string, message: string) {
-      const launcher = (orch as unknown as { nodeLauncher: NodeLauncher }).nodeLauncher;
+      const launcher = orch["nodeLauncher"];
       const real = launcher.launchNode.bind(launcher);
       return vi.spyOn(launcher, "launchNode").mockImplementation(async (rigId, id, opts) => {
         if (id === logicalId) throw new Error(message);
@@ -6239,7 +6252,7 @@ describe("RestoreOrchestrator", () => {
     it("restore: every seat throwing yields rigResult failed, never success, and still completes", async () => {
       const { snap } = seedTwoSeats();
       const orch = createOrchestrator();
-      const launcher = (orch as unknown as { nodeLauncher: NodeLauncher }).nodeLauncher;
+      const launcher = orch["nodeLauncher"];
       vi.spyOn(launcher, "launchNode").mockRejectedValue(new Error("everything exploded"));
 
       const result = await orch.restore(snap.id);
@@ -6299,7 +6312,7 @@ describe("RestoreOrchestrator", () => {
       sessionRegistry.updateBinding(aId, { tmuxPane: "%7" });
       const tmux = mockTmux();
       // launchNode commits, then calls finishLaunchBinding before it returns; the seat is launched but never reported.
-      (tmux as unknown as { finishLaunchBinding: (name: string) => void }).finishLaunchBinding = vi.fn((name: string) => {
+      tmux.finishLaunchBinding = vi.fn((name: string) => {
         if (name === "r99-seat-a") throw new Error("finishLaunchBinding exploded on A");
       });
       const orch = createOrchestrator({ tmux });
@@ -6416,7 +6429,7 @@ describe("RestoreOrchestrator", () => {
       const { snap, aId } = seedTwoSeats();
       const orch = createOrchestrator();
       const fault = evidenceReadFault(orch);
-      const launcher = (orch as unknown as { nodeLauncher: NodeLauncher }).nodeLauncher;
+      const launcher = orch["nodeLauncher"];
       const realLaunch = launcher.launchNode.bind(launcher);
       vi.spyOn(launcher, "launchNode").mockImplementation(async (rigId, id, opts) => {
         if (id === "seat-a") { fault.arm(); throw new Error("launcher exploded on A"); }
@@ -6460,7 +6473,7 @@ describe("RestoreOrchestrator", () => {
     it("restore: when rolling back a FAILED launch result itself throws, the error says nothing was launched and is not rolled back twice", async () => {
       const { snap, aId, priorSessionId } = seedTwoSeats();
       const orch = createOrchestrator();
-      const launcher = (orch as unknown as { nodeLauncher: NodeLauncher }).nodeLauncher;
+      const launcher = orch["nodeLauncher"];
       const realLaunch = launcher.launchNode.bind(launcher);
       vi.spyOn(launcher, "launchNode").mockImplementation(async (rigId, id, opts) => {
         if (id === "seat-a") return { ok: false as const, code: "duplicate_session", message: "launch refused on A" } as never;

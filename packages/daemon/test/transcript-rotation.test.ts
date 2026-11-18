@@ -17,18 +17,13 @@ import {
   DEFAULT_TRANSCRIPT_LINES,
   DEFAULT_TRANSCRIPT_POLL_INTERVAL_MS,
 } from "../src/domain/transcript-rotation.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
+import type { TranscriptHost } from "../src/domain/transcript-rotation.js";
 
-interface FakeAdapter {
-  capturePaneContent: ReturnType<typeof vi.fn>;
-  /** rest of TmuxAdapter is unused by rotation; cast at call site. */
-}
-
-function makeFakeAdapter(captureValue: string | null = "captured-content"): FakeAdapter {
-  return {
-    capturePaneContent: vi.fn(async () => captureValue),
-  };
+/** Rotation takes a TranscriptHost, which a plain object with capturePaneContent already is: no cast needed (workspaces-o9o.129). A plain
+ *  object, not a TmuxAdapter, because rotation batches whenever the host also has capturePanesContent. */
+function makeFakeAdapter(captureValue: string | null = "captured-content") {
+  return { capturePaneContent: vi.fn(async (_session: string, _lines?: number, _opts?: { joinWrappedLines?: boolean }) => captureValue) } satisfies TranscriptHost;
 }
 
 let tmpDir: string;
@@ -52,7 +47,7 @@ describe("startTranscriptRotation — capture-pane invocation contract", () => {
     const outputPath = path.join(tmpDir, "rig", "session.log");
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 500, pollIntervalMs: 60_000 },
@@ -68,7 +63,7 @@ describe("startTranscriptRotation — capture-pane invocation contract", () => {
     const outputPath = path.join(tmpDir, "rig", "session.log");
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -87,7 +82,7 @@ describe("startTranscriptRotation — capture-pane invocation contract", () => {
     const outputPath = path.join(tmpDir, "rig", "session.log");
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -98,7 +93,7 @@ describe("startTranscriptRotation — capture-pane invocation contract", () => {
     adapter.capturePaneContent.mockResolvedValueOnce("second-tick");
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -115,7 +110,7 @@ describe("startTranscriptRotation — capture-pane invocation contract", () => {
     const outputPath = path.join(tmpDir, "rig", "session.log");
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -139,7 +134,7 @@ describe("startTranscriptRotation — unchanged-content write suppression (hotfi
 
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -151,7 +146,7 @@ describe("startTranscriptRotation — unchanged-content write suppression (hotfi
     // Second immediate tick captures identical content (idempotent replace).
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -174,7 +169,7 @@ describe("startTranscriptRotation — unchanged-content write suppression (hotfi
     const outputPath = path.join(tmpDir, "rig", "session.log");
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -185,7 +180,7 @@ describe("startTranscriptRotation — unchanged-content write suppression (hotfi
     adapter.capturePaneContent.mockResolvedValue("second\n");
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -206,7 +201,7 @@ describe("startTranscriptRotation — unchanged-content write suppression (hotfi
 
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -220,7 +215,7 @@ describe("startTranscriptRotation — unchanged-content write suppression (hotfi
     // Identical second tick: boundary + body byte-identical → suppressed.
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -241,7 +236,7 @@ describe("startTranscriptRotation — timer lifecycle", () => {
     expect(getActiveRotationCount()).toBe(0);
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -249,7 +244,7 @@ describe("startTranscriptRotation — timer lifecycle", () => {
     expect(getActiveRotationCount()).toBe(1);
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "session@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -269,14 +264,14 @@ describe("startTranscriptRotation — timer lifecycle", () => {
     const adapter = makeFakeAdapter();
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "a@rig",
       path.join(tmpDir, "a.log"),
       { lines: 1000, pollIntervalMs: 60_000 },
     );
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "b@rig",
       path.join(tmpDir, "b.log"),
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -326,7 +321,7 @@ describe("startTranscriptRotation — generation guard (r2 HIGH-2: in-flight tic
 
     startTranscriptRotation(
       nodeTranscriptFiles(),
-      adapter as unknown as TmuxAdapter,
+      adapter,
       "s@rig",
       outputPath,
       { lines: 1000, pollIntervalMs: 60_000 },
@@ -349,8 +344,8 @@ describe("startTranscriptRotation — generation guard (r2 HIGH-2: in-flight tic
     const adapterB = makeFakeAdapter("new-gen\n");
     const outputPath = path.join(tmpDir, "s.log");
     const opts = { lines: 1000, pollIntervalMs: 100 };
-    startTranscriptRotation(nodeTranscriptFiles(), adapterA as unknown as TmuxAdapter, "s@rig", outputPath, opts);
-    startTranscriptRotation(nodeTranscriptFiles(), adapterB as unknown as TmuxAdapter, "s@rig", outputPath, opts);
+    startTranscriptRotation(nodeTranscriptFiles(), adapterA, "s@rig", outputPath, opts);
+    startTranscriptRotation(nodeTranscriptFiles(), adapterB, "s@rig", outputPath, opts);
     try {
       await vi.advanceTimersByTimeAsync(1000);
       expect(adapterA.capturePaneContent).toHaveBeenCalledTimes(1);
@@ -383,7 +378,7 @@ describe("startTranscriptRotation — bounded polling", () => {
     }) };
     const opts = { lines: 1000, pollIntervalMs: 100 };
     for (const session of ["a@rig", "b@rig", "fast@rig"]) {
-      startTranscriptRotation(nodeTranscriptFiles(), adapter as unknown as TmuxAdapter, session, path.join(tmpDir, session), opts);
+      startTranscriptRotation(nodeTranscriptFiles(), adapter, session, path.join(tmpDir, session), opts);
     }
     try {
       await vi.advanceTimersByTimeAsync(2000);
@@ -411,7 +406,7 @@ describe("startTranscriptRotation — bounded polling", () => {
     const outputPath = path.join(tmpDir, "s.log");
     const tmpPath = `${outputPath}.tmp.${process.pid}`;
     fs.writeFileSync(outputPath, "--- SESSION BOUNDARY: test\n");
-    startTranscriptRotation(nodeTranscriptFiles(), adapter as unknown as TmuxAdapter, "s@rig", outputPath, { lines: 1000, pollIntervalMs: 100 });
+    startTranscriptRotation(nodeTranscriptFiles(), adapter, "s@rig", outputPath, { lines: 1000, pollIntervalMs: 100 });
     await new Promise((resolve) => setImmediate(resolve));
     const firstFreshness = getLastCaptureAt("s@rig");
     expect(firstFreshness).toBe(Date.now());
