@@ -14,6 +14,9 @@ import { SystemPreflight } from "../src/system-preflight.js";
 import { startDaemon } from "../src/daemon-lifecycle.js";
 import { executeDestroy, type DestroyDeps, type DestroyPlan } from "../src/destroy-helpers.js";
 import { crashCartDaemonTarget } from "../src/commands/crash-cart.js";
+import { destroyCommand } from "../src/commands/destroy.js";
+import { DESTROY_CONFIRM_TOKEN } from "../src/destroy-helpers.js";
+import { Command } from "commander";
 import { NO_HOME_DAEMON_URL } from "../src/home-daemon-address.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
 import { stubConfigStore } from "./helpers/stub-config-store.js";
@@ -205,5 +208,34 @@ describe("o9o.181: crash-cart probes the daemon this home means, never its own 1
     expect(configured.openrigUrl).toBe("http://127.0.0.1:28201");
     await configured.fetch(`${configured.openrigUrl}/healthz`);
     expect(send.mock.calls.map((c) => c[0])).toEqual(["http://127.0.0.1:28201/healthz"]);
+  });
+});
+
+describe("o9o.181: rig destroy plans no daemon for a home that names none (the one resolver, end to end)", () => {
+  it("the plan names no daemon, and no listener is inspected, looked up or killed", async () => {
+    const inspectListener = vi.fn(async () => ({ kind: "openrig" as const }));
+    const findListeningPid = vi.fn(() => 4242);
+    const killProcess = vi.fn(() => {});
+    const destroyDeps: DestroyDeps = {
+      stopDaemon: async () => {}, inspectListener, findListeningPid, killProcess,
+      exists: () => false, renamePath: () => {}, removePath: () => {}, mkdirp: () => {},
+      listManagedTmuxSessions: () => [], listManagedHcSeats: () => [], killHcSeat: async () => "missing",
+      sleep: async () => {}, now: () => new Date("2026-11-18T00:00:00Z"),
+    };
+    const printed: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...line: unknown[]) => { printed.push(line.join(" ")); });
+    vi.spyOn(console, "error").mockImplementation((...line: unknown[]) => { printed.push(line.join(" ")); });
+    const program = new Command();
+    program.exitOverride();
+    // The store holds only the built-in values (it cannot say where they came from): this home names no daemon.
+    program.addCommand(destroyCommand({ configStore: stubConfigStore({
+      daemon: { port: 7433, host: "127.0.0.1" }, db: { path: path.join(scratch, "openrig.sqlite") },
+      transcripts: { enabled: true, path: path.join(scratch, "transcripts"), lines: 1000, pollIntervalSeconds: 2 },
+    }), destroyDeps }));
+    await program.parseAsync(["node", "rig", "destroy", "--state", "--yes", "--confirm", DESTROY_CONFIRM_TOKEN]);
+    expect(inspectListener).not.toHaveBeenCalled();
+    expect(findListeningPid).not.toHaveBeenCalled();
+    expect(killProcess).not.toHaveBeenCalled();
+    expect(printed.join("\n")).toContain("daemon: none (this OPENRIG_HOME names no daemon of its own");
   });
 });
