@@ -48,6 +48,7 @@ const ALLOW: Array<{ note: string; code: string }> = [
   { note: "rig send through a quoted here-document", code: `await Bash({ command: "rig send x@y --file - <<'EOF'\\nhi $(date)\\nEOF" })` },
   { note: "a comment that mentions pkill -f and Function(", code: `// never pkill -f, never Function("x")\nawait Bash({ command: "ls" })` },
   { note: "a block comment that names child_process", code: `/* child_process is refused */ await Glob({ pattern: "*.ts" })` },
+  { note: "a block comment after a value (where / is division) that names child_process", code: `const n = 2; const m = n /* child_process is refused */ + 1; m` },
   { note: "identifiers that only contain the words", code: `const myFunction = (x) => x; const constructorName = "a"; myFunction(constructorName); typeof Function` },
   { note: "a template with interpolations and no command words", code: `const a = 1; const s = ${BT}value ${"$"}{a} of ${"$"}{a + 1}${BT}; s` },
   { note: "a regular expression with a quote in it", code: `const r = /it's/; r.test("it's")` },
