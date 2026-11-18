@@ -29,11 +29,11 @@ describe("the shipped Claude hooks manifest relays the events that follow an ans
 
   // workspaces-o9o.4. Measured on Claude Code 2.1.325 (bead note): an async PreToolUse hook does not hold the tool (a 4 s hook, the tool
   // ran 0.69 s after the hook began), and the real relay costs a median 26 ms vs 21 ms with no hook (73 ms when synchronous).
-  it("PreToolUse: one unscoped relay group, async, with the relay's 5 s timeout, beside the rig-body guard's Bash group", () => {
+  it("PreToolUse: one unscoped relay group, async, with the relay's 5 s timeout, beside the rig-body guard's Bash|REPL group (o9o.131)", () => {
     const hooks = (JSON.parse(readFileSync(MANIFEST, "utf-8")) as { hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; async?: boolean }> }>> }).hooks;
     const relayGroups = hooks["PreToolUse"]!.filter((g) => g.hooks.some((h) => h.command.includes("activity-relay.cjs")));
     expect(relayGroups).toEqual([{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/activity-relay.cjs"', timeout: 5, async: true }] }]);
-    expect(hooks["PreToolUse"]!.find((g) => g.matcher === "Bash")!.hooks.map((h) => h.command)).toEqual(['node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/rig-body-guard.cjs"']);
+    expect(hooks["PreToolUse"]!.find((g) => g.matcher === "Bash|REPL")!.hooks.map((h) => h.command)).toEqual(['node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/rig-body-guard.cjs"']);
     expect(deriveRelayEvents(realFs, MANIFEST).filter((e) => e.event === "PreToolUse")).toEqual([{ event: "PreToolUse", timeout: 5, async: true }]);
   });
 
