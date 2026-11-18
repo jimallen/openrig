@@ -1191,243 +1191,177 @@ function backgroundRefusal(kind) {
 // refusal, NOT a sandbox: a name assembled at run time (globalThis["child_" + "process"]) is not seen here. Comments are skipped. Code this
 // reader cannot follow (an unterminated literal) is refused when it carries a risk signal, and allowed otherwise, like check()'s rule.
 
-// The API rules run on a NORMALISED projection of the code (apiScanText), where every property access is written as a dotted member
-// chain — `x["binding"]`, `x?.binding`, `x[("binding")]`, `globalThis["process"]["binding"]` all fold to `...process.binding` — escapes
-// are decoded, optional chaining is flattened, and parentheses are dropped. The rules are REFERENCE-based (CoS ruling, o9o.131 round 2),
-// not call-shape based: ANY reference to the global `Function` value is refused however used (bare, `typeof`, via globalThis/self/window,
-// an alias even if unused, `.call`/`.apply`/`.bind`, `Reflect.construct(Function, …)`), as is ANY `.constructor` access, and
-// `process.binding`/`process.dlopen` in any spelling. String CONTENTS are not scanned (a log line naming one is not a refusal), except a
-// module specifier, so `require("child_process")` is still caught. A name assembled at run time (globalThis["child_"+"process"]) stays a residual.
-const REPL_API_RULES = [
-  { re: /child_process/, name: "child_process" },
-  { re: /\bprocess\s*\.\s*binding\b/, name: "process.binding" },
-  { re: /\bprocess\s*\.\s*dlopen\b/, name: "process.dlopen" },
-  { re: /\.\s*constructor\b/, name: "a .constructor access (reaches the Function constructor)" },
-  { re: /\bFunction\b/, name: "the Function constructor" },
-];
-const REPL_RISK_RE = /\b(?:rig|pkill|killall|kill)\b|child_process|constructor|\bFunction\b|\bprocess\b|\bglobalThis\b|\bself\b|\bwindow\b|\bReflect\b|\brequire\b|\bimport\b/;
-const JS_EXPR = "$OPENRIG_JS_EXPR";
+// workspaces-o9o.131 (Jim's decision, round 3): the Code Mode REPL guard decides STRUCTURALLY, with a real JS parser (vendored acorn
+// 8.19.0, byte-identical — see vendor/acorn.VENDORED). Comments, whitespace, parentheses, computed/optional member forms and string
+// escapes all collapse in the AST, so the regex normaliser's blind spots are gone. On the AST it refuses:
+//   - any reference to the GLOBAL Function value: an identifier `Function` read as a value and NOT bound in any enclosing scope, and
+//     globalThis/self/window.Function in any member form (a local `const Function`, a param named Function, and `obj.Function` on some
+//     other object are NOT the global and are allowed);
+//   - any `.constructor` member access (a .constructor chain reaches the Function constructor);
+//   - any member access resolving to process.binding / process.dlopen (bare process, or global.process);
+//   - `child_process` named in a REAL import()/require() CALL (a member method named import/require is not that call).
+// Every string and template-literal value is still scanned by the shell rules (code builds its commands as strings). Code the parser
+// cannot parse is refused (fail closed). A name assembled at run time (globalThis["Func" + "tion"]) is the documented residual.
 
-/** Decode the \uXXXX, \u{XXXX} and \xXX escapes that spell identifier characters (process -> process, binding -> binding). */
-function decodeIdentEscapes(s) {
-  const cp = (h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ""; } };
-  return s.replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, h) => cp(h))
-          .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => cp(h))
-          .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => cp(h));
+let acornModule;
+function requireAcorn() {
+  if (acornModule === undefined) { try { acornModule = require("./vendor/acorn.cjs"); } catch { acornModule = null; } }
+  return acornModule;
 }
 
-/** The code normalised for the API scan: property access folded to dotted member chains, identifier escapes decoded, optional chaining
- *  flattened, regex literals and comments blanked, and string contents blanked EXCEPT a module specifier. `ok: false` on an unterminated
- *  literal or comment (the caller then takes the fail-closed path). A template's ${...} expressions are normalised in place. */
-function apiScanText(code) {
-  let out = "";
-  let i = 0;
-  let prev = "";
-  const regexAfter = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "<", ">", "~", "^"]);
-  // Whether out's tail is a module-specifier position: require( / import( / ... from
-  const specifierHere = () => /(?:\brequire|\bimport)\s*\(\s*$/.test(out) || /(?:\bfrom|\bimport)\s*$/.test(out);
-  while (i < code.length) {
-    tick();
-    const c = code[i];
-    if (c === "/" && code[i + 1] === "/") { const e = code.indexOf("\n", i); i = e < 0 ? code.length : e; out += " "; continue; }
-    if (c === "/" && code[i + 1] === "*") { const e = code.indexOf("*/", i + 2); if (e < 0) return { ok: false, text: out }; i = e + 2; out += " "; continue; }
-    if (c === "/" && (regexAfter.has(prev) || /\b(?:return|typeof|case|in|of)$/.test(out.trimEnd()))) {
-      let j = i + 1; let cls = false;
-      for (; j < code.length; j++) {
-        if (code[j] === "\\") { j++; continue; }
-        if (code[j] === "\n") return { ok: false, text: out };
-        if (code[j] === "[") cls = true; else if (code[j] === "]") cls = false;
-        else if (code[j] === "/" && !cls) break;
-      }
-      if (j >= code.length) return { ok: false, text: out };
-      i = j + 1; while (i < code.length && /[a-z]/i.test(code[i])) i++;
-      out += " "; prev = "x"; continue;
-    }
-    if (c === "?" && code[i + 1] === ".") {
-      // Optional chaining. `?.[` / `?.(` are a bracket access / call: drop the `?.` so the member folds the same as a plain `[`;
-      // `?.name` is a member access: emit the dot.
-      const after = code[i + 2];
-      if (after === "[" || after === "(") { i += 2; continue; }
-      out += "."; i += 2; prev = "."; continue;
-    }
-    if (c === "'" || c === '"' || c === "`") {
-      const lit = readStringOrTemplate(code, i);
-      if (!lit) return { ok: false, text: out };
-      // A computed member key: `X[ "name" ]`, or a parenthesised key `X[ ("name") ]` / `X?.[ ("name") ]`, the string the sole content of
-      // the brackets with no interpolation. The parens before the string and the `)` after it are tolerated and dropped in the fold.
-      let nextSig = lit.end; while (nextSig < code.length && (/\s/.test(code[nextSig]) || code[nextSig] === ")")) nextSig++;
-      const openKey = /\[\s*\(*\s*$/.test(out.replace(/\s+$/, ""));   // out tail is `[` or `[(` (any depth of parens)
-      if (openKey && code[nextSig] === "]" && !lit.hasExpr) {
-        out = out.replace(/\s+$/, "").replace(/\[\s*\(*\s*$/, "");     // drop the opening bracket and any `(` we already wrote
-        out += "." + lit.raw;                                          // fold to a dotted member (escapes decoded at the end)
-        i = nextSig + 1; prev = "x"; continue;
-      }
-      if (specifierHere() && !lit.hasExpr) { out += ` ${lit.raw} `; i = lit.end; prev = "x"; continue; }  // module specifier: kept
-      // An ordinary string/template: contents blanked; a template's ${...} expressions are normalised in place so code inside them is scanned.
-      out += ` ${lit.exprText} `; i = lit.end; prev = "x"; continue;
-    }
-    out += c;
-    if (!/\s/.test(c)) prev = /[\w$)\]]/.test(c) ? "x" : c;
-    i++;
+const GLOBAL_OBJECTS = new Set(["globalThis", "self", "window"]);
+
+/** Add every name a binding pattern introduces to `set`. */
+function collectPatternNames(node, set) {
+  if (!node || typeof node.type !== "string") return;
+  switch (node.type) {
+    case "Identifier": set.add(node.name); break;
+    case "ObjectPattern": for (const p of node.properties) collectPatternNames(p.type === "RestElement" ? p.argument : p.value, set); break;
+    case "ArrayPattern": for (const e of node.elements) if (e) collectPatternNames(e, set); break;
+    case "AssignmentPattern": collectPatternNames(node.left, set); break;
+    case "RestElement": collectPatternNames(node.argument, set); break;
+    default: break;
   }
-  return { ok: true, text: decodeIdentEscapes(out) };
 }
 
-/** Read a string ('...', "...") or template (`...`) from its opening quote. Returns the raw inner text (for a simple key/specifier),
- *  whether it holds a ${...} expression, the normalised text of those expressions (string parts blanked), and where it ends. */
-function readStringOrTemplate(code, start) {
-  const q = code[start];
-  if (q !== "`") {
-    let j = start + 1; let raw = "";
-    for (; j < code.length && code[j] !== q; j++) {
-      if (code[j] === "\n") return null;
-      if (code[j] === "\\") { raw += code[j] + (code[j + 1] ?? ""); j++; continue; }  // keep the escape for decodeIdentEscapes
-      raw += code[j];
-    }
-    if (j >= code.length) return null;
-    return { raw, hasExpr: false, exprText: "", end: j + 1 };
+/** The names bound directly in a block/program body (let/const/class/function declarations and imports). */
+function hoistBlockBindings(body, set) {
+  for (const s of body) {
+    if (!s) continue;
+    if (s.type === "VariableDeclaration") for (const d of s.declarations) collectPatternNames(d.id, set);
+    else if (s.type === "FunctionDeclaration" && s.id) set.add(s.id.name);
+    else if (s.type === "ClassDeclaration" && s.id) set.add(s.id.name);
+    else if (s.type === "ImportDeclaration") for (const spec of s.specifiers) set.add(spec.local.name);
   }
-  let raw = ""; let exprText = ""; let hasExpr = false;
-  for (let j = start + 1; j < code.length; j++) {
-    tick();
-    const ch = code[j];
-    if (ch === "\\") { raw += ch + (code[j + 1] ?? ""); j++; continue; }
-    if (ch === "`") return { raw, hasExpr, exprText, end: j + 1 };
-    if (ch === "$" && code[j + 1] === "{") {
-      hasExpr = true;
-      let depth = 1; let k = j + 2;
-      for (; k < code.length && depth > 0; k++) {
-        if (code[k] === "{") depth++;
-        else if (code[k] === "}") depth--;
-        else if (code[k] === "`" || code[k] === "'" || code[k] === '"') {
-          const inner = readStringOrTemplate(code, k);
-          if (!inner) return null; k = inner.end - 1;
-        }
-      }
-      if (depth > 0) return null;
-      const expr = code.slice(j + 2, k - 1);
-      const sub = apiScanText(expr);
-      if (!sub.ok) return null;
-      exprText += ` ${sub.text} `; j = k - 1; continue;
-    }
-    raw += ch;
-  }
+}
+
+/** The non-computed property name of a member/property node, from an Identifier key or a string/single-quasi template literal. */
+function staticKeyName(node, computed) {
+  if (!computed) return node.type === "Identifier" ? node.name : null;
+  if (node.type === "Literal" && typeof node.value === "string") return node.value;
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0 && node.quasis.length === 1) return node.quasis[0].value.cooked;
   return null;
 }
 
-/** The string and template literals of a piece of JavaScript, and the code with its comments and literals blanked (for the API scan).
- *  `ok: false` when a literal or comment does not end. A `/` starts a regular expression where a value cannot stand before it. */
-function jsLiterals(code) {
-  const literals = [];
-  let bare = "";
-  let i = 0;
-  let prev = "";                     // the last significant character outside literals and comments
-  const regexAfter = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "<", ">", "~", "^"]);
-  while (i < code.length) {
-    tick();
-    const c = code[i];
-    if (c === "/" && code[i + 1] === "/") { const e = code.indexOf("\n", i); i = e < 0 ? code.length : e; continue; }
-    if (c === "/" && code[i + 1] === "*") { const e = code.indexOf("*/", i + 2); if (e < 0) return { ok: false, literals, bare }; i = e + 2; continue; }
-    if (c === "/" && (regexAfter.has(prev) || /\b(?:return|typeof|case|in|of)$/.test(bare.trimEnd()))) {
-      let j = i + 1; let cls = false;
-      for (; j < code.length; j++) {
-        if (code[j] === "\\") { j++; continue; }
-        if (code[j] === "\n") return { ok: false, literals, bare };
-        if (code[j] === "[") cls = true; else if (code[j] === "]") cls = false;
-        else if (code[j] === "/" && !cls) break;
-      }
-      if (j >= code.length) return { ok: false, literals, bare };
-      i = j + 1; while (i < code.length && /[a-z]/i.test(code[i])) i++;
-      bare += " "; prev = "x"; continue;
-    }
-    if (c === "'" || c === '"') {
-      let text = ""; let j = i + 1;
-      for (; j < code.length && code[j] !== c; j++) {
-        if (code[j] === "\n") return { ok: false, literals, bare };
-        if (code[j] === "\\") { j++; text += jsEscape(code[j]); continue; }
-        text += code[j];
-      }
-      if (j >= code.length) return { ok: false, literals, bare };
-      literals.push(text); bare += ` ${c}${text}${c} `; i = j + 1; prev = "x"; continue;
-    }
-    if (c === "`") {
-      const t = jsTemplate(code, i + 1);
-      if (!t) return { ok: false, literals, bare };
-      for (const inner of t.inner) {
-        const sub = jsLiterals(inner);
-        if (!sub.ok) return { ok: false, literals, bare };
-        literals.push(...sub.literals); bare += ` ${sub.bare} `;
-      }
-      literals.push(t.text); bare += ` \`${t.text}\` `; i = t.end; prev = "x"; continue;
-    }
-    bare += c;
-    if (!/\s/.test(c)) prev = /[\w$)\]]/.test(c) ? "x" : c;
-    i++;
+/** Whether a member/call object resolves to the global `process`: a bare unshadowed `process`, or global.process. */
+function resolvesToProcess(node, scopes) {
+  if (node.type === "Identifier") return node.name === "process" && !isBound("process", scopes);
+  if (node.type === "MemberExpression") {
+    const key = staticKeyName(node.property, node.computed);
+    return key === "process" && node.object.type === "Identifier" && GLOBAL_OBJECTS.has(node.object.name) && !isBound(node.object.name, scopes);
   }
-  return { ok: true, literals, bare };
+  return false;
 }
 
-function jsEscape(ch) {
-  return ch === "n" ? "\n" : ch === "t" ? "\t" : ch === undefined ? "" : ch;
-}
+function isBound(name, scopes) { for (const s of scopes) if (s.has(name)) return true; return false; }
 
-/** A template literal from just after its opening backtick: its text with each ${...} as JS_EXPR, the expressions' source, and where it ends. */
-function jsTemplate(code, start) {
-  let text = ""; const inner = [];
-  for (let j = start; j < code.length; j++) {
-    tick();
-    const ch = code[j];
-    if (ch === "\\") { j++; text += jsEscape(code[j]); continue; }
-    if (ch === "`") return { text, inner, end: j + 1 };
-    if (ch === "$" && code[j + 1] === "{") {
-      let depth = 1; let k = j + 2;
-      for (; k < code.length && depth > 0; k++) {
-        if (code[k] === "{") depth++;
-        else if (code[k] === "}") depth--;
-        else if (code[k] === "`" || code[k] === "'" || code[k] === '"') {
-          const q = code[k];
-          if (q === "`") { const t = jsTemplate(code, k + 1); if (!t) return null; k = t.end - 1; continue; }
-          let m = k + 1; for (; m < code.length && code[m] !== q; m++) if (code[m] === "\\") m++;
-          if (m >= code.length) return null; k = m;
-        }
-      }
-      if (depth > 0) return null;
-      inner.push(code.slice(j + 2, k - 1));
-      text += JS_EXPR; j = k - 1; continue;
+/** Walk the AST, pushing a scope at each function/block/catch/for-head, and return the first API violation (or null). */
+function findReplApiViolation(ast) {
+  let found = null;
+  const strings = [];
+
+  function visit(node, scopes, role) {
+    if (found || !node || typeof node.type !== "string") return;
+    // String/template values feed the shell-rule scan.
+    if (node.type === "Literal" && typeof node.value === "string") strings.push(node.value);
+    if (node.type === "TemplateLiteral") for (const q of node.quasis) if (q.value.cooked != null) strings.push(q.value.cooked);
+
+    // A reference to the global Function value.
+    if (node.type === "Identifier" && node.name === "Function" && role === "ref" && !isBound("Function", scopes)) {
+      found = { kind: "repl-api", command: "the Function constructor" }; return;
     }
-    text += ch;
+
+    if (node.type === "MemberExpression") {
+      const key = staticKeyName(node.property, node.computed);
+      // .constructor chain.
+      if (key === "constructor") { found = { kind: "repl-api", command: "a .constructor access (reaches the Function constructor)" }; return; }
+      // global.Function (globalThis/self/window.Function).
+      if (key === "Function" && node.object.type === "Identifier" && GLOBAL_OBJECTS.has(node.object.name) && !isBound(node.object.name, scopes)) {
+        found = { kind: "repl-api", command: "the Function constructor" }; return;
+      }
+      // process.binding / process.dlopen.
+      if ((key === "binding" || key === "dlopen") && resolvesToProcess(node.object, scopes)) {
+        found = { kind: "repl-api", command: `process.${key}` }; return;
+      }
+      // Descend: object is a reference; a computed property is a reference, a static one is a name (skip).
+      visit(node.object, scopes, "ref");
+      if (node.computed) visit(node.property, scopes, "ref");
+      return;
+    }
+
+    // require("child_process") / import("node:child_process") as real calls.
+    if (node.type === "CallExpression" || node.type === "ImportExpression") {
+      const isImport = node.type === "ImportExpression" || (node.callee && node.callee.type === "Import");
+      const isRequire = node.type === "CallExpression" && node.callee && node.callee.type === "Identifier" && node.callee.name === "require" && !isBound("require", scopes);
+      const arg = node.type === "ImportExpression" ? node.source : (node.arguments && node.arguments[0]);
+      if ((isImport || isRequire) && arg) {
+        const spec = staticKeyName(arg, true);
+        if (typeof spec === "string" && /(^|[:/])child_process$/.test(spec)) { found = { kind: "repl-api", command: "child_process" }; return; }
+      }
+    }
+
+    // Generic descent with scope pushes and role-aware slots.
+    const childScopes = pushScope(node, scopes);
+    for (const key of Object.keys(node)) {
+      if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "range") continue;
+      const child = node[key];
+      if (Array.isArray(child)) { for (const c of child) visit(c, childScopes, childRole(node, key)); }
+      else if (child && typeof child.type === "string") {
+        // Skip non-computed member property and non-computed object/class keys (handled above / are names, not refs).
+        if (node.type === "MemberExpression" && key === "property" && !node.computed) continue;
+        if ((node.type === "Property" || node.type === "MethodDefinition" || node.type === "PropertyDefinition") && key === "key" && !node.computed) continue;
+        visit(child, childScopes, childRole(node, key));
+      }
+    }
   }
-  return null;
+
+  // A child in "ref" role is read as a value; binding ids/keys are not references.
+  function childRole(node, key) {
+    if (node.type === "VariableDeclarator" && key === "id") return "bind";
+    if ((node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") && (key === "id" || key === "params")) return "bind";
+    if (node.type === "ClassDeclaration" && key === "id") return "bind";
+    if (node.type === "CatchClause" && key === "param") return "bind";
+    return "ref";
+  }
+
+  function pushScope(node, scopes) {
+    let names = null;
+    if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+      names = new Set(); for (const p of node.params) collectPatternNames(p, names);
+      if (node.id && node.type !== "FunctionDeclaration") names.add(node.id.name);
+      if (node.body && node.body.type === "BlockStatement") hoistBlockBindings(node.body.body, names);
+    } else if (node.type === "BlockStatement" || node.type === "StaticBlock") {
+      names = new Set(); hoistBlockBindings(node.body, names);
+    } else if (node.type === "CatchClause") {
+      names = new Set(); if (node.param) collectPatternNames(node.param, names);
+    } else if (node.type === "ForStatement" || node.type === "ForInStatement" || node.type === "ForOfStatement") {
+      names = new Set();
+      const init = node.init || node.left;
+      if (init && init.type === "VariableDeclaration") for (const d of init.declarations) collectPatternNames(d.id, names);
+    }
+    return names ? [...scopes, names] : scopes;
+  }
+
+  const top = new Set();
+  if (ast.type === "Program") hoistBlockBindings(ast.body, top);
+  visit(ast, [top], "ref");
+  return { violation: found, strings };
 }
 
-/** checkReplCode(code[, { budgetMs }]) -> { block, violations, reason }. Never throws. */
 function checkReplCode(code, options) {
   if (typeof code !== "string" || code.length === 0) return { block: false, violations: [], reason: "" };
   const budget = options && typeof options.budgetMs === "number" ? options.budgetMs : DEFAULT_BUDGET_MS;
-  let parsed;
+  const acorn = requireAcorn();
+  if (!acorn) { const violations = [{ kind: "unparseable-repl", command: null }]; return { block: true, violations, reason: replRefusal(violations) }; }
+  let ast;
   try {
-    deadline = Date.now() + budget;
-    parsed = jsLiterals(code);
-  } catch {
-    parsed = { ok: false, literals: [], bare: code };
-  }
-  let api;
-  try { api = apiScanText(code); } catch { api = { ok: false, text: "" }; }
-  if (!parsed.ok || !api.ok) {
-    if (!REPL_RISK_RE.test(code)) return { block: false, violations: [], reason: "" };
-    const violations = [{ kind: "unparseable-repl", command: null }];
-    return { block: true, violations, reason: replRefusal(violations) };
-  }
-  // Reference-based (o9o.131 round 2): any reference to the global Function value, any .constructor access, and process.binding/dlopen
-  // in any spelling are refused however used — an alias that is never called is still a reference, so the rules match the normalised
-  // text directly, with no separate call-shape check.
-  for (const rule of REPL_API_RULES) {
-    if (rule.re.test(api.text)) {
-      const violations = [{ kind: "repl-api", command: rule.name }];
-      return { block: true, violations, reason: replRefusal(violations) };
-    }
-  }
-  for (const literal of parsed.literals) {
+    ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true, allowImportExportEverywhere: true, allowSuperOutsideMethod: true });
+  } catch { const violations = [{ kind: "unparseable-repl", command: null }]; return { block: true, violations, reason: replRefusal(violations) }; }
+  let result;
+  try { result = findReplApiViolation(ast); } catch { const violations = [{ kind: "unparseable-repl", command: null }]; return { block: true, violations, reason: replRefusal(violations) }; }
+  if (result.violation) { const violations = [result.violation]; return { block: true, violations, reason: replRefusal(violations) }; }
+  deadline = Date.now() + budget;
+  for (const literal of result.strings) {
     const verdict = check(literal, options);
     if (verdict.block) return verdict;
   }
@@ -1437,8 +1371,8 @@ function checkReplCode(code, options) {
 function replRefusal(violations) {
   const v = violations[0];
   const why = v.kind === "repl-api"
-    ? `this code names ${v.command}, which reaches the host outside the tool calls this guard checks`
-    : "the guard could not read this code (a string, template or comment that does not end), and it names a rig command, a kill or a host API";
+    ? `this code references ${v.command}, which reaches the host outside the tool calls this guard checks`
+    : "the guard could not parse this code with its JavaScript parser, so it refused it (fail closed)";
   return [
     "rig-body-guard BLOCKED this code before it ran. Nothing was executed.",
     `Why: ${why}. This check is defence in depth over Claude Code's own refusal of module loading in REPL code, not a sandbox.`,

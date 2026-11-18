@@ -29,7 +29,6 @@ const DENY: Array<{ note: string; code: string; kind: RegExp }> = [
   { note: "killall in a single-quoted string", code: `await Bash({ command: 'killall node' })`, kind: /^killall$/ },
   { note: "kill of a process group", code: `await Bash({ command: "kill -9 -1" })`, kind: /^kill-group$/ },
   { note: "child_process by dynamic import", code: `const cp = await import("node:child_process"); cp.execSync("ls")`, kind: /^repl-api$/ },
-  { note: "child_process by bracket name", code: `const m = globalThis["child_process"]`, kind: /^repl-api$/ },
   { note: "process.binding", code: `process.binding("spawn_sync")`, kind: /^repl-api$/ },
   { note: "process . dlopen with spaces", code: `process . dlopen(m, "/tmp/x.node")`, kind: /^repl-api$/ },
   { note: "constructor.constructor chain", code: `Read.constructor.constructor("return 1")()`, kind: /^repl-api$/ },
@@ -72,6 +71,17 @@ const DENY: Array<{ note: string; code: string; kind: RegExp }> = [
   { note: "process.binding via optional-chaining parenthesised key", code: `process?.[("binding")]("x")`, kind: /^repl-api$/ },
   { note: "process.binding via nested parenthesised keys on globalThis", code: `globalThis[("process")][("binding")]("x")`, kind: /^repl-api$/ },
   { note: "process.dlopen via a parenthesised key", code: `process[("dlopen")](m, "/x.node")`, kind: /^repl-api$/ },
+  // workspaces-o9o.131 round 3 (verify-sec probes; Jim: rebuild on a real parser). Parens, comments, optional chains collapse in the AST.
+  { note: "(process).binding — parenthesised object", code: `(process).binding("x")`, kind: /^repl-api$/ },
+  { note: "(process)[quoted] — parenthesised object, bracket key", code: `(process)["binding"]("x")`, kind: /^repl-api$/ },
+  { note: "process[(binding)] with a comment in the key", code: `process[("binding")/*c*/]("x")`, kind: /^repl-api$/ },
+  { note: "process?.binding optional chain", code: `process?.binding("x")`, kind: /^repl-api$/ },
+  { note: "globalThis.process.dlopen", code: `globalThis.process.dlopen(m, "/x.node")`, kind: /^repl-api$/ },
+  { note: "(Function).bind(...) parenthesised reference", code: `(Function).bind(null, "return 1")()`, kind: /^repl-api$/ },
+  { note: "Reflect.construct(Function, ...) with an inner comment", code: `Reflect.construct(/*f*/Function, ["return 1"])()`, kind: /^repl-api$/ },
+  { note: "window.Function member form", code: `window.Function("return 1")()`, kind: /^repl-api$/ },
+  { note: ".constructor through optional chaining", code: `const o = {}; o?.constructor`, kind: /^repl-api$/ },
+  { note: "unparseable code refused (fail closed), no risk words", code: `const x = (1 +`, kind: /^unparseable-repl$/ },
 ];
 
 const ALLOW: Array<{ note: string; code: string }> = [
@@ -100,6 +110,15 @@ const ALLOW: Array<{ note: string; code: string }> = [
   { note: "an object property literally called binding, not on process", code: `const o = { binding: 1 }; o.binding + 1` },
   { note: "a bracket access with a NON-API member name spelled with an escape", code: `const o = { value: 2 }; o["\\u0076alue"] + 1` },
   { note: "a module specifier that is not a host API (node:fs is fine)", code: `const fs = await import("node:fs"); fs.readFileSync` },
+  // workspaces-o9o.131 round 3: the parser resolves scope and real calls, so these are NOT references to the host API and are allowed.
+  { note: "a LOCAL const named Function shadows the global", code: `const Function = (s) => s; Function("x")` },
+  { note: "a param named Function is local", code: `((Function) => Function(1))((x) => x)` },
+  { note: "obj.Function is a property on another object, not the global", code: `const o = { Function: 1 }; o.Function` },
+  { note: "a member method named require is not the require() call", code: `const api = { require(x) { return x; } }; api.require("child_process")` },
+  { note: "a member method named import is not import()", code: `const api = { import(x) { return x; } }; api.import("node:child_process")` },
+  { note: "globalThis[child_process] is a property access on a non-global, not a require/import", code: `const m = globalThis["child_process"]; typeof m` },
+  { note: "a class constructor method is a definition, not a .constructor access", code: `class Pt { constructor(x) { this.x = x; } } new Pt(1).x` },
+  { note: "a LOCAL const named require is not the global require() call", code: `const require = (x) => x; require("child_process")` },
 ];
 
 describe("o9o.131: the seat guard reads REPL code", () => {

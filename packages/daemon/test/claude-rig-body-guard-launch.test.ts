@@ -171,10 +171,15 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     expect(hook("", { ...gone, raw: repl("const x = 1 + 1; x") })).toMatchObject(REFUSED);            // no risk words at all: still refused
     expect(hook("", { ...gone, raw: repl('await $`rig send x@y "hi $(date)"`') })).toMatchObject(REFUSED);
     expect(hook("", { ...gone, raw: repl("process.binding('x')") })).toMatchObject(REFUSED);
-    // Spacing in tool_name is tolerated.
+    // workspaces-o9o.131 round 3 (verify-sec): ANY tool_name REPL is refused whatever the JSON whitespace — space before/after the colon,
+    // and pretty-printed JSON with newlines and indentation.
     expect(hook("", { ...gone, raw: '{"tool_name": "REPL", "tool_input": {"code": "1 + 1"}}' })).toMatchObject(REFUSED);
+    expect(hook("", { ...gone, raw: '{"tool_name" : "REPL","tool_input":{"code":"1+1"}}' })).toMatchObject(REFUSED);     // space before the colon
+    expect(hook("", { ...gone, raw: '{\n  "tool_name":\n    "REPL",\n  "tool_input": { "code": "1+1" }\n}' })).toMatchObject(REFUSED);  // pretty-printed, newlines
+    expect(hook("", { ...gone, raw: '{"tool_input":{"code":"1+1"},"tool_name":"REPL"}' })).toMatchObject(REFUSED);         // tool_name last
     // Control: a Bash call with the same cwd, a backtick and no rig in its command still runs (the REPL refusal is REPL-only).
     expect(hook("", { ...gone, raw: JSON.stringify({ cwd: "/home/u/Work/openrig", tool_name: "Bash", tool_input: { command: "echo `date`" } }) })).toMatchObject(ALLOWED);
+    expect(hook("", { ...gone, raw: '{\n  "tool_name": "Bash",\n  "tool_input": { "command": "ls -la" }\n}' })).toMatchObject(ALLOWED);  // pretty-printed Bash: not refused
     expect(hook("ls -la", gone)).toMatchObject(ALLOWED);
   });
 
