@@ -38,6 +38,23 @@ const DENY: Array<{ note: string; code: string; kind: RegExp }> = [
   { note: "new Function", code: `const f = new Function("return 1"); f()`, kind: /^repl-api$/ },
   { note: "Function called directly", code: `Function("return 1")()`, kind: /^repl-api$/ },
   { note: "an unterminated literal that names rig is refused (fail closed)", code: `await $${BT}rig send x@y "hi $(date)"`, kind: /^unparseable-repl$/ },
+  // workspaces-o9o.131 FAIL F1 (verify-sec2): the API rules read a normalised property access, so the member name is caught however it is spelled.
+  { note: "process.binding by bracket string (double quote)", code: `process["binding"]("spawn_sync")`, kind: /^repl-api$/ },
+  { note: "process.binding by bracket string (single quote)", code: `process['binding']("spawn_sync")`, kind: /^repl-api$/ },
+  { note: "process.binding by bracket template string", code: `process[${BT}binding${BT}]("spawn_sync")`, kind: /^repl-api$/ },
+  { note: "process?.binding (optional chaining)", code: `process?.binding("spawn_sync")`, kind: /^repl-api$/ },
+  { note: "process .dlopen by bracket with spaces", code: `process [ "dlopen" ](m, "/x.node")`, kind: /^repl-api$/ },
+  { note: "globalThis['process']['binding'] (no dot anywhere)", code: `globalThis["process"]["binding"]("x")`, kind: /^repl-api$/ },
+  { note: "self.process.binding via bracket on self", code: `self["process"].binding("x")`, kind: /^repl-api$/ },
+  { note: "process.binding with a unicode-escaped member name", code: `process["\\u0062inding"]("x")`, kind: /^repl-api$/ },
+  { note: "process spelled with a unicode-escaped identifier char", code: `\\u0070rocess.binding("x")`, kind: /^repl-api$/ },
+  { note: "constructor by bracket with a hex-escaped name", code: `Read["\\u0063onstructor"]["constructor"]("return 1")()`, kind: /^repl-api$/ },
+  { note: "a direct alias of Function, then called", code: `const F = Function; F("return 1")()`, kind: /^repl-api$/ },
+  { note: "an alias of globalThis.Function, then called", code: `const G = globalThis.Function; G("return 1")()`, kind: /^repl-api$/ },
+  { note: "an alias of self['Function'], then called", code: `const H = self["Function"]; H("return 1")()`, kind: /^repl-api$/ },
+  { note: "child_process as a require module specifier (a specifier IS scanned)", code: `const cp = require("child_process"); cp.execSync("ls")`, kind: /^repl-api$/ },
+  { note: "child_process as an import specifier with node: prefix", code: `const cp = await import("node:child_process")`, kind: /^repl-api$/ },
+  { note: "process.binding reached from inside a template ${...} expression", code: `const t = ${BT}x${"$"}{process.binding("y")}${BT}; t`, kind: /^repl-api$/ },
 ];
 
 const ALLOW: Array<{ note: string; code: string }> = [
@@ -54,6 +71,15 @@ const ALLOW: Array<{ note: string; code: string }> = [
   { note: "a regular expression with a quote in it", code: `const r = /it's/; r.test("it's")` },
   { note: "a division next to strings", code: `const x = 6 / 3; const y = "a"; x + y` },
   { note: "a regular expression with a quote, beside a kill by pid (read as a regex, not as an unterminated string)", code: `const r = /it's/; r.test("x"); await Bash({ command: "kill 4242" })` },
+  // workspaces-o9o.131 FAIL F1 over-refusal (verify-sec2): the API rules do NOT scan string CONTENTS (except a module specifier), so a
+  // string that merely names a host API — a log line, a doc comment, an error message — is not a refusal. Shell/kill rules still scan strings.
+  { note: "a string that merely names process.binding (not a property access or a specifier)", code: `const warn = "do not use process.binding here"; warn.length` },
+  { note: "a string that names child_process but is not a module specifier", code: `const doc = "child_process is refused by the guard"; doc.length` },
+  { note: "a string that names the Function constructor", code: `const note = "never reach for new Function()"; note.length` },
+  { note: "process.binding named inside a template with no interpolation", code: `const t = ${BT}process.binding and child_process are refused${BT}; t.length` },
+  { note: "an object property literally called binding, not on process", code: `const o = { binding: 1 }; o.binding + 1` },
+  { note: "a bracket access with a NON-API member name spelled with an escape", code: `const o = { value: 2 }; o["\\u0076alue"] + 1` },
+  { note: "a module specifier that is not a host API (node:fs is fine)", code: `const fs = await import("node:fs"); fs.readFileSync` },
 ];
 
 describe("o9o.131: the seat guard reads REPL code", () => {

@@ -1191,15 +1191,122 @@ function backgroundRefusal(kind) {
 // refusal, NOT a sandbox: a name assembled at run time (globalThis["child_" + "process"]) is not seen here. Comments are skipped. Code this
 // reader cannot follow (an unterminated literal) is refused when it carries a risk signal, and allowed otherwise, like check()'s rule.
 
+// The API rules run on a NORMALISED projection of the code (apiScanText), where every property access is written as a dotted member
+// chain — `x["binding"]`, `x?.binding`, `x["binding"]`, `globalThis["process"]["binding"]` all fold to `...process.binding` — and
+// string CONTENTS are blanked (so a log line naming process.binding is not a refusal), except a module specifier, which is kept so a
+// require/import of child_process is still caught. A name assembled at run time (globalThis["child_" + "process"]) stays a residual.
 const REPL_API_RULES = [
   { re: /child_process/, name: "child_process" },
   { re: /\bprocess\s*\.\s*binding\b/, name: "process.binding" },
   { re: /\bprocess\s*\.\s*dlopen\b/, name: "process.dlopen" },
-  { re: /\bconstructor\s*(?:\.\s*constructor\b|\(|\[)|\[\s*["'`]constructor["'`]\s*\]/, name: "a Function-constructor chain (.constructor)" },
+  { re: /\bconstructor\s*(?:\.\s*constructor\b|\(|\[)|\.\s*constructor\s*\(/, name: "a Function-constructor chain (.constructor)" },
   { re: /\bnew\s+Function\b|(?<![\w$.])Function\s*\(/, name: "the Function constructor" },
 ];
-const REPL_RISK_RE = /\b(?:rig|pkill|killall|kill)\b|child_process|constructor|\bFunction\b|\bprocess\s*\./;
+// A direct alias of the Function constructor, then called: `const F = Function; ... F(` (also `= globalThis.Function` / `= self.Function`).
+const FUNCTION_ALIAS_DECL = /(?:^|[^\w$.])(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:(?:globalThis|self)\s*\.\s*)?Function\b/g;
+const REPL_RISK_RE = /\b(?:rig|pkill|killall|kill)\b|child_process|constructor|\bFunction\b|\bprocess\b|\bglobalThis\b|\bself\b|\brequire\b|\bimport\b/;
 const JS_EXPR = "$OPENRIG_JS_EXPR";
+
+/** Decode the \uXXXX, \u{XXXX} and \xXX escapes that spell identifier characters (process -> process, binding -> binding). */
+function decodeIdentEscapes(s) {
+  const cp = (h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ""; } };
+  return s.replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, h) => cp(h))
+          .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => cp(h))
+          .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => cp(h));
+}
+
+/** The code normalised for the API scan: property access folded to dotted member chains, identifier escapes decoded, optional chaining
+ *  flattened, regex literals and comments blanked, and string contents blanked EXCEPT a module specifier. `ok: false` on an unterminated
+ *  literal or comment (the caller then takes the fail-closed path). A template's ${...} expressions are normalised in place. */
+function apiScanText(code) {
+  let out = "";
+  let i = 0;
+  let prev = "";
+  const regexAfter = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "<", ">", "~", "^"]);
+  const rtrim = () => { out = out.replace(/\s+$/, ""); };
+  const lastSig = () => { const t = out.replace(/\s+$/, ""); return t[t.length - 1] ?? ""; };
+  // Whether out's tail is a module-specifier position: require( / import( / ... from
+  const specifierHere = () => /(?:\brequire|\bimport)\s*\(\s*$/.test(out) || /(?:\bfrom|\bimport)\s*$/.test(out);
+  while (i < code.length) {
+    tick();
+    const c = code[i];
+    if (c === "/" && code[i + 1] === "/") { const e = code.indexOf("\n", i); i = e < 0 ? code.length : e; out += " "; continue; }
+    if (c === "/" && code[i + 1] === "*") { const e = code.indexOf("*/", i + 2); if (e < 0) return { ok: false, text: out }; i = e + 2; out += " "; continue; }
+    if (c === "/" && (regexAfter.has(prev) || /\b(?:return|typeof|case|in|of)$/.test(out.trimEnd()))) {
+      let j = i + 1; let cls = false;
+      for (; j < code.length; j++) {
+        if (code[j] === "\\") { j++; continue; }
+        if (code[j] === "\n") return { ok: false, text: out };
+        if (code[j] === "[") cls = true; else if (code[j] === "]") cls = false;
+        else if (code[j] === "/" && !cls) break;
+      }
+      if (j >= code.length) return { ok: false, text: out };
+      i = j + 1; while (i < code.length && /[a-z]/i.test(code[i])) i++;
+      out += " "; prev = "x"; continue;
+    }
+    if (c === "?" && code[i + 1] === ".") { out += "."; i += 2; prev = "."; continue; }  // optional chaining -> member access
+    if (c === "'" || c === '"' || c === "`") {
+      const lit = readStringOrTemplate(code, i);
+      if (!lit) return { ok: false, text: out };
+      // A computed member key: `X[ "name" ]` with the string the sole content of the brackets, no interpolation.
+      let nextSig = lit.end; while (nextSig < code.length && /\s/.test(code[nextSig])) nextSig++;
+      if (lastSig() === "[" && code[nextSig] === "]" && !lit.hasExpr) {
+        rtrim(); out = out.replace(/\[$/, "");           // drop the opening bracket we already wrote
+        out += "." + lit.raw;                            // fold to a dotted member (escapes decoded at the end)
+        i = nextSig + 1; prev = "x"; continue;
+      }
+      if (specifierHere() && !lit.hasExpr) { out += ` ${lit.raw} `; i = lit.end; prev = "x"; continue; }  // module specifier: kept
+      // An ordinary string/template: contents blanked; a template's ${...} expressions are normalised in place so code inside them is scanned.
+      out += ` ${lit.exprText} `; i = lit.end; prev = "x"; continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) prev = /[\w$)\]]/.test(c) ? "x" : c;
+    i++;
+  }
+  return { ok: true, text: decodeIdentEscapes(out) };
+}
+
+/** Read a string ('...', "...") or template (`...`) from its opening quote. Returns the raw inner text (for a simple key/specifier),
+ *  whether it holds a ${...} expression, the normalised text of those expressions (string parts blanked), and where it ends. */
+function readStringOrTemplate(code, start) {
+  const q = code[start];
+  if (q !== "`") {
+    let j = start + 1; let raw = "";
+    for (; j < code.length && code[j] !== q; j++) {
+      if (code[j] === "\n") return null;
+      if (code[j] === "\\") { raw += code[j] + (code[j + 1] ?? ""); j++; continue; }  // keep the escape for decodeIdentEscapes
+      raw += code[j];
+    }
+    if (j >= code.length) return null;
+    return { raw, hasExpr: false, exprText: "", end: j + 1 };
+  }
+  let raw = ""; let exprText = ""; let hasExpr = false;
+  for (let j = start + 1; j < code.length; j++) {
+    tick();
+    const ch = code[j];
+    if (ch === "\\") { raw += ch + (code[j + 1] ?? ""); j++; continue; }
+    if (ch === "`") return { raw, hasExpr, exprText, end: j + 1 };
+    if (ch === "$" && code[j + 1] === "{") {
+      hasExpr = true;
+      let depth = 1; let k = j + 2;
+      for (; k < code.length && depth > 0; k++) {
+        if (code[k] === "{") depth++;
+        else if (code[k] === "}") depth--;
+        else if (code[k] === "`" || code[k] === "'" || code[k] === '"') {
+          const inner = readStringOrTemplate(code, k);
+          if (!inner) return null; k = inner.end - 1;
+        }
+      }
+      if (depth > 0) return null;
+      const expr = code.slice(j + 2, k - 1);
+      const sub = apiScanText(expr);
+      if (!sub.ok) return null;
+      exprText += ` ${sub.text} `; j = k - 1; continue;
+    }
+    raw += ch;
+  }
+  return null;
+}
 
 /** The string and template literals of a piece of JavaScript, and the code with its comments and literals blanked (for the API scan).
  *  `ok: false` when a literal or comment does not end. A `/` starts a regular expression where a value cannot stand before it. */
@@ -1297,14 +1404,26 @@ function checkReplCode(code, options) {
   } catch {
     parsed = { ok: false, literals: [], bare: code };
   }
-  if (!parsed.ok) {
+  let api;
+  try { api = apiScanText(code); } catch { api = { ok: false, text: "" }; }
+  if (!parsed.ok || !api.ok) {
     if (!REPL_RISK_RE.test(code)) return { block: false, violations: [], reason: "" };
     const violations = [{ kind: "unparseable-repl", command: null }];
     return { block: true, violations, reason: replRefusal(violations) };
   }
   for (const rule of REPL_API_RULES) {
-    if (rule.re.test(parsed.bare)) {
+    if (rule.re.test(api.text)) {
       const violations = [{ kind: "repl-api", command: rule.name }];
+      return { block: true, violations, reason: replRefusal(violations) };
+    }
+  }
+  // A direct alias of the Function constructor, then called: `const F = Function; F(` .
+  FUNCTION_ALIAS_DECL.lastIndex = 0;
+  let m;
+  while ((m = FUNCTION_ALIAS_DECL.exec(api.text))) {
+    const alias = m[1];
+    if (new RegExp(`(?<![\\w$.])${alias}\\s*\\(`).test(api.text)) {
+      const violations = [{ kind: "repl-api", command: "the Function constructor" }];
       return { block: true, violations, reason: replRefusal(violations) };
     }
   }

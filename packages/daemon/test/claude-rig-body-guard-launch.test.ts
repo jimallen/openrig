@@ -159,15 +159,23 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     });
   }
 
-  // workspaces-o9o.131: a Code Mode REPL call carries its JavaScript as "code", after a cwd that may hold "rig" ("openrig"). The degraded check
-  // reads the value from the "code" key on, so a template literal (a backtick) in ordinary code is not refused for the folder's name.
-  it("guard unavailable, a REPL call: the degraded check reads the code, not the cwd before it", () => {
+  // workspaces-o9o.131 FAIL F2 (verify-sec2): while the guard is down the degraded sh check cannot parse a Code Mode REPL call's
+  // JavaScript, so it refuses the REPL call outright (fail closed) — benign-looking code included. The Bash path is unchanged (o9o.173).
+  it("guard unavailable, a REPL call: refused outright, whatever the code says (fail closed)", () => {
     const repl = (code: string) => JSON.stringify({ hook_event_name: "PreToolUse", cwd: "/home/u/Work/openrig/.workspaces/build-impl", tool_name: "REPL", tool_input: { code } });
     const gone = { script: "/nonexistent/rig-body-guard.cjs" };
-    expect(hook("", { ...gone, raw: repl("const s = `value ${1}`; s") })).toMatchObject(ALLOWED);
+    const r = hook("", { ...gone, raw: repl("const s = `value ${1}`; s") });
+    expect(r).toMatchObject(REFUSED);
+    expect(r.stderr).toContain("Code Mode REPL call");
+    expect(r.stderr).toContain("rig-body-guard is unavailable");
+    expect(hook("", { ...gone, raw: repl("const x = 1 + 1; x") })).toMatchObject(REFUSED);            // no risk words at all: still refused
     expect(hook("", { ...gone, raw: repl('await $`rig send x@y "hi $(date)"`') })).toMatchObject(REFUSED);
-    // Control: the same cwd on a Bash call with a backtick and no rig in its command is allowed too (the command key was always used).
+    expect(hook("", { ...gone, raw: repl("process.binding('x')") })).toMatchObject(REFUSED);
+    // Spacing in tool_name is tolerated.
+    expect(hook("", { ...gone, raw: '{"tool_name": "REPL", "tool_input": {"code": "1 + 1"}}' })).toMatchObject(REFUSED);
+    // Control: a Bash call with the same cwd, a backtick and no rig in its command still runs (the REPL refusal is REPL-only).
     expect(hook("", { ...gone, raw: JSON.stringify({ cwd: "/home/u/Work/openrig", tool_name: "Bash", tool_input: { command: "echo `date`" } }) })).toMatchObject(ALLOWED);
+    expect(hook("ls -la", gone)).toMatchObject(ALLOWED);
   });
 
   for (const [label, script] of [["crashes", "crash.cjs"], ["exits 1", "exit1.cjs"]] as const) {

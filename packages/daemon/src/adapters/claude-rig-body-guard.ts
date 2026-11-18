@@ -49,6 +49,9 @@ bt=$(printf '\140')
 in=$(cat)
 deg() {
   why=$1
+  # workspaces-o9o.131 (verify-sec2 FAIL F2): a Code Mode REPL call carries JavaScript the degraded sh check cannot parse. While the
+  # guard is down it cannot judge that code, so it refuses the REPL call outright (fail closed). The Bash path below is unchanged.
+  case $in in *'"tool_name":"REPL"'*|*'"tool_name": "REPL"'*) echo "rig-body-guard is unavailable ($why) and this is a Code Mode REPL call, which the degraded check cannot read: refused. Run the work as shell commands (await Bash({ command: ... }), which the guard checks), or relaunch or restore this seat." >&2; exit 2 ;; esac
   # Nothing in the hook text can be a risk (no backtick, no "$(", no JSON u00xx escape that could spell one): done.
   case $in in *"$bt"*|*'$('*|*'\u00'*) ;; *) exit 0 ;; esac
   k='"command":'
