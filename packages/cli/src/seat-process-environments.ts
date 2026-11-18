@@ -13,7 +13,7 @@ export interface SeatProcessReadOptions {
   pids?: readonly number[];
 }
 
-/** Every readable process carrying OPENRIG_SESSION_NAME, with its OPENRIG_HOME and its PATH split in order; null where /proc cannot be read. */
+/** Every readable process carrying OPENRIG_SESSION_NAME, with its OPENRIG_HOME, its PATH split in order and its command line; null where /proc cannot be read. */
 export function readSeatProcesses(options: SeatProcessReadOptions = {}): SeatProcess[] | null {
   const procRoot = options.procRoot ?? "/proc";
   if (options.procRoot === undefined && (process.platform !== "linux" || !existsSync("/proc/self/environ"))) return null;
@@ -35,7 +35,13 @@ export function readSeatProcesses(options: SeatProcessReadOptions = {}): SeatPro
       else if (entry.startsWith("PATH=")) pathValue = entry.slice("PATH=".length);
       else if (entry.startsWith("OPENRIG_HOME=")) home = entry.slice("OPENRIG_HOME=".length);
     }
-    if (session) found.push({ pid: Number(name), session, home, path: pathValue ? pathValue.split(":") : [] });
+    if (!session) continue;
+    let argv: string[] = [];
+    try {
+      argv = readFileSync(`${procRoot}/${name}/cmdline`, "utf8").split("\0");
+      if (argv.at(-1) === "") argv.pop(); // the NUL that ends the last argument
+    } catch { /* gone since its environment was read */ }
+    found.push({ pid: Number(name), session, home, path: pathValue ? pathValue.split(":") : [], argv });
   }
   return found;
 }

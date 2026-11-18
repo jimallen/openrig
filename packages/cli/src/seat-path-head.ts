@@ -13,6 +13,8 @@ export interface SeatProcess {
   /** Its OPENRIG_HOME: the instance the seat belongs to (a test scaffold's seats carry their own). */
   home: string | null;
   path: string[];
+  /** Its command line (workspaces-o9o.173: a Claude seat's carries the guard hook); absent where it was not read. */
+  argv?: string[];
 }
 
 /** Whether a PATH starts with the seat PATH head: a folder directly inside a `seat-bin` folder, then a `rig-bin` folder. */

@@ -90,6 +90,6 @@ describe.runIf(process.platform === "linux")("o9o.106: the Linux reader takes ea
     const { readSeatProcesses } = await import("../src/seat-process-environments.js");
     // workspaces-o9o.185: only this test's own child is read, never the rest of the host.
     const mine = readSeatProcesses({ pids: [child.pid!] }) ?? [];
-    expect(mine).toEqual([{ pid: child.pid, session, home: "/tmp/o9o106-home", path: [...HEAD, "/usr/bin"] }]);
+    expect(mine).toEqual([{ pid: child.pid, session, home: "/tmp/o9o106-home", path: [...HEAD, "/usr/bin"], argv: ["/bin/sleep", "30"] }]); // argv: o9o.173
   });
 });

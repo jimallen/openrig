@@ -35,7 +35,13 @@ const SUBCOMMAND_CASE = RIG_BODY_GUARD_SUBCOMMANDS.map((w) => `*[!A-Za-z0-9_]${w
 /** OF-253: the inline `sh -c` script that runs the guard. $1 = node, $2 = the guard script, $3 = the watchdog seconds; the hook JSON arrives on stdin.
  *  Measured on Claude Code 2.1.319: only exit 2 (or a deny decision) blocks a tool call; a missing interpreter (127), a missing script, exit 1, a SIGKILL and a timeout all let it run.
  *  So when the guard cannot answer (node or the script is missing, the guard crashes or exits non-zero, or it outruns the watchdog) this script applies a DEGRADED check
- *  of its own to the hook text: it refuses (exit 2, a message the model reads) only a command that mentions `rig` and holds a backtick or `$(`, and lets everything else run.
+ *  of its own to the hook text: it refuses (exit 2, a message the model reads) the two classes the guard exists for, and lets everything else run:
+ *  - a command that mentions `rig` and holds a backtick or `$(`;
+ *  - workspaces-o9o.173: a command with `kill`, `pkill` or `killall` as a whole word (bounded by anything but letters, digits, `_` and `-`, so `tmux kill-session`
+ *    is not one), read from the same decoded text. The guard's finer verdicts (a kill by pid, `kill %job`, `pkill -P <pid>`) are not reproduced in plain sh: while
+ *    the guard is down every kill word is refused, and the message says why and how to repair it. Refusing every Bash call instead would leave a seat whose guard is
+ *    down (a node upgrade removes the daemon's node from under every seat at once) unable to look into it or report it. `rig doctor` reports such a seat
+ *    (running_seats_guard) before a refusal does.
  *  "Mentions rig" is read after decoding the JSON escapes and removing backslash-newline pairs, quotes and backslashes: the substring `rig` anywhere, OR a guarded rig subcommand word
  *  (send, queue, ...) as a whole word, so `r""ig`, `r\ig`, `'r'ig` and a name spelled apart (`r$''ig send`) count (a deliberately obfuscated NAME *and* SUBCOMMAND, `r$''ig s$''end`, does not: this is an accident guard, not a sandbox); the whole check uses shell
  *  builtins (case, parameter expansion, printf), so a PATH without grep or sed cannot skip it, and PATH is prefixed with /usr/bin:/bin for cat and sleep. A hook text over 16 KB is not
@@ -47,6 +53,10 @@ PATH=/usr/bin:/bin:@@{PATH:-/usr/bin:/bin}
 N=$1; S=$2; W=$3
 bt=$(printf '\140')
 in=$(cat)
+killed() {
+  echo "rig-body-guard is unavailable ($why) and this command uses kill, pkill or killall: refused while the guard is down, a kill by pid included.$gone Relaunch or restore this seat to bring the guard back; rig doctor names a seat whose guard is down." >&2
+  exit 2
+}
 deg() {
   why=$1
   # workspaces-o9o.131 (verify-sec FAIL, round 4): a Code Mode REPL call carries JavaScript the degraded sh check cannot parse. While the
@@ -61,13 +71,16 @@ deg() {
       *) break ;;
     esac
   done
-  # Nothing in the hook text can be a risk (no backtick, no "$(", no JSON u00xx escape that could spell one): done.
-  case $in in *"$bt"*|*'$('*|*'\u00'*) ;; *) exit 0 ;; esac
+  # Nothing in the hook text can be a risk (no backtick, no "$(", no JSON u00xx escape that could spell one, and no k, i, l, l in order that quotes could
+  # split into a kill word, o9o.173): done.
+  case $in in *"$bt"*|*'$('*|*'\u00'*|*k*i*l*l*) ;; *) exit 0 ;; esac
   k='"command":'
   case $in in *"$k"*) ;; *) k='"code":' ;; esac   # workspaces-o9o.131: a REPL call carries its JavaScript as "code"
   s=@@{in#*"$k"}          # the command's value onward: cwd and transcript path come before it and may hold "rig" ("openrig")
   if [ "@@{#s}" -gt 16384 ]; then
-    : # too long to decode in plain sh in time: with a risk signal in it, refuse
+    # too long to decode in plain sh in time: a kill word refuses; a backtick, "$(" or u00xx escape refuses as a rig body; letters that only spell kill apart do not
+    case $s in *kill*) killed ;; esac
+    case $in in *"$bt"*|*'$('*|*'\u00'*) ;; *) exit 0 ;; esac
   else
     # Coarse on purpose: split on backslashes, decode u0060 u0024 u0072 u0069 u0067, drop the letter of a JSON escape pair (n t r b f), then drop quotes.
     set -f
@@ -94,13 +107,17 @@ deg() {
       esac
     done
     IFS=$(printf '\042\047'); set -- $r; IFS=; r="$*"; unset IFS
+    case " $r " in *[!A-Za-z0-9_-]kill[!A-Za-z0-9_-]*|*[!A-Za-z0-9_-]pkill[!A-Za-z0-9_-]*|*[!A-Za-z0-9_-]killall[!A-Za-z0-9_-]*) killed ;; esac
     case $r in *"$bt"*|*'$('*) ;; *) exit 0 ;; esac
     case " $r " in *rig*|SUBCASE) ;; *) exit 0 ;; esac
   fi
-  echo "rig-body-guard is unavailable ($why) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat." >&2
+  echo "rig-body-guard is unavailable ($why) and this command mentions rig with a backtick or \$( : refused. Write the text to a file with a command that does not mention rig (cat > /tmp/msg.md <<'EOF' ... EOF), then send it with rig send <session> --file /tmp/msg.md. Or relaunch or restore this seat.$gone" >&2
   exit 2
 }
-[ -x "$N" ] && [ -f "$S" ] || deg "node or the guard script is missing"
+gone=
+[ -x "$N" ] || gone=" Missing: node $N."
+[ -f "$S" ] || gone="$gone Missing: guard script $S."
+[ -z "$gone" ] || deg "node or the guard script is missing"
 out=$(
   printf '%s' "$in" | "$N" "$S" &
   p=$!

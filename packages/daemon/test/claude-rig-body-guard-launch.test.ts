@@ -189,6 +189,46 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     expect(hook("ls -la", gone)).toMatchObject(ALLOWED);
   });
 
+  // workspaces-o9o.173 (verify-sec2): the degraded check let every broad kill through. While the guard cannot run, a command
+  // with pkill, killall or kill as a whole word is refused (a kill by pid too: the coarse, safe direction), with a message
+  // that the guard is down and how to repair it. Other commands still run, so a degraded seat can still work and report.
+  const KILLS = [
+    "pkill -f vitest", "killall node", "kill -9 -1", "kill $(pgrep -f x)", "pgrep -f x | xargs kill", "kill 12345",
+    "p''kill -f vitest", "/usr/bin/pkill -f x", "echo hi; killall x", "sleep 1 && kill %1",
+  ];
+  const NOT_KILLS = ["ls -la", "tmux kill-session -t x", "npm run kill-port", "echo skilled killer", "git log --grep killed"];
+  for (const [label, options] of [
+    ["the guard script is gone", { script: "/nonexistent/rig-body-guard.cjs" }],
+    ["the node path is gone", { node: "/nonexistent/bin/node" }],
+    ["the guard crashes", { script: "CRASH" }],
+  ] as const) {
+    it(`o9o.173: ${label}: every kill word is refused with the repair, and commands without one still run`, () => {
+      const opts = options.script === "CRASH" ? { script: join(dir, "crash.cjs") } : options;
+      const refused = KILLS.map((c) => [c, hook(c, opts).status]);
+      expect(refused).toEqual(KILLS.map((c) => [c, 2]));
+      const msg = hook("pkill -f vitest", opts).stderr;
+      expect(msg).toContain("rig-body-guard is unavailable");
+      expect(msg).toContain("kill, pkill or killall");
+      expect(msg).toMatch(/relaunch or restore this seat/i);
+      expect(NOT_KILLS.map((c) => [c, hook(c, opts).status])).toEqual(NOT_KILLS.map((c) => [c, 0]));
+    });
+  }
+  it("o9o.173: a missing node or script is named by its path in the refusal", () => {
+    expect(hook("pkill -f x", { node: "/nonexistent/bin/node" }).stderr).toContain("/nonexistent/bin/node");
+    expect(hook("pkill -f x", { script: "/nonexistent/rig-body-guard.cjs" }).stderr).toContain("/nonexistent/rig-body-guard.cjs");
+  });
+  it("o9o.173: a hook text over 16 KB is not decoded: a kill word in it counts as a kill", () => {
+    const pad = "x".repeat(17_000);
+    expect(hook(`echo ${pad}; pkill -f vitest`, { script: "/nonexistent/rig-body-guard.cjs" })).toMatchObject(REFUSED);
+    expect(hook(`echo ${pad}`, { script: "/nonexistent/rig-body-guard.cjs" })).toMatchObject(ALLOWED);
+  });
+  it("o9o.173 control: with the guard running, a kill by pid runs and a broad kill gets the guard's own deny", () => {
+    expect(hook("kill 12345")).toMatchObject(ALLOWED);
+    const broad = hook("pkill -f vitest");
+    expect(broad.status).toBe(0);
+    expect(JSON.parse(broad.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
   for (const [label, script] of [["crashes", "crash.cjs"], ["exits 1", "exit1.cjs"]] as const) {
     it(`the guard ${label}: the same degraded check, not a blanket refusal and not a blanket allow`, () => {
       const bad = hook(BAD, { script: join(dir, script) });

@@ -1,7 +1,7 @@
 import { CODEX_CONFIG_POLICY, readCredentialFile, type CredentialFileRead } from "@openrig/daemon/credential-file";
 import { Command } from "commander";
 import { setOff } from "@openrig/daemon/command-text";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import net from "node:net";
 import { execSync } from "node:child_process";
@@ -36,6 +36,13 @@ import { realLocalHostFacts } from "../host-readiness-facts.js";
 import { buildSeatPathHeadCheck, type SeatProcess } from "../seat-path-head.js";
 import { readSeatProcesses } from "../seat-process-environments.js";
 import { configuredSlackSecretsEnvFile, judgeSlackSecretsFile } from "../slack-secrets-check.js";
+import { buildSeatGuardCheck, type SeatGuardFiles } from "../seat-guard-health.js";
+
+/** The wrapper's own tests, on the real filesystem: `-x` for the node, `-f` for the script. */
+const SEAT_GUARD_FILES: SeatGuardFiles = {
+  isExecutable: (file) => { try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; } },
+  isFile: (file) => { try { return statSync(file).isFile(); } catch { return false; } },
+};
 
 interface DoctorCheck {
   name: string;
@@ -93,6 +100,8 @@ export interface DoctorDeps {
   /** workspaces-o9o.151: the Slack connector's configured secrets file. Set, it adds the slack_secrets row (rig doctor sets it;
    *  rig setup, which shares these checks, does not). */
   slackSecretsEnvFile?: () => Promise<string | null>;
+  /** workspaces-o9o.173: the file checks behind the seat guard row (default: the real filesystem). */
+  seatGuardFiles?: SeatGuardFiles;
 }
 
 /**
@@ -235,7 +244,10 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
   // 6b. Vendored plugin folders the daemon ignores (workspaces-o9o.44). Read from disk, so it answers while the daemon is down.
   checks.push(buildVendoredPluginsCheck(deps.pluginsDir ?? getDefaultOpenRigPath("plugins")));
   // workspaces-o9o.106: a seat launched before the seat PATH head runs without the git worktree shim until relaunched.
-  checks.push(buildSeatPathHeadCheck(deps.readSeatProcesses(), deps.openrigHome ?? getOpenRigHome()));
+  const seatProcesses = deps.readSeatProcesses();
+  checks.push(buildSeatPathHeadCheck(seatProcesses, deps.openrigHome ?? getOpenRigHome()));
+  // workspaces-o9o.173: a Claude seat whose guard's node or script is gone runs a degraded guard that refuses every kill.
+  checks.push(buildSeatGuardCheck(seatProcesses, deps.openrigHome ?? getOpenRigHome(), deps.seatGuardFiles ?? SEAT_GUARD_FILES));
 
   // 7. Port availability (async) — daemon already running on that port counts as OK.
   // workspaces-o9o.181: the one resolver says which daemon this home means BEFORE anything is probed. A home that names
