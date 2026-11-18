@@ -113,7 +113,7 @@ it("o9o.38: the re-check turns the claim back to watching only on full evidence,
   expect(instance.observation().state).toBe("unavailable");
   gaps.current = [];
   vi.advanceTimersByTime(1000);
-  expect(instance.observation()).toEqual({ state: "watching", revision: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  expect(instance.observation()).toEqual({ state: "watching", revision: expect.stringMatching(/^[0-9a-f]{64}$/), verified: true });
   expect(pushed()).toEqual(["unavailable", instance.observation().revision]);
   instance.close();
 });
@@ -152,6 +152,21 @@ it("o9o.38: with evidence, it decides even after a watcher error; without eviden
   vi.advanceTimersByTime(3000);
   expect(b.observation()).toEqual({ state: "unavailable", revision: "unavailable", cause: "the file watcher failed: ENOSPC" });
   b.close();
+});
+
+// workspaces-o9o.134: a platform with no evidence (darwin: the port's unwatched() is null) still claims "watching", but
+// says it is unverified and why; a platform with evidence says verified. The claim's state is unchanged, so no client changes.
+it("o9o.134: without evidence the claim is watching, unverified, with its cause; with full evidence it is verified", () => {
+  const missions = legacyRoot();
+  const none = watchProofSources(missions, vi.fn(), realBus().bus, { watcher: evidenceWatcher({ current: null }).port });
+  expect(none.observation()).toEqual({
+    state: "watching", revision: expect.stringMatching(/^[0-9a-f]{64}$/), verified: false,
+    cause: "no kernel evidence of the watch on this platform: the file watcher's word only",
+  });
+  none.close();
+  const full = watchProofSources(missions, vi.fn(), realBus().bus, { watcher: evidenceWatcher({ current: [] }).port });
+  expect(full.observation()).toEqual({ state: "watching", revision: expect.stringMatching(/^[0-9a-f]{64}$/), verified: true });
+  full.close();
 });
 
 it("o9o.38: close stops the re-check", () => {

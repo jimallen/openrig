@@ -5,10 +5,25 @@ import { readProjectReadiness, resolveProjectRoot } from "./judgments.js";
 
 export interface ProofSourceWatch {
   close(): void;
-  /** "watching" only with evidence that every watched path has a live watch; otherwise "unavailable" and why. */
-  observation(): { state: "watching" | "unavailable"; revision: string; cause?: string };
+  /**
+   * "unavailable" and why, when evidence shows a watched path without a live watch, the evidence cannot be read, the
+   * watcher failed or the inputs are unreadable. Otherwise "watching", with `verified`: true when the port's evidence
+   * shows a live watch on every watched path (Linux), false with a `cause` when the platform gives no evidence at all
+   * (darwin: the file watcher's word only; workspaces-o9o.134).
+   */
+  observation(): ProofSourceObservation;
 }
-export function proofSourceObservation(c: { get: (key: never) => unknown }) {
+export interface ProofSourceObservation {
+  state: "watching" | "unavailable";
+  revision: string;
+  /** Set only on "watching": whether the claim rests on evidence of the watch, or on the watcher's word. */
+  verified?: boolean;
+  cause?: string;
+}
+/** The cause on a "watching" claim the platform gives no evidence for. */
+export const UNVERIFIED_WATCH_CAUSE = "no kernel evidence of the watch on this platform: the file watcher's word only";
+
+export function proofSourceObservation(c: { get: (key: never) => unknown }): ProofSourceObservation {
   return (c.get("proofSourceWatch" as never) as ProofSourceWatch | undefined)?.observation() ?? { state: "unavailable", revision: "unverified" };
 }
 
@@ -59,6 +74,8 @@ export function watchProofSources(missionsRoot: string, invalidate: () => void, 
   try { revision = basis(); inputsReadable = true; } catch { /* Direct reads name unavailable inputs; watching may recover them. */ }
   /** Why the watch itself cannot be trusted (the watcher failed, or a watched path has no live watch); null when it can. */
   let watchFault: string | null = null;
+  /** Whether the port gave evidence at the last read (false on a platform that gives none). */
+  let evidenced = false;
   let closed = false;
   let timer: NodeJS.Timeout | undefined;
   const watches: SourceTreeWatch[] = [];
@@ -70,6 +87,7 @@ export function watchProofSources(missionsRoot: string, invalidate: () => void, 
     try { revision = basis(); inputsReadable = true; } catch { revision = "unavailable"; inputsReadable = false; }
     // Where the platform gives evidence it decides, a past watcher error included; where it gives none, a watcher error stands.
     const evidence = evidenceFault();
+    evidenced = evidence !== undefined;
     if (evidence !== undefined) watchFault = evidence;
     if (state() === "unavailable") revision = "unavailable";
     if (state() !== before.state) log(`[proof-source-watch] ${missionsRoot}: ${state()}${state() === "unavailable" ? ` (${cause() ?? "proof inputs unreadable"})` : ""}`);
@@ -125,7 +143,9 @@ export function watchProofSources(missionsRoot: string, invalidate: () => void, 
     return { close() {}, observation: () => ({ state: "unavailable", revision, cause: why }) };
   }
 
-  watchFault = evidenceFault() ?? null;
+  const armedEvidence = evidenceFault();
+  evidenced = armedEvidence !== undefined;
+  watchFault = armedEvidence ?? null;
   if (watchFault !== null) {
     revision = "unavailable";
     log(`[proof-source-watch] ${missionsRoot}: unavailable (${watchFault})`);
@@ -138,7 +158,8 @@ export function watchProofSources(missionsRoot: string, invalidate: () => void, 
     observation: () => {
       const current = state();
       const why = cause();
-      return current === "unavailable" && why !== undefined ? { state: current, revision, cause: why } : { state: current, revision };
+      if (current === "watching") return evidenced ? { state: current, revision, verified: true } : { state: current, revision, verified: false, cause: UNVERIFIED_WATCH_CAUSE };
+      return why !== undefined ? { state: current, revision, cause: why } : { state: current, revision };
     },
     close: () => {
       closed = true;

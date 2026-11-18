@@ -382,6 +382,14 @@ reached, a directory or file that got no watch) turns it to `unavailable` with a
 `cause` and a log line, and only full evidence turns it back (workspaces-o9o.38).
 Evidence it cannot read (a path it cannot stat other than a gone one, a
 directory it cannot list, an unreadable `/proc`) fails closed the same way.
+The claim reaches clients as `sourceObservation` on `GET /api/scopes`,
+`GET /api/review/slice/:name` and `GET /api/review/mission/:name`, and as the
+observation of `GET /api/proof` (the selected workspace only): `state`,
+`revision`, and on `unavailable` a `cause`. A `watching` claim also carries
+`verified`: `true` when it rests on that kernel evidence, `false` with a `cause`
+on a platform that gives none (macOS: FSEvents is not read back, so the claim is
+the file watcher's word only). Clients that show updates as unavailable test
+only `state`, so an unverified claim looks as it did before (workspaces-o9o.134).
 `isReady()` is true when any configured slice root exists on disk. A set
 `OPENRIG_SLICES_ROOT` still takes precedence over `workspace.slices_root`.
 

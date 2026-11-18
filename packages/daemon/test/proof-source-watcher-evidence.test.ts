@@ -171,6 +171,18 @@ describe.skipIf(process.platform !== "linux" || process.getuid?.() === 0)("o9o.3
     await expect.poll(() => opened.size, { timeout: 2000 }).toBe(0); // close is emitted on the next tick
   });
 
+  // workspaces-o9o.134: the darwin adapter, injected on Linux (no Mac run): it gives no evidence, so the claim says so.
+  it("o9o.134: the darwin adapter gives no evidence, so the claim is watching but unverified, with its cause", () => {
+    const h = host();
+    const db = createDb();
+    migrate(db, [eventsSchema]);
+    const w = watchProofSources(h.missions, () => {}, new EventBus(db), { watcher: nodeSourceTreeWatcher("darwin") });
+    open.push(w);
+    expect(w.observation()).toMatchObject({ state: "watching", verified: false, cause: expect.stringMatching(/^no kernel evidence of the watch/) });
+    expect(watch(h.missions).observation()).toMatchObject({ state: "watching", verified: true });
+    expect(watch(h.missions).observation()).not.toHaveProperty("cause");
+  });
+
   it("positive control: a dangling symlink is gone, not unreadable, and the claim stays watching", () => {
     const h = host();
     fs.symlinkSync(path.join(h.root, "outside", "nothing-here.md"), path.join(h.workspace, "dangling.md"));
