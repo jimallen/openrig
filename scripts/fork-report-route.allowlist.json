@@ -1,0 +1,72 @@
+[
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "Try the next useful step, check the result, and if you can't finish, report it to this fork's own intake, never upstream: see [Report a problem on this fork](#report-a-problem-on-this-fork).",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "Upstream issues are read-only references to known problems: read them for an explanation, and post nothing there.",
+  "reason": "Says the upstream issues are read-only references and to post nothing there: a prohibition, not a submission."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "This build is a private fork, and nothing from it goes to the upstream project: file nothing with it (no issue, discussion or pull request on any `github.com/mvschwarz` repository) and send nothing to its support address.",
+  "reason": "States the fork's rule that nothing is filed upstream: it names the upstream repository and support address to forbid submitting to them."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "For a confirmed bug, search the upstream issues first and name a matching one in your report, as a reference; the fork's Chief of Staff decides what happens next.",
+  "reason": "Upstream issues are searched read-only and named in the fork's own report as a reference; the fork's Chief of Staff decides what happens next."
+ },
+ {
+  "file": "docs/reference/slack-app-setup.md",
+  "sentence": "> here does not match what Slack shows you, report it to this fork's own intake, never upstream",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/stream-classifier-worker.md",
+  "sentence": "> not behave as described here, report it to this fork's own intake, never upstream",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/assets/guidance/openrig-start.md",
+  "sentence": "It is the one help guide, matched to your installed version: check the environment, find the next step, compare known problems, and, when you are still stuck, report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/skills/openrig-skills/SKILL.md",
+  "sentence": "Run `rig context get help`: the one help guide for your installed version, from symptom to next step, known problems, and, if you are still stuck, a report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "Try the next useful step, check the result, and if you can't finish, report it to this fork's own intake, never upstream: see [Report a problem on this fork](#report-a-problem-on-this-fork).",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "Upstream issues are read-only references to known problems: read them for an explanation, and post nothing there.",
+  "reason": "Says the upstream issues are read-only references and to post nothing there: a prohibition, not a submission."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "This build is a private fork, and nothing from it goes to the upstream project: file nothing with it (no issue, discussion or pull request on any `github.com/mvschwarz` repository) and send nothing to its support address.",
+  "reason": "States the fork's rule that nothing is filed upstream: it names the upstream repository and support address to forbid submitting to them."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "For a confirmed bug, search the upstream issues first and name a matching one in your report, as a reference; the fork's Chief of Staff decides what happens next.",
+  "reason": "Upstream issues are searched read-only and named in the fork's own report as a reference; the fork's Chief of Staff decides what happens next."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/onboarding-width/public-what-you-can-do.md",
+  "sentence": "When your user says OpenRig isn't working, start with **`rig context get help`**: the one help guide for the installed version, from checking the environment to a report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/core/openrig-skills/SKILL.md",
+  "sentence": "Run `rig context get help`: the one help guide for your installed version, from symptom to next step, known problems, and, if you are still stuck, a report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
+  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+ }
+]

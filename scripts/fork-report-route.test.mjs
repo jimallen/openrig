@@ -90,40 +90,63 @@ const UPSTREAM_SUBMISSION = [
   /tell us how it went/i,
 ];
 
-// verify-qa review: plain phrasings with no URL ("Report problems upstream.", "File an issue with the upstream project.",
-// "Submit this issue to upstream maintainers.") passed. So the intent is matched too: in one sentence, a verb of submitting
-// followed by an upstream recipient, unless the sentence negates it ("report it here, never upstream").
-// "file" and "open" only in their submitting sense: "file an issue", "open a pull request", never "a companion file that" or
-// "the open body". URLs are matched by the patterns above; in the intent check a URL sits in its own clause (below).
+// Jim, 2026-11-18 (o9o.137, after a third review found another negation that slipped past): a STRICT guard, no negation.
+// Every shipped sentence that pairs a submitting verb with an upstream recipient, in either order, is flagged. A legitimate
+// one (this fork's own help naming upstream to rule it out) goes on the reviewed allowlist, fork-report-route.allowlist.json
+// (file, exact sentence, reason), and an entry that no longer matches a flagged sentence fails the guard.
+// - Verbs: report, submit, send, email, post; "file", "open" and "raise" only as submitting verbs ("file an issue",
+//   "open a pull request"), since "a companion file" and "the open body" are nouns, not submissions.
+// - Recipients: upstream, the maintainers, mvschwarz, hello@openrig.dev, the OpenRig team or support.
+// - A read-only link to an upstream issue, or to the issue list, is taken out first: reading a known issue is allowed.
 const SUBMIT = /\b(?:report|submit|send|email|post)\b|\bfile (?:an?|it|them|your|bugs?|issues?|problems?|reports?)\b|\b(?:open|raise) (?:an? |the |this |a new )?(?:issue|discussion|pull request|PR|ticket|bug)\b/i;
 const RECIPIENT = /\b(?:upstream|maintainers?)\b|mvschwarz|hello@openrig\.dev|OpenRig (?:team|support)/i;
-const NEGATION = /\b(?:never|nothing|not|no|don't|do not)\b/i;
-// verify-qa review 2: a negation anywhere in the sentence cancelled a submission ("Report problems upstream, but do not include
-// secrets." passed). The verb, the recipient after it and the negation are now read within ONE clause: the sentence is split at
-// , ; : ( ) and dashes, and at "but", "and", "or", "while", "though". "report it here, never upstream" stays clean: the recipient
-// sits in its own clause, with "never". Residual: a verb and its recipient in two clauses ("report it, the maintainers read it")
-// is not counted.
-const CLAUSE = /\s*[,;:()\u2013\u2014]\s*|\s+-\s+|\s+(?:but|and|or|while|though)\s+/i;
-function submitsUpstream(text) {
-  return text.split(CLAUSE).some(clauseSubmitsUpstream);
+const READ_ONLY_ISSUE_LINK = /(?:https?:\/\/)?github\.com\/mvschwarz\/[\w.-]+\/issues(?:\/\d+)?(?:#[\w-]+)?(?=[)\s.,;:]|$)/gi;
+
+function flagged(sentence) {
+  if (UPSTREAM_SUBMISSION.some((pattern) => pattern.test(sentence))) return true;
+  const plain = sentence.replace(READ_ONLY_ISSUE_LINK, '');
+  return SUBMIT.test(plain) && RECIPIENT.test(plain);
 }
-// A URL never shares a clause with the words before it: its scheme's ":" and a markdown link's "(" end the clause. So a
-// read-only link ("[open this issue](https://github.com/mvschwarz/...)", "see the report at https://...") names no recipient
-// in the clause that holds the verb (o9o.137 battery: the URL stripping this replaced had become redundant).
-function clauseSubmitsUpstream(sentence) {
-  const verb = SUBMIT.exec(sentence);
-  if (!verb) return false;
-  return RECIPIENT.test(sentence.slice(verb.index)) && !NEGATION.test(sentence);
+
+// A sentence may wrap across lines, so lines are joined into blocks first. A block ends at a blank line and before a line that
+// starts a list item, a heading, a table row or a quote, so two items are never read as one sentence. Each sentence keeps the
+// line it starts on.
+const BLOCK_START = /^\s*(?:[-*+]\s|\d+[.)]\s|#|\||>)/;
+export function sentencesOf(text) {
+  const out = [];
+  let block = [];
+  const flush = () => {
+    let joined = '';
+    const starts = [];
+    for (const { line, body } of block) {
+      starts.push({ at: joined.length + (joined ? 1 : 0), line });
+      joined = joined ? `${joined} ${body}` : body;
+    }
+    let from = 0;
+    for (const piece of joined.split(/(?<=[.!?])\s+/)) {
+      const at = joined.indexOf(piece, from);
+      from = at + piece.length;
+      const line = [...starts].reverse().find((st) => st.at <= at)?.line ?? block[0].line;
+      if (piece.trim()) out.push({ line, text: piece.trim().replace(/\s+/g, ' ') });
+    }
+    block = [];
+  };
+  text.split('\n').forEach((raw, i) => {
+    const body = raw.trim();
+    if (!body) { if (block.length) flush(); return; }
+    if (block.length && BLOCK_START.test(raw)) flush();
+    block.push({ line: i + 1, body });
+  });
+  if (block.length) flush();
+  return out;
 }
 
 export function upstreamSubmissions(text) {
-  const found = [];
-  text.split('\n').forEach((line, i) => {
-    const sentences = line.split(/(?<=[.!?;])\s+/);
-    if (UPSTREAM_SUBMISSION.some((pattern) => pattern.test(line)) || sentences.some(submitsUpstream)) found.push({ line: i + 1, text: line.trim() });
-  });
-  return found;
+  return sentencesOf(text).filter((sentence) => flagged(sentence.text));
 }
+
+const ALLOWLIST_FILE = 'scripts/fork-report-route.allowlist.json';
+const ALLOWLIST = JSON.parse(readFileSync(path.join(root, ALLOWLIST_FILE), 'utf8'));
 
 // Every tracked file under the roots, text only (a file with a NUL byte is binary). No extension filter, so .sh files are read;
 // nothing generated or built is read, so a clean checkout gives the same census as a built one.
@@ -160,8 +183,8 @@ test('the census reads every shipped surface from its sources, on a clean tree t
   assert.ok(!files.some((f) => f.startsWith('packages/daemon/context-packs/') || f.startsWith('packages/cli/dist/')), 'build output read');
 });
 
-test('the matcher catches each way of pointing a reader upstream, and passes a read-only link', () => {
-  for (const line of [
+test('the matcher flags each way of pointing a reader upstream, negated or not, and passes a read-only issue link', () => {
+  for (const sentence of [
     'prepare a message to OpenRig support at hello@openrig.dev.',
     'or [open an issue](https://github.com/mvschwarz/openrig/issues/new/choose).',
     'use [GitHub Q&A](https://github.com/mvschwarz/openrig/discussions/categories/q-a).',
@@ -172,40 +195,71 @@ test('the matcher catches each way of pointing a reader upstream, and passes a r
     '## 6. Submit it to openrig.dev/rigs',
     'next to the ways people can contact OpenRig support.',
     "You're welcome to run it and tell us how it went.",
-    // verify-qa review 2: a negation in ANOTHER clause does not cancel the submission.
+    // verify-qa's probes, all three reviews: with no negation handling, each is flagged.
     'Report problems upstream, but do not include secrets.',
     'Report problems upstream and not here.',
     'Never mind the logs; file an issue with the upstream project.',
-  ]) assert.equal(upstreamSubmissions(line).length, 1, line);
-  // The fork's own wording, which names upstream only to rule it out or to read it, is not a submission.
-  for (const line of [
-    "report it to this fork's own intake, never upstream: see [Report a problem on this fork](#report-a-problem-on-this-fork).",
-    'file nothing with it (no issue, discussion or pull request on any `github.com/mvschwarz` repository) and send nothing to its support address.',
-    'For a confirmed bug, search the upstream issues first and name a matching one in your report, as a reference; the',
-    // A read-only link whose text is a verb: the URL names the upstream repository, and the sentence only points at it.
-    'The cause is in the [report](https://github.com/mvschwarz/openrig/issues/99), which is read-only here.',
-    // verify-qa review 2: a link whose text IS a submitting verb phrase, to an existing issue: read-only.
-    'Reference [open this issue](https://github.com/mvschwarz/openrig/issues/99) for background only.',
-    // A bare URL: its scheme's ":" ends the clause, so the repository it names is not the verb's recipient.
-    'See the report at https://github.com/mvschwarz/openrig/issues/99 for the cause.',
-    // A negation in the clause that holds the verb and the recipient does cancel it.
+    'Report problems upstream if they are not already filed.',
     'Do not report problems upstream.',
-    // Nouns, not submissions: shipped lines that named "file" or "open" beside "upstream" (found by this census).
-    'OpenRig adds a companion file that captures local-use insights without polluting the upstream content.',
-    '/** Parse the `{ provider?, view }` open body honestly (a non-object / missing view → structured 400 upstream). */',
-  ]) assert.deepEqual(upstreamSubmissions(line), [], line);
-  for (const line of [
+    // Either order; and a sentence that wraps across lines is one sentence.
+    'The upstream maintainers want you to report it.',
+    "report it to this fork's own intake, never upstream.",
+  ]) assert.equal(upstreamSubmissions(sentence).length, 1, sentence);
+  assert.equal(upstreamSubmissions('Report problems\nupstream, please.').length, 1, 'a sentence across two lines');
+  for (const sentence of [
+    // A read-only link to an upstream issue, or to the issue list, is not a recipient.
     '- Claude usage limits may not be detected: [#99](https://github.com/mvschwarz/openrig/issues/99).',
     'For everything else, search [open issues](https://github.com/mvschwarz/openrig/issues).',
-  ]) assert.deepEqual(upstreamSubmissions(line), [], line);
+    'The cause is in the [report](https://github.com/mvschwarz/openrig/issues/99), which is read-only here.',
+    'Reference [open this issue](https://github.com/mvschwarz/openrig/issues/99) for background only.',
+    'See the report at https://github.com/mvschwarz/openrig/issues/99 for the cause.',
+    // Nouns, not submitting verbs.
+    'OpenRig adds a companion file that captures local-use insights without polluting the upstream content.',
+    '/** Parse the `{ provider?, view }` open body honestly (a non-object / missing view → structured 400 upstream). */',
+  ]) assert.deepEqual(upstreamSubmissions(sentence), [], sentence);
+  // Two list items, or two paragraphs, are never one sentence.
+  assert.deepEqual(upstreamSubmissions('- report it here\n- the upstream project is read-only'), []);
+  assert.deepEqual(upstreamSubmissions('Report it here\n\nThe upstream project is read-only.'), []);
 });
 
-test('no shipped surface tells a reader to submit anything upstream', () => {
+test('every flagged shipped sentence is on the reviewed allowlist (file, exact sentence, reason)', () => {
+  const allowed = new Set(ALLOWLIST.map((e) => `${e.file}\u0000${e.sentence}`));
   const hits = [];
   for (const file of shippedFiles()) {
-    for (const hit of upstreamSubmissions(readFileSync(path.join(root, file), 'utf8'))) hits.push(`${file}:${hit.line}: ${hit.text}`);
+    for (const hit of upstreamSubmissions(readFileSync(path.join(root, file), 'utf8'))) {
+      if (!allowed.has(`${file}\u0000${hit.text}`)) hits.push(`${file}:${hit.line}: ${hit.text}`);
+    }
   }
   assert.deepEqual(hits, []);
+});
+
+/** What is wrong with allowlist entries: no reason, a duplicate, or a sentence no shipped file still flags (stale). */
+export function allowlistProblems(entries, shipped, textOf) {
+  const problems = [];
+  const seen = new Set();
+  for (const entry of entries) {
+    const key = `${entry.file}\u0000${entry.sentence}`;
+    if (seen.has(key)) problems.push(`duplicate: ${entry.file}: ${entry.sentence}`);
+    seen.add(key);
+    if (typeof entry.reason !== 'string' || entry.reason.trim().length < 20) problems.push(`no reason: ${entry.file}: ${entry.sentence}`);
+    const live = shipped.has(entry.file) && upstreamSubmissions(textOf(entry.file)).some((hit) => hit.text === entry.sentence);
+    if (!live) problems.push(`stale: ${entry.file}: ${entry.sentence}`);
+  }
+  return problems;
+}
+
+test('every allowlist entry is reviewed, and still matches a flagged sentence in a shipped file', () => {
+  assert.deepEqual(allowlistProblems(ALLOWLIST, new Set(shippedFiles()), (f) => readFileSync(path.join(root, f), 'utf8')), []);
+});
+
+test('the allowlist check names a stale entry, a missing reason and a duplicate', () => {
+  const text = { 'a.md': 'Report problems upstream.\n\nNothing else here.' };
+  const ok = { file: 'a.md', sentence: 'Report problems upstream.', reason: 'a reviewed reason that is long enough' };
+  assert.deepEqual(allowlistProblems([ok], new Set(['a.md']), (f) => text[f]), []);
+  assert.deepEqual(allowlistProblems([{ ...ok, sentence: 'Nothing else here.' }], new Set(['a.md']), (f) => text[f]), ['stale: a.md: Nothing else here.']);
+  assert.deepEqual(allowlistProblems([ok], new Set(), (f) => text[f]), ['stale: a.md: Report problems upstream.']);
+  assert.deepEqual(allowlistProblems([{ ...ok, reason: 'ok' }], new Set(['a.md']), (f) => text[f]), ['no reason: a.md: Report problems upstream.']);
+  assert.deepEqual(allowlistProblems([ok, ok], new Set(['a.md']), (f) => text[f]), ['duplicate: a.md: Report problems upstream.']);
 });
 
 test('the help names the fork\'s own route for a report', () => {
@@ -220,6 +274,9 @@ for (const phrasing of [
   'Report problems upstream.',
   'File an issue with the upstream project.',
   'Submit this issue to upstream maintainers.',
+  'Report problems upstream if they are not already filed.',
+  'Report problems upstream, but do not include secrets.',
+  'Do not report problems upstream.',
 ]) {
   test(`the matcher catches a plain phrasing: ${phrasing}`, () => {
     assert.equal(upstreamSubmissions(phrasing).length, 1);
