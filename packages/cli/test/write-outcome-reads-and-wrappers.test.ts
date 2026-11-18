@@ -17,6 +17,7 @@ import { sendCommand } from "../src/commands/send.js";
 import { queueCommand } from "../src/commands/queue.js";
 import { hostCommand } from "../src/commands/host.js";
 import { startupProofCommand } from "../src/commands/startup-proof.js";
+import { seatCommand } from "../src/commands/seat.js";
 import { createMcpServer } from "../src/mcp-server.js";
 import { runRemoteHttpOp } from "../src/remote-host-ops.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
@@ -145,6 +146,19 @@ describe("o9o.169 (1): a POST that only reads is not a write", () => {
     const error = await caught(() => new DaemonClient(daemon.url).post("/api/seat/handover/dev-impl%40my-rig", { dryRun: true }, { read: true }));
     expect(daemon.received).toHaveLength(1);
     expect(error.writeOutcome).toBeUndefined();
+  });
+
+  it("rig seat handover --dry-run whose reply is lost says nothing about a write; the real handover stays UNKNOWN (control)", async () => {
+    const dry = await droppingDaemon();
+    const dryRun = await run(seatCommand({ lifecycleDeps: running(), clientFactory: () => new DaemonClient(dry.url) }),
+      ["seat", "handover", "dev-impl@my-rig", "--reason", "context-wall", "--dry-run"]);
+    expect(dry.received.map((r) => r.path)).toEqual(["/api/seat/handover/dev-impl%40my-rig"]);
+    expect(dryRun.output).not.toContain("UNKNOWN");
+    const real = await droppingDaemon();
+    const handover = await run(seatCommand({ lifecycleDeps: running(), clientFactory: () => new DaemonClient(real.url) }),
+      ["seat", "handover", "dev-impl@my-rig", "--reason", "context-wall"]);
+    expect(real.received.map((r) => r.path)).toEqual(["/api/seat/handover/dev-impl%40my-rig"]);
+    expect(handover.output).toContain("UNKNOWN");
   });
 
   it("rig capture whose reply is lost says nothing about a write", async () => {
