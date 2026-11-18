@@ -11,7 +11,7 @@
 // at packages/daemon/src/server.ts) but NOT by the cli — so a fresh global install could not start
 // the daemon (the worst-audience first-run break). This gate makes that whole class un-shippable.
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 function runtimeDeps(pkgRelToTest: string): Record<string, string> {
@@ -37,6 +37,22 @@ describe("packaging: cli mirrors the vendored daemon's runtime deps (OPR.0.4.1.3
       expect(cliDeps[dep], dep).toBe(daemonDeps[dep]);
     }
     expect(daemonDeps["@hono/node-ws"]).toBeUndefined();
+    expect(cliDeps["@hono/node-ws"]).toBeUndefined();
+  });
+
+  // workspaces-o9o.125: the root package.json keeps @hono/node-ws and @hono/node-server 1.x as dev-only pins for one test's old
+  // daemon build. They resolve from the repo root, so a daemon or cli source file that imported @hono/node-ws would work in this
+  // checkout and fail in a published install, which carries neither. No source file may name it as a module.
+  it("no daemon or cli source file imports @hono/node-ws (it resolves only from the repo root's dev-only pins)", () => {
+    const sourceFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      return entry.isDirectory() ? sourceFiles(full) : /\.[cm]?[jt]sx?$/.test(entry.name) ? [full] : [];
+    });
+    const roots = ["../../daemon/src", "../src"].map((rel) => path.resolve(__dirname, rel));
+    const files = roots.flatMap(sourceFiles);
+    expect(files.length).toBeGreaterThan(500);
+    const NAMES_IT = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]@hono\/node-ws(?:\/[^"'`]*)?["'`]/;
+    expect(files.filter((file) => NAMES_IT.test(readFileSync(file, "utf8"))).map((file) => path.relative(path.resolve(__dirname, "../.."), file))).toEqual([]);
   });
 
   it("keeps mirrored shared deps at matching ranges (no drift between cli + daemon)", () => {

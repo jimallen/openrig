@@ -31,6 +31,14 @@
     "gate:substance": "node scripts/check-substance-gate.mjs",
     "gate": "node scripts/gate-lane.mjs"
   },
+  "//": [
+    "devDependencies (workspaces-o9o.125): @hono/node-ws and @hono/node-server 1.x are dev-only. packages/daemon/test/cross-host-messages.real.test.ts runs a real older daemon build (its OLD_BUILD), whose server.ts imports @hono/node-ws; these are the packages that build declared.",
+    "The daemon and the cli run on @hono/node-server 2 and never import @hono/node-ws; packages/cli/test/packaging-deps-mirror.test.ts fails if one starts to, or if a published manifest declares it."
+  ],
+  "devDependencies": {
+    "@hono/node-server": "^1.19.11",
+    "@hono/node-ws": "1.3.1"
+  },
   "engines": {
     "node": "^22 || ^24"
   }

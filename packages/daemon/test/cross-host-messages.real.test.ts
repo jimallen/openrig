@@ -3,7 +3,7 @@
 // source on the same database, so a mixed pair is two builds, not a flag.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hcTerminalName } from "../src/adapters/hc-seat.js";
@@ -52,7 +52,14 @@ describe.skipIf(!HC || !gitHasOldBuild)("a message across two real daemons", () 
     expect(spawnSync("git", ["-C", REPO, "archive", "--format=tar", "-o", archive, OLD_BUILD, "packages/daemon", "tsconfig.base.json"]).status).toBe(0);
     expect(spawnSync("tar", ["-xf", archive, "-C", old]).status).toBe(0);
     symlinkSync(join(REPO, "node_modules"), join(old, "node_modules"));
-    symlinkSync(join(DAEMON_PACKAGE, "node_modules"), join(old, "packages/daemon/node_modules"));
+    // workspaces-o9o.125: the old build declared @hono/node-server 1 and imports @hono/node-ws; today's daemon has node-server 2 and no
+    // node-ws. Its node_modules is today's daemon modules with @hono pointed at the root's dev-only 1.x pair (root package.json "//").
+    const oldModules = join(old, "packages/daemon/node_modules");
+    mkdirSync(join(oldModules, "@hono"), { recursive: true });
+    for (const entry of readdirSync(join(DAEMON_PACKAGE, "node_modules"))) {
+      if (entry !== "@hono") symlinkSync(join(DAEMON_PACKAGE, "node_modules", entry), join(oldModules, entry));
+    }
+    for (const name of ["node-server", "node-ws"]) symlinkSync(join(REPO, "node_modules/@hono", name), join(oldModules, "@hono", name));
     oldPackage = join(old, "packages/daemon");
     expect(readFileSync(join(oldPackage, "src/server.ts"), "utf8")).not.toContain("messaging");
   });
