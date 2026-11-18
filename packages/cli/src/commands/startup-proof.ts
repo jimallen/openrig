@@ -2,7 +2,8 @@ import { ACTIVITY_ENDPOINT_POLICY, readCredentialFile } from "@openrig/daemon/cr
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
-import { formatDaemonHostForUrl } from "../client.js";
+import { shellWord } from "@openrig/daemon/command-text";
+import { connectionErrorCode, formatDaemonHostForUrl, requestProvablyNotSent } from "../client.js";
 
 export interface StartupProofDeps {
   env?: NodeJS.ProcessEnv;
@@ -14,6 +15,18 @@ export interface StartupProofSubmitResult {
   oriented: "verified";
   nodeId: string;
   challengeId: string;
+}
+
+/**
+ * workspaces-o9o.169: the startup proof is a write (the daemon records the seat as oriented), sent by raw fetch. When its
+ * reply is lost the outcome is UNKNOWN and `recheck` names the exact re-read; only a failure that proves nothing was sent
+ * (requestProvablyNotSent) says "was not sent".
+ */
+export class StartupProofTransportError extends Error {
+  constructor(message: string, readonly outcome: "not-sent" | "unknown", readonly recheck: string) {
+    super(message);
+    this.name = "StartupProofTransportError";
+  }
 }
 
 interface Endpoint {
@@ -65,22 +78,45 @@ export async function submitStartupProof(
     throw new Error("OpenRig startup proof endpoint is unavailable");
   }
 
-  const res = await fetchImpl(new URL("/api/activity/hooks", endpoint.baseUrl).toString(), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${endpoint.token}`,
-    },
-    body: JSON.stringify({
-      eventFamily: "startup_proof",
-      sessionName: first(env["OPENRIG_SESSION_NAME"], env["RIGGED_SESSION_NAME"]),
-      nodeId: first(env["OPENRIG_NODE_ID"], env["RIGGED_NODE_ID"]),
-      runtime: first(env["OPENRIG_RUNTIME"], env["RIGGED_RUNTIME"]),
-      challengeId: input.challengeId,
-      answer: input.answer,
-    }),
-  });
-  const text = await res.text();
+  const session = first(env["OPENRIG_SESSION_NAME"], env["RIGGED_SESSION_NAME"]);
+  const recheck = session
+    ? `rig ps --nodes --session ${shellWord(session)} --json --fields canonicalSessionName,oriented`
+    : "rig ps --nodes -A --json --fields canonicalSessionName,oriented";
+  const transportFailure = (err: unknown, notSent: boolean): StartupProofTransportError => {
+    const msg = err instanceof Error ? err.message : String(err);
+    const cause = connectionErrorCode(err);
+    const detail = `${msg}${cause && !msg.includes(cause) ? ` (${cause})` : ""}`;
+    return notSent
+      ? new StartupProofTransportError(`startup_proof was not sent to ${endpoint.baseUrl}: ${detail}`, "not-sent", recheck)
+      : new StartupProofTransportError(`startup_proof outcome is UNKNOWN: the request may have reached ${endpoint.baseUrl}, and no reply came back: ${detail}`, "unknown", recheck);
+  };
+  let res: Response;
+  let text: string;
+  try {
+    res = await fetchImpl(new URL("/api/activity/hooks", endpoint.baseUrl).toString(), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${endpoint.token}`,
+      },
+      body: JSON.stringify({
+        eventFamily: "startup_proof",
+        sessionName: first(env["OPENRIG_SESSION_NAME"], env["RIGGED_SESSION_NAME"]),
+        nodeId: first(env["OPENRIG_NODE_ID"], env["RIGGED_NODE_ID"]),
+        runtime: first(env["OPENRIG_RUNTIME"], env["RIGGED_RUNTIME"]),
+        challengeId: input.challengeId,
+        answer: input.answer,
+      }),
+    });
+  } catch (err) {
+    throw transportFailure(err, requestProvablyNotSent(err));
+  }
+  try {
+    text = await res.text();
+  } catch (err) {
+    // The daemon answered, so the request arrived; only the reply was lost.
+    throw transportFailure(err, false);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -117,6 +153,11 @@ export function startupProofCommand(depsOverride?: StartupProofDeps): Command {
         }
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));
+        if (err instanceof StartupProofTransportError) {
+          console.error(err.outcome === "unknown"
+            ? `  Re-read with '${err.recheck}' before submitting again: the daemon may already have recorded it.`
+            : "  Check the daemon with 'rig daemon status', then submit again.");
+        }
         process.exitCode = 1;
       }
     });

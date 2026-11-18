@@ -109,6 +109,21 @@ describe("rig host pair (OPR.0.4.6.MH1 FR-6)", () => {
     expect(err.join("\n")).not.toContain("UNKNOWN");
   });
 
+  it("o9o.169: a lost pair reply names the exact re-read on the target", async () => {
+    const deps: DoctorDeps = { ...fakeDeps({ poll: [] }), httpPost: async () => { throw fetchFailure("UND_ERR_SOCKET"); } };
+    const { err } = await capture(() => run(deps, ["pair", "http://vps-a:7433", "--timeout", "10"]));
+    expect(err.join("\n")).toContain("rig queue list -A --source host-pair@kernel --json");
+  });
+
+  it("o9o.169: a pair request fetch refused by its bad-port list (no OS code) was not sent: it could not reach the target", async () => {
+    const badPort = Object.assign(new TypeError("fetch failed"), { cause: new Error("bad port") });
+    const deps: DoctorDeps = { ...fakeDeps({ poll: [] }), httpPost: async () => { throw badPort; } };
+    const { err, exitCode } = await capture(() => run(deps, ["pair", "http://vps-a:7433", "--timeout", "10"]));
+    expect(exitCode).toBe(1);
+    expect(err.join("\n")).toContain("could not reach http://vps-a:7433");
+    expect(err.join("\n")).not.toContain("UNKNOWN");
+  });
+
   it("denied: loud error, exit 1, NOTHING persists", async () => {
     const deps = fakeDeps({ poll: [{ status: 200, body: { status: "denied" } }] });
     const { err, exitCode } = await capture(() => run(deps, ["pair", "http://vps-a:7433", "--timeout", "10"]));

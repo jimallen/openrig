@@ -27,11 +27,12 @@ export interface RemoteOpResult {
 }
 
 // The connection failures that prove the request never reached the remote daemon are the client's one rule
-// (connectionProvablyNotSent, client.ts), which every local write reads too (workspaces-o9o.169).
+// (requestProvablyNotSent, client.ts), recorded on the error as provablyNotSent; every local write reads it too (workspaces-o9o.169).
 
 function requestMayHaveArrived(err: unknown): boolean {
   if (err instanceof DaemonTimeoutError) return true;
-  if (err instanceof DaemonConnectionError) return !connectionProvablyNotSent(err.causeCode);
+  // The client records a proven no-send itself, including fetch's bad-port refusal, which has no cause code.
+  if (err instanceof DaemonConnectionError) return err.provablyNotSent !== true && !connectionProvablyNotSent(err.causeCode);
   return true;
 }
 

@@ -2,8 +2,23 @@ import { transportSendBudgetMs } from "@openrig/daemon/transport-budget";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { terminalAuthHeaders, type DaemonClient, type DaemonResponse } from "./client.js";
+import { DaemonConnectionError, terminalAuthHeaders, type DaemonClient, type DaemonResponse } from "./client.js";
+import { renderDaemonTransportError } from "./cli-error.js";
+import { shellWord } from "@openrig/daemon/command-text";
 import { CLI_VERSION } from "./version.js";
+
+/**
+ * workspaces-o9o.169: a write tool's failure, rendered by the CLI's own transport-error renderer so a lost reply reads as an
+ * UNKNOWN outcome with the exact re-read, and a refused connection as not delivered; the tool result is never the bare message.
+ */
+function writeToolError(err: unknown, recheck: string): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  if (err instanceof DaemonConnectionError && !err.recheck) err.recheck = recheck;
+  const lines: string[] = [];
+  if (renderDaemonTransportError(err, { out: (l) => lines.push(l), err: (l) => lines.push(l), json: false })) {
+    return { content: [{ type: "text" as const, text: lines.join("\n") }], isError: true as const };
+  }
+  return { content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }], isError: true as const };
+}
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 
@@ -75,7 +90,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
         );
         return mapResult(res);
       } catch (err) {
-        return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
+        return writeToolError(err, "rig ps -A");
       }
     },
   );
@@ -100,7 +115,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
         });
         return mapResult(res);
       } catch (err) {
-        return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
+        return writeToolError(err, "rig ps -A");
       }
     },
   );
@@ -147,7 +162,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
         const res = await client.post(`/api/rigs/${encodeURIComponent(rigId)}/snapshots`, {});
         return mapResult(res);
       } catch (err) {
-        return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
+        return writeToolError(err, `rig snapshot list ${shellWord(rigId)}`);
       }
     },
   );
@@ -182,7 +197,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
         const res = await client.post(`/api/rigs/${encodeURIComponent(rigId)}/restore/${encodeURIComponent(snapshotId)}`, {});
         return mapResult(res);
       } catch (err) {
-        return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
+        return writeToolError(err, `rig ps --nodes --rig ${shellWord(rigId)}`);
       }
     },
   );
@@ -290,7 +305,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
         }, transportSendOptions(waitForIdleMs));
         return mapResult(res);
       } catch (err) {
-        return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
+        return writeToolError(err, `rig capture ${shellWord(session)}`);
       }
     },
   );
@@ -351,7 +366,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
         });
         return mapResult(res);
       } catch (err) {
-        return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
+        return writeToolError(err, `rig chatroom history ${shellWord(rigName)}`);
       }
     },
   );
@@ -420,7 +435,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
           return result?.node?.status !== undefined && result.node.status !== "launched";
         });
       } catch (err) {
-        return { content: [{ type: "text" as const, text: (err as Error).message }], isError: true as const };
+        return writeToolError(err, `rig ps --nodes --rig ${shellWord(rigId)}`);
       }
     },
   );

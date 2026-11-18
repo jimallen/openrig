@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { resolveEffectiveHost } from "../host-selection.js";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, DaemonConnectionError } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
@@ -10,7 +10,7 @@ import { runRemoteHttpOp } from "../remote-host-ops.js";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
 import { resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
 import { transportFanoutBudgetMs } from "@openrig/daemon/transport-budget";
-import { refuseEmptyMessage, transportBroadcastOptions } from "./send.js";
+import { captureRechecks, refuseEmptyMessage, transportBroadcastOptions } from "./send.js";
 
 export interface BroadcastDeps extends StatusDeps {
   /** Test seam: inject a registry loader so no real ~/.openrig is touched. */
@@ -125,7 +125,12 @@ selection, not the agent@rig@host sugar.`)
       // header). An env-less broadcast delivers-and-labels rather than refusing.
       body.envelopeSender = seatSender ?? SENDER_FALLBACK;
 
-      const res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, transportBroadcastOptions());
+      const res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, transportBroadcastOptions()).catch((err: unknown) => {
+        // workspaces-o9o.169: a lost reply leaves the broadcast UNKNOWN; name the capture that re-reads its targets.
+        const [recheck] = captureRechecks({ rig: opts.rig, pod: opts.pod });
+        if (err instanceof DaemonConnectionError && recheck) err.recheck = recheck;
+        throw err;
+      });
 
       if (opts.json) {
         console.log(JSON.stringify(res.data));

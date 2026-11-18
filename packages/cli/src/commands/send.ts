@@ -120,7 +120,18 @@ export function wrapSendBody(
  * Shared by both local paths so single-seat and fan-out remediation are
  * IDENTICAL BY CONSTRUCTION rather than by hand-maintained duplication.
  */
-function printTransportFailure(err: DaemonConnectionError, opts?: { json?: boolean }): void {
+/**
+ * workspaces-o9o.169: the exact re-reads of a send's or broadcast's effect, one `rig capture` per target: a session, each
+ * session of a --to list, or the rig/pod a fan-out named. Empty for a broadcast to every rig, which no single capture covers.
+ */
+export function captureRechecks(target: { session?: string; to?: readonly string[]; rig?: string; pod?: string }): string[] {
+  if (target.session) return [`rig capture ${shellWord(target.session)}`];
+  if (target.to && target.to.length > 0) return target.to.map((s) => `rig capture ${shellWord(s)}`);
+  const scope = [target.rig ? `--rig ${shellWord(target.rig)}` : "", target.pod ? `--pod ${shellWord(target.pod)}` : ""].filter(Boolean).join(" ");
+  return scope ? [`rig capture ${scope}`] : [];
+}
+
+function printTransportFailure(err: DaemonConnectionError, opts?: { json?: boolean; rechecks?: readonly string[] }): void {
   // Remediation values are defined ONCE; the human path adds its two-space
   // indentation at render so the existing three-line output stays byte-identical,
   // while the --json envelope carries the clean strings. Same
@@ -138,7 +149,9 @@ function printTransportFailure(err: DaemonConnectionError, opts?: { json?: boole
     ? "Delivery UNCONFIRMED — the daemon may have received and delivered the message."
     : "The message was not sent.";
   const action = timedOut
-    ? `Reconcile by EFFECT before any resend: check the pane/target for the message (${setOff("rig capture <session>")}). ` +
+    ? `Reconcile by EFFECT before any resend: check the pane/target for the message (${
+      opts?.rechecks && opts.rechecks.length > 0 ? opts.rechecks.map((c) => setOff(c)).join(", ") : `${setOff("rig ps -A")}, then ${setOff("rig capture --rig <rig>")} for each rig`
+    }). ` +
       "A resend without checking risks a duplicate. Then 'rig daemon status' for the probe picture."
     : "Inspect the configured target with 'rig status'; a failed health probe does not prove the daemon is stopped. " +
       "If the target is wrong, check OPENRIG_URL / RIGGED_URL or daemon.host + daemon.port. " +
@@ -568,7 +581,7 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
           // configured target + the underlying error) — never the bare
           // probe-derived restart line. 1b45cf21 adds the actionable next
           // step after that real failure.
-          printTransportFailure(err, { json: opts.json });
+          printTransportFailure(err, { json: opts.json, rechecks: captureRechecks({ session }) });
           process.exitCode = 1;
           return;
         }
@@ -1139,7 +1152,7 @@ async function runFanOutSend(params: {
       // 1b45cf21 — same helper as single-seat, so the remediation is
       // byte-identical across both local paths by construction (including the
       // --json envelope, threaded identically).
-      printTransportFailure(err, { json: opts.json });
+      printTransportFailure(err, { json: opts.json, rechecks: captureRechecks({ to: toList, rig, pod }) });
       process.exitCode = 1;
       return;
     }
@@ -1252,6 +1265,6 @@ export function transportBroadcastOptions(recipients?: number): { timeoutMs: num
 }
 
 /** B8-2 test seam: the transport-failure renderer, exported for the honesty pins. */
-export function printTransportFailureForTest(err: DaemonConnectionError, opts?: { json?: boolean }): void {
+export function printTransportFailureForTest(err: DaemonConnectionError, opts?: { json?: boolean; rechecks?: readonly string[] }): void {
   printTransportFailure(err, opts);
 }

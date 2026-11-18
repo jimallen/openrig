@@ -913,7 +913,8 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         }).catch((error: unknown) => {
           // A pre-header disconnect can follow a committed create. Preserve the
           // typed error, but do not let the shared renderer assert nondelivery.
-          if (error instanceof DaemonConnectionError) {
+          if (error instanceof DaemonConnectionError && !error.provablyNotSent) {
+            // workspaces-o9o.169: a create that provably never left (refused, bad port) stays "not delivered".
             error.writeOutcome = "unknown";
             // workspaces-o9o.169: a local create names its exact re-read; a remote one carries its OPENRIG_URL command in the message.
             if (!hostResolved.hostId || hostResolved.hostId === "local") error.recheck = show;

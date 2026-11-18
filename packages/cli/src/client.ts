@@ -95,12 +95,46 @@ export function connectionProvablyNotSent(causeCode: string | undefined): boolea
   return causeCode !== undefined && NOT_SENT_CAUSES.has(causeCode);
 }
 
+/** The one rule for a raw fetch failure (workspaces-o9o.169): true only when it proves the request was never sent, by its OS
+ *  cause (NOT_SENT_CAUSES) or by fetch's own bad-port refusal, which carries no OS code. The client and every raw writer
+ *  (host pairing, startup proof) read it, so no wrapper can call a known no-send UNKNOWN. */
+export function requestProvablyNotSent(err: unknown): boolean {
+  return connectionProvablyNotSent(connectionErrorCode(err)) || fetchRefusedBadPort(err);
+}
+
+/**
+ * Daemon POST routes that only read (workspaces-o9o.169): each handler validates, plans, previews, inspects a copy, searches
+ * or captures a pane, and changes nothing a caller would have to check before a retry (some record that the question was
+ * asked). A write is defined by what it does, not by its HTTP method, so a lost reply on one of these is not an unknown write.
+ * Matched exactly on the path (the query string aside); `:seat` is one path segment. A route is listed only after its handler
+ * was read; anything not listed is a write, the safe side. A POST whose own body decides read or write (the handover dry
+ * run) marks the one request with `read: true` instead.
+ */
+const READ_ONLY_POST_ROUTES: readonly RegExp[] = [
+  /^\/api\/transport\/capture$/, /^\/api\/bundles\/inspect$/, /^\/api\/agents\/validate$/,
+  /^\/api\/packages\/validate$/, /^\/api\/packages\/plan$/, /^\/api\/rigs\/import\/validate$/,
+  /^\/api\/rigs\/import\/preflight$/, /^\/api\/workflow\/validate$/, /^\/api\/workflow\/compile$/,
+  /^\/api\/workspace\/validate$/, /^\/api\/workspace\/doctor$/, /^\/api\/specs\/review\/rig$/,
+  /^\/api\/specs\/review\/agent$/, /^\/api\/wake-resolve$/, /^\/api\/ask$/, /^\/api\/bootstrap\/plan$/,
+  /^\/api\/seat\/launch-plan\/[^/]+$/, /^\/api\/seat\/restart-plan\/[^/]+$/,
+];
+
+/** True when this request writes: any method but GET and HEAD, unless its route is a listed read or the caller marked it one. */
+function requestWrites(method: string, path: string, options?: DaemonRequestOptions): boolean {
+  if (method === "GET" || method === "HEAD" || options?.read === true) return false;
+  const route = path.split("?")[0] ?? path;
+  return !READ_ONLY_POST_ROUTES.some((pattern) => pattern.test(route));
+}
+
 export class DaemonConnectionError extends Error {
   /** A write caller cannot infer nondelivery from losing the response. Set by DaemonClient for every write (any method
    *  but GET and HEAD) whose failure does not prove the request was never sent (workspaces-o9o.169). */
   writeOutcome?: "unknown";
   /** The exact command that re-reads what this write changes, when the caller knows it (`rig queue show <id>`). */
   recheck?: string;
+  /** Set by DaemonClient, whatever the method, when the failure proves the request was never sent (requestProvablyNotSent):
+   *  a wrapper reads this, never the cause code alone (fetch's bad-port refusal has none). */
+  provablyNotSent?: true;
   /** #275: the OS cause, so a connection this machine blocked is not rendered as a stopped daemon. */
   causeCode?: string;
 
@@ -162,6 +196,9 @@ interface DaemonRequestOptions {
   signal?: AbortSignal;
   /** Per-call header overrides (e.g., `Authorization: Bearer ...`). */
   headers?: Record<string, string>;
+  /** This request only reads, though its method is not GET (workspaces-o9o.169): a lost reply is then not an unknown write.
+   *  For a POST whose body decides it (a dry run); a route that always reads is listed in READ_ONLY_POST_ROUTES instead. */
+  read?: true;
 }
 
 interface DaemonClientOptions {
@@ -346,8 +383,9 @@ export class DaemonClient {
         causeCode,
       );
       // workspaces-o9o.169: a write whose request may have reached the daemon has an unknown outcome, never "not delivered".
-      const method = (init.method ?? "GET").toUpperCase();
-      if (method !== "GET" && method !== "HEAD" && !connectionProvablyNotSent(causeCode) && !fetchRefusedBadPort(err)) failure.writeOutcome = "unknown";
+      const notSent = requestProvablyNotSent(err);
+      if (notSent) failure.provablyNotSent = true;
+      else if (requestWrites((init.method ?? "GET").toUpperCase(), path, options)) failure.writeOutcome = "unknown";
       throw failure;
     }
   }
