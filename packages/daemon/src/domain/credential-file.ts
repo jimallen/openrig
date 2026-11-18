@@ -130,9 +130,13 @@ export const DAEMON_STATE_POLICY: CredentialFilePolicy = { label: "the daemon st
 export const OPENRIG_CONFIG_POLICY: CredentialFilePolicy = { label: "the OpenRig config file", kind: "registry", maxBytes: 1024 * 1024, followLinks: true };
 export const SLACK_CONNECTOR_POLICY: CredentialFilePolicy = { label: "the Slack connector config", kind: "registry", maxBytes: 256 * 1024 };
 /** o9o.160: Codex's config.toml chooses the provider credential. It is Codex's (or the operator's) file and OpenRig never chmods it:
- *  a link OpenRig did not make (SEAT_CREDENTIAL_LINKS codex-config), another user's file, or one others can change is refused
- *  (CoS 11-18 13:51Z, from verify-ops' census: every live one, sparky and stu, has no group/other write; mbp unverified). */
-export const CODEX_CONFIG_POLICY: CredentialFilePolicy = { label: "the Codex config", kind: "registry", maxBytes: 1024 * 1024 };
+ *  another user's file, or one others can change, is refused (CoS 11-18 13:51Z, from verify-ops' census: every live one, sparky and
+ *  stu, has no group/other write; mbp unverified).
+ *  THE ASYMMETRY (CoS 11-18 18:50Z): config.toml is configuration, not a login, and OF-42 supports a dotfiles-linked shared
+ *  ~/.codex/config.toml, so a link AT the shared config is followed and its real target is judged by the whole rule (followLinks).
+ *  The shared auth.json is a login: a link at it refuses (Jim, 17:47Z; CODEX_AUTH_POLICY has no followLinks). A seat's own
+ *  config.toml is still followed only to the exact shared path (SEAT_CREDENTIAL_LINKS codex-config: its linkTarget wins). */
+export const CODEX_CONFIG_POLICY: CredentialFilePolicy = { label: "the Codex config", kind: "registry", maxBytes: 1024 * 1024, followLinks: true };
 
 /**
  * The seat credential links OpenRig itself makes, and the only links the credential rule follows (o9o.151; CoS 11-18 11:34Z, from

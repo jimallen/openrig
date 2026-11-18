@@ -1,3 +1,4 @@
+import { CODEX_CONFIG_POLICY, readCredentialFile, type CredentialFileRead } from "@openrig/daemon/credential-file";
 import { Command } from "commander";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, accessSync, constants, mkdirSync } from "node:fs";
@@ -52,6 +53,8 @@ export interface SetupDeps {
   /** The seat processes for setup's doctor verification (rig setup passes the /proc reader). Required, as on DoctorDeps: workspaces-o9o.185. */
   readSeatProcesses: () => SeatProcess[] | null;
   readFile: (path: string) => string | null;
+  /** workspaces-o9o.160: Codex's config.toml under the credential rule (see provider-auth.ts). */
+  readCodexConfig?: (path: string) => CredentialFileRead;
   writeFile: (path: string, content: string) => void;
   exists: (path: string) => boolean;
   mkdirp?: (path: string) => void;
@@ -123,6 +126,7 @@ export function defaultDeps(): SetupDeps {
         stdio: ["pipe", "pipe", "pipe"],
       }),
     readFile: (p: string) => { try { return readFileSync(p, "utf-8"); } catch { return null; } },
+    readCodexConfig: (p: string) => readCredentialFile(p, CODEX_CONFIG_POLICY), // o9o.160: Codex config under the credential rule
     writeFile: (p: string, c: string) => writeFileSync(p, c, "utf-8"),
     exists: (p: string) => existsSync(p),
     mkdirp: (p: string) => mkdirSync(p, { recursive: true }),

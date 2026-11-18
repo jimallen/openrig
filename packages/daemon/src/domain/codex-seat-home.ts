@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { unrestrictedCodexConfigWrites, type CodexConfigWritePolicy } from "./codex-config-write-policy.js";
-import { CODEX_AUTH_POLICY, CredentialFileRefusedError, seatCredentialLinkPolicy, type CredentialFileReader } from "./credential-file.js";
+import { CredentialFileRefusedError, SEAT_CREDENTIAL_LINKS, seatCredentialLinkPolicy, type CredentialFileReader, type SeatCredentialLink } from "./credential-file.js";
 import { codexActivityHookTrustRecords, computeCodexHandlerHash, findTomlTable, lineStartsAtDocumentLevel, upsertCodexHookTrust, upsertVerifiedCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
@@ -349,6 +349,15 @@ async function syncSeatHookTrust(home: string, log: (message: string) => void, p
   return run;
 }
 
+/** The seat links this module makes and keeps only to a shared file that passes its policy (SEAT_CREDENTIAL_LINKS). */
+const SEAT_FILE_LINKS: Readonly<Record<string, SeatCredentialLink>> = { "auth.json": "codex-auth", "config.toml": "codex-config" };
+const JUDGED_SEAT_LINKS: Readonly<Record<SeatCredentialLink, string>> = {
+  "codex-auth": "the shared Codex login",
+  "codex-config": "the shared Codex config",
+  "pi-auth": "the operator's Pi login",
+  "pi-models": "the operator's Pi models",
+};
+
 /**
  * Why the seat's auth.json must not be linked or kept, as the error that stops the launch, or null (o9o.151 F2; attempt-3 rulings).
  * Judged through the CredentialFileReader port, without reading the login. The destination first, whether or not a shared source
@@ -356,20 +365,23 @@ async function syncSeatHookTrust(home: string, log: (message: string) => void, p
  * policy; a seat's own auth.json is judged as it is. An absent destination: the shared login is judged before it is linked. A link
  * someone made is never replaced.
  */
-async function seatAuthLinkRefusal(credentialFiles: CredentialFileReader, source: string, dest: string): Promise<CredentialFileRefusedError | null> {
-  const destVerdict = credentialFiles.inspect(dest, seatCredentialLinkPolicy("codex-auth", source));
+async function seatLinkRefusal(credentialFiles: CredentialFileReader, link: SeatCredentialLink, source: string, dest: string): Promise<CredentialFileRefusedError | null> {
+  const what = JUDGED_SEAT_LINKS[link];
+  const destVerdict = credentialFiles.inspect(dest, seatCredentialLinkPolicy(link, source));
   const pointsAt = await fs.readlink(dest).then((at) => path.resolve(path.dirname(dest), at)).catch(() => null);
   const wrongLink = (at: string) => new CredentialFileRefusedError(dest, "unexpected_link_target",
-    `${dest} is a link to ${at}, not to the shared Codex login ${source}; OpenRig does not replace a link someone made: remove it (OpenRig links the shared login at the next launch) or point it at ${source}`);
+    `${dest} is a link to ${at}, not to ${what} ${source}; OpenRig does not replace a link someone made: remove it (OpenRig links ${what} at the next launch) or point it at ${source}`);
   if (!destVerdict.ok && destVerdict.problem === "unexpected_link_target") return wrongLink(pointsAt ?? "(unreadable)");
   if (!destVerdict.ok && destVerdict.problem !== "missing") return new CredentialFileRefusedError(dest, destVerdict.problem, destVerdict.message);
   // "missing" is an absent name, or a dangling link (its target is gone): a dangling link is still judged by where it points.
   if (!destVerdict.ok && pointsAt !== null && pointsAt !== source) return wrongLink(pointsAt);
   // The shared login is judged ITSELF, whatever the destination verdict (Jim, via the CoS 17:47Z): a seat link that resolves to the
   // same real file as a shared auth.json which is itself a symlink would otherwise pass. A link at the shared path refuses.
-  const sourceVerdict = credentialFiles.inspect(source, CODEX_AUTH_POLICY);
+  // The asymmetry (CoS 18:50Z): codex-auth's policy refuses a link at the shared auth.json (a login, Jim's rule); codex-config's
+  // policy follows a dotfiles link at the shared config.toml (configuration, OF-42) and judges its real target. Never chmod-ed.
+  const sourceVerdict = credentialFiles.inspect(source, SEAT_CREDENTIAL_LINKS[link].policy);
   if (!sourceVerdict.ok && sourceVerdict.problem !== "missing") {
-    return new CredentialFileRefusedError(source, sourceVerdict.problem, `not linking the seat to the shared Codex login: ${sourceVerdict.message}`);
+    return new CredentialFileRefusedError(source, sourceVerdict.problem, `not linking the seat to ${what}: ${sourceVerdict.message}`);
   }
   return null;
 }
@@ -479,8 +491,10 @@ export async function ensureCodexSeatHome(
     // that passes the codex-auth policy (SEAT_CREDENTIAL_LINKS codex-auth), judged before the shared source is even looked for, so an
     // existing seat file or link is judged whether or not a shared login exists. A refusal is its own error kind: the launchers stop
     // the launch on it instead of falling back to the shared home.
-    if (entry === "auth.json") {
-      const refusal = await seatAuthLinkRefusal(opts.credentialFiles, source, dest);
+    // o9o.160: the seat's config.toml (it chooses the provider credential) is made and kept the same way, under codex-config.
+    const judged = SEAT_FILE_LINKS[entry];
+    if (judged) {
+      const refusal = await seatLinkRefusal(opts.credentialFiles, judged, source, dest);
       if (refusal) throw refusal;
     }
     try {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { credentialFileOpsFrom, readCredentialFileWith, seatCredentialLinkPolicy } from "./credential-file.js";
 import nodePath from "node:path";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -1013,6 +1014,8 @@ export function accountLineNames(line: string, expected: string): boolean {
   return new RegExp(`(^|[^A-Za-z0-9._%+@-])${escaped}($|[^A-Za-z0-9._%+@-])`, "i").test(line.replace(/^Account:\s*/i, " "));
 }
 
+const codexConfigOps = credentialFileOpsFrom(fs, () => (typeof process.getuid === "function" ? process.getuid() : -1));
+
 export function defaultInPlaceRestartIo(): InPlaceRestartIo {
   return {
     async readProcess(pid) {
@@ -1037,10 +1040,13 @@ export function defaultInPlaceRestartIo(): InPlaceRestartIo {
       return new CodexThreadIdResolver({ codexHome }).resolve(pid, startedAt);
     },
     readCredentialStore(codexHome) {
-      let text: string;
-      try { text = fs.readFileSync(nodePath.join(codexHome, "config.toml"), "utf8"); } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : undefined;
-      }
+      // workspaces-o9o.160: under the credential rule. A seat's config.toml may be OpenRig's link to the shared CODEX_HOME config
+      // (SEAT_CREDENTIAL_LINKS codex-config, OF-183); any other link, another user's file, or one others can change is unreadable.
+      const sharedHome = process.env.CODEX_HOME || nodePath.join(process.env.HOME ?? "", ".codex");
+      const read = readCredentialFileWith(codexConfigOps, nodePath.join(codexHome, "config.toml"),
+        seatCredentialLinkPolicy("codex-config", nodePath.join(sharedHome, "config.toml")));
+      if (!read.ok) return read.problem === "missing" ? null : undefined;
+      const text = read.content;
       for (const line of text.split("\n")) {
         if (/^\s*\[/.test(line)) break; // top-level keys only
         const match = line.match(/^\s*cli_auth_credentials_store\s*=\s*["']([^"']*)["']/);

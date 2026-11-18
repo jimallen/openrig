@@ -18,7 +18,8 @@
 
 import nodePath from "node:path";
 import os from "node:os";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { CODEX_CONFIG_POLICY, credentialFileOpsFrom, readCredentialFileWith } from "./credential-file.js";
 import { parse as parseToml } from "smol-toml";
 import type { RigRepository } from "./rig-repository.js";
 import type { BootstrapOrchestrator } from "./bootstrap-orchestrator.js";
@@ -215,8 +216,13 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
     probeClaude(),
     probeCodexReadiness({
       run: tryProbe,
+      // workspaces-o9o.160: under the credential rule (never chmod-ed: it is Codex's file); a refusal is said and counts Codex out.
       readConfig: () => {
-        try { return readFileSync(nodePath.join(codexHome, "config.toml"), "utf-8"); } catch { return null; }
+        const read = readCredentialFileWith(codexConfigOps, nodePath.join(codexHome, "config.toml"), CODEX_CONFIG_POLICY);
+        if (read.ok) return read.content;
+        if (read.problem === "missing") return null;
+        console.warn(`[kernel-boot] Codex readiness not checked: ${read.message}`);
+        return { refused: read.message };
       },
       env: process.env,
     }),
@@ -320,12 +326,21 @@ export function selectCodexProviderAuth(configToml: string | null): CodexProvide
 /** Codex half of the kernel runtime probe. An env-key provider is ready when
  *  its variable is nonblank and the executable answers; this is local
  *  credential availability, not a remote authentication or inference check. */
+const codexConfigOps = credentialFileOpsFrom(
+  { constants, openSync, fstatSync, readSync, fchmodSync, closeSync, lstatSync, realpathSync },
+  () => (typeof process.getuid === "function" ? process.getuid() : -1),
+);
+
 export async function probeCodexReadiness(deps: {
   run: (cmd: string) => Promise<RuntimeAuthStatus>;
-  readConfig: () => string | null;
+  /** The config's text, null when absent, or a refusal (workspaces-o9o.160: the credential rule refused the file). */
+  readConfig: () => string | null | { refused: string };
   env: Record<string, string | undefined>;
 }): Promise<RuntimeAuthStatus> {
-  const auth = selectCodexProviderAuth(deps.readConfig());
+  const config = deps.readConfig();
+  // A refused config chooses no credential: Codex is not counted as ready (fail closed); the caller logs why.
+  if (config !== null && typeof config === "object") return "unavailable";
+  const auth = selectCodexProviderAuth(config);
   if (auth.kind === "openai-login") return deps.run("codex login status");
   if (!deps.env[auth.envKey]?.trim()) return "unavailable";
   return deps.run("codex --version");

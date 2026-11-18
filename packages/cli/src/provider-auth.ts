@@ -1,10 +1,14 @@
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { resolveCodexHome } from "./lib/codex-auth.js";
+import type { CredentialFileRead } from "@openrig/daemon/credential-file";
 
 export interface ProviderAuthDeps {
   exec: (cmd: string) => string;
   readFile: (path: string) => string | null;
+  /** workspaces-o9o.160: Codex's config.toml under the credential rule (production: rig doctor and rig setup set it to the rule).
+   *  Optional so existing mocks keep their readFile fake; absent = readFile. */
+  readCodexConfig?: (path: string) => CredentialFileRead;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -78,7 +82,25 @@ export function checkClaudeAuth(deps: ProviderAuthDeps, installed: boolean): Pro
 export function checkCodexAuth(deps: ProviderAuthDeps, installed: boolean): ProviderCheck {
   if (installed) {
     const env = deps.env ?? process.env;
-    const codexAuth = selectCodexProviderAuth(deps.readFile(path.join(resolveCodexHome(env).codexHome, "config.toml")));
+    const configPath = path.join(resolveCodexHome(env).codexHome, "config.toml");
+    let configText: string | null;
+    if (deps.readCodexConfig) {
+      const read = deps.readCodexConfig(configPath);
+      if (!read.ok && read.problem !== "missing") {
+        // A config the rule refuses chooses no credential: report it, never chmod it (it is Codex's file).
+        return {
+          name: "codex_auth",
+          status: "fail",
+          message: "Codex's config.toml is not used to choose a credential: the file fails the credential file check.",
+          reason: "config.toml chooses the provider credential, so a file someone else could change or redirect is not trusted.",
+          fix: read.message,
+        };
+      }
+      configText = read.ok ? read.content : null;
+    } else {
+      configText = deps.readFile(configPath);
+    }
+    const codexAuth = selectCodexProviderAuth(configText);
     if (codexAuth.kind === "env-key") {
       if (env[codexAuth.envKey]?.trim()) {
         return {

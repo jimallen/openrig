@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { readCredentialFile, readOwnFile } from "../src/adapters/node-credential-file-reader.js";
 import {
-  CODEX_CONFIG_POLICY, DAEMON_STATE_POLICY, HOSTS_REGISTRY_POLICY, OPENRIG_CONFIG_POLICY, SEAT_CREDENTIAL_LINKS, TERMINAL_TOKEN_POLICY, seatCredentialLinkPolicy, type CredentialFilePolicy, type SeatCredentialLink,
+  CODEX_AUTH_POLICY, CODEX_CONFIG_POLICY, DAEMON_STATE_POLICY, HOSTS_REGISTRY_POLICY, OPENRIG_CONFIG_POLICY, SEAT_CREDENTIAL_LINKS, TERMINAL_TOKEN_POLICY, seatCredentialLinkPolicy, type CredentialFilePolicy, type SeatCredentialLink,
 } from "../src/domain/credential-file.js";
 
 let dir: string;
@@ -152,6 +152,17 @@ describe("o9o.160: files OpenRig owns are narrowed; another program's registry i
     expect(r).toMatchObject({ ok: false, problem: "group_or_other_write" });
     if (!r.ok) expect(r.message).toContain("chmod go-w");
     expect(fs.statSync(p).mode & 0o777).toBe(0o664);
+  });
+
+  it("a dotfiles-linked Codex config is followed and its real target judged; auth.json's policy refuses the same link (the asymmetry, CoS 18:50Z)", () => {
+    const real = file("dotfiles-config.toml", "a = 1\n", 0o644);
+    fs.symlinkSync(real, path.join(dir, "config.toml"));
+    expect(readCredentialFile(path.join(dir, "config.toml"), CODEX_CONFIG_POLICY)).toEqual({ ok: true, content: "a = 1\n" });
+    fs.chmodSync(real, 0o664);
+    expect(readCredentialFile(path.join(dir, "config.toml"), CODEX_CONFIG_POLICY)).toMatchObject({ ok: false, problem: "group_or_other_write" });
+    const login = file("real-auth.json", "{}", 0o600);
+    fs.symlinkSync(login, path.join(dir, "auth.json"));
+    expect(readCredentialFile(path.join(dir, "auth.json"), CODEX_AUTH_POLICY)).toMatchObject({ ok: false, problem: "symlink" });
   });
 
   it("CONTROL: a Codex config others may read but not change is read", () => {

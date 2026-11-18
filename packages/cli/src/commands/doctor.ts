@@ -1,3 +1,4 @@
+import { CODEX_CONFIG_POLICY, readCredentialFile, type CredentialFileRead } from "@openrig/daemon/credential-file";
 import { Command } from "commander";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -43,6 +44,8 @@ export interface DoctorDeps {
   exists: (p: string) => boolean;
   baseDir: string;
   readFile: (path: string) => string | null;
+  /** workspaces-o9o.160: Codex's config.toml under the credential rule (see provider-auth.ts). */
+  readCodexConfig?: (path: string) => CredentialFileRead;
   exec: (cmd: string) => string;
   checkPort: (port: number, host: string) => Promise<boolean>;
   configStore: Pick<ConfigStore, "resolve">;
@@ -392,6 +395,7 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         exists: existsSync,
         baseDir: import.meta.dirname,
         readFile: (p: string) => { try { return readFileSync(p, "utf-8"); } catch { return null; } },
+        readCodexConfig: (p: string) => readCredentialFile(p, CODEX_CONFIG_POLICY), // o9o.160: Codex config under the credential rule
         exec: (c: string) => execSync(c, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }),
         checkPort: defaultCheckPort,
         configStore: new ConfigStore(),
