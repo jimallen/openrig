@@ -77,6 +77,68 @@ describe.skipIf(process.platform !== "linux" || process.getuid?.() === 0)("o9o.3
     await expect.poll(() => w.observation().state, { timeout: 5000 }).toBe("watching");
   });
 
+  // workspaces-o9o.133 (verify-sec FAIL): a path removed and created again BEFORE the adapter's callback runs. The row above
+  // waits 300 ms between the two, so the callback for the removal runs first; here nothing waits, which is what an editor's
+  // atomic replace or a `git checkout` does. The new directory (or the link's new target) must be watched, and an edit in it
+  // seen, after every replacement.
+  const settle = async (adapter: ReturnType<typeof nodeSourceTreeWatcher>, tree: string): Promise<string[]> => {
+    const until = Date.now() + 2000;
+    let gaps = adapter.unwatched(tree, true) ?? [];
+    while (gaps.length > 0 && Date.now() < until) { await new Promise((r) => setTimeout(r, 20)); gaps = adapter.unwatched(tree, true) ?? []; }
+    return gaps;
+  };
+  const seen = async (events: string[], mark: number): Promise<boolean> => {
+    const until = Date.now() + 1000;
+    while (events.length <= mark && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+    return events.length > mark;
+  };
+
+  it("a directory replaced with no pause, 10 times: every replacement is armed and an edit inside it is seen", async () => {
+    const h = host();
+    const dir = path.join(h.missions, "proofs");
+    fs.mkdirSync(path.join(dir, "nested"), { recursive: true });
+    const adapter = nodeSourceTreeWatcher("linux");
+    const events: string[] = [];
+    const w = adapter.watch(h.missions, { recursive: true }, (name) => events.push(String(name)), () => {});
+    try {
+      expect(await settle(adapter, h.missions), "positive control: the first tree is armed").toEqual([]);
+      const rounds: Array<{ gaps: string[]; editSeen: boolean }> = [];
+      for (let i = 0; i < 10; i++) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(path.join(dir, "nested"), { recursive: true });
+        const gaps = await settle(adapter, h.missions);
+        const mark = events.length;
+        fs.writeFileSync(path.join(dir, "nested", "proof.md"), `proof-${i}\n`);
+        rounds.push({ gaps, editSeen: await seen(events, mark) });
+      }
+      expect(rounds).toEqual(Array.from({ length: 10 }, () => ({ gaps: [], editSeen: true })));
+    } finally { w.close(); }
+  }, 60_000);
+
+  it("a symlink replaced with no pause, 10 times: every new target is armed and an edit to it is seen", async () => {
+    const h = host();
+    const targets = Array.from({ length: 11 }, (_, i) => path.join(h.root, "outside", `target-${i}.md`));
+    for (const [i, t] of targets.entries()) fs.writeFileSync(t, `start-${i}\n`);
+    const link = path.join(h.missions, "proof.md");
+    fs.symlinkSync(targets[0]!, link);
+    const adapter = nodeSourceTreeWatcher("linux");
+    const events: string[] = [];
+    const w = adapter.watch(h.missions, { recursive: true }, (name) => events.push(String(name)), () => {});
+    try {
+      expect(await settle(adapter, h.missions), "positive control: the first link is armed").toEqual([]);
+      const rounds: Array<{ gaps: string[]; editSeen: boolean }> = [];
+      for (let i = 1; i < targets.length; i++) {
+        fs.unlinkSync(link);
+        fs.symlinkSync(targets[i]!, link);
+        const gaps = await settle(adapter, h.missions);
+        const mark = events.length;
+        fs.appendFileSync(targets[i]!, `edit-${i}\n`);
+        rounds.push({ gaps, editSeen: await seen(events, mark) });
+      }
+      expect(rounds).toEqual(Array.from({ length: 10 }, () => ({ gaps: [], editSeen: true })));
+    } finally { w.close(); }
+  }, 60_000);
+
   it("positive control: a dangling symlink is gone, not unreadable, and the claim stays watching", () => {
     const h = host();
     fs.symlinkSync(path.join(h.root, "outside", "nothing-here.md"), path.join(h.workspace, "dangling.md"));

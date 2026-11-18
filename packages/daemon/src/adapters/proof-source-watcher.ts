@@ -115,54 +115,85 @@ function watchedEntries(dir: string, recursive: boolean): string[] {
 /**
  * workspaces-o9o.133: a recursive watch on Linux, built from one non-recursive fs.watch per real directory and per
  * symlink. An entry that cannot be armed (or whose watch reports an error) is left unwatched and a change is reported,
- * so the domain reads the evidence, which names it; nothing here throws past the caller. A directory that appears is
- * armed with its subtree, a symlink by itself; one that goes has its watches dropped, so it is armed again if it comes back.
+ * so the domain reads the evidence, which names it; nothing here throws past the caller.
+ *
+ * Each watch is held with the identity it was armed on (through a symlink), never by its path alone: a path removed and
+ * created again before the callback runs (an editor's atomic replace, a checkout) is a new file, and the old watch is on
+ * the old one. Device and inode do not tell them apart: ext4 gave the new directory the freed inode number in 50 of 50
+ * zero-delay replacements (measured on Sparky, Node 22, 24 and 26), so the identity adds the birth time, which differed in
+ * all 50. A filesystem that reports no birth time falls back to the change time, which re-arms more often, never less. So every event for a path reconciles it: a directory has its whole subtree re-listed,
+ * each entry re-armed whose identity changed and each watch dropped whose path is gone; a symlink is re-armed when its
+ * target changed; anything else has the watches under it dropped (verify-sec review: a stale entry kept by path left the
+ * replacement and its edits unwatched).
  */
 function linuxTreeWatch(root: string, onChange: (filename: string | null) => void): SourceTreeWatch {
-  const watches = new Map<string, fs.FSWatcher>();
+  const watches = new Map<string, { watcher: fs.FSWatcher; identity: string }>();
   let closed = false;
+  const forget = (path: string) => {
+    const held = watches.get(path);
+    if (!held) return;
+    held.watcher.close();
+    watches.delete(path);
+  };
   const drop = (dir: string) => {
-    for (const [path, w] of watches) {
-      if (path === dir || path.startsWith(dir + nodePath.sep)) { w.close(); watches.delete(path); }
-    }
+    for (const path of [...watches.keys()]) if (path === dir || path.startsWith(dir + nodePath.sep)) forget(path);
   };
   const kindOf = (path: string): "directory" | "symlink" | "other" => {
     try { const st = fs.lstatSync(path); return st.isDirectory() ? "directory" : st.isSymbolicLink() ? "symlink" : "other"; } catch { return "other"; }
   };
-  const arm = (dir: string) => {
-    if (closed || watches.has(dir)) return;
+  const identityOf = (path: string): string | null => {
+    let st: fs.BigIntStats;
+    try { st = fs.statSync(path, { bigint: true }); } catch { return null; }
+    return `${st.dev}:${st.ino}:${st.birthtimeNs !== 0n ? `b${st.birthtimeNs}` : `c${st.ctimeNs}`}`;
+  };
+  const arm = (path: string) => {
+    if (closed) return;
+    const identity = identityOf(path);
+    const held = watches.get(path);
+    if (held && identity !== null && held.identity === identity) return;
+    forget(path);
+    // Gone, dangling or unreadable: nothing to arm. The evidence decides whether that is a gap (it names an unreadable one).
+    if (identity === null) { if (!isGoneOrMissing(path)) onChange(null); return; }
     let w: fs.FSWatcher;
     try {
-      w = fs.watch(dir, { persistent: false }, (event, filename) => {
+      w = fs.watch(path, { persistent: false }, (_event, filename) => {
         const name = filename === null ? null : filename.toString();
-        if (name === null) { armTree(dir); onChange(null); return; }
-        const child = nodePath.join(dir, name);
-        if (event === "rename") {
-          const kind = kindOf(child);
-          if (kind === "directory") armTree(child);
-          else if (kind === "symlink") arm(child);
-          else drop(child);
-        }
+        if (name === null) { reconcileTree(path); onChange(null); return; }
+        const child = nodePath.join(path, name);
+        reconcile(child);
         onChange(nodePath.relative(root, child));
       });
     } catch {
-      // Not armed (ENOSPC, EACCES, gone): the evidence names this directory; report a change so it is read now.
+      // Not armed (ENOSPC, EACCES, gone): the evidence names this entry; report a change so it is read now.
       onChange(null);
       return;
     }
+    const entry = { watcher: w, identity };
     w.on("error", () => {
-      // A failed watch is dropped, never thrown; the evidence then names the directory.
+      // A failed watch is dropped, never thrown; the evidence then names the entry.
       w.close();
-      if (watches.get(dir) === w) watches.delete(dir);
+      if (watches.get(path) === entry) watches.delete(path);
       onChange(null);
     });
-    watches.set(dir, w);
+    watches.set(path, entry);
   };
-  const armTree = (dir: string) => {
-    for (const path of watchedEntriesBestEffort(dir)) arm(path);
+  /** One path, as it is now: a directory with its subtree, a symlink by itself, anything else (or nothing) unwatched. */
+  const reconcile = (path: string) => {
+    const kind = kindOf(path);
+    if (kind === "directory") reconcileTree(path);
+    else if (kind === "symlink") { drop(path); arm(path); }
+    else drop(path);
   };
-  armTree(root);
-  return { close: () => { closed = true; for (const w of watches.values()) w.close(); watches.clear(); } };
+  /** A directory and everything under it, re-listed: stale watches go, every entry is armed on its current identity. */
+  const reconcileTree = (dir: string) => {
+    const present = new Set(watchedEntriesBestEffort(dir));
+    for (const path of [...watches.keys()]) {
+      if ((path === dir || path.startsWith(dir + nodePath.sep)) && !present.has(path)) forget(path);
+    }
+    for (const path of present) arm(path);
+  };
+  reconcileTree(root);
+  return { close: () => { closed = true; for (const { watcher } of watches.values()) watcher.close(); watches.clear(); } };
 }
 
 /** watchedEntries(dir, true) for arming: a directory that cannot be listed is still armed itself and not descended. */
