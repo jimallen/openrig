@@ -52,6 +52,7 @@ const ALLOW: Array<{ note: string; code: string }> = [
   { note: "a template with interpolations and no command words", code: `const a = 1; const s = ${BT}value ${"$"}{a} of ${"$"}{a + 1}${BT}; s` },
   { note: "a regular expression with a quote in it", code: `const r = /it's/; r.test("it's")` },
   { note: "a division next to strings", code: `const x = 6 / 3; const y = "a"; x + y` },
+  { note: "a regular expression with a quote, beside a kill by pid (read as a regex, not as an unterminated string)", code: `const r = /it's/; r.test("x"); await Bash({ command: "kill 4242" })` },
 ];
 
 describe("o9o.131: the seat guard reads REPL code", () => {
