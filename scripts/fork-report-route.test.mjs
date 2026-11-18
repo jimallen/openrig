@@ -94,8 +94,7 @@ const UPSTREAM_SUBMISSION = [
 // "Submit this issue to upstream maintainers.") passed. So the intent is matched too: in one sentence, a verb of submitting
 // followed by an upstream recipient, unless the sentence negates it ("report it here, never upstream").
 // "file" and "open" only in their submitting sense: "file an issue", "open a pull request", never "a companion file that" or
-// "the open body". URLs are matched by the patterns above, so they are taken out of the sentence first ("search [open
-// issues](https://github.com/...)" reads a list; it does not open one).
+// "the open body". URLs are matched by the patterns above; in the intent check a URL sits in its own clause (below).
 const SUBMIT = /\b(?:report|submit|send|email|post)\b|\bfile (?:an?|it|them|your|bugs?|issues?|problems?|reports?)\b|\b(?:open|raise) (?:an? |the |this |a new )?(?:issue|discussion|pull request|PR|ticket|bug)\b/i;
 const RECIPIENT = /\b(?:upstream|maintainers?)\b|mvschwarz|hello@openrig\.dev|OpenRig (?:team|support)/i;
 const NEGATION = /\b(?:never|nothing|not|no|don't|do not)\b/i;
@@ -108,8 +107,10 @@ const CLAUSE = /\s*[,;:()\u2013\u2014]\s*|\s+-\s+|\s+(?:but|and|or|while|though)
 function submitsUpstream(text) {
   return text.split(CLAUSE).some(clauseSubmitsUpstream);
 }
-function clauseSubmitsUpstream(text) {
-  const sentence = text.replace(/\]\([^)]*\)/g, ']').replace(/https?:\/\/\S+/g, '');
+// A URL never shares a clause with the words before it: its scheme's ":" and a markdown link's "(" end the clause. So a
+// read-only link ("[open this issue](https://github.com/mvschwarz/...)", "see the report at https://...") names no recipient
+// in the clause that holds the verb (o9o.137 battery: the URL stripping this replaced had become redundant).
+function clauseSubmitsUpstream(sentence) {
   const verb = SUBMIT.exec(sentence);
   if (!verb) return false;
   return RECIPIENT.test(sentence.slice(verb.index)) && !NEGATION.test(sentence);
@@ -185,7 +186,7 @@ test('the matcher catches each way of pointing a reader upstream, and passes a r
     'The cause is in the [report](https://github.com/mvschwarz/openrig/issues/99), which is read-only here.',
     // verify-qa review 2: a link whose text IS a submitting verb phrase, to an existing issue: read-only.
     'Reference [open this issue](https://github.com/mvschwarz/openrig/issues/99) for background only.',
-    // A bare URL (no parentheses for the clause split to cut at) is taken out of the sentence before the recipient is read.
+    // A bare URL: its scheme's ":" ends the clause, so the repository it names is not the verb's recipient.
     'See the report at https://github.com/mvschwarz/openrig/issues/99 for the cause.',
     // A negation in the clause that holds the verb and the recipient does cancel it.
     'Do not report problems upstream.',
