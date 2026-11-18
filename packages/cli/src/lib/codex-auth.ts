@@ -12,6 +12,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { CODEX_AUTH_POLICY, inspectCredentialFile, judgeOpenedCredentialFile, readCredentialFile } from "@openrig/daemon/credential-file";
 
 /** Strict profile-name whitelist: alnum-led, then [A-Za-z0-9._-], 1..64 chars. Excludes /, \, ~,
  *  leading dot, whitespace, control, and shell metacharacters. Fail closed. */
@@ -147,6 +148,10 @@ export function copyOntoFresh(
     srcFd = fs.openSync(source, fs.constants.O_RDONLY | NOFOLLOW);
     const st = fs.fstatSync(srcFd);
     if (!st.isFile() || st.nlink !== 1) return false; // authoritative: regular file, single link
+    // workspaces-o9o.151: and the credential rule on the same fd (ours, no group/other bits, capped), so a swap after the callers'
+    // checks still cannot copy a secret others could read or another user wrote.
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    if (judgeOpenedCredentialFile({ isFile: st.isFile(), uid: st.uid, mode: st.mode, size: st.size }, CODEX_AUTH_POLICY, uid) !== null) return false;
     if (expectSrc && (st.dev !== expectSrc.dev || st.ino !== expectSrc.ino)) return false; // swapped in the window
     const size = st.size;
     data = Buffer.allocUnsafe(size);
@@ -276,12 +281,10 @@ export function authValidate(paths: CodexAuthPaths, name: string): AuthValidateR
     return { ok: false, reason: "unsafe_path" };
   }
   if (fileModeOctal(target) !== "600") return { ok: false, reason: "unsafe_permissions" };
-  let content: string;
-  try {
-    content = fs.readFileSync(target, "utf8");
-  } catch {
-    return { ok: false, reason: "parse_check_unavailable" };
-  }
+  // workspaces-o9o.151: read under the credential rule (O_NOFOLLOW, this user's file, capped), on the descriptor it judges.
+  const read = readCredentialFile(target, CODEX_AUTH_POLICY);
+  if (!read.ok) return { ok: false, reason: read.problem === "wrong_owner" || read.problem === "group_or_other_access" ? "unsafe_permissions" : "parse_check_unavailable" };
+  const content = read.content;
   try {
     JSON.parse(content);
   } catch {
@@ -335,6 +338,14 @@ export function authSwitch(paths: CodexAuthPaths, name: string): AuthSwitchResul
   const srcStat = lstatSafe(source);
   if (srcStat === null) return { ok: false, reason: "missing_profile" };
   if (!isSafeProfileFile(source, paths.profileDir)) return { ok: false, reason: "unsafe_path" };
+  // workspaces-o9o.151 (verify-sec's probe: a 0644 profile in a symlinked profile dir was copied): the profile dir must really
+  // resolve inside CODEX_HOME, and the profile must pass the credential rule (this user's, no group/other bits, capped).
+  if (!realDirContained(paths.profileDir, paths.codexHome)) return { ok: false, reason: "unsafe_path" };
+  const verdict = inspectCredentialFile(source, CODEX_AUTH_POLICY);
+  if (!verdict.ok) {
+    return { ok: false, reason: verdict.problem === "missing" ? "missing_profile"
+      : verdict.problem === "wrong_owner" || verdict.problem === "group_or_other_access" ? "unsafe_permissions" : "unsafe_path" };
+  }
   // Destination guard: a symlink/non-regular OR hardlinked (nlink>1) active auth would let the copy
   // write the selected profile's SECRET bytes THROUGH an inode living outside CODEX_HOME. Refuse it
   // (isFile() is false for a symlink, so the old isFile-gated check silently missed both cases).

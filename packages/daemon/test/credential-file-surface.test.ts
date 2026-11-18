@@ -15,13 +15,15 @@ describe("the credential-file surface", () => {
     expect(Object.keys(surface).sort()).toEqual([
       "ACTIVITY_ENDPOINT_POLICY", "ACTIVITY_HOOK_TOKEN_POLICY", "BEARER_FILE_POLICY", "CODEX_AUTH_POLICY", "HOSTS_REGISTRY_POLICY",
       "PI_AUTH_POLICY", "PI_MODELS_POLICY", "SEAT_CREDENTIAL_LINKS", "SLACK_SECRETS_POLICY", "TERMINAL_TOKEN_POLICY",
-      "credentialFileRefusal", "judgeOpenedCredentialFile", "nodeCredentialFileReader", "readCredentialFile", "seatCredentialLinkPolicy",
+      "credentialFileRefusal", "inspectCredentialFile", "judgeOpenedCredentialFile", "nodeCredentialFileReader", "readCredentialFile",
+      "seatCredentialLinkPolicy",
     ]);
   });
 
   it("each name is the defining module's own value, not a copy", () => {
     expect(surface.readCredentialFile).toBe(reader.readCredentialFile);
     expect(surface.nodeCredentialFileReader).toBe(reader.nodeCredentialFileReader);
+    expect(surface.inspectCredentialFile).toBe(reader.inspectCredentialFile);
     for (const name of ["TERMINAL_TOKEN_POLICY", "HOSTS_REGISTRY_POLICY", "judgeOpenedCredentialFile", "credentialFileRefusal"] as const) {
       expect(surface[name], name).toBe(rule[name]);
     }
