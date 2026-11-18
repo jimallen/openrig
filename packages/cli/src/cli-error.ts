@@ -110,15 +110,18 @@ export function renderDaemonTransportError(
         "Re-check current state (e.g. 'rig queue show <id>'); if it repeats, inspect daemon health with 'rig daemon status' and the daemon logs. This is a bad response, not a stopped daemon.",
     };
   } else if (e instanceof DaemonTimeoutError) {
+    const check = e.recheck ? `Check the command's effect before any retry (re-read with '${e.recheck}')` : "Check the command's effect before any retry";
     parts = {
       fact: e.message,
       consequence: "The command's outcome is UNKNOWN — the daemon did not answer in time.",
       action:
-        "Check the command's effect before any retry, then inspect daemon load with 'rig status' and the daemon logs if it remains slow. This is a slow response, not a stopped daemon.",
+        `${check}, then inspect daemon load with 'rig status' and the daemon logs if it remains slow. This is a slow response, not a stopped daemon.`,
     };
   } else if (e instanceof DaemonConnectionError) {
     const unknownWrite = e.writeOutcome === "unknown";
-    const reconcile = "Reconcile using the recovery ID before any retry. A lost connection does not prove the write failed.";
+    // workspaces-o9o.169: name the exact re-read when the caller knows it; never tell a seat to redo the work.
+    const reread = e.recheck ? `Re-read with '${e.recheck}' before any retry, and do not redo the work.` : "Re-read what this command changes before any retry, and do not redo the work.";
+    const reconcile = `${reread} A lost connection does not prove the write failed.`;
     const delivery = unknownWrite
       ? "The command's outcome is UNKNOWN — no usable response confirmed whether the write was applied."
       : "The command was not delivered.";

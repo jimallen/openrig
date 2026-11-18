@@ -21,7 +21,7 @@ import { getOpenRigHome } from "../openrig-compat.js";
 import { addHostEntry, defaultHostRegistryPath, loadHostRegistry, validateHostRegistry, hostDisplayTarget, resolveHost, resolveRemoteBearer, bearerAuthHeaders, type HostEntry, type HttpHostEntry } from "../host-registry.js";
 import { runCrossHostCommand, type CrossHostResult } from "../cross-host-executor.js";
 import { recordHostObservation, loadHostBindings, describeBindingConflict, defaultHostBindingsPath, type HostObservationOutcome } from "../host-bindings.js";
-import { DaemonClient } from "../client.js";
+import { connectionErrorCode, connectionProvablyNotSent, DaemonClient } from "../client.js";
 import { readOwnHostName, readSelectedHost } from "../host-selection.js";
 import { setOff, shellWord } from "@openrig/daemon/command-text";
 
@@ -708,7 +708,16 @@ export function hostCommand(doctorDepsOverride?: DoctorDeps): Command {
           return;
         }
       } catch (err) {
-        console.error(`could not reach ${targetBase}: ${(err as Error).message}`);
+        const message = err instanceof Error ? err.message : String(err);
+        const cause = connectionErrorCode(err);
+        if (connectionProvablyNotSent(cause)) {
+          console.error(`could not reach ${targetBase}: ${message} (${cause})`);
+        } else {
+          // workspaces-o9o.169: the request may have reached the target, which then holds a pairing item for it.
+          console.error(`the pair request to ${targetBase} lost its reply: ${message}${cause ? ` (${cause})` : ""}`);
+          console.error("  The pair request's outcome is UNKNOWN — the target may have created its pairing item.");
+          console.error("  Before pairing again, check the target's attention queue for a pending pairing item and approve or deny that one.");
+        }
         process.exitCode = 1;
         return;
       }

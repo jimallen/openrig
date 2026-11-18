@@ -11,6 +11,20 @@ import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-
 import type { StatusDeps } from "../src/commands/status.js";
 import { must } from "./helpers/must.js";
 
+/**
+ * workspaces-o9o.169: a loopback port nothing listens on, so a request to it is REFUSED (ECONNREFUSED): provably never sent.
+ * Port 1 is not that here: the test fetch guard intercepts it before any connection (a plain error with no cause), and real
+ * fetch refuses it as a "bad port"; a write whose failure carries no cause reads as an unknown outcome.
+ */
+async function closedLoopbackUrl(): Promise<string> {
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no port");
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return `http://127.0.0.1:${address.port}`;
+}
+
 function mockLifecycleDeps(): LifecycleDeps {
   return {
     spawn: vi.fn(() => ({ pid: 1, unref: vi.fn() }) as never),
@@ -1753,7 +1767,8 @@ describe("Send CLI", () => {
     });
 
     it("R7 RED: REAL down fails honestly — actual connection error names the target; the bare preflight restart line never appears", async () => {
-      vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+      const down = await closedLoopbackUrl(); // workspaces-o9o.169: a REAL refused port, not one the fetch guard intercepts
+      vi.stubEnv("OPENRIG_URL", down);
       vi.stubEnv("RIGGED_URL", "");
       const rc = recordingRealClient();
       const { logs, exitCode } = await captureLogs(async () => {
@@ -1766,7 +1781,7 @@ describe("Send CLI", () => {
       // preflight-derived guess. (Also covers 1b45cf21's explicit/custom
       // target-preservation pin: the resolved target survives verbatim into
       // the fact line rather than being flattened into a generic message.)
-      expect(out).toContain("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:");
+      expect(out).toContain(`Cannot connect to the OpenRig daemon at ${down}:`);
       expect(out).not.toContain("Daemon not running. Start it with: rig daemon start");
       // 1b45cf21 — a real transport failure must also carry the repo's
       // fact/consequence/action remediation. The fact line above is the
@@ -1793,7 +1808,8 @@ describe("Send CLI", () => {
     // "characterization" while it is an intentional RED is exactly the kind of
     // stale label this slice keeps finding elsewhere.
     it("R7b RED: fan-out REAL down fails honestly too — target-specific connection error, exit 1, no restart line, and the same remediation as single-seat", async () => {
-      vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+      const down = await closedLoopbackUrl(); // workspaces-o9o.169: a REAL refused port, not one the fetch guard intercepts
+      vi.stubEnv("OPENRIG_URL", down);
       vi.stubEnv("RIGGED_URL", "");
       const rc = recordingRealClient();
       const { logs, exitCode } = await captureLogs(async () => {
@@ -1804,7 +1820,7 @@ describe("Send CLI", () => {
       });
       const out = logs.join("\n");
       expect(exitCode).toBe(1);
-      expect(out).toContain("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:");
+      expect(out).toContain(`Cannot connect to the OpenRig daemon at ${down}:`);
       expect(out).not.toContain("Daemon not running. Start it with: rig daemon start");
       // 1b45cf21 — SYMMETRY PIN. Fan-out must carry byte-identical
       // remediation to single-seat; divergence between the two paths is the
@@ -1824,7 +1840,8 @@ describe("Send CLI", () => {
     // discriminator is unambiguous: stdout carries exactly one JSON record and
     // stderr is empty (and the human path is the mirror image).
     it("R7c RED: single-seat --json transport failure emits exactly one parseable stdout JSON envelope, empty stderr, exit 1", async () => {
-      vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+      const down = await closedLoopbackUrl(); // workspaces-o9o.169: a REAL refused port, not one the fetch guard intercepts
+      vi.stubEnv("OPENRIG_URL", down);
       vi.stubEnv("RIGGED_URL", "");
       const rc = recordingRealClient();
       const { stdout, stderr, exitCode } = await captureChannels(async () => {
@@ -1836,7 +1853,7 @@ describe("Send CLI", () => {
       expect(stdout).toHaveLength(1);
       expect(JSON.parse(must(stdout[0], "the stdout record"))).toEqual({
         error: {
-          fact: expect.stringContaining("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:"),
+          fact: expect.stringContaining(`Cannot connect to the OpenRig daemon at ${down}:`),
           consequence: "The message was not sent.",
           action: expect.stringContaining("Inspect the configured target with 'rig status'; a failed health probe does not prove the daemon is stopped."),
         },
@@ -1846,7 +1863,8 @@ describe("Send CLI", () => {
     });
 
     it("R7d RED: fan-out --json transport failure emits exactly one parseable stdout JSON envelope, empty stderr, exit 1", async () => {
-      vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+      const down = await closedLoopbackUrl(); // workspaces-o9o.169: a REAL refused port, not one the fetch guard intercepts
+      vi.stubEnv("OPENRIG_URL", down);
       vi.stubEnv("RIGGED_URL", "");
       const rc = recordingRealClient();
       const { stdout, stderr, exitCode } = await captureChannels(async () => {
@@ -1857,7 +1875,7 @@ describe("Send CLI", () => {
       expect(stdout).toHaveLength(1);
       expect(JSON.parse(must(stdout[0], "the stdout record"))).toEqual({
         error: {
-          fact: expect.stringContaining("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:"),
+          fact: expect.stringContaining(`Cannot connect to the OpenRig daemon at ${down}:`),
           consequence: "The message was not sent.",
           action: expect.stringContaining("Inspect the configured target with 'rig status'; a failed health probe does not prove the daemon is stopped."),
         },
@@ -1866,7 +1884,8 @@ describe("Send CLI", () => {
     });
 
     it("R7e: single-seat HUMAN transport failure keeps stdout empty (mirror of R7c) — the 3 remediation lines are stderr-only, exit 1", async () => {
-      vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+      const down = await closedLoopbackUrl(); // workspaces-o9o.169: a REAL refused port, not one the fetch guard intercepts
+      vi.stubEnv("OPENRIG_URL", down);
       vi.stubEnv("RIGGED_URL", "");
       const rc = recordingRealClient();
       const { stdout, stderr, exitCode } = await captureChannels(async () => {
@@ -1875,13 +1894,14 @@ describe("Send CLI", () => {
       expect(exitCode).toBe(1);
       expect(stdout).toEqual([]); // human path must never write to stdout
       const err = stderr.join("\n");
-      expect(err).toContain("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:");
+      expect(err).toContain(`Cannot connect to the OpenRig daemon at ${down}:`);
       expect(err).toContain("The message was not sent.");
       expect(err).toContain("Inspect the configured target with 'rig status'; a failed health probe does not prove the daemon is stopped.");
     });
 
     it("R7f: fan-out HUMAN transport failure keeps stdout empty (mirror of R7d) — stderr-only remediation, exit 1", async () => {
-      vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+      const down = await closedLoopbackUrl(); // workspaces-o9o.169: a REAL refused port, not one the fetch guard intercepts
+      vi.stubEnv("OPENRIG_URL", down);
       vi.stubEnv("RIGGED_URL", "");
       const rc = recordingRealClient();
       const { stdout, stderr, exitCode } = await captureChannels(async () => {
@@ -1890,7 +1910,7 @@ describe("Send CLI", () => {
       expect(exitCode).toBe(1);
       expect(stdout).toEqual([]);
       const err = stderr.join("\n");
-      expect(err).toContain("Cannot connect to the OpenRig daemon at http://127.0.0.1:1:");
+      expect(err).toContain(`Cannot connect to the OpenRig daemon at ${down}:`);
       expect(err).toContain("The message was not sent.");
     });
 

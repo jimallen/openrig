@@ -18,6 +18,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - When the guard cannot run, a REPL call is refused outright (FAIL F2): the degraded shell check cannot parse JavaScript, so it fails closed on the REPL path rather than guess. The Bash path of the degraded check is unchanged (its broad-kill hardening is workspaces-o9o.173).
 - This is defence in depth over Claude Code's own refusal, not a sandbox. Claude Code refuses module loading in REPL code itself (measured: "Module loading (require) is not available in REPL — the vm context is sealed"). The one residual: a name assembled at run time (`globalThis["child_" + "process"]`, a computed non-literal key) is not resolved by the parser and is not seen. When the guard cannot run, the degraded shell wrapper refuses ANY event whose `tool_name` is REPL, whatever the JSON whitespace (fail closed).
 
+### A write whose reply was lost says its outcome is UNKNOWN, never "not delivered" (workspaces-o9o.169)
+
+- Symptom: when the connection dropped after the daemon had read a write (it committed, then restarted or died), `rig queue handoff`, `handoff-and-complete`, `update` and every other CLI write except `rig queue create` printed "The command was not delivered." `rig send` and `rig broadcast` printed "The message was not sent." A seat told that may redo work that is already done.
+- Now the CLI's daemon client marks every write (any method but GET and HEAD) as an unknown outcome unless the failure proves nothing was sent: the connection was refused, the name did not resolve, there was no local address, or the connect itself timed out. A reset, a closed socket, a route loss or no cause at all reads as UNKNOWN. The rule is shared with the remote host operations, which already used it.
+- Each message names the re-read where the CLI knows it: `rig queue show '<id>' --json` for every write on one queue item, `rig health diagnosis show '<id>' --json` for a health record or notify, and the policy, checkpoint or list read for the other health writes. `rig send` and `rig broadcast` say delivery is UNCONFIRMED. `rig host pair` says the target may already hold the pairing item.
+- The queue-handoff skill says "not delivered" now means nothing was sent, and that an older CLI's "not delivered" is still not proof.
+
 ### Section headings no longer skip a level (workspaces-o9o.158)
 
 - Symptom: the For You feed's cards, the slice and mission review bands and the lab preview's cards sat two levels below their page title (an h3 straight under the h1), so a screen reader's heading outline had a gap; the accessibility scan flagged the first gap on each page.

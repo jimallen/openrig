@@ -327,7 +327,30 @@ async function withClient<T>(
       // contract). One render authority, layered context — never a swallowed exit.
       const where = hostContext ? ` (routing to host '${hostContext}')` : "";
       console.error(`queue transport failure${where}: ${err.message}`);
-      console.error("The write outcome is INDETERMINATE if the request may have reached a daemon — reconcile by ID before any retry.");
+      // workspaces-o9o.169: a connection that provably never sent the request (refused, blocked) is not indeterminate.
+      const mayHaveArrived = !(err instanceof DaemonConnectionError) || err instanceof DaemonTimeoutError || err.writeOutcome === "unknown";
+      if (mayHaveArrived) console.error("The write outcome is INDETERMINATE if the request may have reached a daemon — reconcile by ID before any retry.");
+    }
+    throw err;
+  }
+}
+
+/**
+ * workspaces-o9o.169: withClient for a write on one existing item. When the reply is lost and the write may have committed,
+ * the error names the exact re-read of that item, so the seat checks the item instead of redoing the work.
+ */
+async function withItemClient<T>(
+  qitemId: string,
+  deps: QueueDeps,
+  fn: (client: DaemonClient) => Promise<T>,
+  attemptWhenProbeUnconfirmed = false,
+  hostContext?: string,
+): Promise<T | undefined> {
+  try {
+    return await withClient(deps, fn, attemptWhenProbeUnconfirmed, hostContext);
+  } catch (err) {
+    if (err instanceof DaemonConnectionError && (err instanceof DaemonTimeoutError || err.writeOutcome === "unknown")) {
+      err.recheck ??= `rig queue show ${shellQuote(qitemId)} --json`;
     }
     throw err;
   }
@@ -890,7 +913,11 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         }).catch((error: unknown) => {
           // A pre-header disconnect can follow a committed create. Preserve the
           // typed error, but do not let the shared renderer assert nondelivery.
-          if (error instanceof DaemonConnectionError) error.writeOutcome = "unknown";
+          if (error instanceof DaemonConnectionError) {
+            error.writeOutcome = "unknown";
+            // workspaces-o9o.169: a local create names its exact re-read; a remote one carries its OPENRIG_URL command in the message.
+            if (!hostResolved.hostId || hostResolved.hostId === "local") error.recheck = show;
+          }
           if (error instanceof DaemonConnectionError || error instanceof DaemonResponseError) {
             // Keep the shared typed error/exit path, including --json, while
             // supplying the identity missing from an unreadable/late response.
@@ -932,7 +959,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // no body claim. Verify the env (the header source) or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
       if (!requireSeatSession("destination")) return;
       const deps = getDeps();
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/claim`, {});
         await printQueueItemResult(client, qitemId, opts.json ?? false, res.data, res.status, writeReceipt(opts.full, { verb: "claim" }));
       });
@@ -950,7 +977,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // no body claim. Verify the env or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
       if (!requireSeatSession("destination")) return;
       const deps = getDeps();
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/unclaim`, {
           reason: opts.reason,
         });
@@ -994,7 +1021,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // header source) or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal). Matches `resolve`.
       if (!requireSeatSession("actor")) return;
       const deps = getDeps();
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/update`, {
           state: opts.state,
           reopen: opts.reopen,
@@ -1057,7 +1084,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       // ignored, no body actorSession. Verify the env, else the daemon returns 400 actor_required (no seat identity to record). Matches `resolve`.
       if (!requireSeatSession("actor")) return;
       const deps = getDeps();
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/update`, {
           state: "blocked",
           blockedOn: opts.on,
@@ -1098,7 +1125,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       if (!requireSeatSession("actor")) return;
       const deps = getDeps();
       const bearer = opts.bearer ?? process.env.OPENRIG_AUTH_BEARER_TOKEN;
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(
           "/api/mission-control/action",
           {
@@ -1191,7 +1218,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       const seenTags = new Set<string>();
       const dedupedTags = mergedTags.filter((t) => { if (seenTags.has(t)) return false; seenTags.add(t); return true; });
       const tags = dedupedTags.length > 0 ? dedupedTags : undefined;
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/handoff`, {
           toSession: hostResolved.destination,
           body: resolvedBody,
@@ -1288,7 +1315,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       const seenTags = new Set<string>();
       const dedupedTags = mergedTags.filter((t) => { if (seenTags.has(t)) return false; seenTags.add(t); return true; });
       const tags = dedupedTags.length > 0 ? dedupedTags : undefined;
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/handoff-and-complete`, {
           toSession: hostResolved.destination,
           body: resolvedBody,
@@ -1343,7 +1370,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: { destination: string; reason: string; json?: boolean }) => {
       const deps = getDeps();
-      await withClient(deps, async (client) => {
+      await withItemClient(qitemId, deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/fallback`, {
           fallbackDestination: opts.destination,
           reason: opts.reason,

@@ -62,6 +62,9 @@ describe("o9o.166: the queue-handoff skill says what to do when a closing write'
       "`rig queue handoff-and-complete`",
       "`rig queue update`",
       "The command was not delivered.\" is not proof",
+      // workspaces-o9o.169: the CLI now says UNKNOWN for a dropped connection and "not delivered" only when nothing was sent.
+      "only when the\nconnection was never made",
+      "treat it as UNKNOWN",
       "rig queue show",
       "Never redo the work",
       "qitem_already_terminal",

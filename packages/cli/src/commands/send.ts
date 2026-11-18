@@ -131,7 +131,9 @@ function printTransportFailure(err: DaemonConnectionError, opts?: { json?: boole
   // B8-2 (shape 73ee4b25): a TIMEOUT is delivery-UNCONFIRMED — the daemon may have
   // received AND delivered (two seats proved delivery-after-"not sent" live). Only a
   // hard connection failure earns the "was not sent" consequence.
-  const timedOut = err instanceof DaemonTimeoutError;
+  // workspaces-o9o.169: so is a connection that dropped after the request may have reached the daemon (writeOutcome
+  // unknown); only a failure that proves nothing was sent (refused, unresolved) earns "was not sent".
+  const timedOut = err instanceof DaemonTimeoutError || err.writeOutcome === "unknown";
   const consequence = timedOut
     ? "Delivery UNCONFIRMED — the daemon may have received and delivered the message."
     : "The message was not sent.";

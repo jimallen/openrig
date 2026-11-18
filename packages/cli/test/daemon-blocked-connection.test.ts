@@ -28,7 +28,7 @@ const WIDENING = /full_bypass|danger-full-access|network_access/i;
 const TODAY_DOWN_ACTION =
   "Confirm the daemon is reachable with 'rig daemon status'; if it is down, start it with 'rig up' or 'rig daemon start'.";
 const UNKNOWN_WRITE_ACTION =
-  "Check 'rig daemon status' on the affected host; if it is down, start it with 'rig daemon start'. Reconcile using the recovery ID before any retry. A lost connection does not prove the write failed.";
+  "Check 'rig daemon status' on the affected host; if it is down, start it with 'rig daemon start'. Re-read what this command changes before any retry, and do not redo the work. A lost connection does not prove the write failed.";
 
 function failingFetch(code: string): typeof fetch {
   return (async () => {
@@ -142,18 +142,24 @@ describe("transport render: blocked is not down", () => {
     expect(refused.error.action).toBe(TODAY_DOWN_ACTION);
   });
 
-  it("an unknown-outcome write keeps #495's wording; blocked drops only the start advice", async () => {
+  it("an unknown-outcome write says to re-read, never to redo (o9o.169; was #495's recovery-ID wording); blocked drops only the start advice", async () => {
     const blocked = await connectionError("EPERM");
     blocked.writeOutcome = "unknown";
     const b = render(blocked).err;
     expect(b).toMatch(/outcome is UNKNOWN/);
-    expect(b).toContain("Reconcile using the recovery ID before any retry. A lost connection does not prove the write failed.");
+    expect(b).toContain("Re-read what this command changes before any retry, and do not redo the work. A lost connection does not prove the write failed.");
     expect(b).toMatch(/blocked the connection \(EPERM\)/);
     expect(b).not.toMatch(DOWN_ADVICE);
 
     const refused = await connectionError("ECONNREFUSED");
     refused.writeOutcome = "unknown";
     expect(render(refused).err).toContain(UNKNOWN_WRITE_ACTION);
+
+    // A caller that knows the exact re-read names it (o9o.169).
+    const named = await connectionError("ECONNRESET");
+    named.writeOutcome = "unknown";
+    named.recheck = "rig queue show 'qitem-1' --json";
+    expect(render(named).err).toContain("Re-read with 'rig queue show 'qitem-1' --json' before any retry, and do not redo the work.");
   });
 });
 

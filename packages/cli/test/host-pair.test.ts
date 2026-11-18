@@ -85,6 +85,30 @@ describe("rig host pair (OPR.0.4.6.MH1 FR-6)", () => {
     expect(yaml).not.toContain("issued-bearer");
   }, 15_000);
 
+  // workspaces-o9o.169: a pair request creates an approval item on the target. If the connection drops after the request
+  // was sent, the target may hold that item, so the CLI must not say it "could not reach" the target; only a cause that proves
+  // nothing was sent may say so.
+  const fetchFailure = (code: string) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code }) });
+
+  it("o9o.169: a pair request whose connection drops after sending reports an UNKNOWN outcome and where to check", async () => {
+    const deps: DoctorDeps = { ...fakeDeps({ poll: [] }), httpPost: async () => { throw fetchFailure("UND_ERR_SOCKET"); } };
+    const { err, exitCode } = await capture(() => run(deps, ["pair", "http://vps-a:7433", "--timeout", "10"]));
+    const text = err.join("\n");
+    expect(exitCode).toBe(1);
+    expect(text).toContain("outcome is UNKNOWN");
+    expect(text).not.toContain("could not reach");
+    expect(text).toContain("attention queue");
+    expect(fs.existsSync(path.join(dir, "hosts.yaml"))).toBe(false);
+  });
+
+  it("o9o.169: a pair request the target refused to connect to was not sent: it could not reach the target", async () => {
+    const deps: DoctorDeps = { ...fakeDeps({ poll: [] }), httpPost: async () => { throw fetchFailure("ECONNREFUSED"); } };
+    const { err, exitCode } = await capture(() => run(deps, ["pair", "http://vps-a:7433", "--timeout", "10"]));
+    expect(exitCode).toBe(1);
+    expect(err.join("\n")).toContain("could not reach http://vps-a:7433");
+    expect(err.join("\n")).not.toContain("UNKNOWN");
+  });
+
   it("denied: loud error, exit 1, NOTHING persists", async () => {
     const deps = fakeDeps({ poll: [{ status: 200, body: { status: "denied" } }] });
     const { err, exitCode } = await capture(() => run(deps, ["pair", "http://vps-a:7433", "--timeout", "10"]));

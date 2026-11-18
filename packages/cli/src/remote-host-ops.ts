@@ -1,4 +1,4 @@
-import { DaemonClient, DaemonConnectionError, DaemonTimeoutError, remoteDaemonClient } from "./client.js";
+import { connectionProvablyNotSent, DaemonClient, DaemonConnectionError, DaemonTimeoutError, remoteDaemonClient } from "./client.js";
 import { loadHostRegistry, resolveHost, resolveRemoteBearer, bearerAuthHeaders, classifyHttpFailedStep, classifyHttpError, type HttpHostEntry } from "./host-registry.js";
 import { resolveOriginSelfHostId, type LifecycleDeps } from "./daemon-lifecycle.js";
 import type { FailedStep } from "./cross-host-types.js";
@@ -26,16 +26,12 @@ export interface RemoteOpResult {
   outcomeUnknown?: true;
 }
 
-// Connection failures that prove the request never reached the remote daemon. Codes the kernel can also report on a
-// socket that already sent the request (route loss, an interface going down, a firewall change mid-flow: EHOSTUNREACH,
-// ENETUNREACH, EHOSTDOWN, ENETDOWN, EPERM, EACCES) are left out, so they read as an unknown outcome.
-const NOT_CONNECTED_CODES = new Set([
-  "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EADDRNOTAVAIL", "UND_ERR_CONNECT_TIMEOUT", "ERR_INVALID_URL",
-]);
+// The connection failures that prove the request never reached the remote daemon are the client's one rule
+// (connectionProvablyNotSent, client.ts), which every local write reads too (workspaces-o9o.169).
 
 function requestMayHaveArrived(err: unknown): boolean {
   if (err instanceof DaemonTimeoutError) return true;
-  if (err instanceof DaemonConnectionError) return err.causeCode === undefined || !NOT_CONNECTED_CODES.has(err.causeCode);
+  if (err instanceof DaemonConnectionError) return !connectionProvablyNotSent(err.causeCode);
   return true;
 }
 

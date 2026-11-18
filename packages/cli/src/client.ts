@@ -72,9 +72,35 @@ export function connectionErrorCode(err: unknown): string | undefined {
   return typeof code === "string" && code ? code : undefined;
 }
 
+/**
+ * Connection failures that prove the request never reached the daemon: refused, the name did not resolve, no local address,
+ * the connect itself timed out, or the URL was invalid. Codes the kernel can also report on a socket that already sent the
+ * request (route loss, an interface going down, a firewall change mid-flow: EHOSTUNREACH, ENETUNREACH, EHOSTDOWN, ENETDOWN,
+ * EPERM, EACCES) are left out, so they read as an unknown outcome; so does a reset, a closed socket, or no cause at all.
+ * One rule for every write: the local client (workspaces-o9o.169) and the remote host ops (remote-host-ops.ts) both read it.
+ */
+const NOT_SENT_CAUSES = new Set([
+  "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EADDRNOTAVAIL", "UND_ERR_CONNECT_TIMEOUT", "ERR_INVALID_URL",
+]);
+
+/** fetch itself refuses a port on its bad-port list before opening any connection, with no OS code: `cause.message` is
+ *  "bad port" (measured on Node 22 undici: ports 1 and 9). Nothing was sent. */
+function fetchRefusedBadPort(err: unknown): boolean {
+  const cause = (err as { cause?: { message?: unknown } } | null | undefined)?.cause;
+  return cause?.message === "bad port";
+}
+
+/** True only when the cause proves the request was never sent (see NOT_SENT_CAUSES). */
+export function connectionProvablyNotSent(causeCode: string | undefined): boolean {
+  return causeCode !== undefined && NOT_SENT_CAUSES.has(causeCode);
+}
+
 export class DaemonConnectionError extends Error {
-  /** A write caller cannot infer nondelivery from losing the response. */
+  /** A write caller cannot infer nondelivery from losing the response. Set by DaemonClient for every write (any method
+   *  but GET and HEAD) whose failure does not prove the request was never sent (workspaces-o9o.169). */
   writeOutcome?: "unknown";
+  /** The exact command that re-reads what this write changes, when the caller knows it (`rig queue show <id>`). */
+  recheck?: string;
   /** #275: the OS cause, so a connection this machine blocked is not rendered as a stopped daemon. */
   causeCode?: string;
 
@@ -315,10 +341,14 @@ export class DaemonClient {
       // finished. A dropped body must preserve unknown-outcome guidance.
       if (responseStatus !== undefined) throw new DaemonResponseError(responseStatus, "");
       const causeCode = connectionErrorCode(err);
-      throw new DaemonConnectionError(
+      const failure = new DaemonConnectionError(
         `Cannot connect to the OpenRig daemon at ${this.baseUrl}: ${msg}${causeCode && !msg.includes(causeCode) ? ` (${causeCode})` : ""}`,
         causeCode,
       );
+      // workspaces-o9o.169: a write whose request may have reached the daemon has an unknown outcome, never "not delivered".
+      const method = (init.method ?? "GET").toUpperCase();
+      if (method !== "GET" && method !== "HEAD" && !connectionProvablyNotSent(causeCode) && !fetchRefusedBadPort(err)) failure.writeOutcome = "unknown";
+      throw failure;
     }
   }
 

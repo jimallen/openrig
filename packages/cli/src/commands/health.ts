@@ -141,6 +141,17 @@ function daemonError(details: unknown): HealthCliError {
   };
 }
 
+/** workspaces-o9o.169: a health write whose reply was lost after the request may have reached the daemon. */
+function writeOutcomeUnknownError(details: unknown, recheck: string): HealthCliError {
+  return {
+    schema: HEALTH_ERROR_SCHEMA,
+    error: "health_write_outcome_unknown",
+    message: "This write's outcome is UNKNOWN: its reply was lost after the request may have reached the daemon. Re-read before any retry, and do not repeat it blindly.",
+    nextInspection: recheck,
+    details,
+  };
+}
+
 function responseError(status: number, data: unknown): HealthCliError {
   const daemonCode = typeof data === "object" && data !== null && typeof (data as { error?: unknown }).error === "string"
     ? (data as { error: string }).error
@@ -305,6 +316,8 @@ function renderExplanation(record: HealthRecord): void {
 async function guardedRequest<T>(
   request: () => Promise<{ status: number; data: T }>,
   json: boolean,
+  /** For a write: the command that re-reads what it changes (workspaces-o9o.169). Absent for a read. */
+  writeRecheck?: string,
 ): Promise<{ status: number; data: T } | null> {
   try {
     return await request();
@@ -316,7 +329,10 @@ async function guardedRequest<T>(
         : error instanceof DaemonConnectionError
           ? { kind: "connection", message: error.message }
           : { kind: "unexpected", message: error instanceof Error ? error.message : String(error) };
-    emitError(daemonError(details), json);
+    // A write that timed out, got an unreadable reply, or lost a connection that did not prove nondelivery may have applied.
+    const unknownWrite = writeRecheck !== undefined && (error instanceof DaemonTimeoutError || error instanceof DaemonResponseError
+      || (error instanceof DaemonConnectionError && error.writeOutcome === "unknown"));
+    emitError(unknownWrite ? writeOutcomeUnknownError(details, writeRecheck) : daemonError(details), json);
     return null;
   }
 }
@@ -407,11 +423,11 @@ list/explain never mutate. Diagnosis mutations use explicit subcommands; automat
       else renderExplanation(response.data);
     });
 
-  async function diagnosisRequest(path: string, options: { json?: boolean; full?: boolean }, payload?: unknown) {
+  async function diagnosisRequest(path: string, options: { json?: boolean; full?: boolean }, payload?: unknown, writeRecheck?: string) {
     const json = Boolean(options.json || command.opts().json);
     const client = await readyClient(deps, json);
     if (!client) return;
-    const response = await guardedRequest(() => payload === undefined ? client.get(`/api/health-diagnosis${path}`) : client.post(`/api/health-diagnosis${path}`, { ...(payload as object), actor: command.opts().actor }, { timeoutMs: transportWakingWriteBudgetMs() }), json);
+    const response = await guardedRequest(() => payload === undefined ? client.get(`/api/health-diagnosis${path}`) : client.post(`/api/health-diagnosis${path}`, { ...(payload as object), actor: command.opts().actor }, { timeoutMs: transportWakingWriteBudgetMs() }), json, payload === undefined ? undefined : writeRecheck);
     if (!response) return;
     if (response.status >= 400) { console.error(JSON.stringify(response.data)); process.exitCode = 1; return; }
     const occurrenceRead = payload === undefined && path !== "/policy" && path !== "/checkpoints";
@@ -460,12 +476,12 @@ list/explain never mutate. Diagnosis mutations use explicit subcommands; automat
   }
   command.command("policy").description("Inspect effective policy and engine state; apply edited JSON with --file")
     .option("--file <path>", "Apply policy JSON with an audit record").option("--json")
-    .action(async (o: { file?: string; json?: boolean }) => diagnosisRequest("/policy", o, o.file ? { value: fromFile(o.file) } : undefined));
+    .action(async (o: { file?: string; json?: boolean }) => diagnosisRequest("/policy", o, o.file ? { value: fromFile(o.file) } : undefined, "rig health policy --json"));
   command.command("checkpoint").description("Inspect or submit an outcome-boundary lineage census (not a per-edit ritual)")
     .option("--file <path>", "Submit checkpoint JSON with exact queue and product evidence").option("--json")
-    .action(async (o: { file?: string; json?: boolean }) => diagnosisRequest("/checkpoints", o, o.file ? { value: fromFile(o.file) } : undefined));
+    .action(async (o: { file?: string; json?: boolean }) => diagnosisRequest("/checkpoints", o, o.file ? { value: fromFile(o.file) } : undefined, "rig health checkpoint --json"));
   command.command("diagnose").description("Preview policy admission; --apply creates or re-presents bounded diagnostic context")
-    .option("--apply").option("--json").action(async (o: { apply?: boolean; json?: boolean }) => diagnosisRequest("/evaluate", o, { apply: Boolean(o.apply) }));
+    .option("--apply").option("--json").action(async (o: { apply?: boolean; json?: boolean }) => diagnosisRequest("/evaluate", o, { apply: Boolean(o.apply) }, "rig health diagnosis list --json"));
   const diagnosis = command.command("diagnosis").description("Read occurrences and record agent-owned dispositions");
   diagnosis.command("list").description("List occurrence summaries; evidence payloads require --full")
     .option("--json", "Summary array with explicit omitted fields and per-occurrence expansion commands")
@@ -476,8 +492,8 @@ list/explain never mutate. Diagnosis mutations use explicit subcommands; automat
     .option("--full", "Complete original record; use --full --json for lossless JSON (may be large)")
     .action(async (id: string, o: { json?: boolean; full?: boolean }) => diagnosisRequest(`/${encodeURIComponent(id)}`, o));
   diagnosis.command("record <qitem-id>").requiredOption("--file <path>", "Disposition JSON with verdict, causalStart, steering, uncertainty, evidenceRefs").option("--json")
-    .action(async (id: string, o: { file: string; json?: boolean }) => diagnosisRequest(`/${encodeURIComponent(id)}/disposition`, o, { value: fromFile(o.file) }));
+    .action(async (id: string, o: { file: string; json?: boolean }) => diagnosisRequest(`/${encodeURIComponent(id)}/disposition`, o, { value: fromFile(o.file) }, `rig health diagnosis show ${shellQuote(id)} --json`));
   diagnosis.command("notify <qitem-id>").description("Explicitly request human delivery under policy and verified connector readiness").option("--json")
-    .action(async (id: string, o: { json?: boolean }) => diagnosisRequest(`/${encodeURIComponent(id)}/notify`, o, {}));
+    .action(async (id: string, o: { json?: boolean }) => diagnosisRequest(`/${encodeURIComponent(id)}/notify`, o, {}, `rig health diagnosis show ${shellQuote(id)} --json`));
   return command;
 }

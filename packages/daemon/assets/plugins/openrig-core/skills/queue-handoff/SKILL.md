@@ -162,13 +162,15 @@ full content when needed; keep large supporting evidence in linked artifacts.
 The closing verbs are `rig queue handoff`, `rig queue handoff-and-complete` and `rig queue update` to a
 terminal state. The daemon commits each close in one transaction, so it either lands whole or not at
 all. What you can lose is the reply. If the daemon stops, restarts or stalls while your close is in
-flight, the CLI prints one of these:
+flight, the CLI prints "The command's outcome is UNKNOWN": a timeout, a reply it could not read, or a
+connection that dropped after the request was sent. It names the re-read for the item:
+`rig queue show <qitem-id> --json`.
 
-- "The command's outcome is UNKNOWN": a timeout, or a reply it could not read.
-- "Cannot connect to the OpenRig daemon … The command was not delivered."
-
-Treat both the same way. For these verbs, "The command was not delivered." is not proof: a connection
-that drops after the request was sent prints it too, even when the close had already committed.
+The CLI says "Cannot connect to the OpenRig daemon … The command was not delivered." only when the
+connection was never made (refused, the name did not resolve, or this machine blocked it), so nothing
+was sent. From an older CLI (before workspaces-o9o.169), "The command was not delivered." is not proof:
+it printed that for a connection that dropped after the request was sent too, even when the close had
+already committed. When you cannot tell which CLI printed it, treat it as UNKNOWN.
 
 1. **Never redo the work.** The work is done; only its record is in question. A cleanup, a merge or
    a send that you repeat because the close looked lost is the expensive mistake here.
