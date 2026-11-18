@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { watchProofSources, type ProofSourceWatch } from "../src/domain/proof/source-watch.js";
 import { nodeSourceTreeWatcher } from "../src/adapters/proof-source-watcher.js";
 import { EventBus } from "../src/domain/event-bus.js";
@@ -138,6 +139,37 @@ describe.skipIf(process.platform !== "linux" || process.getuid?.() === 0)("o9o.3
       expect(rounds).toEqual(Array.from({ length: 10 }, () => ({ gaps: [], editSeen: true })));
     } finally { w.close(); }
   }, 60_000);
+
+  // A watch kept for a path that is gone is a handle the daemon holds until the claim closes: one per directory ever removed
+  // under a long-lived missions root. fs.watch is wrapped for this row (through the builtin module, so the adapter's own
+  // import sees it) to count the watchers the adapter has open.
+  it("the watches of removed directories are closed, not kept: one open watcher per live entry", async () => {
+    const cfs = createRequire(import.meta.url)("node:fs") as typeof fs;
+    const original = cfs.watch;
+    const opened = new Set<object>();
+    (cfs as { watch: unknown }).watch = (...args: Parameters<typeof original>) => {
+      const w = original(...args);
+      opened.add(w);
+      w.on("close", () => opened.delete(w));
+      return w;
+    };
+    syncBuiltinESMExports();
+    const h = host();
+    const tree = path.join(h.root, "churn");
+    for (let i = 0; i < 5; i++) fs.mkdirSync(path.join(tree, `d${i}`), { recursive: true });
+    let w: { close(): void } | undefined;
+    try {
+      w = nodeSourceTreeWatcher("linux").watch(tree, { recursive: true }, () => {}, () => {});
+      expect(opened.size, "positive control: the root and its five directories are watched").toBe(6);
+      for (let i = 0; i < 5; i++) fs.rmSync(path.join(tree, `d${i}`), { recursive: true });
+      await expect.poll(() => opened.size, { timeout: 2000 }).toBe(1);
+    } finally {
+      w?.close();
+      (cfs as { watch: unknown }).watch = original;
+      syncBuiltinESMExports();
+    }
+    await expect.poll(() => opened.size, { timeout: 2000 }).toBe(0); // close is emitted on the next tick
+  });
 
   it("positive control: a dangling symlink is gone, not unreadable, and the claim stays watching", () => {
     const h = host();
