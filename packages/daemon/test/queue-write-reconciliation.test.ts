@@ -338,7 +338,10 @@ describe("queue unknown-write reconciliation", () => {
     }
   });
 
-  it.each([true, false])("keeps daemon-down create actionable and reconcilable (json=%s)", async (json) => {
+  // workspaces-o9o.169 (verify-qa FAIL, CoS ruling 2026-11-18): a refused connection proves the create was never sent, so it is
+  // "not delivered", never UNKNOWN (this row used to pin UNKNOWN). It stays reconcilable: the recovery ID and its --id retry
+  // are still printed, and the action still names the daemon checks.
+  it.each([true, false])("keeps daemon-down create actionable and reconcilable, and calls it not delivered (json=%s)", async (json) => {
     const port = await claimTestPort();   // a daemon that is down: nobody binds it, claimed meanwhile (workspaces-o9o.81)
     h.networkEndpoint(`http://127.0.0.1:${port}`);
     const first = await h.run([...createArgs, "--no-nudge"], json);
@@ -347,11 +350,12 @@ describe("queue unknown-write reconciliation", () => {
     const rendered = json ? JSON.stringify(first.data) : first.stderr.join("\n");
     expect(rendered).toContain("Cannot connect");
     expect(rendered).toContain("--id");
-    expect(rendered).toContain("UNKNOWN");
+    expect(rendered).toContain("rig queue show");
+    expect(rendered).toContain("The command was not delivered.");
+    expect(rendered).not.toContain("UNKNOWN");
     const action = json ? first.data.error.action : rendered;
     expect(action).toContain("rig daemon status");
     expect(action).toContain("rig daemon start");
-    expect(action).toContain("before any retry");
   });
 
   it.each(["handoff", "handoff-and-complete"])("%s preserves the source and exactly one successor through delayed wake and retry", async (verb) => {
