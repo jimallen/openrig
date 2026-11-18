@@ -143,8 +143,8 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
 describe("o9o.125: the production terminal WebSocket on @hono/node-server 2", () => {
   const TOKEN = "tok-" + "c".repeat(24);
   const ok = async () => ({ ok: true });
-  const tmux = () => ({
-    ...mockTmuxAdapter(), hasSession: async () => { effects++; return true; },
+  const tmux = () => Object.assign(mockTmuxAdapter(), {
+    hasSession: async () => { effects++; return true; },
     setWindowOption: ok, startPipePane: ok, stopPipePane: ok, sendKeys: ok, sendText: ok, resizeWindow: ok,
   });
   let effects = 0;
@@ -153,7 +153,7 @@ describe("o9o.125: the production terminal WebSocket on @hono/node-server 2", ()
   async function start(terminalBearerToken: string | null) {
     const db = createFullTestDb();
     const app = createTestApp(db, {
-      tmux: tmux() as never, withWebSocket: true,
+      tmux: tmux(), withWebSocket: true,
       appDeps: { webUiEnabled: true, terminalBearerToken, browserBoundaryObserver: (d) => seen.push(d.code ?? d.outcome) },
     });
     const { server, port } = await listen(app.app.fetch as Hono["fetch"], app.listenerOptions!());
