@@ -28,6 +28,7 @@ import { NO_STARTUP_SEND, resolveConcreteHint } from "../domain/runtime-adapter.
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import {
+  stubPreseedPath,
   stubSeatSidecarPath, buildStubRunnerCommand, parseStubRunnerState,
   type StubRunnerState,
 } from "./stub-runner-protocol.js";
@@ -60,6 +61,9 @@ export interface StubRuntimeAdapterDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Launch-attempt id minting (tests inject; defaults to randomUUID). */
   newLaunchId?: () => string;
+  /** workspaces-o9o.136: the daemon's HOME, which every seat's env inherits (hc-seat.ts seatEnvironment); the preseed record goes under it.
+   *  Defaults to process.env.HOME. Empty or unset: no record is written, and the runner reports the miss. */
+  daemonHome?: string;
 }
 
 /** In-memory launch record: the readiness fallback for the hermetic path (no
@@ -77,6 +81,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
   private runnerEntryPath?: string;
   private sleep: (ms: number) => Promise<void>;
   private newLaunchId: () => string;
+  private readonly daemonHome: string | undefined;
   private readonly launchRecords = new Map<string, StubLaunchRecord>();
 
   constructor(deps: StubRuntimeAdapterDeps) {
@@ -86,6 +91,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
     this.runnerEntryPath = deps.runnerEntryPath;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.newLaunchId = deps.newLaunchId ?? (() => randomUUID());
+    this.daemonHome = deps.daemonHome !== undefined ? deps.daemonHome : process.env.HOME;
   }
 
   async listInstalled(_binding: NodeBinding): Promise<InstalledResource[]> {
@@ -192,6 +198,15 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
         posture,
         resumeToken: opts.resumeToken,
       });
+      // workspaces-o9o.136: the preseed record for THIS launch, under the daemon's HOME, before the runner starts. A failed write is not a
+      // launch failure: the runner then says on its pane that the preseed did not reach it, which is the visible outcome GAP-7 asks for.
+      if (this.daemonHome) {
+        try {
+          const preseed = stubPreseedPath(this.daemonHome, sessionName);
+          this.fsOps.mkdirp(nodePath.dirname(preseed));
+          this.fsOps.writeFile(preseed, JSON.stringify({ launchId }));
+        } catch { /* reported by the runner, on the pane */ }
+      }
       // Staged: only `/bin/sh <path>` is typed into the pane shell, and the script execs the runner.
       const textResult = await this.tmux.sendShellCommand(sessionName, cmd, undefined, { execInScript: true, asTerminalProgram: true });
       if (!textResult.ok) return { ok: false, error: `Failed to send stub launch command: ${textResult.message}` };

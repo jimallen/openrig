@@ -17,6 +17,7 @@ import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import { formatDaemonHostForUrl } from "./daemon-url.js";
 import {
+  stubPreseedPath,
   stubSeatSidecarPath,
   stubSeatScriptPath,
   STUB_RUNNER_READY_MARKER,
@@ -278,6 +279,17 @@ export function resolveStubActivityEndpoint(env: NodeJS.ProcessEnv): { baseUrl: 
  *  escalation). MUST stay byte-identical to the literal in precompact-hook.mjs. */
 export const STUB_CLOCK_ANNOUNCEMENT = "OPENRIG_TEST_CLOCK_NOW active — timestamps are injected";
 
+/** workspaces-o9o.136: the pane line saying whether this launch's preseed record is under `home` (stubPreseedPath). */
+export function preseedLine(home: string | undefined, sessionName: string, launchId: string): string {
+  if (home) {
+    try {
+      const record = JSON.parse(nodeFs.readFileSync(stubPreseedPath(home, sessionName), "utf8")) as { launchId?: unknown };
+      if (record.launchId === launchId) return "[stub-runner] preseed: trust reached|";
+    } catch { /* absent or unreadable: not reached */ }
+  }
+  return `[stub-runner] preseed NOT reached: no record for this launch under HOME=${home ?? "unset"}|`;
+}
+
 export async function runStubRunner(args: StubRunnerArgs): Promise<void> {
   // PRD §5 (no wall-clock in the stub's OWN behavior): the runner's own stamps honor
   // the same A3-R3 injectable clock the compaction assets use — OPENRIG_TEST_CLOCK_NOW
@@ -340,6 +352,10 @@ export async function runStubRunner(args: StubRunnerArgs): Promise<void> {
     // `|` ends the value, so a scenario can tell /tmp from /tmp/ or /tmpX.
     // eslint-disable-next-line no-console
     console.log(`[stub-runner] claude-config-dir=${process.env.CLAUDE_CONFIG_DIR ?? "unset"}|`);
+    // workspaces-o9o.136 (GAP-7): whether the daemon's preseed for THIS launch reached the HOME this seat runs with. A miss is said, never
+    // silent, with the HOME it looked in. `|` ends the value, as above.
+    // eslint-disable-next-line no-console
+    console.log(preseedLine(process.env.HOME, args.sessionName, args.launchId));
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(`${STUB_RUNNER_ERROR_MARKER} ${(err as Error).message}`);

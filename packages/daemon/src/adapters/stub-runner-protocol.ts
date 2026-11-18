@@ -48,6 +48,16 @@ export function stubSeatScriptPath(cwd: string): string {
 
 // ── Pane markers (runner-authored; the adapter greps for THESE, never harness UI) ─
 
+/**
+ * workspaces-o9o.136 (GAP-7 in the hc era): the stub seat's preseed record, `<HOME>/.openrig-stub/preseed/<session, URI-encoded>`, holding
+ * `{"launchId": ...}`. The adapter writes it under the DAEMON's HOME before the runner starts; the runner reads it under its OWN HOME and says
+ * on its pane whether this launch's record reached it. A seat's env, HOME included, comes from the daemon's for every runtime
+ * (hc-seat.ts seatEnvironment), so a seat started on an hc core with another HOME still finds it; a seat that ran with another HOME would not.
+ */
+export function stubPreseedPath(home: string, sessionName: string): string {
+  return nodePath.join(home, ".openrig-stub", "preseed", encodeURIComponent(sessionName));
+}
+
 export const STUB_RUNNER_READY_MARKER = "[stub-runner] READY";
 export const STUB_RUNNER_EXIT_MARKER = "[stub-runner] EXITED";
 export const STUB_RUNNER_ERROR_MARKER = "[stub-runner] ERROR";

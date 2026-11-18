@@ -19,11 +19,18 @@
 #   produced a SILENT failure (neither reach nor visible), THAT is the defect the pair
 #   catches. (If the SUT is ever found non-determinate at the fixed tip, the any_of
 #   amendment question returns WITH that evidence — not before.)
-# Deps: R-14 (env.pre_existing_tmux hermetic fixture). R-10 runner.
+# HC ERA (workspaces-o9o.136, measured 2026-11-18 at release-7 aec2a9ebe): seats run on hc, not tmux, so the
+#   old fixture (a pre-existing TMUX server with another HOME, R-14) names a host that no longer launches seats.
+#   The hc-era shape is already every scenario's: the scaffold starts its private hc core BEFORE the daemon,
+#   with its OWN HOME (/tmp/hcs-*/h), while the daemon runs with the scaffold's HOME. Measured: the seat process
+#   gets the DAEMON's HOME, not the core's, because every seat's env (claude-code, codex, pi, stub alike) is
+#   built by seatEnvironment (hc-seat.ts) from the daemon's env, through NodeLauncher.launchNode ->
+#   HcHost.createSession. The stub makes that observable: its adapter writes this launch's preseed record
+#   under the daemon's HOME, and the runner prints `preseed: trust reached` only when it finds that record
+#   under its OWN HOME (`preseed NOT reached ... HOME=<its HOME>` otherwise, never silent).
+# Deps: R-10 runner. No env fixture: the scaffold's own hc core is the pre-existing host with another HOME.
 scenario: home-divergence-preseed-visible
 topology: ./solo-stub.yaml
-env:
-  pre_existing_tmux: true
 steps:
   - up: {}
   # GREEN leg — deterministic at the GAP-7-fixed tip: preseed reaches the seat.
@@ -31,6 +38,6 @@ steps:
       surface: pane
       seat: work-worker@solo-stub
       within: 45s
-      contains: "trust reached"
+      contains: "[stub-runner] preseed: trust reached|"
   - seed_regression: {class: gap7-home-divergence}
   - down: {}
