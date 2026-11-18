@@ -22,9 +22,12 @@ describe("test instance environment probe", () => {
       const response = await new DaemonClient().get("/api/test-isolation");
       expect(response.status).toBe(200);
     } catch (error) {
-      // The isolated default is not a fixture server; the existing fetch guard
-      // must reject it before any network request. The parent reaches the outer server.
-      expect(String(error)).toContain("FETCH GUARD");
+      // The isolated default is not a fixture server, and it must be rejected before any network request. Since o9o.181 the
+      // client rejects it first: the fixture home is not ~/.openrig and names no daemon, so it never falls back to the default
+      // address (the fetch guard stays behind it as the second line). The parent reaches the outer server, and checks that no
+      // request was routed.
+      expect(String(error)).toContain("names no daemon of its own");
+      expect(String(error)).toContain("Nothing was sent");
     }
   });
 });
