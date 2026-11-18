@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { buildDaemonEnv, resolveBindIntent, verifyRequiredListeners } from "../src/daemon-lifecycle.js";
 
 // OPR.0.5.5.20 — injected routing environment must never silently become daemon bind
