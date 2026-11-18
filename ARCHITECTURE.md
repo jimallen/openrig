@@ -257,9 +257,12 @@ and no model cost.
    `tui_socket`, `policy_provenance`. `up: { fails: { contains: "<text>" } }` expects the launch
    to fail: the step passes only when `rig up` exits non-zero with the text in its output (for a
    seat a stub script holds short of ready or ends before ready; `packages/test-system/scripts/README.md`).
-3. Today the runner binds `up`, `down`, `send`, `restart` and `daemon`. `restore`, `emit`,
-   `mutate` and `policy` fail with `UnboundActionError`, and `seed_regression` needs a fault
-   controller (`packages/daemon/test/helpers/scenario-real-deps.ts`).
+3. Today the runner binds `up` (including a per-step `up: {topology}` for a second rig), `down`,
+   `send`, `restart` and `daemon`. A step it cannot bind is reported, never run and never passed
+   (workspaces-o9o.132): with no fault controller (host mode), `seed_regression` makes the scenario
+   HEALTHY-ONLY, its healthy leg run and its seeded leg not; `restore`, `emit`, `mutate` and
+   `policy` make it NOT RUN, naming the step and why (`packages/daemon/test/helpers/scenario-real-deps.ts`,
+   `scenario-runner.ts`).
 4. Write a header comment naming the defect class and the seed: what a seeded regression plants,
    and which `expect` must catch it. A scenario counts only as a pair: it passes on healthy code
    and fails on the seeded run (`packages/test-system/README.md`).

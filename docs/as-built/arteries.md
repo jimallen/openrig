@@ -82,7 +82,7 @@ cannot prove" in [test-layers.md](test-layers.md).
   only. `stub-cli-journeys.integration.test.ts` checks that a verified send lands in the addressed
   pane and not its sibling. None of these proves a seat consumed a message.
 - **Restore (the #141 class): not covered.** The scenario runner does not bind the `restore` verb
-  yet; it fails with `UnboundActionError`.
+  yet; a scenario that uses it is reported NOT RUN (workspaces-o9o.132).
 - **Rig identity (the #174 class): not covered.** No library scenario sets up a same-name archived
   or removed rig.
 - **Projection (the #159 class): not coverable with `runtime: stub`,** which projects skills into its

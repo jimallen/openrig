@@ -12,8 +12,9 @@ scenario names none.
   but only inside a per-seat launch script: a JSON `{steps: [...]}` file of `say` and
   `emit` steps that a scenario maps to a seat with `env.stub_scripts` and that the stub
   reads from `<seat cwd>/.openrig/stub/script.json` at launch (host mode only). A
-  step-time `emit` throws `UnboundActionError`. No behavior scripts are authored here
-  yet, so #6 and #8 stop at their first `emit` step (R-01/R-02).
+  step-time `emit` is unbound: a scenario that reaches one is reported NOT RUN, naming the
+  step. No behavior scripts are authored here yet, so #6 and #8 are NOT RUN at their first
+  `emit` step (R-01/R-02).
 - No script names `usage_limit` — it is real-runtime-only and must fail validation loud
   in a stub topology.
 - A script may set how its seat comes up (workspaces-o9o.29), with `readiness`:

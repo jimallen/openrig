@@ -14,7 +14,7 @@ against the locked/ruled shape so it drops in when the dependency lands.
   1eb6d505) built come-up + readiness only; A5 item 5 (ctx%) landed at 13e26355 (CLEARed,
   verdict 53397f73); the four emit BEHAVIORS have since landed, but they run only from a
   per-seat launch script (`stub-script.ts`, executed by `stub-runner.ts`). A step-time
-  `emit` throws `UnboundActionError`, so #6/#8 PARSE but stop at their first `emit` step.
+  `emit` is unbound, so #6/#8 PARSE and are reported NOT RUN at their first `emit` step.
   `usage_limit` is deliberately absent (real-runtime-only).
 - **R-02. Scenario-resolved stub scripts (scripted-response contract) — LANDED (host
   mode).** A scenario maps a seat to a script path (relative to the scenario file) with
@@ -40,21 +40,23 @@ against the locked/ruled shape so it drops in when the dependency lands.
   — no longer a rides-the-gate gap. #11 is authored in the ruled shape and is satisfied by
   the 51-02 v1 verb. The ops are `sigterm` and `restart` (`DAEMON_OPS` in
   `scenario-schema.ts`).
-- **R-12. Multi-rig `up` (#9) — OPEN.** #9 brings up two rigs to prove ps scope honesty.
-  The locked format's `topology:` is scenario-singular; #9 uses a per-step
-  `up: {topology: ./rig-beta-stub.yaml}` override to name the second rig. The runner
-  ignores that override: every `up` runs `rig up` on the scenario's top-level `topology`
-  (`scenario-real-deps.ts`). Routed as a 51-02 spec question; #9 authored in the override
-  shape.
-- **R-13. `equals` cross-surface normalizer (#10) — LANDED in the format; #10 not yet
-  converted.** The declarative normalizer ships as a per-surface projection mapping,
+- **R-12. Multi-rig `up` (#9) — LANDED (host mode, workspaces-o9o.132).** #9 brings up two
+  rigs to prove ps scope honesty. The locked format's `topology:` is scenario-singular; #9
+  names the second rig with a per-step `up: {topology: ./rig-beta-stub.yaml}`, resolved
+  against the scenario's folder. `down` stops every rig the run brought up, latest first;
+  `restart` keeps the scenario's own rig. A staged (`env.stub_scripts`) or container topology
+  has no scenario folder to offer, so there a per-step topology fails loud.
+- **R-13. `equals` cross-surface normalizer (#10) — LANDED; #10 converted (workspaces-o9o.132).**
+  The declarative normalizer ships as a per-surface projection mapping,
   `equals: {<surface>: {pluck, path, rig}}` (`scenario-normalizer.ts`), and it is the only
-  form the validator accepts. #10 still uses a bare list of surfaces, which the validator
-  rejects (`EQUALS_NOT_DECLARATIVE`).
-- **R-14. `env.pre_existing_tmux` hermetic fixture (#5) — OPEN.** The hardest env fixture
-  (a pre-existing tmux server inside a scratch scaffold). No runner code reads
-  `env.pre_existing_tmux`: the validator accepts the key and the pipeline ignores it, so
-  #5 runs without the fixture rather than blocking.
+  form the validator accepts. #10 compares `ps` and `queue` by the rig set each names, with one
+  `env.queue` item, and asserts `tui_socket` on its own (its socket carries UI state, not daemon
+  truth). Its storm uses `mutate`, which is unbound, so host mode reports it NOT RUN.
+- **R-14. `env.pre_existing_tmux` hermetic fixture (#5) — OPEN (workspaces-o9o.136).** The hardest
+  env fixture (a pre-existing tmux server inside a scratch scaffold). No runner code provides it,
+  so a scenario declaring `env.pre_existing_tmux` is reported NOT RUN, naming R-14, before any
+  daemon starts (workspaces-o9o.132). #5 also needs the stub's preseed outcome (its expected
+  `trust reached` line): nothing in the stub prints it.
 - **R-15. Disjunctive expect `any_of` (#5) — RESOLVED: not adopted.** #5's binding
   acceptance was "lands on ONE of two honest outcomes" (preseed reaches the seat OR the
   failure is visible on stream). The locked `expect` is a single match, and an `any_of`
@@ -69,14 +71,16 @@ against the locked/ruled shape so it drops in when the dependency lands.
   incident's `handoff-and-complete` closure may need a queue-completion action beyond
   `send`. #11 drives the executed work via `send`, but `send` runs `rig send`, which
   creates no queue item, and the grammar has no queue action verb: queue items come only
-  from an `env.queue` precondition, applied after the first `up`. #11 declares no
-  `env.queue`, so its first `expect queue` has no item to match.
+  from an `env.queue` precondition, applied after the first `up`. #11 now declares a claimed
+  `env.queue` handoff (workspaces-o9o.132), so its first `expect queue` holds; its post-restart
+  legs wait on R-20.
 
 ## → 51-06 (transactional execution-closure) — #11 GREEN gate
 - **R-20. #11 GREEN gate = the 51-06 transactional-closure reconcile (POOLED, NOT in
   main).** kill-daemon-mid-handoff is RED-FIRST: its product-side green gate is the 51-06
   transactional execution-closure + executed-unclosed reconcile, confirmed NOT in main at
-  `13e26355` (dev-planner 51-03 review, grounded at source). Expected-RED until 51-06
+  `13e26355` (dev-planner 51-03 review, grounded at source), and still absent from src at
+  release-6 744ee7692 (workspaces-o9o.132; built under workspaces-o9o.135). Expected-RED until 51-06
   lands; recorded as expected-RED, never massaged. **Correction (supersedes an earlier
   acting-orch feed):** `bfbc2182` is the 90840bcb response-integrity CLI commit and
   `4cd2c313` is the slow-op-recorder drain latch — BOTH touch no queue/closure code and

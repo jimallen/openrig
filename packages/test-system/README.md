@@ -67,12 +67,23 @@ The remaining historical markers after their assertions are not executable proof
 The runner (`packages/daemon/scripts/run-scenarios.mjs`, over
 `packages/daemon/test/helpers/scenario-*.ts`) and its hermetic env-helper exist. The stub
 runs the four emit behaviors only from a per-seat launch script (`env.stub_scripts`); the
-step verbs `emit`, `restore`, `mutate` and `policy` parse, but the runner throws
-`UnboundActionError` when it reaches one. In CI, `queue-baton-survives-restart` runs with
+step verbs `emit`, `restore`, `mutate` and `policy` parse, but have no binding.
+
+The runner reports five outcomes, each in its own column, and counts only PASS as passed
+(workspaces-o9o.132): **PASS**; **HEALTHY-ONLY**, every step but the seed ran and held, because
+host mode has no seed controller (CI arms it); **NOT RUN**, an unbound step (`emit`, `restore`,
+`mutate`, `policy`) or an unbuilt fixture (`env.pre_existing_tmux`, R-14) stopped it, named with
+why; **FAIL**; and **ERROR**. The summary reads `<n> scenarios: x passed, h healthy-only, y NOT RUN,
+z failed` (an ERROR counts as failed), and the exit status is 1 only on a FAIL or an ERROR.
+Measured in host mode on 2026-11-18 (the library's 20, at the o9o.132 tip): 9 passed, 4
+healthy-only, 6 NOT RUN, 1 failed (#11, on R-20).
+
+In CI, `queue-baton-survives-restart` runs with
 its seed, and `transcript-reads-addressed-seat`, `capture-returns-addressed-seat` and
 `shipped-agent-ref-resolves`, `launch-held-short-of-ready` and `launch-runner-exits-before-ready` run healthy only (see [ci/README.md](ci/README.md)). The other ten historical scenarios are
 not yet runnable as meaningful checks, and `down-stops-every-seat` and
-`send-renders-in-addressed-pane` don't run in CI. Scenario #11 is RED-FIRST: its GREEN gates on the 51-06 transactional
-execution-closure fix and on its own setup and assertion-shape gaps (R-17, R-20); until
-then its expected-RED runs are recorded as expected-RED, never massaged. See `ROUTING.md`
+`send-renders-in-addressed-pane` don't run in CI. Scenario #11 is RED-FIRST: its setup now
+holds (a claimed `env.queue` handoff, R-17), and its GREEN gates on the 51-06 transactional
+execution-closure fix (R-20, workspaces-o9o.135); until then it fails at its post-restart legs,
+recorded as expected-RED, never massaged. See `ROUTING.md`
 for the exact per-item dependencies.
