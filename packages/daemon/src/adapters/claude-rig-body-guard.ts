@@ -31,6 +31,10 @@ export const RIG_BODY_GUARD_SUBCOMMANDS: readonly string[] = [
   "seat", "edge", "gateway", "project", "launch", "agent-image", "bundle", "host", "slack", "startup-proof", "mode", "restore-packet",
 ];
 const SUBCOMMAND_CASE = RIG_BODY_GUARD_SUBCOMMANDS.map((w) => `*[!A-Za-z0-9_]${w}[!A-Za-z0-9_]*`).join("|");
+/** workspaces-o9o.173: the kill words, whole words bounded by anything but [A-Za-z0-9_-] (so `tmux kill-session` is none). */
+const KILL_WORDS = ["kill", "pkill", "killall"];
+const KILL_CASE = KILL_WORDS.map((w) => `*[!A-Za-z0-9_-]${w}[!A-Za-z0-9_-]*`).join("|");
+
 
 /** OF-253: the inline `sh -c` script that runs the guard. $1 = node, $2 = the guard script, $3 = the watchdog seconds; the hook JSON arrives on stdin.
  *  Measured on Claude Code 2.1.319: only exit 2 (or a deny decision) blocks a tool call; a missing interpreter (127), a missing script, exit 1, a SIGKILL and a timeout all let it run.
@@ -78,8 +82,25 @@ deg() {
   case $in in *"$k"*) ;; *) k='"code":' ;; esac   # workspaces-o9o.131: a REPL call carries its JavaScript as "code"
   s=@@{in#*"$k"}          # the command's value onward: cwd and transcript path come before it and may hold "rig" ("openrig")
   if [ "@@{#s}" -gt 16384 ]; then
-    # too long to decode in plain sh in time: a kill word refuses; a backtick, "$(" or u00xx escape refuses as a rig body; letters that only spell kill apart do not
-    case $s in *kill*) killed ;; esac
+    # Too long for the decode loop below, which builds the whole decoded text and so is quadratic in escapes (measured on dash:
+    # 3.6 s at 256 KB, 53 s at 1 MB, against the hook's 5 s). The kill check still reads decoded text (o9o.173, verify-sec
+    # review): the same walk as the decode loop over the backslash-separated fields (an empty field is an escaped backslash,
+    # so the next field joins on as text: k\ill is kill; any other field starts with a JSON escape letter, which separates
+    # words; quotes are removed from each field, as the loop removes them at the end), but each field is checked joined to the
+    # last 16 decoded characters only, so every character is read about once. Then a backtick, "$(" or u00xx escape refuses as a
+    # rig body. (A for loop's list is expanded before it runs, so set -- inside it is safe.)
+    set -f
+    q=$(printf '\042\047')
+    IFS='\'; set -- $s; unset IFS
+    # The first field is plain text, as the field after an escaped backslash is: lit starts at 1.
+    tail=; lit=1
+    for t in "$@"; do
+      if [ $lit = 1 ]; then e=$t; lit=0; elif [ -z "$t" ]; then e=; lit=1; else e=" @@{t#?}"; fi
+      case $e in *[$q]*) IFS=$q; set -- $e; IFS=; e="$*"; unset IFS ;; esac
+      w=$tail$e
+      case " $w " in KILLCASE) killed ;; esac
+      if [ "@@{#w}" -gt 16 ]; then tail=@@{w#"@@{w%????????????????}"}; else tail=$w; fi
+    done
     case $in in *"$bt"*|*'$('*|*'\u00'*) ;; *) exit 0 ;; esac
   else
     # Coarse on purpose: split on backslashes, decode u0060 u0024 u0072 u0069 u0067, drop the letter of a JSON escape pair (n t r b f), then drop quotes.
@@ -107,7 +128,7 @@ deg() {
       esac
     done
     IFS=$(printf '\042\047'); set -- $r; IFS=; r="$*"; unset IFS
-    case " $r " in *[!A-Za-z0-9_-]kill[!A-Za-z0-9_-]*|*[!A-Za-z0-9_-]pkill[!A-Za-z0-9_-]*|*[!A-Za-z0-9_-]killall[!A-Za-z0-9_-]*) killed ;; esac
+    case " $r " in KILLCASE) killed ;; esac
     case $r in *"$bt"*|*'$('*) ;; *) exit 0 ;; esac
     case " $r " in *rig*|SUBCASE) ;; *) exit 0 ;; esac
   fi
@@ -132,7 +153,7 @@ if [ "$rc" -eq 0 ]; then
   [ -z "$out" ] || printf '%s\n' "$out"
   exit 0
 fi
-deg "the guard failed or timed out, exit $rc"`.split("@@{").join("${").split("SUBCASE").join(SUBCOMMAND_CASE);
+deg "the guard failed or timed out, exit $rc"`.split("@@{").join("${").split("SUBCASE").join(SUBCOMMAND_CASE).split("KILLCASE").join(KILL_CASE);
 
 /** The guard's PreToolUse group: a blocking command hook on Bash. `onFailure: "block"` (measured on Claude Code 2.1.317 and 2.1.319, OF-251 round 2) makes a hook that fails to run block the tool call as well: a wrapper that cannot start
  *  (a missing /bin/sh, a bad exit, a timeout, a kill) refuses every Bash call until the seat is relaunched, instead of letting the command run unguarded.  It runs RIG_BODY_GUARD_WRAPPER with the daemon's own node (process.execPath, quoted, like the team hook: a bare `node`

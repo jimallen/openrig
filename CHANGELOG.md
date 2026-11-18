@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A seat whose guard cannot run refuses kill commands, and `rig doctor` names it (workspaces-o9o.173)
+
+- Symptom: when a Claude seat's rig-body guard could not run (its node or guard script missing, for example after a node upgrade removed the daemon's node, or the guard crashing or timing out), the wrapper's degraded check refused only a `rig` command with a backtick or `$(`. Every other command ran, broad kills included: `pkill -f vitest` stopped other seats' processes as if no guard existed.
+- Now, while the guard cannot run, a command with `kill`, `pkill` or `killall` as a whole word is refused (`tmux kill-session` and `kill-port` are not kill words). The check reads the command as the shell would: quotes, backslashes and JSON escapes do not hide the word, at any length. A kill by pid is refused too while the guard is down; the refusal says why, names the missing node or script, and says to relaunch or restore the seat. Every other command still runs, so a seat in this state can still look into it.
+- `rig doctor` has a new row, `running_seats_guard` (Linux): it reads each running Claude seat's guard node and script from the seat's own command line and warns "seat guard unavailable" with the seat and the missing paths, so the state is visible before a refusal shows it. Elsewhere the row is skipped with the reason.
+
 ### A non-default OPENRIG_HOME never reaches or starts on the default daemon (workspaces-o9o.181)
 
 - Symptom: with a temporary `OPENRIG_HOME` that had no `daemon.json` and no configured port, the CLI used the built-in `127.0.0.1:7433`, which on a seat's host is the live daemon. Twice on 2026-11-18 a probe with a temporary home read and wrote the live daemon that way. `rig destroy` in such a home would inspect the default port's daemon and could signal its process.

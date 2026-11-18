@@ -42,6 +42,12 @@
   "when": "!HC"
  },
  {
+  "file": "packages/cli/test/doctor-seat-guard.test.ts",
+  "kind": "runIf",
+  "task": "o9o.173: the seat's command line is read from /proc (Linux)",
+  "when": "process.platform === \"linux\""
+ },
+ {
   "file": "packages/cli/test/doctor-seat-path-head.test.ts",
   "kind": "runIf",
   "task": "o9o.106: the Linux reader takes each process's PATH from its environ",

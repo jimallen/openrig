@@ -222,6 +222,33 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     expect(hook(`echo ${pad}; pkill -f vitest`, { script: "/nonexistent/rig-body-guard.cjs" })).toMatchObject(REFUSED);
     expect(hook(`echo ${pad}`, { script: "/nonexistent/rig-body-guard.cjs" })).toMatchObject(ALLOWED);
   });
+  // o9o.173 (verify-sec review): over 16 KB the check matched the raw substring "kill", so a quoted or backslashed name
+  // (k''ill, k\ill) ran and words that only contain it (skill, kill-port) were refused. Long input now gets the same
+  // decoded whole-word check, built by field splitting (linear), not the quadratic decode loop.
+  const PAD = `echo ${"x".repeat(17_000)}`;
+  const DOWN = { script: "/nonexistent/rig-body-guard.cjs" };
+  it("o9o.173: over 16 KB, a kill name split by quotes, a backslash or a JSON escape is still a kill", () => {
+    const kills = [`${PAD}; k''ill 12345`, `${PAD}; k\\ill 12345`, `${PAD}\nkill 12345`, `${PAD}; p"kill" -f vitest`, `${PAD}\tkillall node`, `${PAD}; kill\n`,
+      `${PAD}\nk\\ill 12345`, `${PAD}; echo "\\"kill 12345`];
+    expect(kills.map((c) => [c.slice(-24), hook(c, DOWN).status])).toEqual(kills.map((c) => [c.slice(-24), 2]));
+  });
+  it("o9o.173: over 16 KB, a word that only contains kill, or a kill- name, still runs", () => {
+    const fine = [`${PAD}; echo skill`, `${PAD}; npm run kill-port`, `${PAD}; tmux kill-session -t x`, `${PAD}; echo killed`];
+    expect(fine.map((c) => [c.slice(-24), hook(c, DOWN).status])).toEqual(fine.map((c) => [c.slice(-24), 0]));
+  });
+  // Measured on Sparky's dash: 64 KB 74 ms, 256 KB 273 ms, 1 MB 978 ms, 4 MB 3.9 s (the decode loop took 53 s at 1 MB).
+  // Past about 5 MB the hook's own 5 s timeout fires and onFailure "block" refuses the call. 256 KB here, so the 2 s bound
+  // keeps headroom on a loaded host.
+  it("o9o.173: the long-input check is linear: 256 KB full of escapes is decided well inside the hook's 5 s", () => {
+    const heavy = 'echo "a" \\\\b\nline\t'.repeat(12_000);
+    const refused = hook(`${heavy}; k''ill 1`, DOWN);
+    expect(refused.status).toBe(2);
+    expect(refused.ms).toBeLessThan(2_000);
+    const allowed = hook(`${heavy}; echo skill`, DOWN);
+    expect(allowed.status).toBe(0);
+    expect(allowed.ms).toBeLessThan(2_000);
+  }, 60_000);
+
   it("o9o.173 control: with the guard running, a kill by pid runs and a broad kill gets the guard's own deny", () => {
     expect(hook("kill 12345")).toMatchObject(ALLOWED);
     const broad = hook("pkill -f vitest");
