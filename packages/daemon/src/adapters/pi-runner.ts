@@ -32,7 +32,7 @@ import { createPaneFrame, type FrameStream, type PaneFrame } from "./runner-pane
 import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
 import { SeatGateStore, seatGateLogPath, userMessageText, type GateIntent } from "./seat-gate-store.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialLaunchGate, piCredentialNotice, piCredentialSource, piVersionNumber, type PiCredentialEvidence } from "./pi-readiness.js";
-import { linkPiOperatorLogin } from "./pi-operator-login.js";
+import { linkPiOperatorLogin, piSeatCredentialRefusal, piSeatMetadataReader } from "./pi-operator-login.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
@@ -1437,10 +1437,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     openrigUrl: endpoint?.baseUrl ?? process.env.OPENRIG_URL,
     extraNames: args.envPassthrough,
   });
-  const readMetadata = (file: string): string => {
-    if (fs.statSync(file).size > 1024 * 1024) throw new Error("Unbounded metadata");
-    return fs.readFileSync(file, "utf8");
-  };
+  const readMetadata = piSeatMetadataReader(args.operatorLoginDir); // workspaces-o9o.151: auth.json/models.json under the credential rule
   const credentialEvidence = (): PiCredentialEvidence => piCredentialEvidence({
     agentDir: paths.agentDir, cwd: args.cwd, env: childEnv, now: () => Date.now(), readFile: readMetadata,
     statId: (file) => {
@@ -1503,6 +1500,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (!linked.ok) { refuseLaunch(`operator login: ${linked.error}`); return; }
     operatorLoginLines = linked.lines;
     for (const line of operatorLoginLines) console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: Pi ${line}`));
+    // workspaces-o9o.151: a credential file the rule refuses refuses the launch (fail closed), before the credential gate reads it.
+    const credentialRefusal = piSeatCredentialRefusal(paths.agentDir, args.operatorLoginDir);
+    if (credentialRefusal) { refuseLaunch(credentialRefusal); return; }
   }
   // OF-279: a launch with no credential for the provider the spec names is refused before Pi starts ("unknown" is not).
   let credentialGateNote: string | undefined;
@@ -1543,10 +1543,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   } else if (runtime === "pi") {
     console.log(sanitizeForPane(`[pi-runner] seat ${args.sessionName}: ${piCredentialNotice({
       model: args.model, agentDir: paths.agentDir, env: childEnv,
-      readFile: (file) => {
-        if (fs.statSync(file).size > 1024 * 1024) throw new Error("Unbounded metadata");
-        return fs.readFileSync(file, "utf8");
-      },
+      readFile: piSeatMetadataReader(args.operatorLoginDir),
     })}`));
   }
   console.log(sanitizeForPane(`[${runtime}-runner] starting ${runtime} --mode rpc (seat ${args.sessionName})`));

@@ -25,6 +25,8 @@
 //   check, the same function, as the model_overrides writer);
 // - declaring the models link without the host setting refuses: the member asked for something the host cannot give.
 // Values printed are paths. No credential value is read or printed.
+import { PI_AUTH_POLICY, PI_MODELS_POLICY, seatCredentialLinkPolicy, type CredentialFilePolicy, type CredentialFileRead } from "../domain/credential-file.js";
+import { inspectCredentialFile, narrowOwnSecretFile, readCredentialFile } from "./node-credential-file-reader.js";
 import { setOff } from "../domain/active-occupant.js";
 import fs from "node:fs";
 import nodePath from "node:path";
@@ -41,6 +43,8 @@ export interface PiOperatorLoginFs {
   symlink(target: string, p: string): void;
   rename(from: string, to: string): void;
   unlink(p: string): void;
+  /** workspaces-o9o.151: the operator's file judged under the credential rule (ours, no group/other bits, capped) WITHOUT reading it. */
+  inspectCredential(p: string, policy: CredentialFilePolicy): { ok: true } | (CredentialFileRead & { ok: false });
 }
 
 export const realPiOperatorLoginFs: PiOperatorLoginFs = {
@@ -54,6 +58,7 @@ export const realPiOperatorLoginFs: PiOperatorLoginFs = {
   symlink: (target, p) => fs.symlinkSync(target, p),
   rename: (a, b) => fs.renameSync(a, b),
   unlink: (p) => fs.unlinkSync(p),
+  inspectCredential: (p, policy) => inspectCredentialFile(p, policy),
 };
 
 export type LinkPiOperatorLoginResult =
@@ -115,6 +120,12 @@ export function linkPiOperatorLogin(opts: {
     if (realTarget === realState || realTarget.startsWith(realState + nodePath.sep)) {
       return { ok: false, error: `the operator's ${name} (${target}) resolves to ${realTarget}, inside the Pi state root ${realState}; that is a seat's own file, not the operator's login. Point pi.operator_login_dir at the operator's own Pi folder.` };
     }
+    // workspaces-o9o.151: a seat is linked only to an operator file that passes the whole credential rule, since every linked seat
+    // then reads it (SEAT_CREDENTIAL_LINKS pi-auth, pi-models). Judged on its REAL path, so the dotfile-manager layout (review F4: an
+    // operator auth.json that is a link to a regular file) stays accepted and the file behind it is what is judged; judged without
+    // being read (the operator's files are never read here); judged before any link is made, so a refusal links nothing.
+    const verdict = io.inspectCredential(realTarget, name === "auth.json" ? PI_AUTH_POLICY : PI_MODELS_POLICY);
+    if (!verdict.ok) return { ok: false, error: `not linking this seat to the operator's ${name}: ${verdict.message}` };
   }
   for (const name of names) {
     const target = nodePath.join(operatorDir, name);
@@ -173,4 +184,52 @@ function isEmptyObjectFile(io: PiOperatorLoginFs, file: string): boolean {
     const value: unknown = JSON.parse(io.readFile(file));
     return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
   } catch { return false; }
+}
+
+/**
+ * workspaces-o9o.151: the reader the pane runner gives its Pi credential notice and evidence (pi-readiness.ts). A seat's auth.json and
+ * models.json are read under the credential rule, following a seat link only to the operator's own file (SEAT_CREDENTIAL_LINKS
+ * pi-auth, pi-models; none when the host declares no operator login). A refusal throws its message, which the notice reports as
+ * unknown (the launch continues); a missing file keeps ENOENT, so the notice still says absent. Other files (settings.json) are not
+ * credentials and are read as before, size-capped.
+ */
+export function piSeatMetadataReader(operatorLoginDir: string | undefined): (file: string) => string {
+  const operator = operatorLoginDir?.trim() ? operatorLoginDir : undefined;
+  return (file) => {
+    const name = nodePath.basename(file);
+    const link = name === "auth.json" ? "pi-auth" : name === "models.json" ? "pi-models" : null;
+    if (link === null) {
+      if (fs.statSync(file).size > 1024 * 1024) throw new Error("Unbounded metadata");
+      return fs.readFileSync(file, "utf8");
+    }
+    const policy = seatCredentialLinkPolicy(link, operator ? nodePath.join(operator, name) : undefined);
+    // The seat's own plain file is OpenRig's (Pi writes it in the seat's agent dir): narrowed to 0600 like the terminal token
+    // (o9o.78), never refused for its mode, so the launch gate still sees what it saw before. A link is judged by the policy.
+    let isLink = false;
+    try { isLink = fs.lstatSync(file).isSymbolicLink(); } catch { /* missing: readCredentialFile says so */ }
+    if (!isLink) {
+      const refused = narrowOwnSecretFile(file, policy);
+      if (refused && refused.problem !== "missing") throw new Error(refused.message);
+    }
+    const read = readCredentialFile(file, policy);
+    if (read.ok) return read.content;
+    throw read.problem === "missing" ? Object.assign(new Error(read.message), { code: "ENOENT" }) : new Error(read.message);
+  };
+}
+
+/**
+ * workspaces-o9o.151: why a Pi seat must not launch on its credential files, or null. A seat's auth.json and models.json are read
+ * through piSeatMetadataReader; anything it refuses (a link anywhere but the operator's file, another user's file, not a plain file,
+ * too large) refuses the launch, naming the file and the fix, rather than letting the credential check read it as "unknown" and
+ * continue. A missing file is not a refusal here: the credential gate decides what absence means.
+ */
+export function piSeatCredentialRefusal(agentDir: string, operatorLoginDir: string | undefined): string | null {
+  const read = piSeatMetadataReader(operatorLoginDir);
+  for (const name of ["auth.json", "models.json"]) {
+    try { read(nodePath.join(agentDir, name)); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return `seat credential file: ${(err as Error).message}`;
+    }
+  }
+  return null;
 }

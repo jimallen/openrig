@@ -24,6 +24,8 @@
 // to nothing: "Unknown override IDs are ignored"). So nothing here refuses a provider that is absent from the file; the cost
 // of a misspelt provider is an override that does nothing, never a failed seat.
 // Values printed are numbers the spec states; no other value of the file is ever echoed.
+import { PI_MODELS_POLICY, type CredentialFileRead } from "../domain/credential-file.js";
+import { narrowOwnSecretFile, readCredentialFile } from "./node-credential-file-reader.js";
 import fs from "node:fs";
 import nodePath from "node:path";
 import { parsePiModelsJson } from "./pi-readiness.js";
@@ -33,12 +35,14 @@ export const PI_MODELS_JSON_MAX_BYTES = 1024 * 1024;
 
 /** The subset of node:fs this module uses, injectable so a failure mid-write can be tested without a broken disk. */
 export interface PiModelOverridesFs {
+  /** workspaces-o9o.151: the seat's own models.json under the credential rule, narrowed first (the o9o.78 precedent for a file
+   *  OpenRig owns: group/other bits are removed on the opened file, a link or another user's file is refused). */
+  readOwnModelsFile(p: string): CredentialFileRead;
   lstat(p: string): fs.Stats;
   realpath(p: string): string;
   /** fsync the directory itself, so the rename survives a crash. */
   fsyncDir(p: string): void;
   readlink(p: string): string;
-  readFile(p: string): string;
   /** Create `p` exclusively (fails if it exists) with mode 0600, write `data`, fsync, close. */
   createExclusive(p: string, data: string): void;
   rename(from: string, to: string): void;
@@ -46,6 +50,7 @@ export interface PiModelOverridesFs {
 }
 
 export const realPiModelOverridesFs: PiModelOverridesFs = {
+  readOwnModelsFile: (p) => narrowOwnSecretFile(p, PI_MODELS_POLICY) ?? readCredentialFile(p, PI_MODELS_POLICY),
   lstat: (p) => fs.lstatSync(p),
   realpath: (p) => fs.realpathSync(p),
   fsyncDir: (p) => {
@@ -53,7 +58,6 @@ export const realPiModelOverridesFs: PiModelOverridesFs = {
     try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   },
   readlink: (p) => fs.readlinkSync(p),
-  readFile: (p) => fs.readFileSync(p, "utf8"),
   createExclusive: (p, data) => {
     const fd = fs.openSync(p, "wx", 0o600); // "wx" (O_EXCL): a name someone planted, a symlink included, refuses here
     try {
@@ -159,8 +163,9 @@ export function applyPiModelOverrides(opts: {
     }
     if (!st.isFile()) return refuse(`${file} is not a regular file; the runner will not write model_overrides over it. Remove it or fix it by hand.`);
     if (st.size > PI_MODELS_JSON_MAX_BYTES) return refuse(`${file} is larger than ${PI_MODELS_JSON_MAX_BYTES} bytes; not rewriting it.`);
-    let text: string;
-    try { text = io.readFile(file); } catch (err) { return refuse(`cannot read ${file}: ${(err as NodeJS.ErrnoException).code ?? "error"}; not writing model_overrides`); }
+    const read = io.readOwnModelsFile(file);
+    if (!read.ok) return refuse(`not writing model_overrides: ${read.message}`);
+    const text = read.content;
     if (hasUnsafeInteger(text)) return refuse(`${file} holds an integer beyond 2^53 (9007199254740991), which rewriting the file would round to a different number; the runner will not rewrite it. Quote that value as a string in the file, or remove model_overrides from the spec.`);
     let parsed: unknown;
     try {

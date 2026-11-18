@@ -6,7 +6,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readCredentialFile } from "../src/adapters/node-credential-file-reader.js";
-import { HOSTS_REGISTRY_POLICY, TERMINAL_TOKEN_POLICY, type CredentialFilePolicy } from "../src/domain/credential-file.js";
+import {
+  HOSTS_REGISTRY_POLICY, SEAT_CREDENTIAL_LINKS, TERMINAL_TOKEN_POLICY, seatCredentialLinkPolicy, type CredentialFilePolicy, type SeatCredentialLink,
+} from "../src/domain/credential-file.js";
 
 let dir: string;
 beforeEach(() => { dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "cred-file-"))); });
@@ -21,7 +23,6 @@ function file(name: string, content: string, mode: number): string {
 
 const SECRET = TERMINAL_TOKEN_POLICY;
 const REGISTRY = HOSTS_REGISTRY_POLICY;
-const LINKED: CredentialFilePolicy = { label: "the linked file", kind: "secret", maxBytes: 4096, followLinkToCheckedTarget: true };
 
 describe("readCredentialFile: a secret file (o9o.151)", () => {
   it("reads a plain file of ours with no group or other bits", () => {
@@ -83,22 +84,43 @@ describe("readCredentialFile: a registry file (o9o.151)", () => {
   });
 });
 
-describe("readCredentialFile: the one named link exception (o9o.151 decision 5)", () => {
-  it("follows a link to a good target", () => {
-    const target = file("real", "abc", 0o600);
-    fs.symlinkSync(target, path.join(dir, "link"));
-    expect(readCredentialFile(path.join(dir, "link"), LINKED)).toEqual({ ok: true, content: "abc" });
+describe("readCredentialFile: the seat credential links OpenRig makes, and no other link (o9o.151, CoS 11-18 11:34Z)", () => {
+  // One row per named exception: a seat file linked to its runtime's shared file is followed, and the target held to the rule.
+  for (const link of Object.keys(SEAT_CREDENTIAL_LINKS) as SeatCredentialLink[]) {
+    it(`${link}: a seat ${SEAT_CREDENTIAL_LINKS[link].seatFile} linked to ${SEAT_CREDENTIAL_LINKS[link].sharedFile} is read through the link`, () => {
+      const shared = file(`shared-${link}`, "abc", 0o600);
+      fs.symlinkSync(shared, path.join(dir, "seat-file"));
+      expect(readCredentialFile(path.join(dir, "seat-file"), seatCredentialLinkPolicy(link, shared))).toEqual({ ok: true, content: "abc" });
+    });
+  }
+
+  it("refuses a link to a good file that is not the known shared file", () => {
+    const shared = file("shared", "abc", 0o600);
+    const other = file("other", "abc", 0o600);
+    fs.symlinkSync(other, path.join(dir, "seat-file"));
+    expect(readCredentialFile(path.join(dir, "seat-file"), seatCredentialLinkPolicy("pi-auth", shared))).toMatchObject({ ok: false, problem: "unexpected_link_target" });
   });
 
-  it("holds the target to the whole rule: a target others can read is refused", () => {
-    const target = file("real", "abc", 0o644);
-    fs.symlinkSync(target, path.join(dir, "link"));
-    expect(readCredentialFile(path.join(dir, "link"), LINKED)).toMatchObject({ ok: false, problem: "group_or_other_access" });
+  it("holds the shared file to the whole rule: one others can read is refused through the link", () => {
+    const shared = file("shared", "abc", 0o644);
+    fs.symlinkSync(shared, path.join(dir, "seat-file"));
+    expect(readCredentialFile(path.join(dir, "seat-file"), seatCredentialLinkPolicy("pi-auth", shared))).toMatchObject({ ok: false, problem: "group_or_other_access" });
   });
 
-  it("CONTROL: without the exception the same good link is refused", () => {
-    const target = file("real", "abc", 0o600);
-    fs.symlinkSync(target, path.join(dir, "link"));
-    expect(readCredentialFile(path.join(dir, "link"), SECRET)).toMatchObject({ ok: false, problem: "symlink" });
+  it("refuses the link when the host declares no shared file", () => {
+    const shared = file("shared", "abc", 0o600);
+    fs.symlinkSync(shared, path.join(dir, "seat-file"));
+    expect(readCredentialFile(path.join(dir, "seat-file"), seatCredentialLinkPolicy("pi-auth", undefined))).toMatchObject({ ok: false, problem: "symlink" });
+  });
+
+  it("CONTROL: without a seat link policy the same good link is refused", () => {
+    const shared = file("shared", "abc", 0o600);
+    fs.symlinkSync(shared, path.join(dir, "seat-file"));
+    expect(readCredentialFile(path.join(dir, "seat-file"), SECRET)).toMatchObject({ ok: false, problem: "symlink" });
+  });
+
+  it("names exactly three exceptions, all secrets (the census found these and no others)", () => {
+    expect(Object.keys(SEAT_CREDENTIAL_LINKS).sort()).toEqual(["codex-auth", "pi-auth", "pi-models"]);
+    for (const link of Object.values(SEAT_CREDENTIAL_LINKS)) expect(link.policy.kind).toBe("secret");
   });
 });

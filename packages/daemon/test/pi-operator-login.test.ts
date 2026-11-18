@@ -148,7 +148,7 @@ describe("rule 2: an existing credential is left alone; only the 2-byte {} stub 
     const reads: string[] = [];
     const spy: PiOperatorLoginFs = { ...realPiOperatorLoginFs, readFile: (p) => { reads.push(p); return realPiOperatorLoginFs.readFile(p); } };
     putOperator();
-    fs.writeFileSync(opModels(), "{}");
+    fs.writeFileSync(opModels(), "{}", { mode: 0o600 }); // o9o.151: an operator file others can read is not linked
     link({ fsOps: spy, linkModels: true });                              // absent seat files
     fs.rmSync(seatAuth()); fs.writeFileSync(seatAuth(), JSON.stringify(OAUTH));
     fs.rmSync(seatModels()); fs.writeFileSync(seatModels(), '{"providers":{}}');
@@ -214,7 +214,7 @@ describe("rule 3: never a dangling link: a missing operator file refuses the lau
 describe("the models.json link (declared per member)", () => {
   it("with the declaration, models.json is linked beside auth.json; without it, models.json is never touched", () => {
     putOperator();
-    fs.writeFileSync(opModels(), '{"providers":{}}');
+    fs.writeFileSync(opModels(), '{"providers":{}}', { mode: 0o600 }); // o9o.151: an operator file others can read is not linked
     const without = link();
     expect(without.ok).toBe(true);
     expect(fs.existsSync(seatModels())).toBe(false);
@@ -226,7 +226,7 @@ describe("the models.json link (declared per member)", () => {
 
   it("a seat's own regular models.json is left alone and named (it may hold keys)", () => {
     putOperator();
-    fs.writeFileSync(opModels(), "{}");
+    fs.writeFileSync(opModels(), "{}", { mode: 0o600 }); // o9o.151: an operator file others can read is not linked
     fs.writeFileSync(seatModels(), '{"providers":{"x":{"apiKey":"dummy"}}}');
     const r = link({ linkModels: true });
     expect(r.ok).toBe(true);
@@ -313,7 +313,7 @@ describe("review N2: the state-root check is on the platform's canonical path", 
   });
   it("review R2: a sibling folder that merely starts with the state root's name is NOT inside it (accepted)", () => {
     const sibling = nodePath.join(dir, "state-ops"); fs.mkdirSync(sibling);
-    fs.writeFileSync(nodePath.join(sibling, "auth.json"), OPERATOR_AUTH_TEXT);
+    fs.writeFileSync(nodePath.join(sibling, "auth.json"), OPERATOR_AUTH_TEXT, { mode: 0o600 }); // o9o.151: an operator file others can read is not linked
     const r = link({ operatorDir: sibling });
     expect(r.ok).toBe(true);
     expect(target(seatAuth())).toBe(nodePath.join(sibling, "auth.json"));

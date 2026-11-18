@@ -18,14 +18,14 @@ export interface CredentialFilePolicy {
   kind: CredentialFileKind;
   /** Bytes; a larger file is refused. */
   maxBytes: number;
-  /** The one named exception (the Pi operator-auth link, o9o.151 decision 5): a symlink AT the file is followed once and its
-   *  TARGET is held to the same rule. Every other policy leaves it unset, and a link is refused. Say why where it is set. */
-  followLinkToCheckedTarget?: boolean;
+  /** Set only through seatCredentialLinkPolicy (one of SEAT_CREDENTIAL_LINKS): a symlink AT the file is followed only when its
+   *  real path is exactly this file's real path, and that target is then held to the whole rule. Unset, a link is refused. */
+  linkTarget?: string;
 }
 
 export type CredentialFileProblem =
-  | "missing" | "symlink" | "not_regular_file" | "wrong_owner" | "group_or_other_access" | "group_or_other_write"
-  | "too_large" | "unreadable";
+  | "missing" | "symlink" | "unexpected_link_target" | "not_regular_file" | "wrong_owner" | "group_or_other_access"
+  | "group_or_other_write" | "too_large" | "unreadable";
 
 export type CredentialFileRead =
   | { ok: true; content: string }
@@ -65,6 +65,8 @@ export function credentialFileRefusal(path: string, policy: CredentialFilePolicy
       return `${it} does not exist`;
     case "symlink":
       return `${it} is a symbolic link; a credential file is read only as a plain file, so replace the link with the file itself`;
+    case "unexpected_link_target":
+      return `${it} is a symbolic link to somewhere other than ${policy.linkTarget ?? "its known shared file"}; OpenRig follows a seat credential link only to that file, so remove the link (OpenRig re-makes it at the next launch) or replace it with the file itself`;
     case "not_regular_file":
       return `${it} is not a regular file (a directory, pipe, device or socket); it must be a plain file`;
     case "wrong_owner":
@@ -94,6 +96,30 @@ export const SLACK_SECRETS_POLICY: CredentialFilePolicy = { label: "the Slack se
 export const PI_AUTH_POLICY: CredentialFilePolicy = { label: "the Pi auth file", kind: "secret", maxBytes: 1024 * 1024 };
 export const PI_MODELS_POLICY: CredentialFilePolicy = { label: "the Pi models file", kind: "secret", maxBytes: 1024 * 1024 };
 export const CODEX_AUTH_POLICY: CredentialFilePolicy = { label: "the Codex auth profile", kind: "secret", maxBytes: 1024 * 1024 };
-/** hosts.yaml names remote daemons and the bearer files sent to them: nobody else may change it. Whether a link at the file is
- *  allowed waits on verify-ops' census of live hosts (o9o.151 decision 4); until then a link is refused like any other. */
+/** hosts.yaml names remote daemons and the bearer files sent to them: nobody else may change it. A link at the file is refused like
+ *  any other (o9o.151 decision 4: verify-ops' census found no live host with a linked hosts.yaml; sparky and stu, mbp unverified). */
 export const HOSTS_REGISTRY_POLICY: CredentialFilePolicy = { label: "the hosts registry", kind: "registry", maxBytes: 1024 * 1024 };
+
+/**
+ * The seat credential links OpenRig itself makes, and the only links the credential rule follows (o9o.151; CoS 11-18 11:34Z, from
+ * verify-ops' census of the live hosts, where every one of these resolved to a regular 0600 file of the operator's). A seat's file
+ * may be a link to its runtime's shared file and nothing else; every other link, anywhere, is refused. The shared file is passed in
+ * by the adapter that knows it (the domain cannot read the home directory).
+ */
+export const SEAT_CREDENTIAL_LINKS = {
+  /** A Pi seat's auth.json -> <pi.operator_login_dir>/auth.json (OF-279, linkPiOperatorLogin). */
+  "pi-auth": { runtime: "pi", seatFile: "auth.json", sharedFile: "<pi.operator_login_dir>/auth.json", policy: PI_AUTH_POLICY },
+  /** A Pi seat's models.json -> <pi.operator_login_dir>/models.json, for members with pi.link_operator_models (OF-279). */
+  "pi-models": { runtime: "pi", seatFile: "models.json", sharedFile: "<pi.operator_login_dir>/models.json", policy: PI_MODELS_POLICY },
+  /** A Codex seat's auth.json -> <CODEX_HOME>/auth.json (the shared Codex login). */
+  "codex-auth": { runtime: "codex", seatFile: "auth.json", sharedFile: "<CODEX_HOME>/auth.json", policy: CODEX_AUTH_POLICY },
+} as const satisfies Record<string, { runtime: string; seatFile: string; sharedFile: string; policy: CredentialFilePolicy }>;
+
+export type SeatCredentialLink = keyof typeof SEAT_CREDENTIAL_LINKS;
+
+/** The policy for a seat credential file that may be one of SEAT_CREDENTIAL_LINKS: a link is followed only to `sharedFile`.
+ *  `sharedFile` undefined (the host declares no shared login) means no link is followed. */
+export function seatCredentialLinkPolicy(link: SeatCredentialLink, sharedFile: string | undefined): CredentialFilePolicy {
+  const base = SEAT_CREDENTIAL_LINKS[link].policy;
+  return sharedFile ? { ...base, linkTarget: sharedFile } : base;
+}

@@ -19,11 +19,17 @@ function refuse(path: string, policy: CredentialFilePolicy, problem: CredentialF
 export function readCredentialFile(path: string, policy: CredentialFilePolicy, options: CredentialFileReadOptions = {}): CredentialFileRead {
   const currentUid = options.currentUid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
   let target = path;
-  if (policy.followLinkToCheckedTarget) {
-    // The named exception: a link at the file is followed ONCE, to its real path, and that target is opened with
-    // O_NOFOLLOW below, so it is held to the whole rule (a link to a link, or to a file someone else owns, is refused).
+  if (policy.linkTarget !== undefined) {
+    // One of SEAT_CREDENTIAL_LINKS: a link at the file is followed only when it resolves to exactly the known shared file, and
+    // that real path is then opened with O_NOFOLLOW below, so the target is held to the whole rule (ours, no group/other, capped).
     try {
-      if (fs.lstatSync(path).isSymbolicLink()) target = fs.realpathSync(path);
+      if (fs.lstatSync(path).isSymbolicLink()) {
+        const real = fs.realpathSync(path);
+        let expected: string;
+        try { expected = fs.realpathSync(policy.linkTarget); } catch { return refuse(path, policy, "unexpected_link_target"); }
+        if (real !== expected) return refuse(path, policy, "unexpected_link_target");
+        target = real;
+      }
     } catch (err) {
       return refuse(path, policy, (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable");
     }
@@ -81,6 +87,30 @@ export function narrowOwnSecretFile(path: string, policy: CredentialFilePolicy, 
     if (problem) return { ok: false, problem, message: credentialFileRefusal(path, policy, problem) };
     if ((st.mode & 0o077) !== 0) fs.fchmodSync(fd, 0o600);
     return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Judge a credential file WITHOUT reading it: one O_NOFOLLOW|O_NONBLOCK open, fstat, the same verdict as readCredentialFile, close.
+ * For a file OpenRig must vouch for but has no business reading: the operator's Pi login before a seat is linked to it (OF-279's
+ * rule that the operator's files are never read). The result carries no content.
+ */
+export function inspectCredentialFile(path: string, policy: CredentialFilePolicy, options: CredentialFileReadOptions = {}): { ok: true } | (CredentialFileRead & { ok: false }) {
+  const currentUid = options.currentUid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
+  let fd: number;
+  try {
+    fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const problem: CredentialFileProblem = code === "ENOENT" ? "missing" : code === "ELOOP" || code === "EMLINK" ? "symlink" : "unreadable";
+    return { ok: false, problem, message: credentialFileRefusal(path, policy, problem) };
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    const problem = judgeOpenedCredentialFile({ isFile: st.isFile(), uid: st.uid, mode: st.mode, size: st.size }, policy, currentUid);
+    return problem ? { ok: false, problem, message: credentialFileRefusal(path, policy, problem) } : { ok: true };
   } finally {
     fs.closeSync(fd);
   }
