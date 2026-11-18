@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A markdown document never adds a second h1 to its page (workspaces-o9o.171)
+
+- Symptom: `/project/mission/<id>` rendered two h1 elements: the page title, and the steering document's own `# ...` heading.
+- Every markdown document in the web UI is shown inside a page that has its own h1 title, so a document's headings now sit one level below it: `#` renders as h2, `##` as h3, and so on. Their size and test ids are unchanged. An h1 census of all 51 twin page routes, before and after, changes on exactly one route: the mission page goes from 2 h1s to 1, and no route loses its only h1.
+
 ### The test suites run on vitest 4 and vite 7 (workspaces-o9o.150)
 
 - vitest 3.2.4 becomes 4.1.12 in every workspace, and the UI's vite 6.4.1 becomes 7.3.8. tinypool and vite-node leave the tree. The lock is written with npm 11, because npm 10 cannot resolve it, and kept in npm 10's form; CONTRIBUTING says how.

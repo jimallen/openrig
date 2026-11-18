@@ -286,7 +286,9 @@ function BlockRenderer({ block, assetBasePath }: { block: Block; assetBasePath?:
   if (block.type === "blank") return null;
   if (block.type === "heading") {
     const sizes = { 1: "text-lg font-bold", 2: "text-base font-bold", 3: "text-sm font-bold", 4: "text-xs font-bold" } as const;
-    const Tag = (`h${block.level}` as "h1" | "h2" | "h3" | "h4");
+    // workspaces-o9o.171: a document is always shown inside a page that has its own h1 title, so its headings sit one level
+    // below it (# renders as h2). The size and the test id still follow the source level, so nothing looks different.
+    const Tag = (`h${block.level + 1}` as "h2" | "h3" | "h4" | "h5");
     return <Tag data-testid={`md-heading-${block.level}`} className={`${sizes[block.level]} mt-4 text-on-surface`}>{renderInline(block.text, assetBasePath)}</Tag>;
   }
   if (block.type === "paragraph") {
