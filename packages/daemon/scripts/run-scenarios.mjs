@@ -17,11 +17,13 @@
  * and TERM, so an ambient TMUX (and any daemon variable) is dropped rather than
  * refused, and running from inside tmux is safe.
  *
- * The equals mode uses the runner-internal normalizer seam (lock amendment A-N1)
- * with an IDENTITY placeholder here; the DECLARATIVE mapping is the scenario-facing
- * form, its shape rides 51-03, and it lowers to this seam when it lands. So a
- * cross-surface scenario exercises the equals path but is not expected green until
- * 51-03 supplies the real mapping.
+ * The equals mode compares surfaces through the DECLARATIVE mapping each scenario
+ * declares (`equals: {<surface>: {pluck, path, rig}}`, scenario-normalizer.ts), the
+ * only form the validator accepts (51-03, R-13): scenario-runner.ts builds the
+ * normalizer from that mapping, and the `normalizer` passed below is used only for
+ * a bare list, which never passes validation. What keeps the one-view-state scenario
+ * (#10) from running in host mode is its unbound `mutate` step (reported NOT RUN),
+ * not its equality.
  */
 import { readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -54,7 +56,8 @@ const files = argv.length > 0
   : readdirSync(FIXTURES).filter((f) => /^scenario-.*\.ya?ml$/.test(f)).sort().map((f) => join(FIXTURES, f));
 
 const baseEnv = { HOME: process.env.HOME, PATH: process.env.PATH, TERM: "xterm" };
-const deps = { normalizer: (_surface, value) => value }; // v1 identity placeholder (rides 51-03)
+// Used only by a bare `equals` list, which the validator rejects; a declared mapping builds its own normalizer.
+const deps = { normalizer: (_surface, value) => value };
 
 const outcomes = [];
 for (const file of files) {
