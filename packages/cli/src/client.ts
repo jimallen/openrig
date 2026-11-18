@@ -103,25 +103,23 @@ export function requestProvablyNotSent(err: unknown): boolean {
 }
 
 /**
- * Daemon POST routes that only read (workspaces-o9o.169): each handler validates, plans, previews, inspects a copy, searches
- * or captures a pane, and changes nothing a caller would have to check before a retry (some record that the question was
- * asked). A write is defined by what it does, not by its HTTP method, so a lost reply on one of these is not an unknown write.
- * Matched exactly on the path (the query string aside); `:seat` is one path segment. A route is listed only after its handler
- * was read; anything not listed is a write, the safe side. A POST whose own body decides read or write (the handover dry
- * run) marks the one request with `read: true` instead.
+ * Daemon POST routes that only read (workspaces-o9o.169, CoS ruling 2026-11-18): a POST is a read ONLY if its handler, followed
+ * to the end, writes no durable state of any kind (rows, events, files, logs that matter); when in doubt it is a write. Each
+ * route below was followed through its whole call closure (type-checker resolved; the per-route chain is on the bead):
+ * agents/validate, rigs/import/validate and specs/review/agent and /rig run pure validators; workspace/validate and
+ * workspace/doctor only read files and settings; wake-resolve runs SELECTs. Every other POST is a write, including ones that
+ * look like reads but record something: capture (a pane-missing verdict), bundle inspect (a temp extraction), package
+ * validate/plan, workflow validate/compile and ask (events, a spec-cache row), bootstrap plan (a run row), preflight and the
+ * seat previews (process and terminal probes the trace could not bound). Matched exactly on the path, the query string aside.
  */
 const READ_ONLY_POST_ROUTES: readonly RegExp[] = [
-  /^\/api\/transport\/capture$/, /^\/api\/bundles\/inspect$/, /^\/api\/agents\/validate$/,
-  /^\/api\/packages\/validate$/, /^\/api\/packages\/plan$/, /^\/api\/rigs\/import\/validate$/,
-  /^\/api\/rigs\/import\/preflight$/, /^\/api\/workflow\/validate$/, /^\/api\/workflow\/compile$/,
-  /^\/api\/workspace\/validate$/, /^\/api\/workspace\/doctor$/, /^\/api\/specs\/review\/rig$/,
-  /^\/api\/specs\/review\/agent$/, /^\/api\/wake-resolve$/, /^\/api\/ask$/, /^\/api\/bootstrap\/plan$/,
-  /^\/api\/seat\/launch-plan\/[^/]+$/, /^\/api\/seat\/restart-plan\/[^/]+$/,
+  /^\/api\/agents\/validate$/, /^\/api\/rigs\/import\/validate$/, /^\/api\/specs\/review\/rig$/,
+  /^\/api\/specs\/review\/agent$/, /^\/api\/workspace\/validate$/, /^\/api\/workspace\/doctor$/, /^\/api\/wake-resolve$/,
 ];
 
-/** True when this request writes: any method but GET and HEAD, unless its route is a listed read or the caller marked it one. */
-function requestWrites(method: string, path: string, options?: DaemonRequestOptions): boolean {
-  if (method === "GET" || method === "HEAD" || options?.read === true) return false;
+/** True when this request writes: any method but GET and HEAD, unless its route is a listed read. */
+function requestWrites(method: string, path: string): boolean {
+  if (method === "GET" || method === "HEAD") return false;
   const route = path.split("?")[0] ?? path;
   return !READ_ONLY_POST_ROUTES.some((pattern) => pattern.test(route));
 }
@@ -196,9 +194,6 @@ interface DaemonRequestOptions {
   signal?: AbortSignal;
   /** Per-call header overrides (e.g., `Authorization: Bearer ...`). */
   headers?: Record<string, string>;
-  /** This request only reads, though its method is not GET (workspaces-o9o.169): a lost reply is then not an unknown write.
-   *  For a POST whose body decides it (a dry run); a route that always reads is listed in READ_ONLY_POST_ROUTES instead. */
-  read?: true;
 }
 
 interface DaemonClientOptions {
@@ -385,7 +380,7 @@ export class DaemonClient {
       // workspaces-o9o.169: a write whose request may have reached the daemon has an unknown outcome, never "not delivered".
       const notSent = requestProvablyNotSent(err);
       if (notSent) failure.provablyNotSent = true;
-      else if (requestWrites((init.method ?? "GET").toUpperCase(), path, options)) failure.writeOutcome = "unknown";
+      else if (requestWrites((init.method ?? "GET").toUpperCase(), path)) failure.writeOutcome = "unknown";
       throw failure;
     }
   }

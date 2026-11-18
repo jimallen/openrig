@@ -18,6 +18,7 @@ import { queueCommand } from "../src/commands/queue.js";
 import { hostCommand } from "../src/commands/host.js";
 import { startupProofCommand } from "../src/commands/startup-proof.js";
 import { seatCommand } from "../src/commands/seat.js";
+import { agentCommand } from "../src/commands/agent.js";
 import { createMcpServer } from "../src/mcp-server.js";
 import { runRemoteHttpOp } from "../src/remote-host-ops.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
@@ -111,15 +112,13 @@ async function run(command: Command, argv: string[]): Promise<{ output: string; 
   return { output: printed.join("\n"), code };
 }
 
-describe("o9o.169 (1): a POST that only reads is not a write", () => {
-  // Every daemon POST route whose handler changes nothing the caller would have to check before a retry (each handler read
-  // at a7bfc7184: it validates, plans, previews, inspects a copy, searches, or captures a pane).
+describe("o9o.169 (1): a POST is a read only if its handler writes no durable state", () => {
+  // CoS ruling 2026-11-18 (attempt 3): a POST is a read ONLY if its handler, followed to the end, writes no durable state of any
+  // kind (rows, events, files, logs that matter); when in doubt it is a write. These seven were followed through their whole
+  // call closure (the per-route chain is on the bead): pure validators, file and settings reads, SELECTs.
   const readRoutes = [
-    "/api/transport/capture", "/api/bundles/inspect", "/api/agents/validate", "/api/packages/validate", "/api/packages/plan",
-    "/api/rigs/import/validate", "/api/rigs/import/preflight", "/api/workflow/validate", "/api/workflow/compile",
-    "/api/workspace/validate", "/api/workspace/doctor", "/api/specs/review/rig", "/api/specs/review/agent", "/api/wake-resolve",
-    "/api/ask", "/api/bootstrap/plan", "/api/seat/launch-plan/dev-impl%40my-rig", "/api/seat/restart-plan/dev-impl%40my-rig",
-    "/api/transport/capture?lines=5",
+    "/api/agents/validate", "/api/rigs/import/validate", "/api/specs/review/rig", "/api/specs/review/agent",
+    "/api/workspace/validate", "/api/workspace/doctor", "/api/wake-resolve", "/api/workspace/doctor?root=x",
   ];
   it.each(readRoutes)("POST %s whose reply is lost: no write outcome", async (route) => {
     const daemon = await droppingDaemon();
@@ -128,11 +127,25 @@ describe("o9o.169 (1): a POST that only reads is not a write", () => {
     expect(error.writeOutcome).toBeUndefined();
   });
 
-  // Near misses: a write route beside a read route, a longer path, and the write the bootstrap verb sends instead of a plan.
+  // Moved to writes by the ruling (attempt 2 listed them as reads): each handler records something durable, or reaches code the
+  // trace could not bound. One row each.
+  const movedToWrites = [
+    "/api/transport/capture", "/api/bundles/inspect", "/api/packages/validate", "/api/packages/plan", "/api/rigs/import/preflight",
+    "/api/workflow/validate", "/api/workflow/compile", "/api/ask", "/api/bootstrap/plan",
+    "/api/seat/launch-plan/dev-impl%40my-rig", "/api/seat/restart-plan/dev-impl%40my-rig",
+  ];
+  it.each(movedToWrites)("POST %s whose reply is lost is an unknown write outcome (moved by the ruling)", async (route) => {
+    const daemon = await droppingDaemon();
+    const error = await caught(() => new DaemonClient(daemon.url).post(route, {}));
+    expect(daemon.received).toHaveLength(1);
+    expect(error.writeOutcome).toBe("unknown");
+  });
+
+  // Near misses: writes beside a listed read, a longer path, and the write the bootstrap verb sends instead of a plan.
   const writeRoutes = [
-    "/api/bundles/install", "/api/bootstrap/apply", "/api/transport/send", "/api/transport/capture/extra", "/api/workflow/project",
+    "/api/bundles/install", "/api/bootstrap/apply", "/api/transport/send", "/api/workspace/doctor/extra", "/api/workflow/project",
     "/api/seat/launch/dev-impl%40my-rig", "/api/seat/restart-verify/dev-impl%40my-rig", "/api/projects/reclaim-classifier",
-    "/api/proof/judge", "/api/context-packs/library/compose", "/api/seat/handover/dev-impl%40my-rig",
+    "/api/proof/judge", "/api/context-packs/library/compose", "/api/seat/handover/dev-impl%40my-rig", "/api/agents/validate/x",
   ];
   it.each(writeRoutes)("POST %s whose reply is lost stays an unknown write outcome", async (route) => {
     const daemon = await droppingDaemon();
@@ -141,33 +154,32 @@ describe("o9o.169 (1): a POST that only reads is not a write", () => {
     expect(error.writeOutcome).toBe("unknown");
   });
 
-  it("a caller may mark one request a read (the handover dry run shares the handover route): no write outcome", async () => {
+  it("rig agent validate whose reply is lost says nothing about a write", async () => {
     const daemon = await droppingDaemon();
-    const error = await caught(() => new DaemonClient(daemon.url).post("/api/seat/handover/dev-impl%40my-rig", { dryRun: true }, { read: true }));
-    expect(daemon.received).toHaveLength(1);
-    expect(error.writeOutcome).toBeUndefined();
+    const { output, code } = await run(agentCommand({ lifecycleDeps: running(), clientFactory: () => new DaemonClient(daemon.url), readFile: () => "name: impl\n" }),
+      ["agent", "validate", "agent.yaml"]);
+    expect(daemon.received.map((r) => r.path)).toEqual(["/api/agents/validate"]);
+    expect(code).not.toBe(0);
+    expect(output).not.toContain("UNKNOWN");
+    expect(output).not.toMatch(/write was applied/);
   });
 
-  it("rig seat handover --dry-run whose reply is lost says nothing about a write; the real handover stays UNKNOWN (control)", async () => {
-    const dry = await droppingDaemon();
-    const dryRun = await run(seatCommand({ lifecycleDeps: running(), clientFactory: () => new DaemonClient(dry.url) }),
-      ["seat", "handover", "dev-impl@my-rig", "--reason", "context-wall", "--dry-run"]);
-    expect(dry.received.map((r) => r.path)).toEqual(["/api/seat/handover/dev-impl%40my-rig"]);
-    expect(dryRun.output).not.toContain("UNKNOWN");
-    const real = await droppingDaemon();
-    const handover = await run(seatCommand({ lifecycleDeps: running(), clientFactory: () => new DaemonClient(real.url) }),
-      ["seat", "handover", "dev-impl@my-rig", "--reason", "context-wall"]);
-    expect(real.received.map((r) => r.path)).toEqual(["/api/seat/handover/dev-impl%40my-rig"]);
-    expect(handover.output).toContain("UNKNOWN");
-  });
-
-  it("rig capture whose reply is lost says nothing about a write", async () => {
+  it("rig capture whose reply is lost is an unknown outcome now (moved by the ruling: a missing pane records a verdict)", async () => {
     const daemon = await droppingDaemon();
     const { output, code } = await run(captureCommand({ lifecycleDeps: running(), clientFactory: () => new DaemonClient(daemon.url) }), ["capture", "dev-impl@my-rig"]);
     expect(daemon.received.map((r) => r.path)).toEqual(["/api/transport/capture"]);
     expect(code).not.toBe(0);
-    expect(output).not.toContain("UNKNOWN");
-    expect(output).not.toMatch(/write was applied/);
+    expect(output).toContain("outcome is UNKNOWN");
+  });
+
+  it("rig seat handover --dry-run whose reply is lost is an unknown outcome too (moved by the ruling), as the real handover", async () => {
+    for (const extra of [["--dry-run"], []]) {
+      const daemon = await droppingDaemon();
+      const { output } = await run(seatCommand({ lifecycleDeps: running(), clientFactory: () => new DaemonClient(daemon.url) }),
+        ["seat", "handover", "dev-impl@my-rig", "--reason", "context-wall", ...extra]);
+      expect(daemon.received.map((r) => r.path)).toEqual(["/api/seat/handover/dev-impl%40my-rig"]);
+      expect(output).toContain("UNKNOWN");
+    }
   });
 });
 

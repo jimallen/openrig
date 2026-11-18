@@ -1388,9 +1388,8 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
   try {
     // #260: a mutating handover launches and readies the successor, so it gets the
     // launch request window. A dry run only plans, and keeps the default deadline.
-    // workspaces-o9o.169: the dry run shares the handover route and only plans, so it is marked a read.
     res = opts.dryRun === true
-      ? await client.post<SeatHandoverPlan | SeatHandoverMutationResult | SeatStatusError>(handoverRoute, handoverBody, { read: true })
+      ? await client.post<SeatHandoverPlan | SeatHandoverMutationResult | SeatStatusError>(handoverRoute, handoverBody)
       : await client.post<SeatHandoverPlan | SeatHandoverMutationResult | SeatStatusError>(handoverRoute, handoverBody, { timeoutMs: 120_000 });
   } catch (err) {
     // The daemon keeps working when the client stops waiting, so reaching the bound leaves a
