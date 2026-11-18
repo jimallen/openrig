@@ -129,6 +129,8 @@ interface NodeOptions {
   remoteControl?: boolean;
   /** `ask_in_modal: true` on the member: persisted so restore and successor launches know it. */
   askInModal?: boolean;
+  /** `code_mode: true` on the member: persisted so restore, handover and the resume probe know it. */
+  codeMode?: boolean;
   /** The seat's own Claude config home, already canonical (claude-config-dir.ts): persisted as nodes.claude_config_dir. */
   claudeConfigDir?: string;
   /** The pda agent the seat drives (runtime pda): persisted as nodes.pda_binding. */
@@ -622,6 +624,12 @@ export class RigRepository {
       this.db.prepare("UPDATE nodes SET ask_in_modal = 1 WHERE id = ?").run(id);
     }
 
+    if (opts?.codeMode) {
+      // No silent skip: a Code Mode seat whose declaration was not stored would be resumed without the variable, and exit.
+      if (!this.hasNodeColumn("code_mode")) throw new Error("nodes.code_mode is missing (migration 133 has not run); the seat's code_mode declaration cannot be stored");
+      this.db.prepare("UPDATE nodes SET code_mode = 1 WHERE id = ?").run(id);
+    }
+
     if (opts?.claudeConfigDir) {
       // No silent skip: a seat whose home was not stored would launch on the daemon's account.
       if (!this.hasNodeColumn("claude_config_dir")) throw new Error("nodes.claude_config_dir is missing (migration 129 has not run); the seat's Claude config home cannot be stored");
@@ -955,24 +963,30 @@ export class RigRepository {
     return this.db.prepare("UPDATE nodes SET ask_in_modal = ? WHERE id = ?").run(askInModal ? 1 : null, nodeId).changes > 0;
   }
 
-  /** A Claude Code seat's two retained launch declarations as every launch reads them (1 = declared; NULL or a missing column = not). */
-  getNodeClaudeRetainedFields(nodeId: string): { remoteControl: boolean; askInModal: boolean } {
-    const read = (column: "remote_control" | "ask_in_modal") => this.hasNodeColumn(column)
+  /** Declare (true) or withdraw (false) the seat's Code Mode, like setNodeAskInModal (workspaces-o9o.123). */
+  setNodeCodeMode(nodeId: string, codeMode: boolean): boolean {
+    if (!this.hasNodeColumn("code_mode")) return false;
+    return this.db.prepare("UPDATE nodes SET code_mode = ? WHERE id = ?").run(codeMode ? 1 : null, nodeId).changes > 0;
+  }
+
+  /** A Claude Code seat's three retained launch declarations as every launch reads them (1 = declared; NULL or a missing column = not). */
+  getNodeClaudeRetainedFields(nodeId: string): { remoteControl: boolean; askInModal: boolean; codeMode: boolean } {
+    const read = (column: "remote_control" | "ask_in_modal" | "code_mode") => this.hasNodeColumn(column)
       && (this.db.prepare(`SELECT ${column} AS v FROM nodes WHERE id = ?`).get(nodeId) as { v: number | null } | undefined)?.v === 1;
-    return { remoteControl: read("remote_control"), askInModal: read("ask_in_modal") };
+    return { remoteControl: read("remote_control"), askInModal: read("ask_in_modal"), codeMode: read("code_mode") };
   }
 
   /**
-   * `rig seat apply-spec` on a Claude Code seat: rewrite remote_control and ask_in_modal in one UPDATE, as the spec states them
-   * (false clears to NULL, the value a node created without the field has). No silent skip, unlike the per-field setters above:
-   * a missing column throws, so the caller's transaction rolls back rather than store one of the two.
+   * `rig seat apply-spec` on a Claude Code seat: rewrite remote_control, ask_in_modal and code_mode in one UPDATE, as the spec states
+   * them (false clears to NULL, the value a node created without the field has). No silent skip, unlike the per-field setters above:
+   * a missing column throws, so the caller's transaction rolls back rather than store some of the three.
    */
-  setNodeClaudeRetainedFields(nodeId: string, fields: { remoteControl: boolean; askInModal: boolean }): boolean {
-    for (const column of ["remote_control", "ask_in_modal"]) {
+  setNodeClaudeRetainedFields(nodeId: string, fields: { remoteControl: boolean; askInModal: boolean; codeMode: boolean }): boolean {
+    for (const column of ["remote_control", "ask_in_modal", "code_mode"]) {
       if (!this.hasNodeColumn(column)) throw new Error(`nodes.${column} is missing; the retained spec fields cannot be stored`);
     }
-    return this.db.prepare("UPDATE nodes SET remote_control = ?, ask_in_modal = ? WHERE id = ?")
-      .run(fields.remoteControl ? 1 : null, fields.askInModal ? 1 : null, nodeId).changes > 0;
+    return this.db.prepare("UPDATE nodes SET remote_control = ?, ask_in_modal = ?, code_mode = ? WHERE id = ?")
+      .run(fields.remoteControl ? 1 : null, fields.askInModal ? 1 : null, fields.codeMode ? 1 : null, nodeId).changes > 0;
   }
 
   /**
@@ -1269,6 +1283,7 @@ export class RigRepository {
       // Present only when declared, so nodes (and the snapshots serialized from them) that never declared it are unchanged.
       ...(row.remote_control === 1 ? { remoteControl: true } : {}),
       ...(row.ask_in_modal === 1 ? { askInModal: true } : {}),
+      ...(row.code_mode === 1 ? { codeMode: true } : {}),
       // Present only when set, so nodes (and their snapshots) on the daemon's own Claude home are unchanged.
       ...(row.claude_config_dir ? { claudeConfigDir: row.claude_config_dir } : {}),
       // Present only for a pda seat, so every other node (and the snapshots serialized from them) is unchanged.
@@ -1365,6 +1380,7 @@ interface NodeRow {
   effort?: string | null;
   remote_control?: number | null;
   ask_in_modal?: number | null;
+  code_mode?: number | null;
   claude_config_dir?: string | null;
   pda_binding?: string | null;
   effort_choice?: string | null;

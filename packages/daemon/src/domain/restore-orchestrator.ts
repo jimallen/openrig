@@ -1588,7 +1588,7 @@ export class RestoreOrchestrator {
             this.sessionRegistry.recordResumeLaunch(launchedSessionId, resumeToken);
           } catch { /* best-effort: without it a rotation stays unproved, as before */ }
         }
-        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), effortForRestore(), warnings, node.remoteControl === true, node.askInModal === true);
+        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), effortForRestore(), warnings, node.remoteControl === true, node.askInModal === true, node.codeMode === true);
         if (resumeOutcome.kind === "resumed") {
           baseStatus = "resumed";
           if (launchedSessionId && this.claudeResume.canResume(resumeType, resumeToken)) {
@@ -1784,6 +1784,8 @@ export class RestoreOrchestrator {
             ...(node.remoteControl ? { remoteControl: true } : {}),
             // The same for the seat's ask_in_modal declaration: the fresh relaunch carries the Stop hook again.
             ...(node.askInModal ? { askInModal: true } : {}),
+            // And its code_mode declaration (workspaces-o9o.123): the fresh relaunch runs in Code Mode again.
+            ...(node.codeMode ? { codeMode: true } : {}),
           };
 
           try {
@@ -2102,6 +2104,7 @@ export class RestoreOrchestrator {
     warnings?: string[],
     remoteControl?: boolean,
     askInModal?: boolean,
+    codeMode?: boolean,
   ): Promise<
     | { kind: "resumed"; launchedProcess?: ClaudeLaunchedProcess }
     | { kind: "retry_fresh" }
@@ -2136,8 +2139,11 @@ export class RestoreOrchestrator {
       ? [effort, nonInterruptive, true] : nonInterruptive ? [effort, true] : effort !== undefined ? [effort] : [];
     if (this.claudeResume.canResume(resumeType, resumeToken)) {
       // The variable-length launchTail cannot take a trailing positional, so a declared remote_control
-      // gets the full five-slot tail, and a declared ask_in_modal the six-slot one; an undeclared seat keeps today's exact call shape.
-      const claudeTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean, teamPermissionDefault?: boolean, remoteControl?: boolean, askInModal?: boolean] = askInModal
+      // gets the full five-slot tail, a declared ask_in_modal the six-slot one and a declared code_mode the seven-slot one (o9o.123);
+      // an undeclared seat keeps today's exact call shape.
+      const claudeTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean, teamPermissionDefault?: boolean, remoteControl?: boolean, askInModal?: boolean, codeMode?: boolean] = codeMode
+        ? [effort, nonInterruptive, kernelAuthority, teamPermissionDefault, remoteControl === true, askInModal === true, true]
+        : askInModal
         ? [effort, nonInterruptive, kernelAuthority, teamPermissionDefault, remoteControl === true, true]
         : remoteControl
         ? [effort, nonInterruptive, kernelAuthority, teamPermissionDefault, true] // launchOverride makes kernelAuthority and teamPermissionDefault mutually exclusive, so this equals launchTail's precedence
@@ -2488,7 +2494,7 @@ interface PlanEntry {
 /** OF-25: the snapshot's node with the launch settings Jim ruled the LIVE seat decides (cwd, pod, model, Codex config
  *  profile, remote control). The snapshot's id and everything else stay: `id` keys the snapshot's own records. */
 function withLiveSeatSettings(snapshotNode: NodeWithBinding, live: NodeWithBinding): NodeWithBinding {
-  const { remoteControl: _snapshotRemoteControl, askInModal: _snapshotAskInModal, ...rest } = snapshotNode;
+  const { remoteControl: _snapshotRemoteControl, askInModal: _snapshotAskInModal, codeMode: _snapshotCodeMode, ...rest } = snapshotNode;
   return {
     ...rest,
     // OF-128 L7 (Jim, 2026-10-27): a seat with no live cwd falls back to the snapshot's, so it is not started in tmux's
@@ -2499,6 +2505,7 @@ function withLiveSeatSettings(snapshotNode: NodeWithBinding, live: NodeWithBindi
     codexConfigProfile: live.codexConfigProfile,
     ...(live.remoteControl ? { remoteControl: true } : {}),
     ...(live.askInModal ? { askInModal: true } : {}),
+    ...(live.codeMode ? { codeMode: true } : {}),
   };
 }
 

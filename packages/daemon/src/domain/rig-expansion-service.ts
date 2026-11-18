@@ -163,6 +163,8 @@ export class RigExpansionService {
             ...("remoteControl" in member && member.remoteControl !== undefined ? { remote_control: member.remoteControl } : {}),
             // ask_in_modal: PRESENCE-preserving like remote_control; the canonical validator owns the checks.
             ...("askInModal" in member && member.askInModal !== undefined ? { ask_in_modal: member.askInModal } : {}),
+            // code_mode: the same (workspaces-o9o.123).
+            ...("codeMode" in member && member.codeMode !== undefined ? { code_mode: member.codeMode } : {}),
             // claude_config_dir: PRESENCE-preserving like remote_control; the canonical validator owns the checks.
             ...("claudeConfigDir" in member && member.claudeConfigDir !== undefined ? { claude_config_dir: member.claudeConfigDir } : {}),
             // pda: PRESENCE-preserving RAW carry like remote_control -- a present-invalid block reaches the canonical

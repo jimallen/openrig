@@ -387,7 +387,7 @@ seatRoutes.post("/set-mcp/:seatRef", async (c) => {
 });
 
 // OF-283 — apply a seat's retained spec fields from the spec: a Pi seat's env_passthrough, model_overrides and
-// pi.link_operator_models, a Claude Code seat's remote_control and ask_in_modal.
+// pi.link_operator_models, a Claude Code seat's remote_control, ask_in_modal and code_mode.
 // A dry run unless `yes` is exactly true; only a write needs an audit actor. Never relaunches anything.
 seatRoutes.post("/apply-spec/:seatRef", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));

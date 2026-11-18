@@ -748,7 +748,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // reaches the next launch and the next send; seats need a relaunch to carry the inbox setting).
   // OF-180 N4: the answer is kept until the settings file or the env override changes (one stat per decision, no parse).
   const nativeClaudeEnabled = nativeClaudeFlag(new ContextPackSettingsStore());
-  const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment, nativeInboxEnabled: nativeClaudeEnabled });
+  // workspaces-o9o.123: the launch adapter (built below) records Code Mode's one-time answer for a code_mode seat's restore too; this
+  // runs only at restore time, after it exists.
+  const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment, nativeInboxEnabled: nativeClaudeEnabled,
+    prepareCodeMode: (binding) => claudeAdapter.ensureCodeModeAccepted(binding) });
   // #275: one reader for both Codex launch adapters, with the PATH, HOME and CODEX_HOME a seat session gets.
   const readCodexNetworkDefault = codexNetworkDefaultReader({ launchPath: process.env.PATH, home: daemonHome, codexHome });
   // Per-seat Codex MCP servers: the server NAMES the other Codex config layers define for a launch (the shared
@@ -1440,7 +1443,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // process's, so capture and null-fill skip it.
   const claudeProcessStartedAt = (sessionName: string) => observeClaudePaneStartedAt({ target: sessionName, tmux: tmuxAdapter });
   const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome,
-    seatClaudeConfigDir: (session) => seatClaudeHomes.launchedHomeOfSession(session.sessionId) });
+    seatClaudeConfigDir: (session) => seatClaudeHomes.launchedHomeOfSession(session.sessionId),
+    // workspaces-o9o.123: a code_mode seat's probe resume sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1. A read that fails is "not declared".
+    seatCodeMode: (session) => {
+      try {
+        const row = db.prepare("SELECT n.code_mode AS v FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.id = ?").get(session.sessionId) as { v: number | null } | undefined;
+        return row?.v === 1;
+      } catch { return false; }
+    } });
   const sessionReconciler = new SessionReconciler({
     db, rigRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
     // OPR.0.4.3.20 FR-3 — adoption-boundary resume-token capture deps

@@ -18,6 +18,7 @@ import type {
 import { NO_STARTUP_SEND, resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
+import { claudeCodeModeEnv, claudeCodeModePrefix, CODE_MODE_ACCEPTED_KEYS } from "../domain/claude-code-mode.js";
 import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
@@ -289,6 +290,14 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const guardRefusal = claudeRigBodyGuardRefusal(this.rigBodyGuardScript);
     if (guardRefusal) return { ok: false, error: guardRefusal };
 
+    // workspaces-o9o.123: a code_mode seat's first Code Mode launch in a Claude home would stop at a one-time picker. Best effort: a
+    // home whose state cannot be read or written is left as it is and the launch goes ahead (the picker then shows; nothing is lost).
+    if (binding.codeMode === true) {
+      try { this.provisionCodeModeAccepted(binding); } catch (err) {
+        console.error(`[openrig] claude code mode bootstrap warning: ${(err as Error).message}`);
+      }
+    }
+
     // OPR.0.4.8.2: the acceptEdits floor by default; YOLO (opt-in) swaps in the full-bypass flag.
     // The SAME decision (claudePostureFlag) is used on the restore path (claude-resume.ts).
     // OPR.0.4.8.3 Seam B: a per-seat resolved policy posture (binding.launchPosture) overrides env.
@@ -306,6 +315,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // OPR.0.5.3.1: classic-renderer env prefix (default on) → native scrollback for every
     // managed launch path (fresh/resume/fork). "" when overridden off → byte-identical command.
     const rendererPrefix = claudeClassicRendererEnvPrefix(process.env);
+    // workspaces-o9o.123: a code_mode seat runs every launch with CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 ("" / {} otherwise: unchanged).
+    const codeModePrefix = claudeCodeModePrefix(binding.codeMode);
+    const codeModeEnv = claudeCodeModeEnv(binding.codeMode);
+    const managedEnv = (env: Record<string, string> | undefined): Record<string, string> | undefined =>
+      Object.keys(codeModeEnv).length === 0 ? env : { ...(env ?? {}), ...codeModeEnv };
 
     // 51-07: a per-agent model declared in the spec (member.model ?? profile ?? defaults, resolved
     // onto binding.model at instantiate) is emitted as `--model <x>` on the launch command. Absent →
@@ -343,11 +357,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       if (forkHomeRefusal) return { ok: false, error: forkHomeRefusal };
       const forkSessionId = this.sessionIdFactory();
       const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, this.launchChoice(binding)), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
-        "--resume", parentId, "--fork-session", "--session-id", forkSessionId, `--name=${opts.name}`])
+        "--resume", parentId, "--fork-session", "--session-id", forkSessionId, `--name=${opts.name}`], managedEnv(undefined))
         // The non-managed command text is parsed by the pane shell, so the
         // parent id needs the same quoting as --model/--effort above (and as
         // the codex fork path) — a hostile id must not leave --resume.
-        : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(parentId)} --fork-session --session-id ${forkSessionId} --name=${shellWord(opts.name)}`;
+        : `${rendererPrefix}${codeModePrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(parentId)} --fork-session --session-id ${forkSessionId} --name=${shellWord(opts.name)}`;
       // Every branch stages the command: only the source line is typed into the pane shell.
       const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent, { asTerminalProgram: true })
         : await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
@@ -364,9 +378,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const generatedSessionId = opts.resumeToken ? null : this.sessionIdFactory();
     const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, this.launchChoice(binding)), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
       ...(opts.resumeToken ? ["--resume", opts.resumeToken] : ["--session-id", generatedSessionId!]), `--name=${opts.name}`],
-      opts.resumeToken ? claudeResumeLaunchEnv(opts.resumeToken) : undefined) : opts.resumeToken
-      ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(opts.resumeToken)} --name=${shellWord(opts.name)}`
-      : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --session-id ${generatedSessionId} --name=${shellWord(opts.name)}`;
+      managedEnv(opts.resumeToken ? claudeResumeLaunchEnv(opts.resumeToken) : undefined)) : opts.resumeToken
+      ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}${codeModePrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(opts.resumeToken)} --name=${shellWord(opts.name)}`
+      : `${rendererPrefix}${codeModePrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --session-id ${generatedSessionId} --name=${shellWord(opts.name)}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent, { asTerminalProgram: true })
       : await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
@@ -430,6 +444,12 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   /** Best-effort public seam for tmux-bound Claude sessions adopted outside the launch path. */
   ensureContextCollector(binding: { cwd?: string | null; tmuxSession?: string | null }): void {
     this.provisionContextCollector(binding);
+  }
+
+  /** workspaces-o9o.123: the restore path's seam (claude-resume.ts) for Code Mode's one-time answer: a restored seat newly declared
+   *  code_mode resumes a session started without Code Mode, and that resume shows the picker too (measured, Claude Code 2.1.327). */
+  ensureCodeModeAccepted(binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
+    this.provisionCodeModeAccepted(binding);
   }
 
   /** Best-effort public seam for user-scope Claude bootstrap used by managed sessions. */
@@ -733,6 +753,41 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   private provisionManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
     // OPR.0.4.8.2 agnostic rip-out: provisionRigPermissions (C2) removed — OpenRig no longer
     // authors any config-file permission policy. Trust/onboarding (C3/C4) are neutral plumbing, kept.
+    const { statePaths, cwd, failures } = this.claudeStateTargets(binding);
+    // Each file is merged on its own: unmergeable state in one is preserved and reported,
+    // and never stops the other from being provisioned.
+    for (const statePath of statePaths) {
+      try {
+        this.provisionClaudeState(statePath, cwd);
+      } catch (err) {
+        failures.push(`${statePath}: ${(err as Error).message}`);
+      }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
+  }
+
+  /** workspaces-o9o.123: record Code Mode's one-time answer in every Claude home this seat's launch reads, when it is missing. The same
+   *  homes and the same merge rule as the trust and onboarding bootstrap: every other field is kept, a file already answered is not
+   *  rewritten (running Claude processes write it too), and unreadable state is left as it is and reported. */
+  private provisionCodeModeAccepted(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
+    const { statePaths, failures } = this.claudeStateTargets(binding);
+    for (const statePath of statePaths) {
+      try {
+        const state = this.fs.exists(statePath) ? this.readJsonObjectStrict(statePath) : {};
+        const missing = CODE_MODE_ACCEPTED_KEYS.filter((key) => state[key] !== true);
+        if (missing.length === 0) continue;
+        for (const key of missing) state[key] = true;
+        this.fs.mkdirp(nodePath.dirname(statePath));
+        this.fs.writeFile(statePath, JSON.stringify(state, null, 2));
+      } catch (err) {
+        failures.push(`${statePath}: ${(err as Error).message}`);
+      }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
+  }
+
+  /** The Claude state files (.claude.json) a launch of this binding reads, and the cwd it trusts. */
+  private claudeStateTargets(binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }): { statePaths: string[]; cwd: string | null | undefined; failures: string[] } {
     const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
     // Match launchHarness: an explicit permission mode exports the selected home to the child, so
     // only that home is provisioned.
@@ -763,16 +818,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         failures.push((err as Error).message);
       }
     }
-    // Each file is merged on its own: unmergeable state in one is preserved and reported,
-    // and never stops the other from being provisioned.
-    for (const statePath of statePaths) {
-      try {
-        this.provisionClaudeState(statePath, cwd);
-      } catch (err) {
-        failures.push(`${statePath}: ${(err as Error).message}`);
-      }
-    }
-    if (failures.length > 0) throw new Error(failures.join("; "));
+    return { statePaths, cwd, failures };
   }
 
   private provisionClaudeState(statePath: string, cwd: string | null | undefined): void {

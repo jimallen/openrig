@@ -285,6 +285,18 @@ describe("SuccessorSessionLauncher", () => {
     else expect("remoteControl" in opts).toBe(false);
   });
 
+  it.each([[true], [undefined]])("the successor's launch binding carries the seat's code_mode declaration (%s) (workspaces-o9o.123)", async (codeMode) => {
+    listPanes.mockResolvedValue([{ id: "%42", index: 0, cwd: "/w", width: 80, height: 24, active: true }]);
+    const res = await launcher().createSuccessor({
+      node: { id: "node-1", runtime: "codex", cwd: "/w", ...(codeMode ? { codeMode } : {}) },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(res.ok).toBe(true);
+    const binding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
+    if (codeMode) expect(binding.codeMode).toBe(true);
+    else expect("codeMode" in binding).toBe(false);
+  });
+
   it.each([[true], [undefined]])("the successor's launch binding carries the seat's ask_in_modal declaration (%s)", async (askInModal) => {
     listPanes.mockResolvedValue([{ id: "%42", index: 0, cwd: "/w", width: 80, height: 24, active: true }]);
     const res = await launcher().createSuccessor({

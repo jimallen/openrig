@@ -672,7 +672,7 @@ export class SeatLifecycleService {
 
   /**
    * OF-283: `rig seat apply-spec`. A seat's retained spec fields live on its node: a Pi seat's env_passthrough, model_overrides
-   * and pi.link_operator_models (written when the node is created), a Claude Code seat's remote_control and ask_in_modal
+   * and pi.link_operator_models (written when the node is created), a Claude Code seat's remote_control, ask_in_modal and code_mode
    * (nodes.remote_control, nodes.ask_in_modal; written at creation and when `rig up` relaunches the member from the spec).
    * `rig seat launch`, restore and handover read them from the node and never re-read the spec. This is the explicit step that
    * does: it reads the seat's member from the rig's recorded spec source (or `specFile`), judged by the same trust rule as
@@ -701,14 +701,14 @@ export class SeatLifecycleService {
     const node = this.db.prepare("SELECT runtime, cwd, agent_ref, profile FROM nodes WHERE id = ?").get(seat.nodeId) as { runtime: string | null; cwd: string | null; agent_ref: string | null; profile: string | null } | undefined;
     if (!node) return { ok: false, code: "seat_not_found", message: `Seat "${input.seatRef}" has no node row.` };
     if (node.runtime !== "pi" && node.runtime !== "claude-code") {
-      return { ok: false, code: "apply_spec_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; env_passthrough, model_overrides and pi.link_operator_models apply to pi seats, remote_control and ask_in_modal to claude-code seats.` };
+      return { ok: false, code: "apply_spec_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; env_passthrough, model_overrides and pi.link_operator_models apply to pi seats, remote_control, ask_in_modal and code_mode to claude-code seats.` };
     }
     const claude = node.runtime === "claude-code";
     // The kernel's seats are launched by the kernel boot, and its spec may not declare ask_in_modal: this step does not change a
     // kernel seat's Claude Code fields (3b88b97fa). Its agent_ref and profile are realigned like any seat's (workspaces-o9o.12), as
     // its Pi siblings' already were, so a kernel spec whose refs change (o9o.20: path: to shipped:) can be adopted.
     const kernelClaude = claude && seat.rigName === "kernel";
-    const kernelNote = kernelClaude ? " A kernel seat's remote_control and ask_in_modal are not applied by this step." : "";
+    const kernelNote = kernelClaude ? " A kernel seat's remote_control, ask_in_modal and code_mode are not applied by this step." : "";
 
     const read = readTrustedSeatSpec({
       specSource: this.rigRepo.getRigSpecSource(seat.rigId), rigName: seat.rigName, node: { logicalId: seat.logicalId, cwd: node.cwd }, purpose: "applying seat fields",
@@ -738,8 +738,8 @@ export class SeatLifecycleService {
       fields = [];
       write = () => true;
     } else if (claude) {
-      // remote_control and ask_in_modal have no rule beyond the spec load's (a boolean, claude-code only, no ask_in_modal in the
-      // kernel rig), and readTrustedSeatSpec has already validated the whole spec with it.
+      // remote_control, ask_in_modal and code_mode have no rule beyond the spec load's (a boolean, claude-code only, no ask_in_modal in
+      // the kernel rig, no code_mode beside remote_control), and readTrustedSeatSpec has already validated the whole spec with it.
       const spec = specClaudeFields(member);
       fields = diffRetainedClaudeFields(this.rigRepo.getNodeClaudeRetainedFields(seat.nodeId), spec);
       write = () => this.rigRepo.setNodeClaudeRetainedFields(seat.nodeId, spec);
@@ -771,7 +771,7 @@ export class SeatLifecycleService {
     if (!input.yes) {
       const what = surgeOf ? `the seat's agent_ref and profile (from ${surgeOf}, the member this surge seat copies)`
         : kernelClaude ? "the seat's agent_ref and profile"
-        : `these ${claude ? "two" : "three"} fields${identityChanged ? " and the seat's agent_ref and profile" : ""}`;
+        : `these three fields${identityChanged ? " and the seat's agent_ref and profile" : ""}`;
       return { ok: true, ...base, dryRun: true, written: false, effect: (changed
         ? `Dry run: nothing was written. Pass --yes to write ${what}; they then take effect at the seat's next launch.`
         : "Dry run: the seat already retains what the spec says. Nothing to write.") + kernelNote };
@@ -1764,6 +1764,7 @@ export class SeatLifecycleService {
         effort: resolveSeatEffort(node).effective ?? undefined,
         ...(node.remoteControl ? { remoteControl: true } : {}),
         ...(node.askInModal ? { askInModal: true } : {}),
+        ...(node.codeMode ? { codeMode: true } : {}),
         ...(node.pda ? { pda: node.pda } : {}),
         codexConfigProfile: node.codexConfigProfile ?? undefined,
         launchPosture,

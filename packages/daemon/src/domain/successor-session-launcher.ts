@@ -70,6 +70,8 @@ export interface SuccessorNode {
   /** The seat's declared ask_in_modal (nodes.ask_in_modal): the successor launches with the ask-in-modal Stop hook
    *  exactly as the departing occupant did. */
   askInModal?: boolean;
+  /** The seat's declared code_mode (nodes.code_mode, workspaces-o9o.123): the successor runs in Code Mode as the departing occupant did. */
+  codeMode?: boolean;
   /** The seat's own Claude config home (nodes.claude_config_dir): the successor runs on the same home, and so the same
    *  login and conversation store, as the departing occupant. Absent: nothing exported (the daemon's own selection). */
   claudeConfigDir?: string;
@@ -463,6 +465,7 @@ export class SuccessorSessionLauncher {
       effort: node.effort ?? undefined,
       ...(node.remoteControl ? { remoteControl: true } : {}),
       ...(node.askInModal ? { askInModal: true } : {}),
+      ...(node.codeMode ? { codeMode: true } : {}),
       // 0.5.2-07 A4-profile: the successor reads the seat's SPEC-pinned codex config profile (adapter emits -p).
       codexConfigProfile: node.codexConfigProfile ?? undefined,
     };

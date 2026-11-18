@@ -4,6 +4,8 @@ import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
+import { claudeCodeModeEnv, claudeCodeModePrefix } from "../domain/claude-code-mode.js";
+import type { NodeBinding } from "../domain/runtime-adapter.js";
 import { claudeRemoteControlArg, claudeRemoteControlArgs, claudeRemoteControlNameMissing } from "./claude-remote-control.js";
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
@@ -44,6 +46,9 @@ interface ClaudeResumeOptions {
   settleMs?: number;
   /** OF-250: DI seam for the rig-body guard hook script path (default: the shipped asset). */
   rigBodyGuardScript?: string;
+  /** workspaces-o9o.123: records Code Mode's one-time answer in the Claude home a code_mode seat's restore reads (the launch
+   *  adapter's ensureCodeModeAccepted). Best effort: a failure is logged and the restore goes ahead. */
+  prepareCodeMode?: (binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }) => void;
 }
 
 export class ClaudeResumeAdapter {
@@ -83,6 +88,9 @@ export class ClaudeResumeAdapter {
     // The seat's declared `ask_in_modal` (nodes.ask_in_modal): restore keeps the ask-in-modal Stop hook in the launch's
     // --settings. TRAILING like remoteControl; absent/false → the command is byte-identical.
     askInModal?: boolean,
+    // workspaces-o9o.123: the seat's declared `code_mode` (nodes.code_mode): a Code Mode session resumes only with
+    // CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 (without it claude exits 1). TRAILING like askInModal; absent/false → byte-identical.
+    codeMode?: boolean,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Claude resume not available" };
@@ -107,12 +115,17 @@ export class ClaudeResumeAdapter {
         managed = await this.options.claudeManagedLaunch!.prepare({ nodeId: nodeId!, cwd, session: tmuxSessionName }, selectedPermissionMode);
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
+    if (codeMode === true) {
+      try { this.options.prepareCodeMode?.({ nodeId, cwd, permissionMode: selectedPermissionMode }); } catch (err) {
+        console.error(`[openrig] claude code mode bootstrap warning: ${(err as Error).message}`);
+      }
+    }
     const choice = { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode, ...(askInModal ? { askInModal: true } : {}), nativeInbox:this.options.nativeInboxEnabled?.() ?? false, rigBodyGuardScript: this.options.rigBodyGuardScript };
     const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
     const appliedLaunch = observeClaudePermission(posture);
     const permissionMode = posture + operationalLaunchArg("claude-code", choice);
-    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...claudeRemoteControlArgs(remoteControl, tmuxSessionName), "--resume", resumeToken!], claudeResumeLaunchEnv(resumeToken!))
-      : `${claudeResumeLaunchPrefix(resumeToken!)}${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg}${claudeRemoteControlArg(remoteControl, tmuxSessionName)} --resume ${shellQuote(resumeToken!)}`;
+    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...claudeRemoteControlArgs(remoteControl, tmuxSessionName), "--resume", resumeToken!], { ...claudeResumeLaunchEnv(resumeToken!), ...claudeCodeModeEnv(codeMode) })
+      : `${claudeResumeLaunchPrefix(resumeToken!)}${claudeClassicRendererEnvPrefix(process.env)}${claudeCodeModePrefix(codeMode)}claude ${permissionMode}${modelArg}${effortArg}${claudeRemoteControlArg(remoteControl, tmuxSessionName)} --resume ${shellQuote(resumeToken!)}`;
 
     // Every branch stages the command: only the source line is typed into the pane shell, and
     // sendShellCommand owns the Enter and its C-c cleanup.

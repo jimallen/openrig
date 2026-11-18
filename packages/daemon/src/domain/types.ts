@@ -38,6 +38,8 @@ export interface Node {
   remoteControl?: boolean;
   /** The seat declared `ask_in_modal: true` (nodes.ask_in_modal); persisted so restore and successor launches know it. */
   askInModal?: boolean;
+  /** The seat declared `code_mode: true` (nodes.code_mode); persisted so restore, handover and the resume probe know it. */
+  codeMode?: boolean;
   /** The seat's own Claude config home (nodes.claude_config_dir, canonical absolute path); absent = the daemon's own. */
   claudeConfigDir?: string;
   /** The pda agent this seat drives (runtime pda only; nodes.pda_binding). Absent for every other seat. */
@@ -170,9 +172,9 @@ export type RigEvent =
   // Per-seat Codex MCP servers (rig seat set-mcp): one server switched on or off for one seat instance.
   | { type: "node.mcp_server_changed"; rigId: string; nodeId: string; logicalId: string; server: string; from: "on" | "off"; to: "on" | "off"; reason: string; actor: string; declaredIn: string | null; declarationSha256: string | null; commandSha256: string | null; warning: string | null; specSource: "recorded" | "operator" | null; specSha256: string | null }
   // OF-283 (rig seat apply-spec): a seat's retained spec fields rewritten from the spec, on an explicit apply (a Pi seat's three, a
-  // Claude Code seat's remote_control and ask_in_modal). Names only: never an environment value. `fields` are the ones that changed;
+  // Claude Code seat's remote_control, ask_in_modal and code_mode). Names only: never an environment value. `fields` are the ones that changed;
   // envAdded and envRemoved are empty for a Claude Code seat.
-  | { type: "node.spec_fields_applied"; rigId: string; nodeId: string; logicalId: string; fields: Array<"env_passthrough" | "model_overrides" | "pi.link_operator_models" | "remote_control" | "ask_in_modal">; envAdded: string[]; envRemoved: string[]; actor: string; reason: string | null; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string;
+  | { type: "node.spec_fields_applied"; rigId: string; nodeId: string; logicalId: string; fields: Array<"env_passthrough" | "model_overrides" | "pi.link_operator_models" | "remote_control" | "ask_in_modal" | "code_mode">; envAdded: string[]; envRemoved: string[]; actor: string; reason: string | null; declaredIn: string; specSource: "recorded" | "operator"; specSha256: string;
       // agent_ref / profile realigned to the spec member, old -> new (present only when one changed). A ref is a path, never a secret.
       identity?: Array<{ field: "agent_ref" | "profile"; from: string | null; to: string | null }>;
       // A surge seat (<member><N>): the spec member it was read from. Its own per-seat fields are not rewritten.
@@ -1238,6 +1240,12 @@ export interface RigSpecPodMember {
    * refused in the kernel rig (validated); absent/false = no hook.
    */
   askInModal?: boolean;
+  /**
+   * `code_mode` (workspaces-o9o.123): every claude launch of this seat (fresh, resume, restore, fork, handover successor, the
+   * resumability probe) sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1, and the launch pre-answers Code Mode's one-time picker.
+   * claude-code only, refused together with remote_control (Code Mode turns itself off under Remote Control); absent/false = no change.
+   */
+  codeMode?: boolean;
   /** `claude_config_dir`: this seat's own Claude Code config home (claude-code only), as written in the spec;
    *  stored on the node in canonical form (claude-config-dir.ts). Absent = the daemon's own selection. */
   claudeConfigDir?: string;
@@ -1556,6 +1564,8 @@ export interface ExpansionPodFragment {
     remoteControl?: unknown;
     /** `ask_in_modal`. Typed UNKNOWN like remoteControl: RAW presence preserved so the canonical validator rejects a bad value. */
     askInModal?: unknown;
+    /** `code_mode`. Typed UNKNOWN like remoteControl: RAW presence preserved so the canonical validator rejects a bad value. */
+    codeMode?: unknown;
     /** `claude_config_dir`. Typed UNKNOWN: RAW presence preserved so the canonical validator rejects a bad value. */
     claudeConfigDir?: unknown;
     /** `pda` block. Typed UNKNOWN: RAW presence is preserved so the canonical validator owns the shape. */

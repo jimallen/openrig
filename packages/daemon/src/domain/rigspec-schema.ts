@@ -93,7 +93,7 @@ export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda", "env_passthrough", "model_overrides", "pi",
-  "claude_config_dir", "ask_in_modal", "relaunch_checks",
+  "claude_config_dir", "ask_in_modal", "code_mode", "relaunch_checks",
 ]);
 
 /** Member keys a pda seat cannot take: OpenRig delivers no startup content to a pda agent (D4), and the model,
@@ -647,6 +647,18 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.ask_in_modal: must be a boolean (true or false)`);
     } else if (member["ask_in_modal"] === true && member["runtime"] !== "claude-code") {
       errors.push(`${prefix}.ask_in_modal: only valid when runtime is "claude-code"`);
+    }
+  }
+  // `code_mode: true` (workspaces-o9o.123) runs every Claude launch of this seat in Code Mode (CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1).
+  // The same shape rules as remote_control, and one more: Code Mode turns itself off under Remote Control (measured on Claude Code
+  // 2.1.327: "isn't available ... with Remote Control. Starting with the ordinary tools"), so declaring both declares one that does nothing.
+  if (member["code_mode"] !== undefined) {
+    if (typeof member["code_mode"] !== "boolean") {
+      errors.push(`${prefix}.code_mode: must be a boolean (true or false)`);
+    } else if (member["code_mode"] === true && member["runtime"] !== "claude-code") {
+      errors.push(`${prefix}.code_mode: only valid when runtime is "claude-code"`);
+    } else if (member["code_mode"] === true && member["remote_control"] === true) {
+      errors.push(`${prefix}.code_mode: cannot be combined with remote_control: true (Claude Code turns Code Mode off under Remote Control)`);
     }
   }
   // A seat's own Claude config home: claude-code only (and the stub runtime, the test double that reports it). The
@@ -1362,6 +1374,8 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     remoteControl: m["remote_control"] === true ? true : undefined,
     // Only a validated `true` survives, like remote_control.
     askInModal: m["ask_in_modal"] === true ? true : undefined,
+    // Only a validated `true` survives, like remote_control.
+    codeMode: m["code_mode"] === true ? true : undefined,
     // As written (shape validated); the instantiator stores its canonical form (claude-config-dir.ts).
     claudeConfigDir: typeof m["claude_config_dir"] === "string" ? m["claude_config_dir"] : undefined,
     pda: normalizePdaBinding(m["pda"]),

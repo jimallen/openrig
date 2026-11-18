@@ -16,6 +16,9 @@ export interface NodeBinding extends Binding {
   /** The seat declared `ask_in_modal: true` (nodes.ask_in_modal): every claude launch of it carries the ask-in-modal Stop hook
    *  in its one `--settings` (claude-code only; never on a kernel-authority launch; absent/false = settings unchanged). */
   askInModal?: boolean;
+  /** The seat declared `code_mode: true` (nodes.code_mode): every claude launch of it sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1
+   *  and pre-answers Code Mode's one-time picker (claude-code only; absent/false = launch unchanged). */
+  codeMode?: boolean;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: the seat's RESOLVED launch posture from its permission_policy
    * attachment (member > rig precedence, resolved by the core resolver at materialize /

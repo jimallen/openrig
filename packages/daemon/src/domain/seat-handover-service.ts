@@ -138,6 +138,8 @@ interface NodeRow {
   remote_control: number | null;
   // The seat's declared ask_in_modal (nodes.ask_in_modal, 1/NULL; NULL when the column is missing), threaded onto the successor binding.
   ask_in_modal: number | null;
+  // The seat's declared code_mode (nodes.code_mode, migration 133, 1/NULL; NULL when the column is missing), threaded the same way.
+  code_mode: number | null;
   // The seat's own Claude config home (nodes.claude_config_dir; null = the daemon's own), carried to the successor's env.
   claude_config_dir: string | null;
 }
@@ -507,7 +509,7 @@ export class SeatHandoverService {
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, ...(node.remote_control === 1 ? { remoteControl: true } : {}), ...(node.ask_in_modal === 1 ? { askInModal: true } : {}), ...(node.claude_config_dir ? { claudeConfigDir: node.claude_config_dir } : {}), codexConfigProfile: node.codex_config_profile ?? undefined },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, ...(node.remote_control === 1 ? { remoteControl: true } : {}), ...(node.ask_in_modal === 1 ? { askInModal: true } : {}), ...(node.code_mode === 1 ? { codeMode: true } : {}), ...(node.claude_config_dir ? { claudeConfigDir: node.claude_config_dir } : {}), codexConfigProfile: node.codex_config_profile ?? undefined },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the
@@ -1148,6 +1150,10 @@ export class SeatHandoverService {
     const hasAskInModal = this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'ask_in_modal'").get() !== undefined;
     row.ask_in_modal = hasAskInModal
       ? (this.db.prepare("SELECT ask_in_modal AS v FROM nodes WHERE id = ?").get(row.id) as { v: number | null }).v : null;
+    // The seat's code_mode declaration (migration 133, workspaces-o9o.123); a database without the column reads as undeclared.
+    const hasCodeMode = this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'code_mode'").get() !== undefined;
+    row.code_mode = hasCodeMode
+      ? (this.db.prepare("SELECT code_mode AS v FROM nodes WHERE id = ?").get(row.id) as { v: number | null }).v : null;
     return row;
   }
 

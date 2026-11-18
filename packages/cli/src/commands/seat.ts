@@ -859,11 +859,11 @@ Examples:
     .option("--reason <text>", "Reason recorded on the node.spec_fields_applied event")
     .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
     .option("--json", "JSON output for agents")
-    .description("Make a seat retain the launch fields its spec now states (Pi: env_passthrough, model_overrides, pi.link_operator_models; Claude Code: remote_control, ask_in_modal; both: agent_ref, profile); dry run unless --yes; no relaunch")
+    .description("Make a seat retain the launch fields its spec now states (Pi: env_passthrough, model_overrides, pi.link_operator_models; Claude Code: remote_control, ask_in_modal, code_mode; both: agent_ref, profile); dry run unless --yes; no relaunch")
     .addHelpText("after", `
 A seat keeps these fields on its node, and every launch other than rig up from the spec reads them there:
   pi           env_passthrough, model_overrides, pi.link_operator_models
-  claude-code  remote_control, ask_in_modal
+  claude-code  remote_control, ask_in_modal, code_mode
   both         agent_ref, profile (the seat's identity: a fresh launch from the spec refuses a seat whose
                recorded agent_ref or profile differs from its member's, as after rig add records a path: ref)
 A surge seat (<member><N>, added beside <member> with rig-here's add-seat --as) is read as declared by
@@ -874,8 +874,8 @@ fields as the spec load does, and shows 'retained -> spec' for each (names and o
 value). Without --yes it writes nothing. With --yes it writes the runtime's fields in one transaction and records
 one audit event. A field the spec no longer states is cleared. Nothing is relaunched and no process is touched:
 the new values apply at the seat's next launch: a seat launch, a restore, rig up --existing, or a handover
-successor. Other runtimes are refused. A kernel seat's Claude Code fields (remote_control, ask_in_modal) are not
-applied; its agent_ref and profile are realigned like any seat's.
+successor. Other runtimes are refused. A kernel seat's Claude Code fields (remote_control, ask_in_modal, code_mode) are
+not applied; its agent_ref and profile are realigned like any seat's.
 Examples:
   rig seat apply-spec verify-ops@eztrack
   rig seat apply-spec verify-ops@eztrack --yes --reason "release c84c5ba3 adds OPENAI_API_KEY"
@@ -889,7 +889,7 @@ Examples:
         const surgeOf = typeof data["surgeOf"] === "string" ? `, surge seat of ${data["surgeOf"]}` : "";
         console.log(`${data["dryRun"] === true ? "Dry run for" : data["written"] === true ? "Applied to" : "Checked"} ${s?.logicalId}@${s?.rigName} (spec ${String(data["declaredIn"])}, ${String(data["specSource"])}${surgeOf}):`);
         for (const f of (data["fields"] as Array<{ field: string; retained: string[]; spec: string[]; changed: boolean }> | undefined) ?? []) {
-          const flag = f.field === "pi.link_operator_models" || f.field === "remote_control" || f.field === "ask_in_modal";
+          const flag = f.field === "pi.link_operator_models" || f.field === "remote_control" || f.field === "ask_in_modal" || f.field === "code_mode";
           const show = (v: string[]) => (flag ? (v.length ? "true" : "false") : `[${v.join(", ")}]`);
           console.log(f.changed ? `  ${f.field}: ${show(f.retained)} -> ${show(f.spec)}` : `  ${f.field}: no change (${show(f.retained)})`);
         }

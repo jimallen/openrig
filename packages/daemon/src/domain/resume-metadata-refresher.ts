@@ -1,3 +1,4 @@
+import { claudeCodeModePrefix } from "./claude-code-mode.js";
 import os from "node:os";
 import fs from "node:fs";
 import nodePath from "node:path";
@@ -53,6 +54,8 @@ interface ResumeMetadataRefresherDeps {
   claudeConfigDir?: string;
   /** A seat's own Claude config home (nodes.claude_config_dir), which wins over claudeConfigDir for that seat. */
   seatClaudeConfigDir?: (session: ResumeRefreshSession) => string | null | undefined;
+  /** workspaces-o9o.123: the seat declared `code_mode` (nodes.code_mode), so its probe resume sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1. */
+  seatCodeMode?: (session: ResumeRefreshSession) => boolean;
   listClaudeProcesses?: NativeProcessLister;
 }
 
@@ -61,8 +64,9 @@ export class ResumeMetadataRefresher {
   private tmuxAdapter: TmuxAdapter;
   private listProcesses: () => Array<{ pid: number; ppid: number; command: string }> | Promise<Array<{ pid: number; ppid: number; command: string }>>;
   private readCodexThreadIdByPid: (pid: number, identity?: string) => Promise<string | undefined> | string | undefined;
-  private probeClaudeResume: (sessionName: string, resumeToken: string, cwd?: string | null, seatClaudeConfigDir?: string | null) => Promise<"resumable" | "not_resumable" | "inconclusive">;
+  private probeClaudeResume: (sessionName: string, resumeToken: string, cwd?: string | null, seatClaudeConfigDir?: string | null, codeMode?: boolean) => Promise<"resumable" | "not_resumable" | "inconclusive">;
   private seatClaudeConfigDir: (session: ResumeRefreshSession) => string | null;
+  private seatCodeMode: (session: ResumeRefreshSession) => boolean;
   private resolveHomeDirByPid: ResolveHomeDirByPid;
   private sleep: (ms: number) => Promise<void>;
   private homeDir: string;
@@ -89,8 +93,9 @@ export class ResumeMetadataRefresher {
     // through the named ungated escape hatch — never a silent fallback (r1 owed item 3).
     this.readCodexThreadIdByPid = deps.readCodexThreadIdByPid
       ?? ((pid, identity) => identity === undefined ? threadIdResolver.resolveUngatedLegacy(pid) : threadIdResolver.resolve(pid, identity));
-    this.probeClaudeResume = deps.probeClaudeResume ?? ((sessionName, resumeToken, cwd, seatHome) => this.defaultProbeClaudeResume(sessionName, resumeToken, cwd, seatHome));
+    this.probeClaudeResume = deps.probeClaudeResume ?? ((sessionName, resumeToken, cwd, seatHome, codeMode) => this.defaultProbeClaudeResume(sessionName, resumeToken, cwd, seatHome, codeMode));
     this.seatClaudeConfigDir = (session) => deps.seatClaudeConfigDir?.(session) ?? null;
+    this.seatCodeMode = (session) => deps.seatCodeMode?.(session) === true;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.homeDir = deps.homeDir ?? os.homedir();
     this.contextUsageStore = deps.contextUsageStore ?? null;
@@ -222,7 +227,7 @@ export class ResumeMetadataRefresher {
           }
           continue;
         }
-        const probe = await this.probeClaudeResume(session.sessionName, session.resumeToken, session.cwd ?? null, this.seatClaudeConfigDir(session));
+        const probe = await this.probeClaudeResume(session.sessionName, session.resumeToken, session.cwd ?? null, this.seatClaudeConfigDir(session), this.seatCodeMode(session));
         // OPR.0.4.3.20 FR-6 §2.1b — record the probe result WITHOUT clearing:
         // `not_resumable`/`inconclusive` marks the present token stale (the plan
         // surfaces it as `stale — re-verify`), `resumable` stamps freshness. The
@@ -303,12 +308,13 @@ export class ResumeMetadataRefresher {
     resumeToken: string,
     cwd?: string | null,
     seatClaudeConfigDir?: string | null,
+    codeMode?: boolean,
   ): Promise<"resumable" | "not_resumable" | "inconclusive"> {
     // OF-75: the line below is typed into a pane, so a seat name or token outside the typed-word set is not probed.
     if (!isTypedResumeWord(sessionName) || !isTypedResumeWord(resumeToken)) {
       return "inconclusive";
     }
-    const command = claudeProbeCommand(resumeToken, sessionName, seatClaudeConfigDir);
+    const command = claudeProbeCommand(resumeToken, sessionName, seatClaudeConfigDir, codeMode);
     if (command === "untyped_home") return "inconclusive";
     if (!command) {
       return "not_resumable";
@@ -492,10 +498,13 @@ function resolveProbeCwd(cwd: string | null | undefined, homeDir: string): strin
 }
 
 /** The line the resumability probe types: `claude --resume …`, prefixed with the seat's own Claude home when it has one
- *  (its conversation lives there). A home outside the plain-path set is never typed (`untyped_home`); null when there
- *  is no resume command. */
-export function claudeProbeCommand(resumeToken: string, sessionName: string, seatClaudeConfigDir?: string | null): string | null | "untyped_home" {
+ *  (its conversation lives there), and for a code_mode seat with CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 (a Code Mode session exits 1
+ *  without it, which would read as not resumable; workspaces-o9o.123). A home outside the plain-path set is never typed
+ *  (`untyped_home`); null when there is no resume command. */
+export function claudeProbeCommand(resumeToken: string, sessionName: string, seatClaudeConfigDir?: string | null, codeMode?: boolean): string | null | "untyped_home" {
   if (seatClaudeConfigDir && !/^\/[A-Za-z0-9._\/-]+$/.test(seatClaudeConfigDir)) return "untyped_home";
   const resume = buildNativeResumeCommand("claude-code", resumeToken, sessionName);
-  return resume && seatClaudeConfigDir ? `CLAUDE_CONFIG_DIR=${seatClaudeConfigDir} ${resume}` : resume;
+  if (!resume) return resume;
+  const line = `${claudeCodeModePrefix(codeMode)}${resume}`;
+  return seatClaudeConfigDir ? `CLAUDE_CONFIG_DIR=${seatClaudeConfigDir} ${line}` : line;
 }

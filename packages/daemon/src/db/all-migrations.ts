@@ -132,6 +132,7 @@ import { nodeClaudeConfigDirSchema } from "./migrations/129_node_claude_config_d
 import { sessionClaudeConfigDirSchema } from "./migrations/130_session_claude_config_dir.js";
 import { nodeAskInModalSchema } from "./migrations/131_node_ask_in_modal.js";
 import { pluginCopyClaimsSchema } from "./migrations/132_plugin_copy_claims.js";
+import { nodeCodeModeSchema } from "./migrations/133_node_code_mode.js";
 import { bindingTerminalAddressSchema } from "./migrations/121_binding_terminal_address.js";
 import { seatMessageSchema } from "./migrations/122_seat_message.js";
 
@@ -276,4 +277,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   sessionClaudeConfigDirSchema,
   nodeAskInModalSchema,
   pluginCopyClaimsSchema,
+  nodeCodeModeSchema,
 ];

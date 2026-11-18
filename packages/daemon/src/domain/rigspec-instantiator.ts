@@ -1271,7 +1271,7 @@ export class PodRigInstantiator {
     const initialRefusal = eligible();
     if (initialRefusal) return refuse(initialRefusal);
 
-    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "ask_in_modal", "claude_config_dir", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides", "pi"]);
+    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "ask_in_modal", "code_mode", "claude_config_dir", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough", "model_overrides", "pi"]);
     if (Object.keys(memberFragment).some(key => !retainedFields.has(key))) return refuse("Retry accepts only retained member fields; topology and startup overrides require a separate change.");
     const rawSpec = { version: "0.2", name: rig.rig.name, pods: [{ id: podRow.namespace, label: podRow.label, members: [memberFragment], edges: [] }], edges: [] };
     const validation = PodRigSpecSchema.validate(rawSpec);
@@ -1298,6 +1298,8 @@ export class PodRigInstantiator {
       || (member.remoteControl === true) !== (node.remoteControl === true)
       // The same for ask_in_modal: a retry must not silently add or drop the seat's guard.
       || (member.askInModal === true) !== (node.askInModal === true)
+      // And for code_mode (workspaces-o9o.123): a retry must not silently start or stop the seat's Code Mode.
+      || (member.codeMode === true) !== (node.codeMode === true)
       // The seat's Claude home must agree too: a retry that changed it would move the seat to another login.
       || !retainedClaudeConfigDirAgrees(member.claudeConfigDir, node.claudeConfigDir)
       || !retainedPdaBindingAgrees(member.pda, node)
@@ -1647,6 +1649,7 @@ export class PodRigInstantiator {
             effort: member.effort ?? configResult.config.effort,
             remoteControl: member.remoteControl,
             askInModal: member.askInModal,
+            codeMode: member.codeMode,
             ...(claudeHome.value ? { claudeConfigDir: claudeHome.value } : {}),
             pda: member.pda,
             envPassthrough: member.envPassthrough,
@@ -2035,6 +2038,7 @@ export class PodRigInstantiator {
       effort: input.member.effort,
       remoteControl: input.member.remoteControl,
       askInModal: input.member.askInModal,
+      codeMode: input.member.codeMode,
       ...(claudeHome.value ? { claudeConfigDir: claudeHome.value } : {}),
       pda: input.member.pda,
       envPassthrough: input.member.envPassthrough,
@@ -2214,6 +2218,8 @@ export class PodRigInstantiator {
     this.deps.rigRepo.setNodeRemoteControl(input.nodeId, input.member.remoteControl === true);
     // The same for ask_in_modal: restore and handover read the node, so it must hold the spec's current declaration.
     this.deps.rigRepo.setNodeAskInModal(input.nodeId, input.member.askInModal === true);
+    // And code_mode (workspaces-o9o.123): restore, handover and the resume probe read the node.
+    this.deps.rigRepo.setNodeCodeMode(input.nodeId, input.member.codeMode === true);
 
     // OPR.0.4.8.3 Seam B: resolve the seat's permission-policy attachment once for this
     // launch (member > rig precedence; declaring dir = the rig root, where the declaring
@@ -2305,6 +2311,7 @@ export class PodRigInstantiator {
       effort: (readSeatEffort(this.deps.rigRepo.db, input.nodeId) ?? { effective: configResult.config.effort ?? null }).effective ?? undefined,
       ...(input.member.remoteControl ? { remoteControl: true } : {}),
       ...(input.member.askInModal ? { askInModal: true } : {}),
+      ...(input.member.codeMode ? { codeMode: true } : {}),
       ...(input.member.pda ? { pda: input.member.pda } : {}),
       codexConfigProfile: input.member.codexConfigProfile,
       // OPR.0.4.8.3 Seam B: resolved launch posture (member > rig > persisted > FLOOR)
@@ -2918,7 +2925,7 @@ export class PodRigInstantiator {
     // seat (`<member><N>`, added beside the member it copies) is declared by that member: it runs the member's persona
     // (agent_ref, profile, runtime, startup layers), under its OWN member id, so the identity hint, the canonical session
     // name and the skills owner below are the surge seat's, never the base seat's. Its folder is its recorded cwd (as for
-    // every re-read), and its per-seat launch fields (model, effort, Claude home, remote_control, ask_in_modal) stay on its
+    // every re-read), and its per-seat launch fields (model, effort, Claude home, remote_control, ask_in_modal, code_mode) stay on its
     // node, which this read does not change. Its label is its own too (the one `rig whoami` reports), else the base member's.
     const declared = specMemberForSeat(rigSpec.pods, node.logicalId);
     if (!declared) return { kind: "undeclared", specSource };
