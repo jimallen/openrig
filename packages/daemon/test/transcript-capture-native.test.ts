@@ -9,6 +9,7 @@ import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -44,9 +45,10 @@ describe.skipIf(!findHc())("hc transcript capture against a private core", () =>
   }
   const say = (name: string, text: string) => scratch.client().call("terminal.send", { terminal: hcTerminalName(name), text });
   const until = async (f: () => boolean, what: string) => {
+    const waitStarted = Date.now();
     const deadline = Date.now() + 30_000;
     while (!f()) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
       await wait(25);
     }
   };

@@ -20,16 +20,18 @@ import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js"
 import { startFakePda, type FakePda } from "./helpers/fake-pda.js";
 import { BEARER } from "./helpers/pda-runner-rig.js";
 import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
 
 async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, what: string, ms = 30_000): Promise<T> {
+  const waitStarted = Date.now();
   const end = Date.now() + ms;
   for (;;) {
     const v = await read();
     if (ok(v)) return v;
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}; last: ${JSON.stringify(v)}`);
+    if (Date.now() > end) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted, `${JSON.stringify(v)}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 }

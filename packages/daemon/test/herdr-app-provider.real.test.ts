@@ -19,13 +19,15 @@ import { createHerdrAppCli, HerdrAppProvider } from "../src/domain/terminal/herd
 import { TerminalService, type TerminalServiceDeps } from "../src/domain/terminal/terminal-service.js";
 import type { LiveSeatRow } from "../src/domain/terminal/terminal-views-store.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, what: string, ms = 20_000): Promise<T> {
+  const waitStarted = Date.now();
   const end = Date.now() + ms;
   for (;;) {
     const v = await read();
     if (ok(v)) return v;
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}; last: ${JSON.stringify(v).slice(0, 400)}`);
+    if (Date.now() > end) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted, `${JSON.stringify(v).slice(0, 400)}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 }

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HC_GENERATION, HcClient, HcError, HcUnavailableError } from "../src/adapters/hc-client.js";
 import { connectHcCore, type HcCoreWatch } from "../src/adapters/hc-core-watch.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const hello = (over: Record<string, unknown> = {}) => ({
   generation: HC_GENERATION, version: "0.1.16", core: { id: "core-a", name: "n" }, ...over,
@@ -48,9 +49,10 @@ class ScriptedCore {
 }
 
 const until = async (check: () => boolean, what: string, ms = 5000) => {
+  const waitStarted = Date.now();
   const deadline = Date.now() + ms;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 };

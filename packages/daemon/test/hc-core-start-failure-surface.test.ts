@@ -8,6 +8,7 @@ import { HC_GENERATION } from "../src/adapters/hc-client.js";
 import { connectHcCore } from "../src/adapters/hc-core-watch.js";
 import { HcCoreRefusalHealthSource } from "../src/domain/hc-core-refusal-health.js";
 import type { HealthSourceCoverage } from "../src/domain/health-detectors.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 // A refused core start (no named runtime location) was a daemon.log line and nothing else (review of 6f813a07, F4): `rig health` showed no cause,
 // and the log line was written once per reason for the life of the daemon, so a second outage with the same cause was silent. The fake `hc`
@@ -23,9 +24,10 @@ beforeEach(() => rmSync(ran, { force: true }));
 const PATH = process.env.PATH ?? "/usr/bin:/bin";
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(check: () => boolean, what: string, timeoutMs = 8_000): Promise<void> {
+  const waitStarted = Date.now();
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
     await wait(25);
   }
 }

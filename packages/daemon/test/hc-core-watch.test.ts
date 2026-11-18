@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HcHello } from "../src/adapters/hc-client.js";
 import { EMPTY_HC_VIEW, HC_HEARTBEAT_INTERVAL_MS, HC_HEARTBEAT_TIMEOUT_MS, HcCoreRefusedError, HcCoreWatch, lossReason, probeCore, reduceHcView, turnsCompleted, verifyHello, type HcNotice, type HcStreamMessage, type HcView, type HcViewTerminal } from "../src/adapters/hc-core-watch.js";
 import { HC_TESTED_VERSION } from "../src/adapters/hc-version.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const T = (address: string, over: Partial<HcViewTerminal> = {}): HcViewTerminal => ({
   address, labels: { "openrig.seat": `seat-${address}` }, argv: ["sh"], cwd: "/", state: "live", created_ms: 0, screen: "exact", cols: 200, rows: 120, turn: 0, status: null, ...over,
@@ -215,9 +216,10 @@ class FakeCore {
 }
 
 const until = async (check: () => boolean, what: string, ms = 3000) => {
+  const waitStarted = Date.now();
   const deadline = Date.now() + ms;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 };

@@ -16,6 +16,7 @@ import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js"
 import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { piSeatGate } from "../src/adapters/seat-gate-readers.js";
 import { seedPiFixtureCredential } from "./helpers/pi-fixture-credential.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../src/adapters/", import.meta.url));
@@ -26,11 +27,12 @@ const OTHER_NONCE = "fedcba9876543210";
 const marked = (text: string, id: string, nonce = NONCE): string => `${text}\n[openrig-msg ${id}:${nonce}]`;
 
 async function until<T>(read: () => T | Promise<T>, ok: (v: T) => boolean, what: string, ms = 20_000): Promise<T> {
+  const waitStarted = Date.now();
   const end = Date.now() + ms;
   for (;;) {
     const v = await read();
     if (ok(v)) return v;
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}; last: ${JSON.stringify(v)}`);
+    if (Date.now() > end) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted, `${JSON.stringify(v)}`);
     await new Promise((r) => setTimeout(r, 50));
   }
 }
