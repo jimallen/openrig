@@ -13,7 +13,12 @@ import type { ExpectSurface } from "./scenario-schema.js";
 export interface RunRecord {
   /** The scenario name (its defect class). */
   scenario: string;
-  verdict: "PASS" | "FAIL";
+  /** workspaces-o9o.132: HEALTHY_ONLY (an unbound seed did not run) and NOT_RUN (an unbound step or fixture stopped it) are never passes. */
+  verdict: "PASS" | "FAIL" | "HEALTHY_ONLY" | "NOT_RUN";
+  /** HEALTHY_ONLY only: the seed step that did not run, its class and why. */
+  seedNotRun?: { step: number; class: string; reason: string };
+  /** NOT_RUN only: what stopped it (a step index, or null for a scenario-level precondition) and why. */
+  notRun?: { step: number | null; verb: string; reason: string };
   /** 0-based index of the step that failed (FAIL only). */
   failedStep?: number;
   /** The expected-vs-last-observed DIFF (FAIL only). */

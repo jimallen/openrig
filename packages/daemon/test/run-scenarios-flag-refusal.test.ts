@@ -25,7 +25,9 @@ function runWith(args: string[]) {
 }
 
 // A scenario ledger line or the partial summary — the tell that something ran.
-const RAN_SOMETHING = /\[(PASS|FAIL|ERROR)\]|scenarios passed/;
+// workspaces-o9o.132: the runner's tags and summary now include HEALTHY-ONLY and NOT RUN ("<n> scenarios: ..."), so a refused run printing
+// any of them is still caught.
+const RAN_SOMETHING = /\[(PASS|FAIL|ERROR|HEALTHY-ONLY|NOT RUN)\]|scenarios passed|\d+ scenarios:/;
 
 describe("run-scenarios standalone runner — unknown-flag refusal (B12-S)", () => {
   it("refuses '--container <yaml>' pre-execution: nonzero exit, names --container, ZERO scenarios run", () => {

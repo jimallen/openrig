@@ -27,6 +27,7 @@ import { readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runScenarioFile } from "../test/helpers/scenario-pipeline.ts";
+import { exitCode, outcomeLines, summaryLine, tally } from "../test/helpers/scenario-report.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DAEMON_ROOT = resolve(HERE, "..");
@@ -55,22 +56,19 @@ const files = argv.length > 0
 const baseEnv = { HOME: process.env.HOME, PATH: process.env.PATH, TERM: "xterm" };
 const deps = { normalizer: (_surface, value) => value }; // v1 identity placeholder (rides 51-03)
 
-let failures = 0;
+const outcomes = [];
 for (const file of files) {
+  let outcome;
   try {
-    const result = await runScenarioFile(file, { rigBin: RIG_BIN, baseEnv, deps });
-    const tag = result.verdict === "PASS" ? "PASS" : "FAIL";
-    let line = `[${tag}] ${result.scenario}`;
-    if (result.verdict === "FAIL") line += `\n  step ${result.failedStep}: ${result.diff}`;
-    console.log(line);
-    if (result.verdict !== "PASS") failures++;
+    outcome = { kind: "result", result: await runScenarioFile(file, { rigBin: RIG_BIN, baseEnv, deps }) };
   } catch (err) {
-    failures++;
     // A teardown failure after a returned run carries that run's result (ScenarioTeardownError): show it too.
-    const r = err && err.result;
-    const ran = r ? `\n  the run itself: ${r.verdict}${r.verdict === "FAIL" ? ` at step ${r.failedStep}: ${r.diff}` : ""}` : "";
-    console.log(`[ERROR] ${file}\n  ${(err && err.message) || err}${ran}`);
+    outcome = { kind: "error", file, message: String((err && err.message) || err), ...(err && err.result ? { ran: err.result } : {}) };
   }
+  outcomes.push(outcome);
+  console.log(outcomeLines(outcome).join("\n"));
 }
-console.log(`\n${files.length - failures}/${files.length} scenarios passed`);
-process.exit(failures > 0 ? 1 : 0);
+// workspaces-o9o.132 (CoS decision D1): HEALTHY-ONLY and NOT RUN have their own columns and are never counted as passed.
+const counts = tally(outcomes);
+console.log(`\n${summaryLine(counts)}`);
+process.exit(exitCode(counts));

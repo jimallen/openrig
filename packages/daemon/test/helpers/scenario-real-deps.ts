@@ -28,33 +28,28 @@
  * so the verb→argv MAPPING is unit-testable without a live daemon.
  */
 
+import { resolve } from "node:path";
 import { runRig as realRunRig, type RigResult, type ScenarioDaemon } from "./scenario-daemon.js";
 import { readSurface } from "./scenario-surfaces.js";
 import type { ExpectSurface } from "./scenario-schema.js";
 import type { ScenarioRunnerDeps, ActionResult } from "./scenario-runner.js";
 import type { RunRecord } from "./scenario-run-record.js";
 
-/** Thrown when an action verb has no shipped runtime binding in v1 (FLAG-1-style floor). */
-export class UnboundActionError extends Error {
-  readonly verb: string;
-  constructor(verb: string) {
-    super(
-      `action verb "${verb}" is UNBOUND in v1: it has no shipped runtime binding, so the ` +
-        `runner FAILS LOUD here rather than fabricating a call (its binding rides 51-03 / A5 ` +
-        `items 6-8). This is not a silently-skipped action.` +
-        (verb === "emit"
-          ? ` WHY (measured at source): the stub runner has NO input channel — no stdin reader, ` +
-            `no socket, no CLI/daemon route triggers a behavior; behaviors execute only from the ` +
-            `LAUNCH script it reads at boot. A step-time emit therefore cannot be honestly bound ` +
-            `without 51-01 source work (routed to the 51-01 backlog), and simulating one would be ` +
-            `a green that means nothing. THE V1 PATH: declare env.stub_scripts to deliver a ` +
-            `per-seat launch script whose steps carry the behaviors you need.`
-          : ""),
-    );
-    this.name = "UnboundActionError";
-    this.verb = verb;
-  }
-}
+// workspaces-o9o.132: the error lives with the runner core, which turns it into a HEALTHY_ONLY or NOT_RUN verdict; re-exported here for the
+// callers that already import it from this adapter.
+export { UnboundActionError } from "./scenario-runner.js";
+import { UnboundActionError } from "./scenario-runner.js";
+
+/** Why each verb is unbound in host mode, so a NOT RUN or HEALTHY-ONLY report names it (workspaces-o9o.132). */
+const UNBOUND_REASONS: Record<string, string> = {
+  seed_regression: "host mode has no seed controller; CI arms it",
+  emit: "a step-time emit has no binding (ROUTING R-01): the stub runner has no input channel (no stdin reader, no socket, no route), " +
+    "so behaviors run only from the launch script it reads at boot; declare env.stub_scripts to deliver a per-seat launch script instead",
+  mutate: "no binding at v1 for a structural edit (test-system README, Run status honesty)",
+  policy: "no binding at v1 for a policy step (test-system README, Run status honesty)",
+  restore: "no binding at v1 for a step-time restore (test-system README, Run status honesty)",
+};
+const unbound = (verb: string): UnboundActionError => new UnboundActionError(verb, UNBOUND_REASONS[verb] ?? "no binding at v1");
 
 /** The subset of a live ScenarioDaemon the adapter needs (readEnv + lifecycle). */
 export type RealDepsDaemon = Pick<ScenarioDaemon, "readEnv" | "baseUrl" | "sigterm" | "restart">;
@@ -98,6 +93,9 @@ export interface RealDepsOptions {
    * control). The paired harness owns injection timing and verifies the actual
    * failing observation; this must never invoke a production `rig` command. */
   seedRegression?: (regressionClass: string) => Promise<ActionResult>;
+  /** workspaces-o9o.132 (ROUTING R-12): the scenario file's folder, which a per-step `up: {topology: <path>}` is relative to. Host mode
+   *  without staged scripts passes it; where it is absent (staged or container topologies) a per-step topology fails loud. */
+  scenarioDir?: string;
 }
 
 /** `rig up` is heavy (real tmux seat launch) — give it a generous ceiling. */
@@ -113,10 +111,30 @@ export function buildRealDeps(opts: RealDepsOptions): ScenarioRunnerDeps {
   // Captured from the `up` result so down/restart target the real rig (never fabricated).
   let rigId: string | undefined;
   let rigName: string | undefined;
+  // workspaces-o9o.132 (R-12): the further rigs a per-step `up: {topology}` brought up, in order. `down` stops them too, latest first, so a
+  // second rig never outlives the scenario; `restart` keeps targeting the scenario's own rig.
+  const extraRigs: string[] = [];
 
   const runAction = async (verb: string, payload: unknown, seat?: string): Promise<ActionResult> => {
     switch (verb) {
       case "up": {
+        const stepTopology = payload && typeof payload === "object" ? (payload as { topology?: unknown }).topology : undefined;
+        if (stepTopology !== undefined) {
+          if (!opts.scenarioDir) {
+            return fail("up: a per-step topology is relative to the scenario file, and this run has no scenario folder to resolve it " +
+              "against (a staged or container topology); run the scenario in host mode without env.stub_scripts");
+          }
+          const extraArgs = ["up", resolve(opts.scenarioDir, stepTopology as string), "--json", "--yes"];
+          if (opts.seatCwd) extraArgs.push("--cwd", opts.seatCwd);
+          const r = await runRig(extraArgs, daemon.readEnv, rigBin, UP_TIMEOUT_MS);
+          try {
+            const j = JSON.parse(r.stdout) as Record<string, unknown>;
+            const rig = (j.rig as Record<string, unknown> | undefined) ?? undefined;
+            const name = (j.rigName as string) ?? (rig?.name as string) ?? (j.rigId as string) ?? (rig?.id as string);
+            if (name) extraRigs.push(name);
+          } catch { /* non-JSON up output: the rig is not tracked, and its down will not run */ }
+          return r;
+        }
         const upArgs = ["up", topologyPath, "--json", "--yes"];
         if (opts.seatCwd) upArgs.push("--cwd", opts.seatCwd);
         const r = await runRig(upArgs, daemon.readEnv, rigBin, UP_TIMEOUT_MS);
@@ -151,6 +169,12 @@ export function buildRealDeps(opts: RealDepsOptions): ScenarioRunnerDeps {
       case "down": {
         const target = rigName ?? rigId;
         if (!target) return fail("down: no rig brought up yet (no rigId/rigName captured from `up`)");
+        // R-12: the further rigs first, latest first; the first failure is the result.
+        for (const extra of [...extraRigs].reverse()) {
+          const r = await runRig(["down", extra, "--json", "--force"], daemon.readEnv, rigBin);
+          if (r.code !== 0) return r;
+        }
+        extraRigs.length = 0;
         return runRig(["down", target, "--json", "--force"], daemon.readEnv, rigBin);
       }
       case "daemon": {
@@ -165,12 +189,12 @@ export function buildRealDeps(opts: RealDepsOptions): ScenarioRunnerDeps {
         if (typeof regressionClass !== "string" || regressionClass.length === 0) {
           return fail("seed_regression: a non-empty class is required");
         }
-        if (!opts.seedRegression) throw new UnboundActionError(verb);
+        if (!opts.seedRegression) throw unbound(verb);
         return opts.seedRegression(regressionClass);
       }
       default:
         // restore / emit / mutate / policy — no shipped binding at v1.
-        throw new UnboundActionError(verb);
+        throw unbound(verb);
     }
   };
 

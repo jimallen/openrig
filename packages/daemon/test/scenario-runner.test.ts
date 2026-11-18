@@ -6,6 +6,7 @@ import {
   type ScenarioRunnerDeps,
 } from "./helpers/scenario-runner.js";
 import type { RunRecord } from "./helpers/scenario-run-record.js";
+import { UnboundActionError } from "./helpers/scenario-real-deps.js";
 
 // Slice 51-02 — the runner CORE (dumb executor). Parse+validate happens upstream;
 // this runs a validated scenario's steps in order: actions via the injected
@@ -117,5 +118,61 @@ describe("runValidatedScenario", () => {
     await runValidatedScenario(sc, deps);
     // 250ms bound at 100ms/tick => ~3 polls, far fewer than the 1000ms default
     expect(polls).toBeLessThanOrEqual(4);
+  });
+});
+
+// workspaces-o9o.132 (CoS decision D1): host mode has no seed controller and binds no emit/mutate/policy/restore step. A scenario whose only
+// unbound step is its seed runs its healthy leg and is HEALTHY_ONLY (never PASS); any other unbound step stops it as NOT_RUN, naming the
+// step, the verb and why. Neither is an ERROR, and neither is counted as passed.
+describe("unbound steps: HEALTHY_ONLY and NOT_RUN", () => {
+  const unbound = (unboundVerb: string, reason: string) => vi.fn(async (verb: string) => {
+    if (verb === unboundVerb) throw Object.assign(new UnboundActionError(verb), { reason });
+    return { code: 0, stdout: "", stderr: "" };
+  });
+
+  it("a scenario whose only unbound step is its seed is HEALTHY_ONLY: the healthy leg ran, the seed did not, and the steps after it still run", async () => {
+    const runAction = unbound("seed_regression", "host mode has no seed controller; CI arms it");
+    const deps = makeDeps({ runAction, observe: vi.fn(async () => ({ ok: true })) });
+    const r = await runValidatedScenario(scenario([
+      { up: {} },
+      { expect: { surface: "ps", match: { ok: true } } },
+      { seed_regression: { class: "view-state-divergence" } },
+      { down: {} },
+    ]), deps);
+    expect(r.verdict).toBe("HEALTHY_ONLY");
+    expect(r).toMatchObject({ seedNotRun: { step: 2, class: "view-state-divergence", reason: "host mode has no seed controller; CI arms it" } });
+    expect(runAction).toHaveBeenLastCalledWith("down", {}, undefined);
+    expect(deps.records.map((x) => x.verdict)).toEqual(["HEALTHY_ONLY"]);
+  });
+
+  it("any other unbound step stops the scenario as NOT_RUN, naming the step, the verb and why; nothing after it runs", async () => {
+    const runAction = unbound("mutate", "no binding at v1");
+    const deps = makeDeps({ runAction });
+    const r = await runValidatedScenario(scenario([
+      { up: {} },
+      { mutate: { op: "add_member", pod: "p", member: "d", runtime: "stub" } },
+      { down: {} },
+    ]), deps);
+    expect(r.verdict).toBe("NOT_RUN");
+    expect(r).toMatchObject({ notRun: { step: 1, verb: "mutate", reason: "no binding at v1" } });
+    expect(runAction).toHaveBeenCalledTimes(2);
+    expect(deps.records.map((x) => x.verdict)).toEqual(["NOT_RUN"]);
+  });
+
+  it("a healthy leg that fails before the seed is a FAIL, not HEALTHY_ONLY", async () => {
+    const runAction = unbound("seed_regression", "host mode has no seed controller; CI arms it");
+    const deps = makeDeps({ runAction, observe: vi.fn(async () => ({ ok: false })) });
+    const r = await runValidatedScenario(scenario([
+      { up: {} },
+      { expect: { surface: "ps", within: "1s", match: { ok: true } } },
+      { seed_regression: { class: "c" } },
+    ]), deps);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.failedStep).toBe(1);
+  });
+
+  it("an error that is not an unbound step still propagates (no blanket catch)", async () => {
+    const runAction = vi.fn(async () => { throw new Error("boom"); });
+    await expect(runValidatedScenario(scenario([{ up: {} }]), makeDeps({ runAction }))).rejects.toThrow("boom");
   });
 });

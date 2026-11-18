@@ -50,6 +50,20 @@ describe("loadScenarioFile", () => {
     expect(seedRegression).toHaveBeenCalledExactlyOnceWith("baton-drop");
   });
 
+  // workspaces-o9o.132 (ROUTING R-14): no runner code provides env.pre_existing_tmux, so a scenario that declares it would run without the
+  // fixture it depends on. It is reported NOT_RUN, naming the fixture and the routing item, before any daemon or scaffold exists.
+  it("a scenario declaring env.pre_existing_tmux is NOT_RUN (R-14), and no daemon is started", async () => {
+    const { runScenarioFile } = await import("./helpers/scenario-pipeline.js");
+    const p = write("tmux.yaml", "scenario: needs-tmux\ntopology: ./unused.yaml\nenv:\n  pre_existing_tmux: true\nsteps:\n  - up: {}\n");
+    const spawn = vi.fn();
+    const records: unknown[] = [];
+    const result = await runScenarioFile(p, { rigBin: "/not-executed", deps: { appendRecord: (r) => records.push(r) }, daemon: spawn as never });
+    expect(result).toMatchObject({ scenario: "needs-tmux", verdict: "NOT_RUN", notRun: { step: null, verb: "env.pre_existing_tmux" } });
+    expect(result.notRun?.reason).toContain("R-14");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(records).toEqual([result]);
+  });
+
   it("parses a valid scenario and resolves topology relative to the scenario file", () => {
     const p = write("s.yaml", [
       "scenario: baton-survives",

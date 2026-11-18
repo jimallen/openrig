@@ -135,3 +135,57 @@ describe("D2 — the unbound-verb message states WHY and names the v1 path", () 
     expect(msg.toLowerCase()).toContain("launch");
   });
 });
+
+// workspaces-o9o.132 (ROUTING R-12): a scenario brings up a second rig with a per-step `up: {topology: <path>}`, the path relative to the
+// scenario file. The runner used to ignore it and re-up the scenario's own topology (ps-scope-honesty failed with rig_name_running).
+describe("a per-step up topology (R-12)", () => {
+  const upAs = (name: string, id: string) => ok(JSON.stringify({ rigId: id, rigName: name }));
+
+  it("brings up the named topology, resolved against the scenario's folder; a plain up still brings up the scenario's own", async () => {
+    const calls: string[][] = [];
+    const runRig = vi.fn(async (args: string[]) => { calls.push(args); return args[1] === "/s/rig-beta.yaml" ? upAs("rig-beta", "r-b") : upAs("rig-alpha", "r-a"); });
+    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/rig-alpha.yaml", scenarioDir: "/s", runRig } as never);
+    await deps.runAction("up", {}, undefined);
+    await deps.runAction("up", { topology: "./rig-beta.yaml" }, undefined);
+    expect(calls.map((c) => c.slice(0, 2))).toEqual([["up", "/t/rig-alpha.yaml"], ["up", "/s/rig-beta.yaml"]]);
+  });
+
+  it("down stops every rig the run brought up, the later one first; restart still targets the scenario's own rig", async () => {
+    const calls: string[][] = [];
+    const runRig = vi.fn(async (args: string[]) => { calls.push(args); return args[0] === "up" ? (args[1] === "/s/rig-beta.yaml" ? upAs("rig-beta", "r-b") : upAs("rig-alpha", "r-a")) : ok(); });
+    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/rig-alpha.yaml", scenarioDir: "/s", runRig } as never);
+    await deps.runAction("up", {}, undefined);
+    await deps.runAction("up", { topology: "./rig-beta.yaml" }, undefined);
+    await deps.runAction("restart", "w", "w");
+    const r = await deps.runAction("down", {}, undefined);
+    expect(r.code).toBe(0);
+    expect(calls.filter((c) => c[0] === "launch").map((c) => c[1])).toEqual(["r-a"]);
+    expect(calls.filter((c) => c[0] === "down").map((c) => c[1])).toEqual(["rig-beta", "rig-alpha"]);
+  });
+
+  it("a per-step topology with no scenario folder to resolve it against fails loud, running nothing", async () => {
+    const runRig = vi.fn(async () => ok());
+    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/rig-alpha.yaml", runRig });
+    const r = await deps.runAction("up", { topology: "./rig-beta.yaml" }, undefined);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("per-step topology");
+    expect(runRig).not.toHaveBeenCalled();
+  });
+});
+
+// workspaces-o9o.132: an unbound verb says why, so host mode can report it NOT RUN with its reason.
+describe("an unbound verb names why it is unbound", () => {
+  it.each([
+    ["seed_regression", { class: "x" }, "no seed controller"],
+    ["emit", { seat: "a@r", behavior: "restore" }, "R-01"],
+    ["mutate", { op: "add_member" }, "no binding"],
+    ["policy", {}, "no binding"],
+    ["restore", {}, "no binding"],
+  ])("%s", async (verb, payload, reason) => {
+    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/spec.yaml", runRig: vi.fn(async () => ok()) });
+    const err = await deps.runAction(verb, payload, undefined).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnboundActionError);
+    expect((err as UnboundActionError & { verb: string }).verb).toBe(verb);
+    expect(String((err as { reason?: unknown }).reason)).toContain(reason);
+  });
+});

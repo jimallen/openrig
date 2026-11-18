@@ -31,7 +31,7 @@ import {
   type ScenarioDaemon,
 } from "./scenario-daemon.js";
 import { buildRealDeps, type RealDepsOptions } from "./scenario-real-deps.js";
-import { runValidatedScenario, type RunScenarioResult } from "./scenario-runner.js";
+import { notRunResult, runValidatedScenario, type RunScenarioResult } from "./scenario-runner.js";
 import type { RunRecord } from "./scenario-run-record.js";
 import { stageTopologyRoot, deliverStubScripts, resolveStubScriptTargets } from "./scenario-stage.js";
 import { provisionTui, spawnShippedTui, type ProvisionedTui, type TuiProcessLike } from "./scenario-tui.js";
@@ -317,6 +317,16 @@ export async function runScenarioFile(
     throw new ScenarioLoadError(path, `validation failed:\n  ${loaded.errors.map((e) => `${e.path}: ${e.message}`).join("\n  ")}`);
   }
 
+  // workspaces-o9o.132 (ROUTING R-14): no runner code provides the pre-existing tmux server fixture, so a scenario that declares it is NOT
+  // RUN, named, before any daemon or scaffold exists, rather than run without the fixture it depends on.
+  if (loaded.loaded.scenario.env?.pre_existing_tmux === true) {
+    return notRunResult(loaded.loaded.scenario.scenario, {
+      step: null,
+      verb: "env.pre_existing_tmux",
+      reason: "the pre-existing tmux server fixture is not built (ROUTING R-14), so this scenario cannot run as written",
+    }, { appendRecord: withImageId(opts.deps?.appendRecord, opts.imageId) });
+  }
+
   const preconditions = extractQueuePreconditions(loaded.loaded.scenario.env);
   const stubScripts = extractStubScripts(loaded.loaded.scenario.env);
 
@@ -393,6 +403,9 @@ export async function runScenarioFile(
       // Staged runs author per-seat cwds IN the spec; a --cwd override would
       // collapse them back to one directory.
       seatCwd: staged ? undefined : seatCwd,
+      // workspaces-o9o.132 (R-12): a per-step `up: {topology}` resolves against the scenario's folder in plain host mode; a staged or
+      // container topology has no such folder to offer, so there the step fails loud.
+      scenarioDir: staged || daemon.stageTopology ? undefined : dirname(path),
       scopeMission: typeof loaded.loaded.scenario.env?.scope_mission === "string"
         ? (loaded.loaded.scenario.env.scope_mission as string)
         : undefined,

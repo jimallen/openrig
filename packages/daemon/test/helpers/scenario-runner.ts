@@ -44,13 +44,36 @@ export interface ScenarioRunnerDeps {
   normalizer?: (surface: ExpectSurface, value: unknown) => unknown;
 }
 
+/**
+ * Thrown by an adapter when an action verb has no runtime binding in this mode (FLAG-1-style floor: never fabricate a call). The runner
+ * turns it into a verdict (workspaces-o9o.132, CoS decision D1): an unbound `seed_regression` makes the scenario HEALTHY_ONLY (its healthy
+ * leg ran; the seeded leg did not), any other unbound verb makes it NOT_RUN. Neither is a PASS.
+ */
+export class UnboundActionError extends Error {
+  readonly verb: string;
+  readonly reason: string;
+  constructor(verb: string, reason = "no binding at v1") {
+    super(`action verb "${verb}" is UNBOUND here: ${reason}. The runner reports the scenario NOT RUN (or HEALTHY-ONLY for a seed step) rather than fabricating a call.`);
+    this.name = "UnboundActionError";
+    this.verb = verb;
+    this.reason = reason;
+  }
+}
+
+/** PASS: every step ran and held. HEALTHY_ONLY: every step but an unbound seed ran and held. NOT_RUN: an unbound step stopped it. */
+export type ScenarioVerdict = "PASS" | "FAIL" | "HEALTHY_ONLY" | "NOT_RUN";
+
 export interface RunScenarioResult {
   scenario: string;
-  verdict: "PASS" | "FAIL";
+  verdict: ScenarioVerdict;
   /** 0-based index of the failing step (FAIL only). */
   failedStep?: number;
   diff?: string;
   observation?: RunRecord["observation"];
+  /** HEALTHY_ONLY: the seed step that did not run, its class and why. */
+  seedNotRun?: { step: number; class: string; reason: string };
+  /** NOT_RUN: what stopped the scenario (a step index, or null for a scenario-level precondition such as an env fixture) and why. */
+  notRun?: { step: number | null; verb: string; reason: string };
 }
 
 const DURATION_RE = /^(\d+)(ms|s|m|h)?$/;
@@ -73,6 +96,7 @@ export async function runValidatedScenario(
   scenario: ValidatedScenario,
   deps: ScenarioRunnerDeps,
 ): Promise<RunScenarioResult> {
+  let seedNotRun: RunScenarioResult["seedNotRun"];
   for (let i = 0; i < scenario.steps.length; i++) {
     const step = scenario.steps[i]!;
     const verb = Object.keys(step)[0]!;
@@ -86,7 +110,18 @@ export async function runValidatedScenario(
 
     // Action verb.
     const seat = typeof value === "string" ? value : (value as { seat?: string } | null)?.seat;
-    const res = await deps.runAction(verb, value, seat);
+    let res: ActionResult;
+    try {
+      res = await deps.runAction(verb, value, seat);
+    } catch (error) {
+      if (!(error instanceof UnboundActionError)) throw error;
+      if (verb === "seed_regression") {
+        const regressionClass = (value as { class?: unknown } | null)?.class;
+        seedNotRun = { step: i, class: typeof regressionClass === "string" ? regressionClass : "", reason: error.reason };
+        continue;
+      }
+      return notRunResult(scenario.scenario, { step: i, verb, reason: error.reason }, deps);
+    }
     // workspaces-o9o.29: `up: { fails: { contains } }` expects the launch to fail, saying `contains` in its output.
     const expectedFailure = verb === "up" ? upFailureExpected(value) : null;
     if (expectedFailure !== null) {
@@ -104,9 +139,23 @@ export async function runValidatedScenario(
     }
   }
 
+  if (seedNotRun) {
+    deps.appendRecord?.({ scenario: scenario.scenario, verdict: "HEALTHY_ONLY", seedNotRun });
+    return { scenario: scenario.scenario, verdict: "HEALTHY_ONLY", seedNotRun };
+  }
   const rec: RunRecord = { scenario: scenario.scenario, verdict: "PASS" };
   deps.appendRecord?.(rec);
   return { scenario: scenario.scenario, verdict: "PASS" };
+}
+
+/** A NOT_RUN result and its run-record row (workspaces-o9o.132). */
+export function notRunResult(
+  scenario: string,
+  notRun: NonNullable<RunScenarioResult["notRun"]>,
+  deps: Pick<ScenarioRunnerDeps, "appendRecord">,
+): RunScenarioResult {
+  deps.appendRecord?.({ scenario, verdict: "NOT_RUN", notRun });
+  return { scenario, verdict: "NOT_RUN", notRun };
 }
 
 /** The text an `up` expected to fail must report (`up: { fails: { contains } }`), or null when it is expected to succeed. */
