@@ -366,12 +366,14 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
   describe("a Claude Code seat: remote_control and ask_in_modal", () => {
     const rcLine = "        remote_control: true\n";
     const askLine = "        ask_in_modal: true\n";
-    function claudeSeat(rigName: string, retained: { rc?: boolean; ask?: boolean; cm?: boolean } = {}) {
+    function claudeSeat(rigName: string, retained: { rc?: boolean; ask?: boolean; cm?: boolean; home?: string } = {}) {
       const rig = rigRepo.createRig(rigName);
       rigRepo.setRigSpecSource(rig.id, specPath);
       const cwd = join(root, `ws-${rigName}`);
       mkdirSync(cwd, { recursive: true });
       const node = rigRepo.addNode(rig.id, "verify.ops", { runtime: "claude-code", cwd, agentRef: "local:agents/ops", profile: "default",
+        // workspaces-o9o.123 round 2: a code_mode seat needs its own claude_config_dir — set one when the test turns code_mode on.
+        ...(retained.home ? { claudeConfigDir: retained.home } : {}),
         ...(retained.rc ? { remoteControl: true } : {}), ...(retained.ask ? { askInModal: true } : {}), ...(retained.cm ? { codeMode: true } : {}) });
       new SessionRegistry(db).registerSession(node.id, `verify-ops@${rigName}`);
       return { rig, node, ref: `verify-ops@${rigName}` };
@@ -419,9 +421,9 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
     });
 
     // workspaces-o9o.123: how the CoS turns Code Mode on for a running builder seat after adding code_mode to its spec member.
-    it("--yes writes code_mode, and the next launch reads it; nothing relaunched", async () => {
+    it("--yes writes code_mode on a seat that has its own home, and the next launch reads it; nothing relaunched", async () => {
       writeSpec("        code_mode: true\n        claude_config_dir: ~/.claude-seats/impl\n", "claude-code");
-      const s = claudeSeat("eztrack");
+      const s = claudeSeat("eztrack", { home: "~/.claude-seats/impl" });   // the node already has its own Claude home (set-claude-home)
       const dry = await apply(s.ref);
       expect(dry.ok && dry.fields).toContainEqual({ field: "code_mode", retained: [], spec: ["true"], changed: true });
       const result = await apply(s.ref, { yes: true, actor: "jim@host", reason: "builders run in Code Mode" });
@@ -447,6 +449,20 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       const result = await apply(s.ref, { yes: true, actor: "jim@host" });
       expect(result.ok).toBe(false);
       expect(JSON.stringify(result)).toMatch(/code_mode: requires the member's own claude_config_dir/);
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: false, askInModal: false, codeMode: false });
+      expect(tmuxCalls).toEqual([]);
+    });
+
+    // workspaces-o9o.123 round 2 (verify-sec2 F1): the spec member declares BOTH code_mode and claude_config_dir (so the spec load
+    // passes), but apply-spec does NOT apply claude_config_dir — so if the NODE has no home of its own, enabling code_mode is refused.
+    it("refuses code_mode when the node has no claude_config_dir, even though the spec member declares one (apply-spec does not set the home)", async () => {
+      writeSpec("        code_mode: true\n        claude_config_dir: ~/.claude-seats/impl\n", "claude-code");
+      const s = claudeSeat("eztrack");   // the NODE has no home of its own
+      const result = await apply(s.ref, { yes: true, actor: "jim@host", reason: "turn code mode on" });
+      expect(result.ok).toBe(false);
+      expect(result.ok ? "" : result.code).toBe("apply_spec_code_mode_needs_home");
+      expect(JSON.stringify(result)).toMatch(/has no per-seat Claude home.*apply-spec does not set claude_config_dir/);
+      expect(JSON.stringify(result)).toMatch(/rig seat set-claude-home/);
       expect(claudeOf(s.node.id)).toEqual({ remoteControl: false, askInModal: false, codeMode: false });
       expect(tmuxCalls).toEqual([]);
     });

@@ -382,6 +382,27 @@ describe("SeatLifecycleService.setClaudeHome", () => {
     expect(rigRepo.getNodeClaudeConfigDir(node.id)).toBeNull();
   });
 
+  // workspaces-o9o.123 round 2 (verify-sec2 F1): clearing the home of a code_mode seat would strand the invariant (Code Mode's answer
+  // has nowhere to live), so --clear is refused for a code_mode seat; a non-code_mode seat clears as before.
+  it("refuses to clear the home of a code_mode seat, naming code_mode and the way out; a non-code_mode seat still clears", async () => {
+    const userHome = scratch("ccd-user-");
+    process.env.HOME = userHome;
+    fs.mkdirSync(path.join(userHome, ".claude-cm"));
+    const { node, sessionName } = seat("dev.cm");
+    await service.setClaudeHome({ seatRef: sessionName, dir: "~/.claude-cm/", reason: "cel" });
+    rigRepo.setNodeCodeMode(node.id, true);                         // the seat now runs Code Mode
+    const refused = await service.setClaudeHome({ seatRef: sessionName, dir: null, reason: "clearing" });
+    expect(refused).toMatchObject({ ok: false, code: "code_mode_needs_home" });
+    expect(JSON.stringify(refused)).toMatch(/Code Mode \(code_mode\)/);
+    expect(JSON.stringify(refused)).toMatch(/code_mode: false/);
+    expect(rigRepo.getNodeClaudeConfigDir(node.id)).toBe(path.join(userHome, ".claude-cm"));   // home untouched
+    // Control: with Code Mode off, the same clear succeeds.
+    rigRepo.setNodeCodeMode(node.id, false);
+    const cleared = await service.setClaudeHome({ seatRef: sessionName, dir: null, reason: "clearing" });
+    expect(cleared).toMatchObject({ ok: true, to: null, changed: true });
+    expect(rigRepo.getNodeClaudeConfigDir(node.id)).toBeNull();
+  });
+
   it("refuses the default home, a relative path, a missing reason and a non-Claude seat, writing nothing", async () => {
     const userHome = scratch("ccd-user-");
     process.env.HOME = userHome;

@@ -1,5 +1,6 @@
 import { readDeclaredMcpServer, readTrustedSeatSpec, type TrustedSeatSpecFailureKind, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
 import { claudeConfigDirFindings, claudeConfigDirLaunchRefusal, claudeHomeNoModelFinding, daemonHomeForClaudeConfigDir, normalizeClaudeConfigDir } from "./claude-config-dir.js";
+import { CODE_MODE_REQUIRES_OWN_HOME } from "./claude-code-mode.js";
 import { validatePiRetainedMemberFields } from "./rigspec-schema.js";
 import { diffRetainedClaudeFields, diffRetainedPiFields, diffSeatIdentity, envNameChanges, specClaudeFields, specRetainedFields, type IdentityFieldDiff, type RetainedFieldDiff, type RetainedFieldName, type RetainedPiFields } from "./seat-spec-apply.js";
 import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
@@ -157,6 +158,7 @@ export interface SeatRefusal {
     | "apply_spec_unsupported_runtime" | "apply_spec_runtime_mismatch" | "apply_spec_seat_undeclared" | "apply_spec_invalid_spec_file"
     | "apply_spec_source_unrecorded" | "apply_spec_source_unavailable" | "apply_spec_source_untrusted"
     | "apply_spec_file_unavailable" | "apply_spec_file_untrusted" | "apply_spec_rig_mismatch" | "apply_spec_fields_refused" | "apply_spec_not_saved"
+    | "apply_spec_code_mode_needs_home" | "code_mode_needs_home"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -490,6 +492,11 @@ export class SeatLifecycleService {
     const columnPresent = this.db.prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'claude_config_dir'").get() !== undefined;
     if (!columnPresent) return { ok: false, code: "claude_home_unavailable", message: "This daemon's database has no per-seat Claude home (checked: nodes.claude_config_dir column); nothing was saved." };
     const from = this.rigRepo.getNodeClaudeConfigDir(seat.nodeId);
+    // workspaces-o9o.123 round 2 (verify-sec2 F1): clearing the home of a code_mode seat would strand the invariant (Code Mode's answer
+    // has nowhere to live), so it is refused. Turn Code Mode off first (apply-spec with code_mode: false).
+    if (to === null && from !== null && this.rigRepo.getNodeClaudeRetainedFields(seat.nodeId).codeMode) {
+      return { ok: false, code: "code_mode_needs_home", message: `Seat "${input.seatRef}" runs Code Mode (code_mode), so its Claude home cannot be cleared: ${CODE_MODE_REQUIRES_OWN_HOME}. Turn Code Mode off first with \`rig seat apply-spec\` and code_mode: false.` };
+    }
     let changed = false;
     if (from !== to) {
       let persisted: PersistedEvent | null = null;
@@ -741,6 +748,11 @@ export class SeatLifecycleService {
       // remote_control, ask_in_modal and code_mode have no rule beyond the spec load's (a boolean, claude-code only, no ask_in_modal in
       // the kernel rig, no code_mode beside remote_control), and readTrustedSeatSpec has already validated the whole spec with it.
       const spec = specClaudeFields(member);
+      // workspaces-o9o.123 round 2 (verify-sec2 F1): apply-spec does NOT set claude_config_dir (that is rig seat set-claude-home), so it
+      // refuses enabling code_mode on a node that has no home of its own — the invariant must hold here too, not only at spec load.
+      if (spec.codeMode && this.rigRepo.getNodeClaudeConfigDir(seat.nodeId) === null) {
+        return { ok: false, code: "apply_spec_code_mode_needs_home", message: `The spec ${specPath} enables code_mode on seat ${seat.logicalId}, which has no per-seat Claude home. apply-spec does not set claude_config_dir, so nothing was changed: ${CODE_MODE_REQUIRES_OWN_HOME}.` };
+      }
       fields = diffRetainedClaudeFields(this.rigRepo.getNodeClaudeRetainedFields(seat.nodeId), spec);
       write = () => this.rigRepo.setNodeClaudeRetainedFields(seat.nodeId, spec);
     } else {

@@ -13,6 +13,14 @@
 /** The variable Claude Code reads (code.claude.com/docs/en/code-mode). */
 export const CLAUDE_CODE_MODE_ENV = "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE";
 
+// workspaces-o9o.123 round 2 (verify-sec2 F1): a seat may run Code Mode only with its OWN claude_config_dir, because OpenRig records
+// Code Mode's one-time answer there and nowhere else. The invariant holds at EVERY mutation of the pair, not only at spec load:
+// the spec schema refuses `code_mode: true` without `claude_config_dir`; `rig seat apply-spec` refuses enabling code_mode on a node with
+// no home (it does not set the home — that is `rig seat set-claude-home`); and `rig seat set-claude-home --clear` refuses to clear the
+// home of a code_mode seat. This message names the way out.
+export const CODE_MODE_REQUIRES_OWN_HOME =
+  "a seat cannot run Code Mode without its own claude_config_dir (OpenRig records Code Mode's one-time answer only in a seat's own Claude home); set one with `rig seat set-claude-home <seat> --dir <path>`, or turn Code Mode off (code_mode: false)";
+
 /** The .claude.json keys that record the one-time Code Mode answer: both are written when it is answered "Yes", and the picker shows
  *  again unless both are true (measured on Claude Code 2.1.327, launch only: either key alone still showed it, the two together did not). */
 export const CODE_MODE_ACCEPTED_KEYS: readonly string[] = ["codeModeCaveatsAcceptedV1", "codeModeAutoModeCaveatAcceptedV1"];
