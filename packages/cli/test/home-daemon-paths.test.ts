@@ -56,6 +56,16 @@ describe("o9o.181: the one resolver", () => {
     expect(resolveHomeDaemon({ configStore: broken, userHome })).toEqual({ kind: "configured", host: "127.0.0.1", port: 7433 });
   });
 
+  it("a port source that says configured while the config itself cannot be read: still no daemon for a non-default home", () => {
+    // Reaches the resolver's unreadable-config branch (the row above stops earlier, at "nothing is configured"): the env names
+    // a port, but resolving the config throws (a corrupt config.json beside OPENRIG_PORT). Never the built-in 7433.
+    const halfBroken = {
+      resolve: () => { throw new Error("config.json: unexpected token"); },
+      resolveWithSource: (_key: string) => ({ value: 28202, source: "env" as const, defaultValue: 7433 }),
+    };
+    expect(resolveHomeDaemon({ configStore: halfBroken }).kind).toBe("none");
+  });
+
   it("start: a non-default home needs a port of its own; a configured port or an explicit --port is enough; a host is not", () => {
     expect(homeBindRefusal()).toMatch(/names no daemon port of its own.*never starts a daemon on, or probes, the default port/);
     expect(homeBindRefusal({ explicitPort: true })).toBeNull();
