@@ -232,8 +232,8 @@ export function ProjectGraphicsPreview() {
   const headingId = useId();
   return (
     <div className="paper-grid min-h-full p-8">
-      {/* workspaces-o9o.156: the shell's <main> scrolls here and nothing on this page can take focus, so the gallery is a region named
-          by its heading and focusable: a keyboard user reaches it with Tab and scrolls <main> with the arrow keys from there. */}
+      {/* workspaces-o9o.156: the shell's main element scrolls here and nothing on this page can take focus, so the gallery is a region
+          named by its heading and focusable: a keyboard user reaches it with Tab and scrolls the page with the arrow keys from there. */}
       <div role="region" aria-labelledby={headingId} tabIndex={0} className="mx-auto max-w-7xl space-y-8">
         <header className="border border-outline-variant bg-surface-lowest/60 p-4 font-mono backdrop-blur-sm hard-shadow">
           <div className="text-[10px] uppercase tracking-[0.18em] text-on-surface-variant">
