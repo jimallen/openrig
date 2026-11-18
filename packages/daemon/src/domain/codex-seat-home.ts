@@ -365,7 +365,8 @@ async function seatAuthLinkRefusal(credentialFiles: CredentialFileReader, source
   if (!destVerdict.ok && destVerdict.problem !== "missing") return new CredentialFileRefusedError(dest, destVerdict.problem, destVerdict.message);
   // "missing" is an absent name, or a dangling link (its target is gone): a dangling link is still judged by where it points.
   if (!destVerdict.ok && pointsAt !== null && pointsAt !== source) return wrongLink(pointsAt);
-  if (destVerdict.ok) return null;
+  // The shared login is judged ITSELF, whatever the destination verdict (Jim, via the CoS 17:47Z): a seat link that resolves to the
+  // same real file as a shared auth.json which is itself a symlink would otherwise pass. A link at the shared path refuses.
   const sourceVerdict = credentialFiles.inspect(source, CODEX_AUTH_POLICY);
   if (!sourceVerdict.ok && sourceVerdict.problem !== "missing") {
     return new CredentialFileRefusedError(source, sourceVerdict.problem, `not linking the seat to the shared Codex login: ${sourceVerdict.message}`);

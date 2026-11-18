@@ -13,6 +13,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { TmuxAdapter, type TmuxResult } from "../src/adapters/tmux.js";
 import { codexSeatHomePath, ensureCodexSeatHome } from "../src/domain/codex-seat-home.js";
+import { deriveSessionName } from "../src/domain/session-name.js";
 import { linkPiOperatorLogin } from "../src/adapters/pi-operator-login.js";
 import { nodeCredentialFileReader, readCredentialFile } from "../src/adapters/node-credential-file-reader.js";
 import { TERMINAL_TOKEN_POLICY } from "../src/domain/credential-file.js";
@@ -47,6 +48,33 @@ describe("(a) a refused shared Codex login stops the launch: no session is creat
     const result = await launcher.launchNode(rig.id, "verify-qa");
     expect(result).toMatchObject({ ok: false, code: "seat_credential_refused" });
     if (!result.ok) expect(result.message).toMatch(/auth\.json.*chmod 600/);
+    expect(tmux.created).toEqual([]);
+  });
+});
+
+describe("Jim's edge (CoS 17:47Z): the shared CODEX_HOME/auth.json is judged itself, whatever the seat's link resolves to", () => {
+  it("NodeLauncher: a shared auth.json that is a symlink (to a safe 0600 file) refuses the launch even when the seat already links to it", async () => {
+    const codex = nodePath.join(dir, "codex");
+    fs.mkdirSync(codex, { mode: 0o700 });
+    const safe = nodePath.join(dir, "safe-login.json");
+    put(safe, '{"note":"login"}', 0o600);
+    fs.symlinkSync(safe, nodePath.join(codex, "auth.json"));
+    const openrigHome = nodePath.join(dir, "openrig");
+    const seatHome = codexSeatHomePath(openrigHome, deriveSessionName("refusal-rig", "verify-qa"));
+    fs.mkdirSync(seatHome, { recursive: true });
+    fs.symlinkSync(nodePath.join(codex, "auth.json"), nodePath.join(seatHome, "auth.json"));
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const rig = rigRepo.createRig("refusal-rig");
+    rigRepo.addNode(rig.id, "verify-qa", { role: "qa", runtime: "codex" });
+    const tmux = new CountingTmux();
+    const launcher = new NodeLauncher({
+      db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: tmux,
+      sessionEnv: { OPENRIG_HOME: openrigHome, CODEX_HOME: codex }, credentialFiles: nodeCredentialFileReader,
+    });
+    const result = await launcher.launchNode(rig.id, "verify-qa");
+    expect(result).toMatchObject({ ok: false, code: "seat_credential_refused" });
+    if (!result.ok) expect(result.message).toMatch(/auth\.json.*symbolic link/);
     expect(tmux.created).toEqual([]);
   });
 });
