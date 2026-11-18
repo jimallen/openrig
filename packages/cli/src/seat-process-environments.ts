@@ -6,15 +6,24 @@ import type { SeatProcess } from "./seat-path-head.js";
 
 export type { SeatProcess } from "./seat-path-head.js";
 
+/** Where to read. No options is the whole host: every process under /proc, which only rig doctor and rig setup ask for. A test passes
+ *  its own procRoot (a fixture tree) or its own pids (workspaces-o9o.185: a test never reads another process's environment). */
+export interface SeatProcessReadOptions {
+  procRoot?: string;
+  pids?: readonly number[];
+}
+
 /** Every readable process carrying OPENRIG_SESSION_NAME, with its OPENRIG_HOME and its PATH split in order; null where /proc cannot be read. */
-export function readSeatProcesses(): SeatProcess[] | null {
-  if (process.platform !== "linux" || !existsSync("/proc/self/environ")) return null;
+export function readSeatProcesses(options: SeatProcessReadOptions = {}): SeatProcess[] | null {
+  const procRoot = options.procRoot ?? "/proc";
+  if (options.procRoot === undefined && (process.platform !== "linux" || !existsSync("/proc/self/environ"))) return null;
   const found: SeatProcess[] = [];
-  for (const name of readdirSync("/proc")) {
+  const names = options.pids ? options.pids.map(String) : readdirSync(procRoot);
+  for (const name of names) {
     if (!/^\d+$/.test(name)) continue;
     let raw: string;
     try {
-      raw = readFileSync(`/proc/${name}/environ`, "utf8");
+      raw = readFileSync(`${procRoot}/${name}/environ`, "utf8");
     } catch {
       continue; // gone, or not this user's
     }

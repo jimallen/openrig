@@ -7,6 +7,7 @@ import { shellQuote } from "../cross-host-executor.js";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { runDoctorChecks, type DoctorDeps } from "./doctor.js";
+import { readSeatProcesses, type SeatProcess } from "../seat-process-environments.js";
 import { resolveDaemonPath } from "../daemon-lifecycle.js";
 import { ConfigStore } from "../config-store.js";
 import { HC_TESTED_VERSION, buildHcHostFailure, probeHcInstall } from "../tmux-health.js";
@@ -48,6 +49,8 @@ export interface SetupResult {
 
 export interface SetupDeps {
   exec: (cmd: string, opts?: { timeoutMs?: number }) => string;
+  /** The seat processes for setup's doctor verification (rig setup passes the /proc reader). Required, as on DoctorDeps: workspaces-o9o.185. */
+  readSeatProcesses: () => SeatProcess[] | null;
   readFile: (path: string) => string | null;
   writeFile: (path: string, content: string) => void;
   exists: (path: string) => boolean;
@@ -123,6 +126,7 @@ export function defaultDeps(): SetupDeps {
     writeFile: (p: string, c: string) => writeFileSync(p, c, "utf-8"),
     exists: (p: string) => existsSync(p),
     mkdirp: (p: string) => mkdirSync(p, { recursive: true }),
+    readSeatProcesses: () => readSeatProcesses(),
   };
 }
 
@@ -527,7 +531,7 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
   return { profile, platform, ready, steps, runtimeConfig, ...(verification ? { verification } : {}) };
 }
 
-function buildDefaultDoctorDeps(setupDeps: SetupDeps): DoctorDeps {
+export function buildDefaultDoctorDeps(setupDeps: SetupDeps): DoctorDeps {
   const platform = setupDeps.platform ?? process.platform;
   const baseDir = path.dirname(path.dirname(fileURLToPath(new URL(import.meta.url))));
   return {
@@ -549,6 +553,7 @@ function buildDefaultDoctorDeps(setupDeps: SetupDeps): DoctorDeps {
     mkdirp: (p: string) => mkdirSync(p, { recursive: true }),
     checkWritable: (p: string) => accessSync(p, constants.W_OK),
     fetch: globalThis.fetch,
+    readSeatProcesses: setupDeps.readSeatProcesses,
   };
 }
 

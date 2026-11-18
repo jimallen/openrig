@@ -2,13 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { createProgram } from "../src/index.js";
 import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
-import { setupCommand, runSetup, goldenPathNextSteps, permissionPolicyMenuLines, parseSetupProviders, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
+import { buildDefaultDoctorDeps, setupCommand, runSetup, goldenPathNextSteps, permissionPolicyMenuLines, parseSetupProviders, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
 import type { DoctorDeps } from "../src/commands/doctor.js";
 import { HC_TESTED_VERSION } from "../src/tmux-health.js";
 import { stubConfigStore } from "./helpers/stub-config-store.js";
 
 function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
   return {
+    readSeatProcesses: () => [],  // workspaces-o9o.185: no test reads this host's processes
     exec: (cmd: string) => {
       if (cmd === "herdr --version") return "herdr 0.9.3\n";
       if (cmd === "brew --version") return "Homebrew 4.0\n";
@@ -82,6 +83,13 @@ describe("rig setup", () => {
     const program = createProgram();
     const setupCmd = program.commands.find((c) => c.name() === "setup");
     expect(setupCmd).toBeDefined();
+  });
+
+  // workspaces-o9o.185: rig setup's doctor verification reads seats through the reader setup was given, never one of its own.
+  it("setup's doctor verification uses the seat reader setup was given", () => {
+    const readSeatProcesses = vi.fn(() => []);
+    const doctorDeps = buildDefaultDoctorDeps(makeDeps({ readSeatProcesses }));
+    expect(doctorDeps.readSeatProcesses).toBe(readSeatProcesses);
   });
 
   it("--dry-run --json returns structured plan with core profile and expected step ids", async () => {
@@ -449,6 +457,7 @@ describe("rig setup", () => {
   it("result includes verification section with real doctor check names including the async hc_core check", async () => {
     const deps = makeDeps();
     const doctorDeps: DoctorDeps = {
+      readSeatProcesses: () => [],  // workspaces-o9o.185: no test reads this host's processes
       exists: () => true,
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {
@@ -497,6 +506,7 @@ describe("rig setup", () => {
     // All tools present, all doctor checks pass
     const deps = makeDeps();
     const doctorDeps: DoctorDeps = {
+      readSeatProcesses: () => [],  // workspaces-o9o.185: no test reads this host's processes
       exists: () => true,
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {

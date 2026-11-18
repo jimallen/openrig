@@ -22,6 +22,7 @@ afterEach(() => {
 
 function fixture(failed: boolean): SetupDeps {
   return {
+    readSeatProcesses: () => [],  // workspaces-o9o.185: no test reads this host's processes
     platform: "darwin",
     env: {},
     exec: vi.fn((cmd: string) => {

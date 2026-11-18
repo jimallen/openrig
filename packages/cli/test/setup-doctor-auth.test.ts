@@ -28,7 +28,7 @@ function fixture(options: {
     if (command === "hc --version") return `hc ${HC_TESTED_VERSION}`;
     return "available";
   };
-  const common = { exec, readFile, exists: () => true, platform: "linux" as const, env: { HOME: "/fixture", CODEX_HOME: "/fixture/codex", ...options.env } };
+  const common = { exec, readFile, exists: () => true, platform: "linux" as const, readSeatProcesses: () => [], env: { HOME: "/fixture", CODEX_HOME: "/fixture/codex", ...options.env } };
   return {
     commands,
     setup: { ...common, writeFile: vi.fn(), mkdirp: vi.fn() },

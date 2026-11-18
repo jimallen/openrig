@@ -12,7 +12,7 @@ function fixture(installed = false) {
     if (cmd === "hc --version") return "hc 0.1.16";
     return "available";
   });
-  const deps: SetupDeps = { platform: "darwin", env: { HOME: "/fixture" }, exec, exists: () => false, readFile: () => null, writeFile: vi.fn(), mkdirp: vi.fn() };
+  const deps: SetupDeps = { readSeatProcesses: () => [], platform: "darwin", env: { HOME: "/fixture" }, exec, exists: () => false, readFile: () => null, writeFile: vi.fn(), mkdirp: vi.fn() };
   return { deps, exec };
 }
 

@@ -73,8 +73,9 @@ export interface DoctorDeps {
   localHostFacts?: LocalHostFacts;
   /** workspaces-o9o.11: ask the daemon for its host rows; null when it cannot be reached. */
   fetchHostRows?: (input: { seatShell: boolean; runtimes: string[] | null }) => Promise<{ status: number; rows: DoctorCheck[] | null } | null>;
-  /** workspaces-o9o.106: the seat processes on this host with their PATH (default: /proc on Linux; null elsewhere). */
-  readSeatProcesses?: () => SeatProcess[] | null;
+  /** workspaces-o9o.106: the seat processes on this host with their PATH (rig doctor and rig setup pass the /proc reader; null elsewhere).
+   *  Required (workspaces-o9o.185): the real reader reads every live process's environment, so no default can reach it unasked. */
+  readSeatProcesses: () => SeatProcess[] | null;
   /** The OpenRig instance whose seats that row judges (default: this CLI's OPENRIG_HOME). */
   openrigHome?: string;
   /** workspaces-o9o.151: the Slack connector's configured secrets file. Set, it adds the slack_secrets row (rig doctor sets it;
@@ -210,7 +211,7 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
   // 6b. Vendored plugin folders the daemon ignores (workspaces-o9o.44). Read from disk, so it answers while the daemon is down.
   checks.push(buildVendoredPluginsCheck(deps.pluginsDir ?? getDefaultOpenRigPath("plugins")));
   // workspaces-o9o.106: a seat launched before the seat PATH head runs without the git worktree shim until relaunched.
-  checks.push(buildSeatPathHeadCheck((deps.readSeatProcesses ?? readSeatProcesses)(), deps.openrigHome ?? getOpenRigHome()));
+  checks.push(buildSeatPathHeadCheck(deps.readSeatProcesses(), deps.openrigHome ?? getOpenRigHome()));
 
   // 7. Port availability (async) — daemon already running on that port counts as OK.
   // OPR.0.4.7 slice-05 item-4b: resolve the daemon host+port ONCE from config and use
@@ -398,6 +399,7 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         checkWritable: (dirPath: string) => accessSync(dirPath, constants.W_OK),
         specPath: opts.spec ? path.resolve(opts.spec) : undefined,
         slackSecretsEnvFile: () => configuredSlackSecretsEnvFile(getOpenRigHome()),
+        readSeatProcesses: () => readSeatProcesses(),
         // Returns null on ANY failure to read the live side. The conformance check treats null as
         // "unknown" and skips — an unreachable daemon must never read as a matching topology.
         fetchHostRows: async (input) => {

@@ -88,7 +88,8 @@ describe.runIf(process.platform === "linux")("o9o.106: the Linux reader takes ea
     child = spawn("/bin/sleep", ["30"], { env: { OPENRIG_SESSION_NAME: session, OPENRIG_HOME: "/tmp/o9o106-home", PATH: [...HEAD, "/usr/bin"].join(":") }, stdio: "ignore" });
     await new Promise((r) => setTimeout(r, 200));
     const { readSeatProcesses } = await import("../src/seat-process-environments.js");
-    const mine = (readSeatProcesses() ?? []).filter((p) => p.session === session);
+    // workspaces-o9o.185: only this test's own child is read, never the rest of the host.
+    const mine = readSeatProcesses({ pids: [child.pid!] }) ?? [];
     expect(mine).toEqual([{ pid: child.pid, session, home: "/tmp/o9o106-home", path: [...HEAD, "/usr/bin"] }]);
   });
 });

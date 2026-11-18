@@ -41,6 +41,7 @@ const swallowed = {
 
 function makeDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
+    readSeatProcesses: () => [],  // workspaces-o9o.185: no test reads this host's processes
     exists: () => true,
     baseDir: "/install/cli/dist",
     readFile: () => null,

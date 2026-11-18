@@ -27,6 +27,7 @@ pods:
 
 function baseDeps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
+    readSeatProcesses: () => [],  // workspaces-o9o.185: no test reads this host's processes
     exists: () => true,
     baseDir: "/tmp",
     readFile: () => null,

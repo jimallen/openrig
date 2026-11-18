@@ -6,7 +6,9 @@ import { Command } from "commander";
 import { doctorCommand } from "../src/commands/doctor.js";
 import { HC_TESTED_VERSION } from "../src/tmux-health.js";
 
-const fixture = vi.hoisted(() => ({ home: "", exec: vi.fn() }));
+const fixture = vi.hoisted(() => ({ home: "", exec: vi.fn(), readSeatProcesses: vi.fn(() => []) }));
+// workspaces-o9o.185: rig doctor's own deps read every process on the host; here that reader is a fake, and a row checks doctor asks it.
+vi.mock("../src/seat-process-environments.js", () => ({ readSeatProcesses: fixture.readSeatProcesses }));
 vi.mock("node:child_process", async () => ({ ...await vi.importActual("node:child_process"), execSync: fixture.exec }));
 vi.mock("../src/config-store.js", () => ({ ConfigStore: class {
   resolve() { return { daemon: { host: "127.0.0.1", port: 1 }, db: { path: path.join(fixture.home, "db.sqlite") }, transcripts: { enabled: false, path: path.join(fixture.home, "transcripts") } }; }
@@ -50,6 +52,8 @@ describe("doctor default executor", () => {
     const body = JSON.parse(vi.mocked(console.log).mock.calls[0]![0] as string);
     expect(body.checks.find((check: { name: string }) => check.name === "hc").status).toBe("pass");
     expect(body.checks.find((check: { name: string }) => check.name === "hc_core").status).toBe("pass");
+    // rig doctor's own deps ask for the whole host (no root, no pids): the scan a test is never allowed to make (workspaces-o9o.185).
+    expect(fixture.readSeatProcesses.mock.calls).toEqual([[]]);
     const calls = fixture.exec.mock.calls as Array<[string, { timeout?: number }]>;
     const prior = calls.filter(([command]) => !/^(claude|codex) /.test(command));
     expect(prior.some(([command]) => command === "hc --version")).toBe(true);
