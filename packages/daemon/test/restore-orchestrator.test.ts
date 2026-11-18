@@ -4514,22 +4514,21 @@ describe("RestoreOrchestrator", () => {
       restorePolicy: "resume_if_possible",
     });
 
-    // Claude resume succeeds for first call, fails for second
-    let callCount = 0;
+    // workspaces-o9o.168: which seat resumes is decided by the seat, not by call order (agent-fail used to get the first call and
+    // with it the success), and the native lineage lets a resume that succeeded count as resumed, so each outcome is visible.
     const claudeResume = stubOf<ClaudeResumeAdapter>({
       canResume: vi.fn((type: string | null) => type === "claude_name"),
-      resume: vi.fn(async (): Promise<ResumeResult> => {
-        callCount++;
-        if (callCount === 1) return { ok: true };
-        return { ok: false, code: "resume_failed", message: "Session expired" };   // a real ResumeResult failure (o9o.162)
-      }),
+      resume: vi.fn(async (sessionName: string): Promise<ResumeResult> => sessionName.includes("agent-ok")
+        ? { ok: true }
+        : { ok: false, code: "resume_failed", message: "Session expired" }),   // a real ResumeResult failure (o9o.162)
     });
 
-    const orchestrator = createOrchestrator({ claude: claudeResume });
+    const orchestrator = createOrchestrator({ claude: claudeResume, listProcesses: nativeLineage("claude-code", "token-123") });
     const result = await orchestrator.restore(snapshot.id);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(Object.fromEntries(result.result.nodes.map((n) => [n.logicalId, n.status]))).toEqual({ "agent-ok": "resumed", "agent-fail": "awaiting-decision" });
     expect(result.result.rigResult).toBe("partially_restored");
   });
 
@@ -4546,11 +4545,13 @@ describe("RestoreOrchestrator", () => {
     });
 
     const claudeResume = mockClaudeResume({ ok: false, code: "resume_failed", message: "All expired" });   // a real ResumeResult failure (o9o.162)
-    const orchestrator = createOrchestrator({ claude: claudeResume });
+    // workspaces-o9o.168: with the native lineage a resume that succeeded counts as resumed, so only the failure keeps every seat waiting.
+    const orchestrator = createOrchestrator({ claude: claudeResume, listProcesses: nativeLineage("claude-code", "token-123") });
     const result = await orchestrator.restore(snapshot.id);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.result.nodes.map((n) => n.status)).toEqual(["awaiting-decision", "awaiting-decision"]);
     expect(result.result.rigResult).toBe("partially_restored");
   });
 
