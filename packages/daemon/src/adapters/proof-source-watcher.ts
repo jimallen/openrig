@@ -10,6 +10,17 @@
 // inotify descriptors. Nothing is written into the watched tree. Other platforms give no such evidence; unwatched()
 // returns null there.
 //
+// workspaces-o9o.133: on Linux this adapter no longer uses Node's recursive fs.watch. Node's recursive arming differs by
+// version (measured on sparky, 2026-11-18: 22.23.4 watches every directory and every file; 24.22.3 and 26.13.1 directories
+// only), and on 24 and 26 a directory added while no inotify watch can be added makes Node rethrow ENOSPC from its own
+// internal handler (node:internal/fs/recursive_watch:177), an uncaught exception that killed the process. So the adapter
+// arms one NON-recursive watch per real directory itself (a directory's inotify watch delivers the events of the entries
+// in it, so an ordinary file needs no watch of its own), plus one per symlink (the kernel follows it to its target,
+// whose edits no directory watch here would see; a symlinked directory is not descended, as Node did not), arms each
+// directory or symlink that appears, drops its watches when it goes (so one re-created is armed again), and catches every
+// failure itself: an entry it cannot arm is left unwatched, never thrown, and the evidence below names it. Evidence and
+// behaviour are then the same on every Node version: directories and symlinks.
+//
 // An entry that is gone (removed since the listing, or a dangling symlink: ENOENT, ENOTDIR) cannot be watched by
 // anyone and is skipped. Any other failure to check an entry, list a directory or read /proc (EACCES behind a
 // non-searchable directory, an unreadable /proc) means the evidence is incomplete, so unwatched() throws and the domain
@@ -77,8 +88,9 @@ function watchedKeys(procSelf: string): Set<string> {
 }
 
 /**
- * `dir` and, when recursive, every entry under it, as Node's recursive watch arms them: it descends real directories
- * only. A directory gone since it was listed is skipped; one that cannot be listed throws.
+ * `dir` and, when recursive, every real directory and every symlink under it: what the Linux tree watch below arms (it
+ * descends real directories only, never a symlinked one). A directory gone since it was listed is skipped; one that
+ * cannot be listed throws.
  */
 function watchedEntries(dir: string, recursive: boolean): string[] {
   const found = [dir];
@@ -91,6 +103,7 @@ function watchedEntries(dir: string, recursive: boolean): string[] {
       throw new Error(`could not list ${current}: ${errorCode(err)}`);
     }
     for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const path = nodePath.join(current, entry.name);
       found.push(path);
       if (entry.isDirectory()) pending.push(path);
@@ -99,10 +112,72 @@ function watchedEntries(dir: string, recursive: boolean): string[] {
   return found;
 }
 
+/**
+ * workspaces-o9o.133: a recursive watch on Linux, built from one non-recursive fs.watch per real directory and per
+ * symlink. An entry that cannot be armed (or whose watch reports an error) is left unwatched and a change is reported,
+ * so the domain reads the evidence, which names it; nothing here throws past the caller. A directory that appears is
+ * armed with its subtree, a symlink by itself; one that goes has its watches dropped, so it is armed again if it comes back.
+ */
+function linuxTreeWatch(root: string, onChange: (filename: string | null) => void): SourceTreeWatch {
+  const watches = new Map<string, fs.FSWatcher>();
+  let closed = false;
+  const drop = (dir: string) => {
+    for (const [path, w] of watches) {
+      if (path === dir || path.startsWith(dir + nodePath.sep)) { w.close(); watches.delete(path); }
+    }
+  };
+  const kindOf = (path: string): "directory" | "symlink" | "other" => {
+    try { const st = fs.lstatSync(path); return st.isDirectory() ? "directory" : st.isSymbolicLink() ? "symlink" : "other"; } catch { return "other"; }
+  };
+  const arm = (dir: string) => {
+    if (closed || watches.has(dir)) return;
+    let w: fs.FSWatcher;
+    try {
+      w = fs.watch(dir, { persistent: false }, (event, filename) => {
+        const name = filename === null ? null : filename.toString();
+        if (name === null) { armTree(dir); onChange(null); return; }
+        const child = nodePath.join(dir, name);
+        if (event === "rename") {
+          const kind = kindOf(child);
+          if (kind === "directory") armTree(child);
+          else if (kind === "symlink") arm(child);
+          else drop(child);
+        }
+        onChange(nodePath.relative(root, child));
+      });
+    } catch {
+      // Not armed (ENOSPC, EACCES, gone): the evidence names this directory; report a change so it is read now.
+      onChange(null);
+      return;
+    }
+    w.on("error", () => {
+      // A failed watch is dropped, never thrown; the evidence then names the directory.
+      w.close();
+      if (watches.get(dir) === w) watches.delete(dir);
+      onChange(null);
+    });
+    watches.set(dir, w);
+  };
+  const armTree = (dir: string) => {
+    for (const path of watchedEntriesBestEffort(dir)) arm(path);
+  };
+  armTree(root);
+  return { close: () => { closed = true; for (const w of watches.values()) w.close(); watches.clear(); } };
+}
+
+/** watchedEntries(dir, true) for arming: a directory that cannot be listed is still armed itself and not descended. */
+function watchedEntriesBestEffort(dir: string): string[] {
+  try { return watchedEntries(dir, true); } catch { return isGoneOrMissing(dir) ? [] : [dir]; }
+}
+function isGoneOrMissing(path: string): boolean {
+  try { fs.lstatSync(path); return false; } catch (err) { return isGone(err); }
+}
+
 /** `procSelf` is where this process's /proc entries are read; tests point it elsewhere to prove a failed read fails closed. */
 export function nodeSourceTreeWatcher(platform: NodeJS.Platform = process.platform, procSelf = "/proc/self"): SourceTreeWatcher {
   return {
     watch(dir, options, onChange, onError): SourceTreeWatch {
+      if (platform === "linux" && options.recursive) return linuxTreeWatch(dir, onChange);
       const watcher = fs.watch(dir, { recursive: options.recursive, persistent: false }, (_event, filename) => {
         onChange(filename === null ? null : filename.toString());
       });

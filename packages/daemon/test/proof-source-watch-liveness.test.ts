@@ -70,11 +70,22 @@ describe.skipIf(!runnable)("o9o.38: source watch liveness under inotify exhausti
     expect(seen.cause).toMatch(/no live watch on 1 of the watched path\(s\) .*first: .*02-beta$/);
   });
 
-  it("a file whose own watch failed, with every directory watched, is a gap: its edits would give no event", () => {
-    // Root, 4 directories, then 01-alpha/SPEC.md is armed last: with 5 allowed only the file's watch fails.
+  // workspaces-o9o.133 rewrote this row. It pinned Node 22's recursive watch, which armed a watch on each file and needed
+  // it for that file's edits ("a file whose own watch failed, with every directory watched, is a gap"). The adapter now
+  // arms one non-recursive watch per directory itself on every Node version, and a directory's watch delivers its files'
+  // edits, so a file needs no watch of its own: with the root and its 4 directories armed (5 allowed), the claim holds.
+  it("a file needs no watch of its own: with every directory armed, the claim is watching", () => {
     const seen = observe(missionsRoot("legacy", true), 5);
+    expect(seen.state).toBe("watching");
+  });
+
+  // workspaces-o9o.133: on Node 24 and 26, Node's own recursive watch rethrew ENOSPC for a directory added while no watch
+  // could be armed (node:internal/fs/recursive_watch:177), an uncaught exception that killed the process. The child must
+  // stay alive (observe throws on any non-zero exit) and the claim must name the directory it could not watch.
+  it("a directory added while no watch can be armed leaves the process alive and the claim unavailable, naming it", () => {
+    const seen = observe(missionsRoot("legacy"), 5, "trial/slices/03-gamma/proof");
     expect(seen.state).toBe("unavailable");
-    expect(seen.cause).toMatch(/first: .*SPEC\.md$/);
+    expect(seen.cause).toMatch(/no live watch on 2 of the watched path\(s\) .*first: .*03-gamma$/);
   });
 
   it("names the cause when nothing could be watched", () => {

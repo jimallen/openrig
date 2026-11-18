@@ -62,6 +62,21 @@ describe.skipIf(process.platform !== "linux" || process.getuid?.() === 0)("o9o.3
     });
   });
 
+  // workspaces-o9o.133: the adapter arms each directory itself, so one removed and created again must be armed again
+  // (a stale entry for the old watch would leave the new directory unwatched, and the evidence would name it).
+  it("a directory removed and created again is armed again: the claim returns to watching", async () => {
+    const h = host();
+    const slice = path.join(h.missions, "trial", "slices", "01-alpha");
+    const w = watch(h.missions);
+    expect(w.observation().state).toBe("watching");
+    fs.rmSync(slice, { recursive: true, force: true });
+    await new Promise((r) => setTimeout(r, 300));
+    fs.mkdirSync(path.join(slice, "proof"), { recursive: true });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(nodeSourceTreeWatcher().unwatched(path.dirname(h.missions), true), "every directory holds a live watch").toEqual([]);
+    await expect.poll(() => w.observation().state, { timeout: 5000 }).toBe("watching");
+  });
+
   it("positive control: a dangling symlink is gone, not unreadable, and the claim stays watching", () => {
     const h = host();
     fs.symlinkSync(path.join(h.root, "outside", "nothing-here.md"), path.join(h.workspace, "dangling.md"));
