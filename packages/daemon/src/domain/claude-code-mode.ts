@@ -21,6 +21,22 @@ export function claudeCodeModeEnv(codeMode: boolean | undefined): Record<string,
   return codeMode === true ? { [CLAUDE_CODE_MODE_ENV]: "1" } : {};
 }
 
+/** The one read this module makes of the daemon's database, named here so the domain does not import the driver. */
+export interface CodeModeDb {
+  prepare(sql: string): { get(...params: unknown[]): unknown };
+}
+
+/** Whether the seat a session belongs to declared code_mode (nodes.code_mode = 1). The resumability probe asks it per session. A read
+ *  that fails (a database without the column, say) is "not declared", which types the probe line as before. */
+export function seatCodeModeOfSession(db: CodeModeDb, sessionId: string): boolean {
+  try {
+    const row = db.prepare("SELECT n.code_mode AS v FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.id = ?").get(sessionId) as { v: number | null } | undefined;
+    return row?.v === 1;
+  } catch {
+    return false;
+  }
+}
+
 /** The shell prefix for a typed launch line, with its trailing space; "" when the seat does not declare it. */
 export function claudeCodeModePrefix(codeMode: boolean | undefined): string {
   return codeMode === true ? `${CLAUDE_CODE_MODE_ENV}=1 ` : "";

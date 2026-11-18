@@ -5,6 +5,9 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { claudeProbeCommand } from "../src/domain/resume-metadata-refresher.js";
+import { seatCodeModeOfSession } from "../src/domain/claude-code-mode.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
 import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import { GUARD_FLAG } from "./helpers/claude-guard.js";
@@ -231,5 +234,22 @@ describe("the resumability probe types the variable for a code_mode seat", () =>
   it("other seats: unchanged", () => {
     expect(claudeProbeCommand("tok-1", SEAT, null)).toBe(`claude --resume 'tok-1' --name='${SEAT}'`);
     expect(claudeProbeCommand("tok-1", SEAT, null, false)).toBe(`claude --resume 'tok-1' --name='${SEAT}'`);
+  });
+});
+
+describe("the probe's per-session read of the seat's declaration (seatCodeModeOfSession, wired in startup.ts)", () => {
+  it("true for a session of a code_mode seat, false for any other session, an unknown one, or a database without the column", () => {
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const sessions = new SessionRegistry(db);
+    const rig = rigRepo.createRig("r");
+    const on = sessions.registerSession(rigRepo.addNode(rig.id, "dev.on", { runtime: "claude-code", codeMode: true }).id, "dev-on@r");
+    const off = sessions.registerSession(rigRepo.addNode(rig.id, "dev.off", { runtime: "claude-code" }).id, "dev-off@r");
+    expect(seatCodeModeOfSession(db, on.id)).toBe(true);
+    expect(seatCodeModeOfSession(db, off.id)).toBe(false);
+    expect(seatCodeModeOfSession(db, "no-such-session")).toBe(false);
+    db.exec("ALTER TABLE nodes DROP COLUMN code_mode");
+    expect(seatCodeModeOfSession(db, on.id)).toBe(false);
+    db.close();
   });
 });

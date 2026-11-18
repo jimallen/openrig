@@ -1,3 +1,4 @@
+import { seatCodeModeOfSession } from "./domain/claude-code-mode.js";
 import { fileURLToPath } from "node:url";
 import { CodexRolloutOpenCalls } from "./adapters/codex-rollout-open-calls.js";
 import { wirePostRestartPrompt, type PostRestartWiringOptions } from "./domain/post-restart-wiring.js";
@@ -1444,13 +1445,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const claudeProcessStartedAt = (sessionName: string) => observeClaudePaneStartedAt({ target: sessionName, tmux: tmuxAdapter });
   const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome,
     seatClaudeConfigDir: (session) => seatClaudeHomes.launchedHomeOfSession(session.sessionId),
-    // workspaces-o9o.123: a code_mode seat's probe resume sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1. A read that fails is "not declared".
-    seatCodeMode: (session) => {
-      try {
-        const row = db.prepare("SELECT n.code_mode AS v FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.id = ?").get(session.sessionId) as { v: number | null } | undefined;
-        return row?.v === 1;
-      } catch { return false; }
-    } });
+    // workspaces-o9o.123: a code_mode seat's probe resume sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1.
+    seatCodeMode: (session) => seatCodeModeOfSession(db, session.sessionId) });
   const sessionReconciler = new SessionReconciler({
     db, rigRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
     // OPR.0.4.3.20 FR-3 — adoption-boundary resume-token capture deps
