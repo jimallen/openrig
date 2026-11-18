@@ -2,8 +2,9 @@
 
 A rig bundle is a whole OpenRig team that someone else can install and run: the rig spec, its agents, their
 instructions and skills, and its documentation. This guide walks through building one, checking it, sharing it as a
-link, installing from a link, and submitting it to openrig.dev/rigs. The last section is a block of instructions you can
-give your agent to build one for you.
+link, and installing from a link. This build is a private fork: it never sends a bundle to the upstream catalogue at
+openrig.dev/rigs (see section 6). The last section is a block of instructions you can give your agent to build one for
+you.
 
 For every flag, see the [rig bundle reference](rig-bundle.md); for the file formats, see
 [bundle formats](bundle-formats.md). This guide doesn't repeat them.
@@ -100,32 +101,14 @@ On openrig.dev/rigs, pick a configuration and the page gives you one command to 
 configuration from GitHub. Every run prints the configuration it used, as its configuration ID.
 
 The page also shows how much each configuration has been tested, with a label such as Tested by OpenRig, Partly tested
-or **"Not tested by OpenRig"**, which means exactly that. You're welcome to run it and tell us how it went.
+or **"Not tested by OpenRig"**, which means exactly that.
 
-## 6. Submit it to openrig.dev/rigs
+## 6. The upstream catalogue is not for this fork
 
-Open a pull request to [mvschwarz/openrig-registry](https://github.com/mvschwarz/openrig-registry) that adds one file,
-`registry/submissions/<your-team>.yaml`, with three fields: `repository` (your GitHub repository URL), `folder` (the
-folder holding `rig.yaml`, or `.` for the repository root) and `ref` (a branch, tag or commit). No pull requests? Open
-an issue there with the same three things. A maintainer then writes the full entry, in the `registry-entry.v1` format
-defined in the [bundle formats reference](bundle-formats.md), with the parts only a review can produce, such as the
-pinned commit and each configuration's package digest.
-
-Rig names are unique on the site. If `registry/<your-team>.yaml` already exists, openrig-registry's registry check says the name is taken;
-choose a distinct one, for example `<taken-name>-<your-name>`.
-
-What happens next:
-- a maintainer pins your link to an exact commit, runs the same check, and reads everything your bundle gives to an
-  agent;
-- if it's useful to people running OpenRig and meets the standard, it's listed, and appears on the site
-  automatically. The listing shows the commit we reviewed, the date, and "Review is not a security audit". Listing
-  doesn't mean OpenRig tested it;
-- if it isn't listed, you get a short reply saying why.
-
-**Updating:** push your change, then open a pull request that updates your entry. The site keeps showing the reviewed
-commit until the update is merged.
-
-**Removing:** ask in an issue or a pull request, and we'll take it down.
+openrig.dev/rigs and its registry belong to the upstream project, and nothing from this fork goes upstream: this fork
+files no registry entry, pull request or issue there. To share a bundle, share its pinned link (section 5) directly. To
+publish anything beyond that, ask the openrig rig's Chief of Staff first (`rig send exec-cos@openrig`, with
+`--host <id>` from `rig host list` on another host).
 
 ---
 

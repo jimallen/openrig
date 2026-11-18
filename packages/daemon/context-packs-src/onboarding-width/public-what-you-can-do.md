@@ -409,7 +409,8 @@ not have to tear one down to change it, and you rarely have to start from nothin
 because someone lost work once.
 
 When your user says OpenRig isn't working, start with **`rig context get help`**: the one help guide for the installed
-version, from checking the environment to a useful report to the OpenRig team.
+version, from checking the environment to a report to this fork's own intake (the openrig rig's Chief of Staff), never
+upstream.
 
 - **`rig start`** — the box rebooted and everything is gone: bring the whole topology back in one
   move, rather than hand-restoring rig by rig. Selected-rig recovery now demands positive runtime

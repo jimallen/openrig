@@ -3,9 +3,8 @@
 > **Experimental in 0.6.0.** The manifest (`rig slack manifest`) and this setup guide are new
 > and have not been confirmed against a real app creation. The Slack connector itself and its
 > `setup`, `verify`, `enable`, `disable` and `status` commands are not experimental. If a step
-> here does not match what Slack shows you, please
-> [open an issue](https://github.com/mvschwarz/openrig/issues/new/choose) or send a pull request
-> ([CONTRIBUTING.md](../../CONTRIBUTING.md)).
+> here does not match what Slack shows you, report it to this fork's own intake, never upstream
+> ([Report a problem on this fork](help.md#report-a-problem-on-this-fork)).
 
 OpenRig's Slack connector talks to a Slack app that you create in your own workspace. OpenRig
 ships the app's manifest; it does not host an app, run an install endpoint, or publish anything

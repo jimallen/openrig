@@ -4,14 +4,15 @@ This page is for an agent whose user says OpenRig isn't working. It is the one p
 copy installed with OpenRig matches that installed version. Read it with `rig context get help`, which needs a running
 daemon. If `rig` won't run or the daemon is down, open `daemon/docs/reference/help.md` inside the installed
 `@openrig/cli` package (under `npm root -g`); in the source
-repository the same file is `docs/reference/help.md`. The same text is online at
-[openrig.dev/help/agents](https://www.openrig.dev/help/agents), next to the ways people can contact OpenRig support.
+repository the same file is `docs/reference/help.md`. This build is a private fork: the upstream project's version of
+this page, online at [openrig.dev/help/agents](https://www.openrig.dev/help/agents), is a read-only reference, and its
+contact routes are the upstream project's, never this fork's.
 
 Each guide this page links to is installed too. Load one only when you need it, with the `rig context get` address
 shown beside its link where there is one; every linked file also sits beside this one in `daemon/docs/reference/`.
 
 Start with what your user was trying to do. Try the next useful step, check the result, and if you can't finish,
-prepare a message to OpenRig support at **hello@openrig.dev**. Your user doesn't need a GitHub account.
+report it to this fork's own intake, never upstream: see [Report a problem on this fork](#report-a-problem-on-this-fork).
 
 ## Start with the environment
 
@@ -153,7 +154,8 @@ issue's current status; a similar symptom alone is not a diagnosis.
 - Kernel seats fail within a second of the first start: `rig preflight` names a missing or mismatched hc. The check and
   recovery are in [Incomplete setup and restart](getting-started.md#incomplete-setup-and-restart).
 
-For everything else, search [open issues](https://github.com/mvschwarz/openrig/issues).
+For everything else, search [open issues](https://github.com/mvschwarz/openrig/issues). Upstream issues are read-only
+references to known problems: read them for an explanation, and post nothing there.
 
 ## Try a fix, then check the original problem
 
@@ -169,16 +171,27 @@ completing useful work.
 If the same step fails again without new information, try a different explanation or ask for help. Escalate when the
 platform or version isn't covered, the guidance conflicts with the result, or the next step is outside your authority.
 
-## Prepare a support request
+## Report a problem on this fork
 
-Email **hello@openrig.dev**. Prepare the message for your user to review. Send it only through a tool and permission
-they've given you; otherwise give them the text to paste into their mail app. Use the same thread for follow-ups.
+This build is a private fork, and nothing from it goes to the upstream project: file nothing with it (no issue,
+discussion or pull request on any `github.com/mvschwarz` repository) and send nothing to its support address. Report to
+the fork's own intake. Until the fork's shared intake database exists, send the report to the openrig rig's Chief of
+Staff, who files it:
+
+```sh
+rig send exec-cos@openrig --file - <<'EOF'
+<the report>
+EOF
+```
+
+From a host other than the one running the openrig rig (sparky), add `--host <id>`, with that host's id from
+`rig host list`. Prepare the report for your user to review before you send it, and send follow-ups the same way.
 
 Keep the useful details. Remove credentials, private project content and unrelated logs. A short error excerpt is
 usually more useful than a full transcript. The template is optional; ordinary questions are welcome too.
 
 ```text
-Subject: OpenRig help — [short description]
+OpenRig problem — [short description]
 
 Goal:
 OpenRig version (or attempted version if install failed):
@@ -194,6 +207,5 @@ The specific question I still need help with:
 
 Missing details are fine. Say what you know and what you still need to collect.
 
-If your user prefers a public conversation, use [GitHub Q&A](https://github.com/mvschwarz/openrig/discussions/categories/q-a).
-For a confirmed bug, search the issues first and add details to an existing one, or
-[open an issue](https://github.com/mvschwarz/openrig/issues/new/choose).
+For a confirmed bug, search the upstream issues first and name a matching one in your report, as a reference; the
+fork's Chief of Staff decides what happens next.

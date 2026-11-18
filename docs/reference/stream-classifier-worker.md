@@ -3,9 +3,8 @@
 > **Experimental in 0.6.0, optional and off by default.** The Jev classification path and shadow
 > capture may be incomplete or not work, and no accuracy or production-reliability claim is
 > made. OpenRig's delivery, watchdog and routing decisions do not use their output. If they do
-> not behave as described here, please
-> [open an issue](https://github.com/mvschwarz/openrig/issues/new/choose) or send a pull request
-> ([CONTRIBUTING.md](../../CONTRIBUTING.md)).
+> not behave as described here, report it to this fork's own intake, never upstream
+> ([Report a problem on this fork](help.md#report-a-problem-on-this-fork)).
 
 This source provides a bounded receiver for one real classifier occupant. It does
 not start an agent, register a watchdog job, or enable capture by default.

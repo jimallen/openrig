@@ -42,9 +42,9 @@ Operators who provide equivalent guidance can disable both with
 ## When OpenRig itself misbehaves
 
 Run `rig context get help`. It is the one help guide, matched to your installed version: check the environment, find
-the next step, compare known problems, and send the OpenRig team a useful report when you are still stuck. If `rig`
-itself won't run, read `daemon/docs/reference/help.md` inside the installed `@openrig/cli` package (under
-`npm root -g`), or the same text at https://www.openrig.dev/help/agents.
+the next step, compare known problems, and, when you are still stuck, report to this fork's own intake (the openrig
+rig's Chief of Staff), never upstream. If `rig` itself won't run, read `daemon/docs/reference/help.md` inside the
+installed `@openrig/cli` package (under `npm root -g`).
 
 ## What this file is not
 
