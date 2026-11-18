@@ -3,7 +3,7 @@
 // (src/index.ts under tsx) with process.version spoofed by a preload, or with better-sqlite3 made to fail by NODE_OPTIONS.
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +94,37 @@ describe("nothing loads the binding before the gate", () => {
     expect(all.length).toBeGreaterThan(100);
     const STATIC = /^\s*import\s+(?!type\b)[^;]*?\bfrom\s+["']better-sqlite3["']/m;
     expect(all.filter((f) => STATIC.test(readFileSync(f, "utf8"))).map((f) => f.slice(SRC.length))).toEqual([]);
+  });
+});
+
+describe("the public bin wrapper runs the gate before the front door and the program", () => {
+  // run() imports <package>/dist/index.js beside the invoked bin: a fake package records which of its exports are called.
+  const roots: string[] = [];
+  afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }); });
+  async function runWith(gatePasses: boolean): Promise<string[]> {
+    const root = mkdtempSync(join(tmpdir(), "o9o180-bin-"));
+    roots.push(root);
+    mkdirSync(join(root, "bin"));
+    mkdirSync(join(root, "dist"));
+    writeFileSync(join(root, "bin", "rig"), "");
+    writeFileSync(join(root, "dist", "index.js"), [
+      "const calls = (globalThis.__o9o180Calls ??= []);",
+      `export async function checkNodeRuntime() { calls.push("gate"); return ${gatePasses}; }`,
+      "export async function runFrontDoor() { calls.push('frontDoor'); return false; }",
+      "export function createProgram() { calls.push('createProgram'); return {}; }",
+      "export async function runProgram() { calls.push('runProgram'); return 0; }",
+    ].join("\n"));
+    const calls: string[] = [];
+    (globalThis as { __o9o180Calls?: string[] }).__o9o180Calls = calls;
+    const { run } = await import("../src/bin-wrapper.js");
+    await run(["node", join(root, "bin", "rig"), "ps"]);
+    return calls;
+  }
+  it("a refused gate stops the wrapper before the front door or any command", async () => {
+    expect(await runWith(false)).toEqual(["gate"]);
+  });
+  it("a passed gate goes on to the front door and the program", async () => {
+    expect(await runWith(true)).toEqual(["gate", "frontDoor", "createProgram", "runProgram"]);
   });
 });
 
