@@ -1192,19 +1192,20 @@ function backgroundRefusal(kind) {
 // reader cannot follow (an unterminated literal) is refused when it carries a risk signal, and allowed otherwise, like check()'s rule.
 
 // The API rules run on a NORMALISED projection of the code (apiScanText), where every property access is written as a dotted member
-// chain — `x["binding"]`, `x?.binding`, `x["binding"]`, `globalThis["process"]["binding"]` all fold to `...process.binding` — and
-// string CONTENTS are blanked (so a log line naming process.binding is not a refusal), except a module specifier, which is kept so a
-// require/import of child_process is still caught. A name assembled at run time (globalThis["child_" + "process"]) stays a residual.
+// chain — `x["binding"]`, `x?.binding`, `x[("binding")]`, `globalThis["process"]["binding"]` all fold to `...process.binding` — escapes
+// are decoded, optional chaining is flattened, and parentheses are dropped. The rules are REFERENCE-based (CoS ruling, o9o.131 round 2),
+// not call-shape based: ANY reference to the global `Function` value is refused however used (bare, `typeof`, via globalThis/self/window,
+// an alias even if unused, `.call`/`.apply`/`.bind`, `Reflect.construct(Function, …)`), as is ANY `.constructor` access, and
+// `process.binding`/`process.dlopen` in any spelling. String CONTENTS are not scanned (a log line naming one is not a refusal), except a
+// module specifier, so `require("child_process")` is still caught. A name assembled at run time (globalThis["child_"+"process"]) stays a residual.
 const REPL_API_RULES = [
   { re: /child_process/, name: "child_process" },
   { re: /\bprocess\s*\.\s*binding\b/, name: "process.binding" },
   { re: /\bprocess\s*\.\s*dlopen\b/, name: "process.dlopen" },
-  { re: /\bconstructor\s*(?:\.\s*constructor\b|\(|\[)|\.\s*constructor\s*\(/, name: "a Function-constructor chain (.constructor)" },
-  { re: /\bnew\s+Function\b|(?<![\w$.])Function\s*\(/, name: "the Function constructor" },
+  { re: /\.\s*constructor\b/, name: "a .constructor access (reaches the Function constructor)" },
+  { re: /\bFunction\b/, name: "the Function constructor" },
 ];
-// A direct alias of the Function constructor, then called: `const F = Function; ... F(` (also `= globalThis.Function` / `= self.Function`).
-const FUNCTION_ALIAS_DECL = /(?:^|[^\w$.])(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:(?:globalThis|self)\s*\.\s*)?Function\b/g;
-const REPL_RISK_RE = /\b(?:rig|pkill|killall|kill)\b|child_process|constructor|\bFunction\b|\bprocess\b|\bglobalThis\b|\bself\b|\brequire\b|\bimport\b/;
+const REPL_RISK_RE = /\b(?:rig|pkill|killall|kill)\b|child_process|constructor|\bFunction\b|\bprocess\b|\bglobalThis\b|\bself\b|\bwindow\b|\bReflect\b|\brequire\b|\bimport\b/;
 const JS_EXPR = "$OPENRIG_JS_EXPR";
 
 /** Decode the \uXXXX, \u{XXXX} and \xXX escapes that spell identifier characters (process -> process, binding -> binding). */
@@ -1223,8 +1224,6 @@ function apiScanText(code) {
   let i = 0;
   let prev = "";
   const regexAfter = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "<", ">", "~", "^"]);
-  const rtrim = () => { out = out.replace(/\s+$/, ""); };
-  const lastSig = () => { const t = out.replace(/\s+$/, ""); return t[t.length - 1] ?? ""; };
   // Whether out's tail is a module-specifier position: require( / import( / ... from
   const specifierHere = () => /(?:\brequire|\bimport)\s*\(\s*$/.test(out) || /(?:\bfrom|\bimport)\s*$/.test(out);
   while (i < code.length) {
@@ -1244,15 +1243,23 @@ function apiScanText(code) {
       i = j + 1; while (i < code.length && /[a-z]/i.test(code[i])) i++;
       out += " "; prev = "x"; continue;
     }
-    if (c === "?" && code[i + 1] === ".") { out += "."; i += 2; prev = "."; continue; }  // optional chaining -> member access
+    if (c === "?" && code[i + 1] === ".") {
+      // Optional chaining. `?.[` / `?.(` are a bracket access / call: drop the `?.` so the member folds the same as a plain `[`;
+      // `?.name` is a member access: emit the dot.
+      const after = code[i + 2];
+      if (after === "[" || after === "(") { i += 2; continue; }
+      out += "."; i += 2; prev = "."; continue;
+    }
     if (c === "'" || c === '"' || c === "`") {
       const lit = readStringOrTemplate(code, i);
       if (!lit) return { ok: false, text: out };
-      // A computed member key: `X[ "name" ]` with the string the sole content of the brackets, no interpolation.
-      let nextSig = lit.end; while (nextSig < code.length && /\s/.test(code[nextSig])) nextSig++;
-      if (lastSig() === "[" && code[nextSig] === "]" && !lit.hasExpr) {
-        rtrim(); out = out.replace(/\[$/, "");           // drop the opening bracket we already wrote
-        out += "." + lit.raw;                            // fold to a dotted member (escapes decoded at the end)
+      // A computed member key: `X[ "name" ]`, or a parenthesised key `X[ ("name") ]` / `X?.[ ("name") ]`, the string the sole content of
+      // the brackets with no interpolation. The parens before the string and the `)` after it are tolerated and dropped in the fold.
+      let nextSig = lit.end; while (nextSig < code.length && (/\s/.test(code[nextSig]) || code[nextSig] === ")")) nextSig++;
+      const openKey = /\[\s*\(*\s*$/.test(out.replace(/\s+$/, ""));   // out tail is `[` or `[(` (any depth of parens)
+      if (openKey && code[nextSig] === "]" && !lit.hasExpr) {
+        out = out.replace(/\s+$/, "").replace(/\[\s*\(*\s*$/, "");     // drop the opening bracket and any `(` we already wrote
+        out += "." + lit.raw;                                          // fold to a dotted member (escapes decoded at the end)
         i = nextSig + 1; prev = "x"; continue;
       }
       if (specifierHere() && !lit.hasExpr) { out += ` ${lit.raw} `; i = lit.end; prev = "x"; continue; }  // module specifier: kept
@@ -1411,19 +1418,12 @@ function checkReplCode(code, options) {
     const violations = [{ kind: "unparseable-repl", command: null }];
     return { block: true, violations, reason: replRefusal(violations) };
   }
+  // Reference-based (o9o.131 round 2): any reference to the global Function value, any .constructor access, and process.binding/dlopen
+  // in any spelling are refused however used — an alias that is never called is still a reference, so the rules match the normalised
+  // text directly, with no separate call-shape check.
   for (const rule of REPL_API_RULES) {
     if (rule.re.test(api.text)) {
       const violations = [{ kind: "repl-api", command: rule.name }];
-      return { block: true, violations, reason: replRefusal(violations) };
-    }
-  }
-  // A direct alias of the Function constructor, then called: `const F = Function; F(` .
-  FUNCTION_ALIAS_DECL.lastIndex = 0;
-  let m;
-  while ((m = FUNCTION_ALIAS_DECL.exec(api.text))) {
-    const alias = m[1];
-    if (new RegExp(`(?<![\\w$.])${alias}\\s*\\(`).test(api.text)) {
-      const violations = [{ kind: "repl-api", command: "the Function constructor" }];
       return { block: true, violations, reason: replRefusal(violations) };
     }
   }

@@ -55,6 +55,23 @@ const DENY: Array<{ note: string; code: string; kind: RegExp }> = [
   { note: "child_process as a require module specifier (a specifier IS scanned)", code: `const cp = require("child_process"); cp.execSync("ls")`, kind: /^repl-api$/ },
   { note: "child_process as an import specifier with node: prefix", code: `const cp = await import("node:child_process")`, kind: /^repl-api$/ },
   { note: "process.binding reached from inside a template ${...} expression", code: `const t = ${BT}x${"$"}{process.binding("y")}${BT}; t`, kind: /^repl-api$/ },
+  // workspaces-o9o.131 round 2 (CoS reference-based ruling): ANY reference to the global Function value is refused, however used; any
+  // .constructor access; process.binding/dlopen in any spelling (parenthesised literal keys folded); typeof Function flips to refuse.
+  { note: "bare reference to Function (no call)", code: `const f = Function; f;`, kind: /^repl-api$/ },
+  { note: "typeof Function (a reference)", code: `const t = typeof Function; t`, kind: /^repl-api$/ },
+  { note: "an UNUSED alias of Function", code: `const F = Function; 1 + 1`, kind: /^repl-api$/ },
+  { note: "Function.call(...)()", code: `Function.call(null, "return 1")()`, kind: /^repl-api$/ },
+  { note: "Function.apply(...)()", code: `Function.apply(null, ["return 1"])()`, kind: /^repl-api$/ },
+  { note: "Function.bind(...)()", code: `Function.bind(null, "return 1")()`, kind: /^repl-api$/ },
+  { note: "globalThis['Function']['call'] chain", code: `globalThis["Function"]["call"](null, "return 1")()`, kind: /^repl-api$/ },
+  { note: "window.Function reference", code: `const f = window.Function; f`, kind: /^repl-api$/ },
+  { note: "Reflect.construct(Function, [...])", code: `Reflect.construct(Function, ["return 1"])()`, kind: /^repl-api$/ },
+  { note: "a bare .constructor access (no call)", code: `const c = ({}).constructor; c`, kind: /^repl-api$/ },
+  { note: "this.constructor access", code: `function f() { return this.constructor; }`, kind: /^repl-api$/ },
+  { note: "process.binding via a parenthesised literal key", code: `process[("binding")]("x")`, kind: /^repl-api$/ },
+  { note: "process.binding via optional-chaining parenthesised key", code: `process?.[("binding")]("x")`, kind: /^repl-api$/ },
+  { note: "process.binding via nested parenthesised keys on globalThis", code: `globalThis[("process")][("binding")]("x")`, kind: /^repl-api$/ },
+  { note: "process.dlopen via a parenthesised key", code: `process[("dlopen")](m, "/x.node")`, kind: /^repl-api$/ },
 ];
 
 const ALLOW: Array<{ note: string; code: string }> = [
@@ -66,7 +83,10 @@ const ALLOW: Array<{ note: string; code: string }> = [
   { note: "a comment that mentions pkill -f and Function(", code: `// never pkill -f, never Function("x")\nawait Bash({ command: "ls" })` },
   { note: "a block comment that names child_process", code: `/* child_process is refused */ await Glob({ pattern: "*.ts" })` },
   { note: "a block comment after a value (where / is division) that names child_process", code: `const n = 2; const m = n /* child_process is refused */ + 1; m` },
-  { note: "identifiers that only contain the words", code: `const myFunction = (x) => x; const constructorName = "a"; myFunction(constructorName); typeof Function` },
+  { note: "identifiers that only contain the words (myFunction, constructorName) — not the global Function", code: `const myFunction = (x) => x; const constructorName = "a"; myFunction(constructorName)` },
+  { note: "a lowercase function keyword and a declaration are not the Function value", code: `function helper(x) { return x + 1; } helper(2)` },
+  { note: "a class constructor METHOD is a definition, not a .constructor access", code: `class Pt { constructor(x) { this.x = x; } } new Pt(1).x` },
+  { note: "an object property named constructor at definition (not an access) — still data unless accessed by .constructor", code: `const o = { value: 1 }; o.value` },
   { note: "a template with interpolations and no command words", code: `const a = 1; const s = ${BT}value ${"$"}{a} of ${"$"}{a + 1}${BT}; s` },
   { note: "a regular expression with a quote in it", code: `const r = /it's/; r.test("it's")` },
   { note: "a division next to strings", code: `const x = 6 / 3; const y = "a"; x + y` },
