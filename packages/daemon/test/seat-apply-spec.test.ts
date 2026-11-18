@@ -420,7 +420,7 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
 
     // workspaces-o9o.123: how the CoS turns Code Mode on for a running builder seat after adding code_mode to its spec member.
     it("--yes writes code_mode, and the next launch reads it; nothing relaunched", async () => {
-      writeSpec("        code_mode: true\n", "claude-code");
+      writeSpec("        code_mode: true\n        claude_config_dir: ~/.claude-seats/impl\n", "claude-code");
       const s = claudeSeat("eztrack");
       const dry = await apply(s.ref);
       expect(dry.ok && dry.fields).toContainEqual({ field: "code_mode", retained: [], spec: ["true"], changed: true });
@@ -439,6 +439,16 @@ describe("rig seat apply-spec: a Pi seat takes its retained spec fields from the
       expect(result.ok).toBe(false);
       expect(JSON.stringify(result)).toMatch(/code_mode: cannot be combined with remote_control/);
       expect(claudeOf(s.node.id)).toEqual({ remoteControl: false, askInModal: false, codeMode: false });
+    });
+
+    it("refuses a spec whose member declares code_mode without its own claude_config_dir, and writes nothing (o9o.123 review)", async () => {
+      writeSpec("        code_mode: true\n", "claude-code");
+      const s = claudeSeat("eztrack");
+      const result = await apply(s.ref, { yes: true, actor: "jim@host" });
+      expect(result.ok).toBe(false);
+      expect(JSON.stringify(result)).toMatch(/code_mode: requires the member's own claude_config_dir/);
+      expect(claudeOf(s.node.id)).toEqual({ remoteControl: false, askInModal: false, codeMode: false });
+      expect(tmuxCalls).toEqual([]);
     });
 
     it("--yes writes remote_control on its own", async () => {

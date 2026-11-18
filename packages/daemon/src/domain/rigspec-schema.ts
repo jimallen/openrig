@@ -659,6 +659,10 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.code_mode: only valid when runtime is "claude-code"`);
     } else if (member["code_mode"] === true && member["remote_control"] === true) {
       errors.push(`${prefix}.code_mode: cannot be combined with remote_control: true (Claude Code turns Code Mode off under Remote Control)`);
+    } else if (member["code_mode"] === true && member["claude_config_dir"] === undefined) {
+      // verify-sec2's review of o9o.123: the launch records Code Mode's one-time answer only in the seat's own Claude home, never the
+      // daemon's default or selected one, so a seat without its own home would stop at the picker.
+      errors.push(`${prefix}.code_mode: requires the member's own claude_config_dir (OpenRig records Code Mode's one-time answer only in a seat's own Claude home)`);
     }
   }
   // A seat's own Claude config home: claude-code only (and the stub runtime, the test double that reports it). The

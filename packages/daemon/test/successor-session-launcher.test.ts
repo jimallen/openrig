@@ -229,6 +229,17 @@ describe("SuccessorSessionLauncher", () => {
     expect((res.warnings ?? []).filter((w) => w.includes("codex per-seat CODEX_HOME seeding failed"))).toHaveLength(1);
   });
 
+  it("o9o.123: the successor launch's own warnings ride the handover result (a Code Mode answer it did not write)", async () => {
+    launchHarness.mockResolvedValueOnce({ ok: true, warnings: ["code_mode: /h/.claude.json already answers codeModeCaveatsAcceptedV1=false"] });
+    const res = await launcher().createSuccessor({
+      node: { id: "node-1", runtime: "codex", cwd: "/w" },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.warnings).toEqual(["code_mode: /h/.claude.json already answers codeModeCaveatsAcceptedV1=false"]);
+  });
+
   it("a healthy codex handover carries no seat-home warning", async () => {
     const res = await launcher().createSuccessor({
       node: { id: "node-1", runtime: "codex", cwd: "/w" },

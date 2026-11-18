@@ -119,7 +119,9 @@ export type HarnessLaunchRecovery = "retry_fresh" | "attention_required";
 // pinned as the one it started, kept even when a later sample saw it replaced (#1077).
 export type HarnessLaunchResult =
   | { ok: true; resumeToken?: string; resumeType?: string; appliedLaunch?: import("./permission-drift.js").AppliedLaunchObservation;
-    launchedProcess?: import("./native-process-lineage.js").ClaudeLaunchedProcess }
+    launchedProcess?: import("./native-process-lineage.js").ClaudeLaunchedProcess;
+    /** Observations that did not stop the launch and the operator should see (workspaces-o9o.123: a Code Mode answer not written). */
+    warnings?: string[] }
   // `evidence` carries the last-N pane lines for `attention_required` outcomes
   // so the failure can flow honest evidence through to RestoreNodeResult's
   // attentionEvidence field. Omitted for non-attention recoveries.

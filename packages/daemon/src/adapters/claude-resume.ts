@@ -48,7 +48,8 @@ interface ClaudeResumeOptions {
   rigBodyGuardScript?: string;
   /** workspaces-o9o.123: records Code Mode's one-time answer in the Claude home a code_mode seat's restore reads (the launch
    *  adapter's ensureCodeModeAccepted). Best effort: a failure is logged and the restore goes ahead. */
-  prepareCodeMode?: (binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }) => void;
+  /** workspaces-o9o.123: records Code Mode's one-time answer in the seat's own Claude home; returns what it did not do, as warnings. */
+  prepareCodeMode?: (binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }) => string[] | void;
 }
 
 export class ClaudeResumeAdapter {
@@ -115,10 +116,12 @@ export class ClaudeResumeAdapter {
         managed = await this.options.claudeManagedLaunch!.prepare({ nodeId: nodeId!, cwd, session: tmuxSessionName }, selectedPermissionMode);
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
+    const codeModeWarnings: string[] = [];
     if (codeMode === true) {
-      try { this.options.prepareCodeMode?.({ nodeId, cwd, permissionMode: selectedPermissionMode }); } catch (err) {
-        console.error(`[openrig] claude code mode bootstrap warning: ${(err as Error).message}`);
+      try { codeModeWarnings.push(...(this.options.prepareCodeMode?.({ nodeId, cwd, permissionMode: selectedPermissionMode }) ?? [])); } catch (err) {
+        codeModeWarnings.push(`code_mode: Code Mode's one-time answer was not checked: ${(err as Error).message}`);
       }
+      for (const warning of codeModeWarnings) console.error(`[openrig] ${warning}`);
     }
     const choice = { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode, ...(askInModal ? { askInModal: true } : {}), nativeInbox:this.options.nativeInboxEnabled?.() ?? false, rigBodyGuardScript: this.options.rigBodyGuardScript };
     const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
@@ -147,7 +150,9 @@ export class ClaudeResumeAdapter {
     // "No conversation found" and exits. Believe it only if Claude is still there after the settle window.
     const held = await holdResumedPoll("claude-code", result, { session: tmuxSessionName, tmux: this.tmux,
       listProcesses: this.options.listProcesses, sleep: this.options.sleep ?? sleep, settleMs: this.options.settleMs });
-    return held.ok ? { ...held, appliedLaunch } : held;
+    if (!held.ok) return held;
+    const warnings = [...codeModeWarnings, ...(held.warnings ?? [])];
+    return { ...held, appliedLaunch, ...(warnings.length > 0 ? { warnings } : {}) };
   }
 
   private async verifyResume(tmuxSessionName: string, resumeToken: string): Promise<ResumeResult> {

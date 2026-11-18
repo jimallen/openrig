@@ -56,13 +56,21 @@ class FakeManagedLaunch extends ClaudeManagedLaunch {
   }
 }
 
-/** An in-memory file system: what the launch wrote, by path. */
-function memFs(initial: Record<string, string> = {}) {
+/** An in-memory file system: what the launch wrote, by path. `links` maps a symbolic link to its target: reads and a plain
+ *  writeFile follow it (as fs.writeFileSync does), lstat reports it, and writeFileNoFollow refuses it (as O_NOFOLLOW does). */
+function memFs(initial: Record<string, string> = {}, links: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial));
+  const link = new Map(Object.entries(links));
+  const follow = (p: string): string => link.get(p) ?? p;
   const ops: ClaudeAdapterFsOps = {
-    readFile: (p: string) => { const v = files.get(p); if (v === undefined) throw new Error(`not found: ${p}`); return v; },
-    writeFile: (p: string, c: string) => { files.set(p, c); },
-    exists: (p: string) => files.has(p),
+    readFile: (p: string) => { const v = files.get(follow(p)); if (v === undefined) throw new Error(`not found: ${p}`); return v; },
+    writeFile: (p: string, c: string) => { files.set(follow(p), c); },
+    writeFileNoFollow: (p: string, c: string) => {
+      if (link.has(p)) throw Object.assign(new Error(`ELOOP: ${p}`), { code: "ELOOP" });
+      files.set(p, c);
+    },
+    exists: (p: string) => files.has(follow(p)) || link.has(p),
+    lstat: (p: string) => link.has(p) ? "symlink" : files.has(p) ? "file" : null,
     mkdirp: () => {}, copyFile: () => {}, listFiles: () => [],
     homedir: "/home/u",
   };
@@ -129,59 +137,157 @@ describe("launchHarness: code_mode sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 on 
   });
 });
 
-describe("launchHarness: a code_mode seat's launch pre-answers Code Mode's one-time picker", () => {
-  const STATE = "/home/u/.claude.json";
+describe("launchHarness: a code_mode seat's launch pre-answers Code Mode's one-time picker, in the seat's own Claude home only", () => {
+  // verify-sec2 (o9o.123 review, temp-home probes at 3068d3590) and the CoS's acceptance: the answer is written only into the seat's
+  // OWN Claude state (nodes.claude_config_dir), never HOME/.claude.json or the daemon-selected one, never through a link, and only
+  // where a key is ABSENT; a present answer that is not true is kept, and the launch says so in a warning naming the file and key.
+  const HOME_STATE = "/home/u/.claude.json";
+  const SEAT_HOME = "/seat-home";
+  const STATE = `${SEAT_HOME}/.claude.json`;
+  const DAEMON_STATE = "/daemon-claude/.claude.json";
+  const seatHomed = () => new FakeManagedLaunch(SEAT_HOME, STATE);
+  const launchWarnings = (r: Awaited<ReturnType<ClaudeCodeAdapter["launchHarness"]>>): string[] => (r.ok ? r.warnings ?? [] : []);
 
-  it("writes both answer keys into the seat's Claude state, keeping every other field", async () => {
+  it("writes both answer keys into the seat's own Claude state, keeping every other field", async () => {
     const { files, ops } = memFs({ [STATE]: JSON.stringify({ hasCompletedOnboarding: true, keep: { a: 1 } }) });
-    await adapterWith(mockTmux(), ops).launchHarness(cm(), { name: SEAT });
+    const result = await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
     expect(JSON.parse(files.get(STATE)!)).toEqual({ hasCompletedOnboarding: true, keep: { a: 1 }, ...ACCEPTED });
+    expect(launchWarnings(result)).toEqual([]);
   });
 
-  it.each(Object.keys(ACCEPTED))("a file holding only one of them gets the other (%s present)", async (present) => {
+  it("a seat home with no state file yet gets one holding just the answer", async () => {
+    const { files, ops } = memFs();
+    await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
+    expect(JSON.parse(files.get(STATE)!)).toEqual(ACCEPTED);
+  });
+
+  it.each(Object.keys(ACCEPTED))("a file holding only one of them, true, gets the other (%s present)", async (present) => {
     const { files, ops } = memFs({ [STATE]: JSON.stringify({ [present]: true }) });
-    await adapterWith(mockTmux(), ops).launchHarness(cm(), { name: SEAT });
+    await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
     expect(JSON.parse(files.get(STATE)!)).toEqual(ACCEPTED);
   });
 
   it("on resume and fork too (a seat whose first Code Mode launch is a handover successor)", async () => {
     for (const opts of [{ resumeToken: "tok-1" }, { forkSource: { kind: "native_id" as const, value: "p" } }]) {
       const { files, ops } = memFs({ [STATE]: "{}" });
-      await adapterWith(mockTmux(), ops).launchHarness(cm(), { name: SEAT, ...opts });
+      await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT, ...opts });
       expect(JSON.parse(files.get(STATE)!)).toEqual(ACCEPTED);
     }
+  });
+
+  it("a managed launch writes into the seat's home too", async () => {
+    const { files, ops } = memFs({ [STATE]: "{}" });
+    await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm({ permissionMode: "bypassPermissions" }), { name: SEAT });
+    expect(JSON.parse(files.get(STATE)!)).toEqual(ACCEPTED);
   });
 
   it("an already-answered file is not rewritten (running Claude processes write it too)", async () => {
     const before = JSON.stringify({ ...ACCEPTED, other: "x" });
     const { files, ops } = memFs({ [STATE]: before });
     const write = vi.spyOn(ops, "writeFile");
-    await adapterWith(mockTmux(), ops).launchHarness(cm(), { name: SEAT });
+    const writeNoFollow = vi.spyOn(ops, "writeFileNoFollow");
+    await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
     expect(files.get(STATE)).toBe(before);
     expect(write).not.toHaveBeenCalled();
+    expect(writeNoFollow).not.toHaveBeenCalled();
   });
 
   it("a seat without code_mode never gets the key (control)", async () => {
     const { files, ops } = memFs({ [STATE]: "{}" });
-    await adapterWith(mockTmux(), ops).launchHarness(binding(), { name: SEAT });
+    await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(binding(), { name: SEAT });
     expect(files.get(STATE)).toBe("{}");
   });
 
-  it("a malformed state file is left as it is, and the launch still goes ahead (the picker then shows; nothing is lost)", async () => {
+  it("a malformed state file is left as it is, the launch goes ahead, and it says so", async () => {
     const { files, ops } = memFs({ [STATE]: "{not json" });
     const tmux = mockTmux();
-    const result = await adapterWith(tmux, ops).launchHarness(cm(), { name: SEAT });
+    const result = await adapterWith(tmux, ops, seatHomed()).launchHarness(cm(), { name: SEAT });
     expect(files.get(STATE)).toBe("{not json");
     expect(result.ok).toBe(true);
     expect(sent(tmux)).toContain(CM);
+    expect(launchWarnings(result).join("\n")).toContain(STATE);
   });
 
-  it("a managed launch writes it into the home that launch selects", async () => {
-    const managedState = "/seat-home/.claude.json";
-    const { files, ops } = memFs({ [managedState]: "{}" });
-    const managed = new FakeManagedLaunch("/seat-home", managedState);
-    await adapterWith(mockTmux(), ops, managed).launchHarness(cm({ permissionMode: "bypassPermissions" }), { name: SEAT });
-    expect(JSON.parse(files.get(managedState)!)).toEqual(ACCEPTED);
+  // (1) A present answer that is not true is the user's: kept, never filled around, and named in a warning.
+  it.each([
+    ["false", { codeModeCaveatsAcceptedV1: false }, "codeModeCaveatsAcceptedV1"],
+    ["false (the other key)", { codeModeAutoModeCaveatAcceptedV1: false }, "codeModeAutoModeCaveatAcceptedV1"],
+    ["a non-boolean", { codeModeCaveatsAcceptedV1: "no" }, "codeModeCaveatsAcceptedV1"],
+  ])("FINDING 1: a present %s answer is kept, the file is not written, and the launch warns naming the file and key", async (_label, state, key) => {
+    const before = JSON.stringify({ ...state, other: 1 });
+    const { files, ops } = memFs({ [STATE]: before });
+    const result = await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
+    expect(files.get(STATE)).toBe(before);
+    expect(result.ok).toBe(true);
+    const warning = launchWarnings(result).join("\n");
+    expect(warning).toContain(STATE);
+    expect(warning).toContain(key);
+  });
+
+  // (2) Never through a link: the seat's state file, or its home, being a symbolic link is refused, and the target is untouched.
+  it("FINDING 2: a symlinked .claude.json in the seat home is refused; its target is not written; the launch warns", async () => {
+    const TARGET = "/elsewhere/shared.json";
+    const { files, ops } = memFs({ [TARGET]: JSON.stringify({ shared: true }) }, { [STATE]: TARGET });
+    const result = await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
+    expect(JSON.parse(files.get(TARGET)!)).toEqual({ shared: true });
+    expect(result.ok).toBe(true);
+    expect(launchWarnings(result).join("\n")).toMatch(new RegExp(`${STATE}.*link|link.*${STATE}`));
+  });
+
+  it("FINDING 2: a seat home that is itself a symbolic link is refused", async () => {
+    const { files, ops } = memFs({}, { [SEAT_HOME]: "/elsewhere" });
+    const result = await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
+    expect([...files.keys()]).toEqual([]);
+    expect(launchWarnings(result).join("\n")).toMatch(/link/);
+  });
+
+  it.each([["neither", ["lstat", "writeFileNoFollow"]], ["no lstat", ["lstat"]], ["no no-follow write", ["writeFileNoFollow"]]])(
+    "FINDING 2: a file system with %s is refused (fail closed), and the warning says why", async (_label, missing) => {
+      const { files, ops } = memFs({ [STATE]: "{}" });
+      const bare: ClaudeAdapterFsOps = { ...ops };
+      for (const key of missing) delete bare[key as "lstat" | "writeFileNoFollow"];
+      const result = await adapterWith(mockTmux(), bare, seatHomed()).launchHarness(cm(), { name: SEAT });
+      expect(files.get(STATE)).toBe("{}");
+      expect(launchWarnings(result)).toEqual([`code_mode: ${STATE} was not written: this file system cannot check for or refuse a symbolic link`]);
+    });
+
+  it("FINDING 2: the write itself never follows a link (a link swapped in after the check is refused by the write)", async () => {
+    const { files, ops } = memFs({ [STATE]: "{}" });
+    const write = vi.spyOn(ops, "writeFile");
+    await adapterWith(mockTmux(), ops, seatHomed()).launchHarness(cm(), { name: SEAT });
+    expect(write).not.toHaveBeenCalled();
+    expect(JSON.parse(files.get(STATE)!)).toEqual(ACCEPTED);
+  });
+
+  // (3) Never the daemon's default or selected home: no per-seat claude_config_dir means nothing is written anywhere.
+  it("FINDING 3: with no per-seat claude_config_dir, neither HOME/.claude.json nor the daemon-selected one is written; the launch warns", async () => {
+    const { files, ops } = memFs({ [HOME_STATE]: "{}", [DAEMON_STATE]: "{}" });
+    const noSeatHome = new FakeManagedLaunch(null, DAEMON_STATE);
+    const result = await adapterWith(mockTmux(), ops, noSeatHome).launchHarness(cm(), { name: SEAT });
+    expect(files.get(HOME_STATE)).toBe("{}");
+    expect(files.get(DAEMON_STATE)).toBe("{}");
+    expect(result.ok).toBe(true);
+    expect(launchWarnings(result).join("\n")).toContain("claude_config_dir");
+  });
+
+  it("FINDING 3: the same with a managed launch (the daemon-selected home is not the seat's)", async () => {
+    const { files, ops } = memFs({ [HOME_STATE]: "{}", [DAEMON_STATE]: "{}" });
+    const noSeatHome = new FakeManagedLaunch(null, DAEMON_STATE);
+    await adapterWith(mockTmux(), ops, noSeatHome).launchHarness(cm({ permissionMode: "bypassPermissions" }), { name: SEAT });
+    expect(files.get(HOME_STATE)).toBe("{}");
+    expect(files.get(DAEMON_STATE)).toBe("{}");
+  });
+
+  it("FINDING 3: with no managed launch at all, HOME/.claude.json is not written", async () => {
+    const { files, ops } = memFs({ [HOME_STATE]: "{}" });
+    await adapterWith(mockTmux(), ops).launchHarness(cm(), { name: SEAT });
+    expect(files.get(HOME_STATE)).toBe("{}");
+  });
+
+  it("the restore seam returns its warnings instead of logging them away", () => {
+    const { ops } = memFs({ [STATE]: JSON.stringify({ codeModeCaveatsAcceptedV1: false }) });
+    const warnings = adapterWith(mockTmux(), ops, seatHomed()).ensureCodeModeAccepted({ nodeId: "n1", cwd: "/project" });
+    expect(warnings.join("\n")).toContain("codeModeCaveatsAcceptedV1");
   });
 });
 
@@ -209,6 +315,13 @@ describe("ClaudeResumeAdapter.resume (the restore path): code_mode is applied on
     error.mockRestore();
     expect(tmux.sendText.mock.calls[0]![1]).toContain(CM);
     expect(result.ok === true || result.code !== "resume_failed").toBe(true);
+  });
+
+  it("restore: the pre-answer's warnings reach the restore result (a kept answer is visible, not only logged)", async () => {
+    const result = await new ClaudeResumeAdapter(mockTmux(), { prepareCodeMode: () => ["code_mode: kept codeModeCaveatsAcceptedV1=false in /seat-home/.claude.json"] })
+      .resume(SEAT, "claude_id", "tok-1", "/repo", undefined, undefined, undefined, "node-7", undefined, undefined, undefined, undefined, undefined, undefined, true);
+    expect(result.ok).toBe(true);
+    expect(result.ok ? result.warnings ?? [] : []).toContain("code_mode: kept codeModeCaveatsAcceptedV1=false in /seat-home/.claude.json");
   });
 
   it.each([[undefined], [false]])("codeMode=%s -> restore never pre-answers (control)", async (flag) => {

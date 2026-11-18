@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi, type Mock } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
@@ -20,6 +20,9 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RuntimeAdapter, NodeBinding } from "../src/domain/runtime-adapter.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // `code_mode: true` as a member field: the same plumbing contract as remote_control (remote-control-plumb.test.ts).
 // It must survive every node-creation path, persist on the node (nodes.code_mode) and land on the launch binding, so that
@@ -37,9 +40,17 @@ const rawSpec = (members: Record<string, unknown>[], name = "cm-rig"): Record<st
   version: "0.2", name, pods: [{ id: "dev", label: "Dev", members, edges: [] }], edges: [],
 });
 
+// workspaces-o9o.123 review (verify-sec2, CoS acceptance): Code Mode's one-time answer is written only into the seat's own Claude
+// home, so `code_mode: true` requires a per-seat claude_config_dir, refused at spec validation like code_mode with remote_control.
+const OWN_HOME = { claude_config_dir: "~/.claude-seats/cos" };
+// A real directory for the paths that instantiate the node (they refuse a seat home that does not exist).
+const SEAT_DIR = mkdtempSync(join(tmpdir(), "cm-seat-home-"));
+const SEAT_HOME = { claude_config_dir: SEAT_DIR };
+afterAll(() => { rmSync(SEAT_DIR, { recursive: true, force: true }); });
+
 describe("code_mode: schema validation + normalization", () => {
-  it("accepts `true` on a claude-code member and normalizes it to codeMode: true", () => {
-    const spec = rawSpec([rawMember("cos", { code_mode: true })]);
+  it("accepts `true` on a claude-code member with its own claude_config_dir and normalizes it to codeMode: true", () => {
+    const spec = rawSpec([rawMember("cos", { code_mode: true, ...OWN_HOME })]);
     expect(RigSpecSchema.validate(spec)).toMatchObject({ valid: true, errors: [] });
     expect(RigSpecSchema.normalize(spec).pods[0]!.members[0]!.codeMode).toBe(true);
   });
@@ -72,13 +83,22 @@ describe("code_mode: schema validation + normalization", () => {
   });
 
   it("refuses `true` together with remote_control: true on the same member (Code Mode turns itself off under Remote Control)", () => {
-    const refused = RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: true, remote_control: true })]));
+    const refused = RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: true, remote_control: true, ...OWN_HOME })]));
     expect(refused.valid).toBe(false);
     expect(refused.errors.join("\n")).toMatch(/pods\[0\]\.members\[0\]\.code_mode: cannot be combined with remote_control/);
     // Controls: either one alone is legal, and code_mode: false beside remote_control: true is legal.
-    expect(RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: true })])).valid).toBe(true);
+    expect(RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: true, ...OWN_HOME })])).valid).toBe(true);
     expect(RigSpecSchema.validate(rawSpec([rawMember("cos", { remote_control: true })])).valid).toBe(true);
     expect(RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: false, remote_control: true })])).valid).toBe(true);
+  });
+
+  it("refuses `true` without a per-seat claude_config_dir (the answer is never written into the daemon's default or selected Claude home)", () => {
+    const refused = RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: true })]));
+    expect(refused.valid).toBe(false);
+    expect(refused.errors.join("\n")).toMatch(/pods\[0\]\.members\[0\]\.code_mode: requires the member's own claude_config_dir/);
+    // Controls: with its own home it is legal; `false` needs none.
+    expect(RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: true, ...OWN_HOME })])).valid).toBe(true);
+    expect(RigSpecSchema.validate(rawSpec([rawMember("cos", { code_mode: false })])).valid).toBe(true);
   });
 
   it("round-trips through the codec: serialize emits `code_mode: true`; absent is not emitted", () => {
@@ -169,7 +189,7 @@ describe("code_mode: plumbed across the node-creation paths and onto the launch 
   };
 
   it("initial pod materialize: spec -> nodes.code_mode", async () => {
-    const outcome = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("cos", { code_mode: true }), rawMember("plain")]), RIG_ROOT);
+    const outcome = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("cos", { code_mode: true, ...SEAT_HOME }), rawMember("plain")]), RIG_ROOT);
     expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
     expect(column("dev.cos")).toBe(1);
     expect(column("dev.plain")).toBeNull();
@@ -180,7 +200,7 @@ describe("code_mode: plumbed across the node-creation paths and onto the launch 
     const expanded = await setup.rigExpansionService.expand({
       rigId: rig.id, rigRoot: RIG_ROOT,
       pod: { id: "qa", label: "QA", members: [
-        { id: "asks", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: ".", codeMode: true },
+        { id: "asks", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: ".", codeMode: true, claudeConfigDir: SEAT_DIR },
         { id: "quiet", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "." },
       ], edges: [] },
     });
@@ -199,7 +219,7 @@ describe("code_mode: plumbed across the node-creation paths and onto the launch 
 
   it.each([["code_mode"], ["codeMode"]])("the HTTP expand ingress carries `%s: true` through", async (key) => {
     const rig = setup.rigRepo.createRig("cm-rig");
-    const res = await expandViaRoute(rig.id, routeMember({ [key]: true }));
+    const res = await expandViaRoute(rig.id, routeMember({ [key]: true, ...(key === "code_mode" ? SEAT_HOME : { claudeConfigDir: SEAT_DIR }) }));
     expect(res.status, JSON.stringify(await res.clone().json())).toBe(201);
     expect(column("web.m")).toBe(1);
     expect(launchedWith("web.m").codeMode).toBe(true);
@@ -218,7 +238,7 @@ describe("code_mode: plumbed across the node-creation paths and onto the launch 
     const outcome = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("seed")]), RIG_ROOT);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
-    const added = await setup.podInstantiator.addMemberToPod(outcome.result.rigId, "dev", rawMember("added", { code_mode: true }), RIG_ROOT);
+    const added = await setup.podInstantiator.addMemberToPod(outcome.result.rigId, "dev", rawMember("added", { code_mode: true, ...SEAT_HOME }), RIG_ROOT);
     expect(added.ok, JSON.stringify(added)).toBe(true);
     expect(column("dev.added")).toBe(1);
     expect(launchedWith("dev.added").codeMode).toBe(true);
@@ -228,12 +248,12 @@ describe("code_mode: plumbed across the node-creation paths and onto the launch 
     ["withdrawn: node declared it, the member no longer does", true, false],
     ["added: node had not declared it, the member now does", false, true],
   ])("a relaunch from the spec re-syncs the persisted declaration (%s)", async (_label, before, after) => {
-    const outcome = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("cos", before ? { code_mode: true } : {})]), RIG_ROOT);
+    const outcome = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("cos", before ? { code_mode: true, ...SEAT_HOME } : {})]), RIG_ROOT);
     expect(outcome.ok).toBe(true);
     expect(column("dev.cos")).toBe(before ? 1 : null);
     const rigId = (outcome as { ok: true; result: { rigId: string } }).result.rigId;
     const nodeId = (db.prepare("SELECT id FROM nodes WHERE logical_id = 'dev.cos'").get() as { id: string }).id;
-    const edited = RigSpecSchema.normalize(rawSpec([rawMember("cos", after ? { code_mode: true } : {})]));
+    const edited = RigSpecSchema.normalize(rawSpec([rawMember("cos", after ? { code_mode: true, ...SEAT_HOME } : {})]));
     const pod = edited.pods[0]!;
     const launched = await setup.podInstantiator.launchBinding({ rigId, rigSpec: edited, rigRoot: RIG_ROOT, pod, member: pod.members[0]!, qualifiedId: "dev.cos", nodeId });
     expect(launched.status, JSON.stringify(launched)).toBe("launched");
@@ -244,7 +264,7 @@ describe("code_mode: plumbed across the node-creation paths and onto the launch 
   });
 
   it("bootstrap instantiate-from-YAML (`rig up <spec>`): its own inline addNode persists it and the launch carries it", async () => {
-    const yaml = RigSpecCodec.serialize(RigSpecSchema.normalize(rawSpec([rawMember("cos", { code_mode: true }), rawMember("plain")])));
+    const yaml = RigSpecCodec.serialize(RigSpecSchema.normalize(rawSpec([rawMember("cos", { code_mode: true, ...SEAT_HOME }), rawMember("plain")])));
     const outcome = await setup.podInstantiator.instantiate(yaml, RIG_ROOT);
     expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
     expect(column("dev.cos")).toBe(1);

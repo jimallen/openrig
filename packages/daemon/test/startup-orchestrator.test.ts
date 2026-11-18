@@ -164,6 +164,17 @@ describe("StartupOrchestrator", () => {
     expect(result.warnings).toEqual(["AGENTS.md is untracked", "plugin exclude skipped"]);
   });
 
+  it("o9o.123: a launch's own warnings (a Code Mode answer it did not write) reach the launch outcome, named by session", async () => {
+    const seed = seedSession();
+    const adapter = mockAdapter({
+      launchHarness: vi.fn(async (): Promise<HarnessLaunchResult> => ({ ok: true, warnings: ["code_mode: /h/.claude.json is a symbolic link"] })),
+    });
+    const input = makeInput(seed, { adapter });
+    const result = await createOrchestrator().startNode(input);
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toContain(`${input.sessionName ?? input.nodeId}: code_mode: /h/.claude.json is a symbolic link`);
+  });
+
   it("keeps a challenge-only transport failure best-effort", async () => {
     const seed = seedSession();
     const tmux = mockTmux({ sendText: vi.fn(async (): Promise<TmuxResult> => ({ ok: false, code: "send_failed", message: "fixture transport failure" })) });

@@ -464,6 +464,8 @@ export class StartupOrchestrator {
             }
             const notice = nonInterruptiveNotice(input.adapter.runtime, input.binding);
             if (notice) warnings.push(`${input.sessionName ?? input.nodeId}: ${notice}`);
+            // workspaces-o9o.123: what the launch did not do but the operator should see (a Code Mode answer not written).
+            for (const warning of launchResult.warnings ?? []) warnings.push(`${input.sessionName ?? input.nodeId}: ${warning}`);
             // OF-75: a token the adapter reports is checked against the runtime's format before it is stored.
             const normalizedResumeToken = launchResult.resumeToken
               ? observedResumeTokenToWrite(input.adapter.runtime, launchResult.resumeToken)

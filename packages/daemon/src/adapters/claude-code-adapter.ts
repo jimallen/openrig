@@ -18,7 +18,7 @@ import type {
 import { NO_STARTUP_SEND, resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
-import { claudeCodeModeEnv, claudeCodeModePrefix, CODE_MODE_ACCEPTED_KEYS } from "../domain/claude-code-mode.js";
+import { claudeCodeModeEnv, claudeCodeModePrefix, codeModeAnswerPlan } from "../domain/claude-code-mode.js";
 import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
@@ -54,7 +54,13 @@ export interface ClaudeAdapterFsOps {
   lstat?(path: string): "file" | "directory" | "symlink" | "other" | null;
   /** Remove one file (the plugin-copy prune). Absent: nothing is removed. */
   removeFile?(path: string): void;
+  /** Write a file without following a symbolic link at its final component (O_NOFOLLOW; a new file is created 0600). A link there
+   *  makes it throw. workspaces-o9o.123: Code Mode's answer is written only this way. Absent: that write is refused. */
+  writeFileNoFollow?(path: string, content: string): void;
 }
+
+/** A launch result's warnings field, present only when there is one (an undeclared seat's result is unchanged). */
+const withWarnings = (warnings: readonly string[]): { warnings?: string[] } => (warnings.length > 0 ? { warnings: [...warnings] } : {});
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
 
@@ -290,13 +296,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const guardRefusal = claudeRigBodyGuardRefusal(this.rigBodyGuardScript);
     if (guardRefusal) return { ok: false, error: guardRefusal };
 
-    // workspaces-o9o.123: a code_mode seat's first Code Mode launch in a Claude home would stop at a one-time picker. Best effort: a
-    // home whose state cannot be read or written is left as it is and the launch goes ahead (the picker then shows; nothing is lost).
-    if (binding.codeMode === true) {
-      try { this.provisionCodeModeAccepted(binding); } catch (err) {
-        console.error(`[openrig] claude code mode bootstrap warning: ${(err as Error).message}`);
-      }
-    }
+    // workspaces-o9o.123: a code_mode seat's first Code Mode launch in a Claude home would stop at a one-time picker. The answer is
+    // written only into the seat's own home and only where it is absent; anything it does not write is a warning on the launch result
+    // (the launch goes ahead, and the picker then shows; nothing is lost).
+    const codeModeWarnings = binding.codeMode === true ? this.provisionCodeModeAccepted(binding) : [];
+    for (const warning of codeModeWarnings) console.error(`[openrig] ${warning}`);
 
     // OPR.0.4.8.2: the acceptEdits floor by default; YOLO (opt-in) swaps in the full-bypass flag.
     // The SAME decision (claudePostureFlag) is used on the restore path (claude-resume.ts).
@@ -372,7 +376,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
       // As with a fresh launch, nothing is read back from Claude's session files: a same-name
       // file can belong to an earlier occupant or another seat sharing the config directory.
-      return { ok: true, resumeToken: forkSessionId, resumeType: "claude_id", appliedLaunch };
+      return { ok: true, resumeToken: forkSessionId, resumeType: "claude_id", appliedLaunch, ...withWarnings(codeModeWarnings) };
     }
 
     const generatedSessionId = opts.resumeToken ? null : this.sessionIdFactory();
@@ -398,12 +402,12 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // The process readiness pinned first, if it observed one: the caller records it, not a later read.
       const launchedProcess = launch.process ? { launchedProcess: { ...launch.process } } : {};
       if (!verification.ok) return { ...verification, ...launchedProcess };
-      return { ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id", appliedLaunch, ...launchedProcess };
+      return { ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id", appliedLaunch, ...launchedProcess, ...withWarnings(codeModeWarnings) };
     }
 
     // Fresh launches already have an explicit --session-id. A same-name file
     // can belong to another seat sharing the Claude config directory.
-    return { ok: true, resumeToken: generatedSessionId!, resumeType: "claude_id", appliedLaunch };
+    return { ok: true, resumeToken: generatedSessionId!, resumeType: "claude_id", appliedLaunch, ...withWarnings(codeModeWarnings) };
   }
 
   async checkReady(binding: NodeBinding): Promise<ReadinessResult> {
@@ -448,8 +452,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
   /** workspaces-o9o.123: the restore path's seam (claude-resume.ts) for Code Mode's one-time answer: a restored seat newly declared
    *  code_mode resumes a session started without Code Mode, and that resume shows the picker too (measured, Claude Code 2.1.327). */
-  ensureCodeModeAccepted(binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
-    this.provisionCodeModeAccepted(binding);
+  ensureCodeModeAccepted(binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }): string[] {
+    return this.provisionCodeModeAccepted(binding);
   }
 
   /** Best-effort public seam for user-scope Claude bootstrap used by managed sessions. */
@@ -753,41 +757,6 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   private provisionManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
     // OPR.0.4.8.2 agnostic rip-out: provisionRigPermissions (C2) removed — OpenRig no longer
     // authors any config-file permission policy. Trust/onboarding (C3/C4) are neutral plumbing, kept.
-    const { statePaths, cwd, failures } = this.claudeStateTargets(binding);
-    // Each file is merged on its own: unmergeable state in one is preserved and reported,
-    // and never stops the other from being provisioned.
-    for (const statePath of statePaths) {
-      try {
-        this.provisionClaudeState(statePath, cwd);
-      } catch (err) {
-        failures.push(`${statePath}: ${(err as Error).message}`);
-      }
-    }
-    if (failures.length > 0) throw new Error(failures.join("; "));
-  }
-
-  /** workspaces-o9o.123: record Code Mode's one-time answer in every Claude home this seat's launch reads, when it is missing. The same
-   *  homes and the same merge rule as the trust and onboarding bootstrap: every other field is kept, a file already answered is not
-   *  rewritten (running Claude processes write it too), and unreadable state is left as it is and reported. */
-  private provisionCodeModeAccepted(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
-    const { statePaths, failures } = this.claudeStateTargets(binding);
-    for (const statePath of statePaths) {
-      try {
-        const state = this.fs.exists(statePath) ? this.readJsonObjectStrict(statePath) : {};
-        const missing = CODE_MODE_ACCEPTED_KEYS.filter((key) => state[key] !== true);
-        if (missing.length === 0) continue;
-        for (const key of missing) state[key] = true;
-        this.fs.mkdirp(nodePath.dirname(statePath));
-        this.fs.writeFile(statePath, JSON.stringify(state, null, 2));
-      } catch (err) {
-        failures.push(`${statePath}: ${(err as Error).message}`);
-      }
-    }
-    if (failures.length > 0) throw new Error(failures.join("; "));
-  }
-
-  /** The Claude state files (.claude.json) a launch of this binding reads, and the cwd it trusts. */
-  private claudeStateTargets(binding: { nodeId?: string; cwd?: string | null; permissionMode?: NodeBinding["permissionMode"] }): { statePaths: string[]; cwd: string | null | undefined; failures: string[] } {
     const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
     // Match launchHarness: an explicit permission mode exports the selected home to the child, so
     // only that home is provisioned.
@@ -818,7 +787,58 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         failures.push((err as Error).message);
       }
     }
-    return { statePaths, cwd, failures };
+    // Each file is merged on its own: unmergeable state in one is preserved and reported,
+    // and never stops the other from being provisioned.
+    for (const statePath of statePaths) {
+      try {
+        this.provisionClaudeState(statePath, cwd);
+      } catch (err) {
+        failures.push(`${statePath}: ${(err as Error).message}`);
+      }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
+  }
+
+  /** workspaces-o9o.123: record Code Mode's one-time answer in the seat's OWN Claude home (nodes.claude_config_dir) where it is absent.
+   *  verify-sec2's review and the CoS's acceptance bound it:
+   *  - never the daemon's default or selected home (one the spec author did not choose for the seat; a seat home shared on purpose
+   *    is fine, CoS ruling): no per-seat home means nothing is written (spec validation refuses that declaration; a home
+   *    cleared later lands here);
+   *  - never through a link: the home and its .claude.json are checked with lstat, and the write itself does not follow one (O_NOFOLLOW),
+   *    so a link swapped in after the check is refused too; a file system that offers neither is refused;
+   *  - only ABSENT keys (codeModeAnswerPlan): a present answer that is not true is kept, and said so.
+   *  Every field other than the keys is kept, an answered file is not rewritten (running Claude processes write it too), and nothing
+   *  here stops the launch. Returns what it did not do, as warnings naming the file and key, for the launch result. */
+  private provisionCodeModeAccepted(binding: { nodeId?: string }): string[] {
+    const seatHome = binding.nodeId ? this.claudeManagedLaunch?.seatConfigDir(binding.nodeId) ?? null : null;
+    if (!seatHome) {
+      return ["code_mode: this seat has no claude_config_dir of its own, so Code Mode's one-time answer was not written (the launch may stop at the picker); OpenRig writes it only into a seat's own Claude home"];
+    }
+    const statePath = nodePath.join(seatHome, ".claude.json");
+    const lstat = this.fs.lstat?.bind(this.fs);
+    const writeNoFollow = this.fs.writeFileNoFollow?.bind(this.fs);
+    if (!lstat || !writeNoFollow) {
+      return [`code_mode: ${statePath} was not written: this file system cannot check for or refuse a symbolic link`];
+    }
+    try {
+      for (const [path, wanted] of [[seatHome, "directory"], [statePath, "file"]] as const) {
+        const kind = lstat(path);
+        if (kind === "symlink") return [`code_mode: ${path} is a symbolic link, so Code Mode's one-time answer was not written; OpenRig never writes through a link`];
+        if (kind !== null && kind !== wanted) return [`code_mode: ${path} is not a ${wanted}, so Code Mode's one-time answer was not written`];
+      }
+      const state = lstat(statePath) === "file" ? this.readJsonObjectStrict(statePath) : {};
+      const plan = codeModeAnswerPlan(state);
+      if (plan.kind === "answered") return [];
+      if (plan.kind === "declined") {
+        return [`code_mode: ${statePath} already answers ${plan.keys.map((key) => `${key}=${JSON.stringify(state[key])}`).join(", ")}; kept as it is, so the launch may stop at Code Mode's picker`];
+      }
+      for (const key of plan.keys) state[key] = true;
+      this.fs.mkdirp(seatHome);
+      writeNoFollow(statePath, JSON.stringify(state, null, 2));
+      return [];
+    } catch (err) {
+      return [`code_mode: ${statePath} was not written: ${(err as Error).message}`];
+    }
   }
 
   private provisionClaudeState(statePath: string, cwd: string | null | undefined): void {

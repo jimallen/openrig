@@ -408,7 +408,8 @@ export class SuccessorSessionLauncher {
       resumeToken: started.resumeToken,
       resumeType: started.resumeType,
       appliedLaunch: started.appliedLaunch,
-      ...(respawned.warnings || seatHomeWarnings.length > 0 ? { warnings: [...seatHomeWarnings, ...(respawned.warnings ?? [])] } : {}),
+      // workspaces-o9o.123: the successor launch's own warnings (a Code Mode answer not written) ride the handover result too.
+      ...(respawned.warnings || seatHomeWarnings.length > 0 || started.warnings ? { warnings: [...seatHomeWarnings, ...(respawned.warnings ?? []), ...(started.warnings ?? [])] } : {}),
     };
   }
 
@@ -426,7 +427,7 @@ export class SuccessorSessionLauncher {
     cwd: string | undefined,
     forkSource?: ForkSource,
     launchGeneration?: string | null,
-  ): Promise<{ ok: true; resumeToken?: string; resumeType?: string; appliedLaunch?: AppliedLaunchObservation } | { ok: false; code: string; message: string }> {
+  ): Promise<{ ok: true; resumeToken?: string; resumeType?: string; appliedLaunch?: AppliedLaunchObservation; warnings?: string[] } | { ok: false; code: string; message: string }> {
     const adapter = node.runtime ? this.runtimeAdapters[node.runtime] : undefined;
     if (!adapter) {
       return {
@@ -519,7 +520,7 @@ export class SuccessorSessionLauncher {
       };
     }
 
-    return { ok: true, resumeToken, resumeType, appliedLaunch: launch.appliedLaunch };
+    return { ok: true, resumeToken, resumeType, appliedLaunch: launch.appliedLaunch, ...(launch.warnings?.length ? { warnings: launch.warnings } : {}) };
   }
 
   /** The successor pane's recent text for a failure report; "" when it cannot be read (never a throw). */
