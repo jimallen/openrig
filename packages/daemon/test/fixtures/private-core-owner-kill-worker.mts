@@ -1,5 +1,5 @@
-import { HC as TestHC, PrivateCore as TestPrivateCore } from "./hc-private-core.js";
-import { HC as HelperHC, PrivateCore as HelperPrivateCore } from "./helpers/hc-private-core.js";
+import { HC as TestHC, PrivateCore as TestPrivateCore } from "../hc-private-core.js";
+import { HC as HelperHC, PrivateCore as HelperPrivateCore } from "../helpers/hc-private-core.js";
 
 const helper = process.argv[2];
 const core = helper === "test"

@@ -27,6 +27,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: a seat whose `rig queue handoff`, `handoff-and-complete` or `update --state done` ended in a daemon error had no guidance. These verbs print "The command was not delivered." when the connection drops after the request was sent, even if the close had committed (only `queue create` marks that as an unknown outcome). In the 2026-08-05 incident, completed work was read as not done for about 5 hours.
 - Now the shipped `queue-handoff` skill has a section, "When a closing write's outcome is unknown": never redo the work, wait for the daemon, re-read the item with `rig queue show --json`, retry the close once only while it is still open, and cite the receipt (`--evidence-ref` on `update`, `--note` on a handoff, where `--evidence-ref` belongs to the new item). `openrig-user` points at it from its handoff entry.
 - A CLI test checks that every command in the section names a real subcommand with declared options.
+### A test's private hc core no longer outlives a killed test worker (workspaces-o9o.163)
+
+- Symptom: the two test helpers that start a private hc core (`packages/daemon/test/hc-private-core.ts` and `test/helpers/hc-private-core.ts`) stopped it only from `stop()`, in an `afterAll`. A worker that died first (SIGKILL, a stopped run, a timeout) left the core and its terminal programs running; a census on 2026-11-18 found such leftovers.
+- Now both arm the owner-death reaper hc-scratch uses (o9o.90) before the core starts, and `stop()` disarms it only once no process carries the core's runtime dir. The reaper selects the core's processes by `XDG_RUNTIME_DIR=<root>/r`, and refuses a runtime dir outside the core's own fresh root, which could name other processes. The two helpers have different APIs, so they share the guard (`test/helpers/private-core-guard.ts`) rather than being merged.
+- On a host without `/proc` or `ps -E` the guard arms nothing, as before.
 
 ### Low-contrast text found by the accessibility scan is readable in both themes (workspaces-o9o.155)
 

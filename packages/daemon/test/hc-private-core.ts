@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { hcCountedSocketBytes, hcScratchBase, hcScratchFallback, hcServerUntilUp, hcSocketFits, HC_SOCKET_PATH_LIMIT } from "./helpers/hc-scratch.js";
+import { PrivateCoreGuard } from "./helpers/private-core-guard.js";
 
 export { hcServerUntilUp };
 
@@ -16,6 +17,8 @@ export class PrivateCore {
   readonly env: NodeJS.ProcessEnv;
   readonly socketPath: string;
   readonly client: HcClient;
+  /** workspaces-o9o.163: reaps this core if the worker dies before stop() (helpers/private-core-guard.ts). */
+  private readonly guard: PrivateCoreGuard;
 
   /** `hc` is the binary on PATH; a test of this harness passes a stand-in. */
   constructor(tag: string, extraEnv: NodeJS.ProcessEnv = {}, private readonly hc: string = HC) {
@@ -25,6 +28,12 @@ export class PrivateCore {
       XDG_CONFIG_HOME: join(this.root, "c"), XDG_DATA_HOME: join(this.root, "d"), XDG_STATE_HOME: join(this.root, "s"), XDG_RUNTIME_DIR: join(this.root, "r"),
       ...extraEnv,
     };
+    try {
+      this.guard = new PrivateCoreGuard(this.env, this.root, `hc-private-core:${tag}`);
+    } catch (error) {
+      rmSync(this.root, { recursive: true, force: true });
+      throw error;
+    }
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(this.root, d), { recursive: true, mode: 0o700 });
     this.socketPath = resolveHcSocket(this.env, this.env.HOME);
     // Measured as hc measures it (the socket plus HC_SOCKET_PATH_RESERVE), so a root hc would refuse is refused here first.
@@ -52,11 +61,13 @@ export class PrivateCore {
    * followed by `server start`, at most 3 times; any other failure throws with hc's own message, as it always threw.
    */
   private serverUntilUp(verb: "start" | "restart"): void {
+    this.guard.arm(); // before the core exists: the window in which a killed worker leaves it behind begins at start
     hcServerUntilUp(this.hc, this.env, verb);
   }
 
   stop(): void {
     spawnSync(this.hc, ["server", "stop"], { env: this.env, stdio: "ignore" });
+    this.guard.releaseWhenStopped(); // a core not seen stopped keeps its guard, which reaps it when the worker ends
     rmSync(this.root, { recursive: true, force: true });
   }
 

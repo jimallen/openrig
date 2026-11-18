@@ -822,6 +822,12 @@
   "when": "process.platform === \"win32\""
  },
  {
+  "file": "packages/daemon/test/private-core-owner-death.real.test.ts",
+  "kind": "skipIf",
+  "task": "a private core does not outlive the test worker that started it (o9o.163; Linux: reads /proc)",
+  "when": "!HC || !hasProcFs()"
+ },
+ {
   "file": "packages/daemon/test/profile-source-read-errors.test.ts",
   "kind": "skipIf",
   "task": "reports an unreadable regular source without claiming its target is missing",
