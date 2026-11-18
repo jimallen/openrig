@@ -10,6 +10,7 @@ import { buildWritableHomeCheck } from "../system-preflight.js";
 import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, readHcHello, type HcHelloOutcome } from "../tmux-health.js";
 import { parse as parseYaml } from "yaml";
 import { compareSpecToLive, topologyFromRigSpec, topologyFromLiveLogicalIds } from "@openrig/daemon/spec-conformance";
+import { notThisInstanceCore, readThisInstanceCore, type ThisInstanceCore } from "@openrig/daemon/hc";
 import { findIgnoredVendoredPlugins } from "@openrig/daemon/vendored-plugin-conflicts";
 import { getDefaultOpenRigPath, getOpenRigHome } from "../openrig-compat.js";
 import { classifyNodeVersion } from "../node-support.js";
@@ -64,6 +65,8 @@ export interface DoctorDeps {
   fetchLiveLogicalIds?: (rigName: string) => Promise<string[] | null>;
   /** One `hello` to the hc core's socket (default: the real socket). Never starts a core. */
   readHcHello?: () => Promise<HcHelloOutcome>;
+  /** The core this instance's state dir names (default: core.json under this env's state dir). workspaces-o9o.165. */
+  thisInstanceCore?: () => ThisInstanceCore;
   /** The daemon's vendored plugins folder (default: OPENRIG_HOME/plugins). */
   pluginsDir?: string;
   /** workspaces-o9o.11: this machine's reads for the host rows (default: the real ones). */
@@ -253,6 +256,20 @@ async function buildHcCoreCheck(deps: DoctorDeps): Promise<DoctorCheck> {
   const outcome = await (deps.readHcHello ?? (() => readHcHello()))();
   const core = classifyHcCore(outcome);
   if (core.code === "available") {
+    // workspaces-o9o.165: the daemon refuses, and does not start against, a core at its socket that another state dir's core.json names
+    // (core_not_this_instance); its log says so, and so does this check, which needs no running daemon. Judged with this shell's env,
+    // the same rule the daemon applies to its own.
+    const notMine = outcome.kind === "hello" && outcome.coreId !== undefined
+      ? notThisInstanceCore((deps.thisInstanceCore ?? (() => readThisInstanceCore(process.env)))(), outcome.coreId)
+      : null;
+    if (notMine) {
+      return {
+        name: "hc_core", status: "fail",
+        message: "The hc core at this instance's socket is not this instance's core; the daemon refuses it and does not start.",
+        reason: notMine,
+        fix: "Stop the core that is there (hc server stop, run with the env that started it), or run the daemon with the HOME that core was started with; then rerun 'rig doctor'.",
+      };
+    }
     return core.warning
       ? { name: "hc_core", status: "warn", message: `hc core ${core.version} (untested), protocol generation ${HC_GENERATION}.`, reason: core.warning }
       : { name: "hc_core", status: "pass", message: `hc core ${core.version}, protocol generation ${HC_GENERATION}.` };

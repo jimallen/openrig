@@ -8,7 +8,8 @@
 export { SEAT_LABEL, hcTerminalName } from "./adapters/hc-seat.js";
 export {
   HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, coreRuntimeLocationRefusal, resolveHcSocket,
-  type HcHello, type HcTerminal,
+  hcCoreIdentityFile, notThisInstanceCore, readThisInstanceCore,
+  type HcHello, type HcTerminal, type ThisInstanceCore,
 } from "./adapters/hc-client.js";
 export {
   HC_OLDEST_ACCEPTED_VERSION, HC_TESTED_VERSION, HC_TESTED_VERSIONS, judgeHcVersion, parseHcVersionOutput, type HcVersionJudgement,

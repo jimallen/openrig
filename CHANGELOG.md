@@ -72,6 +72,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now both arm the owner-death reaper hc-scratch uses (o9o.90) before the core starts, and `stop()` disarms it only once no process carries the core's runtime dir. The reaper selects the core's processes by `XDG_RUNTIME_DIR=<root>/r`, and refuses a runtime dir outside the core's own fresh root, which could name other processes. The two helpers have different APIs, so they share the guard (`test/helpers/private-core-guard.ts`) rather than being merged.
 - On a host without `/proc` or `ps -E` the guard arms nothing, as before.
 
+### The daemon refuses an hc core that is not this instance's (workspaces-o9o.165)
+
+- Symptom: the daemon joined whatever hc core answered at its socket, judged only on generation, version and the id it saw first. On Linux the socket is the runtime dir's (`XDG_RUNTIME_DIR/herdr-core/<session>.sock`), while a core's id and its registry of terminals are its state dir's (`<state dir>/herdr-core/<session>/core.json`). So a core started with another HOME or XDG_STATE_HOME in the same runtime dir answered at this instance's socket with another registry, and the daemon took it for its own. Measured with hc 0.1.18: the id stays the same across restarts of one state dir, and a core of another state dir at the same socket has another one.
+- Now the daemon reads its own state dir's `core.json`. A core at its socket that answers with another id is refused (`core_not_this_instance`), and the daemon does not start, as for a refused version. A `core.json` that cannot be read as one also refuses. With no `core.json` (a state dir that has never held a core, such as a test harness's or the scenario scaffold's private core), the core is joined as before. When the file names an id, that id is pinned from the start rather than the first core that answers.
+- `rig doctor`'s `hc_core` check reports the same refusal without a running daemon. It names both ids and the file.
+- On macOS the socket lives in the state dir, so the core at it is always the state dir's own, and nothing changes there.
+
 ### Low-contrast text found by the accessibility scan is readable in both themes (workspaces-o9o.155)
 
 - Symptom: the twin accessibility scan (workspaces-o9o.130) found 15 elements on 6 surfaces below WCAG AA, measured by axe in Chromium: the For You level control's header note (3.04:1 light, 1.93:1 dark) and its amber highlights (3.72:1 dark); the compaction policy form's fields and the audit history filters, browser-white with light text in dark (1.23:1, 1.07:1); the restore dialog's unselected policy option, a fixed white in dark (3.27:1); and the Open-in-terminal group labels (3.1:1 light, 4.45:1 dark).

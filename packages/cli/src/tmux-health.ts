@@ -32,7 +32,8 @@ function errorMessage(err: unknown): string {
 
 /** What a core answered to `hello`, or why nothing was learned. */
 export type HcHelloOutcome =
-  | { kind: "hello"; generation: number; version: string }
+  /** coreId: the core's `hello.core.id` when it sent one (workspaces-o9o.165: rig doctor compares it with this instance's core.json). */
+  | { kind: "hello"; generation: number; version: string; coreId?: string }
   | { kind: "no_core"; detail: string }
   | { kind: "refused"; refusal: string; detail: string }
   | { kind: "unreadable"; detail: string };
@@ -67,7 +68,7 @@ export function readHcHello(socketPath: string = resolveHcSocket(), timeoutMs: n
       buffer += chunk;
       const end = buffer.indexOf("\n");
       if (end < 0) return;
-      let reply: { result?: { generation?: unknown; version?: unknown }; error?: { message?: unknown; data?: { kind?: unknown } } };
+      let reply: { result?: { generation?: unknown; version?: unknown; core?: { id?: unknown } }; error?: { message?: unknown; data?: { kind?: unknown } } };
       try {
         reply = JSON.parse(buffer.slice(0, end));
       } catch {
@@ -78,7 +79,8 @@ export function readHcHello(socketPath: string = resolveHcSocket(), timeoutMs: n
         const refusal = typeof reply.error.data?.kind === "string" ? reply.error.data.kind : "unknown";
         done({ kind: "refused", refusal, detail: typeof reply.error.message === "string" ? reply.error.message : refusal });
       } else if (typeof reply.result?.generation === "number" && typeof reply.result.version === "string") {
-        done({ kind: "hello", generation: reply.result.generation, version: reply.result.version });
+        const coreId = reply.result.core?.id;
+        done({ kind: "hello", generation: reply.result.generation, version: reply.result.version, ...(typeof coreId === "string" ? { coreId } : {}) });
       } else {
         done({ kind: "unreadable", detail: "the core's hello reply had no generation and version" });
       }

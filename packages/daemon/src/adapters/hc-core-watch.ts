@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
-import { HC_GENERATION, HcClient, coreRuntimeLocationRefusal, type CoreAccount, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
+import { HC_GENERATION, HcClient, coreRuntimeLocationRefusal, type CoreAccount, HcError, HcOutcomeUnknownError, HcUnavailableError, notThisInstanceCore, readThisInstanceCore, setHcHelloCheck, type HcHello, type HcTerminal, type ThisInstanceCore } from "./hc-client.js";
 import { OPERATOR_SECRET_ENV_NAMES } from "./hc-seat.js";
 import { judgeHcVersion, type HcVersionJudgement } from "./hc-version.js";
 
@@ -14,9 +14,9 @@ const HELLO_TIMEOUT_MS = 10_000;
 const RECONNECT_DELAYS_MS = [100, 200, 500, 1_000, 2_000, 5_000];
 
 /** The core is reachable and wrong for this daemon. The daemon must stop there and not proceed (design section 6):
- *  retrying cannot fix a generation, a version or a swapped core. */
+ *  retrying cannot fix a generation, a version, a swapped core or another state dir's core (core_not_this_instance, workspaces-o9o.165). */
 export class HcCoreRefusedError extends Error {
-  constructor(message: string, readonly kind: "unsupported_generation" | "unsupported_version" | "core_changed") {
+  constructor(message: string, readonly kind: "unsupported_generation" | "unsupported_version" | "core_changed" | "core_not_this_instance") {
     super(message);
     this.name = "HcCoreRefusedError";
   }
@@ -401,6 +401,9 @@ export interface HcCoreWatchOptions {
    *  keeps retrying and reporting. */
   startCore?: () => Promise<void>;
   pin?: Pick<HcCorePin, "versions">;
+  /** The core this instance's state dir names (readThisInstanceCore), read at every connect: a core at the socket with another id is
+   *  refused as core_not_this_instance, and an id read before the first connect is the pinned one from the start (workspaces-o9o.165). */
+  thisInstanceCore?: () => ThisInstanceCore;
   /** Only terminals carrying all of these labels. */
   labels?: Record<string, string>;
   heartbeatTimeoutMs?: number;
@@ -423,7 +426,12 @@ export class HcCoreWatch {
   private wake: (() => void) | null = null;
   private first: { resolve: (state: HcWatchState) => void; reject: (err: unknown) => void } | null = null;
 
-  constructor(private readonly options: HcCoreWatchOptions) {}
+  constructor(private readonly options: HcCoreWatchOptions) {
+    // workspaces-o9o.165: pin the core this instance's state dir names from the start, not the first core that answers, so the
+    // calls pinCallsToCore guards are held to it even while the core is down.
+    const instance = options.thisInstanceCore?.();
+    if (instance?.kind === "id") this.coreId = instance.id;
+  }
 
   view(): HcView { return this.current; }
   state(): HcWatchState { return this.watchState; }
@@ -518,6 +526,11 @@ export class HcCoreWatch {
       throw new HcUnavailableError(`hc core ${presence.state.replace("_", " ")} at ${socketPath}`);
     }
     // Re-verify core id and generation after any start: nothing restarts a killed core, and a swapped one is another core.
+    verifyHello(presence.hello, { ...this.options.pin });
+    // workspaces-o9o.165: and it must be this instance's core, by the id its state dir names, before the core seen first is judged.
+    const instance = this.options.thisInstanceCore?.();
+    const notMine = instance ? notThisInstanceCore(instance, presence.hello.core.id) : null;
+    if (notMine) throw new HcCoreRefusedError(notMine, "core_not_this_instance");
     verifyHello(presence.hello, { ...this.options.pin, coreId: this.coreId });
     this.coreId ??= presence.hello.core.id;
 
@@ -660,6 +673,8 @@ export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCo
   const startCore = env.OPENRIG_HC_NO_START_CORE === "1" ? undefined : options.startCore ?? loggingRefusals(startCoreWithCli({ env }), log, startState, report);
   const watch = new HcCoreWatch({
     socketPath: options.socketPath,
+    // workspaces-o9o.165: the core at this socket must be the one this instance's state dir names (the daemon's env, as resolveHcSocket).
+    thisInstanceCore: () => readThisInstanceCore(env),
     ...(startCore ? { startCore } : {}),
     ...(options.pin ? { pin: options.pin } : {}),
     onNotice: (notice) => {

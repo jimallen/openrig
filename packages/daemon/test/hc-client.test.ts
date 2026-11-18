@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, resolveHcSocket } from "../src/adapters/hc-client.js";
+import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, hcCoreIdentityFile, notThisInstanceCore, readThisInstanceCore, resolveHcSocket } from "../src/adapters/hc-client.js";
 
 type Handler = (method: string, params: Record<string, unknown>, id: number, socket: Socket) => void;
 
@@ -69,6 +69,48 @@ describe("resolveHcSocket", () => {
       expect(error, JSON.stringify(env)).toBeInstanceOf(HcUnavailableError);
       expect(String((error as Error).message)).toMatch(/HOME/);
     }
+  });
+});
+
+// workspaces-o9o.165: the core this instance's state dir names. Ids are built at runtime; files are injected, never a real state dir.
+describe("this instance's core (core.json in the state dir)", () => {
+  const ID = "ab".repeat(16);
+  const OTHER = "cd".repeat(16);
+  const enoent = (): never => { throw Object.assign(new Error("no such file"), { code: "ENOENT" }); };
+
+  it("lives at <state dir>/herdr-core/<session>/core.json: XDG_STATE_HOME first, else HOME/.local/state; session default", () => {
+    expect(hcCoreIdentityFile({ XDG_STATE_HOME: "/x/s", HOME: "/x/h", HC_SESSION: "p1" })).toBe("/x/s/herdr-core/p1/core.json");
+    expect(hcCoreIdentityFile({ HOME: "/x/h" })).toBe("/x/h/.local/state/herdr-core/default/core.json");
+    expect(hcCoreIdentityFile({ XDG_STATE_HOME: "", HOME: "" })).toBeNull();
+  });
+
+  it("reads the id, and a missing file or no state dir names none", () => {
+    expect(readThisInstanceCore({ HOME: "/x/h" }, undefined, () => JSON.stringify({ id: ID, name: "n", machine_id: OTHER })))
+      .toEqual({ kind: "id", id: ID, file: "/x/h/.local/state/herdr-core/default/core.json" });
+    expect(readThisInstanceCore({ HOME: "/x/h" }, undefined, enoent)).toEqual({ kind: "none", file: "/x/h/.local/state/herdr-core/default/core.json" });
+    expect(readThisInstanceCore({}, undefined, () => { throw new Error("must not be read"); })).toEqual({ kind: "none", file: null });
+  });
+
+  it("anything else is unreadable: another read error, not JSON, no id, or an id that is not one", () => {
+    const denied = (): never => { throw Object.assign(new Error("permission denied"), { code: "EACCES" }); };
+    for (const [read, detail] of [
+      [denied, "permission denied"], [() => "{", "not JSON"], [() => "null", "no core id in it"],
+      [() => JSON.stringify({ name: "n" }), "no core id in it"], [() => JSON.stringify({ id: 7 }), "no core id in it"],
+      [() => JSON.stringify({ id: "../core" }), "no core id in it"],
+    ] as const) {
+      expect(readThisInstanceCore({ HOME: "/x/h" }, undefined, read)).toMatchObject({ kind: "unreadable", detail });
+    }
+  });
+
+  it("refuses a core whose id is not the one named, naming both and the file; joins a match or when none is named", () => {
+    const file = "/x/h/.local/state/herdr-core/default/core.json";
+    const why = notThisInstanceCore({ kind: "id", id: ID, file }, OTHER);
+    expect(why).toContain(ID);
+    expect(why).toContain(OTHER);
+    expect(why).toContain(file);
+    expect(notThisInstanceCore({ kind: "id", id: ID, file }, ID)).toBeNull();
+    expect(notThisInstanceCore({ kind: "none", file }, OTHER)).toBeNull();
+    expect(notThisInstanceCore({ kind: "unreadable", file, detail: "not JSON" }, ID)).toContain(file);
   });
 });
 

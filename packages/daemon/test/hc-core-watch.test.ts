@@ -311,6 +311,29 @@ describe("HcCoreWatch against a scripted core", () => {
     core.helloReply = () => ({ ...hello({ version: "9.9.9" }) });
     await expect(watch.start()).rejects.toMatchObject({ kind: "unsupported_version" });
   });
+  // workspaces-o9o.165: the core at the socket must be the one this instance's state dir names.
+  it("refuses, at start, a core whose id is not the one this instance's state dir names", async () => {
+    const { watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-x", file: "/s/herdr-core/default/core.json" }) });
+    await expect(watch.start()).rejects.toMatchObject({ kind: "core_not_this_instance" });
+    expect(watch.state()).toBe("refused");
+  });
+  it("refuses when this instance's identity file cannot be read, naming it", async () => {
+    const { watch } = await setup({ thisInstanceCore: () => ({ kind: "unreadable", file: "/s/herdr-core/default/core.json", detail: "not JSON" }) });
+    await expect(watch.start()).rejects.toMatchObject({ kind: "core_not_this_instance", message: expect.stringContaining("/s/herdr-core/default/core.json") });
+  });
+  it("pins the id this instance's state dir names before any connect, and streams from that core", async () => {
+    const { watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-a", file: "/s/herdr-core/default/core.json" }) });
+    expect(watch.pinnedCoreId()).toBe("core-a");
+    await watch.start();
+    expect(watch.state()).toBe("streaming");
+  });
+  it("joins the core that answers when this instance's state dir names none", async () => {
+    const { watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }) });
+    expect(watch.pinnedCoreId()).toBeUndefined();
+    await watch.start();
+    expect(watch.state()).toBe("streaming");
+    expect(watch.pinnedCoreId()).toBe("core-a");
+  });
   it("refuses a different core after a reconnect, and stops", async () => {
     const { core, watch } = await setup();
     await watch.start();

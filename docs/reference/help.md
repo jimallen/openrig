@@ -66,6 +66,11 @@ stops. Read its diagnostic: if it names a runnable command, run that command by 
 in a report; otherwise follow the accompanying diagnostic. If the only remaining failures are provider sign-ins under
 "Some steps need attention", the install steps finished: sign in to each selected provider and continue.
 
+If the daemon will not start and its log says `refusing the hc core: the core answering at this instance's socket is …`,
+another state dir's core holds this instance's socket. That is a core started with another HOME or XDG_STATE_HOME in the same
+runtime dir, and it has another registry of terminals. `rig doctor` names both core ids and this instance's `core.json`. Stop
+that core (`hc server stop`, run with the env that started it), or run the daemon with the HOME it was started with.
+
 ### Installation finished, but there is nobody to talk to
 
 Load the `rigs` skill and follow its step 2: it opens the OpenRig view (`rig terminal open saved:kernel --window`),

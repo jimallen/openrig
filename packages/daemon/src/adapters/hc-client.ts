@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { userInfo } from "node:os";
 import { join, resolve } from "node:path";
@@ -79,6 +80,65 @@ export function resolveHcSocket(env: NodeJS.ProcessEnv = process.env, home?: str
   const base = env.XDG_STATE_HOME || (home || env.HOME ? join(home || env.HOME!, ".local", "state") : "");
   if (!base) throw new HcUnavailableError("refusing to resolve an hc socket: none of HC_SOCKET, XDG_RUNTIME_DIR, XDG_STATE_HOME or HOME is set, so there is no named location (the account's home is not assumed)");
   return join(base, "herdr-core", session, `${session}.sock`);
+}
+
+/** Where hc keeps the identity of the core of this env's state dir: `<state dir>/herdr-core/<session>/core.json`, the state dir being
+ *  XDG_STATE_HOME, else `$HOME/.local/state` (as resolveHcSocket). Null when the env names no state dir. workspaces-o9o.165, measured
+ *  with hc 0.1.18: the file holds `{ id, name, machine_id }`, its `id` is the one `hello` answers with, it stays the same across
+ *  restarts of that state dir's core, and a core started with another state dir has another, even at the same socket. */
+export function hcCoreIdentityFile(env: NodeJS.ProcessEnv = process.env, home?: string): string | null {
+  const base = env.XDG_STATE_HOME || (home || env.HOME ? join(home || env.HOME!, ".local", "state") : "");
+  if (!base) return null;
+  const session = env.HC_SESSION || "default";
+  return join(base, "herdr-core", session, "core.json");
+}
+
+/** The core this instance's state dir names: none (it has never held a core), its id, or a file that cannot be read as one. */
+export type ThisInstanceCore =
+  | { kind: "none"; file: string | null }
+  | { kind: "id"; id: string; file: string }
+  | { kind: "unreadable"; file: string; detail: string };
+
+const CORE_ID = /^[0-9a-f]{16,64}$/i;
+
+/** Reads hcCoreIdentityFile. A missing file (or no state dir) is `none`; anything else that is not a core id is `unreadable`. */
+export function readThisInstanceCore(
+  env: NodeJS.ProcessEnv = process.env, home?: string, read: (file: string) => string = (file) => readFileSync(file, "utf8"),
+): ThisInstanceCore {
+  const file = hcCoreIdentityFile(env, home);
+  if (!file) return { kind: "none", file: null };
+  let text: string;
+  try {
+    text = read(file);
+  } catch (err) {
+    const code = typeof err === "object" && err !== null && "code" in err ? (err as { code?: unknown }).code : undefined;
+    if (code === "ENOENT") return { kind: "none", file };
+    return { kind: "unreadable", file, detail: err instanceof Error ? err.message : String(err) };
+  }
+  let id: unknown;
+  try {
+    id = (JSON.parse(text) as { id?: unknown } | null)?.id;
+  } catch {
+    return { kind: "unreadable", file, detail: "not JSON" };
+  }
+  if (typeof id !== "string" || !CORE_ID.test(id)) return { kind: "unreadable", file, detail: "no core id in it" };
+  return { kind: "id", id, file };
+}
+
+/** Why the core answering `answeringId` at this instance's socket is not this instance's, or null when it is (or nothing says otherwise).
+ *  On Linux the socket is the runtime dir's and the id the state dir's, so a core of another state dir (another HOME or XDG_STATE_HOME
+ *  in the same runtime dir) can answer at this instance's socket, with another registry of terminals (workspaces-o9o.165). A state dir
+ *  that has never held a core names none, and any core is joined, as a scratch harness's private core is. */
+export function notThisInstanceCore(expected: ThisInstanceCore, answeringId: string): string | null {
+  if (expected.kind === "none") return null;
+  if (expected.kind === "unreadable") {
+    return `refusing the hc core: this instance's core identity file ${expected.file} cannot be read as one (${expected.detail}), so the core at its socket `
+      + "cannot be shown to be this instance's. hc writes that file when it starts a core with this state dir; repair it, or stop the core and start again.";
+  }
+  if (expected.id === answeringId) return null;
+  return `refusing the hc core: the core answering at this instance's socket is ${answeringId}, but this instance's state dir names core ${expected.id} `
+    + `(${expected.file}). It is the core of another state dir (another HOME or XDG_STATE_HOME in the same runtime dir), with another registry of terminals. `
+    + "Stop that core, or start the daemon with the HOME it was started with.";
 }
 
 /** The account the process runs as: its uid names the host's runtime dir (`/run/user/<uid>`), its home the host's state dir. */

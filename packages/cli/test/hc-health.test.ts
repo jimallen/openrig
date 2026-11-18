@@ -181,12 +181,12 @@ describe("readHcHello over a socket", () => {
     await new Promise<void>((done) => server!.listen(sockPath, done));
   }
 
-  it("sends hello pinned to our generation, and reads the generation and version", async () => {
+  it("sends hello pinned to our generation, and reads the generation, the version and the core id (workspaces-o9o.165)", async () => {
     await core((line, socket) => {
       const request = JSON.parse(line) as { id: number };
       socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { generation: 1, version: "0.1.16", core: { id: "c", name: "n" } } })}\n`);
     });
-    expect(await readHcHello(sockPath)).toEqual({ kind: "hello", generation: 1, version: "0.1.16" });
+    expect(await readHcHello(sockPath)).toEqual({ kind: "hello", generation: 1, version: "0.1.16", coreId: "c" });
     expect(received).toHaveLength(1);
     expect(JSON.parse(received[0]!)).toMatchObject({ jsonrpc: "2.0", method: "hello", params: { generation: HC_GENERATION, framed: false } });
   });

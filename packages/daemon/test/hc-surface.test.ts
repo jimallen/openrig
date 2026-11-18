@@ -18,13 +18,13 @@ describe("the hc surface exports", () => {
     expect(Object.keys(surface).sort()).toEqual([
       "HC_GENERATION", "HC_OLDEST_ACCEPTED_VERSION", "HC_TESTED_VERSION", "HC_TESTED_VERSIONS", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError",
       "KERNEL_RIG", "KERNEL_TAB", "SEAT_LABEL", "SPACE_LABEL", "TAB_ID_SEPARATOR", "TAB_LABEL",
-      "coreRuntimeLocationRefusal", "hcTerminalName", "judgeHcVersion", "parseHcVersionOutput", "pickLead", "placementLabels", "planKernelTabs", "planLabels", "planRigTabs", "resolveHcSocket",
-      "rigOfSeat", "rigSpaceId", "rigTabId",
+      "coreRuntimeLocationRefusal", "hcCoreIdentityFile", "hcTerminalName", "judgeHcVersion", "notThisInstanceCore", "parseHcVersionOutput", "pickLead", "placementLabels", "planKernelTabs",
+      "planLabels", "planRigTabs", "readThisInstanceCore", "resolveHcSocket", "rigOfSeat", "rigSpaceId", "rigTabId",
     ]);
   });
 
   it("each name is the defining module's own value, not a copy", () => {
-    for (const name of ["HC_GENERATION", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError", "resolveHcSocket"] as const) {
+    for (const name of ["HC_GENERATION", "HcClient", "HcError", "HcOutcomeUnknownError", "HcUnavailableError", "resolveHcSocket", "hcCoreIdentityFile", "notThisInstanceCore", "readThisInstanceCore"] as const) {
       expect(surface[name], name).toBe(client[name]);
     }
     for (const name of ["SEAT_LABEL", "hcTerminalName"] as const) expect(surface[name], name).toBe(seat[name]);
@@ -74,7 +74,8 @@ describe("the hc surface pulls in nothing heavy", () => {
       "adapters/hc-client.ts", "adapters/hc-placement.ts", "adapters/hc-remote-control-env.ts", "adapters/hc-seat.ts", "adapters/hc-version.ts",
       "domain/parent-session-env.ts", "hc-surface.ts",
     ]);
-    expect(external).toEqual(["node:crypto", "node:net", "node:os", "node:path"]);
+    // node:fs since workspaces-o9o.165: readThisInstanceCore reads this instance's core.json (rig doctor and the core watch).
+    expect(external).toEqual(["node:crypto", "node:fs", "node:net", "node:os", "node:path"]);
   });
 
   it("the version rule is a leaf: it imports nothing, so judging a version never pulls in a client or a watch", () => {

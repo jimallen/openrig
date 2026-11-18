@@ -26,6 +26,7 @@ function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
     mkdirp: () => {},
     checkWritable: () => {},
     readHcHello: async () => ({ kind: "no_core", detail: "fixture: no core" }),
+    thisInstanceCore: () => ({ kind: "none", file: null }),
     ...overrides,
   };
 }
@@ -187,6 +188,36 @@ describe("runDoctorChecks", () => {
       const check = await core(async () => ({ kind: "no_core", detail: "no hc core at /x (ENOENT)" }));
       expect(check?.status).toBe("pass");
       expect(check?.message).toContain("No hc core running");
+    });
+
+    // workspaces-o9o.165: the daemon refuses a core at its socket whose id is not the one this instance's state dir names; doctor says so.
+    describe("this instance's core (core.json)", () => {
+      const ID = "ab".repeat(16);
+      const OTHER = "cd".repeat(16);
+      const FILE = "/x/h/.local/state/herdr-core/default/core.json";
+      const answering = (coreId?: string) => async (): Promise<HcHelloOutcome> => ({ kind: "hello", generation: HC_GENERATION, version: HC_TESTED_VERSION, ...(coreId ? { coreId } : {}) });
+
+      it("fails when the core answering is not the one this instance's state dir names, naming both ids and the file", async () => {
+        const check = await core(answering(OTHER), { thisInstanceCore: () => ({ kind: "id", id: ID, file: FILE }) });
+        expect(check).toMatchObject({ status: "fail" });
+        expect(check?.message).toContain("not this instance's core");
+        expect(check?.reason).toContain(ID);
+        expect(check?.reason).toContain(OTHER);
+        expect(check?.reason).toContain(FILE);
+        expect(check?.fix).toContain("rig doctor");
+      });
+
+      it("fails when this instance's core.json cannot be read", async () => {
+        const check = await core(answering(ID), { thisInstanceCore: () => ({ kind: "unreadable", file: FILE, detail: "not JSON" }) });
+        expect(check).toMatchObject({ status: "fail" });
+        expect(check?.reason).toContain(FILE);
+      });
+
+      it("passes when the ids match, when the state dir names none, and when the core sent no id", async () => {
+        expect(await core(answering(ID), { thisInstanceCore: () => ({ kind: "id", id: ID, file: FILE }) })).toMatchObject({ status: "pass" });
+        expect(await core(answering(OTHER), { thisInstanceCore: () => ({ kind: "none", file: FILE }) })).toMatchObject({ status: "pass" });
+        expect(await core(answering(), { thisInstanceCore: () => ({ kind: "id", id: ID, file: FILE }) })).toMatchObject({ status: "pass" });
+      });
     });
 
     it("is not asked when hc itself is missing or the wrong version", async () => {
