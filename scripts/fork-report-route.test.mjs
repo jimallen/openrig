@@ -80,11 +80,12 @@ const SHIPPED_ROOTS = shippedRoots({
 // maintainers.") and a read-only link the verb check flagged before its exception ran, the CoS ruled within that decision: no
 // verb matching at all, so there is no verb list left to race. ANY shipped sentence that names an upstream recipient is
 // flagged, whatever it says: mvschwarz (every upstream URL holds it), the upstream site openrig.dev (any path, and its mail
-// address hello@openrig.dev), the word upstream, the maintainers, OpenRig support, the OpenRig team. Every legitimate one, read-only issue links included, is on the reviewed allowlist,
+// address hello@openrig.dev), the word upstream, the maintainers, OpenRig support, and the upstream project's people in any
+// form: OpenRig, an optional possessive (s, 's, ’s), then team, developers, devs, maintainers, authors, project, folks or people. Every legitimate one, read-only issue links included, is on the reviewed allowlist,
 // fork-report-route.allowlist.json (file, exact sentence, reason), and an entry that no longer matches fails the guard. The
 // older phrase patterns ("open an issue", ...) are gone too (re-review nit): they flagged a sentence that names no upstream
 // recipient at all, such as one about this repository's own issues.
-const RECIPIENT = /\bupstream\b|\bmaintainers?\b|mvschwarz|\bopenrig\.dev\b|\bOpenRig (?:support|team)\b/i;
+const RECIPIENT = /\bupstream\b|\bmaintainers?\b|mvschwarz|\bopenrig\.dev\b|\bOpenRig(?:s|'s|’s)? (?:support|team|developers|devs|maintainers|authors|project|folks|people)\b/i;
 
 function flagged(sentence) {
   return RECIPIENT.test(sentence);
@@ -202,6 +203,10 @@ test('the matcher flags every sentence that names an upstream recipient, whateve
     'Write to hello@openrig.dev.',
     // Strict: "OpenRig team" is a recipient even in its generic sense; legitimate uses go on the allowlist with their reason.
     'This is the universal operating floor for every OpenRig team.',
+    // The CoS's narrow check: the upstream project's people in any form, with or without a possessive.
+    "Tell OpenRig's team.", 'Tell OpenRig’s team.', 'Ask the OpenRig developers.', "Ask OpenRig's developers.", 'Ping the OpenRig devs.',
+    'Write to the OpenRig maintainers.', 'Credit the OpenRig authors.', 'Report it to the OpenRig project.', 'Tell the OpenRig folks.',
+    'Tell the OpenRig people.', 'Ask OpenRigs team.', 'Tell OpenRig support.',
   ]) assert.equal(upstreamSubmissions(sentence).length, 1, sentence);
   assert.equal(upstreamSubmissions('Report problems\nupstream, please.').length, 1, 'a sentence across two lines');
   for (const sentence of [

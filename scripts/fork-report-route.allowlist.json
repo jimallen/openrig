@@ -110,6 +110,11 @@
   "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
+  "file": "docs/reference/project-workspace.md",
+  "sentence": "OpenRig's Project TUI is a file-backed view over a workspace root.",
+  "reason": "'OpenRig' followed by a word in another sense (the Project TUI, a product feature; 'authors' as a verb), not the upstream project's people; nothing is sent anywhere."
+ },
+ {
   "file": "docs/reference/publishing-a-rig-bundle.md",
   "sentence": "A rig bundle is a whole OpenRig team that someone else can install and run: the rig spec, its agents, their instructions and skills, and its documentation.",
   "reason": "Uses 'OpenRig team' for a team of agents a person runs (a rig), not the upstream project's people; nothing is sent anywhere."
@@ -768,6 +773,11 @@
   "file": "packages/daemon/specs/rigs/launch/kernel/agents/operator/agent/guidance/role.md",
   "sentence": "- **Workshop:** install it from its pinned link, `rig up https://github.com/mvschwarz/openrig-world/tree/<commit>/rigs/workshop --target ~/rigs/workshop`, and choose the configuration from its listing that matches their providers (`--preset <alias>`, or `--seat <member>=<runtime>`).",
   "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/src/adapters/claude-rig-body-guard.ts",
+  "sentence": "// nothing is written to disk (no config file, no state file): it is a launch argument, so the \"OpenRig authors no config-file policy\" rip-out is untouched.",
+  "reason": "'OpenRig' followed by a word in another sense (the Project TUI, a product feature; 'authors' as a verb), not the upstream project's people; nothing is sent anywhere."
  },
  {
   "file": "packages/daemon/src/adapters/codex-runtime-adapter.ts",
