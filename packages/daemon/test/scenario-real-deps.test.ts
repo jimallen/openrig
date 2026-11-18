@@ -144,7 +144,7 @@ describe("a per-step up topology (R-12)", () => {
   it("brings up the named topology, resolved against the scenario's folder; a plain up still brings up the scenario's own", async () => {
     const calls: string[][] = [];
     const runRig = vi.fn(async (args: string[]) => { calls.push(args); return args[1] === "/s/rig-beta.yaml" ? upAs("rig-beta", "r-b") : upAs("rig-alpha", "r-a"); });
-    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/rig-alpha.yaml", scenarioDir: "/s", runRig } as never);
+    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/rig-alpha.yaml", scenarioDir: "/s", runRig });
     await deps.runAction("up", {}, undefined);
     await deps.runAction("up", { topology: "./rig-beta.yaml" }, undefined);
     expect(calls.map((c) => c.slice(0, 2))).toEqual([["up", "/t/rig-alpha.yaml"], ["up", "/s/rig-beta.yaml"]]);
@@ -153,7 +153,7 @@ describe("a per-step up topology (R-12)", () => {
   it("down stops every rig the run brought up, the later one first; restart still targets the scenario's own rig", async () => {
     const calls: string[][] = [];
     const runRig = vi.fn(async (args: string[]) => { calls.push(args); return args[0] === "up" ? (args[1] === "/s/rig-beta.yaml" ? upAs("rig-beta", "r-b") : upAs("rig-alpha", "r-a")) : ok(); });
-    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/rig-alpha.yaml", scenarioDir: "/s", runRig } as never);
+    const deps = buildRealDeps({ daemon: fakeDaemon(), rigBin: "/bin/rig", topologyPath: "/t/rig-alpha.yaml", scenarioDir: "/s", runRig });
     await deps.runAction("up", {}, undefined);
     await deps.runAction("up", { topology: "./rig-beta.yaml" }, undefined);
     await deps.runAction("restart", "w", "w");
