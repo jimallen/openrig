@@ -1,72 +1,697 @@
 [
  {
+  "file": "docs/reference/bundle-formats.md",
+  "sentence": "| Run record | `run-record.v1` | beside its receipt, private | Fleet, Dev QA, and maintainers for community reports |",
+  "reason": "Describes the roles in the upstream registry's process (who maintains it and reads its run records): format reference, not an instruction to submit."
+ },
+ {
+  "file": "docs/reference/bundle-formats.md",
+  "sentence": "| Registry entry | `registry-entry.v1` | `openrig-registry/registry/<slug>.yaml` | maintainers, through review |",
+  "reason": "Describes the roles in the upstream registry's process (who maintains it and reads its run records): format reference, not an instruction to submit."
+ },
+ {
+  "file": "docs/reference/bundle-formats.md",
+  "sentence": "- git clone https://github.com/mvschwarz/openrig.git",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "docs/reference/developing.md",
+  "sentence": "Upstream leaves it out of `npm test` because pull-request CI runs it as `package-tests (ui)`; this fork merges and releases locally without that CI, so the UI suite would otherwise run nowhere (workspaces-o9o.107).",
+  "reason": "Describes how the upstream project's CI runs the UI suite and why this fork adds it to npm test: nothing is sent upstream."
+ },
+ {
+  "file": "docs/reference/getting-started.md",
+  "sentence": "[dajiaohuang](https://github.com/dajiaohuang) [ran OpenRig 0.6.6 under WSL2](https://github.com/mvschwarz/openrig/issues/88#issuecomment-6043925546) on Ubuntu 24.04, with Node.js 24.14.1, tmux 3.4, Codex CLI 0.161.0 and Pi (`@earendil-works/pi-coding-agent`) 1.0.4, headless, as the distribution's root user.",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/getting-started.md",
+  "sentence": "Before that, add it with `npx skills add mvschwarz/openrig --skill rigs`, or read [`skills/rigs/SKILL.md`](../../skills/rigs/SKILL.md).",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "docs/reference/getting-started.md",
+  "sentence": "```sh curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.8/scripts/install.sh | sh -s -- --dry-run ```",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "docs/reference/getting-started.md",
+  "sentence": "The same command without `--dry-run`, `curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.8/scripts/install.sh | sh`, installs the latest published `@openrig/cli` with `npm install -g`, runs the Node.js and SQLite check, then `rig setup --dry-run` and `rig setup`.",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "This build is a private fork: the upstream project's version of this page, online at [openrig.dev/help/agents](https://www.openrig.dev/help/agents), is a read-only reference, and its contact routes are the upstream project's, never this fork's.",
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
   "file": "docs/reference/help.md",
   "sentence": "Try the next useful step, check the result, and if you can't finish, report it to this fork's own intake, never upstream: see [Report a problem on this fork](#report-a-problem-on-this-fork).",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "For full release notes and known limitations, open `https://github.com/mvschwarz/openrig/blob/v<version>/docs/releases/v<version>.md`, using the version number from `rig --version` (without the commit it may show in parentheses).",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "When that file doesn't exist, use the version's section of `https://github.com/mvschwarz/openrig/blob/v<version>/CHANGELOG.md`.",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "- Claude seats reported as needing attention after a restore: [#86](https://github.com/mvschwarz/openrig/issues/86), [#273](https://github.com/mvschwarz/openrig/issues/273).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "- Claude usage limits may not be detected: [#99](https://github.com/mvschwarz/openrig/issues/99).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "- Codex prompt variants not recognised as idle: [#79](https://github.com/mvschwarz/openrig/issues/79).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "- Codex asks about hook trust at first launch: [#17](https://github.com/mvschwarz/openrig/issues/17), not reproduced by the team.",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "- A Codex seat on the default `workspace-write` sandbox starts without network access, so it can't reach the local daemon, when its Codex configuration sets network access off, a managed requirement could restrict it, or Codex doesn't answer OpenRig's configuration read in time: [#275](https://github.com/mvschwarz/openrig/issues/275).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/help.md",
+  "sentence": "For everything else, search [open issues](https://github.com/mvschwarz/openrig/issues).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
  },
  {
   "file": "docs/reference/help.md",
   "sentence": "Upstream issues are read-only references to known problems: read them for an explanation, and post nothing there.",
-  "reason": "Says the upstream issues are read-only references and to post nothing there: a prohibition, not a submission."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
   "file": "docs/reference/help.md",
   "sentence": "This build is a private fork, and nothing from it goes to the upstream project: file nothing with it (no issue, discussion or pull request on any `github.com/mvschwarz` repository) and send nothing to its support address.",
-  "reason": "States the fork's rule that nothing is filed upstream: it names the upstream repository and support address to forbid submitting to them."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
   "file": "docs/reference/help.md",
   "sentence": "For a confirmed bug, search the upstream issues first and name a matching one in your report, as a reference; the fork's Chief of Staff decides what happens next.",
-  "reason": "Upstream issues are searched read-only and named in the fork's own report as a reference; the fork's Chief of Staff decides what happens next."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/publishing-a-rig-bundle.md",
+  "sentence": "This build is a private fork: it never sends a bundle to the upstream catalogue at openrig.dev/rigs (see section 6).",
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/publishing-a-rig-bundle.md",
+  "sentence": "The upstream catalogue is not for this fork",
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/publishing-a-rig-bundle.md",
+  "sentence": "openrig.dev/rigs and its registry belong to the upstream project, and nothing from this fork goes upstream: this fork files no registry entry, pull request or issue there.",
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/rig-spec.md",
+  "sentence": "If a full rig restore leaves an OMP seat in `attention_required` or `failed`, `rig seat clear-attention` cannot yet reconcile it to `operator_recovered`, even with `--reason`, because restore reconciliation only verifies Claude Code and Codex processes ([#41](https://github.com/mvschwarz/openrig/issues/41)).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/behaviour/not-generated-with-sections.json",
+  "sentence": "\"repository\": \"https://github.com/mvschwarz/openrig-world\",",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/behaviour/not-generated-with-sections.json",
+  "sentence": "\"canonicalUrl\": \"https://github.com/mvschwarz/openrig-world/tree/894ad0e301ab46ac6ddd74dea784b7f6311d69a2/rigs/openrig-dev\"",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/registry/listed-with-withdrawn-on.yaml",
+  "sentence": "repository: https://github.com/mvschwarz/openrig-world",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/registry/parent-folder.yaml",
+  "sentence": "repository: https://github.com/mvschwarz/openrig-world",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/registry/short-commit.yaml",
+  "sentence": "repository: https://github.com/mvschwarz/openrig-world",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/registry/withdrawn-without-date.yaml",
+  "sentence": "repository: https://github.com/mvschwarz/openrig-world",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/run-record/unlabelable-platform.json",
+  "sentence": "\"repository\": \"https://github.com/mvschwarz/openrig-world\",",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/invalid/run-record/unlabelable-platform.json",
+  "sentence": "\"canonicalUrl\": \"https://github.com/mvschwarz/openrig-world/tree/894ad0e301ab46ac6ddd74dea784b7f6311d69a2/rigs/openrig-dev\"",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/behaviour/custom-not-generated.json",
+  "sentence": "\"repository\": \"https://github.com/mvschwarz/openrig-world\",",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/behaviour/custom-not-generated.json",
+  "sentence": "\"canonicalUrl\": \"https://github.com/mvschwarz/openrig-world/tree/894ad0e301ab46ac6ddd74dea784b7f6311d69a2/rigs/openrig-dev\"",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/behaviour/openrig-dev.recommended.json",
+  "sentence": "\"repository\": \"https://github.com/mvschwarz/openrig-world\",",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/behaviour/openrig-dev.recommended.json",
+  "sentence": "\"canonicalUrl\": \"https://github.com/mvschwarz/openrig-world/tree/894ad0e301ab46ac6ddd74dea784b7f6311d69a2/rigs/openrig-dev\"",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/registry/openrig-dev.yaml",
+  "sentence": "repository: https://github.com/mvschwarz/openrig-world",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/registry/withdrawn.yaml",
+  "sentence": "repository: https://github.com/mvschwarz/openrig-world",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/run-record/team-assisted-pass.json",
+  "sentence": "\"repository\": \"https://github.com/mvschwarz/openrig-world\",",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/run-record/team-assisted-pass.json",
+  "sentence": "\"canonicalUrl\": \"https://github.com/mvschwarz/openrig-world/tree/894ad0e301ab46ac6ddd74dea784b7f6311d69a2/rigs/openrig-dev\"",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/run-record/team-pass.json",
+  "sentence": "\"repository\": \"https://github.com/mvschwarz/openrig-world\",",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/run-record/team-pass.json",
+  "sentence": "\"canonicalUrl\": \"https://github.com/mvschwarz/openrig-world/tree/894ad0e301ab46ac6ddd74dea784b7f6311d69a2/rigs/openrig-dev\"",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/run-record/withdraws-earlier.json",
+  "sentence": "\"repository\": \"https://github.com/mvschwarz/openrig-world\",",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
+ },
+ {
+  "file": "docs/reference/schemas/fixtures/valid/run-record/withdraws-earlier.json",
+  "sentence": "\"canonicalUrl\": \"https://github.com/mvschwarz/openrig-world/tree/894ad0e301ab46ac6ddd74dea784b7f6311d69a2/rigs/openrig-dev\"",
+  "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
  },
  {
   "file": "docs/reference/slack-app-setup.md",
   "sentence": "> here does not match what Slack shows you, report it to this fork's own intake, never upstream",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
   "file": "docs/reference/stream-classifier-worker.md",
   "sentence": "> not behave as described here, report it to this fork's own intake, never upstream",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/topology-naming.md",
+  "sentence": "Workshop is a [bundle](https://github.com/mvschwarz/openrig-world/tree/main/rigs/workshop).",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/cli/src/commands/context.ts",
+  "sentence": ": \"Explicitly fetch/merge the upstream, then select the clean pack; refuse local selection edits\")",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/commands/ps.ts",
+  "sentence": "// --full (the invariant's last rung; validated as -A-only upstream).",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/commands/workflow.ts",
+  "sentence": ": `Wait for upstream; rig workflow show ${opts.instance} to monitor`;",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/cross-host-executor.ts",
+  "sentence": "* the caller from the seat env + this host's selfHostId (an upstream triple preserved verbatim, never",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/lib/context-git.ts",
+  "sentence": "const upstream = optionalGit(checkout, [\"rev-parse\", \"--abbrev-ref\", \"--symbolic-full-name\", \"@{upstream}\"]);",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/lib/context-git.ts",
+  "sentence": "const counts = upstream ? optionalGit(checkout, [\"rev-list\", \"--left-right\", \"--count\", \"HEAD...@{upstream}\"])?.split(/\\s+/).map(Number) : null;",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/lib/context-git.ts",
+  "sentence": "upstream, ahead: counts?.[0] ?? null, behind: counts?.[1] ?? null,",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/lib/context-git.ts",
+  "sentence": "git(checkout, [\"branch\", \"--set-upstream-to\", `origin/${branch}`, \"--\", branch]);",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/lib/context-git.ts",
+  "sentence": "if (!remote || remote.startsWith(\"-\") || !merge.startsWith(\"refs/heads/\")) throw new Error(\"Select a branch with an ordinary Git upstream before updating.\");",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/lib/context-git.ts",
+  "sentence": "git(checkout, [\"merge\", \"--no-edit\", \"@{upstream}\"]);",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
  },
  {
   "file": "packages/daemon/assets/guidance/openrig-start.md",
   "sentence": "It is the one help guide, matched to your installed version: check the environment, find the next step, compare known problems, and, when you are still stuck, report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/.claude-plugin/plugin.json",
+  "sentence": "\"url\": \"https://github.com/mvschwarz\"",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/.claude-plugin/plugin.json",
+  "sentence": "\"homepage\": \"https://github.com/mvschwarz/openrig-plugins\",",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/.claude-plugin/plugin.json",
+  "sentence": "\"repository\": \"github:mvschwarz/openrig-plugins\",",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/.codex-plugin/plugin.json",
+  "sentence": "\"url\": \"https://github.com/mvschwarz\"",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/.codex-plugin/plugin.json",
+  "sentence": "\"homepage\": \"https://github.com/mvschwarz/openrig-plugins\",",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/.codex-plugin/plugin.json",
+  "sentence": "\"repository\": \"github:mvschwarz/openrig-plugins\",",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/.codex-plugin/plugin.json",
+  "sentence": "\"websiteURL\": \"https://github.com/mvschwarz/openrig-plugins\"",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/README.md",
+  "sentence": "- Plugin repo: https://github.com/mvschwarz/openrig-plugins",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/README.md",
+  "sentence": "- OpenRig CLI: https://github.com/mvschwarz/openrig",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/skills/agent-operated-software/SKILL.md",
+  "sentence": "One item judgment derives its upstream readiness; agents do not synchronize parent checkboxes, queue tags, or status prose.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/skills/openrig-skills/SKILL.md",
+  "sentence": "### Vendored craft — load when you're coding (ships with upstream provenance) General engineering skills OpenRig ships as vendored copies.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
  },
  {
   "file": "packages/daemon/assets/plugins/openrig-core/skills/openrig-skills/SKILL.md",
   "sentence": "Run `rig context get help`: the one help guide for your installed version, from symptom to next step, known problems, and, if you are still stuck, a report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/assets/plugins/openrig-core/skills/orienting-to-an-inherited-seat/SKILL.md",
+  "sentence": "So confirm the things your packet *says* it handed you actually arrived: if a first-acts step named a skill or doc, verify it loaded; if it didn't, **go get it** and flag the delivery gap upstream.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/assets/skills/rigs/SKILL.md",
+  "sentence": "Say so before you start OpenRig ([the full list](https://github.com/mvschwarz/openrig#what-openrig-changes-on-your-machine)).",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "This build is a private fork: the upstream project's version of this page, online at [openrig.dev/help/agents](https://www.openrig.dev/help/agents), is a read-only reference, and its contact routes are the upstream project's, never this fork's.",
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
   "file": "packages/daemon/context-packs-src/help/help.md",
   "sentence": "Try the next useful step, check the result, and if you can't finish, report it to this fork's own intake, never upstream: see [Report a problem on this fork](#report-a-problem-on-this-fork).",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "For full release notes and known limitations, open `https://github.com/mvschwarz/openrig/blob/v<version>/docs/releases/v<version>.md`, using the version number from `rig --version` (without the commit it may show in parentheses).",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "When that file doesn't exist, use the version's section of `https://github.com/mvschwarz/openrig/blob/v<version>/CHANGELOG.md`.",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "- Claude seats reported as needing attention after a restore: [#86](https://github.com/mvschwarz/openrig/issues/86), [#273](https://github.com/mvschwarz/openrig/issues/273).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "- Claude usage limits may not be detected: [#99](https://github.com/mvschwarz/openrig/issues/99).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "- Codex prompt variants not recognised as idle: [#79](https://github.com/mvschwarz/openrig/issues/79).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "- Codex asks about hook trust at first launch: [#17](https://github.com/mvschwarz/openrig/issues/17), not reproduced by the team.",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "- A Codex seat on the default `workspace-write` sandbox starts without network access, so it can't reach the local daemon, when its Codex configuration sets network access off, a managed requirement could restrict it, or Codex doesn't answer OpenRig's configuration read in time: [#275](https://github.com/mvschwarz/openrig/issues/275).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/help/help.md",
+  "sentence": "For everything else, search [open issues](https://github.com/mvschwarz/openrig/issues).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
  },
  {
   "file": "packages/daemon/context-packs-src/help/help.md",
   "sentence": "Upstream issues are read-only references to known problems: read them for an explanation, and post nothing there.",
-  "reason": "Says the upstream issues are read-only references and to post nothing there: a prohibition, not a submission."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
   "file": "packages/daemon/context-packs-src/help/help.md",
   "sentence": "This build is a private fork, and nothing from it goes to the upstream project: file nothing with it (no issue, discussion or pull request on any `github.com/mvschwarz` repository) and send nothing to its support address.",
-  "reason": "States the fork's rule that nothing is filed upstream: it names the upstream repository and support address to forbid submitting to them."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
   "file": "packages/daemon/context-packs-src/help/help.md",
   "sentence": "For a confirmed bug, search the upstream issues first and name a matching one in your report, as a reference; the fork's Chief of Staff decides what happens next.",
-  "reason": "Upstream issues are searched read-only and named in the fork's own report as a reference; the fork's Chief of Staff decides what happens next."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/onboarding-width/public-what-you-can-do.md",
+  "sentence": "Install it from its pinned openrig-world link, `rig up https://github.com/mvschwarz/openrig-world/tree/<commit>/rigs/workshop --target ~/rigs/workshop`, taking the commit from `https://raw.githubusercontent.com/mvschwarz/openrig-registry/main/registry/workshop.yaml`; fetch it fresh, since a web tool's cached copy can be older.",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
  },
  {
   "file": "packages/daemon/context-packs-src/onboarding-width/public-what-you-can-do.md",
   "sentence": "When your user says OpenRig isn't working, start with **`rig context get help`**: the one help guide for the installed version, from checking the environment to a report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/reference/getting-started.md",
+  "sentence": "[dajiaohuang](https://github.com/dajiaohuang) [ran OpenRig 0.6.6 under WSL2](https://github.com/mvschwarz/openrig/issues/88#issuecomment-6043925546) on Ubuntu 24.04, with Node.js 24.14.1, tmux 3.4, Codex CLI 0.161.0 and Pi (`@earendil-works/pi-coding-agent`) 1.0.4, headless, as the distribution's root user.",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/reference/getting-started.md",
+  "sentence": "Before that, add it with `npx skills add mvschwarz/openrig --skill rigs`, or read [`skills/rigs/SKILL.md`](../../skills/rigs/SKILL.md).",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/reference/getting-started.md",
+  "sentence": "```sh curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.8/scripts/install.sh | sh -s -- --dry-run ```",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/reference/getting-started.md",
+  "sentence": "The same command without `--dry-run`, `curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.8/scripts/install.sh | sh`, installs the latest published `@openrig/cli` with `npm install -g`, runs the Node.js and SQLite check, then `rig setup --dry-run` and `rig setup`.",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/reference/rig-spec.md",
+  "sentence": "If a full rig restore leaves an OMP seat in `attention_required` or `failed`, `rig seat clear-attention` cannot yet reconcile it to `operator_recovered`, even with `--reason`, because restore reconciliation only verifies Claude Code and Codex processes ([#41](https://github.com/mvschwarz/openrig/issues/41)).",
+  "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/core/openrig-skills/SKILL.md",
+  "sentence": "### Vendored craft — load when you're coding (ships with upstream provenance) General engineering skills OpenRig ships as vendored copies.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
  },
  {
   "file": "packages/daemon/specs/agents/shared/skills/core/openrig-skills/SKILL.md",
   "sentence": "Run `rig context get help`: the one help guide for your installed version, from symptom to next step, known problems, and, if you are still stuck, a report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
-  "reason": "Names upstream only to rule it out: the sentence sends a problem report to this fork's own intake, never upstream (o9o.137; Jim: nothing goes upstream)."
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/core/watchdog/SKILL.md",
+  "sentence": "- **Producer-edge repair**: if upstream completion exists but the downstream artifact is missing, wake the producer loop head.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/LOCAL-INSIGHTS.md",
+  "sentence": "To sync SKILL.md with upstream while preserving local insights:",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/LOCAL-INSIGHTS.md",
+  "sentence": "## Local Dev Insights **IMPORTANT:** Read `LOCAL-INSIGHTS.md` in this skill directory for gotchas, corrections, and tested workflows discovered through hands-on use that this upstream skill doesn't cover.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "- **Upstream**: Vercel agent-browser CLI (https://github.com/vercel/agent-browser)",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "- **Last upstream check**: 2026-05-13 (initial relationship declaration)",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "The upstream skill is kept structurally intact; OpenRig adds a companion file that captures local-use insights without polluting the upstream content.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "| `LOCAL-INSIGHTS.md` (new sibling, ~189 lines) | Field-tested gotchas, command-compatibility matrices, corrections discovered through hands-on use that the upstream skill doesn't cover.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "Nothing else in `SKILL.md` diverges from upstream content as of the last upstream check.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "The SKILL.md body explicitly points readers here for hands-on gotchas the upstream skill doesn't cover.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "## When to re-sync upstream",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/OPENRIG.md",
+  "sentence": "Re-sync `SKILL.md` body from upstream, preserving the \"Local Dev Insights\" pointer section.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/SKILL.md",
+  "sentence": "allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*) metadata: openrig: vendored_from: \"Vercel agent-browser (https://github.com/vercel/agent-browser)\" vendoring_pattern: add-supplementary-files last_upstream_check: \"2026-05-13 (initial vendoring declaration)\" divergence_notes: | Upstream SKILL.md content tracks upstream; a small \"Local Dev Insights\" pointer section was added near the end of the body to surface the sibling LOCAL-INSIGHTS.md companion file.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/agent-browser/SKILL.md",
+  "sentence": "**IMPORTANT:** Read `LOCAL-INSIGHTS.md` in this skill directory for gotchas, corrections, and tested workflows discovered through hands-on use that this upstream skill doesn't cover.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/process/test-driven-development/SKILL.md",
+  "sentence": "--- name: test-driven-development description: Use when implementing any feature or bugfix, before writing implementation code metadata: openrig: vendored_from: \"Obra Superpowers (https://github.com/obra/superpowers)\" vendoring_pattern: modify-the-file last_upstream_check: \"2026-05-13 (historical upstream comparison; local scope and preservation adaptations made since)\" ---",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/rigs/launch/factory/topology/seats/orch-lead/CRAFT.md",
+  "sentence": "- You are the shock absorber, not the wire: absorb upstream churn, relay only settled decisions.",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/specs/rigs/launch/kernel/agents/operator/agent/guidance/role.md",
+  "sentence": "Read the commit and its configurations from https://raw.githubusercontent.com/mvschwarz/openrig-registry/main/registry/workshop.yaml, fetched fresh, for example with `curl -fsSL <that link>`.",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/specs/rigs/launch/kernel/agents/operator/agent/guidance/role.md",
+  "sentence": "- **Workshop:** install it from its pinned link, `rig up https://github.com/mvschwarz/openrig-world/tree/<commit>/rigs/workshop --target ~/rigs/workshop`, and choose the configuration from its listing that matches their providers (`--preset <alias>`, or `--seat <member>=<runtime>`).",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/src/adapters/codex-runtime-adapter.ts",
+  "sentence": "// (Positional keying is a known upstream fragility (#23259); if a user pre-authored hooks",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/adapters/codex-runtime-adapter.ts",
+  "sentence": "* refuses that shape upstream in `assertFragmentOpensWithTable`, because an",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/adapters/tmux.ts",
+  "sentence": "* after the `$`); tmux 3.7c prints the value as it is; upstream 3.4 and 3.5a read as printing it as it is. The build is not",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/active-lens-store.ts",
+  "sentence": "// workflow_specs cache — that's an upstream concern at the route",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/bundle-skills-router.ts",
+  "sentence": "// validation upstream).",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/bundle-workflow-specs-router.ts",
+  "sentence": "// validation upstream).",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/current-work.ts",
+  "sentence": "* The tags column is persisted verbatim and nothing upstream enforces one value per",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/node-inventory.ts",
+  "sentence": "* Permission/IO failures upstream (L1 fail-closed) leave sessionStatus unchanged, so",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/plugin-vendor-service.ts",
+  "sentence": "// github.com/mvschwarz/openrig-plugins. Tolerates 404, network errors,",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/src/domain/plugin-vendor-service.ts",
+  "sentence": "// - The repo at github.com/mvschwarz/openrig-plugins is currently empty",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/src/domain/plugin-vendor-service.ts",
+  "sentence": "const REPO_BASE = \"https://github.com/mvschwarz/openrig-plugins\";",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/src/domain/plugin-vendor-service.ts",
+  "sentence": "* UPSTREAM of the adapter CWD projection, so an unfixed mode here strands 0644 in the",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/plugin-vendor-service.ts",
+  "sentence": "* github.com/mvschwarz/openrig-plugins. Tolerates 404, network errors,",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/src/domain/policies/edge-artifact-required.ts",
+  "sentence": "`Artifact edge repair needed: ${label} has ${missing.length} upstream artifact(s) with no matching downstream artifact.\\n${list}${suffix}\\n\\n` +",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/proof/judgments.ts",
+  "sentence": "/** Addressed Markdown owns judgments. These views are rebuilt, never written upstream. */",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/proof/judgments.ts",
+  "sentence": "const upstream = visit(dep, next);",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/proof/judgments.ts",
+  "sentence": "return upstream === null || [\"unknown\", \"legacy\"].includes(dep.readiness.state) ? null : upstream && dep.readiness.state === \"ready\";",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/queue-repository.ts",
+  "sentence": "* source rig's workspace.repos[]; unknown names rejected upstream. */",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/queue-repository.ts",
+  "sentence": "if (res.kind !== \"unregistered\") return undefined; // registered/scheme were admitted upstream",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/queue-repository.ts",
+  "sentence": "throw new QueueRepositoryError(\"wake_self_blocker\", \"a repeating wait must name an upstream blocker, not its own packet\");",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/scope/scope-approve.ts",
+  "sentence": "* (the freeze trigger). Omitted upstream ⇒ delivery (back-compat). */",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/steering/steering-composer.ts",
+  "sentence": "// - STEERING.md priority stack (verbatim render upstream)",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/terminal/view-composer.ts",
+  "sentence": "* decided upstream (liveness probe + cross-rig/saved-read-only policy); the",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/watchdog-policy-engine.ts",
+  "sentence": "* `not_due` polls are filtered upstream by the scheduler and never",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/routes/terminal.ts",
+  "sentence": "/** Parse the `{ provider?, view }` open body honestly (a non-object / missing view → structured 400 upstream). */",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/startup.ts",
+  "sentence": "// github.com/mvschwarz/openrig-plugins is best-effort + 404-tolerant",
+  "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/ui/src/components/review/SliceReviewTab.tsx",
+  "sentence": "if (src.startsWith(\"/\")) return null; // absolute = defect, surfaced upstream",
+  "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
  }
 ]

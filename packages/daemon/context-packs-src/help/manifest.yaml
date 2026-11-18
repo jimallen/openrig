@@ -2,8 +2,8 @@
 name: help
 version: "0"
 taxonomy: world
-purpose: "What an agent does when its user says OpenRig isn't working: diagnose, fix within permissions, verify, and escalate to OpenRig support."
+purpose: "What an agent does when its user says OpenRig isn't working: diagnose, fix within permissions, verify, and report to this fork's own intake (the openrig rig's Chief of Staff)."
 files:
   - path: help.md
     role: reference
-    summary: "Help your user get unstuck: environment checks, version-matched guidance, known problems, and how to reach OpenRig support."
+    summary: "Help your user get unstuck: environment checks, version-matched guidance, known problems, and how to report a problem to this fork's own intake."

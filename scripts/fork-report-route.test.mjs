@@ -90,22 +90,17 @@ const UPSTREAM_SUBMISSION = [
   /tell us how it went/i,
 ];
 
-// Jim, 2026-11-18 (o9o.137, after a third review found another negation that slipped past): a STRICT guard, no negation.
-// Every shipped sentence that pairs a submitting verb with an upstream recipient, in either order, is flagged. A legitimate
-// one (this fork's own help naming upstream to rule it out) goes on the reviewed allowlist, fork-report-route.allowlist.json
-// (file, exact sentence, reason), and an entry that no longer matches a flagged sentence fails the guard.
-// - Verbs: report, submit, send, email, post; "file", "open" and "raise" only as submitting verbs ("file an issue",
-//   "open a pull request"), since "a companion file" and "the open body" are nouns, not submissions.
-// - Recipients: upstream, the maintainers, mvschwarz, hello@openrig.dev, the OpenRig team or support.
-// - A read-only link to an upstream issue, or to the issue list, is taken out first: reading a known issue is allowed.
-const SUBMIT = /\b(?:report|submit|send|email|post)\b|\bfile (?:an?|it|them|your|bugs?|issues?|problems?|reports?)\b|\b(?:open|raise) (?:an? |the |this |a new )?(?:issue|discussion|pull request|PR|ticket|bug)\b/i;
-const RECIPIENT = /\b(?:upstream|maintainers?)\b|mvschwarz|hello@openrig\.dev|OpenRig (?:team|support)/i;
-const READ_ONLY_ISSUE_LINK = /(?:https?:\/\/)?github\.com\/mvschwarz\/[\w.-]+\/issues(?:\/\d+)?(?:#[\w-]+)?(?=[)\s.,;:]|$)/gi;
+// Jim, 2026-11-18 (o9o.137): a STRICT guard. After a fourth review found a verb the list missed ("File the issue with upstream
+// maintainers.") and a read-only link the verb check flagged before its exception ran, the CoS ruled within that decision: no
+// verb matching at all, so there is no verb list left to race. ANY shipped sentence that names an upstream recipient is
+// flagged, whatever it says: mvschwarz (every upstream URL holds it), hello@openrig.dev, the word upstream, the maintainers,
+// OpenRig support. Every legitimate one, read-only issue links included, is on the reviewed allowlist,
+// fork-report-route.allowlist.json (file, exact sentence, reason), and an entry that no longer matches fails the guard. The
+// phrase patterns above stay, as sentences flagged too.
+const RECIPIENT = /\bupstream\b|\bmaintainers?\b|mvschwarz|hello@openrig\.dev|\bOpenRig support\b/i;
 
 function flagged(sentence) {
-  if (UPSTREAM_SUBMISSION.some((pattern) => pattern.test(sentence))) return true;
-  const plain = sentence.replace(READ_ONLY_ISSUE_LINK, '');
-  return SUBMIT.test(plain) && RECIPIENT.test(plain);
+  return UPSTREAM_SUBMISSION.some((pattern) => pattern.test(sentence)) || RECIPIENT.test(sentence);
 }
 
 // A sentence may wrap across lines, so lines are joined into blocks first. A block ends at a blank line and before a line that
@@ -141,9 +136,19 @@ export function sentencesOf(text) {
   return out;
 }
 
-export function upstreamSubmissions(text) {
-  return sentencesOf(text).filter((sentence) => flagged(sentence.text));
+/** Prose (Markdown, text) is read as sentences across line wraps. Code, JSON, YAML and scripts are read one line per unit: they
+ *  have no sentence ends, so a "sentence" would be a whole block, and its allowlist key would go stale on any edit near it. */
+export const isProse = (file) => /\.(?:md|markdown|txt)$/i.test(file);
+function unitsOf(text, prose) {
+  if (prose) return sentencesOf(text);
+  return text.split('\n').map((raw, i) => ({ line: i + 1, text: raw.trim().replace(/\s+/g, ' ') })).filter((u) => u.text);
 }
+
+/** The flagged units of a text: sentences when `prose` (the default), lines otherwise. */
+export function upstreamSubmissions(text, prose = true) {
+  return unitsOf(text, prose).filter((unit) => flagged(unit.text));
+}
+const submissionsIn = (file, text) => upstreamSubmissions(text, isProse(file));
 
 const ALLOWLIST_FILE = 'scripts/fork-report-route.allowlist.json';
 const ALLOWLIST = JSON.parse(readFileSync(path.join(root, ALLOWLIST_FILE), 'utf8'));
@@ -183,50 +188,47 @@ test('the census reads every shipped surface from its sources, on a clean tree t
   assert.ok(!files.some((f) => f.startsWith('packages/daemon/context-packs/') || f.startsWith('packages/cli/dist/')), 'build output read');
 });
 
-test('the matcher flags each way of pointing a reader upstream, negated or not, and passes a read-only issue link', () => {
+test('the matcher flags every sentence that names an upstream recipient, whatever it says', () => {
   for (const sentence of [
     'prepare a message to OpenRig support at hello@openrig.dev.',
     'or [open an issue](https://github.com/mvschwarz/openrig/issues/new/choose).',
     'use [GitHub Q&A](https://github.com/mvschwarz/openrig/discussions/categories/q-a).',
-    '> open an issue or send a pull request',
     'Open a pull request to [mvschwarz/openrig-registry](https://github.com/mvschwarz/openrig-registry)',
-    'send the OpenRig team a useful report when you are still stuck',
-    'and a useful report to the OpenRig team if you are still stuck',
-    '## 6. Submit it to openrig.dev/rigs',
-    'next to the ways people can contact OpenRig support.',
-    "You're welcome to run it and tell us how it went.",
-    // verify-qa's probes, all three reviews: with no negation handling, each is flagged.
+    // verify-qa's probes, all four reviews: each names a recipient, so each is flagged.
     'Report problems upstream, but do not include secrets.',
     'Report problems upstream and not here.',
     'Never mind the logs; file an issue with the upstream project.',
     'Report problems upstream if they are not already filed.',
     'Do not report problems upstream.',
-    // Either order; and a sentence that wraps across lines is one sentence.
+    'File the issue with upstream maintainers.',
     'The upstream maintainers want you to report it.',
+    // No exceptions: a read-only issue link names the upstream repository too, and goes on the allowlist if it is legitimate.
+    'Reference [open an issue](https://github.com/mvschwarz/openrig/issues/99) for background only.',
+    '- Claude usage limits may not be detected: [#99](https://github.com/mvschwarz/openrig/issues/99).',
     "report it to this fork's own intake, never upstream.",
+    'Ask the maintainers.',
   ]) assert.equal(upstreamSubmissions(sentence).length, 1, sentence);
   assert.equal(upstreamSubmissions('Report problems\nupstream, please.').length, 1, 'a sentence across two lines');
+  // The phrase patterns still flag a sentence that names no recipient word.
+  for (const sentence of ['> open an issue or send a pull request', 'send the OpenRig team a useful report when you are still stuck',
+    '## 6. Submit it to openrig.dev/rigs', "You're welcome to run it and tell us how it went."]) assert.equal(upstreamSubmissions(sentence).length, 1, sentence);
   for (const sentence of [
-    // A read-only link to an upstream issue, or to the issue list, is not a recipient.
-    '- Claude usage limits may not be detected: [#99](https://github.com/mvschwarz/openrig/issues/99).',
-    'For everything else, search [open issues](https://github.com/mvschwarz/openrig/issues).',
-    'The cause is in the [report](https://github.com/mvschwarz/openrig/issues/99), which is read-only here.',
-    'Reference [open this issue](https://github.com/mvschwarz/openrig/issues/99) for background only.',
-    'See the report at https://github.com/mvschwarz/openrig/issues/99 for the cause.',
-    // Nouns, not submitting verbs.
-    'OpenRig adds a companion file that captures local-use insights without polluting the upstream content.',
-    '/** Parse the `{ provider?, view }` open body honestly (a non-object / missing view → structured 400 upstream). */',
+    // No recipient: the fork's own route, and "OpenRig supports" (a word boundary, not the support desk).
+    "send the report to the openrig rig's Chief of Staff, who files it.",
+    'OpenRig supports Node.js 22 and 24.',
+    'This is the universal operating floor for every OpenRig team.',
   ]) assert.deepEqual(upstreamSubmissions(sentence), [], sentence);
   // Two list items, or two paragraphs, are never one sentence.
-  assert.deepEqual(upstreamSubmissions('- report it here\n- the upstream project is read-only'), []);
-  assert.deepEqual(upstreamSubmissions('Report it here\n\nThe upstream project is read-only.'), []);
+  assert.deepEqual(upstreamSubmissions('- report it here\n- the docs live elsewhere'), []);
+  // A file that is not prose is read one line per unit.
+  assert.deepEqual(upstreamSubmissions('const a = 1; // report\nconst b = "upstream";', false).map((u) => u.text), ['const b = "upstream";']);
 });
 
 test('every flagged shipped sentence is on the reviewed allowlist (file, exact sentence, reason)', () => {
   const allowed = new Set(ALLOWLIST.map((e) => `${e.file}\u0000${e.sentence}`));
   const hits = [];
   for (const file of shippedFiles()) {
-    for (const hit of upstreamSubmissions(readFileSync(path.join(root, file), 'utf8'))) {
+    for (const hit of submissionsIn(file, readFileSync(path.join(root, file), 'utf8'))) {
       if (!allowed.has(`${file}\u0000${hit.text}`)) hits.push(`${file}:${hit.line}: ${hit.text}`);
     }
   }
@@ -242,7 +244,7 @@ export function allowlistProblems(entries, shipped, textOf) {
     if (seen.has(key)) problems.push(`duplicate: ${entry.file}: ${entry.sentence}`);
     seen.add(key);
     if (typeof entry.reason !== 'string' || entry.reason.trim().length < 20) problems.push(`no reason: ${entry.file}: ${entry.sentence}`);
-    const live = shipped.has(entry.file) && upstreamSubmissions(textOf(entry.file)).some((hit) => hit.text === entry.sentence);
+    const live = shipped.has(entry.file) && submissionsIn(entry.file, textOf(entry.file)).some((hit) => hit.text === entry.sentence);
     if (!live) problems.push(`stale: ${entry.file}: ${entry.sentence}`);
   }
   return problems;
