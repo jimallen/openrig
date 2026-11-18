@@ -63,7 +63,9 @@ export function VellumSheet({
           ×
         </button>
       ) : null}
-      <div className="flex-1 overflow-auto">{children}</div>
+      {/* workspaces-o9o.175: sectioning content, so a <header> inside the sheet (each drawer viewer has one) heads the sheet
+          and is not a page banner landmark; an unnamed section is not a landmark itself. */}
+      <section className="flex-1 overflow-auto">{children}</section>
       <RegistrationMarks testIdPrefix={testId} />
     </div>
   );

@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The detail drawer adds no second banner landmark (workspaces-o9o.175)
+
+- Symptom: the shared detail drawer's viewers (queue item, file, sub-spec) head their content with a `<header>`. Inside the drawer, which is a dialog over the page, that `<header>` was a second banner landmark: axe reported `landmark-banner-is-top-level`, `landmark-no-duplicate-banner` and `landmark-unique` on both drawers in both themes.
+- Now the sheet's content sits in a `<section>`, so a header inside it heads the sheet and the page keeps one banner. The twin scan of both drawers, light and dark, no longer reports those three rules. With o9o.155 in the tree, it reports no `color-contrast` violation in either drawer.
+
 ### An accessibility scan of the web UI, and its first fixes (workspaces-o9o.130)
 
 - New: `npm run twin:a11y` (in `packages/ui`) runs axe-core's default rules (none disabled) over every route of the UI twin and the dialogs it can open, in light and dark, and writes a report by rule and surface (`twin/README.md`). A test fails if a route is neither scanned nor listed as not scanned with a reason, and a page that crashes in the twin is a failed scan rather than a scan of the error screen. axe-core 4.14.1 is a dev dependency of `packages/ui`; `test/a11y-axe.test.tsx` checks it runs, as part of `npm test`.
