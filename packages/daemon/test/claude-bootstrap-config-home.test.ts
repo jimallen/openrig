@@ -69,6 +69,10 @@ console.log(JSON.stringify({env:{HOME:process.env.HOME,CLAUDE_CONFIG_DIR:dir}, s
     readFile: p => { reads.push(p); return fs.readFileSync(p, "utf8"); },
     writeFile: (p, text) => { writes.push(p); fs.writeFileSync(p, text); },
     copyFile: fs.copyFileSync, readdir: p => fs.readdirSync(p),
+    // workspaces-o9o.176: the bootstrap now writes the seat state through the symlink-safe rule, so the harness carries the same real
+    // fs ops the daemon wires (startup.ts): lstat without following a link, and an O_NOFOLLOW write that refuses a linked file.
+    lstat: p => { try { const st = fs.lstatSync(p); return st.isSymbolicLink() ? "symlink" : st.isFile() ? "file" : st.isDirectory() ? "directory" : "other"; } catch { return null; } },
+    writeFileNoFollow: (p, text) => { const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600); try { writes.push(p); fs.writeFileSync(fd, text, "utf8"); } finally { fs.closeSync(fd); } },
   };
   const tmux = { sendShellCommand: async (_target: string, command: string, check: () => void) => {
     check(); launches.push(JSON.parse(execFileSync("/bin/sh", ["-c", command], { encoding: "utf8", env: { HOME: daemonHome, PATH: "/usr/bin:/bin" } })));
@@ -142,6 +146,25 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
     expect(new Set(f.writes)).toEqual(new Set([f.statePath]));
     for (const [file, before] of f.untouched) expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
+  // workspaces-o9o.176 (verify-sec2): the bootstrap wrote .claude.json with plain writeFile, so a symlinked state file was written
+  // THROUGH — the link target gained hasCompletedOnboarding. Now it is refused, the target is untouched, and a bootstrap warning names it.
+  it("refuses a symlinked .claude.json state file: the link target is not written, and the launch warns naming the file", async () => {
+    const f = fixture("alternate", true, false);
+    const target = path.join(f.root, "someone-elses.json");
+    fs.writeFileSync(target, JSON.stringify({ secret: "theirs" }));
+    fs.mkdirSync(path.dirname(f.statePath), { recursive: true });
+    fs.symlinkSync(target, f.statePath);
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await f.adapter.deliverStartup([], f.binding)).toEqual({ delivered: 0, failed: [] });
+    expect(JSON.parse(fs.readFileSync(target, "utf8"))).toEqual({ secret: "theirs" });     // NOT written through
+    expect(fs.lstatSync(f.statePath).isSymbolicLink()).toBe(true);                          // still the link, not replaced
+    expect(f.writes).toEqual([]);
+    const logged = warn.mock.calls.map(c => String(c[0])).join("\n");
+    warn.mockRestore();
+    expect(logged).toContain(f.statePath);
+    expect(logged).toMatch(/symbolic link/);
+  });
+
   it("classic bootstrap without cwd preserves known-home onboarding", () => {
     const f = fixture("alternate", false, true);
     f.adapter.ensureManagedBootstrap({ ...f.binding, cwd: undefined, permissionMode: undefined });

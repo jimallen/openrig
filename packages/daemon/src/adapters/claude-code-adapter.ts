@@ -19,6 +19,7 @@ import { NO_STARTUP_SEND, resolveConcreteHint } from "../domain/runtime-adapter.
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
 import { claudeCodeModeEnv, claudeCodeModePrefix, codeModeAnswerPlan } from "../domain/claude-code-mode.js";
+import { writeGuardedClaudeState, type GuardedStateFs } from "./claude-state-write.js";
 import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
@@ -768,6 +769,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // A seat's own Claude config home (nodes.claude_config_dir): its launch exports exactly that home on every path,
     // so its trust and onboarding state lives in <home>/.claude.json and nowhere else.
     const seatHome = binding.nodeId ? this.claudeManagedLaunch?.seatConfigDir(binding.nodeId) ?? null : null;
+    // workspaces-o9o.176: the state file that lives under the seat's own managed home — that write guards the home against a link too.
+    const seatHomeStatePath = seatHome ? nodePath.join(seatHome, ".claude.json") : null;
     if (managed) {
       if (cwd) statePaths.push(managed.configPaths(cwd, seatHome).statePath);
     } else if (seatHome) {
@@ -788,13 +791,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
     }
     // Each file is merged on its own: unmergeable state in one is preserved and reported,
-    // and never stops the other from being provisioned.
+    // and never stops the other from being provisioned. workspaces-o9o.176: a seat home's own state file guards that home against a
+    // symbolic link too (the same rule the Code Mode writer uses); HOME and the daemon-selected home are not a seat's managed dir.
     for (const statePath of statePaths) {
-      try {
-        this.provisionClaudeState(statePath, cwd);
-      } catch (err) {
-        failures.push(`${statePath}: ${(err as Error).message}`);
-      }
+      const warning = this.provisionClaudeState(statePath, cwd, statePath === seatHomeStatePath ? [seatHome!] : []);
+      if (warning) failures.push(warning);
     }
     if (failures.length > 0) throw new Error(failures.join("; "));
   }
@@ -815,59 +816,65 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return ["code_mode: this seat has no claude_config_dir of its own, so Code Mode's one-time answer was not written (the launch may stop at the picker); OpenRig writes it only into a seat's own Claude home"];
     }
     const statePath = nodePath.join(seatHome, ".claude.json");
-    const lstat = this.fs.lstat?.bind(this.fs);
-    const writeNoFollow = this.fs.writeFileNoFollow?.bind(this.fs);
-    if (!lstat || !writeNoFollow) {
-      return [`code_mode: ${statePath} was not written: this file system cannot check for or refuse a symbolic link`];
-    }
-    try {
-      for (const [path, wanted] of [[seatHome, "directory"], [statePath, "file"]] as const) {
-        const kind = lstat(path);
-        if (kind === "symlink") return [`code_mode: ${path} is a symbolic link, so Code Mode's one-time answer was not written; OpenRig never writes through a link`];
-        if (kind !== null && kind !== wanted) return [`code_mode: ${path} is not a ${wanted}, so Code Mode's one-time answer was not written`];
-      }
-      const state = lstat(statePath) === "file" ? this.readJsonObjectStrict(statePath) : {};
-      const plan = codeModeAnswerPlan(state);
-      if (plan.kind === "answered") return [];
-      if (plan.kind === "declined") {
-        return [`code_mode: ${statePath} already answers ${plan.keys.map((key) => `${key}=${JSON.stringify(state[key])}`).join(", ")}; kept as it is, so the launch may stop at Code Mode's picker`];
-      }
-      for (const key of plan.keys) state[key] = true;
-      this.fs.mkdirp(seatHome);
-      writeNoFollow(statePath, JSON.stringify(state, null, 2));
-      return [];
-    } catch (err) {
-      return [`code_mode: ${statePath} was not written: ${(err as Error).message}`];
-    }
+    // workspaces-o9o.176: the same symlink-safe write rule as the bootstrap, shared. Only ABSENT keys are written; a present answer that
+    // is not true is kept, with a warning. The seat home and the file are both refused if they are links.
+    const warning = writeGuardedClaudeState(this.guardedStateFs(), statePath, {
+      subject: "Code Mode's one-time answer",
+      prefix: "code_mode: ",
+      guardDirs: [seatHome],
+      mutate: (state) => {
+        const plan = codeModeAnswerPlan(state);
+        if (plan.kind === "answered") return { changed: false };
+        if (plan.kind === "declined") {
+          return { changed: false, warning: `code_mode: ${statePath} already answers ${plan.keys.map((key) => `${key}=${JSON.stringify(state[key])}`).join(", ")}; kept as it is, so the launch may stop at Code Mode's picker` };
+        }
+        for (const key of plan.keys) state[key] = true;
+        return { changed: true };
+      },
+    });
+    return warning ? [warning] : [];
   }
 
-  private provisionClaudeState(statePath: string, cwd: string | null | undefined): void {
-    // Preserve every existing field. Unreadable/malformed/non-object state is
-    // left untouched and reported through the caller's best-effort bootstrap boundary.
-    const state = this.fs.exists(statePath) ? this.readJsonObjectStrict(statePath) : {};
-    // Running Claude processes read and write this file, so it is rewritten only when a flag is
-    // missing: an already-provisioned file (every relaunch, resume and post-launch delivery) is left alone.
-    let changed = false;
-    if (cwd) {
-      const projects = this.readJsonObjectField(state, "projects");
-      if (Object.hasOwn(state, "projects") && projects !== state["projects"]) throw new Error("Claude bootstrap projects must be a JSON object; existing state preserved.");
-      for (const trustKey of this.workspaceTrustKeys(cwd)) {
-        const projectState = this.readJsonObjectField(projects, trustKey);
-        if (Object.hasOwn(projects, trustKey) && projectState !== projects[trustKey]) throw new Error("Claude bootstrap project state must be a JSON object; existing state preserved.");
-        if (projectState["hasTrustDialogAccepted"] === true) continue;
-        projectState["hasTrustDialogAccepted"] = true;
-        projects[trustKey] = projectState;
-        changed = true;
-      }
-      state["projects"] = projects;
-    }
-    if (state["hasCompletedOnboarding"] !== true) {
-      state["hasCompletedOnboarding"] = true;
-      changed = true;
-    }
-    if (!changed) return;
-    this.fs.mkdirp(nodePath.dirname(statePath));
-    this.fs.writeFile(statePath, JSON.stringify(state, null, 2));
+  /** The seat-state writer's view of this adapter's file system: the strict JSON reader and the no-follow write. */
+  private guardedStateFs(): GuardedStateFs {
+    return {
+      readJsonObject: (path) => this.readJsonObjectStrict(path),
+      mkdirp: (path) => this.fs.mkdirp(path),
+      ...(this.fs.lstat ? { lstat: this.fs.lstat.bind(this.fs) } : {}),
+      ...(this.fs.writeFileNoFollow ? { writeFileNoFollow: this.fs.writeFileNoFollow.bind(this.fs) } : {}),
+    };
+  }
+
+  /** Write the seat's onboarding and trust state, preserving every existing field, through the one symlink-safe rule (o9o.176): the
+   *  file is never written through a link, and a seat's own home (guardDirs) is refused if it is a link. Returns a warning, or null. */
+  private provisionClaudeState(statePath: string, cwd: string | null | undefined, guardDirs: readonly string[]): string | null {
+    return writeGuardedClaudeState(this.guardedStateFs(), statePath, {
+      subject: "the Claude onboarding and trust state",
+      guardDirs,
+      // Running Claude processes read and write this file, so it is rewritten only when a flag is missing: an already-provisioned file
+      // (every relaunch, resume and post-launch delivery) is left alone. Malformed sub-objects throw; the writer returns that as a warning.
+      mutate: (state) => {
+        let changed = false;
+        if (cwd) {
+          const projects = this.readJsonObjectField(state, "projects");
+          if (Object.hasOwn(state, "projects") && projects !== state["projects"]) throw new Error("Claude bootstrap projects must be a JSON object; existing state preserved.");
+          for (const trustKey of this.workspaceTrustKeys(cwd)) {
+            const projectState = this.readJsonObjectField(projects, trustKey);
+            if (Object.hasOwn(projects, trustKey) && projectState !== projects[trustKey]) throw new Error("Claude bootstrap project state must be a JSON object; existing state preserved.");
+            if (projectState["hasTrustDialogAccepted"] === true) continue;
+            projectState["hasTrustDialogAccepted"] = true;
+            projects[trustKey] = projectState;
+            changed = true;
+          }
+          state["projects"] = projects;
+        }
+        if (state["hasCompletedOnboarding"] !== true) {
+          state["hasCompletedOnboarding"] = true;
+          changed = true;
+        }
+        return { changed };
+      },
+    });
   }
 
   // OPR.0.4.8.2 agnostic rip-out: the CONVENIENCE_BASELINE (global `Bash(rig:*)` allow) and its

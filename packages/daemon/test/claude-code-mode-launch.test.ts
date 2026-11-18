@@ -286,6 +286,15 @@ describe("launchHarness: a code_mode seat's launch pre-answers Code Mode's one-t
     expect(files.get(HOME_STATE)).toBe("{}");
   });
 
+  // workspaces-o9o.176: the onboarding/trust bootstrap writes the SAME seat state file through the SAME shared rule, so a symlinked
+  // seat home is refused there too (the guardDirs wiring in provisionManagedBootstrap), not only for the Code Mode answer.
+  it("the onboarding/trust bootstrap refuses a symlinked seat home (shared rule): the link target is not written", () => {
+    const { files, ops } = memFs({ "/elsewhere/.claude.json": JSON.stringify({ shared: true }) }, { [SEAT_HOME]: "/elsewhere" });
+    expect(() => adapterWith(mockTmux(), ops, seatHomed()).ensureManagedBootstrap(binding({ nodeId: "n1", cwd: "/project", permissionMode: "bypassPermissions" })))
+      .toThrow(/is a symbolic link/);
+    expect(JSON.parse(files.get("/elsewhere/.claude.json")!)).toEqual({ shared: true });
+  });
+
   it("the restore seam returns its warnings instead of logging them away", () => {
     const { ops } = memFs({ [STATE]: JSON.stringify({ codeModeCaveatsAcceptedV1: false }) });
     const warnings = adapterWith(mockTmux(), ops, seatHomed()).ensureCodeModeAccepted({ nodeId: "n1", cwd: "/project" });
