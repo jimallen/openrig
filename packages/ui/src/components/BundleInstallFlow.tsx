@@ -51,7 +51,7 @@ export function BundleInstallFlow() {
   return (
     <WorkspacePage>
     <div data-testid="bundle-install-flow">
-      <h2 className="text-headline-lg uppercase mb-spacing-4">INSTALL BUNDLE</h2>
+      <h1 className="text-headline-lg uppercase mb-spacing-4">INSTALL BUNDLE</h1>
 
       {step === "enter" && (
         <div data-testid="step-enter">
@@ -73,7 +73,7 @@ export function BundleInstallFlow() {
 
       {step === "planned" && planResult && (
         <div data-testid="step-planned">
-          <h3 className="text-headline-md uppercase mb-spacing-3">PLAN</h3>
+          <h2 className="text-headline-md uppercase mb-spacing-3">PLAN</h2>
           <div className="space-y-spacing-1 mb-spacing-4">
             {planResult.stages.map((s) => (
               <div key={s.stage} className="text-label-sm font-mono">
@@ -89,7 +89,7 @@ export function BundleInstallFlow() {
 
       {step === "done" && planResult && (
         <div data-testid="step-done">
-          <h3 className="text-headline-md uppercase mb-spacing-3">COMPLETE</h3>
+          <h2 className="text-headline-md uppercase mb-spacing-3">COMPLETE</h2>
           <div className="text-label-sm font-mono">
             Status: <span className="text-success-ink">{planResult.status.toUpperCase()}</span>
             {planResult.stages.some((s) => s.detail?.source === "pod_bundle") ? (

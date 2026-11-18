@@ -80,6 +80,7 @@ function useOverlayForActiveTab(active: string) {
 }
 
 function ScopeShell({
+  title,
   tabsNav,
   children,
 }: {
@@ -102,6 +103,8 @@ function ScopeShell({
   // shouldn't actually overlap, but z-order is the safety net).
   return (
     <div className="flex flex-col h-full">
+      {/* o9o.157: the page's one h1, for assistive tech; the canvas shows the scope visually. */}
+      {title ? <h1 className="sr-only">{title}</h1> : null}
       <div
         className="relative z-30 px-6 pt-4"
         style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}

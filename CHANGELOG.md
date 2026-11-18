@@ -84,6 +84,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Why it is safe: better-sqlite3 13 is Node-API (one platform prebuild, no ABI suffix, no native build at install), so Node 26 loads the same binary as 22/24; the full suite is green on Node 26 after workspaces-o9o.133 fixed the Node-26 proof-source watcher. The docs stating the supported range are updated; the frozen release notes are left as history.
 - Residual (filed as a separate unit): npm 11 (bundled with Node 24 and 26) gates a registry package's install scripts by default, so `npm install -g @openrig/cli` skips the `check-abi.mjs` postinstall guard — the native binding still loads from the prebuild, but the Node-major check belongs in the CLI runtime, not only the postinstall.
 
+### Every page of the web UI has one top-level heading (workspaces-o9o.157)
+
+- Symptom: 25 pages had no level-one heading, so a screen reader had no page title to announce or jump to. The accessibility scan (workspaces-o9o.130) flagged 22 of them; its rule passes any page where it thinks a dialog is open, which hid the topology host and pod pages and `/context`.
+- Now the shared workflow page header and every page whose own title was a second-level heading use a first-level one, with their section headings moved up one level so no level is skipped. The topology canvas pages, the legacy rig graph and the discovery placeholder, and the loading and error states of the agents, fleet and legacy package pages, carry a title for screen readers only. Nothing changes visually: no style targets a heading's tag, and captures of the changed pages in both themes are identical.
+
 ### A markdown document never adds a second h1 to its page (workspaces-o9o.171)
 
 - Symptom: `/project/mission/<id>` rendered two h1 elements: the page title, and the steering document's own `# ...` heading.

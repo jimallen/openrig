@@ -204,6 +204,7 @@ export function PackageDetail() {
   if (pkgPending || installsPending) {
     return (
       <WorkspacePage>
+      <h1 className="sr-only">Legacy package</h1>
       <div data-testid="detail-loading">
         <div className="h-8 w-48 shimmer mb-spacing-4" />
         <div className="card-dark p-spacing-6 mb-spacing-4">
@@ -219,6 +220,7 @@ export function PackageDetail() {
   if (pkgError) {
     return (
       <WorkspacePage>
+      <h1 className="sr-only">Legacy package</h1>
       <div data-testid="detail-error">
         <p className="text-destructive">{pkgError.message}</p>
       </div>
@@ -229,6 +231,7 @@ export function PackageDetail() {
   if (installsError) {
     return (
       <WorkspacePage>
+      <h1 className="sr-only">Legacy package</h1>
       <div data-testid="installs-error">
         <p className="text-destructive">Failed to load install history</p>
       </div>
@@ -246,7 +249,7 @@ export function PackageDetail() {
       {pkg && (
         <div className="card-dark p-spacing-6 mb-spacing-6" data-testid="package-header">
           <div className="flex items-baseline justify-between mb-spacing-2">
-            <h2 className="text-headline-lg uppercase">{pkg.name} (Legacy)</h2>
+            <h1 className="text-headline-lg uppercase">{pkg.name} (Legacy)</h1>
             <span className="text-label-md font-mono text-foreground-muted-on-dark">
               v{pkg.version}
             </span>
@@ -264,7 +267,7 @@ export function PackageDetail() {
       )}
 
       {/* Install history */}
-      <h3 className="text-headline-md uppercase mb-spacing-4">INSTALL HISTORY</h3>
+      <h2 className="text-headline-md uppercase mb-spacing-4">INSTALL HISTORY</h2>
 
       {sortedInstalls.length === 0 ? (
         <div data-testid="empty-installs" className="text-body-md text-foreground-muted">

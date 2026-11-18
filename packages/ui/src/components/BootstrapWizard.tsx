@@ -161,7 +161,7 @@ export function BootstrapWizard() {
         >
         <div data-testid="step-planned">
           {/* Stages */}
-          <h3 className="text-headline-md uppercase mb-spacing-3">STAGES</h3>
+          <h2 className="text-headline-md uppercase mb-spacing-3">STAGES</h2>
           <div className="space-y-spacing-1 mb-spacing-6" data-testid="stage-list">
             {planResult.stages.map((s) => (
               <div key={s.stage} className="flex items-center gap-spacing-3 text-label-sm font-mono" data-testid="stage-row">
@@ -176,7 +176,7 @@ export function BootstrapWizard() {
           {/* Requirements */}
           {requirements.length > 0 && (
             <>
-              <h3 className="text-headline-md uppercase mb-spacing-3">REQUIREMENTS</h3>
+              <h2 className="text-headline-md uppercase mb-spacing-3">REQUIREMENTS</h2>
               <div className="mb-spacing-6">
                 <RequirementsPanel results={requirements} />
               </div>
@@ -186,7 +186,7 @@ export function BootstrapWizard() {
           {/* Actions */}
           {actions.length > 0 && (
             <>
-              <h3 className="text-headline-md uppercase mb-spacing-3">ACTIONS</h3>
+              <h2 className="text-headline-md uppercase mb-spacing-3">ACTIONS</h2>
               <div className="space-y-spacing-1 mb-spacing-4">
                 {actions.map((a) => (
                   <label key={a.key} className="flex items-center gap-spacing-3 text-label-sm font-mono cursor-pointer">
@@ -249,7 +249,7 @@ export function BootstrapWizard() {
           description="Bootstrap is executing the approved actions and importing the rig."
         >
         <div data-testid="step-applying">
-          <h3 className="text-headline-md uppercase mb-spacing-3">APPLYING</h3>
+          <h2 className="text-headline-md uppercase mb-spacing-3">APPLYING</h2>
           <div className="space-y-spacing-1 mb-spacing-4" data-testid="applying-checklist">
             {planResult.stages.map((s) => (
               <div key={s.stage} className="flex items-center gap-spacing-3 text-label-sm font-mono">
@@ -282,9 +282,9 @@ export function BootstrapWizard() {
           description="Bootstrap finished and returned the managed rig identity."
         >
         <div data-testid="step-done">
-          <h3 className="text-headline-md uppercase mb-spacing-3">
+          <h2 className="text-headline-md uppercase mb-spacing-3">
             {planResult.status === "completed" ? "BOOTSTRAP COMPLETE" : "BOOTSTRAP PARTIAL"}
-          </h3>
+          </h2>
           <div className="text-label-sm font-mono space-y-spacing-1 mb-spacing-4">
             <div>Status: <span className={planResult.status === "completed" ? "text-success-ink" : "text-warning-ink"}>{planResult.status.toUpperCase()}</span></div>
             {(planResult as { rigId?: string }).rigId && (

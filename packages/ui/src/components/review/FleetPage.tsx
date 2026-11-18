@@ -153,13 +153,21 @@ export function FleetPage() {
   const openKey = readSearchParam("open");
 
   if (isLoading) {
-    return <p className="p-4 font-mono text-[11px] text-on-surface-variant">composing the fleet glance…</p>;
+    return (
+      <>
+        <h1 className="sr-only">Fleet</h1>
+        <p className="p-4 font-mono text-[11px] text-on-surface-variant">composing the fleet glance…</p>
+      </>
+    );
   }
   if (error || !data) {
     return (
-      <p data-testid="fleet-error" className="p-4 font-mono text-[11px] text-error">
-        fleet glance unavailable: {error instanceof Error ? error.message : "composer unreachable"}
-      </p>
+      <>
+        <h1 className="sr-only">Fleet</h1>
+        <p data-testid="fleet-error" className="p-4 font-mono text-[11px] text-error">
+          fleet glance unavailable: {error instanceof Error ? error.message : "composer unreachable"}
+        </p>
+      </>
     );
   }
 
@@ -175,7 +183,7 @@ export function FleetPage() {
       </nav>
 
       <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-[14px] font-semibold uppercase">Fleet — needs me / stuck / failing</h2>
+        <h1 className="text-[14px] font-semibold uppercase">Fleet — needs me / stuck / failing</h1>
         {/* FR-3: the DAEMON's rollup (computed from the deduped rows) —
             checkable against the HOSTS band's per-host counts below. */}
         <div data-testid="fleet-rollup" className="flex items-center gap-2 font-mono text-[10px] uppercase">
@@ -203,7 +211,7 @@ export function FleetPage() {
       {/* Band 1: NEEDS YOU — the fleet union, host-attributed, ● and ▲ at
           equal rank (the shipped grammar, one altitude up). */}
       <section data-testid="fleet-needs-you" className={cn("space-y-1 p-2", VELLUM_CARD)}>
-        <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">NEEDS YOU</h3>
+        <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">NEEDS YOU</h2>
         {data.needsYou.items.length > 0 ? (
           <ul className="divide-y divide-outline-variant/50">
             {data.needsYou.items.map((item) => (
@@ -223,7 +231,7 @@ export function FleetPage() {
       {/* Band 2: HOSTS — the field band at fleet altitude (each factory,
           honest status; the MH-2 drill-in is the row's verb). */}
       <section data-testid="fleet-hosts" className={cn("space-y-1 p-2", VELLUM_CARD)}>
-        <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">HOSTS</h3>
+        <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">HOSTS</h2>
         <ul className="divide-y divide-outline-variant/50">
           {data.hosts.map((h) => {
             const glyph = hostGlyph(h);
@@ -285,7 +293,7 @@ export function FleetPage() {
 
       {/* Band 3: SETTLED — the record band, minimal (D-5), host-chipped. */}
       <section data-testid="fleet-settled" className="space-y-1">
-        <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SETTLED</h3>
+        <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SETTLED</h2>
         {data.settled.length > 0 ? (
           <ul className="divide-y divide-outline-variant/50 border border-outline-variant">
             {data.settled.map((row) => (

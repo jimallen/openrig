@@ -76,13 +76,21 @@ export function RigAgentsPage() {
   }, [data, anchoredSlice]);
 
   if (isLoading) {
-    return <p className="p-4 font-mono text-[11px] text-on-surface-variant">composing the rig coordination story…</p>;
+    return (
+      <>
+        <h1 className="sr-only">Agents</h1>
+        <p className="p-4 font-mono text-[11px] text-on-surface-variant">composing the rig coordination story…</p>
+      </>
+    );
   }
   if (error || !data || !band) {
     return (
-      <p data-testid="rig-agents-error" className="p-4 font-mono text-[11px] text-red-700">
-        rig agents panel unavailable: {error instanceof Error ? error.message : "composer unreachable"}
-      </p>
+      <>
+        <h1 className="sr-only">Agents</h1>
+        <p data-testid="rig-agents-error" className="p-4 font-mono text-[11px] text-red-700">
+          rig agents panel unavailable: {error instanceof Error ? error.message : "composer unreachable"}
+        </p>
+      </>
     );
   }
 
@@ -109,7 +117,7 @@ export function RigAgentsPage() {
       </nav>
 
       <header className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-[14px] font-semibold">AGENTS — the coordination story</h2>
+        <h1 className="text-[14px] font-semibold">AGENTS — the coordination story</h1>
         <div className="flex items-center gap-1 font-mono text-[10px] uppercase">
           <span className="text-on-surface-variant">group by</span>
           {(["agent", "slice"] as const).map((g) => (
@@ -143,7 +151,7 @@ export function RigAgentsPage() {
 
       {/* Band 3: SETTLED — the record band (today's closed handoffs). */}
       <section data-testid="settled-band" className="space-y-1">
-        <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SETTLED</h3>
+        <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SETTLED</h2>
         {data.settled.length === 0 ? (
           <p data-testid="settled-empty" className="font-mono text-[11px] text-on-surface-variant">
             {data.settledProvenance}

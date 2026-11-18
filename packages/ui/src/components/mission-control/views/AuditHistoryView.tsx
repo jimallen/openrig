@@ -55,7 +55,7 @@ export function AuditHistoryView() {
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-on-surface-variant">
           audit-history
         </div>
-        <h2 className="font-headline text-lg text-on-surface">Audit history</h2>
+        <h1 className="font-headline text-lg text-on-surface">Audit history</h1>
         <p className="text-xs text-on-surface-variant">
           Browse <code>mission_control_actions</code> by qitem, verb, actor,
           and time range. Read-only.

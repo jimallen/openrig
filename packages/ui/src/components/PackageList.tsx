@@ -34,7 +34,7 @@ function PackageCard({ pkg, onSelect }: { pkg: PackageSummary; onSelect: (id: st
       onKeyDown={(e) => { if (e.key === "Enter") onSelect(pkg.id); }}
     >
       <div className="flex items-baseline justify-between mb-spacing-2">
-        <h3 className="text-headline-md uppercase">{pkg.name}</h3>
+        <h2 className="text-headline-md uppercase">{pkg.name}</h2>
         <span className="text-label-md font-mono text-foreground-muted-on-dark">v{pkg.version}</span>
       </div>
 
@@ -75,6 +75,7 @@ export function PackageList() {
   if (isPending) {
     return (
       <WorkspacePage>
+      <h1 className="sr-only">Legacy package tools</h1>
       <div data-testid="packages-loading">
         <div className="flex justify-between mb-spacing-6">
           <div className="h-8 w-32 shimmer" />
@@ -96,6 +97,7 @@ export function PackageList() {
   if (error) {
     return (
       <WorkspacePage>
+      <h1 className="sr-only">Legacy package tools</h1>
       <div>
         <Alert data-testid="packages-error">
           <AlertDescription>{error.message}</AlertDescription>
@@ -110,7 +112,7 @@ export function PackageList() {
     return (
       <WorkspacePage>
       <div className="flex flex-col items-center justify-center min-h-[60vh]" data-testid="packages-empty">
-        <h2 className="text-display-lg text-foreground mb-spacing-4">NO LEGACY PACKAGE INSTALLS</h2>
+        <h1 className="text-display-lg text-foreground mb-spacing-4">NO LEGACY PACKAGE INSTALLS</h1>
         <p className="text-body-md text-foreground-muted mb-spacing-8">
           Legacy package tools remain available for bootstrap internals while Library becomes the main authoring surface.
         </p>
@@ -143,7 +145,7 @@ export function PackageList() {
       {/* Page header */}
       <div className="flex justify-between items-baseline mb-spacing-6">
         <div>
-          <h2 className="text-headline-lg uppercase">LEGACY PACKAGE TOOLS</h2>
+          <h1 className="text-headline-lg uppercase">LEGACY PACKAGE TOOLS</h1>
           <p className="text-label-md text-foreground-muted font-grotesk mt-spacing-1">
             {sortedPackages.length} legacy package install{sortedPackages.length !== 1 ? "s" : ""} retained for bootstrap internals
           </p>

@@ -363,6 +363,7 @@ function RigDetail() {
   const rigName = rigs?.find((r: { id: string; name: string }) => r.id === rigId)?.name;
   return (
     <div className="flex flex-col flex-1 h-full">
+      <h1 className="sr-only">{rigName ?? rigId}</h1>
       <div className="flex-1 min-h-[400px] relative">
         <RigGraph rigId={rigId} rigName={rigName ?? null} />
       </div>
@@ -452,6 +453,7 @@ const discoveryRoute = createRoute({
   path: "/discovery",
   component: () => (
     <div className="flex h-full w-full items-center justify-center p-8">
+      <h1 className="sr-only">Discovery</h1>
       <EmptyState
         label="DISCOVERY"
         description="Discovery surface preserved; redesign deferred per code-map."

@@ -18,7 +18,7 @@ export function BundleInspector() {
   return (
     <WorkspacePage>
     <div data-testid="bundle-inspector">
-      <h2 className="text-headline-lg uppercase mb-spacing-4">INSPECT BUNDLE</h2>
+      <h1 className="text-headline-lg uppercase mb-spacing-4">INSPECT BUNDLE</h1>
 
       <div className="mb-spacing-4">
         <label className="text-label-md uppercase block mb-spacing-2">BUNDLE PATH</label>
@@ -46,7 +46,7 @@ export function BundleInspector() {
           {/* Manifest summary */}
           <div className="card-dark p-spacing-4 mb-spacing-4" data-testid="manifest-summary">
             <div className="flex items-center gap-spacing-2 mb-spacing-2">
-              <h3 className="text-headline-md uppercase">{result.manifest.name}</h3>
+              <h2 className="text-headline-md uppercase">{result.manifest.name}</h2>
               <span className="text-label-sm font-mono px-spacing-2 py-px bg-foreground/10" data-testid="schema-badge">
                 v{result.manifest.schemaVersion ?? 1}
               </span>
@@ -66,7 +66,7 @@ export function BundleInspector() {
           {/* v2: Agents list, v1: Packages list */}
           {result.manifest.schemaVersion === 2 && result.manifest.agents ? (
             <>
-              <h3 className="text-headline-md uppercase mb-spacing-3">AGENTS</h3>
+              <h2 className="text-headline-md uppercase mb-spacing-3">AGENTS</h2>
               <div className="space-y-spacing-1 mb-spacing-4" data-testid="agent-list">
                 {result.manifest.agents.map((agent) => (
                   <div key={agent.name} className="text-label-sm font-mono" data-testid="agent-entry">
@@ -77,7 +77,7 @@ export function BundleInspector() {
             </>
           ) : (
             <>
-              <h3 className="text-headline-md uppercase mb-spacing-3">PACKAGES</h3>
+              <h2 className="text-headline-md uppercase mb-spacing-3">PACKAGES</h2>
               <div className="space-y-spacing-1 mb-spacing-4" data-testid="package-list">
                 {(result.manifest.packages ?? []).map((pkg) => (
                   <div key={pkg.name} className="text-label-sm font-mono" data-testid="package-entry">
@@ -91,7 +91,7 @@ export function BundleInspector() {
           {/* Item 1 / slice-05: Provenance block (rendered when bundle carries it) */}
           {result.manifest.provenance && (
             <>
-              <h3 className="text-headline-md uppercase mb-spacing-3">PROVENANCE</h3>
+              <h2 className="text-headline-md uppercase mb-spacing-3">PROVENANCE</h2>
               <div className="card-dark p-spacing-4 mb-spacing-4 space-y-spacing-1" data-testid="provenance-block">
                 {result.manifest.provenance.createdAt && (
                   <div className="text-label-sm font-mono" data-testid="provenance-createdAt">
@@ -136,7 +136,7 @@ export function BundleInspector() {
           {/* Item 2 / slice-05: Compatibility block (rendered when bundle carries it). Live "compatible against this daemon" comparison is deferred — UI surfaces the bundle's stated minimums; the install-time check at /api/bundles/install enforces actual compatibility with the running daemon. */}
           {result.manifest.compatibility && (
             <>
-              <h3 className="text-headline-md uppercase mb-spacing-3">COMPATIBILITY</h3>
+              <h2 className="text-headline-md uppercase mb-spacing-3">COMPATIBILITY</h2>
               <div className="card-dark p-spacing-4 mb-spacing-4 space-y-spacing-1" data-testid="compatibility-block">
                 {result.manifest.compatibility.minDaemonVersion && (
                   <div className="text-label-sm font-mono" data-testid="compatibility-minDaemonVersion">
@@ -160,7 +160,7 @@ export function BundleInspector() {
           {/* Per-file integrity */}
           {result.integrityResult && (
             <>
-              <h3 className="text-headline-md uppercase mb-spacing-3">FILE INTEGRITY</h3>
+              <h2 className="text-headline-md uppercase mb-spacing-3">FILE INTEGRITY</h2>
               <div className="space-y-spacing-1 mb-spacing-4" data-testid="file-integrity">
                 {Object.keys((result.manifest.packages ?? result.manifest.agents ?? []).length > 0 ? (result as unknown as { manifest: { integrity?: { files: Record<string, string> } } }).manifest?.integrity?.files ?? {} : {}).map((file) => {
                   const isMismatch = result.integrityResult.mismatches.includes(file);
