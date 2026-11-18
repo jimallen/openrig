@@ -27,6 +27,7 @@ import { composeFleet } from "../domain/review/fleet-compose.js";
 import { defaultHostRegistryPath, loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import type { HostRegistryLoadResult } from "../domain/hosts/hosts-registry-reader.js";
 import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
+import { nodeRemoteDaemonClient } from "../adapters/remote-daemon-http.js";
 
 function getGatherer(c: { get(key: string): unknown }): ReviewGatherer | null {
   return (c.get("reviewGatherer") as ReviewGatherer | undefined) ?? null;
@@ -90,7 +91,7 @@ export function reviewRoutes(): Hono {
       composeLocalRig: () => gatherer.composeRig(),
       loadRegistry: registryLoader,
       registryExists: registryProbe,
-      credentialFiles: nodeCredentialFileReader,
+      remoteDaemons: nodeRemoteDaemonClient(),
       // View time enters at the edge; the union never derives host time state.
       nowIso: new Date().toISOString(),
     });

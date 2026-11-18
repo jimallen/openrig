@@ -20,6 +20,7 @@ import { LOCAL_HOST_ID } from "../src/domain/hosts/fanout-contract.js";
 import type { PerHostStatus } from "../src/domain/hosts/fanout-contract.js";
 import type { HostRegistry } from "../src/domain/hosts/hosts-registry-reader.js";
 import type { ComposedRigAgents, NeedsYouItem } from "../src/domain/review/types.js";
+import { HttpRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 
 const NOW = "2026-07-08T14:00:00.000Z";
 
@@ -298,15 +299,22 @@ function localComposed(items: NeedsYouItem[]): ComposedRigAgents {
   };
 }
 
-function fanoutDeps(overrides: Partial<FleetComposeDeps> = {}): FleetComposeDeps {
-  return { credentialFiles: NO_CREDENTIAL_FILES,
+/** The rows still set (and some later swap) the fetch they want; workspaces-o9o.161: it reaches composeFleet through the port, as
+ *  the real HTTP client, whose fetch reads this object's current `fetchImpl` on every call. */
+type TestDeps = FleetComposeDeps & { fetchImpl?: typeof fetch };
+function fanoutDeps(overrides: Partial<FleetComposeDeps> & { fetchImpl?: typeof fetch; env?: Record<string, string | undefined> } = {}): TestDeps {
+  const { env = { A: "ta", B: "tb" }, ...rest } = overrides;
+  const out: TestDeps = {
     composeLocalRig: () => localComposed([item({ identity: "qi-local-1" })]),
     loadRegistry: () => ({ ok: true, registry: REGISTRY }),
     registryExists: () => true,
     nowIso: NOW,
-    env: { A: "ta", B: "tb" },
-    ...overrides,
+    remoteDaemons: new HttpRemoteDaemonClient({
+      credentialFiles: NO_CREDENTIAL_FILES, env, fetchImpl: ((url, init) => (out.fetchImpl ?? fetch)(url, init)) as typeof fetch,
+    }),
+    ...rest,
   };
+  return out;
 }
 
 describe("composeFleet — the fan-out shell (D-1/D-7 + per-host honesty)", () => {

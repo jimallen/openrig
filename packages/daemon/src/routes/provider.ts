@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { getSelfHostId, LOCAL_HOST_ID } from "../domain/hosts/fanout-contract.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
+import { nodeRemoteDaemonClient } from "../adapters/remote-daemon-http.js";
 import type { ProviderService } from "../domain/provider/provider-service.js";
 import type { ProviderKind } from "../domain/provider/provider-types.js";
 import {
@@ -113,7 +114,7 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
     selfHostId: getSelfHostId(),
     ...(only ? { only } : {}),
     lastRefresh: (hostId) => legs.lastFor(hostId),
-    fetchImpl: c.get("remoteFetchImpl" as never) as typeof fetch | undefined,
+    remoteDaemons: nodeRemoteDaemonClient(c.get("remoteFetchImpl" as never) as typeof fetch | undefined),
     ...(opts.usageAcrossHosts?.readTimeoutMs !== undefined ? { readTimeoutMs: opts.usageAcrossHosts.readTimeoutMs } : {}),
     ...(opts.usageAcrossHosts?.viewDeadlineMs !== undefined ? { viewDeadlineMs: opts.usageAcrossHosts.viewDeadlineMs } : {}),
     ...(opts.usageAcrossHosts?.now ? { now: opts.usageAcrossHosts.now } : {}),

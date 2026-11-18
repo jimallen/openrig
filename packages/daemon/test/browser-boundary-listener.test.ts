@@ -13,7 +13,7 @@ import WebSocket from "ws";
 import { browserBoundary } from "../src/middleware/browser-boundary.js";
 import { terminalAuthMiddleware } from "../src/routes/terminal-ws.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
-import { remoteJsonRequest } from "../src/domain/hosts/remote-daemon-http.js";
+import { remoteJsonRequest } from "../src/adapters/remote-daemon-http.js";
 import { DaemonClient as CliDaemonClient } from "../../cli/src/client.js";
 import { DaemonClient as TuiDaemonClient } from "../../tui/src/daemon-client.js";
 

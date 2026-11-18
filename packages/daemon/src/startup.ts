@@ -1,5 +1,6 @@
 // workspaces-o9o.151: the one production CredentialFileReader, handed to every domain service that reads hosts.yaml or a bearer file.
 import { nodeCredentialFileReader } from "./adapters/node-credential-file-reader.js";
+import { nodeRemoteDaemonClient } from "./adapters/remote-daemon-http.js";
 import { sessionCodeMode } from "./domain/claude-code-mode.js";
 import { fileURLToPath } from "node:url";
 import { CodexRolloutOpenCalls } from "./adapters/codex-rollout-open-calls.js";
@@ -1407,7 +1408,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       },
     },
   }) : NO_SEAT_MESSAGING_PORTS);
-  const farDaemons = new FarDaemons({ selfHost: getSelfHostId, credentialFiles: nodeCredentialFileReader });
+  const farDaemons = new FarDaemons({ selfHost: getSelfHostId, credentialFiles: nodeCredentialFileReader, remoteDaemons: nodeRemoteDaemonClient() });
   const realSeatMessagingPorts = withFarSeats(localSeatMessagingPorts, farDaemons, (id) => seatMessages.senderOf(id));
   const seatMessagingPorts = opts?.wrapSeatMessagingPorts?.(realSeatMessagingPorts) ?? realSeatMessagingPorts;
   const heldMessages = new GuardHeldMessages(deliveryGuard);

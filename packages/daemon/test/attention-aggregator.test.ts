@@ -12,6 +12,7 @@ import { aggregateAttention, ATTENTION_READ_TIMEOUT_MS } from "../src/domain/fee
 import type { AttentionAggregatorDeps } from "../src/domain/feed/attention-aggregator.js";
 import { LOCAL_HOST_ID, hostsCovered } from "../src/domain/hosts/fanout-contract.js";
 import type { HostRegistry } from "../src/domain/hosts/hosts-registry-reader.js";
+import { HttpRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 
 const REGISTRY: HostRegistry = {
   hosts: [
@@ -25,13 +26,17 @@ function attentionResponse(items: unknown[]): Response {
   return new Response(JSON.stringify(items), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
-function deps(overrides: Partial<AttentionAggregatorDeps> = {}): AttentionAggregatorDeps {
-  return { credentialFiles: NO_CREDENTIAL_FILES,
+/** The rows still set the transport they want (fetch, env); workspaces-o9o.161: it reaches the aggregator through the port, as the
+ *  real HTTP client built over that transport. */
+type TestDeps = Partial<AttentionAggregatorDeps> & { fetchImpl?: typeof fetch; env?: Record<string, string | undefined> };
+function deps(overrides: TestDeps = {}): AttentionAggregatorDeps {
+  const { fetchImpl, env = { B: "tb", C: "tc" }, ...rest } = overrides;
+  return {
+    remoteDaemons: new HttpRemoteDaemonClient({ credentialFiles: NO_CREDENTIAL_FILES, env, ...(fetchImpl ? { fetchImpl } : {}) }),
     listLocalAttention: () => [{ qitemId: "local-1" }],
     listSubscriptions: () => [],
     loadRegistry: () => ({ ok: true, registry: REGISTRY }),
-    env: { B: "tb", C: "tc" },
-    ...overrides,
+    ...rest,
   };
 }
 

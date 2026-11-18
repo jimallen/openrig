@@ -21,9 +21,8 @@
 import type { AggregatedPayload, PerHostStatus } from "../hosts/fanout-contract.js";
 import { LOCAL_HOST_ID } from "../hosts/fanout-contract.js";
 import type { HostRegistryLoadResult } from "../hosts/hosts-registry-reader.js";
-import type { CredentialFileReader } from "../credential-file.js";
 import { resolveHost } from "../hosts/hosts-registry-reader.js";
-import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
+import type { RemoteDaemonClient } from "../hosts/remote-daemon-client.js";
 
 /** The aggregation READ deadline class (per-host bound). Distinct from the
  *  up-leaf's long-running budget by design — named here, passed explicitly. */
@@ -42,10 +41,8 @@ export interface AttentionAggregatorDeps {
   listSubscriptions: () => Array<{ hostId: string; enabled: boolean }>;
   /** S11's shared reader — called lazily, only when a remote sub exists. */
   loadRegistry: () => HostRegistryLoadResult;
-  fetchImpl?: typeof fetch;
-  env?: Record<string, string | undefined>;
-  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
-  credentialFiles: CredentialFileReader;
+  /** workspaces-o9o.161: the remote daemons, through the domain's port (the HTTP adapter carries fetch and the bearer sources). */
+  remoteDaemons: RemoteDaemonClient;
   /** Test override; production uses ATTENTION_READ_TIMEOUT_MS. */
   timeoutMs?: number;
   concurrency?: number;
@@ -75,12 +72,9 @@ async function readHostAttention(hostId: string, reg: HostRegistryLoadResult, de
       items: [],
     };
   }
-  const res = await remoteJsonRequest(resolved.host, "/api/queue/list?attention=1", {
+  const res = await deps.remoteDaemons.requestJson(resolved.host, "/api/queue/list?attention=1", {
     method: "GET",
     timeoutMs: deps.timeoutMs ?? ATTENTION_READ_TIMEOUT_MS,
-    fetchImpl: deps.fetchImpl,
-    env: deps.env,
-    credentialFiles: deps.credentialFiles,
   });
   if (res.ok) {
     const arr = Array.isArray(res.payload) ? (res.payload as AttentionItem[]) : [];

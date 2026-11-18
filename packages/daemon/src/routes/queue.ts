@@ -18,8 +18,8 @@ import { aggregateAttention } from "../domain/feed/attention-aggregator.js";
 import type { AttentionItem } from "../domain/feed/attention-aggregator.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
 import { getSelfHostId, resolvesToLocalHost } from "../domain/hosts/fanout-contract.js";
-import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
 import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
+import { nodeRemoteDaemonClient } from "../adapters/remote-daemon-http.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { deriveCurrentWork, deriveRole, deriveWorkCandidates, type RoleOrientation } from "../domain/current-work.js";
 import type { WhoamiService } from "../domain/whoami-service.js";
@@ -267,12 +267,10 @@ export function queueRoutes(): Hono {
         "unsupported-transport",
       );
     }
-    const res = await remoteJsonRequest(resolved.host, path, {
+    const res = await nodeRemoteDaemonClient(fetchImpl).requestJson(resolved.host, path, {
       method: "POST",
       body: forwardBody,
       timeoutMs: QUEUE_FORWARD_TIMEOUT_MS,
-      fetchImpl,
-      credentialFiles: nodeCredentialFileReader,
       headers: c.req.header(ORIGIN_UNKNOWN_HEADER) === "true" ? { [ORIGIN_UNKNOWN_HEADER]: "true" } : undefined,
     });
     if (res.ok) {
@@ -935,7 +933,7 @@ export function queueRoutes(): Hono {
       listLocalAttention: () => repo.listAttention({ state: ["pending", "in-progress", "blocked"] }) as unknown as AttentionItem[],
       listSubscriptions: () => (store ? store.listFeedHostSubscriptions() : []),
       loadRegistry: registryLoader,
-      credentialFiles: nodeCredentialFileReader,
+      remoteDaemons: nodeRemoteDaemonClient(),
     });
     return c.json(payload);
   });

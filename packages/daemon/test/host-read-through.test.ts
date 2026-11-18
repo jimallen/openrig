@@ -17,7 +17,7 @@ import {
   hostReadThrough,
   isReadThroughPath,
 } from "../src/domain/hosts/read-through.js";
-import { remoteRawRequest } from "../src/domain/hosts/remote-daemon-http.js";
+import { remoteRawRequest, contextRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 import type { HostRegistry, HttpHostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
 
 const REGISTRY: HostRegistry = {
@@ -60,7 +60,7 @@ function makeApp(opts: { fetchResponse?: () => Response; env?: Record<string, st
     set("remoteFetchImpl", fakeFetch);
     await next();
   });
-  app.use("/api/*", hostReadThrough(nodeCredentialFileReader));
+  app.use("/api/*", hostReadThrough(nodeCredentialFileReader, contextRemoteDaemonClient));
   app.get("/api/rigs/summary", (c) => {
     localHits.push(c.req.path);
     return c.json({ rigs: ["local-rig"] });

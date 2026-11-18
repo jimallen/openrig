@@ -24,7 +24,7 @@ import type { CredentialFileReader } from "../credential-file.js";
 import type { Context, Next } from "hono";
 import { getSelfHostId, resolvesToLocalHost } from "./fanout-contract.js";
 import { loadHostRegistry, resolveHost } from "./hosts-registry-reader.js";
-import { remoteRawRequest } from "./remote-daemon-http.js";
+import type { RemoteDaemonClient } from "./remote-daemon-client.js";
 
 // The 5s single-host READ deadline class (matches the shipped aggregate
 // read class in attention-aggregator.ts; deadline is a REQUIRED arg on the
@@ -84,8 +84,9 @@ const MH3_BOUNDARY_MESSAGE =
 /** The param-intercept middleware (arch E2 ruling). Mounted on /api/* ahead
  *  of the route table; consumes the `?host=` envelope for remote reads and
  *  passes everything else through untouched. */
-/** `credentialFiles` (workspaces-o9o.151) reads hosts.yaml and bearer files under the credential rule. */
-export function hostReadThrough(credentialFiles: CredentialFileReader) {
+/** `credentialFiles` (workspaces-o9o.151) reads hosts.yaml under the credential rule. `remoteDaemonsFor` (workspaces-o9o.161) gives
+ *  the port to the origin daemon for one request (the adapter side decides its transport). */
+export function hostReadThrough(credentialFiles: CredentialFileReader, remoteDaemonsFor: (c: Context) => RemoteDaemonClient) {
   return async (c: Context, next: Next) => {
     const hostParam = c.req.query("host");
     // local / absent host param short-circuits to the existing handler. 51-09
@@ -118,7 +119,6 @@ export function hostReadThrough(credentialFiles: CredentialFileReader) {
     // seam as the write twin (tests swap it; production reads the registry).
     const registryLoader =
       (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? (() => loadHostRegistry(credentialFiles));
-    const fetchImpl = c.get("remoteFetchImpl" as never) as typeof fetch | undefined;
     const fail = (detail: string, failureClass: string, remoteStatus?: number) =>
       c.json({ error: "remote_read_failed", hostId, failureClass, ...(remoteStatus !== undefined ? { remoteStatus } : {}), detail }, 502);
 
@@ -138,11 +138,7 @@ export function hostReadThrough(credentialFiles: CredentialFileReader) {
     url.searchParams.delete("host");
     const forwardPath = `${path}${url.searchParams.size > 0 ? `?${url.searchParams.toString()}` : ""}`;
 
-    const res = await remoteRawRequest(resolved.host, forwardPath, {
-      timeoutMs: READ_THROUGH_TIMEOUT_MS,
-      fetchImpl,
-      credentialFiles,
-    });
+    const res = await remoteDaemonsFor(c).requestRaw(resolved.host, forwardPath, { timeoutMs: READ_THROUGH_TIMEOUT_MS });
     if (res.ok) {
       // Arch P3: the origin ANSWERED — its status/content-type/body ARE the
       // answer, passed through untouched (its own 404/500 included). Edge

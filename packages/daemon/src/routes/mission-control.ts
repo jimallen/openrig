@@ -5,8 +5,8 @@ import type { EventBus } from "../domain/event-bus.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { LOCAL_HOST_ID, getSelfHostId } from "../domain/hosts/fanout-contract.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
-import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
 import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
+import { nodeRemoteDaemonClient } from "../adapters/remote-daemon-http.js";
 
 /** OPR.0.4.4.15 FR-4 — the remote-action deadline class (a transactional
  *  write, not a bootstrap; named at this call-site per the arch
@@ -373,12 +373,10 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
       // chokepoint above) + mark relay provenance — the origin derives the RE-STAMPED actor, never the
       // forwarded body claim (the census's #5/#17 forward sites).
       const { hostId: _dropped, actorSession: _claim, ...forwardBody } = body as Record<string, unknown>;
-      const res = await remoteJsonRequest(resolved.host, "/api/mission-control/action", {
+      const res = await nodeRemoteDaemonClient(fetchImpl).requestJson(resolved.host, "/api/mission-control/action", {
         method: "POST",
         body: forwardBody,
         timeoutMs: REMOTE_ACTION_TIMEOUT_MS,
-        fetchImpl,
-        credentialFiles: nodeCredentialFileReader,
         headers: {
           "X-OpenRig-Session": identity.session,
           "X-OpenRig-Relay": getSelfHostId() ?? "unknown",

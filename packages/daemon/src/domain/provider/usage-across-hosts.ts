@@ -14,7 +14,7 @@ import type { AggregatedPayload, PerHostStatus } from "../hosts/fanout-contract.
 import { LOCAL_HOST_ID, resolvesToLocalHost } from "../hosts/fanout-contract.js";
 import type { HostEntry, HostRegistryLoadResult, HttpHostEntry } from "../hosts/hosts-registry-reader.js";
 import type { CredentialFileReader } from "../credential-file.js";
-import { remoteJsonRequest, resolveBearer, type RemoteJsonResult } from "../hosts/remote-daemon-http.js";
+import { resolveBearer, type RemoteJsonResult, type RemoteDaemonClient } from "../hosts/remote-daemon-client.js";
 import { claudeUsageIdentityKey } from "./claude-usage-windows.js";
 import { codexUsageIdentityKey } from "./codex-usage-windows.js";
 import type {
@@ -214,9 +214,11 @@ export interface UsageHostsDeps {
   /** Narrow the remote hosts to these registry ids (this daemon is always included). */
   only?: string[];
   lastRefresh?: (hostId: string) => Partial<Record<ProviderKind, UsageRefreshLeg>> | undefined;
-  fetchImpl?: typeof fetch;
+  /** workspaces-o9o.161: the remote daemons, through the domain's port. */
+  remoteDaemons: RemoteDaemonClient;
   env?: Record<string, string | undefined>;
-  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts); here also
+   *  for resolveBearer, so this module knows which token each call sent and scrubs it from the answer. */
   credentialFiles: CredentialFileReader;
   readTimeoutMs?: number;
   viewDeadlineMs?: number;
@@ -389,16 +391,9 @@ const HOST_CALL = { maxBytes: USAGE_HOSTS_MAX_BYTES, redirect: "manual" as const
  * is read again on the next call; nothing is cached.
  */
 async function exchange(host: HttpHostEntry, path: string, opts: { method: "GET" | "POST"; body?: unknown; timeoutMs: number },
-  deps: Pick<UsageHostsDeps, "fetchImpl" | "env" | "credentialFiles">): Promise<RemoteJsonResult> {
+  deps: Pick<UsageHostsDeps, "remoteDaemons" | "env" | "credentialFiles">): Promise<RemoteJsonResult> {
   const resolvedBearer = resolveBearer(host, { env: deps.env, credentialFiles: deps.credentialFiles });
-  const res = await remoteJsonRequest(host, path, {
-    ...opts,
-    ...HOST_CALL,
-    resolvedBearer,
-    fetchImpl: deps.fetchImpl,
-    env: deps.env,
-    credentialFiles: deps.credentialFiles,
-  });
+  const res = await deps.remoteDaemons.requestJson(host, path, { ...opts, ...HOST_CALL, resolvedBearer });
   const sent = resolvedBearer.ok ? resolvedBearer.token : undefined;
   return res.ok ? { ...res, payload: scrubBearer(res.payload, sent) } : { ...res, detail: scrubBearer(res.detail, sent) as string };
 }
@@ -661,7 +656,7 @@ export class UsageRefreshLegs {
   }
 
   /** One leg to a registry host's own refresh route, bounded by the provider's refresh deadline. */
-  remote(host: HostEntry, provider: ProviderKind, deps: Pick<UsageHostsDeps, "fetchImpl" | "env" | "credentialFiles">): Promise<UsageRefreshLeg> {
+  remote(host: HostEntry, provider: ProviderKind, deps: Pick<UsageHostsDeps, "remoteDaemons" | "env" | "credentialFiles">): Promise<UsageRefreshLeg> {
     const now = this.opts.now ?? (() => new Date().toISOString());
     return this.run(host.id, provider, async () => {
       if (host.transport !== "http") {

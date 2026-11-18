@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
 import { loadHostRegistry, type HttpHostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
-import { resolveBearer } from "../src/domain/hosts/remote-daemon-http.js";
+import { resolveBearer } from "../src/adapters/remote-daemon-http.js";
 
 let dir: string;
 beforeEach(() => { dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "daemon-cred-"))); });

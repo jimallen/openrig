@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
+import type { RemoteDaemonClient } from "../hosts/remote-daemon-client.js";
 import { loadHostRegistry, resolveHost, type HostRegistryLoadResult, type HttpHostEntry } from "../hosts/hosts-registry-reader.js";
 import { SEAT_MESSAGE_ID_PREFIX } from "../outbox-handler.js";
 import type { CredentialFileReader } from "../credential-file.js";
@@ -61,7 +61,8 @@ export interface FarDaemonsDeps {
   loadRegistry?: () => HostRegistryLoadResult;
   /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
   credentialFiles: CredentialFileReader;
-  fetchImpl?: typeof fetch;
+  /** workspaces-o9o.161: the far daemons, through the domain's port. */
+  remoteDaemons: RemoteDaemonClient;
   clock?: () => number;
   capabilityTtlMs?: number;
 }
@@ -87,7 +88,7 @@ export class FarDaemons {
   }
 
   private request(host: HttpHostEntry, path: string, method: "GET" | "POST", body?: unknown) {
-    return remoteJsonRequest(host, path, { method, body, timeoutMs: FAR_REQUEST_TIMEOUT_MS, fetchImpl: this.deps.fetchImpl, credentialFiles: this.deps.credentialFiles });
+    return this.deps.remoteDaemons.requestJson(host, path, { method, body, timeoutMs: FAR_REQUEST_TIMEOUT_MS });
   }
 
   /** Read at most once per TTL. A far daemon that does not answer keeps its last known value: it is down, which says nothing of its build. */

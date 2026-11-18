@@ -1,4 +1,5 @@
-// OPR.0.4.4.15 — the SHARED daemon→daemon HTTP core (arch cell 1, RATIFIED).
+// OPR.0.4.4.15 — the SHARED daemon→daemon HTTP core (arch cell 1, RATIFIED). workspaces-o9o.161: the adapter for the domain's
+// RemoteDaemonClient port (src/domain/hosts/remote-daemon-client.ts); moved here from src/domain/hosts, the mechanics unchanged.
 //
 // Extracted from topology/remote-up-leaf.ts so the P4 aggregation fan-out
 // does not mint a second copy of security-adjacent transport code (bearer
@@ -19,99 +20,49 @@
 // signal (a hand-built/proxied Response is not necessarily wired to the
 // controller — no trust in fetch internals).
 
-import type { HttpHostEntry } from "./hosts-registry-reader.js";
-import { BEARER_FILE_POLICY, type CredentialFileReader } from "../credential-file.js";
+import type { HttpHostEntry } from "../domain/hosts/hosts-registry-reader.js";
+import {
+  resolveBearer, type BearerSources, type RemoteDaemonClient, type RemoteJsonRequest, type RemoteJsonResult, type RemoteRawRequest,
+  type RemoteRawResult,
+} from "../domain/hosts/remote-daemon-client.js";
 
-export interface RemoteJsonDeps {
-  /** workspaces-o9o.151: how a bearer_file is read (the credential rule); required, so no caller can read one unchecked. */
-  credentialFiles: CredentialFileReader;
-  /** Injected for tests; defaults to global fetch. */
+import { nodeCredentialFileReader } from "./node-credential-file-reader.js";
+
+export type { RemoteJsonFailure, RemoteJsonFailureKind, RemoteJsonResult, RemoteRawResult } from "../domain/hosts/remote-daemon-client.js";
+export { resolveBearer } from "../domain/hosts/remote-daemon-client.js";
+
+/** What the HTTP client needs from the world: the bearer sources, and fetch (injected for tests; defaults to global fetch). */
+export interface RemoteJsonDeps extends BearerSources {
   fetchImpl?: typeof fetch;
-  env?: Record<string, string | undefined>;
 }
 
-export interface RemoteJsonOptions extends RemoteJsonDeps {
-  method: "GET" | "POST";
-  body?: unknown;
-  /** REQUIRED — the caller names its deadline class explicitly. */
-  timeoutMs: number;
-  /** P21: extra request headers (e.g. the re-stamped X-OpenRig-Session + X-OpenRig-Relay on a
-   *  cross-host forward). Merged AFTER Content-Type/Authorization so a forwarder's identity re-stamp
-   *  is what the remote reads — never the inbound body claim. */
-  headers?: Record<string, string>;
-  /** Stop reading an answer larger than this many bytes (a failure, never parsed). Absent: no bound (today's default). */
-  maxBytes?: number;
-  /** Absent: fetch's default (follow). "manual": a 3xx comes back as the http failure it is, never followed, and its
-   *  body isn't read. */
-  redirect?: "follow" | "manual" | "error";
-  /** The bearer resolution to send, made by the caller with `resolveBearer` right before this call, so the caller
-   *  knows exactly which token went out. Absent: resolved here, as before. */
-  resolvedBearer?: ReturnType<typeof resolveBearer>;
+export interface RemoteJsonOptions extends RemoteJsonRequest, RemoteJsonDeps {}
+
+export interface RemoteRawOptions extends RemoteRawRequest, RemoteJsonDeps {}
+
+/** The daemon's own client: bearer files read by the node credential reader, and the given fetch (a route's test seam) or the
+ *  global one. What a route or startup.ts hands to the domain. */
+export function nodeRemoteDaemonClient(fetchImpl?: typeof fetch): RemoteDaemonClient {
+  return new HttpRemoteDaemonClient({ credentialFiles: nodeCredentialFileReader, ...(fetchImpl ? { fetchImpl } : {}) });
 }
 
-export type RemoteJsonFailureKind = "bearer" | "timeout" | "network" | "http";
-
-export interface RemoteJsonFailure {
-  ok: false;
-  kind: RemoteJsonFailureKind;
-  /** Response interruption after request delivery cannot settle the operation outcome. */
-  outcome?: "indeterminate";
-  /** For kind=timeout: whether the deadline fired before headers
-   *  ("request") or while reading the body ("body"). */
-  phase?: "request" | "body";
-  /** HTTP status when headers arrived (including body timeout or network failure). */
-  status?: number;
-  /** Bearer message / network error message / remote error text (may be ""). */
-  detail: string;
-  /** The answer exceeded the caller's `maxBytes` and wasn't read further (kind "network"). */
-  tooLarge?: true;
+/** The client for one HTTP request: over the fetch a test set on its context as `remoteFetchImpl`, or the global one. The context is
+ *  read here, on the adapter side, so no domain code names fetch or the test seam. */
+export function contextRemoteDaemonClient(c: { get(key: string): unknown }): RemoteDaemonClient {
+  return nodeRemoteDaemonClient(c.get("remoteFetchImpl") as typeof fetch | undefined);
 }
 
-export type RemoteJsonResult = { ok: true; status: number; payload: unknown } | RemoteJsonFailure;
+/** The port over HTTP: every request goes through remoteJsonRequest / remoteRawRequest with this client's deps. */
+export class HttpRemoteDaemonClient implements RemoteDaemonClient {
+  constructor(private readonly deps: RemoteJsonDeps) {}
 
-export interface RemoteRawOptions extends RemoteJsonDeps {
-  /** REQUIRED — the caller names its deadline class explicitly. */
-  timeoutMs: number;
-}
-
-// OPR.0.4.6.MH2 FR-2/FR-7 — the read-through's transport leg. Verbatim
-// passthrough means STATUS + CONTENT-TYPE + BODY (arch P3): the origin's own
-// 404/500 IS the answer, so unlike remoteJsonRequest this variant returns the
-// full body TEXT for EVERY origin status and never collapses error bodies to
-// a detail string. Failure kinds stay transport-only (bearer/timeout/network)
-// — an origin that ANSWERED is always ok:true here. Text-only by design: the
-// v1 read allowlist carries JSON endpoints; binary surfaces (proof-asset)
-// are deliberately not allowlisted.
-export type RemoteRawResult =
-  | { ok: true; status: number; contentType: string; bodyText: string }
-  | { ok: false; kind: Exclude<RemoteJsonFailureKind, "http">; phase?: "request" | "body"; status?: number; detail: string };
-
-/** Mirrors the CLI's resolveRemoteBearer (host-registry.ts): at-most-one of
- *  bearer_env / bearer_file, resolved at call time. Neither configured is an
- *  anonymous (URL-only) host — a tokenless daemon; ok with no token, so no
- *  Authorization header is sent. A configured-but-unresolvable pointer still
- *  fails (fail-closed). */
-export function resolveBearer(host: HttpHostEntry, deps: RemoteJsonDeps): { ok: true; token?: string } | { ok: false; detail: string } {
-  const env = deps.env ?? process.env;
-  if (host.bearer_env) {
-    const token = env[host.bearer_env]?.trim();
-    if (token) return { ok: true, token };
-    return { ok: false, detail: `bearer env var ${host.bearer_env} is not set or empty for host ${host.id}` };
+  requestJson(host: HttpHostEntry, path: string, request: RemoteJsonRequest): Promise<RemoteJsonResult> {
+    return remoteJsonRequest(host, path, { ...request, ...this.deps });
   }
-  if (host.bearer_file) {
-    // workspaces-o9o.151: under the credential rule (a plain file of ours, no group/other bits, capped). Missing keeps its old
-    // wording; a refusal names the file and the fix, never the content.
-    const read = deps.credentialFiles.read(host.bearer_file, BEARER_FILE_POLICY);
-    if (!read.ok) {
-      return read.problem === "missing"
-        ? { ok: false, detail: `bearer file ${host.bearer_file} not readable for host ${host.id}` }
-        : { ok: false, detail: `bearer file refused for host ${host.id}: ${read.message}` };
-    }
-    const token = read.content.trim();
-    if (token) return { ok: true, token };
-    return { ok: false, detail: `bearer file ${host.bearer_file} is empty for host ${host.id}` };
+
+  requestRaw(host: HttpHostEntry, path: string, request: RemoteRawRequest): Promise<RemoteRawResult> {
+    return remoteRawRequest(host, path, { ...request, ...this.deps });
   }
-  return { ok: true };
 }
 
 /** One bounded daemon→daemon JSON exchange. The single deadline covers

@@ -13,7 +13,7 @@ import { once } from "node:events";
 import { Hono } from "hono";
 import { remoteUpLeaf } from "../src/domain/topology/remote-up-leaf.js";
 import { hostReadThrough } from "../src/domain/hosts/read-through.js";
-import { remoteJsonRequest, remoteRawRequest } from "../src/domain/hosts/remote-daemon-http.js";
+import { remoteJsonRequest, remoteRawRequest, contextRemoteDaemonClient, HttpRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 import { LOCAL_HOST_ID, hostsCovered } from "../src/domain/hosts/fanout-contract.js";
 import type { AggregatedPayload } from "../src/domain/hosts/fanout-contract.js";
 import type { HttpHostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
@@ -211,11 +211,11 @@ describe("remote response body transport — native HTTP consumers", () => {
         set("hostRegistryLoader", () => ({ ok: true, registry: { hosts: [host] } }));
         await next();
       });
-      app.use("/api/*", hostReadThrough(nodeCredentialFileReader));
+      app.use("/api/*", hostReadThrough(nodeCredentialFileReader, contextRemoteDaemonClient));
       let localHits = 0;
       app.get("/api/rigs/summary", c => { localHits++; return c.json({ local: true }); });
       try {
-        const up = await remoteUpLeaf({ sourceRef: "fixture" }, host, { credentialFiles: NO_CREDENTIAL_FILES, timeoutMs: 2000, env: {} });
+        const up = await remoteUpLeaf({ sourceRef: "fixture" }, host, { remoteDaemons: new HttpRemoteDaemonClient({ credentialFiles: NO_CREDENTIAL_FILES, env: {} }), timeoutMs: 2000 });
         const json = await remoteJsonRequest(host, "/api/rigs/summary", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2000, env: {} });
         const raw = await remoteRawRequest(host, "/api/rigs/summary", { credentialFiles: NO_CREDENTIAL_FILES, timeoutMs: 2000, env: {} });
         const edge = await app.request("/api/rigs/summary?host=fixture-edge");

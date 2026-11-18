@@ -22,6 +22,7 @@ import {
 } from "../src/domain/hosts/fanout-contract.js";
 import { hostReadThrough } from "../src/domain/hosts/read-through.js";
 import type { HostRegistry } from "../src/domain/hosts/hosts-registry-reader.js";
+import { contextRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 
 // vps-a is TOKENLESS (bearer optional) so the remote leg dials without needing
 // an env-provided bearer — we only need to prove a non-self host forwards.
@@ -46,7 +47,7 @@ function makeApp() {
     set("remoteFetchImpl", fakeFetch);
     await next();
   });
-  app.use("/api/*", hostReadThrough(nodeCredentialFileReader));
+  app.use("/api/*", hostReadThrough(nodeCredentialFileReader, contextRemoteDaemonClient));
   app.get("/api/rigs/summary", (c) => { localHits.push(c.req.path); return c.json({ rigs: ["local-rig"] }); });
   return { app, fetchCalls, localHits };
 }

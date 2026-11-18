@@ -6,7 +6,7 @@ import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { remoteJsonRequest, resolveBearer } from "../src/domain/hosts/remote-daemon-http.js";
+import { remoteJsonRequest, resolveBearer } from "../src/adapters/remote-daemon-http.js";
 import type { HttpHostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
 
 const servers: http.Server[] = [];

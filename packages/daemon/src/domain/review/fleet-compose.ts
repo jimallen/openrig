@@ -39,9 +39,8 @@ import type {
 import type { PerHostStatus } from "../hosts/fanout-contract.js";
 import { LOCAL_HOST_ID } from "../hosts/fanout-contract.js";
 import type { HostRegistryLoadResult } from "../hosts/hosts-registry-reader.js";
-import type { CredentialFileReader } from "../credential-file.js";
 import { resolveHost } from "../hosts/hosts-registry-reader.js";
-import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
+import type { RemoteDaemonClient } from "../hosts/remote-daemon-client.js";
 
 /** The ordinary TUI/CLI caller gives GET five seconds. Reserve one second
  *  (20%) for union/serialization, transport and scheduling after fan-out;
@@ -226,10 +225,8 @@ export interface FleetComposeDeps {
   registryExists: () => boolean;
   /** View-time fact, passed in — the union never derives time state. */
   nowIso: string;
-  fetchImpl?: typeof fetch;
-  env?: Record<string, string | undefined>;
-  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
-  credentialFiles: CredentialFileReader;
+  /** workspaces-o9o.161: the remote daemons, through the domain's port (the HTTP adapter carries fetch and the bearer sources). */
+  remoteDaemons: RemoteDaemonClient;
   /** Test override for the TOTAL elapsed budget; never per-host/per-wave. */
   timeoutMs?: number;
   concurrency?: number;
@@ -275,14 +272,11 @@ async function readHostComposedRig(hostId: string, reg: HostRegistryLoadResult, 
       input: null,
     };
   }
-  const res = await remoteJsonRequest(resolved.host, "/api/review/rig", {
+  const res = await deps.remoteDaemons.requestJson(resolved.host, "/api/review/rig", {
     method: "GET",
     // Reuse the transport's abort across request AND body. Later worker
     // waves receive only time left on this same deadline, never a reset.
     timeoutMs: remainingMs,
-    fetchImpl: deps.fetchImpl,
-    env: deps.env,
-    credentialFiles: deps.credentialFiles,
   });
   if (res.ok) {
     const composed = parseComposedRig(res.payload);
