@@ -9,8 +9,14 @@ import type { FleetSnapshot, LoadState } from "../types.js";
 export const VIEW_DIGEST_LIMITS = { rigs: 500, agentsPerRig: 200, agents: 2000, hostsDown: 100, chars: 100 } as const;
 
 export interface ViewDigestAgent { name: string; session?: string; status: string }
-/** agentCount is the rig's whole agent count in the snapshot, whatever the agent list's caps cut (compared with ps's nodeCount). */
-export interface ViewDigestRig { host: string; name: string; id?: string; reachable: boolean; agentCount: number; agents: ViewDigestAgent[] }
+/** Whether the TUI holds this rig's seats: it reads them only when its page needs them ("not-loaded"), and a failed read is
+ *  "unavailable". Measured on a real TUI: an unread rig sits in the snapshot with no pods, which must never read as "no agents". */
+export type ViewDigestInventory = "read" | "not-loaded" | "unavailable";
+/** agentCount is the rig's whole agent count in the snapshot, whatever the agent list's caps cut (compared with ps's nodeCount);
+ *  null unless inventory is "read". */
+export interface ViewDigestRig {
+  host: string; name: string; id?: string; reachable: boolean; inventory: ViewDigestInventory; agentCount: number | null; agents: ViewDigestAgent[];
+}
 export interface ViewDigest {
   /** When the TUI last confirmed its read of the daemon (ISO), null before the first. */
   readAt: string | null;
@@ -49,7 +55,11 @@ export function describeView(input: { snapshot: FleetSnapshot; load: LoadState |
         }
       }
       if (rigs.length >= limits.rigs) { truncated = true; continue; }
-      rigs.push({ host: cap(host.name), name: cap(rig.name), ...(rig.id ? { id: cap(rig.id) } : {}), reachable: host.reachable, agentCount, agents });
+      const inventory: ViewDigestInventory = rig.inventoryNotLoaded ? "not-loaded" : rig.inventoryUnavailable ? "unavailable" : "read";
+      rigs.push({
+        host: cap(host.name), name: cap(rig.name), ...(rig.id ? { id: cap(rig.id) } : {}), reachable: host.reachable,
+        inventory, agentCount: inventory === "read" ? agentCount : null, agents,
+      });
     }
   }
   if (snapshot.hostsDown.length > limits.hostsDown) truncated = true;

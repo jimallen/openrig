@@ -48,9 +48,10 @@ against the locked/ruled shape so it drops in when the dependency lands.
   has no scenario folder to offer, so there a per-step topology fails loud.
 - **R-13. `equals` cross-surface normalizer (#10) — LANDED; #10 converted (workspaces-o9o.132).**
   The declarative normalizer ships as a per-surface projection mapping,
-  `equals: {<surface>: {pluck, path, rig}}` (`scenario-normalizer.ts`), and it is the only
-  form the validator accepts. #10 compares `ps`, `queue` and the TUI's view (`tui_view`, R-21) by the
-  rig set each names, with one `env.queue` item, and asserts `tui_socket` (the TUI's own state) on its
+  `equals: {<surface>: {pluck, path, rig, join}}` (`scenario-normalizer.ts`), and it is the only
+  form the validator accepts. #10 compares `ps` and `queue` by the rig set each names, with one
+  `env.queue` item, and `ps` and the TUI's view (`tui_view`, R-21) by rig and agent count (`join`);
+  the TUI's view counts only when fresh, and `tui_socket` (the TUI's own state) is asserted on its
   own. Its seed is armed before the equality and is a class the equality catches. Its storm
   uses `mutate`, which is unbound, so host mode reports it NOT RUN.
 - **R-14. `env.pre_existing_tmux` hermetic fixture (#5) — OBSOLETE as written; replaced in
@@ -85,8 +86,17 @@ against the locked/ruled shape so it drops in when the dependency lands.
   it renders. Its third read-only verb, `view`, returns a bounded digest of the snapshot every topology
   view is rendered from (each rig with its host and agents, the hosts it could not read, and `readAt`,
   when it last confirmed its read; names and status only). Scenarios read it as the `tui_view` surface
-  (needs `env.tui`). #10's equality now includes it, so a TUI still showing a world that has moved on
-  fails that equality once its bound passes (pinned by `test/scenario-one-view-state-library.test.ts`).
+  (needs `env.tui`). Every list and string in the digest is capped (500 rigs, 200 agents per rig, 2000
+  agents, 100 down hosts, 100 characters a string; `truncated` when anything is cut), and each rig
+  carries its whole `agentCount`, or `null` with `inventory: not-loaded|unavailable` when the TUI has
+  not read its seats: the TUI reads a rig's seats only once that rig is selected (measured on a real
+  TUI, whose landing page holds no seats), so #10 first drills it into the rig with the `tui` action
+  (`tui: {rig: <name>}`, which sends only the TUI's own `rig <name>` line to its socket, never the
+  daemon). A view counts only when FRESH: #10 asserts `settled`, not `stale`, and
+  `confirmedDuringStep` (the reader marks a view whose `readAt` is at or after the expect's start; it
+  assumes the TUI and the runner read one wall clock on one host). #10 then compares `ps` and the TUI
+  by rig and agent count, so a stale view, one confirmed before the step, one with fewer agents, or
+  one whose seats were never read fails (pinned by `test/scenario-one-view-state-library.test.ts`).
 
 ## → 51-06 (transactional execution-closure) — #11 GREEN gate
 - **R-20. #11 GREEN gate = the 51-06 transactional-closure reconcile (POOLED, NOT in

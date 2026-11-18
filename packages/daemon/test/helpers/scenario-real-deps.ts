@@ -30,7 +30,7 @@
 
 import { resolve } from "node:path";
 import { runRig as realRunRig, type RigResult, type ScenarioDaemon } from "./scenario-daemon.js";
-import { readSurface } from "./scenario-surfaces.js";
+import { readSurface, sendTuiDrill } from "./scenario-surfaces.js";
 import type { ExpectSurface } from "./scenario-schema.js";
 import type { ScenarioRunnerDeps, ActionResult } from "./scenario-runner.js";
 import type { RunRecord } from "./scenario-run-record.js";
@@ -183,6 +183,17 @@ export function buildRealDeps(opts: RealDepsOptions): ScenarioRunnerDeps {
         if (op === "restart") { await daemon.restart(); return { code: 0, stdout: "", stderr: "" }; }
         return fail(`daemon: unknown op ${JSON.stringify(op)} (allowed: sigterm, restart)`);
       }
+      case "tui": {
+        // workspaces-o9o.172: one drill line to the scenario's TUI socket (sendTuiDrill re-checks the payload); never the rig CLI.
+        try {
+          const reply = await sendTuiDrill(daemon.readEnv, payload);
+          const accepted = !!reply && typeof reply === "object" && (reply as { ok?: unknown }).ok === true;
+          return accepted ? { code: 0, stdout: JSON.stringify(reply), stderr: "" }
+            : fail(`tui: the TUI did not accept the line: ${JSON.stringify(reply)}`);
+        } catch (e) {
+          return fail(e instanceof Error ? e.message : String(e));
+        }
+      }
       case "seed_regression": {
         const regressionClass = payload && typeof payload === "object"
           ? (payload as { class?: unknown }).class : undefined;
@@ -198,11 +209,11 @@ export function buildRealDeps(opts: RealDepsOptions): ScenarioRunnerDeps {
     }
   };
 
-  const observe = (surface: ExpectSurface, o: { seat?: string }): Promise<unknown> =>
+  const observe = (surface: ExpectSurface, o: { seat?: string; since?: number }): Promise<unknown> =>
     readSurface(
       surface,
       { rigBin, readEnv: daemon.readEnv, baseUrl: daemon.baseUrl },
-      { seat: o.seat, scopeMission: opts.scopeMission },
+      { seat: o.seat, scopeMission: opts.scopeMission, ...(o.since !== undefined ? { since: o.since } : {}) },
     );
 
   return {

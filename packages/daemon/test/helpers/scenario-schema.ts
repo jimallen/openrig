@@ -27,7 +27,23 @@ export const ACTION_VERBS = [
   "policy",
   "seed_regression",
   "daemon",
+  // workspaces-o9o.172: drill the scenario's TUI into one rig (its only payload is { rig: <name> }), so the TUI reads that rig's seats.
+  "tui",
 ] as const;
+
+/** A rig name the `tui` action may send: one token of the TUI's `rig <name>` drill, so no space, newline or prefix character can
+ *  make it another command or a second line. */
+const TUI_RIG_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** The ONE grammar line a `tui` action sends (`rig <name>`, a drill the TUI already accepts), or null when the payload is not exactly
+ *  { rig: <safe name> }. The validator and the adapter both use it, so nothing else can reach the TUI. */
+export function tuiActionLine(payload: unknown): string | null {
+  if (!isPlainObject(payload)) return null;
+  const keys = Object.keys(payload);
+  if (keys.length !== 1 || keys[0] !== "rig") return null;
+  const rig = payload.rig;
+  return typeof rig === "string" && TUI_RIG_NAME.test(rig) ? `rig ${rig}` : null;
+}
 
 /** The shipped-observable surface set — the ONLY surfaces `expect` may name. */
 export const EXPECT_SURFACES = [
@@ -96,7 +112,8 @@ export type ValidationErrorCode =
   | "UNKNOWN_EMIT_BEHAVIOR"
   | "USAGE_LIMIT_IN_STUB_TOPOLOGY"
   | "UNKNOWN_DAEMON_OP"
-  | "UP_FAILS_INVALID";
+  | "UP_FAILS_INVALID"
+  | "TUI_ACTION_INVALID";
 
 export interface ValidationError {
   code: ValidationErrorCode;
@@ -228,10 +245,12 @@ function validateEnvStepCrossRequirements(
   push: (code: ValidationErrorCode, message: string, path: string) => void,
 ): void {
   const surfacesRead = new Set<string>();
+  let drivesTui = false;
   steps.forEach((step) => {
     if (!isPlainObject(step)) return;
     const ex = step.expect;
     if (isPlainObject(ex) && typeof ex.surface === "string") surfacesRead.add(ex.surface);
+    if ("tui" in step) drivesTui = true;
   });
 
   if (surfacesRead.has("scope")) {
@@ -244,10 +263,10 @@ function validateEnvStepCrossRequirements(
       );
     }
   }
-  if ((surfacesRead.has("tui_socket") || surfacesRead.has("tui_view")) && env?.tui !== true) {
+  if ((surfacesRead.has("tui_socket") || surfacesRead.has("tui_view") || drivesTui) && env?.tui !== true) {
     push(
       "TUI_NOT_DECLARED",
-      "env.tui: true is required when any step expects the tui_socket or tui_view surface — the control socket exists only inside the TUI the pipeline provisions on opt-in",
+      "env.tui: true is required when any step expects the tui_socket or tui_view surface, or runs the tui action — the control socket exists only inside the TUI the pipeline provisions on opt-in",
       "env.tui",
     );
   }
@@ -289,6 +308,13 @@ function validateStep(
   else if (verb === "emit") validateEmit(value, `${base}.emit`, topologyKind, push);
   else if (verb === "daemon") validateDaemon(value, `${base}.daemon`, push);
   else if (verb === "up") validateUp(value, `${base}.up`, push);
+  else if (verb === "tui" && tuiActionLine(value) === null) {
+    push(
+      "TUI_ACTION_INVALID",
+      `${base}.tui: must be exactly { rig: <name> } (letters, digits, '.', '_' or '-', at most 100) — the action sends only the TUI's own \`rig <name>\` drill`,
+      `${base}.tui`,
+    );
+  }
   // Other action verbs (up/down/send/restart/restore/mutate/policy/seed_regression)
   // carry free-form payloads the runner interprets; no schema gate at v1.
 }
@@ -368,8 +394,8 @@ function validateExpect(
         continue;
       }
       for (const key of Object.keys(spec)) {
-        if (!["pluck", "rig", "path"].includes(key)) {
-          push("EQUALS_PROJECTION_INVALID", `${path}.equals.${surf}.${key}: unknown projection key — allowed: pluck, rig, path`, `${path}.equals.${surf}.${key}`);
+        if (!["pluck", "rig", "path", "join"].includes(key)) {
+          push("EQUALS_PROJECTION_INVALID", `${path}.equals.${surf}.${key}: unknown projection key — allowed: pluck, rig, path, join`, `${path}.equals.${surf}.${key}`);
         }
       }
       if (spec.pluck !== undefined && typeof spec.pluck !== "string") {
@@ -379,6 +405,13 @@ function validateExpect(
         // was accepted at load and then threw `path.split is not a function` at
         // runtime — a TypeError must never be the first signal.
         push("EQUALS_PROJECTION_INVALID", `${path}.equals.${surf}.path: must be a dot-path string`, `${path}.equals.${surf}.path`);
+      }
+      // workspaces-o9o.172: join is two or more field names, and never beside pluck (a projection takes one shape).
+      if (spec.join !== undefined && (!Array.isArray(spec.join) || spec.join.length < 2 || !spec.join.every((k) => typeof k === "string" && k.length > 0))) {
+        push("EQUALS_PROJECTION_INVALID", `${path}.equals.${surf}.join: must be a list of two or more field names`, `${path}.equals.${surf}.join`);
+      }
+      if (spec.join !== undefined && spec.pluck !== undefined) {
+        push("EQUALS_PROJECTION_INVALID", `${path}.equals.${surf}: join and pluck cannot both be declared`, `${path}.equals.${surf}`);
       }
       if (spec.rig !== undefined && typeof spec.rig !== "boolean") {
         push("EQUALS_PROJECTION_INVALID", `${path}.equals.${surf}.rig: must be a boolean`, `${path}.equals.${surf}.rig`);

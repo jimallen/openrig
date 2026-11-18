@@ -4,11 +4,15 @@
 #   activity, so three surfaces told three stories of one system.
 #
 # WHAT THIS PROVES (workspaces-o9o.132; TUI view workspaces-o9o.172): after the storm, `ps`, `queue` and the
-#   TUI's own view of the world name the same rig set (the declarative `equals`, ROUTING R-13), with one real
-#   queue item (env.queue) so the comparison cannot pass empty. The TUI's view is its socket's OBSERVE verb
-#   `view` (the `tui_view` surface: every rig the TUI holds, the digest of what it renders; R-21), so a TUI
-#   still showing a world that has moved on fails the equality once its bound passes. The `tui_socket` leg
-#   asserts the TUI's own state: it is live on the topology screen.
+#   TUI's own view of the world agree (the declarative `equals`, ROUTING R-13): `ps` and `queue` name the same
+#   rig set, with one real queue item (env.queue) so the comparison cannot pass empty, and `ps` and the TUI
+#   name the same rigs with the same agent count each (a `join` of name and count). The TUI's view is its
+#   socket's OBSERVE verb `view` (the `tui_view` surface; R-21), and it counts only when FRESH: settled, not
+#   stale, and confirmed during the step (its readAt at or after the step's start; the TUI and the runner
+#   read one wall clock on one host). The `tui_socket` leg asserts the TUI is live on the topology screen.
+#   The TUI reads a rig's seats only once that rig is selected (measured on a real TUI: on its landing page the
+#   rig sat in the view with no seats read), so the `tui` action first drills it into the rig with its own
+#   `rig <name>` command; until the seats are read the view's agentCount is null, which no ps count equals.
 #
 # SEED (class: queue-rig-divergence): the seeded run plants, AFTER the storm and BEFORE the assertions, a
 #   queue item addressed to a rig `ps` does not run (the queue telling a story `ps` cannot see). The `equals`
@@ -43,7 +47,7 @@ steps:
   # The seed is armed BEFORE the assertion it must break (workspaces-o9o.132 review): a seeded run plants the
   # queue-rig divergence here, after the storm, and the `equals` leg below must catch it.
   - seed_regression: {class: queue-rig-divergence}
-  # The TUI is live on the topology screen (its own state; it is not part of the equality, see NOT COVERED).
+  # The TUI is live on the topology screen (its own state; its view of the world is the tui_view legs below).
   - expect:
       surface: tui_socket
       within: 30s
@@ -53,12 +57,31 @@ steps:
           screen: topology
           address:
             section: topology
-  # ...and ps, queue and the TUI's view name the same rig set (normalized cross-surface equality).
+  # Drill the TUI into the rig, so it reads the rig's seats (the one `rig <name>` line to the TUI socket, never the daemon).
+  - tui: {rig: mutation-pod-stub}
+  # The TUI's view counts only when it is fresh: settled, not stale, and confirmed during this step (its readAt at or after the step's
+  # start; the TUI and the runner read one wall clock on one host).
+  - expect:
+      surface: tui_view
+      within: 30s
+      match:
+        ok: true
+        view:
+          settled: true
+          stale: false
+          confirmedDuringStep: true
+  # ps and queue name the same rig set (normalized cross-surface equality)...
   - expect:
       surface: ps
       within: 30s
       equals:
         ps: { pluck: name }
         queue: { pluck: destinationSession, rig: true }
-        tui_view: { path: view.rigs, pluck: name }
+  # ...and ps and the TUI name the same rigs with the same number of agents each (an unread rig's agentCount is null, never equal).
+  - expect:
+      surface: ps
+      within: 30s
+      equals:
+        ps: { join: [name, nodeCount] }
+        tui_view: { path: view.rigs, join: [name, agentCount] }
   - down: {}

@@ -18,7 +18,7 @@
 
 import net from "node:net";
 import { runRig } from "./scenario-daemon.js";
-import type { ExpectSurface } from "./scenario-schema.js";
+import { tuiActionLine, type ExpectSurface } from "./scenario-schema.js";
 import { waitBound, waitTimedOut } from "./wait-timeout.js";
 
 export interface SurfaceContext {
@@ -38,6 +38,8 @@ export interface ReadSurfaceOptions {
   scopeMission?: string;
   /** Lines for a transcript read's `--tail <lines>` (a value-taking option). */
   transcriptTail?: number;
+  /** workspaces-o9o.172: when the expect making this read began (the runner clock, wall time in a real run). */
+  since?: number;
 }
 
 /** Default tail depth for a transcript surface read. */
@@ -102,7 +104,7 @@ export async function readSurface(
     case "tui_socket":
       return readTuiSocket(ctx, opts, "state");
     case "tui_view":
-      return readTuiSocket(ctx, opts, "view");
+      return annotateTuiView(await readTuiSocket(ctx, opts, "view"), opts.since);
     default:
       // Defense-in-depth: a RESERVED value (e.g. "proof") smuggled past the
       // validator by a cast still fails loud and named, never fabricated.
@@ -129,39 +131,69 @@ async function jsonRig(args: string[], ctx: SurfaceContext): Promise<unknown> {
 }
 
 /**
+ * workspaces-o9o.172 (verify-qa2 review): a TUI view counts only when it is fresh. Marks view.confirmedDuringStep: the TUI's readAt (when
+ * it last confirmed its read of the daemon) is at or after `since`, when the expect began. ASSUMPTION, stated: the TUI and the scenario
+ * runner read ONE wall clock (they run on one host), and the scenario clock injection reaches only the daemon, never the TUI. With no
+ * `since` (a read outside an expect) the reply is returned unchanged.
+ */
+export function annotateTuiView(reply: unknown, since: number | undefined): unknown {
+  if (since === undefined || !reply || typeof reply !== "object") return reply;
+  const view = (reply as { view?: unknown }).view;
+  if (!view || typeof view !== "object") return reply;
+  const readAt = (view as { readAt?: unknown }).readAt;
+  const at = typeof readAt === "string" ? Date.parse(readAt) : Number.NaN;
+  return { ...reply, view: { ...view, confirmedDuringStep: Number.isFinite(at) && at >= since } };
+}
+
+/**
  * Query one of the TUI control socket's OBSERVE verbs: connect, send exactly that verb (`state`, the navigation address; `view`, the
  * digest of the world the TUI renders, workspaces-o9o.172), and parse the one-line JSON reply. Any other line is a MUTATION, so the
  * verb is typed to the two OBSERVE lines and nothing else is ever sent. Path from OPENRIG_TUI_SOCKET (the scenario helper sets it
  * when a TUI is up).
  */
 function readTuiSocket(ctx: SurfaceContext, opts: ReadSurfaceOptions, verb: "state" | "view"): Promise<unknown> {
-  const sockPath = ctx.readEnv.OPENRIG_TUI_SOCKET;
+  return queryTuiSocket(ctx.readEnv, verb, opts.timeoutMs ?? 5000);
+}
+
+/**
+ * workspaces-o9o.172 (CoS decision A): the `tui` action. Sends the ONE line `tuiActionLine` builds from the payload (`rig <name>`, the
+ * TUI's own drill) to the TUI control socket at OPENRIG_TUI_SOCKET, and nowhere else: no rig CLI, no daemon URL. Returns the TUI's reply;
+ * throws when the payload is not exactly { rig: <safe name> } (nothing is sent) or there is no socket.
+ */
+export function sendTuiDrill(readEnv: Record<string, string | undefined>, payload: unknown, timeoutMs = 5000): Promise<unknown> {
+  const line = tuiActionLine(payload);
+  if (line === null) return Promise.reject(new Error(`tui: the payload must be exactly { rig: <name> }, got ${JSON.stringify(payload)}`));
+  return queryTuiSocket(readEnv, line, timeoutMs);
+}
+
+/** One request line to the TUI control socket, one JSON reply line back. */
+function queryTuiSocket(readEnv: Record<string, string | undefined>, line: string, timeoutMs: number): Promise<unknown> {
+  const sockPath = readEnv.OPENRIG_TUI_SOCKET;
   if (!sockPath) {
     return Promise.reject(
       new Error("tui_socket read requires OPENRIG_TUI_SOCKET (the TUI control socket path)"),
     );
   }
-  const timeoutMs = opts.timeoutMs ?? 5000;
   return new Promise((resolve, reject) => {
     const conn = net.createConnection(sockPath);
     let buf = "";
     const bound = waitBound(timeoutMs);
     const timer = setTimeout(() => {
       conn.destroy();
-      reject(waitTimedOut(`tui_socket \`${verb}\` query timed out`, bound));
+      reject(waitTimedOut(`tui_socket \`${line}\` query timed out`, bound));
     }, bound.ms);
-    conn.on("connect", () => conn.write(`${verb}\n`));
+    conn.on("connect", () => conn.write(`${line}\n`));
     conn.on("data", (b) => {
       buf += b.toString();
       const nl = buf.indexOf("\n");
       if (nl < 0) return;
       clearTimeout(timer);
-      const line = buf.slice(0, nl);
+      const reply = buf.slice(0, nl);
       conn.end();
       try {
-        resolve(JSON.parse(line));
+        resolve(JSON.parse(reply));
       } catch {
-        reject(new Error(`tui_socket reply was not JSON: ${line.slice(0, 120)}`));
+        reject(new Error(`tui_socket reply was not JSON: ${reply.slice(0, 120)}`));
       }
     });
     conn.on("error", (e) => {

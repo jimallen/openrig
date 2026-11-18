@@ -50,6 +50,11 @@ export interface SurfaceProjection {
   rig?: boolean;
   /** Read a nested field from an OBJECT surface before projecting (dot path). */
   path?: string;
+  /** workspaces-o9o.172: join two or more fields of each element with "/" (numbers as text), e.g. ps {join: [name, nodeCount]} against
+   *  tui_view {path: view.rigs, join: [name, agentCount]}. Exclusive with pluck. A field that is present but null joins as "null" (an
+   *  observed value, e.g. the agentCount of a rig whose seats the TUI has not read), so it fails an equality instead of reading as a broken
+   *  declaration; only an absent field drops the element. */
+  join?: string[];
 }
 
 /** The declarative `equals` mapping: surface -> projection. */
@@ -80,18 +85,27 @@ export function projectSurface(
   surface = "surface",
 ): unknown {
   const base = spec.path ? readPath(value, spec.path) : value;
-  if (!spec.pluck) return base;
+  if (!spec.pluck && !spec.join) return base;
   const items = Array.isArray(base) ? base : [base];
   const nonEmptyInput = items.some((i) => i !== undefined && i !== null);
-  const plucked = items
-    .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>)[spec.pluck!] : undefined))
-    .filter((v): v is string => typeof v === "string" && v.length > 0)
-    .map((v) => (spec.rig ? rigOf(v) : v));
+  const field = (item: unknown, key: string): string | undefined => {
+    const v = item && typeof item === "object" ? (item as Record<string, unknown>)[key] : undefined;
+    return typeof v === "string" && v.length > 0 ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : undefined;
+  };
+  const joinField = (item: unknown, key: string): string | undefined =>
+    item && typeof item === "object" && key in item && (item as Record<string, unknown>)[key] === null ? "null" : field(item, key);
+  const plucked = spec.join
+    ? items.map((item) => { const parts = spec.join!.map((k) => joinField(item, k)); return parts.every((p) => p !== undefined) ? parts.join("/") : undefined; })
+        .filter((v): v is string => v !== undefined)
+    : items
+      .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>)[spec.pluck!] : undefined))
+      .filter((v): v is string => typeof v === "string" && v.length > 0)
+      .map((v) => (spec.rig ? rigOf(v) : v));
   // A declaration that matches nothing on a surface that HAS data is a broken
   // declaration, not evidence of agreement. Fail loud; never return [] here.
   if (plucked.length === 0 && nonEmptyInput) {
     throw new ProjectionError(
-      `${surface}: projection { pluck: "${spec.pluck}"${spec.path ? `, path: "${spec.path}"` : ""} } extracted NOTHING ` +
+      `${surface}: projection { ${spec.join ? `join: ${JSON.stringify(spec.join)}` : `pluck: "${spec.pluck}"`}${spec.path ? `, path: "${spec.path}"` : ""} } extracted NOTHING ` +
         `from a non-empty surface (${items.length} item(s)). An empty projection from real data cannot be equality ` +
         `evidence — two surfaces both extracting nothing compare equal and prove nothing. Check the declared field ` +
         `against the surface's actual shape.`,

@@ -27,7 +27,9 @@ export interface ScenarioRunnerDeps {
   /** Run an action verb (up/down/send/restart/restore/emit/mutate/policy/seed_regression/daemon). */
   runAction: (verb: string, payload: unknown, seat?: string) => Promise<ActionResult>;
   /** Read a shipped surface for an `expect`. */
-  observe: (surface: ExpectSurface, opts: { seat?: string }) => Promise<unknown>;
+  /** `since` (workspaces-o9o.172): the runner clock when the expect began, so a reader can say whether what it read was confirmed during
+   *  this step (the tui_view reader's confirmedDuringStep). */
+  observe: (surface: ExpectSurface, opts: { seat?: string; since?: number }) => Promise<unknown>;
   /** Injected monotonic clock (ms) for the poll bound. */
   now: () => number;
   /** Injected sleep between polls. */
@@ -176,16 +178,18 @@ async function runExpect(
   const seat = exp.seat as string | undefined;
   const withinMs = exp.within !== undefined ? parseDuration(String(exp.within)) : deps.defaults.withinMs;
   const pollIntervalMs = deps.defaults.pollIntervalMs;
+  // workspaces-o9o.172: when this expect began, handed to every read it makes.
+  const since = deps.now();
 
   // `equals` compares MULTIPLE surfaces after normalization — a distinct shape.
   if ("equals" in exp) {
-    const diff = await runEqualsExpect(exp.equals, { withinMs, pollIntervalMs }, deps);
+    const diff = await runEqualsExpect(exp.equals, { withinMs, pollIntervalMs, since }, deps);
     return diff === null ? null : { diff };
   }
 
   const { predicate, expected } = buildSingleSurfacePredicate(exp);
   const res = await pollUntilMatch({
-    observe: () => deps.observe(surface, { seat }),
+    observe: () => deps.observe(surface, { seat, since }),
     predicate,
     expected,
     withinMs,
@@ -218,7 +222,7 @@ function buildSingleSurfacePredicate(exp: Record<string, unknown>): {
  */
 async function runEqualsExpect(
   equalsPayload: unknown,
-  bounds: { withinMs: number; pollIntervalMs: number },
+  bounds: { withinMs: number; pollIntervalMs: number; since: number },
   deps: ScenarioRunnerDeps,
 ): Promise<string | null> {
   const surfaces = extractEqualsSurfaces(equalsPayload);
@@ -234,7 +238,7 @@ async function runEqualsExpect(
   }
   const observeAllEqual = async (): Promise<{ equal: boolean; snapshot: unknown[] }> => {
     const snapshot = await Promise.all(
-      surfaces.map(async (s) => normalizer(s, await deps.observe(s, {}))),
+      surfaces.map(async (s) => normalizer(s, await deps.observe(s, { since: bounds.since }))),
     );
     const first = JSON.stringify(snapshot[0]);
     return { equal: snapshot.every((v) => JSON.stringify(v) === first), snapshot };

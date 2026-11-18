@@ -28,7 +28,14 @@ and becomes standing infrastructure instead of a hand-built probe.
   loud in a stub topology — no scenario here names it.
 - Assertions ride the shipped-observable surface set ONLY: `ps` · `queue` · `stream` ·
   `scope` · `pane` · `transcript` · `tui_socket` · `tui_view` · `policy_provenance`. `tui_view` reads the TUI's
-  `view` verb, the digest of the world it renders, so a TUI can join a cross-surface `equals` (R-21). `proof` is
+  `view` verb, the digest of the world it renders, so a TUI can join a cross-surface `equals` (R-21). Read inside an
+  `expect`, it also carries `view.confirmedDuringStep`: the TUI's `readAt` is at or after the moment that expect began.
+  That rests on one assumption: the TUI and the scenario runner read ONE wall clock (they run on one host; the scenario
+  clock injection reaches only the daemon). An `equals` projection may `join` two or more fields of each element with
+  `/` (e.g. `{ join: [name, nodeCount] }`), exclusive with `pluck`; a field present but `null` joins as
+  `null`. The TUI reads a rig's seats only once that rig is selected, so a scenario comparing agents first
+  runs the `tui` action, `tui: {rig: <name>}` (needs `env.tui`): it sends only the TUI's own `rig <name>`
+  drill to the TUI socket, never to the daemon, and fails if the TUI does not accept it. `proof` is
   reserved: the scenario runner has no read binding for it (`rig proof show` exists, but
   no scenario surface reads it), and the validator rejects it. No internal DB pokes.
 

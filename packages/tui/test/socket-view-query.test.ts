@@ -73,7 +73,7 @@ describe("the socket 'view' query (o9o.172)", () => {
       const raw = JSON.stringify(await q("view"));
       for (const sentinel of [secretish, pathish, paneish]) expect(raw).not.toContain(sentinel);
       const allowed = new Set(["ok", "instanceId", "view", "readAt", "stale", "settled", "rigs", "hostsDown", "counts", "truncated",
-        "host", "name", "id", "reachable", "agentCount", "agents", "session", "status"]);
+        "host", "name", "id", "reachable", "inventory", "agentCount", "agents", "session", "status"]);
       const keys = new Set<string>();
       const walk = (v: unknown) => { if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { keys.add(k); walk(x); } };
       walk(JSON.parse(raw));
@@ -156,6 +156,22 @@ describe("the socket 'view' query (o9o.172)", () => {
       expect(view.rigs).toHaveLength(500);
       expect(view.truncated).toBe(true);
       expect(view.counts.rigs).toBe(rigCount(snapshot));
+    });
+  });
+
+  // Measured on a real TUI (solo-stub, 1 node in ps): the TUI reads a rig's seats only when its page needs them, so the rig sat in the
+  // snapshot with pods [] and the digest said agentCount 0. "Not read" must never read as "no agents".
+  it("a rig whose seats the TUI has not read (or could not read) has agentCount null and says which, never 0", async () => {
+    const snapshot = demoSnapshot();
+    const [read, notLoaded, unavailable] = [0, 1, 2].map((i) => ({ ...snapshot.hosts[0]!.rigs[0]!, name: `r${i}` }));
+    snapshot.hosts[0]!.rigs = [read!, { ...notLoaded!, pods: [], inventoryNotLoaded: true }, { ...unavailable!, pods: [], inventoryUnavailable: true }];
+    await withSocket(snapshot, null, async (q) => {
+      const view = (await q("view")).view as { rigs: Array<{ name: string; inventory: string; agentCount: number | null }> };
+      const want = read!.pods.reduce((n, p) => n + p.agents.length, 0);
+      expect(want).toBeGreaterThan(0);
+      expect(view.rigs.map((r) => [r.name, r.inventory, r.agentCount])).toEqual([
+        ["r0", "read", want], ["r1", "not-loaded", null], ["r2", "unavailable", null],
+      ]);
     });
   });
 });
