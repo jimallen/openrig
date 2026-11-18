@@ -57,6 +57,28 @@ PATH=/usr/bin:/bin:@@{PATH:-/usr/bin:/bin}
 N=$1; S=$2; W=$3
 bt=$(printf '\140')
 in=$(cat)
+# workspaces-o9o.173 (verify-sec review 2): the ONE decoding of a backslash-separated field of the hook text, used by both paths
+# below so their rules cannot drift. In: t (the field), and the state lit and after. Out: e, the text the field decodes to.
+# An empty field is the first backslash of a JSON escaped backslash (\\): the field after it is plain text (so \\rig keeps its r);
+# an empty plain field right after it marks a backslash-newline. u0060 u0024 u0072 u0069 u0067 decode; JSON n, t, r escapes are
+# separators (a space), except a newline right after an escaped backslash (backslash-newline, which the shell removes, so
+# ri BS NL g is rig); b and f are dropped.
+dec1() {
+  if [ $lit = 1 ]; then e=$t; lit=0; [ -n "$t" ] || after=1; return; fi
+  was=$after; after=0
+  case $t in
+    '') e=; lit=1 ;;
+    u0060*) e=$bt@@{t#u0060} ;;
+    u0024*) e='$'@@{t#u0024} ;;
+    u0072*) e=r@@{t#u0072} ;;
+    u0069*) e=i@@{t#u0069} ;;
+    u0067*) e=g@@{t#u0067} ;;
+    n*) if [ $was = 1 ]; then e=@@{t#?}; else e=" @@{t#?}"; fi ;;
+    [tr]*) e=" @@{t#?}" ;;
+    [bf]*) e=@@{t#?} ;;
+    *) e=$t ;;
+  esac
+}
 killed() {
   echo "rig-body-guard is unavailable ($why) and this command uses kill, pkill or killall: refused while the guard is down, a kill by pid included.$gone Relaunch or restore this seat to bring the guard back; rig doctor names a seat whose guard is down." >&2
   exit 2
@@ -84,18 +106,17 @@ deg() {
   if [ "@@{#s}" -gt 16384 ]; then
     # Too long for the decode loop below, which builds the whole decoded text and so is quadratic in escapes (measured on dash:
     # 3.6 s at 256 KB, 53 s at 1 MB, against the hook's 5 s). The kill check still reads decoded text (o9o.173, verify-sec
-    # review): the same walk as the decode loop over the backslash-separated fields (an empty field is an escaped backslash,
-    # so the next field joins on as text: k\ill is kill; any other field starts with a JSON escape letter, which separates
-    # words; quotes are removed from each field, as the loop removes them at the end), but each field is checked joined to the
-    # last 16 decoded characters only, so every character is read about once. Then a backtick, "$(" or u00xx escape refuses as a
-    # rig body. (A for loop's list is expanded before it runs, so set -- inside it is safe.)
+    # reviews): the same fields, decoded by the same dec1, quotes removed from each piece as the loop removes them at the end,
+    # but each piece is checked joined to the last 16 decoded characters only, so every character is read about once. Then a
+    # backtick, "$(" or u00xx escape refuses as a rig body. (A for loop's list is expanded before it runs, so set -- inside it
+    # is safe.)
     set -f
     q=$(printf '\042\047')
     IFS='\'; set -- $s; unset IFS
-    # The first field is plain text, as the field after an escaped backslash is: lit starts at 1.
-    tail=; lit=1
+    # The first field is plain text, as the short path's r=$1 is; every later field goes through dec1.
+    tail=; lit=0; after=0; first=1
     for t in "$@"; do
-      if [ $lit = 1 ]; then e=$t; lit=0; elif [ -z "$t" ]; then e=; lit=1; else e=" @@{t#?}"; fi
+      if [ $first = 1 ]; then e=$t; first=0; else dec1; fi
       case $e in *[$q]*) IFS=$q; set -- $e; IFS=; e="$*"; unset IFS ;; esac
       w=$tail$e
       case " $w " in KILLCASE) killed ;; esac
@@ -108,25 +129,8 @@ deg() {
     IFS='\'; set -- $s; unset IFS
     r=$1; [ $# -gt 0 ] && shift
     lit=0; after=0
-    for t in "$@"; do
-      # an empty field is the first backslash of a JSON escaped backslash (\\): the field after it is plain text, not an escape letter (so \rig keeps its r)
-      if [ $lit = 1 ]; then r=$r$t; lit=0; [ -n "$t" ] || after=1; continue; fi
-      was=$after; after=0
-      case $t in
-        '') lit=1 ;;
-        u0060*) r=$r$bt@@{t#u0060} ;;
-        u0024*) r=$r'$'@@{t#u0024} ;;
-        u0072*) r=@@{r}r@@{t#u0072} ;;
-        u0069*) r=@@{r}i@@{t#u0069} ;;
-        u0067*) r=@@{r}g@@{t#u0067} ;;
-        # JSON n, t, r escapes are SEPARATORS (a space): r$''ig TAB send must not read as r$''igsend. The exception is a newline right after an escaped backslash
-        # (backslash-newline, which the shell removes, so ri BS NL g is rig). The b and f escapes are dropped.
-        n*) if [ $was = 1 ]; then r=$r@@{t#?}; else r="$r @@{t#?}"; fi ;;
-        [tr]*) r="$r @@{t#?}" ;;
-        [bf]*) r=$r@@{t#?} ;;
-        *) r=$r$t ;;
-      esac
-    done
+    # JSON n, t, r escapes are SEPARATORS (a space): r$''ig TAB send must not read as r$''igsend (dec1 holds the rules).
+    for t in "$@"; do dec1; r=$r$e; done
     IFS=$(printf '\042\047'); set -- $r; IFS=; r="$*"; unset IFS
     case " $r " in KILLCASE) killed ;; esac
     case $r in *"$bt"*|*'$('*) ;; *) exit 0 ;; esac

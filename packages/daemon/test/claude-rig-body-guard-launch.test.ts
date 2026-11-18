@@ -239,6 +239,31 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
   // Measured on Sparky's dash: 64 KB 74 ms, 256 KB 273 ms, 1 MB 978 ms, 4 MB 3.9 s (the decode loop took 53 s at 1 MB).
   // Past about 5 MB the hook's own 5 s timeout fires and onFailure "block" refuses the call. 256 KB here, so the 2 s bound
   // keeps headroom on a loaded host.
+  // o9o.173 (verify-sec review 2): the long path had its own copy of the decoding rules, and it drifted. Over 16 KB a shell line
+  // continuation (k\ then a newline then ill, which the shell joins into kill) ran, while the short path refused it. One
+  // spelling list now goes through BOTH paths, as the raw hook JSON Claude Code sends, and both must answer alike.
+  const SPELLINGS: Array<[string, 0 | 2]> = [
+    ["pkill -f vitest", 2],
+    ["k''ill 12345", 2],
+    ["k\\\\ill 12345", 2],             // JSON k\\ill: the shell's k\ill
+    ["k\\\\\\nill 12345", 2],        // JSON k\\\nill: k, a backslash-newline (line continuation), ill
+    ["k\\u0069ll 12345", 2],             // JSON k\u0069ll: i as a JSON unicode escape
+    ["\\nkill 12345", 2],                // JSON \nkill: a newline, then kill
+    ["p\\\"kill\\\" -f x", 2],       // JSON p\"kill\": quoted in the shell
+    ["\\tkillall node", 2],              // JSON \tkillall: a tab, then killall
+    ["echo skill", 0],
+    ["npm run kill-port", 0],
+    ["tmux kill-session -t x", 0],
+    ["echo killed", 0],
+    ["echo k\\nill", 0],                 // JSON k\nill: a newline between k and ill is two words
+  ];
+  const rawEvent = (commandJson: string) => `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"${commandJson}"}}`;
+  it("o9o.173: one spelling list through both paths, short and over 16 KB: the same answer, the expected one", () => {
+    const pad = `echo ${"x".repeat(17_000)}; `;
+    const answers = SPELLINGS.map(([json, want]) => [json, want, hook("", { ...DOWN, raw: rawEvent(json) }).status, hook("", { ...DOWN, raw: rawEvent(pad + json) }).status]);
+    expect(answers).toEqual(SPELLINGS.map(([json, want]) => [json, want, want, want]));
+  });
+
   it("o9o.173: the long-input check is linear: 256 KB full of escapes is decided well inside the hook's 5 s", () => {
     const heavy = 'echo "a" \\\\b\nline\t'.repeat(12_000);
     const refused = hook(`${heavy}; k''ill 1`, DOWN);
