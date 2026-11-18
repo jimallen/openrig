@@ -42,6 +42,12 @@
   "when": "!HC"
  },
  {
+  "file": "packages/cli/test/doctor-seat-path-head.test.ts",
+  "kind": "runIf",
+  "task": "o9o.106: the Linux reader takes each process's PATH from its environ",
+  "when": "process.platform === \"linux\""
+ },
+ {
   "file": "packages/cli/test/file-transfer.test.ts",
   "kind": "skipIf",
   "task": "native local file copies disclose the transferred byte count",
