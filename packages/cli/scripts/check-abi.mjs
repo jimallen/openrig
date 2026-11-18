@@ -7,7 +7,18 @@
 // native code runs, then proves the binding can actually open a database.
 // The open runs in a child process so a native crash is reported, not silent.
 
-const SUPPORTED_MAJORS = [22, 24, 26];
+import { readFileSync } from "node:fs";
+
+// workspaces-o9o.180: the supported majors have one source, node-support.json beside this file (shipped in the package's
+// scripts folder). This postinstall, the CLI's runtime gate (src/node-runtime-gate.ts) and rig doctor and preflight
+// (src/node-support.ts) all read it through here; o9o.121 set its values.
+export const SUPPORTED_MAJORS = JSON.parse(readFileSync(new URL("./node-support.json", import.meta.url), "utf8")).supportedMajors;
+
+/** "22, 24 or 26" (joiner "or") / "22, 24 and 26" (joiner "and"). */
+export function supportedMajorsText(joiner) {
+  return SUPPORTED_MAJORS.length === 1 ? String(SUPPORTED_MAJORS[0])
+    : `${SUPPORTED_MAJORS.slice(0, -1).join(", ")} ${joiner} ${SUPPORTED_MAJORS[SUPPORTED_MAJORS.length - 1]}`;
+}
 
 const box = (lines) =>
   [
@@ -18,7 +29,7 @@ const box = (lines) =>
     "",
   ].join("\n");
 
-const FIX_INSTALL = "Fix:  nvm install 22 && npm install -g @openrig/cli";
+const FIX_INSTALL = `Fix:  nvm install ${SUPPORTED_MAJORS[0]} && npm install -g @openrig/cli`;
 
 /**
  * @param {{
@@ -37,7 +48,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
     return {
       ok: false,
       message: box([
-        "@openrig/cli requires Node.js 22, 24 or 26 (even LTS).",
+        `@openrig/cli requires Node.js ${supportedMajorsText("or")} (even LTS).`,
         `Current: ${nodeVersion}`,
         "",
         "Node 20 is no longer supported: the SQLite binding",
@@ -55,7 +66,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
         "@openrig/cli does not support odd-numbered Node releases.",
         `Current: ${nodeVersion}`,
         "",
-        "Supported: Node.js 22, 24 and 26 (even LTS).",
+        `Supported: Node.js ${supportedMajorsText("and")} (even LTS).`,
         "",
         FIX_INSTALL,
       ]),
@@ -69,7 +80,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
         `Node ${major} is untested with @openrig/cli.`,
         `Current: ${nodeVersion}`,
         "",
-        "Supported: Node.js 22, 24 and 26 (even LTS). The SQLite check below",
+        `Supported: Node.js ${supportedMajorsText("and")} (even LTS). The SQLite check below`,
         "passed, but other behavior on this Node is unverified.",
       ]);
 
@@ -90,7 +101,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
                 `Current: ${nodeVersion}`,
                 "",
                 "Fix:  npm rebuild better-sqlite3",
-                " or:  nvm install 22 && npm install -g @openrig/cli",
+                ` or:  nvm install ${SUPPORTED_MAJORS[0]} && npm install -g @openrig/cli`,
               ]
             : [
                 "better-sqlite3 native addon failed to load.",
@@ -98,7 +109,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
                 "",
                 "Fix:  npm rebuild better-sqlite3",
                 "If that fails, reinstall with a supported Node version:",
-                "      nvm install 22 && npm install -g @openrig/cli",
+                `      nvm install ${SUPPORTED_MAJORS[0]} && npm install -g @openrig/cli`,
               ],
         ) + `  Detail: ${detail}\n`,
     };
@@ -117,8 +128,8 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
             `Current: ${nodeVersion}`,
             "",
             "Fix:  npm rebuild better-sqlite3",
-            "If that fails, reinstall with Node 22, 24 or 26:",
-            "      nvm install 22 && npm install -g @openrig/cli",
+            `If that fails, reinstall with Node ${supportedMajorsText("or")}:`,
+            `      nvm install ${SUPPORTED_MAJORS[0]} && npm install -g @openrig/cli`,
           ]) + `  Detail: ${opened.detail}\n`,
       };
     }

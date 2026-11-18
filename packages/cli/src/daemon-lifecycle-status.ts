@@ -1,4 +1,5 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
+import { sqlite } from "./sqlite-binding.js";
 import { join } from "node:path";
 import { OPENRIG_HOME, readOpenRigEnv } from "./openrig-compat.js";
 
@@ -58,7 +59,7 @@ export function readLifecycleDescription(): LifecycleDescription {
 export function readDaemonLifecycle(dbPath: string): DaemonLifecycleRecord | null {
   let db: Database.Database | null = null;
   try {
-    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    db = new (sqlite())(dbPath, { readonly: true, fileMustExist: true });
     const row = db
       .prepare(`SELECT boot_epoch, started_at, last_heartbeat_at, stopped_at FROM daemon_lifecycle WHERE singleton = 1`)
       .get() as

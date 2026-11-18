@@ -64,6 +64,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - A hard-coded Tailwind palette colour class (`text-red-600`, `bg-white`, `border-stone-100`, ...) is the same colour in light and dark, so it ignores the theme. The 565 in `packages/ui/src` today (classified on the o9o.164 bead) are recorded per file and class in `packages/ui/test/palette-class-baseline.json`.
 - `palette-class-baseline.test.ts` fails on a palette class above that baseline, and on a baseline entry above today's count, so the baseline can only shrink. After removing palette classes, run `npx tsx test/palette-classes.ts --update` from `packages/ui`; it refuses a rise. No colour changed.
 
+### The CLI checks its Node.js version and SQLite binding itself (workspaces-o9o.180)
+
+- Symptom: npm 11 (bundled with Node.js 24 and 26) skips third-party install scripts on a global registry install, so `npm install -g @openrig/cli` no longer ran the CLI's postinstall check. On Node.js 20 or an odd-numbered release the CLI ran with no refusal, and a binding built for another Node crashed it with a raw stack.
+- Now every `rig` command first checks the Node.js major, from the one list in `scripts/node-support.json` that the postinstall, `rig doctor` and `rig preflight` also read. An unsupported major is refused with exit 1 and names the supported versions; `rig doctor`, `--version` and `--help` still run after the message. The first run with each CLI version and Node.js version also loads the SQLite binding and opens a database in a child process, with the postinstall's own messages, and records the pass in `OPENRIG_HOME/cli-runtime-check.json`. Measured on Node 22: the first run takes about 30-50 ms, and a recorded run adds about 0.01 ms.
+- `rig doctor` adds a `node_sqlite` row: the binding opens a database on this Node.
+- No CLI module imports the SQLite binding at load time any more (`src/sqlite-binding.ts` loads it on first use), so the check runs before the binding does.
+- Residual: with an `OPENRIG_HOME` that cannot be written, the first-run check repeats on every command (about 40 ms each).
+
 ### Node.js 26 is a supported version (workspaces-o9o.121)
 
 - The engines range widens to `^22 || ^24 || ^26` (root and `@openrig/daemon`; `@openrig/cli` stays `>=22`), and the Node support policy — `check-abi.mjs` `SUPPORTED_MAJORS`, `node-support.ts` `SUPPORTED_NODE_MAJORS` (used by `rig doctor`/`rig preflight`), and `check-engines.test.mjs` `LTS_ENGINE` — now lists 22, 24 and 26. Jim's call (2026-11-18).

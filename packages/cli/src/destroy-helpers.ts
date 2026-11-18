@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
+import { sqlite } from "./sqlite-binding.js";
 import { HcClient, HcError, SEAT_LABEL, hcTerminalName, resolveHcSocket } from "@openrig/daemon/hc";
 
 export const DESTROY_CONFIRM_TOKEN = "destroy-openrig-state";
@@ -121,7 +122,7 @@ export function buildBackupPath(targetPath: string, exists: (path: string) => bo
 }
 
 function listManagedSessionNames(dbPath: string, attachmentType: "tmux" | "hc"): string[] {
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  const db = new (sqlite())(dbPath, { readonly: true, fileMustExist: true });
   try {
     // A node with no binding row reads as 'tmux' (the column default) and falls back to its latest session name. The
     // hc pass also takes those: whichever host ran the seat, a name is only acted on after its own host vouches for it.

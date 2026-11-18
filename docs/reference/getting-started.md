@@ -125,7 +125,7 @@ Ask: **“Which working account do you want this team to use: Claude Code, Codex
 or both?”** Reuse an explicit choice already made. Recommend the account the
 user already has working; a second subscription is not a prerequisite.
 
-Install OpenRig (`npm install -g @openrig/cli`) and check `hc --version`. With npm 11 or later, an `npm warn install-scripts` line for `@openrig/cli` is expected: only the postinstall Node.js and SQLite check was skipped, and `node "$(npm root -g)/@openrig/cli/scripts/check-abi.mjs"` runs it. Check **only the selected providers**:
+Install OpenRig (`npm install -g @openrig/cli`) and check `hc --version`. With npm 11 or later, an `npm warn install-scripts` line for `@openrig/cli` is expected: the postinstall Node.js and SQLite check was skipped, and the CLI runs it itself at its first run (and `rig doctor` every time). Check **only the selected providers**:
 
 - Claude Code: `claude --version` and `claude auth status`. If sign-in is missing,
   ask once: “Please run `claude auth login` in your launch environment.”

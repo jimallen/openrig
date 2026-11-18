@@ -90,7 +90,11 @@ export async function run(argv = process.argv): Promise<void> {
     createProgram: () => import("commander").Command;
     runProgram: (program: import("commander").Command, argv: string[]) => Promise<number>;
     runFrontDoor?: (argv: readonly string[]) => Promise<boolean>;
+    checkNodeRuntime?: (argv: readonly string[]) => Promise<boolean>;
   };
+  // workspaces-o9o.180: the Node-major and native-SQLite gate first, before the front door or any command (npm 11 skips the
+  // postinstall that used to run it). Feature-detected so the wrapper still runs an older sibling entry.
+  if (mod.checkNodeRuntime && !(await mod.checkNodeRuntime(normalizedArgv))) return;
   // Slice 17: the PUBLIC bin is the real front door — bare `rig` in a TTY
   // opens the TUI here, not only under a direct `node dist/index.js` run
   // (guard finding 1: importing the entry makes its isDirectRun false).

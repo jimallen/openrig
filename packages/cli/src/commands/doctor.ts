@@ -17,6 +17,9 @@ import { notThisInstanceCore, readThisInstanceCore, type ThisInstanceCore } from
 import { findIgnoredVendoredPlugins } from "@openrig/daemon/vendored-plugin-conflicts";
 import { getDefaultOpenRigPath, getOpenRigHome } from "../openrig-compat.js";
 import { classifyNodeVersion } from "../node-support.js";
+import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
+import { openInChildProcess } from "../../scripts/check-abi.mjs";
 import { checkProviderReadiness } from "../provider-auth.js";
 import {
   SEAT_SHELL_NOTE,
@@ -74,6 +77,8 @@ export interface DoctorDeps {
   readHcHello?: () => Promise<HcHelloOutcome>;
   /** The core this instance's state dir names (default: core.json under this env's state dir). workspaces-o9o.165. */
   thisInstanceCore?: () => ThisInstanceCore;
+  /** workspaces-o9o.180: open an in-memory SQLite database with this CLI's binding, in a child (default: the real binding). */
+  probeNativeSqlite?: () => { ok: true } | { ok: false; detail: string };
   /** The daemon's vendored plugins folder (default: OPENRIG_HOME/plugins). */
   pluginsDir?: string;
   /** workspaces-o9o.11: this machine's reads for the host rows (default: the real ones). */
@@ -172,6 +177,19 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
       reason: nodeSupport.reason,
       fix: nodeSupport.fix,
     });
+  }
+  // 3b. workspaces-o9o.180: the binding opens a database here (what the postinstall checked when npm ran it; npm 11 skips it on a
+  // global install). Only on a Node the range admits: on any other the row above already fails. In a child, so a crash is reported.
+  if (nodeSupport.kind === "supported" || nodeSupport.kind === "untested") {
+    const opened = (deps.probeNativeSqlite ?? probeNativeSqliteForReal)();
+    checks.push(opened.ok
+      ? { name: "node_sqlite", status: "pass", message: "The SQLite binding opens a database on this Node." }
+      : {
+        name: "node_sqlite", status: "fail",
+        message: "The SQLite binding (better-sqlite3) cannot open a database on this Node.",
+        reason: opened.detail,
+        fix: "Run 'npm rebuild better-sqlite3' in the CLI's install, or reinstall @openrig/cli with a supported Node.",
+      });
   }
 
   // 4. hc: the seat host. Installed and an accepted version here; the running core's generation is an async check
@@ -504,4 +522,13 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
     });
 
   return cmd;
+}
+
+/** The real binding's open, in a child process (scripts/check-abi.mjs openInChildProcess). */
+function probeNativeSqliteForReal(): { ok: true } | { ok: false; detail: string } {
+  try {
+    return openInChildProcess(createRequire(import.meta.url).resolve("better-sqlite3"), spawnSync);
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
 }

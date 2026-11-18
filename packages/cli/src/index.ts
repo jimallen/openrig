@@ -282,8 +282,18 @@ export { runProgram, wantsJsonOutput } from "./cli-error.js";
 // path owns bare TTY invocations too, not just direct entry runs).
 export { runFrontDoor } from "./front-door.js";
 
+/** workspaces-o9o.180: the Node-major and native-SQLite gate, run before anything else (front door included) on every
+ *  entry. Feature-detected by the bin wrapper, as runFrontDoor is. Returns false when the CLI must stop (exit code set). */
+export async function checkNodeRuntime(argv: readonly string[]): Promise<boolean> {
+  const { runNodeRuntimeGate } = await import("./node-runtime-gate.js");
+  const { getOpenRigHome } = await import("./openrig-compat.js");
+  const gate = runNodeRuntimeGate(argv, CLI_VERSION, getOpenRigHome());
+  if (!gate.proceed) process.exitCode = gate.exitCode;
+  return gate.proceed;
+}
+
 // Only parse when executed directly (not imported for testing)
-if (isDirectRun()) {
+if (isDirectRun() && await checkNodeRuntime(process.argv)) {
   // Slice-17 mini-req 7 — bare `rig` in a real terminal opens the TUI; any
   // arg or a non-TTY stream falls through to the normal program unchanged.
   const { runFrontDoor } = await import("./front-door.js");

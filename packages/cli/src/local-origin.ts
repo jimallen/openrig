@@ -1,4 +1,5 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
+import { sqlite } from "./sqlite-binding.js";
 import { join } from "node:path";
 import { DAEMON_STATE_POLICY, readOwnFile } from "@openrig/daemon/credential-file";
 import { ConfigStore } from "./config-store.js";
@@ -25,7 +26,7 @@ export function readLocalOrigin(): string | undefined {
         } catch { /* An unparseable launch record: use the configured default, never search other homes. */ }
       }
     }
-    db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 100 });
+    db = new (sqlite())(dbPath, { readonly: true, fileMustExist: true, timeout: 100 });
     const row = db.prepare("SELECT host_id FROM self_host_identity WHERE singleton = 1").get() as { host_id?: unknown } | undefined;
     const id = row?.host_id;
     if (typeof id !== "string" || id === "localhost") return undefined;

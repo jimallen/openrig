@@ -43,6 +43,24 @@ function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
 }
 
 describe("runDoctorChecks", () => {
+  // workspaces-o9o.180: the native SQLite open the postinstall checked, now in doctor (npm 11 skips the postinstall).
+  describe("node_sqlite", () => {
+    const sqliteRow = (over: Partial<DoctorDeps>) => runDoctorChecks(makeDeps(over)).checks.find((c) => c.name === "node_sqlite");
+    it("passes when the binding opens a database on this Node", () => {
+      expect(sqliteRow({ probeNativeSqlite: () => ({ ok: true }) })).toMatchObject({ status: "pass" });
+    });
+    it("fails with the rebuild fix when it cannot, naming why", () => {
+      const row = sqliteRow({ probeNativeSqlite: () => ({ ok: false, detail: "database open was killed by SIGSEGV" }) });
+      expect(row).toMatchObject({ status: "fail", reason: "database open was killed by SIGSEGV" });
+      expect(row?.fix).toContain("npm rebuild better-sqlite3");
+    });
+    it("is asked once per doctor run", () => {
+      let asked = 0;
+      runDoctorChecks(makeDeps({ probeNativeSqlite: () => { asked++; return { ok: true }; } }));
+      expect(asked).toBe(1);
+    });
+  });
+
   it("monorepo command-dir base resolves via the same daemon root seam as daemon start", () => {
     const deps = makeDeps({
       baseDir: "/Users/example/code/openrig/packages/cli/src/commands",
