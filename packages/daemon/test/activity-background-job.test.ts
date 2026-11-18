@@ -13,6 +13,9 @@ import { SeatStructuralActivityService } from "../src/domain/seat-structural-act
 import { classifyPaneActivity, detectBackgroundJobs } from "../src/domain/session-transport.js";
 import type { AgentActivity } from "../src/domain/types.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+import { stubOf } from "./helpers/tmux-stub.js";
+import type { AgentActivityStore } from "../src/domain/agent-activity-store.js";
+import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
 const RULE = "─".repeat(40);
 const STATUS_ONE = "✻ Churned for 9s · done 4:22 PM · 1 shell still running";
@@ -175,8 +178,8 @@ function harness(initialPane: string) {
     const out = (await attachAgentActivity(
       [{ canonicalSessionName: "dev-impl@rig", runtime: "claude-code", attachmentType: "tmux", logicalId: "dev.impl" }] as never,
       {
-        tmuxAdapter: { probeSession: probeSessionFromHasSession, hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } } as never,
-        activityStore: { getLatestForNode: () => hook } as never,
+        tmuxAdapter: stubOf<TmuxAdapter>({ probeSession: probeSessionFromHasSession, hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } }),
+        activityStore: stubOf<AgentActivityStore>({ getLatestForNode: () => hook }),
         structuralActivity: service,
         // The REQUEST clock is deliberately 2s past the service clock (and both are far from wall
         // clock): a sampledAt read from the request time instead of the observation is then visible.
@@ -279,11 +282,11 @@ function arbitratedHarness(initialPane: string) {
     tmux: { readPaneLastActivity: async () => null },
     defaultWindowSeconds: 3,
     now: () => new Date(state.clock),
-  } as never);
+  });
   seatActivity.declareRungInventory({ seatNodeId: SEAT, sessionName: SESSION }, {
     adapterId: "claude-code-adapter", runtime: "claude-code",
     rungs: [{ rung: "lifecycle-hooks", lifecycleCoverage: "full", initialTrust: "authoritative" }],
-  } as never);
+  });
   let seq = 0;
   const report = (activity: string, needsInput?: { count: number; reason: string | null }) =>
     seatActivity.reportEvidence({
@@ -295,12 +298,12 @@ function arbitratedHarness(initialPane: string) {
   // Both enrichers exactly as the routes compose them.
   const enrich = async (hookRow: AgentActivity | null) => {
     const withA = (await attachAgentActivity([entry] as never, {
-      tmuxAdapter: { probeSession: probeSessionFromHasSession, hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } } as never,
-      activityStore: { getLatestForNode: () => hookRow } as never,
+      tmuxAdapter: stubOf<TmuxAdapter>({ probeSession: probeSessionFromHasSession, hasSession: async () => true, getPaneCommand: async () => "claude", capturePaneContent: async () => { throw new Error("capture-free"); } }),
+      activityStore: stubOf<AgentActivityStore>({ getLatestForNode: () => hookRow }),
       structuralActivity: structural,
       now: new Date(state.clock),
     } as never)) as never;
-    const db = { prepare: () => ({ all: () => [] }) } as never;
+    const db = { prepare: () => ({ all: () => [] }) };
     return attachTerminalActivityAndWork(withA, { db, seatActivity, structuralActivity: structural } as never)[0] as unknown as {
       agentActivity: AgentActivity;
       activityState: { activity: string; display: string; decidedBy: string | null; needsInput: { count: number } } | null;
@@ -394,7 +397,7 @@ describe("OF-34 node detail: backgroundJobActivity", () => {
     await h.service.pollSeat(SESSION);
     const out = (await attachAgentActivity(detailEntries, {
       tmuxAdapter: probeTmux(NO_JOB, { captures: 0 }),
-      activityStore: { getLatestForNode: () => hook("idle", "stop") } as never,
+      activityStore: stubOf<AgentActivityStore>({ getLatestForNode: () => hook("idle", "stop") }),
       backgroundJobActivity: h.service,
       captureFallback: true,
       now: new Date(T0),
@@ -409,7 +412,7 @@ describe("OF-34 node detail: backgroundJobActivity", () => {
     const livePane = ["Which region?", "❯ 1. us-east-1", "  2. eu-west-1", "Enter to select · ↑/↓ to navigate · Esc to cancel"].join("\n");
     const out = (await attachAgentActivity(detailEntries, {
       tmuxAdapter: probeTmux(livePane, counter),
-      activityStore: { getLatestForNode: () => null } as never,
+      activityStore: stubOf<AgentActivityStore>({ getLatestForNode: () => null }),
       backgroundJobActivity: h.service,
       captureFallback: true,
       now: new Date(T0),
@@ -423,7 +426,7 @@ describe("OF-34 node detail: backgroundJobActivity", () => {
     await h.service.pollSeat(SESSION);
     const out = (await attachAgentActivity(detailEntries, {
       tmuxAdapter: probeTmux(ONE_SHELL, { captures: 0 }),
-      activityStore: { getLatestForNode: () => null } as never,
+      activityStore: stubOf<AgentActivityStore>({ getLatestForNode: () => null }),
       backgroundJobActivity: h.service,
       captureFallback: true,
       now: new Date(T0),

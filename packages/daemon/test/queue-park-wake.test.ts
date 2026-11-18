@@ -106,7 +106,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       blockedOn: "external:vendor-window",
       transitionNote: "continuation: resume when the vendor window opens",
       wakeWatchdogId: job.jobId,
-    } as never);
+    });
 
     expect(wakes(row.qitemId)).toEqual([
       expect.objectContaining({ phase: "armed", wake_kind: "watchdog", wake_ref: job.jobId }),
@@ -122,7 +122,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       blockedOn: "external:cooldown",
       transitionNote: "continuation: retry after cooldown",
       wakeAfterSeconds: 90,
-    } as never);
+    });
 
     const wake = wakes(row.qitemId)[0] as { wake_kind: string; wake_ref: string } | undefined;
     expect(wake?.wake_kind).toBe("timer");
@@ -156,11 +156,11 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     await repo.update({
       qitemId: short.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: short", wakeAfterSeconds: 120,
-    } as never);
+    });
     await repo.update({
       qitemId: long.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: long", wakeAfterSeconds: 7200,
-    } as never);
+    });
 
     const shortJob = jobs.getById((wakes(short.qitemId)[0] as { wake_ref: string }).wake_ref)!;
     const longJob = jobs.getById((wakes(long.qitemId)[0] as { wake_ref: string }).wake_ref)!;
@@ -191,7 +191,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: one-shot", wakeAfterSeconds: 90,
-    } as never);
+    });
     const ref = (wakes(row.qitemId)[0] as { wake_ref: string }).wake_ref;
     expect(jobs.getById(ref)!.state).toBe("active");
 
@@ -209,14 +209,14 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: lifetime", wakeAfterSeconds: 7200,
-    } as never);
+    });
     const ref = (wakes(row.qitemId)[0] as { wake_ref: string }).wake_ref;
     expect(jobs.getById(ref)!.state).toBe("active");
 
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "done",
       closureReason: "no-follow-on", transitionNote: "row closed while parked",
-    } as never);
+    });
 
     // The timer is gone at the moment the park ended — long before its 2h due
     // time — so no clock advance can produce a wake for a closed row.
@@ -230,7 +230,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: legacy timer", wakeAfterSeconds: 90,
-    } as never);
+    });
     const timerId = (wakes(row.qitemId)[0] as { wake_ref: string }).wake_ref;
 
     // Exact legacy residue: an older daemon closed the row without retiring its
@@ -287,7 +287,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: timerRow.qitemId, actorSession: "timer-owner@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: actionable", wakeAfterSeconds: 90,
-    } as never);
+    });
     const timerId = (wakes(timerRow.qitemId)[0] as { wake_ref: string }).wake_ref;
     const timerResult = await engine.evaluate(jobs.getByIdOrThrow(timerId));
 
@@ -311,7 +311,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       qitemId: attachedRow.qitemId, actorSession: "attached-owner@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: attached watchdog",
       wakeWatchdogId: operatorJob.jobId,
-    } as never);
+    });
     const attachedResult = await engine.evaluate(jobs.getByIdOrThrow(operatorJob.jobId));
 
     expect(attachedResult.outcome.action).toBe("send");
@@ -350,7 +350,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: timerRow.qitemId, actorSession: "shared-owner@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: timer", wakeAfterSeconds: 90,
-    } as never);
+    });
     const sharedJobId = (db.prepare(
       "SELECT wake_ref FROM queue_transition_wakes WHERE qitem_id = ? AND wake_kind = 'timer'",
     ).get(timerRow.qitemId) as { wake_ref: string }).wake_ref;
@@ -361,7 +361,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       qitemId: attachedRow.qitemId, actorSession: "shared-owner@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: attached watchdog",
       wakeWatchdogId: sharedJobId,
-    } as never);
+    });
 
     // The exact legacy residue S1c exists to guard, written the way R2's probe
     // writes it: DIRECT SQL, deliberately bypassing repo.update. Closing the row
@@ -425,7 +425,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: owner, state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: timer", wakeAfterSeconds: 90,
-    } as never);
+    });
     const jobId = (db.prepare(
       "SELECT wake_ref FROM queue_transition_wakes WHERE qitem_id = ? AND wake_kind = 'timer'",
     ).get(row.qitemId) as { wake_ref: string }).wake_ref;
@@ -479,7 +479,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: "own-super@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: new park", wakeAfterSeconds: 300,
-    } as never);
+    });
     expect(jobs.getById(oldJob)?.state).toBe("terminal");
     await tick();
     expect(deliveries).toHaveLength(1); // the new 300 s timer isn't due yet; the old one is gone
@@ -491,7 +491,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     await runUntilRetired(jobId, 1);
 
     expect(repo.getParkWakeStatus(row.qitemId)).toMatchObject({ kind: "timer", ref: jobId, live: true });
-    repo.update({ qitemId: row.qitemId, actorSession: "own-owner@rig", state: "in-progress", transitionNote: "resumed" } as never);
+    repo.update({ qitemId: row.qitemId, actorSession: "own-owner@rig", state: "in-progress", transitionNote: "resumed" });
     expect(jobs.getById(jobId)?.state).toBe("terminal");
   });
 
@@ -511,9 +511,9 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: attached.qitemId, actorSession: owner, state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: attached", wakeWatchdogId: jobId,
-    } as never);
+    });
     // The original task is stopped the normal way; the attachment keeps the shared job alive.
-    repo.update({ qitemId: original.qitemId, actorSession: owner, state: "canceled", transitionNote: "stop" } as never);
+    repo.update({ qitemId: original.qitemId, actorSession: owner, state: "canceled", transitionNote: "stop" });
     expect(jobs.getById(jobId)?.state).toBe("active");
     return { attached, jobId };
   }
@@ -551,7 +551,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     expect(() => repo.update({
       qitemId: late.qitemId, actorSession: "shared-window@rig", state: "blocked",
       blockedOn: "external:late", transitionNote: "late attach", wakeWatchdogId: jobId,
-    } as never)).toThrow(expect.objectContaining({ code: "wake_watchdog_not_live" }));
+    })).toThrow(expect.objectContaining({ code: "wake_watchdog_not_live" }));
   });
 
   it("a shared one-shot timer: repeated retained attempts to the attached task, then a failed one consumes it", async () => {
@@ -598,7 +598,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: "lone-owner@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: timer", wakeAfterSeconds: 90,
-    } as never);
+    });
     const jobId = (db.prepare(
       "SELECT wake_ref FROM queue_transition_wakes WHERE qitem_id = ? AND wake_kind = 'timer'",
     ).get(row.qitemId) as { wake_ref: string }).wake_ref;
@@ -616,13 +616,13 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: unpark", wakeAfterSeconds: 7200,
-    } as never);
+    });
     const ref = (wakes(row.qitemId)[0] as { wake_ref: string }).wake_ref;
 
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "in-progress",
       transitionNote: "owner resumed the row itself",
-    } as never);
+    });
 
     expect(jobs.getById(ref)!.state).not.toBe("active");
   });
@@ -640,7 +640,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: session, state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: parked", wakeAfterSeconds: seconds,
-    } as never);
+    });
     const ref = (wakes(row.qitemId).at(-1) as { wake_ref: string }).wake_ref;
     expect(jobs.getById(ref)!.state).toBe("active");
     return { row, ref };
@@ -656,7 +656,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
 
     await repo.handoff({
       qitemId: row.qitemId, fromSession: "worker@rig", toSession: "next@rig", nudge: false,
-    } as never);
+    });
 
     expect(repo.getById(row.qitemId)!.state).toBe("handed-off");
     expect(jobs.getById(ref)!.state).not.toBe("active");
@@ -668,7 +668,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
 
     await repo.handoffAndComplete({
       qitemId: row.qitemId, fromSession: "worker@rig", toSession: "next@rig", nudge: false,
-    } as never);
+    });
 
     expect(jobs.getById(ref)!.state).not.toBe("active");
     expect(terminalReason(ref)).toBe("park_ended:done");
@@ -696,7 +696,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     // state directly. My earlier pin spelled this through update(), not claim().
     const { row, ref } = await parkedWithTimer();
 
-    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@rig" } as never);
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@rig" });
 
     expect(repo.getById(row.qitemId)!.state).toBe("in-progress");
     expect(jobs.getById(ref)!.state).not.toBe("active");
@@ -712,14 +712,14 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: blocker.qitemId, transitionNote: "parked on a blocker AND a timer",
       wakeAfterSeconds: 7200,
-    } as never);
+    });
     const ref = (wakes(row.qitemId).at(-1) as { wake_ref: string }).wake_ref;
     expect(jobs.getById(ref)!.state).toBe("active");
 
     repo.update({
       qitemId: blocker.qitemId, actorSession: "gate@rig", state: "done",
       closureReason: "no-follow-on", transitionNote: "blocker cleared",
-    } as never);
+    });
 
     expect(repo.getById(row.qitemId)!.state).toBe("pending");   // auto-unparked
     expect(jobs.getById(ref)!.state).not.toBe("active");
@@ -903,11 +903,11 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "park on operator watchdog",
       wakeWatchdogId: job.jobId,
-    } as never);
+    });
 
     await repo.handoff({
       qitemId: row.qitemId, fromSession: "worker@rig", toSession: "next@rig", nudge: false,
-    } as never);
+    });
 
     expect(jobs.getById(job.jobId)!.state).toBe("active");
   });
@@ -920,14 +920,14 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: first park", wakeAfterSeconds: 90,
-    } as never);
+    });
     const first = (wakes(row.qitemId)[0] as { wake_ref: string }).wake_ref;
     expect(jobs.getById(first)!.state).toBe("active");
 
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: re-park, longer", wakeAfterSeconds: 3600,
-    } as never);
+    });
     const second = repo.getParkWakeStatus(row.qitemId)!.ref;
     expect(second).not.toBe(first);
 
@@ -959,11 +959,11 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "park on operator watchdog",
       wakeWatchdogId: job.jobId,
-    } as never);
+    });
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "re-park with a timer", wakeAfterSeconds: 90,
-    } as never);
+    });
 
     expect(jobs.getById(job.jobId)!.state).toBe("active");   // still the operator's
   });
@@ -976,9 +976,9 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     });
     const row = await item("worker@rig");
     repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
-      blockedOn: "external:first", transitionNote: "park on old watchdog", wakeWatchdogId: job.jobId } as never);
+      blockedOn: "external:first", transitionNote: "park on old watchdog", wakeWatchdogId: job.jobId });
     repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
-      blockedOn: "external:second", transitionNote: "new timer owns continuation", wakeAfterSeconds: 90 } as never);
+      blockedOn: "external:second", transitionNote: "new timer owns continuation", wakeAfterSeconds: 90 });
     const current = repo.getParkWakeStatus(row.qitemId)!;
     const before = wakes(row.qitemId);
     repo.recordWatchdogWakeAttempt(job.jobId, "sent");
@@ -995,15 +995,15 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
     const original = await item(owner);
     repo.update({ qitemId: original.qitemId, actorSession: owner, state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "original wait",
-      wakeAfterSeconds: 30, ...(repeating ? { wakeMaxSeconds: 120 } : {}) } as never);
+      wakeAfterSeconds: 30, ...(repeating ? { wakeMaxSeconds: 120 } : {}) });
     const jobId = repo.getParkWakeStatus(original.qitemId)!.ref;
     const attached = await item(owner);
     repo.update({ qitemId: attached.qitemId, actorSession: owner, state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "attach shared watchdog",
-      wakeWatchdogId: jobId } as never);
+      wakeWatchdogId: jobId });
     repo.update({ qitemId: original.qitemId, actorSession: owner, state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "original row reattaches the same watchdog",
-      wakeWatchdogId: jobId } as never);
+      wakeWatchdogId: jobId });
     const deliveries: Array<{ targetSession: string; message: string }> = [];
     const engine = new WatchdogPolicyEngine({
       jobsRepo: jobs, historyLog: new WatchdogHistoryLog(db), eventBus: bus,
@@ -1050,7 +1050,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       qitemId: blocker.qitemId, actorSession: "wake-ladder@system", state: "blocked",
       blockedOn: "external:provider-limit:claude:local",
       transitionNote: "usage-limit park until stated reset", wakeAfterSeconds: 60,
-    } as never);
+    });
     const ref = repo.getParkWakeStatus(blocker.qitemId)!.ref;
 
     repo.recordWatchdogWakeAttempt(ref, "verified");
@@ -1077,13 +1077,13 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked",
       blockedOn: "external:cooldown", transitionNote: "continuation: attached",
       wakeWatchdogId: job.jobId,
-    } as never);
+    });
     expect(repo.getParkWakeStatus(row.qitemId)).toMatchObject({ kind: "watchdog", ref: job.jobId });
 
     repo.update({
       qitemId: row.qitemId, actorSession: "worker@rig", state: "done",
       closureReason: "no-follow-on", transitionNote: "row closed while parked",
-    } as never);
+    });
 
     expect(jobs.getById(job.jobId)!.state).toBe("active");   // still the operator's
   });
@@ -1103,7 +1103,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       blockedOn: "external:cooldown",
       transitionNote: "continuation: retry after cooldown",
       wakeAfterSeconds: 90,
-    } as never)).toThrow(/forced park failure/);
+    })).toThrow(/forced park failure/);
     expect((db.prepare("SELECT COUNT(*) AS n FROM watchdog_jobs").get() as { n: number }).n).toBe(before);
     expect(repo.getById(row.qitemId)?.state).toBe("pending");
     expect(wakes(row.qitemId)).toEqual([]);
@@ -1298,7 +1298,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       blockedOn: "external:provider-limit:claude:local",
       transitionNote: "usage-limit park until stated reset",
       wakeAfterSeconds: 60,
-    } as never);
+    });
     const timer = repo.getParkWakeStatus(blocker.qitemId)!;
 
     const dependents = await Promise.all([
@@ -1358,7 +1358,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       blockedOn: "external:provider-limit:claude:local",
       transitionNote: "usage-limit park until stated reset",
       wakeAfterSeconds: 60,
-    } as never);
+    });
 
     const timer = repo.getParkWakeStatus(blocker.qitemId)!;
     const job = jobs.getById(timer.ref)!;
@@ -1417,7 +1417,7 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       blockedOn: "external:cooldown",
       transitionNote: "continuation: resume after cooldown",
       wakeAfterSeconds: 30,
-    } as never);
+    });
     const timerId = String(wakes(row.qitemId)[0]?.wake_ref);
 
     (repo as unknown as { recordWatchdogWakeAttempt: (jobId: string, status: string) => void })

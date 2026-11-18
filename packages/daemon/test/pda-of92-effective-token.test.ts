@@ -73,9 +73,9 @@ function seat(rigName: string, logicalId: string, sessionName: string, binding: 
 function operatorSets(sessionName: string, token: string) {
   const hono = new Hono();
   hono.use("*", async (c, next) => {
-    c.set("sessionRegistry" as never, sessions as never);
-    c.set("rigRepo" as never, repo as never);
-    c.set("eventBus" as never, new EventBus(db) as never);
+    c.set("sessionRegistry" as never, sessions);
+    c.set("rigRepo" as never, repo);
+    c.set("eventBus" as never, new EventBus(db));
     c.set("terminalBearerToken" as never, "term-token" as never);
     await next();
   });
@@ -236,10 +236,10 @@ describe("OF-92: the re-check is against the agent the seat will actually drive"
     const before = tokens();
     const hono = new Hono();
     hono.use("*", async (c, next) => {
-      c.set("sessionRegistry" as never, sessions as never);
-      c.set("rigRepo" as never, repo as never);
-      c.set("eventBus" as never, new EventBus(db) as never);
-      c.set("runtimeAdapters" as never, { pda: new PdaRuntimeAdapter({ ...(pdaDeps()) }) } as never);
+      c.set("sessionRegistry" as never, sessions);
+      c.set("rigRepo" as never, repo);
+      c.set("eventBus" as never, new EventBus(db));
+      c.set("runtimeAdapters" as never, { pda: new PdaRuntimeAdapter({ ...(pdaDeps()) }) });
       c.set("terminalBearerToken" as never, "term-token" as never);
       await next();
     });

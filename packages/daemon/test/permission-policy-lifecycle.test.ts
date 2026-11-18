@@ -37,6 +37,7 @@ import { observeClaudePermission } from "../src/domain/permission-drift.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+import { stubOf } from "./helpers/tmux-stub.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const SEAT_DIR = existingRigRoot("seat");
 
@@ -90,7 +91,7 @@ function rigLevelSpec(extraMembers: Record<string, unknown>[] = []): Record<stri
 }
 
 function mockTmux(): TmuxAdapter {
-  return mockShellCommand({
+  return mockShellCommand(stubOf<TmuxAdapter>({
     createSession: vi.fn(async () => ({ ok: true as const })),
     killSession: vi.fn(async () => ({ ok: true as const })),
     sendText: vi.fn(async () => ({ ok: true as const })),
@@ -101,7 +102,7 @@ function mockTmux(): TmuxAdapter {
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
     probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
-  } as unknown as TmuxAdapter);
+  }));
 }
 
 describe("F1 — rig-level custom provenance is RESTART-COMPLETE", () => {
@@ -136,20 +137,20 @@ describe("F1 — rig-level custom provenance is RESTART-COMPLETE", () => {
     const checkpointStore2 = new CheckpointStore(db2);
     const snapshotCapture2 = new SnapshotCapture({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, snapshotRepo: snapshotRepo2, checkpointStore: checkpointStore2 });
     const tmux = mockTmux();
-    const claudeResume = {
+    const claudeResume = stubOf<ClaudeResumeAdapter>({
       canResume: vi.fn((t: string | null) => t === "claude_id" || t === "claude_name"),
       resume: vi.fn(async (): Promise<ResumeResult> => ({
         ok: true,
         appliedLaunch: observeClaudePermission("--dangerously-skip-permissions"),
       })),
-    } as unknown as ClaudeResumeAdapter;
+    });
     const orch = new RestoreOrchestrator({
       db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
       snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
       nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
       tmuxAdapter: tmux,
       claudeResume,
-      codexResume: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as CodexResumeAdapter,
+      codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
     });
     const snapId = snap.id;
     // policy file readable at restore: served from the ORIGINAL declaring root
@@ -285,17 +286,17 @@ describe("F3 — unreadable custom content at restore uses the PERSISTED posture
     const checkpointStore2 = new CheckpointStore(db2);
     const snapshotCapture2 = new SnapshotCapture({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, snapshotRepo: snapshotRepo2, checkpointStore: checkpointStore2 });
     const tmux = mockTmux();
-    const claudeResume = {
+    const claudeResume = stubOf<ClaudeResumeAdapter>({
       canResume: vi.fn((t: string | null) => t === "claude_id" || t === "claude_name"),
       resume: vi.fn(async (): Promise<ResumeResult> => ({ ok: true })),
-    } as unknown as ClaudeResumeAdapter;
+    });
     const orch = new RestoreOrchestrator({
       db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
       snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
       nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
       tmuxAdapter: tmux,
       claudeResume,
-      codexResume: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as CodexResumeAdapter,
+      codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
     });
     const snapId = snap.id;
     await orch.restore(snapId);
@@ -349,7 +350,7 @@ describe("F4 — REAL adapter command pins (floor + full_bypass on every launch 
     // fresh
     for (const [posture, expected, absent] of [["full_bypass", " -s danger-full-access", ""], ["floor", " -s workspace-write", "danger-full-access"]] as const) {
       const tmux = mockTmux();
-      const result = await new CodexRuntimeAdapter({ sleep: async () => {}, tmux, fsOps: codexFs as never }).launchHarness(binding(posture), { name: "dev-qa@test-rig" });
+      const result = await new CodexRuntimeAdapter({ sleep: async () => {}, tmux, fsOps: codexFs }).launchHarness(binding(posture), { name: "dev-qa@test-rig" });
       const cmd = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
       expect(cmd).toContain(expected);
       expect(result.ok && result.appliedLaunch).toMatchObject({ axis: "sandbox", state: "observed", value: posture === "floor" ? "workspace-write" : "danger-full-access" });
@@ -358,7 +359,7 @@ describe("F4 — REAL adapter command pins (floor + full_bypass on every launch 
     // native fork (the Slice-02 helper remains the only flag translator)
     for (const [posture, expected] of [["full_bypass", " -s danger-full-access"], ["floor", " -s workspace-write"]] as const) {
       const tmux = mockTmux();
-      const result = await new CodexRuntimeAdapter({ sleep: async () => {}, tmux, fsOps: codexFs as never }).launchHarness(binding(posture), { name: "dev-qa@test-rig", forkSource: { kind: "native_id", value: "parent-thread-1" } as never });
+      const result = await new CodexRuntimeAdapter({ sleep: async () => {}, tmux, fsOps: codexFs }).launchHarness(binding(posture), { name: "dev-qa@test-rig", forkSource: { kind: "native_id", value: "parent-thread-1" } });
       const cmd = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
       expect(cmd).toContain("fork");
       expect(cmd).toContain(expected);
@@ -432,17 +433,17 @@ describe("GF1 — READABLE but malformed/unusable custom content uses the PERSIS
     const checkpointStore2 = new CheckpointStore(db2);
     const snapshotCapture2 = new SnapshotCapture({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, snapshotRepo: snapshotRepo2, checkpointStore: checkpointStore2 });
     const tmux = mockTmux();
-    const claudeResume = {
+    const claudeResume = stubOf<ClaudeResumeAdapter>({
       canResume: vi.fn((t: string | null) => t === "claude_id"),
       resume: vi.fn(async (): Promise<ResumeResult> => ({ ok: true })),
-    } as unknown as ClaudeResumeAdapter;
+    });
     const orch = new RestoreOrchestrator({
       db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
       snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
       nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
       tmuxAdapter: tmux,
       claudeResume,
-      codexResume: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as CodexResumeAdapter,
+      codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
     });
     await orch.restore(snap.id);
     db2.close();
@@ -528,10 +529,10 @@ describe("GF2 — the COMPLETE production-altitude launch/restore matrix", () =>
         ],
         nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
         tmuxAdapter: tmux,
-        claudeResume: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as ClaudeResumeAdapter,
-        codexResume: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as CodexResumeAdapter,
+        claudeResume: stubOf<ClaudeResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
+        codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
       });
-      const restored = await orch.restore(snap.id, { adapters: { "claude-code": realClaude } } as never);
+      const restored = await orch.restore(snap.id, { adapters: { "claude-code": realClaude } });
       expect(restored).toMatchObject({ ok: true, result: { nodes: [
         { nodeId: implNode.id, status: "resumed" },
       ] } });
@@ -573,7 +574,7 @@ describe("GF2 — the COMPLETE production-altitude launch/restore matrix", () =>
       const piFs = { readFile: () => "{}", writeFile: () => {}, exists: () => true, mkdirp: () => {}, listFiles: () => [] };
       for (const [posture, expectedTrust] of [["full_bypass", "approve"], ["floor", "no-approve"]] as const) {
         const tmux = mockTmux();
-        const adapter = new PiRuntimeAdapter({ tmux, fsOps: piFs as never, stateRoot: "/tmp/pi-state", runnerEntryPath: "/tmp/pi-runner.js", sleep: async () => {} });
+        const adapter = new PiRuntimeAdapter({ tmux, fsOps: piFs, stateRoot: "/tmp/pi-state", runnerEntryPath: "/tmp/pi-runner.js", sleep: async () => {} });
         await adapter.launchHarness(binding2(posture), { name: "dev-pi@test-rig" });
         const cmd = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
         // RESOURCE TRUST wording: Pi's --approve/--no-approve govern resource trust, not permissions
@@ -582,7 +583,7 @@ describe("GF2 — the COMPLETE production-altitude launch/restore matrix", () =>
       }
       for (const [posture, expectedTrust] of [["full_bypass", "approve"], ["floor", "no-approve"]] as const) {
         const tmux = mockTmux();
-        const adapter = new PiResumeAdapter(tmux, piFs as never, { stateRoot: "/tmp/pi-state", runnerEntryPath: "/tmp/pi-runner.js" }, { sleep: async () => {} });
+        const adapter = new PiResumeAdapter(tmux, piFs, { stateRoot: "/tmp/pi-state", runnerEntryPath: "/tmp/pi-runner.js" }, { sleep: async () => {} });
         await adapter.resume("s1", "pi_session_file", "/tmp/pi-state/session.json", "/w", null, posture);
         const cmd = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
         if (expectedTrust === "approve") { expect(cmd).toMatch(/--approve/); expect(cmd).not.toMatch(/--no-approve/); }
@@ -598,7 +599,7 @@ describe("GF2 — the COMPLETE production-altitude launch/restore matrix", () =>
         const tmux = mockTmux();
         const store: Record<string, string> = {};
         const adapter = new ClaudeCodeAdapter({ sleep: async () => {}, tmux, fsOps: { readFile: (p: string) => { if (p in store) return store[p]!; throw new Error("nf"); }, writeFile: (p: string, c: string) => { store[p] = c; }, exists: (p: string) => p in store, mkdirp: () => {}, copyFile: () => {}, listFiles: () => [] } as ClaudeAdapterFsOps, sessionIdFactory: () => "11111111-1111-4111-8111-111111111111" });
-        await adapter.launchHarness(binding2(posture), { name: "dev-impl@test-rig", forkSource: { kind: "native_id", value: "parent-session-1" } as never });
+        await adapter.launchHarness(binding2(posture), { name: "dev-impl@test-rig", forkSource: { kind: "native_id", value: "parent-session-1" } });
         const cmd = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
         expect(cmd).toContain("claude");
         expect(cmd).toContain(expected);
@@ -673,17 +674,17 @@ describe("ABSENCE = locked floor at every lifecycle surface (R2 HIGH at 954d97a0
       const checkpointStore2 = new CheckpointStore(db2);
       const snapshotCapture2 = new SnapshotCapture({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, snapshotRepo: snapshotRepo2, checkpointStore: checkpointStore2 });
       const tmux = mockTmux();
-      const claudeResume = {
+      const claudeResume = stubOf<ClaudeResumeAdapter>({
         canResume: vi.fn((t: string | null) => t === "claude_id"),
         resume: vi.fn(async (): Promise<ResumeResult> => ({ ok: true })),
-      } as unknown as ClaudeResumeAdapter;
+      });
       const orch = new RestoreOrchestrator({
         db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
         snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
         nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
         tmuxAdapter: tmux,
         claudeResume,
-        codexResume: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as CodexResumeAdapter,
+        codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
       });
       await orch.restore(snap.id);
       const call = (claudeResume.resume as ReturnType<typeof vi.fn>).mock.calls.find((c) => c[2] === "tok-abs");
