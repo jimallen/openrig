@@ -213,10 +213,22 @@ describe("runDoctorChecks", () => {
         expect(check?.reason).toContain(FILE);
       });
 
-      it("passes when the ids match, when the state dir names none, and when the core sent no id", async () => {
+      it("passes when the ids match, and when the state dir names none", async () => {
         expect(await core(answering(ID), { thisInstanceCore: () => ({ kind: "id", id: ID, file: FILE }) })).toMatchObject({ status: "pass" });
         expect(await core(answering(OTHER), { thisInstanceCore: () => ({ kind: "none", file: FILE }) })).toMatchObject({ status: "pass" });
-        expect(await core(answering(), { thisInstanceCore: () => ({ kind: "id", id: ID, file: FILE }) })).toMatchObject({ status: "pass" });
+        expect(await core(answering(), { thisInstanceCore: () => ({ kind: "none", file: FILE }) })).toMatchObject({ status: "pass" });
+      });
+
+      // verify-sec review of o9o.165 (F4): a core that does not report its id cannot be verified against core.json.
+      it("warns when the core reports no id but this instance's state dir names one, naming the file", async () => {
+        const check = await core(answering(), { thisInstanceCore: () => ({ kind: "id", id: ID, file: FILE }) });
+        expect(check).toMatchObject({ status: "warn" });
+        expect(check?.message).toContain("cannot verify");
+        expect(check?.reason).toContain(FILE);
+      });
+
+      it("fails on an unreadable core.json even when the core reports no id", async () => {
+        expect(await core(answering(), { thisInstanceCore: () => ({ kind: "unreadable", file: FILE, detail: "a symbolic link" }) })).toMatchObject({ status: "fail" });
       });
     });
 

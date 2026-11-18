@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,6 +101,57 @@ describe("this instance's core (core.json in the state dir)", () => {
     ] as const) {
       expect(readThisInstanceCore({ HOME: "/x/h" }, undefined, read)).toMatchObject({ kind: "unreadable", detail });
     }
+  });
+
+  // verify-sec review of o9o.165 (F2, F3): the file is read like a credential file. lstat first: only a missing path is none;
+  // a link (even a dangling one) or anything not a regular file is unreadable, and a FIFO must not block the read.
+  describe("read from the real file system", () => {
+    const roots: string[] = [];
+    afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }); });
+    const stateDir = (): { env: NodeJS.ProcessEnv; dir: string; file: string } => {
+      const root = mkdtempSync(join(tmpdir(), "o9o165-"));
+      roots.push(root);
+      const dir = join(root, "herdr-core", "default");
+      mkdirSync(dir, { recursive: true });
+      return { env: { XDG_STATE_HOME: root }, dir, file: join(dir, "core.json") };
+    };
+
+    it("a regular file gives its id, and a missing one names none", () => {
+      const { env, file } = stateDir();
+      expect(readThisInstanceCore(env)).toEqual({ kind: "none", file });
+      writeFileSync(file, JSON.stringify({ id: ID, name: "n" }));
+      expect(readThisInstanceCore(env)).toEqual({ kind: "id", id: ID, file });
+    });
+
+    it("a dangling symbolic link is unreadable, not none", () => {
+      const { env, dir, file } = stateDir();
+      symlinkSync(join(dir, "gone.json"), file);
+      expect(readThisInstanceCore(env)).toMatchObject({ kind: "unreadable", file });
+    });
+
+    it("a symbolic link to a valid file, a directory and an oversized file are unreadable", () => {
+      const a = stateDir();
+      writeFileSync(join(a.dir, "real.json"), JSON.stringify({ id: ID }));
+      symlinkSync(join(a.dir, "real.json"), a.file);
+      expect(readThisInstanceCore(a.env)).toMatchObject({ kind: "unreadable" });
+      const b = stateDir();
+      mkdirSync(b.file);
+      expect(readThisInstanceCore(b.env)).toMatchObject({ kind: "unreadable" });
+      const c = stateDir();
+      writeFileSync(c.file, JSON.stringify({ id: ID, pad: "x".repeat(70_000) }));
+      expect(readThisInstanceCore(c.env)).toMatchObject({ kind: "unreadable" });
+    });
+
+    it("a FIFO is unreadable and the read does not block (run in a child with a 10 s limit)", () => {
+      const { env, file } = stateDir();
+      expect(spawnSync("mkfifo", [file]).status).toBe(0);
+      const module = new URL("../src/adapters/hc-client.ts", import.meta.url).href;
+      const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval",
+        `import { readThisInstanceCore } from ${JSON.stringify(module)}; console.log(JSON.stringify(readThisInstanceCore(${JSON.stringify(env)})));`],
+        { encoding: "utf8", timeout: 10_000 });
+      expect(child.signal, "the read blocked on the FIFO").toBeNull();
+      expect(JSON.parse(child.stdout.trim())).toMatchObject({ kind: "unreadable", file });
+    });
   });
 
   it("refuses a core whose id is not the one named, naming both and the file; joins a match or when none is named", () => {

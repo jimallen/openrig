@@ -46,7 +46,8 @@ export function verifyHello(hello: HcHello, pin: HcCorePin = {}): Exclude<HcVers
     judged = judgeHcVersion(hello.version);
   }
   if (judged.verdict === "refused") throw new HcCoreRefusedError(`the core is refused: ${judged.reason}`, "unsupported_version");
-  if (pin.coreId !== undefined && hello.core.id !== pin.coreId) {
+  // A core that reports no id (an older hc) cannot be judged by id; the watch says so (workspaces-o9o.165, verify-sec F4).
+  if (pin.coreId !== undefined && hello.core?.id !== undefined && hello.core.id !== pin.coreId) {
     throw new HcCoreRefusedError("the core answering is not the one this daemon first saw", "core_changed");
   }
   return judged;
@@ -404,6 +405,8 @@ export interface HcCoreWatchOptions {
   /** The core this instance's state dir names (readThisInstanceCore), read at every connect: a core at the socket with another id is
    *  refused as core_not_this_instance, and an id read before the first connect is the pinned one from the start (workspaces-o9o.165). */
   thisInstanceCore?: () => ThisInstanceCore;
+  /** Told what the watch could not verify and went on anyway (a core that does not report its id). */
+  warn?: (message: string) => void;
   /** Only terminals carrying all of these labels. */
   labels?: Record<string, string>;
   heartbeatTimeoutMs?: number;
@@ -512,6 +515,10 @@ export class HcCoreWatch {
   private async connectOnce(): Promise<{ closed: Promise<string> }> {
     const { socketPath } = this.options;
     const helloTimeoutMs = this.options.helloTimeoutMs ?? HELLO_TIMEOUT_MS;
+    // workspaces-o9o.165 (verify-sec F1): an identity file that cannot be read refuses before anything else, a core start included:
+    // a core started here would write a new core.json beside it, or adopt holders, before the refusal.
+    const known = this.options.thisInstanceCore?.();
+    if (known?.kind === "unreadable") throw new HcCoreRefusedError(notThisInstanceCore(known, "")!, "core_not_this_instance");
     let presence = await probeCore(socketPath, { helloTimeoutMs });
     if ((presence.state === "stale_socket" || presence.state === "absent") && this.options.startCore) {
       await this.options.startCore();
@@ -529,10 +536,21 @@ export class HcCoreWatch {
     verifyHello(presence.hello, { ...this.options.pin });
     // workspaces-o9o.165: and it must be this instance's core, by the id its state dir names, before the core seen first is judged.
     const instance = this.options.thisInstanceCore?.();
-    const notMine = instance ? notThisInstanceCore(instance, presence.hello.core.id) : null;
-    if (notMine) throw new HcCoreRefusedError(notMine, "core_not_this_instance");
+    const answeringId = presence.hello.core?.id;
+    if (answeringId === undefined) {
+      // verify-sec F4: an older hc that reports no core id cannot be verified. An unreadable file still refuses; a named id is said
+      // to be unverified, in the log, and the core is joined.
+      if (instance?.kind === "unreadable") throw new HcCoreRefusedError(notThisInstanceCore(instance, "")!, "core_not_this_instance");
+      if (instance?.kind === "id") {
+        this.options.warn?.(`cannot verify that the hc core at ${socketPath} is this instance's: the core does not report its id `
+          + `(this instance's state dir names core ${instance.id}, ${instance.file}); joining it`);
+      }
+    } else {
+      const notMine = instance ? notThisInstanceCore(instance, answeringId) : null;
+      if (notMine) throw new HcCoreRefusedError(notMine, "core_not_this_instance");
+    }
     verifyHello(presence.hello, { ...this.options.pin, coreId: this.coreId });
-    this.coreId ??= presence.hello.core.id;
+    this.coreId ??= answeringId;
 
     const generation = ++this.generation;
     let resolveClosed: (why: string) => void = () => undefined;
@@ -675,6 +693,7 @@ export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCo
     socketPath: options.socketPath,
     // workspaces-o9o.165: the core at this socket must be the one this instance's state dir names (the daemon's env, as resolveHcSocket).
     thisInstanceCore: () => readThisInstanceCore(env),
+    warn: (message) => log(JSON.stringify({ kind: "core_identity_unverified", why: message })),
     ...(startCore ? { startCore } : {}),
     ...(options.pin ? { pin: options.pin } : {}),
     onNotice: (notice) => {

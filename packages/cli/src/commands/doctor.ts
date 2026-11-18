@@ -259,9 +259,20 @@ async function buildHcCoreCheck(deps: DoctorDeps): Promise<DoctorCheck> {
     // workspaces-o9o.165: the daemon refuses, and does not start against, a core at its socket that another state dir's core.json names
     // (core_not_this_instance); its log says so, and so does this check, which needs no running daemon. Judged with this shell's env,
     // the same rule the daemon applies to its own.
-    const notMine = outcome.kind === "hello" && outcome.coreId !== undefined
-      ? notThisInstanceCore((deps.thisInstanceCore ?? (() => readThisInstanceCore(process.env)))(), outcome.coreId)
+    const instance = outcome.kind === "hello" ? (deps.thisInstanceCore ?? (() => readThisInstanceCore(process.env)))() : null;
+    // An unreadable core.json refuses whatever the core reports; another id refuses; a core that reports no id cannot be verified
+    // (verify-sec, o9o.165 review F4): the daemon logs that and joins, and this check warns.
+    const notMine = instance === null || outcome.kind !== "hello" ? null
+      : instance.kind === "unreadable" ? notThisInstanceCore(instance, "")
+      : outcome.coreId !== undefined ? notThisInstanceCore(instance, outcome.coreId)
       : null;
+    if (!notMine && instance?.kind === "id" && outcome.kind === "hello" && outcome.coreId === undefined) {
+      return {
+        name: "hc_core", status: "warn",
+        message: `hc core ${core.version}: cannot verify it is this instance's core: the core does not report its id.`,
+        reason: `This instance's state dir names core ${instance.id} (${instance.file}); an hc that reports no core id cannot be compared with it. The daemon logs the same and joins the core.`,
+      };
+    }
     if (notMine) {
       return {
         name: "hc_core", status: "fail",

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { userInfo } from "node:os";
 import { join, resolve } from "node:path";
@@ -100,10 +100,43 @@ export type ThisInstanceCore =
   | { kind: "unreadable"; file: string; detail: string };
 
 const CORE_ID = /^[0-9a-f]{16,64}$/i;
+/** hc writes about 100 bytes; anything far larger is not its core.json. */
+const CORE_IDENTITY_MAX_BYTES = 64 * 1024;
+
+/** Reads hc's core.json the way a credential file is read (verify-sec, o9o.165 review): lstat first, and only a path that is
+ *  not there is missing (its ENOENT is the one error passed on as is); a link, even a dangling one, or anything but a regular
+ *  file is refused; the open follows no link and never blocks (a FIFO); the opened file must still be regular and small. */
+export function readCoreIdentityFile(file: string): string {
+  const st = lstatSync(file);
+  if (st.isSymbolicLink()) throw new Error("it is a symbolic link, not a regular file");
+  if (!st.isFile()) throw new Error("it is not a regular file");
+  let fd: number;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (err) {
+    // Not ENOENT: a path removed between the lstat and the open is not "missing", it is a file that changed under the read.
+    throw new Error(`it cannot be opened: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) throw new Error("it is not a regular file");
+    if (opened.size > CORE_IDENTITY_MAX_BYTES) throw new Error(`it is larger than ${CORE_IDENTITY_MAX_BYTES} bytes`);
+    const buffer = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const n = readSync(fd, buffer, offset, buffer.length - offset, offset);
+      if (n === 0) break;
+      offset += n;
+    }
+    return buffer.subarray(0, offset).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /** Reads hcCoreIdentityFile. A missing file (or no state dir) is `none`; anything else that is not a core id is `unreadable`. */
 export function readThisInstanceCore(
-  env: NodeJS.ProcessEnv = process.env, home?: string, read: (file: string) => string = (file) => readFileSync(file, "utf8"),
+  env: NodeJS.ProcessEnv = process.env, home?: string, read: (file: string) => string = readCoreIdentityFile,
 ): ThisInstanceCore {
   const file = hcCoreIdentityFile(env, home);
   if (!file) return { kind: "none", file: null };

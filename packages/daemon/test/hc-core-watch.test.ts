@@ -321,6 +321,28 @@ describe("HcCoreWatch against a scripted core", () => {
     const { watch } = await setup({ thisInstanceCore: () => ({ kind: "unreadable", file: "/s/herdr-core/default/core.json", detail: "not JSON" }) });
     await expect(watch.start()).rejects.toMatchObject({ kind: "core_not_this_instance", message: expect.stringContaining("/s/herdr-core/default/core.json") });
   });
+  // verify-sec review (F1): an unreadable identity refuses BEFORE any core is started, not after one was.
+  it("an unreadable identity file refuses before a core is started at an absent socket", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "o9o165-w-"));
+    let starts = 0;
+    const watch = new HcCoreWatch({
+      socketPath: join(dir, "none.sock"), reconnectDelaysMs: [20], startSettleMs: 20, startCore: async () => { starts++; },
+      thisInstanceCore: () => ({ kind: "unreadable", file: "/s/herdr-core/default/core.json", detail: "a symbolic link" }),
+    });
+    watches.push(watch);
+    await expect(watch.start()).rejects.toMatchObject({ kind: "core_not_this_instance" });
+    expect(starts).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // verify-sec review (F4): a core that does not report its id cannot be verified; the daemon says so and joins (an older hc).
+  it("a core that reports no id is joined with a warning, not refused, even with an id named", async () => {
+    const warnings: string[] = [];
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-x", file: "/s/herdr-core/default/core.json" }), warn: (m: string) => warnings.push(m) });
+    core.helloReply = () => JSON.parse(JSON.stringify({ ...hello(), core: { name: "n" } }));  // a hello without core.id, as an older hc might send
+    await watch.start();
+    expect(watch.state()).toBe("streaming");
+    expect(warnings.join("\n")).toContain("does not report its id");
+  });
   it("pins the id this instance's state dir names before any connect, and streams from that core", async () => {
     const { watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-a", file: "/s/herdr-core/default/core.json" }) });
     expect(watch.pinnedCoreId()).toBe("core-a");
