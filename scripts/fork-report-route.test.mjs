@@ -185,6 +185,8 @@ test('the matcher catches each way of pointing a reader upstream, and passes a r
     'The cause is in the [report](https://github.com/mvschwarz/openrig/issues/99), which is read-only here.',
     // verify-qa review 2: a link whose text IS a submitting verb phrase, to an existing issue: read-only.
     'Reference [open this issue](https://github.com/mvschwarz/openrig/issues/99) for background only.',
+    // A bare URL (no parentheses for the clause split to cut at) is taken out of the sentence before the recipient is read.
+    'See the report at https://github.com/mvschwarz/openrig/issues/99 for the cause.',
     // A negation in the clause that holds the verb and the recipient does cancel it.
     'Do not report problems upstream.',
     // Nouns, not submissions: shipped lines that named "file" or "open" beside "upstream" (found by this census).
