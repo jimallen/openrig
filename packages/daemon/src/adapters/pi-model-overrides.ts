@@ -25,7 +25,7 @@
 // of a misspelt provider is an override that does nothing, never a failed seat.
 // Values printed are numbers the spec states; no other value of the file is ever echoed.
 import { PI_MODELS_POLICY, type CredentialFileRead } from "../domain/credential-file.js";
-import { narrowOwnSecretFile, readCredentialFile } from "./node-credential-file-reader.js";
+import { narrowOwnFile, readCredentialFile } from "./node-credential-file-reader.js";
 import fs from "node:fs";
 import nodePath from "node:path";
 import { parsePiModelsJson } from "./pi-readiness.js";
@@ -50,7 +50,7 @@ export interface PiModelOverridesFs {
 }
 
 export const realPiModelOverridesFs: PiModelOverridesFs = {
-  readOwnModelsFile: (p) => narrowOwnSecretFile(p, PI_MODELS_POLICY) ?? readCredentialFile(p, PI_MODELS_POLICY),
+  readOwnModelsFile: (p) => narrowOwnFile(p, PI_MODELS_POLICY) ?? readCredentialFile(p, PI_MODELS_POLICY),
   lstat: (p) => fs.lstatSync(p),
   realpath: (p) => fs.realpathSync(p),
   fsyncDir: (p) => {

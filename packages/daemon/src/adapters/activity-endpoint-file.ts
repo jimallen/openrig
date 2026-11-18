@@ -12,7 +12,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { ACTIVITY_ENDPOINT_POLICY, ACTIVITY_HOOK_TOKEN_POLICY } from "../domain/credential-file.js";
 import { ACTIVITY_ENDPOINT_FILE, ACTIVITY_HOOK_TOKEN_FILE } from "../domain/activity-endpoint.js";
-import { narrowOwnSecretFile, readCredentialFile } from "./node-credential-file-reader.js";
+import { narrowOwnFile, readCredentialFile } from "./node-credential-file-reader.js";
 
 const NEW_SECRET_FLAGS = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
 
@@ -53,7 +53,7 @@ export function ensureActivityHookToken(stateDir: string): string {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") return newToken(); // could not persist: best effort, as before
   }
-  const refused = narrowOwnSecretFile(tokenPath, ACTIVITY_HOOK_TOKEN_POLICY);
+  const refused = narrowOwnFile(tokenPath, ACTIVITY_HOOK_TOKEN_POLICY);
   if (refused) throw new Error(refused.message);
   const read = readCredentialFile(tokenPath, ACTIVITY_HOOK_TOKEN_POLICY);
   if (!read.ok) throw new Error(read.message);

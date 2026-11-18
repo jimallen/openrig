@@ -21,14 +21,26 @@ export interface CredentialFilePolicy {
   /** Set only through seatCredentialLinkPolicy (one of SEAT_CREDENTIAL_LINKS): a symlink AT the file is followed only when its
    *  real path is exactly this file's real path, and that target is then held to the whole rule. Unset, a link is refused. */
   linkTarget?: string;
+  /** A registry OpenRig does not own (Codex's config.toml): group/other write bits are reported, not refused; the content is
+   *  still returned with a warning (o9o.160, CoS: never chmod another program's file; warn unless the live census is clean). */
+  groupOrOtherWrite?: "warn";
+  /** o9o.160 (CoS 11-18 13:36Z): the file may be a link to anywhere, its REAL target judged by the whole rule (and narrowed by
+   *  readOwnFile). Only for config.json, whose writer deliberately follows a link (a supported dotfiles layout). */
+  followLinks?: true;
 }
 
 export type CredentialFileProblem =
   | "missing" | "symlink" | "unexpected_link_target" | "not_regular_file" | "hard_linked" | "wrong_owner" | "group_or_other_access"
   | "group_or_other_write" | "too_large" | "unreadable";
 
+/** A finding on a file that was still read (only group_or_other_write, and only under groupOrOtherWrite: "warn"). */
+export interface CredentialFileWarning {
+  problem: "group_or_other_write";
+  message: string;
+}
+
 export type CredentialFileRead =
-  | { ok: true; content: string }
+  | { ok: true; content: string; warning?: CredentialFileWarning }
   | { ok: false; problem: CredentialFileProblem; message: string };
 
 /** The outbound port: read one credential file under a policy, or judge it without reading it. Never throws for a file problem;
@@ -119,6 +131,17 @@ export const CODEX_AUTH_POLICY: CredentialFilePolicy = { label: "the Codex auth 
 /** hosts.yaml names remote daemons and the bearer files sent to them: nobody else may change it. A link at the file is refused like
  *  any other (o9o.151 decision 4: verify-ops' census found no live host with a linked hosts.yaml; sparky and stu, mbp unverified). */
 export const HOSTS_REGISTRY_POLICY: CredentialFilePolicy = { label: "the hosts registry", kind: "registry", maxBytes: 1024 * 1024 };
+/** o9o.160: the routing registries. daemon.json and config.json choose the URL the CLI sends the terminal token to;
+ *  slack-connector.json names the Slack secrets file. OpenRig writes all three, so a file of ours others can change is narrowed
+ *  (readOwnFile), never refused; a link or another user's file is refused. */
+export const DAEMON_STATE_POLICY: CredentialFilePolicy = { label: "the daemon state file", kind: "registry", maxBytes: 64 * 1024 };
+/** config.json may be a link (its writer follows one by design); daemon.json may not (its writer renames over the name). */
+export const OPENRIG_CONFIG_POLICY: CredentialFilePolicy = { label: "the OpenRig config file", kind: "registry", maxBytes: 1024 * 1024, followLinks: true };
+export const SLACK_CONNECTOR_POLICY: CredentialFilePolicy = { label: "the Slack connector config", kind: "registry", maxBytes: 256 * 1024 };
+/** o9o.160: Codex's config.toml chooses the provider credential. It is Codex's (or the operator's) file, never chmod-ed by OpenRig: a
+ *  link OpenRig did not make or another user's file is refused; group/other write is a warning (rig doctor names it), until the
+ *  live census decides (CoS 11-18 13:32Z). */
+export const CODEX_CONFIG_POLICY: CredentialFilePolicy = { label: "the Codex config", kind: "registry", maxBytes: 1024 * 1024, groupOrOtherWrite: "warn" };
 
 /**
  * The seat credential links OpenRig itself makes, and the only links the credential rule follows (o9o.151; CoS 11-18 11:34Z, from
@@ -133,6 +156,8 @@ export const SEAT_CREDENTIAL_LINKS = {
   "pi-models": { runtime: "pi", seatFile: "models.json", sharedFile: "<pi.operator_login_dir>/models.json", policy: PI_MODELS_POLICY },
   /** A Codex seat's auth.json -> <CODEX_HOME>/auth.json (the shared Codex login). */
   "codex-auth": { runtime: "codex", seatFile: "auth.json", sharedFile: "<CODEX_HOME>/auth.json", policy: CODEX_AUTH_POLICY },
+  /** A Codex seat's config.toml -> <CODEX_HOME>/config.toml (OF-183: the seat reads the shared config; o9o.160). */
+  "codex-config": { runtime: "codex", seatFile: "config.toml", sharedFile: "<CODEX_HOME>/config.toml", policy: CODEX_CONFIG_POLICY },
 } as const satisfies Record<string, { runtime: string; seatFile: string; sharedFile: string; policy: CredentialFilePolicy }>;
 
 export type SeatCredentialLink = keyof typeof SEAT_CREDENTIAL_LINKS;

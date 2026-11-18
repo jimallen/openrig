@@ -13,10 +13,10 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 describe("the credential-file surface", () => {
   it("exports exactly the reader, the policies and the rule's pure parts", () => {
     expect(Object.keys(surface).sort()).toEqual([
-      "ACTIVITY_ENDPOINT_POLICY", "ACTIVITY_HOOK_TOKEN_POLICY", "BEARER_FILE_POLICY", "CODEX_AUTH_POLICY", "HOSTS_REGISTRY_POLICY",
-      "PI_AUTH_POLICY", "PI_MODELS_POLICY", "SEAT_CREDENTIAL_LINKS", "SLACK_SECRETS_POLICY", "TERMINAL_TOKEN_POLICY",
-      "credentialFileRefusal", "inspectCredentialFile", "judgeOpenedCredentialFile", "nodeCredentialFileReader", "readCredentialFile",
-      "seatCredentialLinkPolicy",
+      "ACTIVITY_ENDPOINT_POLICY", "ACTIVITY_HOOK_TOKEN_POLICY", "BEARER_FILE_POLICY", "CODEX_AUTH_POLICY", "CODEX_CONFIG_POLICY",
+      "DAEMON_STATE_POLICY", "HOSTS_REGISTRY_POLICY", "OPENRIG_CONFIG_POLICY", "PI_AUTH_POLICY", "PI_MODELS_POLICY", "SEAT_CREDENTIAL_LINKS",
+      "SLACK_CONNECTOR_POLICY", "SLACK_SECRETS_POLICY", "TERMINAL_TOKEN_POLICY", "credentialFileRefusal", "inspectCredentialFile",
+      "judgeOpenedCredentialFile", "nodeCredentialFileReader", "readCredentialFile", "readOwnFile", "seatCredentialLinkPolicy",
     ]);
   });
 
@@ -24,6 +24,7 @@ describe("the credential-file surface", () => {
     expect(surface.readCredentialFile).toBe(reader.readCredentialFile);
     expect(surface.nodeCredentialFileReader).toBe(reader.nodeCredentialFileReader);
     expect(surface.inspectCredentialFile).toBe(reader.inspectCredentialFile);
+    expect(surface.readOwnFile).toBe(reader.readOwnFile);
     for (const name of ["TERMINAL_TOKEN_POLICY", "HOSTS_REGISTRY_POLICY", "judgeOpenedCredentialFile", "credentialFileRefusal"] as const) {
       expect(surface[name], name).toBe(rule[name]);
     }

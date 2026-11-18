@@ -5,7 +5,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { TERMINAL_TOKEN_FILE } from "../domain/terminal-token-policy.js";
 import { TERMINAL_TOKEN_POLICY } from "../domain/credential-file.js";
-import { narrowOwnSecretFile, readCredentialFile } from "./node-credential-file-reader.js";
+import { narrowOwnFile, readCredentialFile } from "./node-credential-file-reader.js";
 
 /**
  * The token in <openrigHome>/terminal-token, made first when absent: 32 random bytes, hex, created with O_EXCL|O_NOFOLLOW and mode 0600
@@ -21,7 +21,7 @@ export function readOrCreateTerminalToken(openrigHome: string): string {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
-  const refused = narrowOwnSecretFile(file, TERMINAL_TOKEN_POLICY);
+  const refused = narrowOwnFile(file, TERMINAL_TOKEN_POLICY);
   if (refused) throw new Error(refused.message);
   const read = readCredentialFile(file, TERMINAL_TOKEN_POLICY);
   if (!read.ok) throw new Error(read.message);

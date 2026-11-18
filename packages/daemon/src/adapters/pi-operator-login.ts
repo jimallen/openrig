@@ -26,7 +26,7 @@
 // - declaring the models link without the host setting refuses: the member asked for something the host cannot give.
 // Values printed are paths. No credential value is read or printed.
 import { PI_AUTH_POLICY, PI_MODELS_POLICY, seatCredentialLinkPolicy, type CredentialFilePolicy, type CredentialFileRead } from "../domain/credential-file.js";
-import { inspectCredentialFile, narrowOwnSecretFile, readCredentialFile } from "./node-credential-file-reader.js";
+import { inspectCredentialFile, narrowOwnFile, readCredentialFile, readOwnFile } from "./node-credential-file-reader.js";
 import { setOff } from "../domain/active-occupant.js";
 import fs from "node:fs";
 import nodePath from "node:path";
@@ -56,7 +56,7 @@ export const realPiOperatorLoginFs: PiOperatorLoginFs = {
   // lets a differently-cased spelling of a seat's own path slip past the state-root check; review N2).
   realpath: (p) => fs.realpathSync.native(p),
   readlink: (p) => fs.readlinkSync(p),
-  readSeatStub: (p) => narrowOwnSecretFile(p, PI_AUTH_POLICY) ?? readCredentialFile(p, PI_AUTH_POLICY),
+  readSeatStub: (p) => readOwnFile(p, PI_AUTH_POLICY),
   symlink: (target, p) => fs.symlinkSync(target, p),
   rename: (a, b) => fs.renameSync(a, b),
   unlink: (p) => fs.unlinkSync(p),
@@ -213,7 +213,7 @@ export function piSeatMetadataReader(operatorLoginDir: string | undefined): (fil
     let isLink = false;
     try { isLink = fs.lstatSync(file).isSymbolicLink(); } catch { /* missing: readCredentialFile says so */ }
     if (!isLink) {
-      const refused = narrowOwnSecretFile(file, policy);
+      const refused = narrowOwnFile(file, policy);
       if (refused && refused.problem !== "missing") throw new Error(refused.message);
     }
     const read = readCredentialFile(file, policy);
