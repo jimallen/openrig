@@ -27,6 +27,7 @@
     "./transport-budget": { "types": "./dist/transport-budget.d.ts", "import": "./dist/transport-budget.js" },
     "./shared-docs-root": { "types": "./dist/shared-docs-root.d.ts", "import": "./dist/shared-docs-root.js" },
     "./hc": { "types": "./dist/hc-surface.d.ts", "import": "./dist/hc-surface.js" },
+    "./credential-file": { "types": "./dist/credential-file-surface.d.ts", "import": "./dist/credential-file-surface.js" },
     "./crash-cart": {
       "types": "./dist/crash-cart-surface.d.ts",
       "import": "./dist/crash-cart-surface.js"
