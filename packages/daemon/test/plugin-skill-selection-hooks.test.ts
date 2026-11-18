@@ -49,7 +49,7 @@ const tmux = {} as TmuxAdapter; // project() must not launch or contact a provid
 function hookReadSkillFiles(): string[] {
   const sources = [
     ...fs.readdirSync(nodePath.join(PLUGIN_ROOT, "hooks")).filter((name) => name.endsWith(".json")).map((name) => nodePath.join("hooks", name)),
-    ...fs.readdirSync(nodePath.join(PLUGIN_ROOT, "hooks", "scripts")).map((name) => nodePath.join("hooks", "scripts", name)),
+    ...fs.readdirSync(nodePath.join(PLUGIN_ROOT, "hooks", "scripts"), { withFileTypes: true }).filter((e) => e.isFile()).map((e) => nodePath.join("hooks", "scripts", e.name)),
   ];
   const found = new Set<string>();
   for (const source of sources) {
