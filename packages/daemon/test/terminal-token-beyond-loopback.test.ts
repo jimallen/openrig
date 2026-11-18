@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 // workspaces-o9o.78 (Jim, 2026-11-17: "Token when non-loopback"): terminal-class routes require the terminal token whenever the daemon
 // listens beyond loopback (the tailnet included); loopback-only stays tokenless. This file pins the parts around the decision itself
 // (test/terminal-token-policy.test.ts): the token file, the listener check, the routes now under the terminal guard, and the 401 a peer
@@ -40,13 +41,27 @@ describe("the instance's terminal token file", () => {
     const elsewhere = nodePath.join(temp(), "other");
     writeFileSync(elsewhere, `${TOKEN}\n`);
     symlinkSync(elsewhere, nodePath.join(home, TERMINAL_TOKEN_FILE));
-    expect(() => readOrCreateTerminalToken(home)).toThrow(/not a regular file/);
+    expect(() => readOrCreateTerminalToken(home)).toThrow(/symbolic link/); // o9o.151: the credential rule's wording
   });
 
   it("an empty file is refused (an empty token would be no token)", () => {
     const home = temp();
     writeFileSync(nodePath.join(home, TERMINAL_TOKEN_FILE), "\n");
     expect(() => readOrCreateTerminalToken(home)).toThrow(/is empty/);
+  });
+
+  // workspaces-o9o.151: the file is read under the credential rule, so it has a size cap like every other secret file.
+  it("a file over the 4096-byte cap is refused, naming it, and is not read whole", () => {
+    const home = temp();
+    const file = nodePath.join(home, TERMINAL_TOKEN_FILE);
+    writeFileSync(file, "a".repeat(5000), { mode: 0o600 });
+    expect(() => readOrCreateTerminalToken(home)).toThrow(new RegExp(`${file.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}.*4096-byte limit`));
+  });
+
+  it("a FIFO at that path is refused without hanging the start", () => {
+    const home = temp();
+    execFileSync("mkfifo", ["-m", "600", nodePath.join(home, TERMINAL_TOKEN_FILE)]);
+    expect(() => readOrCreateTerminalToken(home)).toThrow(/not a regular file/);
   });
 });
 
