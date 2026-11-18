@@ -95,7 +95,11 @@ describe("the four components behind the six surfaces carry no prohibited ARIA a
     const bar = getByTestId("feed-card-progress-m1-bar");
     expect(bar.getAttribute("role")).toBe("progressbar");
     expect(bar.getAttribute("aria-valuenow")).toBe("42");
-    expect(bar.getAttribute("aria-label")).toBe("Progress 42%");
+    // verify-qa2 review: the name says WHAT is progressing and carries no number, since aria-valuenow already says how far (a name with
+    // the percentage made a screen reader say it twice).
+    expect(bar.getAttribute("aria-label")).toBe("Mission one progress");
+    expect(bar.getAttribute("aria-label")).not.toMatch(/\d|%/);
+    expect([bar.getAttribute("aria-valuemin"), bar.getAttribute("aria-valuemax")]).toEqual(["0", "100"]);
   });
 });
 

@@ -331,7 +331,8 @@ export function ProgressCard({
           aria-valuenow={pct}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-label={`Progress ${pct}%`}
+          // The name says what is progressing; aria-valuenow says how far (a name with the percentage made it read twice).
+          aria-label={`${source.title} progress`}
         >
           <div
             data-testid={`feed-card-progress-${source.missionId}-bar-fill`}
