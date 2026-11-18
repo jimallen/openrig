@@ -1,22 +1,20 @@
-# Defect class: the one-view-state invariant (PIN-1): after a burst of activity, the daemon-truth surfaces
-#   `ps` and `queue` must name the same world.
+# Defect class: the one-view-state invariant (PIN-1): after a burst of activity, `ps`, `queue` and the TUI
+#   must name the same world.
 # Marathon origin: the TUI socket state, `rig ps`, and `rig queue` drifted out of sync after a burst of
 #   activity, so three surfaces told three stories of one system.
 #
-# WHAT THIS PROVES (workspaces-o9o.132, CoS decision A): after the storm, `ps` and `queue` name the same rig
-#   set (the declarative `equals`, ROUTING R-13), with one real queue item (env.queue) so the comparison
-#   cannot pass empty. The TUI leg asserts only what its socket reports: it is live on the topology screen.
-#
-# NOT COVERED: the TUI lagging the daemon. Measured (2026-11-18, a scenario TUI provisioned as here): the
-#   socket's `state` returns the TUI's navigation address (screen, drill, section; no rig until navigated)
-#   and never the rows it renders, and no scenario step drives the TUI. So a TUI showing a stale view cannot
-#   be compared with `ps` or `queue`; ROUTING R-21 routes the TUI OBSERVE verb that would allow it.
+# WHAT THIS PROVES (workspaces-o9o.132; TUI view workspaces-o9o.172): after the storm, `ps`, `queue` and the
+#   TUI's own view of the world name the same rig set (the declarative `equals`, ROUTING R-13), with one real
+#   queue item (env.queue) so the comparison cannot pass empty. The TUI's view is its socket's OBSERVE verb
+#   `view` (the `tui_view` surface: every rig the TUI holds, the digest of what it renders; R-21), so a TUI
+#   still showing a world that has moved on fails the equality once its bound passes. The `tui_socket` leg
+#   asserts the TUI's own state: it is live on the topology screen.
 #
 # SEED (class: queue-rig-divergence): the seeded run plants, AFTER the storm and BEFORE the assertions, a
 #   queue item addressed to a rig `ps` does not run (the queue telling a story `ps` cannot see). The `equals`
 #   leg MUST then fail: the normalized rig sets differ. Pinned with this file's own steps and the real runner
 #   core and normalizer by test/scenario-one-view-state-library.test.ts (healthy PASS, seeded FAIL at the
-#   equality, a lagging TUI not caught). Host mode arms no seed and does not bind `mutate`, so here the
+#   equality, a TUI missing the rig FAIL at the equality). Host mode arms no seed and does not bind `mutate`, so here the
 #   scenario is reported NOT RUN at its first `mutate`.
 #
 scenario: one-view-state-after-mutation-storm
@@ -55,11 +53,12 @@ steps:
           screen: topology
           address:
             section: topology
-  # ...and ps and queue name the same rig set (normalized cross-surface equality).
+  # ...and ps, queue and the TUI's view name the same rig set (normalized cross-surface equality).
   - expect:
       surface: ps
       within: 30s
       equals:
         ps: { pluck: name }
         queue: { pluck: destinationSession, rig: true }
+        tui_view: { path: view.rigs, pluck: name }
   - down: {}

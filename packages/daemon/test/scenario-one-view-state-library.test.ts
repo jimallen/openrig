@@ -1,8 +1,8 @@
 // workspaces-o9o.132 review (verify-qa; CoS decision A): the library scenario one-view-state-after-mutation-storm (#10) must pin the seed it
 // declares. Host mode cannot arm a seed and does not bind `mutate`, so this runs the scenario FILE itself (loaded and validated as the runner
 // loads it) through the real runner core and declarative normalizer, with fake surfaces: the healthy run passes, the seeded run (a queue item
-// addressed to a rig `ps` does not run) fails at the ps-vs-queue equality, and a lagging TUI is NOT caught, which the scenario's header
-// declares (the TUI's socket carries its navigation address, not the rows it renders; ROUTING R-21).
+// addressed to a rig `ps` does not run) fails at the equality, and so does a TUI whose view (the `tui_view` surface, its socket's OBSERVE
+// verb "view", workspaces-o9o.172, ROUTING R-21) lacks the rig.
 import { describe, expect, it } from "vitest";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FILE = resolve(HERE, "../../test-system/scenarios/one-view-state-after-mutation-storm.yaml");
 const ok: ActionResult = { code: 0, stdout: "", stderr: "" };
 
-function run(opts: { seedPlantsForeignRig?: boolean; tuiLags?: boolean; tuiScreen?: string }) {
+function run(opts: { seedPlantsForeignRig?: boolean; tuiScreen?: string; tuiMissesRig?: boolean }) {
   const loaded = loadScenarioFile(FILE);
   if (!loaded.ok) throw new Error(`#10 does not load: ${JSON.stringify(loaded.errors)}`);
   const scenario = loaded.loaded.scenario;
@@ -29,8 +29,12 @@ function run(opts: { seedPlantsForeignRig?: boolean; tuiLags?: boolean; tuiScree
           ...(seeded ? [{ qitemId: "storm-2", state: "pending", destinationSession: "swarm-a@ghost-rig" }] : []),
         ];
       }
+      if (surface === "tui_view") {
+        const rigs = opts.tuiMissesRig ? [] : [{ host: "local", name: "mutation-pod-stub", reachable: true, agents: [] }];
+        return { ok: true, instanceId: "tui-1", view: { readAt: "2026-11-18T16:00:00.000Z", stale: false, settled: true, rigs, hostsDown: [], counts: { rigs: rigs.length, agents: 0 }, truncated: false } };
+      }
       if (surface === "tui_socket") {
-        const address = opts.tuiLags ? { instance: "tui-1", section: "topology", rig: "stale-rig" } : { instance: "tui-1", section: "topology" };
+        const address = { instance: "tui-1", section: "topology" };
         const screen = opts.tuiScreen ?? "topology";
         return { ok: true, instanceId: "tui-1", state: { ok: true, screen, drill: [], address: { ...address, section: screen } } };
       }
@@ -71,7 +75,10 @@ describe("#10 one-view-state-after-mutation-storm pins the seed it declares", ()
     expect(r.failedStep).toBe(tuiStep);
   });
 
-  it("NOT COVERED, as its header declares: a TUI showing a stale rig is not caught (R-21)", async () => {
-    expect((await run({ tuiLags: true }).result).verdict).toBe("PASS");
+  it("a TUI whose view lacks the rig ps and queue name fails the equality (R-21, o9o.172)", async () => {
+    const { result, equalityStep } = run({ tuiMissesRig: true });
+    const r = await result;
+    expect(r.verdict).toBe("FAIL");
+    expect(r.failedStep).toBe(equalityStep);
   });
 });

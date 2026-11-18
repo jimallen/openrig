@@ -49,9 +49,9 @@ against the locked/ruled shape so it drops in when the dependency lands.
 - **R-13. `equals` cross-surface normalizer (#10) — LANDED; #10 converted (workspaces-o9o.132).**
   The declarative normalizer ships as a per-surface projection mapping,
   `equals: {<surface>: {pluck, path, rig}}` (`scenario-normalizer.ts`), and it is the only
-  form the validator accepts. #10 compares `ps` and `queue` by the rig set each names, with one
-  `env.queue` item, and asserts `tui_socket` on its own (its socket carries UI state, not daemon
-  truth; R-21). Its seed is armed before the equality and is a class the equality catches. Its storm
+  form the validator accepts. #10 compares `ps`, `queue` and the TUI's view (`tui_view`, R-21) by the
+  rig set each names, with one `env.queue` item, and asserts `tui_socket` (the TUI's own state) on its
+  own. Its seed is armed before the equality and is a class the equality catches. Its storm
   uses `mutate`, which is unbound, so host mode reports it NOT RUN.
 - **R-14. `env.pre_existing_tmux` hermetic fixture (#5) — OBSOLETE as written; replaced in
   workspaces-o9o.136.** Measured 2026-11-18 (release-7): seats run on hc, not tmux, so a
@@ -80,13 +80,13 @@ against the locked/ruled shape so it drops in when the dependency lands.
   `env.queue` handoff (workspaces-o9o.132), so its first `expect queue` holds; its post-restart
   legs wait on R-20.
 
-- **R-21. The TUI's view on the control socket (#10) — OPEN (workspaces-o9o.172).** Measured
-  2026-11-18: the TUI socket's `state` returns its navigation address (screen, drill, section; a rig
-  only once navigated) and `commands` its command registry; neither returns the rows it renders, and
-  no step drives the TUI. So #10 cannot compare the TUI with `ps` and `queue`, and a TUI lagging the
-  daemon is NOT COVERED: #10's equality is `ps` vs `queue`, its seed (`queue-rig-divergence`) is one
-  that equality catches (pinned by `test/scenario-one-view-state-library.test.ts`), and its TUI leg
-  asserts only the TUI's own state. Needs a read-only socket verb returning what the TUI shows.
+- **R-21. The TUI's view on the control socket (#10) — LANDED (workspaces-o9o.172).** The TUI
+  socket's `state` returns its navigation address and `commands` its command registry; neither says what
+  it renders. Its third read-only verb, `view`, returns a bounded digest of the snapshot every topology
+  view is rendered from (each rig with its host and agents, the hosts it could not read, and `readAt`,
+  when it last confirmed its read; names and status only). Scenarios read it as the `tui_view` surface
+  (needs `env.tui`). #10's equality now includes it, so a TUI still showing a world that has moved on
+  fails that equality once its bound passes (pinned by `test/scenario-one-view-state-library.test.ts`).
 
 ## → 51-06 (transactional execution-closure) — #11 GREEN gate
 - **R-20. #11 GREEN gate = the 51-06 transactional-closure reconcile (POOLED, NOT in
