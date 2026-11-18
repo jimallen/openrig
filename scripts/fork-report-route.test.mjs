@@ -152,6 +152,8 @@ test('the matcher catches each way of pointing a reader upstream, and passes a r
     "report it to this fork's own intake, never upstream: see [Report a problem on this fork](#report-a-problem-on-this-fork).",
     'file nothing with it (no issue, discussion or pull request on any `github.com/mvschwarz` repository) and send nothing to its support address.',
     'For a confirmed bug, search the upstream issues first and name a matching one in your report, as a reference; the',
+    // A read-only link whose text is a verb: the URL names the upstream repository, and the sentence only points at it.
+    'The cause is in the [report](https://github.com/mvschwarz/openrig/issues/99), which is read-only here.',
     // Nouns, not submissions: shipped lines that named "file" or "open" beside "upstream" (found by this census).
     'OpenRig adds a companion file that captures local-use insights without polluting the upstream content.',
     '/** Parse the `{ provider?, view }` open body honestly (a non-object / missing view → structured 400 upstream). */',
