@@ -39,20 +39,56 @@ export function claudeCodeModeEnv(codeMode: boolean | undefined): Record<string,
   return codeMode === true ? { [CLAUDE_CODE_MODE_ENV]: "1" } : {};
 }
 
-/** The one read this module makes of the daemon's database, named here so the domain does not import the driver. */
+/** The reads and the one write this module makes of the daemon's database, named here so the domain does not import the driver. */
 export interface CodeModeDb {
-  prepare(sql: string): { get(...params: unknown[]): unknown };
+  prepare(sql: string): { get(...params: unknown[]): unknown; run(...params: unknown[]): unknown };
 }
 
-/** Whether the seat a session belongs to declared code_mode (nodes.code_mode = 1). The resumability probe asks it per session. A read
- *  that fails (a database without the column, say) is "not declared", which types the probe line as before. */
-export function seatCodeModeOfSession(db: CodeModeDb, sessionId: string): boolean {
+// Invariant (CoS ruling, verify-sec2's finding 4): Code Mode belongs to the CONVERSATION. A session row records the mode its conversation
+// was launched in (sessions.code_mode, migration 133); a launch that continues a conversation (resume, restore, fork, the resumability
+// probe, the resume line OpenRig shows) uses that recorded mode, and only a FRESH launch takes the seat's declaration (nodes.code_mode).
+// A conversation with no recorded mode (a row from before the column, or a session the person started and OpenRig claimed) is not Code
+// Mode. A read that fails is the same answer, which types every line as it was before code_mode existed.
+
+/** The mode a session's conversation was launched in (sessions.code_mode = 1). The resumability probe asks it per session. */
+export function sessionCodeMode(db: CodeModeDb, sessionId: string): boolean {
   try {
-    const row = db.prepare("SELECT n.code_mode AS v FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.id = ?").get(sessionId) as { v: number | null } | undefined;
+    const row = db.prepare("SELECT code_mode AS v FROM sessions WHERE id = ?").get(sessionId) as { v: number | null } | undefined;
     return row?.v === 1;
   } catch {
     return false;
   }
+}
+
+/** The mode of the conversation a launch continues, found by its native id (the resume token a resume passes, the parent id a fork
+ *  passes): the newest session row carrying that id, other than the row of the launch asking (which may already carry it). */
+export function conversationCodeMode(db: CodeModeDb, conversationId: string, launchingSessionId?: string | null): boolean {
+  try {
+    const row = db.prepare("SELECT code_mode AS v FROM sessions WHERE resume_token = ? AND id IS NOT ? ORDER BY rowid DESC LIMIT 1")
+      .get(conversationId, launchingSessionId ?? null) as { v: number | null } | undefined;
+    return row?.v === 1;
+  } catch {
+    return false;
+  }
+}
+
+/** The mode a launch should run in: the continued conversation's recorded mode, or (a fresh launch, `conversationId` absent) the seat's
+ *  declaration. */
+export function launchCodeMode(db: CodeModeDb, input: { declared: boolean; conversationId?: string | null; launchingSessionId?: string | null }): boolean {
+  return input.conversationId ? conversationCodeMode(db, input.conversationId, input.launchingSessionId) : input.declared;
+}
+
+/** Record on a session row the mode its conversation runs in. Best effort: a database without the column keeps the row as it is. */
+export function recordSessionCodeMode(db: CodeModeDb, sessionId: string, codeMode: boolean): void {
+  try {
+    db.prepare("UPDATE sessions SET code_mode = ? WHERE id = ?").run(codeMode ? 1 : null, sessionId);
+  } catch { /* a reduced-schema database: nothing to record into */ }
+}
+
+/** A binding with `codeMode` set to the launch's mode: the key present only when true, so an undeclared launch is unchanged. */
+export function withCodeMode<T extends { codeMode?: boolean }>(binding: T, codeMode: boolean): T {
+  const { codeMode: _previous, ...rest } = binding;
+  return (codeMode ? { ...rest, codeMode: true } : rest) as T;
 }
 
 /** The shell prefix for a typed launch line, with its trailing space; "" when the seat does not declare it. */

@@ -1822,6 +1822,37 @@ describe("SeatHandoverService", () => {
     else expect("codeMode" in successorBinding).toBe(false);
   });
 
+  // workspaces-o9o.123, finding 4 (CoS ruling): Code Mode belongs to the CONVERSATION. A fork continues the forked conversation, so it
+  // runs in the mode that conversation was launched with, whatever the seat declares now; a fresh successor is a new conversation and
+  // takes the seat's current declaration. Either way the successor's session row records the mode it was launched in.
+  const successorRowCodeMode = (nodeId: string): number | null =>
+    (db.prepare("SELECT code_mode FROM sessions WHERE node_id = ? ORDER BY rowid DESC LIMIT 1").get(nodeId) as { code_mode: number | null }).code_mode;
+
+  it.each([[true], [false]])("finding 4: a FORK successor runs in the forked conversation's mode (launched %s), not the seat's flipped declaration", async (launchedInCodeMode) => {
+    const { node, sessionId } = seedSeat({ runtime: "codex", codeMode: launchedInCodeMode });
+    sessionRegistry.updateResumeToken(sessionId!, "codex_id", "native-abc", "scrape");
+    rigRepo.setNodeCodeMode(node.id, !launchedInCodeMode); // what rig seat apply-spec does when the spec flips code_mode
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fork:dev-impl@seat-rig", operator: "orch-lead@seat-rig" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(launchHarness).toHaveBeenCalledTimes(1);
+    const successorBinding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
+    if (launchedInCodeMode) expect(successorBinding.codeMode).toBe(true);
+    else expect("codeMode" in successorBinding).toBe(false);
+    expect(successorRowCodeMode(node.id)).toBe(launchedInCodeMode ? 1 : null);
+  });
+
+  it.each([[true], [false]])("finding 4: a FRESH successor takes the seat's current declaration (%s), whatever the old conversation ran in", async (declaredNow) => {
+    const { node, sessionId } = seedSeat({ runtime: "codex", codeMode: !declaredNow });
+    sessionRegistry.updateResumeToken(sessionId!, "codex_id", "native-abc", "scrape");
+    rigRepo.setNodeCodeMode(node.id, declaredNow);
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const successorBinding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
+    if (declaredNow) expect(successorBinding.codeMode).toBe(true);
+    else expect("codeMode" in successorBinding).toBe(false);
+    expect(successorRowCodeMode(node.id)).toBe(declaredNow ? 1 : null);
+  });
+
   it.each([[true], [false]])("an ask_in_modal seat's handover launches the successor with the declaration (%s): the REAL lookupNode, createSuccessor, launchHarness path", async (askInModal) => {
     seedSeat({ runtime: "codex", askInModal });
     const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });

@@ -1,3 +1,4 @@
+import { conversationCodeMode, recordSessionCodeMode } from "./claude-code-mode.js";
 import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, liveSeatGateInputs, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
@@ -1588,9 +1589,13 @@ export class RestoreOrchestrator {
             this.sessionRegistry.recordResumeLaunch(launchedSessionId, resumeToken);
           } catch { /* best-effort: without it a rotation stays unproved, as before */ }
         }
-        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), effortForRestore(), warnings, node.remoteControl === true, node.askInModal === true, node.codeMode === true);
+        // workspaces-o9o.123, finding 4: the resume continues the conversation, so it runs in the mode that conversation was launched in
+        // (recorded on its session row), not the seat's current declaration, which applies to a fresh launch only.
+        const resumedCodeMode = resumeToken ? conversationCodeMode(this.db, resumeToken, launchedSessionId) : false;
+        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), effortForRestore(), warnings, node.remoteControl === true, node.askInModal === true, resumedCodeMode);
         if (resumeOutcome.kind === "resumed") {
           baseStatus = "resumed";
+          if (launchedSessionId && this.claudeResume.canResume(resumeType, resumeToken)) recordSessionCodeMode(this.db, launchedSessionId, resumedCodeMode);
           if (launchedSessionId && this.claudeResume.canResume(resumeType, resumeToken)) {
             // The process this resume started, as the launch itself observes it (#1077): the one its
             // identity check proved, else one observed now.

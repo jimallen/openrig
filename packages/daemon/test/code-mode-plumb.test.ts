@@ -326,6 +326,121 @@ describe("code_mode: legacy (non-pod) restore passes the persisted declaration t
   });
 });
 
+// workspaces-o9o.123, finding 4 (CoS ruling, verify-sec2): Code Mode is a property of the CONVERSATION. The session row records the mode
+// it was launched in; every resume of that conversation uses the recorded mode, and the seat's declaration applies to the next fresh
+// launch only. So `rig seat apply-spec` withdrawing code_mode never strands a live Code Mode conversation (it would exit 1 on resume),
+// and declaring it never forces Code Mode onto an existing one.
+describe("finding 4: a restore resumes the conversation in the mode it was launched in, whatever the seat declares now", () => {
+  const dbs: ReturnType<typeof createFullTestDb>[] = [];
+  afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
+
+  it.each([
+    ["launched in Code Mode, then apply-spec withdrew code_mode -> the resume still carries it", true],
+    ["launched without, then apply-spec declared code_mode -> the resume does not carry it", false],
+  ])("legacy (non-pod) restore: %s", async (_label, launchedInCodeMode) => {
+    const db = createFullTestDb(); dbs.push(db);
+    const rigRepo = new RigRepository(db);
+    const sessionRegistry = new SessionRegistry(db);
+    const eventBus = new EventBus(db);
+    const snapshotRepo = new SnapshotRepository(db);
+    const checkpointStore = new CheckpointStore(db);
+    const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
+    const rig = rigRepo.createRig("legacy-rig");
+    const node = rigRepo.addNode(rig.id, "cos", { runtime: "claude-code", cwd: WORKSPACE, ...(launchedInCodeMode ? { codeMode: true } : {}) });
+    const session = sessionRegistry.registerSession(node.id, "cos@legacy-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateStartupStatus(session.id, "ready", new Date().toISOString());
+    db.prepare("UPDATE sessions SET resume_type = 'claude_name', resume_token = 'tok-1' WHERE id = ?").run(session.id);
+    // `rig seat apply-spec --yes` writes the three retained Claude fields exactly like this (seat-lifecycle-service, applySpec).
+    rigRepo.setNodeClaudeRetainedFields(node.id, { remoteControl: false, askInModal: false, codeMode: !launchedInCodeMode });
+    const snapshot = snapshotCapture.captureSnapshot(rig.id, "manual");
+    const partialTmux: Partial<TmuxAdapter> = {
+      createSession: vi.fn(async () => ({ ok: true as const })), killSession: vi.fn(async () => ({ ok: true as const })), listSessions: vi.fn(async () => []),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false), sendText: vi.fn(async () => ({ ok: true as const })), sendKeys: vi.fn(async () => ({ ok: true as const })),
+      listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "claude"),
+    };
+    const tmux = partialTmux as TmuxAdapter;
+    const calls: unknown[][] = [];
+    class RecordingClaudeResume extends ClaudeResumeAdapter {
+      override canResume(): boolean { return true; }
+      override async resume(...args: Parameters<ClaudeResumeAdapter["resume"]>): Promise<ResumeResult> { calls.push(args); return { ok: true }; }
+    }
+    class NoCodexResume extends CodexResumeAdapter {
+      override canResume(): boolean { return false; }
+    }
+    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore,
+      nodeLauncher, tmuxAdapter: tmux, claudeResume: new RecordingClaudeResume(tmux), codexResume: new NoCodexResume(tmux) });
+    expect((await restore.restore(snapshot.id)).ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    // Slot 15 of resume(...) is codeMode; an undeclared resume keeps today's four-slot tail.
+    const tail = calls[0]!.slice(8);
+    expect(tail).toEqual(launchedInCodeMode ? [null, false, false, true, false, false, true] : [null, false, false, true]);
+    // The restored session row records the conversation's mode, so the NEXT resume of it decides the same way.
+    const newest = db.prepare("SELECT code_mode FROM sessions WHERE node_id = ? ORDER BY rowid DESC LIMIT 1").get(node.id) as { code_mode: number | null };
+    expect(newest.code_mode).toBe(launchedInCodeMode ? 1 : null);
+  });
+
+  it.each([
+    ["launched in Code Mode, then withdrawn -> the resume carries it", true],
+    ["launched without, then declared -> the resume does not", false],
+  ])("pod-aware restore (startNode resumes with the token): %s", async (_label, launchedInCodeMode) => {
+    const db = createFullTestDb(); dbs.push(db);
+    const rigRepo = new RigRepository(db);
+    const sessionRegistry = new SessionRegistry(db);
+    const eventBus = new EventBus(db);
+    const snapshotRepo = new SnapshotRepository(db);
+    const checkpointStore = new CheckpointStore(db);
+    const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
+    const rig = rigRepo.createRig("pod-restore");
+    db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("restore-pod", rig.id, "Test");
+    const node = rigRepo.addNode(rig.id, "exec.cos", { runtime: "claude-code", podId: "restore-pod", cwd: WORKSPACE, ...(launchedInCodeMode ? { codeMode: true } : {}) });
+    const name = "exec-cos@pod-restore";
+    const old = sessionRegistry.registerSession(node.id, name);
+    sessionRegistry.updateStatus(old.id, "running");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: name, tmuxPane: "%old" });
+    db.prepare("UPDATE sessions SET resume_type = 'claude_id', resume_token = 'conv-1' WHERE id = ?").run(old.id);
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(node.id, "[]", "[]", "[]", "claude-code");
+    rigRepo.setNodeClaudeRetainedFields(node.id, { remoteControl: false, askInModal: false, codeMode: !launchedInCodeMode });
+    let live = true;
+    const partialTmux: Partial<TmuxAdapter> = {
+      hasSession: vi.fn(async () => live),
+      probeSession: vi.fn(async () => ({ state: live ? "present" as const : "absent" as const })),
+      killSession: vi.fn(async () => { live = false; return { ok: true as const }; }),
+      createSession: vi.fn(async () => { live = true; return { ok: true as const }; }),
+      listSessions: vi.fn(async () => []), listWindows: vi.fn(async () => []),
+      listPanes: vi.fn(async () => [{ id: "%new", index: 0, cwd: "/", width: 80, height: 24, active: true }]),
+      getPaneCommand: vi.fn(async () => "claude"), capturePaneContent: vi.fn(async () => ""),
+      sendText: vi.fn(async () => ({ ok: true as const })), sendKeys: vi.fn(async () => ({ ok: true as const })),
+    };
+    const tmux = partialTmux as TmuxAdapter;
+    const down = await new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotCapture, tmuxAdapter: tmux }).teardown(rig.id);
+    expect(down.errors).toEqual([]);
+    // (A pod-aware restore never falls back to a fresh launch on its own: startNode's fallback is pinned in startup-orchestrator.test.ts.)
+    const launchHarness = vi.fn<RuntimeAdapter["launchHarness"]>(async (_b, opts) => ({ ok: true as const, ...(opts.resumeToken ? { resumeToken: opts.resumeToken, resumeType: "claude_id" } : {}) }));
+    const adapter: RuntimeAdapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness,
+    };
+    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
+      checkpointStore, nodeLauncher, tmuxAdapter: tmux, claudeResume: new ClaudeResumeAdapter(tmux), codexResume: new CodexResumeAdapter(tmux) });
+    const up = await restore.restore(down.snapshotId!, { adapters: { "claude-code": adapter } });
+    if (!up.ok) throw new Error(up.message);
+    const resumeCall = launchHarness.mock.calls.find((c) => c[1].resumeToken === "conv-1");
+    expect(resumeCall, JSON.stringify(launchHarness.mock.calls.map((c) => c[1]))).toBeDefined();
+    if (launchedInCodeMode) expect(resumeCall![0].codeMode).toBe(true);
+    else expect("codeMode" in resumeCall![0]).toBe(false);
+    // The restored row records the conversation's mode, so its next resume decides the same way.
+    const newest = db.prepare("SELECT code_mode FROM sessions WHERE node_id = ? ORDER BY rowid DESC LIMIT 1").get(node.id) as { code_mode: number | null };
+    expect(newest.code_mode).toBe(launchedInCodeMode ? 1 : null);
+  });
+});
+
 describe("code_mode: the pod-aware restore's FRESH relaunch (no resume token) binds the persisted declaration", () => {
   const dbs: ReturnType<typeof createFullTestDb>[] = [];
   afterEach(() => { for (const db of dbs.splice(0)) db.close(); });

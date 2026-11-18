@@ -125,6 +125,19 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
     expect(seatClaudeHomeReaders(db, "/h/.claude").homeOfRunningNode(node.id)).toBe("/h/cel");
   });
 
+  // workspaces-o9o.123, finding 4: Code Mode belongs to the conversation, and a re-adoption is the same live process: the new row
+  // carries the mode the newest row of this name recorded, whatever the seat declares now, so its later resume decides the same way.
+  it.each([[true], [false]])("a re-adopted process keeps the Code Mode its conversation was launched in (%s), not the seat's current declaration", async (launchedInCodeMode) => {
+    const { node, sessionName } = await seedDetachedSeat();
+    const newestLaunch = setup.sessionRegistry.registerSession(node.id, sessionName);
+    db.prepare("UPDATE sessions SET code_mode = ? WHERE id = ?").run(launchedInCodeMode ? 1 : null, newestLaunch.id);
+    setup.rigRepo.setNodeCodeMode(node.id, !launchedInCodeMode);
+    setup.sessionRegistry.markDetached(newestLaunch.id);
+    expect((await setup.sessionReconciler.reconcileSession({ sessionName })).ok).toBe(true);
+    const newest = db.prepare("SELECT code_mode, origin FROM sessions WHERE node_id = ? ORDER BY rowid DESC LIMIT 1").get(node.id);
+    expect(newest).toEqual({ code_mode: launchedInCodeMode ? 1 : null, origin: "claimed" });
+  });
+
   it("a re-adopted process launched on the daemon's own home records none", async () => {
     const { node, sessionName } = await seedDetachedSeat();
     expect((await setup.sessionReconciler.reconcileSession({ sessionName })).ok).toBe(true);

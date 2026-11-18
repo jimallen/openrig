@@ -1,3 +1,4 @@
+import { conversationCodeMode, recordSessionCodeMode } from "./claude-code-mode.js";
 import type Database from "better-sqlite3";
 import { claudeConfigDirLaunchRefusal } from "./claude-config-dir.js";
 import { readSeatEffort } from "./seat-effort.js";
@@ -503,13 +504,16 @@ export class SeatHandoverService {
     // The successor must carry its own generation from its first byte. This reservation writes no
     // ledger row; commit consumes it, while every failed pre-commit branch remains unregistered.
     const occupantGeneration = this.sessionRegistry.reserveOccupantGeneration();
+    // workspaces-o9o.123, finding 4: a fork continues the forked conversation, so the successor runs in the mode that conversation was
+    // launched in (its session row); a fresh or rebuilt successor is a new conversation and takes the seat's declaration.
+    const successorCodeMode = forkSource ? conversationCodeMode(this.db, forkSource.value) : node.code_mode === 1;
     const launch = await this.successorLauncher.createSuccessor({
       // Seam B: the successor is the SAME seat continuing — persisted policy posture carries.
       // 0.5.2-07 model fidelity: carry the seat's SPEC-pinned model so the successor launch reads the
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, ...(node.remote_control === 1 ? { remoteControl: true } : {}), ...(node.ask_in_modal === 1 ? { askInModal: true } : {}), ...(node.code_mode === 1 ? { codeMode: true } : {}), ...(node.claude_config_dir ? { claudeConfigDir: node.claude_config_dir } : {}), codexConfigProfile: node.codex_config_profile ?? undefined },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, ...(node.remote_control === 1 ? { remoteControl: true } : {}), ...(node.ask_in_modal === 1 ? { askInModal: true } : {}), ...(successorCodeMode ? { codeMode: true } : {}), ...(node.claude_config_dir ? { claudeConfigDir: node.claude_config_dir } : {}), codexConfigProfile: node.codex_config_profile ?? undefined },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the
@@ -665,6 +669,7 @@ export class SeatHandoverService {
       occupantGeneration,
       appliedLaunch: launch.appliedLaunch ?? null,
       sourceOutcome,
+      codeMode: successorCodeMode,
       cleanup: () => this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId),
     });
     // The launch's warnings reach the operator through the result (they were dropped here before workspaces-o9o.10), and so do the relaunch
@@ -718,6 +723,8 @@ export class SeatHandoverService {
     appliedLaunch: AppliedLaunchObservation | null;
     /** OPR.0.5.5.5 — per-source execution outcome, threaded onto the result. */
     sourceOutcome?: SeatHandoverMutationResult["sourceOutcome"];
+    /** workspaces-o9o.123: the Code Mode the launched successor runs in, recorded on its session row; absent for a discovered one. */
+    codeMode?: boolean;
     cleanup: (() => Promise<void>) | null;
   }): Promise<SeatHandoverResult> {
     const fail = async (result: SeatHandoverResult): Promise<SeatHandoverResult> => {
@@ -818,6 +825,7 @@ export class SeatHandoverService {
       occupantGeneration: input.occupantGeneration,
       appliedLaunch: input.appliedLaunch,
       sourceOutcome: input.sourceOutcome,
+      ...(input.codeMode !== undefined ? { codeMode: input.codeMode } : {}),
     });
     if (!committed.ok) return fail(committed);
     this.tmuxAdapter.deliveryGuard?.rebindLifecycle(input.node.id);
@@ -1187,6 +1195,7 @@ export class SeatHandoverService {
     occupantGeneration: string | null;
     appliedLaunch: AppliedLaunchObservation | null;
       sourceOutcome?: SeatHandoverMutationResult["sourceOutcome"];
+    codeMode?: boolean;
   }): SeatHandoverResult {
     const handoverAt = this.now().toISOString();
     const tx = this.db.transaction(() => {
@@ -1231,6 +1240,8 @@ export class SeatHandoverService {
         input.occupantGeneration,
         input.reportedSource.mode === "discovered" ? "claimed" : "launched",
       );
+      // workspaces-o9o.123: the mode the successor's conversation was launched in (a fork: the forked conversation's).
+      if (input.codeMode !== undefined) recordSessionCodeMode(this.db, newSession.id, input.codeMode);
       // W3: registerClaimedSession mints the successor generation. Only now may
       // the exact adapter-returned launch effect be attached to that tenure.
       // The store is best-effort, so observation persistence can never make an

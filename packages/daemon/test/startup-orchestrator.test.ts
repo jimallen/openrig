@@ -175,6 +175,55 @@ describe("StartupOrchestrator", () => {
     expect(result.warnings).toContain(`${input.sessionName ?? input.nodeId}: code_mode: /h/.claude.json is a symbolic link`);
   });
 
+  // workspaces-o9o.123, finding 4: a Claude launch that continues a conversation runs in that conversation's recorded Code Mode; a fresh
+  // launch (including the fallback after a refused resume) in the seat's declaration; the launching row records the mode it ran in.
+  it.each([[true], [false]])("finding 4: a resume runs in the conversation's recorded mode (%s); its fresh fallback takes the declaration", async (conversationInCodeMode) => {
+    const seed = seedSession();
+    const earlier = sessionRegistry.registerSession(seed.nodeId, "r01-impl");
+    db.prepare("UPDATE sessions SET resume_token = 'conv-9', code_mode = ? WHERE id = ?").run(conversationInCodeMode ? 1 : null, earlier.id);
+    const launchHarness = vi.fn(async (_b: NodeBinding, opts: Parameters<RuntimeAdapter["launchHarness"]>[1]): Promise<HarnessLaunchResult> => (opts.resumeToken
+      ? { ok: false, error: "No conversation found", recovery: "retry_fresh", missingConversation: true }
+      : { ok: true }));
+    const declared = !conversationInCodeMode;
+    const input = makeInput(seed, { adapter: mockAdapter({ launchHarness }), resumeToken: "conv-9", resumeType: "claude_id",
+      binding: { ...makeBinding(), ...(declared ? { codeMode: true } : {}) } });
+    const result = await createOrchestrator().startNode(input);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(launchHarness).toHaveBeenCalledTimes(2);
+    const [resumeBinding, resumeOpts] = launchHarness.mock.calls[0]!;
+    expect(resumeOpts.resumeToken).toBe("conv-9");
+    if (conversationInCodeMode) expect(resumeBinding.codeMode).toBe(true); else expect("codeMode" in resumeBinding).toBe(false);
+    const [freshBinding, freshOpts] = launchHarness.mock.calls[1]!;
+    expect(freshOpts.resumeToken).toBeUndefined();
+    if (declared) expect(freshBinding.codeMode).toBe(true); else expect("codeMode" in freshBinding).toBe(false);
+    // The launching row records what actually ran: the fresh launch, in the declaration.
+    expect((db.prepare("SELECT code_mode FROM sessions WHERE id = ?").get(seed.sessionId) as { code_mode: number | null }).code_mode).toBe(declared ? 1 : null);
+  });
+
+  it.each([[true], [false]])("finding 4: a native-id FORK through startNode runs in the forked conversation's recorded mode (%s), not the declaration", async (conversationInCodeMode) => {
+    const seed = seedSession();
+    const parent = sessionRegistry.registerSession(seed.nodeId, "r01-impl");
+    db.prepare("UPDATE sessions SET resume_token = 'parent-7', code_mode = ? WHERE id = ?").run(conversationInCodeMode ? 1 : null, parent.id);
+    const launchHarness = vi.fn(async (_b: NodeBinding, _o: Parameters<RuntimeAdapter["launchHarness"]>[1]): Promise<HarnessLaunchResult> => ({ ok: true, resumeToken: "fork-own-1", resumeType: "claude_id" }));
+    const input = makeInput(seed, { adapter: mockAdapter({ launchHarness }), forkSource: { kind: "native_id", value: "parent-7" },
+      binding: { ...makeBinding(), ...(!conversationInCodeMode ? { codeMode: true } : {}) } });
+    const result = await createOrchestrator().startNode(input);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const [forkBinding, forkOpts] = launchHarness.mock.calls[0]!;
+    expect(forkOpts.forkSource).toEqual({ kind: "native_id", value: "parent-7" });
+    if (conversationInCodeMode) expect(forkBinding.codeMode).toBe(true); else expect("codeMode" in forkBinding).toBe(false);
+    expect((db.prepare("SELECT code_mode FROM sessions WHERE id = ?").get(seed.sessionId) as { code_mode: number | null }).code_mode).toBe(conversationInCodeMode ? 1 : null);
+  });
+
+  it("finding 4: a fork by NAME (not a native id) cannot be looked up as a conversation, so it takes the seat's declaration (residual)", async () => {
+    const seed = seedSession();
+    const launchHarness = vi.fn(async (_b: NodeBinding, _o: Parameters<RuntimeAdapter["launchHarness"]>[1]): Promise<HarnessLaunchResult> => ({ ok: true, resumeToken: "fork-own-2", resumeType: "claude_id" }));
+    const input = makeInput(seed, { adapter: mockAdapter({ launchHarness }), forkSource: { kind: "name", value: "some-session" },
+      binding: { ...makeBinding(), codeMode: true } });
+    expect((await createOrchestrator().startNode(input)).ok).toBe(true);
+    expect(launchHarness.mock.calls[0]![0].codeMode).toBe(true);
+  });
+
   it("keeps a challenge-only transport failure best-effort", async () => {
     const seed = seedSession();
     const tmux = mockTmux({ sendText: vi.fn(async (): Promise<TmuxResult> => ({ ok: false, code: "send_failed", message: "fixture transport failure" })) });

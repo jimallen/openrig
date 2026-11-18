@@ -161,6 +161,33 @@ export class SessionRegistry {
     this.db.prepare("UPDATE sessions SET claude_config_dir = (SELECT claude_config_dir FROM nodes WHERE id = ?) WHERE id = ?").run(nodeId, sessionId);
   }
 
+  private codeModeColumns?: boolean;
+
+  /** workspaces-o9o.123: record on the new session row the seat's Code Mode declaration (nodes.code_mode), the mode a FRESH launch
+   *  of it runs in. A launch that continues a conversation (resume, restore, fork) overwrites it with that conversation's recorded
+   *  mode once it knows the conversation (claude-code-mode.ts, launchCodeMode), and a re-adoption carries the old row's. */
+  private recordLaunchedCodeMode(sessionId: string, nodeId: string): void {
+    if (!this.hasCodeModeColumns()) return;
+    this.db.prepare("UPDATE sessions SET code_mode = (SELECT code_mode FROM nodes WHERE id = ?) WHERE id = ?").run(nodeId, sessionId);
+  }
+
+  private hasCodeModeColumns(): boolean {
+    if (this.codeModeColumns === undefined) {
+      const has = (table: string) => (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === "code_mode");
+      this.codeModeColumns = has("sessions") && has("nodes");
+    }
+    return this.codeModeColumns;
+  }
+
+  /** The Code Mode the seat's newest session of this name runs in (false: none recorded). A re-adoption of that same live process
+   *  (reconcile) carries it to the new row, as it carries the Claude home. */
+  launchedCodeModeOf(nodeId: string, sessionName: string): boolean {
+    if (!this.hasCodeModeColumns()) return false;
+    const row = this.db.prepare("SELECT code_mode AS v FROM sessions WHERE node_id = ? AND session_name = ? ORDER BY rowid DESC LIMIT 1")
+      .get(nodeId, sessionName) as { v: number | null } | undefined;
+    return row?.v === 1;
+  }
+
   private hasClaudeHomeColumns(): boolean {
     if (this.claudeHomeColumns === undefined) {
       const has = (table: string) => (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === "claude_config_dir");
@@ -228,6 +255,7 @@ export class SessionRegistry {
       this.db.prepare("UPDATE sessions SET fresh_start = 1 WHERE id = ?").run(id);
     }
     this.recordLaunchedClaudeHome(id, nodeId);
+    this.recordLaunchedCodeMode(id, nodeId);
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration, continuesConversation); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
     return this.rowToSession(
@@ -247,6 +275,8 @@ export class SessionRegistry {
     origin: "claimed" | "launched" = "claimed",
     /** The home the claimed process was launched with, when the caller knows it (a re-adopted process OpenRig launched). */
     launchedClaudeHome?: string | null,
+    /** workspaces-o9o.123: the Code Mode that re-adopted process runs in, when the caller knows it. */
+    launchedCodeMode?: boolean,
   ): Session {
     if (!validateClaimedSessionName(sessionName)) {
       throw new Error(
@@ -274,6 +304,12 @@ export class SessionRegistry {
     if (origin === "launched") this.recordLaunchedClaudeHome(id, nodeId);
     else if (launchedClaudeHome && this.hasClaudeHomeColumns()) {
       this.db.prepare("UPDATE sessions SET claude_config_dir = ? WHERE id = ?").run(launchedClaudeHome, id);
+    }
+    // workspaces-o9o.123: a successor OpenRig launched starts from the seat's declaration (the handover overwrites it with a forked
+    // conversation's mode); a claimed session's mode is unknown (NULL), unless the caller re-adopts a process it knows (reconcile).
+    if (origin === "launched") this.recordLaunchedCodeMode(id, nodeId);
+    else if (launchedCodeMode && this.hasCodeModeColumns()) {
+      this.db.prepare("UPDATE sessions SET code_mode = 1 WHERE id = ?").run(id);
     }
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);

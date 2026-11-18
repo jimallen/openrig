@@ -5,8 +5,10 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { claudeProbeCommand, ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
-import { seatCodeModeOfSession } from "../src/domain/claude-code-mode.js";
+import { sessionCodeMode, conversationCodeMode, launchCodeMode } from "../src/domain/claude-code-mode.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
+import { getNodeInventory, getNodeDetail } from "../src/domain/node-inventory.js";
+import { readFileSync } from "node:fs";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
@@ -350,30 +352,80 @@ describe("the resumability probe types the variable for a code_mode seat", () =>
   });
 });
 
-describe("the probe's per-session read of the seat's declaration (seatCodeModeOfSession, wired in startup.ts)", () => {
-  it("true for a session of a code_mode seat, false for any other session, an unknown one, or a database without the column", () => {
+describe("finding 4: a session records the mode its conversation was launched in; resumes read that, not the seat (claude-code-mode.ts)", () => {
+  it("registerSession records the seat's declaration at the time (a fresh launch's mode); withdrawing later does not change the row", () => {
     const db = createFullTestDb();
     const rigRepo = new RigRepository(db);
     const sessions = new SessionRegistry(db);
     const rig = rigRepo.createRig("r");
-    const on = sessions.registerSession(rigRepo.addNode(rig.id, "dev.on", { runtime: "claude-code", codeMode: true }).id, "dev-on@r");
+    const onNode = rigRepo.addNode(rig.id, "dev.on", { runtime: "claude-code", codeMode: true });
+    const on = sessions.registerSession(onNode.id, "dev-on@r");
     const off = sessions.registerSession(rigRepo.addNode(rig.id, "dev.off", { runtime: "claude-code" }).id, "dev-off@r");
-    expect(seatCodeModeOfSession(db, on.id)).toBe(true);
-    expect(seatCodeModeOfSession(db, off.id)).toBe(false);
-    expect(seatCodeModeOfSession(db, "no-such-session")).toBe(false);
-    db.exec("ALTER TABLE nodes DROP COLUMN code_mode");
-    expect(seatCodeModeOfSession(db, on.id)).toBe(false);
+    expect(sessionCodeMode(db, on.id)).toBe(true);
+    expect(sessionCodeMode(db, off.id)).toBe(false);
+    rigRepo.setNodeCodeMode(onNode.id, false);
+    expect(sessionCodeMode(db, on.id)).toBe(true);
+    expect(sessionCodeMode(db, "no-such-session")).toBe(false);
+    db.exec("ALTER TABLE sessions DROP COLUMN code_mode");
+    expect(sessionCodeMode(db, on.id)).toBe(false);
+    db.close();
+  });
+
+  it("a conversation's mode is found by its native id on the newest other row; a fresh launch takes the declaration", () => {
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const sessions = new SessionRegistry(db);
+    const node = rigRepo.addNode(rigRepo.createRig("r").id, "dev.cm", { runtime: "claude-code", codeMode: true });
+    const first = sessions.registerSession(node.id, "dev-cm@r");
+    db.prepare("UPDATE sessions SET resume_token = 'conv-1' WHERE id = ?").run(first.id);
+    rigRepo.setNodeCodeMode(node.id, false);
+    const restoring = sessions.registerSession(node.id, "dev-cm@r");
+    db.prepare("UPDATE sessions SET resume_token = 'conv-1' WHERE id = ?").run(restoring.id); // the restore row already carries the id
+    expect(sessionCodeMode(db, restoring.id)).toBe(false); // recorded from the withdrawn seat at registration
+    expect(conversationCodeMode(db, "conv-1", restoring.id)).toBe(true); // ...but the conversation it continues is Code Mode
+    expect(conversationCodeMode(db, "conv-1")).toBe(false); // without excluding itself, the newest row (its own) answers
+    expect(conversationCodeMode(db, "unknown-conv")).toBe(false);
+    expect(launchCodeMode(db, { declared: true, conversationId: null })).toBe(true);
+    expect(launchCodeMode(db, { declared: false, conversationId: "conv-1", launchingSessionId: restoring.id })).toBe(true);
+    expect(launchCodeMode(db, { declared: true, conversationId: "unknown-conv" })).toBe(false);
     db.close();
   });
 });
 
-describe("the refresher hands the probe the seat's code_mode only when it is declared", () => {
+describe("finding 4: the resume line OpenRig SHOWS carries the variable for a Code Mode conversation (rig ps, node detail)", () => {
+  // The approved design said the shown resume command carries it; the first hand-back did it for the probe only (build-arch's own gap,
+  // reported to the CoS). It follows the latest conversation's recorded mode, not the seat's declaration.
+  it.each([[true], [false]])("launched in Code Mode=%s, then the seat flipped: the list's resumeCommand and the detail's guidance follow the conversation", (launchedInCodeMode) => {
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const sessions = new SessionRegistry(db);
+    const rig = rigRepo.createRig("r");
+    const node = rigRepo.addNode(rig.id, "dev.cm", { runtime: "claude-code", cwd: "/repo", ...(launchedInCodeMode ? { codeMode: true } : {}) });
+    const s1 = sessions.registerSession(node.id, "dev-cm@r");
+    db.prepare("UPDATE sessions SET resume_type = 'claude_id', resume_token = 'conv-1' WHERE id = ?").run(s1.id);
+    rigRepo.setNodeCodeMode(node.id, !launchedInCodeMode);
+    const entry = getNodeInventory(db, rig.id).find((e) => e.logicalId === "dev.cm")!;
+    const prefix = launchedInCodeMode ? `${CM} ` : "";
+    expect(entry.resumeCommand).toBe(`${prefix}claude --resume 'conv-1'`);
+    const guidance = getNodeDetail(db, rig.id, "dev.cm")!.recoveryGuidance!;
+    expect(guidance.commands[0]).toBe(`${prefix}claude --resume 'conv-1' --name='dev-cm@r'`);
+    expect(guidance.commands).toContain(`${prefix}claude --resume`);
+    db.close();
+  });
+
+  it("the probe's per-session read is wired in startup.ts from the session's own record", () => {
+    const startup = readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
+    expect(startup).toContain("sessionCodeMode: (session) => sessionCodeMode(db, session.sessionId)");
+  });
+});
+
+describe("the refresher hands the probe the session's code_mode only when its conversation runs in Code Mode", () => {
   const session = { sessionId: "sess-1", sessionName: "dev-impl@r", runtime: "claude-code", resumeType: "claude_id", resumeToken: "abc-123", cwd: "/repo" };
   it.each([[true], [false]])("declared=%s", async (declared) => {
     const db = createFullTestDb();
     const probe = vi.fn(async (_n: string, _t: string, _c?: string | null, _h?: string | null, _m?: boolean) => "resumable" as const);
     const refresher = new ResumeMetadataRefresher({ sessionRegistry: new SessionRegistry(db), tmuxAdapter: tmuxStub({}), probeClaudeResume: probe,
-      sleep: async () => {}, seatCodeMode: () => declared });
+      sleep: async () => {}, sessionCodeMode: () => declared });
     await refresher.refresh([session]);
     // An undeclared seat's call is exactly the four arguments it always was; a declared one adds `true`.
     expect(probe.mock.calls).toEqual([declared ? ["dev-impl@r", "abc-123", "/repo", null, true] : ["dev-impl@r", "abc-123", "/repo", null]]);

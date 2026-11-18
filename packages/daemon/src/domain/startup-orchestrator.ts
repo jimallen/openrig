@@ -1,3 +1,4 @@
+import { launchCodeMode, recordSessionCodeMode, withCodeMode } from "./claude-code-mode.js";
 import { nonInterruptiveNotice } from "../adapters/non-interruptive.js";
 import { readGuardedStartupFile } from "./culture-file-guard.js";
 import { inertStartupText } from "./packet-text.js";
@@ -452,12 +453,19 @@ export class StartupOrchestrator {
               this.sessionRegistry.recordResumeLaunch(input.sessionId, launchResumeToken ?? null);
             } catch { /* best-effort: without it a rotation stays unproved, as before */ }
           }
-          const launchResult = await input.adapter.launchHarness(input.binding, {
+          // workspaces-o9o.123, finding 4: a Claude launch that continues a conversation (this resume, or a fork of a native id) runs in
+          // that conversation's recorded Code Mode; a fresh one (including the fallback below) in the seat's declaration.
+          const forkingId = input.forkSource && !launchResumeToken && input.forkSource.kind === "native_id" ? input.forkSource.value : undefined;
+          const codeMode = input.adapter.runtime === "claude-code"
+            ? launchCodeMode(this.db, { declared: input.binding.codeMode === true, conversationId: launchResumeToken ?? forkingId, launchingSessionId: input.sessionId })
+            : input.binding.codeMode === true;
+          const launchResult = await input.adapter.launchHarness(withCodeMode(input.binding, codeMode), {
             name: input.sessionName ?? input.binding.tmuxSession ?? "",
             resumeToken: launchResumeToken,
             ...(input.forkSource && !launchResumeToken ? { forkSource: input.forkSource } : {}),
           });
           if (launchResult.ok) {
+            if (input.adapter.runtime === "claude-code") recordSessionCodeMode(this.db, input.sessionId, codeMode);
             appliedLaunch = launchResult.appliedLaunch;
             if (input.adapter.runtime === "claude-code" && launchResumeToken?.trim()) {
               await this.recordClaudeResumeLaunch(input.sessionId, registeredPaneOf(input.binding) ?? input.binding.tmuxSession, launchResumeToken.trim(), launchResult.launchedProcess);

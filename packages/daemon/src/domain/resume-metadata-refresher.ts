@@ -54,8 +54,9 @@ interface ResumeMetadataRefresherDeps {
   claudeConfigDir?: string;
   /** A seat's own Claude config home (nodes.claude_config_dir), which wins over claudeConfigDir for that seat. */
   seatClaudeConfigDir?: (session: ResumeRefreshSession) => string | null | undefined;
-  /** workspaces-o9o.123: the seat declared `code_mode` (nodes.code_mode), so its probe resume sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1. */
-  seatCodeMode?: (session: ResumeRefreshSession) => boolean;
+  /** workspaces-o9o.123: the session's conversation runs in Code Mode (sessions.code_mode, the mode it was launched in, never the seat's
+   *  current declaration), so its probe resume sets CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1. */
+  sessionCodeMode?: (session: ResumeRefreshSession) => boolean;
   listClaudeProcesses?: NativeProcessLister;
 }
 
@@ -66,7 +67,7 @@ export class ResumeMetadataRefresher {
   private readCodexThreadIdByPid: (pid: number, identity?: string) => Promise<string | undefined> | string | undefined;
   private probeClaudeResume: (sessionName: string, resumeToken: string, cwd?: string | null, seatClaudeConfigDir?: string | null, codeMode?: boolean) => Promise<"resumable" | "not_resumable" | "inconclusive">;
   private seatClaudeConfigDir: (session: ResumeRefreshSession) => string | null;
-  private seatCodeMode: (session: ResumeRefreshSession) => boolean;
+  private sessionCodeMode: (session: ResumeRefreshSession) => boolean;
   private resolveHomeDirByPid: ResolveHomeDirByPid;
   private sleep: (ms: number) => Promise<void>;
   private homeDir: string;
@@ -95,7 +96,7 @@ export class ResumeMetadataRefresher {
       ?? ((pid, identity) => identity === undefined ? threadIdResolver.resolveUngatedLegacy(pid) : threadIdResolver.resolve(pid, identity));
     this.probeClaudeResume = deps.probeClaudeResume ?? ((sessionName, resumeToken, cwd, seatHome, codeMode) => this.defaultProbeClaudeResume(sessionName, resumeToken, cwd, seatHome, codeMode));
     this.seatClaudeConfigDir = (session) => deps.seatClaudeConfigDir?.(session) ?? null;
-    this.seatCodeMode = (session) => deps.seatCodeMode?.(session) === true;
+    this.sessionCodeMode = (session) => deps.sessionCodeMode?.(session) === true;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.homeDir = deps.homeDir ?? os.homedir();
     this.contextUsageStore = deps.contextUsageStore ?? null;
@@ -228,7 +229,7 @@ export class ResumeMetadataRefresher {
           continue;
         }
         // workspaces-o9o.123: the code_mode argument only for a seat that declares it, so every other seat's probe call is unchanged.
-        const codeMode = this.seatCodeMode(session);
+        const codeMode = this.sessionCodeMode(session);
         const probe = await this.probeClaudeResume(session.sessionName, session.resumeToken, session.cwd ?? null, this.seatClaudeConfigDir(session), ...(codeMode ? [true] : []));
         // OPR.0.4.3.20 FR-6 §2.1b — record the probe result WITHOUT clearing:
         // `not_resumable`/`inconclusive` marks the present token stale (the plan

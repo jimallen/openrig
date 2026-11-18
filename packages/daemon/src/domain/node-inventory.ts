@@ -21,7 +21,7 @@ import type { BackgroundJobs } from "./session-transport.js";
 import { findLatestUsableSnapshot, findLatestUsableSnapshotsForAllRigs, readSavedPackageRefs, readSavedSessionSource } from "./rig-repository.js";
 import { resolveNodeWorkspace } from "./workspace/workspace-resolver.js";
 import { deriveCanonicalSessionName } from "./session-name.js";
-import { buildNativeResumeCommand, buildCodexResumeCore } from "./native-resume-probe.js";
+import { buildNativeResumeCommand, buildClaudeResumePickerCommand, buildCodexResumeCore } from "./native-resume-probe.js";
 import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
 
 // -- Row types for SQL results --
@@ -58,6 +58,7 @@ interface InventoryRow {
   startup_status: string | null;
   resume_type: string | null;
   resume_token: string | null;
+  session_code_mode?: number | null;
   startup_completed_at: string | null;
   binding_attachment_type: string | null;
   binding_id: string | null;
@@ -98,8 +99,19 @@ interface BindingRow {
 
 // -- Helpers --
 
-function computeResumeCommand(runtime: string | null, resumeToken: string | null, codexConfigProfile?: string | null): string | null {
-  return buildNativeResumeCommand(runtime, resumeToken, null, codexConfigProfile);
+function sessionsHaveCodeMode(db: Database.Database): boolean {
+  return (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name?: string }>).some((row) => row.name === "code_mode");
+}
+
+/** The Code Mode of the seat's latest conversation (the same row the inventory list joins), false when none is recorded. */
+function latestSessionCodeMode(db: Database.Database, nodeId: string): boolean {
+  if (!sessionsHaveCodeMode(db)) return false;
+  const row = db.prepare("SELECT code_mode AS v FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1").get(nodeId) as { v: number | null } | undefined;
+  return row?.v === 1;
+}
+
+function computeResumeCommand(runtime: string | null, resumeToken: string | null, codexConfigProfile?: string | null, codeMode?: boolean): string | null {
+  return buildNativeResumeCommand(runtime, resumeToken, null, codexConfigProfile, codeMode);
 }
 
 function computeRecoveryGuidance(input: {
@@ -108,21 +120,23 @@ function computeRecoveryGuidance(input: {
   cwd: string | null;
   sessionName: string | null;
   codexConfigProfile?: string | null;
+  /** workspaces-o9o.123: the latest conversation runs in Code Mode, so every claude line it shows sets the variable. */
+  codeMode?: boolean;
 }): NodeRecoveryGuidance | null {
-  const { runtime, resumeToken, cwd, sessionName, codexConfigProfile } = input;
+  const { runtime, resumeToken, cwd, sessionName, codexConfigProfile, codeMode } = input;
 
   if (runtime === "claude-code") {
     const commands: string[] = [];
     const notes: string[] = [];
 
     if (resumeToken) {
-      const cmd = buildNativeResumeCommand(runtime, resumeToken, sessionName);
+      const cmd = buildNativeResumeCommand(runtime, resumeToken, sessionName, null, codeMode);
       if (cmd) commands.push(cmd);
     }
     if (cwd) {
       commands.push(`cd ${cwd}`);
     }
-    commands.push("claude --resume");
+    commands.push(buildClaudeResumePickerCommand(codeMode));
 
     if (sessionName) {
       notes.push(`Look for session name: ${sessionName}`);
@@ -561,6 +575,8 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
   const hasTerminalAddress = db.prepare("PRAGMA table_info(bindings)").all()
     .some((row) => (row as { name?: string }).name === "terminal_address");
   const terminalAddressSelect = hasTerminalAddress ? "b.terminal_address" : "NULL";
+  // workspaces-o9o.123: the mode the latest conversation was launched in (migration 133); reduced-schema fixtures stop short of it.
+  const sessionCodeModeSelect = sessionsHaveCodeMode(db) ? "s.code_mode" : "NULL";
   const stmt = db.prepare(`
     SELECT
       n.id as node_id,
@@ -593,6 +609,7 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
       s.startup_status,
       s.resume_type,
       s.resume_token,
+      ${sessionCodeModeSelect} as session_code_mode,
       s.startup_completed_at,
       b.attachment_type as binding_attachment_type,
       b.id as binding_id,
@@ -727,7 +744,7 @@ function buildInventoryEntry(
       : row.binding_attachment_type === "tmux" ? tmuxAttachCommand(row.session_name)
       : row.binding_attachment_type === "hc" ? hcAttachCommand(row.session_name)
       : null,
-    resumeCommand: computeResumeCommand(row.runtime, row.resume_token, row.codex_config_profile),
+    resumeCommand: computeResumeCommand(row.runtime, row.resume_token, row.codex_config_profile, row.session_code_mode === 1),
     // OPR.0.4.0.26: recoveryGuidance is NOT inlined per node in the LIST
     // payload. It duplicated ~47KB of templated prose across all nodes and
     // no node-list consumer reads it. The full guidance is recomputed on
@@ -1041,6 +1058,7 @@ export function getNodeDetail(
       cwd: entry.cwd,
       sessionName: entry.canonicalSessionName,
       codexConfigProfile: entry.codexConfigProfile,
+      codeMode: latestSessionCodeMode(db, nodeId),
     }),
     binding,
     startupFiles,

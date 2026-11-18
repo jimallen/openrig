@@ -1,4 +1,5 @@
 import { shellQuote } from "../adapters/shell-quote.js";
+import { claudeCodeModePrefix } from "./claude-code-mode.js";
 import { codexPostureArg } from "../adapters/yolo-mode.js";
 
 // L3 adds `attention_required` for the Claude resume-selection prompt proxy.
@@ -29,16 +30,24 @@ export interface ProbeShellReadyInput {
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
 
+/** The operator-facing workspace-local picker line (`claude --resume` with no id): the fallback a node's recovery guidance shows.
+ *  workspaces-o9o.123: a Code Mode conversation resumes only with the variable, so the line carries it for one. */
+export function buildClaudeResumePickerCommand(codeMode?: boolean): string {
+  return `${claudeCodeModePrefix(codeMode)}claude --resume`;
+}
+
 export function buildNativeResumeCommand(
   runtime: string | null,
   resumeToken: string | null,
   sessionName?: string | null,
   codexConfigProfile?: string | null,
+  /** workspaces-o9o.123: the conversation runs in Code Mode (sessions.code_mode), which resumes only with the variable set. */
+  codeMode?: boolean,
 ): string | null {
   if (!resumeToken) return null;
   if (runtime === "claude-code") {
     const nameSuffix = sessionName ? ` --name=${shellQuote(sessionName)}` : "";
-    return `claude --resume ${shellQuote(resumeToken)}${nameSuffix}`;
+    return `${claudeCodeModePrefix(codeMode)}claude --resume ${shellQuote(resumeToken)}${nameSuffix}`;
   }
   if (runtime === "codex") {
     return buildCodexResumeCore(resumeToken, codexConfigProfile);
