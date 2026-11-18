@@ -43,6 +43,7 @@ import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { getOpenRigHome } from "../openrig-compat.js";
 import { addHostEntry } from "../domain/hosts/hosts-registry-writer.js";
 import { defaultHostRegistryPath, loadHostRegistry, validateHostRegistry, type HostEntry } from "../domain/hosts/hosts-registry-reader.js";
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import type { QueueRepository } from "../domain/queue-repository.js";
 import { existsSync } from "node:fs";
@@ -133,7 +134,7 @@ export function hostsRoutes(opts?: { bearerToken?: string | null; humanRegistry?
     if (!existsSync(registryPath)) {
       return c.json({ ownName, selected, hosts: [] });
     }
-    const loaded = loadHostRegistry(registryPath);
+    const loaded = loadHostRegistry(nodeCredentialFileReader, registryPath);
     if (!loaded.ok) {
       return c.json({ error: "invalid_registry", message: loaded.error }, 500);
     }
@@ -252,7 +253,7 @@ export function hostsRoutes(opts?: { bearerToken?: string | null; humanRegistry?
         message: `field '${secretField}' looks like a secret VALUE — hosts.yaml carries bearer POINTERS only (bearer_env / bearer_file). Nothing was written.`,
       }, 400);
     }
-    const res = addHostEntry(body);
+    const res = addHostEntry(nodeCredentialFileReader, body);
     if (!res.ok) {
       return c.json({ error: "invalid_host_entry", message: res.error }, 400);
     }
@@ -283,7 +284,7 @@ export function hostsRoutes(opts?: { bearerToken?: string | null; humanRegistry?
       const registryPath = defaultHostRegistryPath();
       let existing: HostEntry[] = [];
       if (existsSync(registryPath)) {
-        const loaded = loadHostRegistry(registryPath);
+        const loaded = loadHostRegistry(nodeCredentialFileReader, registryPath);
         if (!loaded.ok) {
           return c.json({ error: "invalid_registry", message: loaded.error }, 400);
         }
@@ -409,7 +410,7 @@ export function hostsRoutes(opts?: { bearerToken?: string | null; humanRegistry?
       }
       return c.json({ error: "pair_token_write_failed", message: (err as Error).message }, 500);
     }
-    const added = addHostEntry({
+    const added = addHostEntry(nodeCredentialFileReader, {
       id: rec.hostId,
       transport: "http",
       url: rec.url,

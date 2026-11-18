@@ -5,6 +5,7 @@
 // no-clock/no-random purity pin. The fan-out shell vectors mirror the
 // shipped attention-aggregator's per-host outcome discipline.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -298,7 +299,7 @@ function localComposed(items: NeedsYouItem[]): ComposedRigAgents {
 }
 
 function fanoutDeps(overrides: Partial<FleetComposeDeps> = {}): FleetComposeDeps {
-  return {
+  return { credentialFiles: NO_CREDENTIAL_FILES,
     composeLocalRig: () => localComposed([item({ identity: "qi-local-1" })]),
     loadRegistry: () => ({ ok: true, registry: REGISTRY }),
     registryExists: () => true,

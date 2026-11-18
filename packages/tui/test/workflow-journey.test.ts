@@ -8,6 +8,7 @@ import { ALL_MIGRATIONS } from "../../daemon/src/db/all-migrations.js";
 import { migrate } from "../../daemon/src/db/migrate.js";
 import { EventBus } from "../../daemon/src/domain/event-bus.js";
 import { QueueRepository } from "../../daemon/src/domain/queue-repository.js";
+import { NO_CREDENTIAL_FILES } from "../../daemon/test/helpers/credential-files.js";
 import { WatchdogJobsRepository } from "../../daemon/src/domain/watchdog-jobs-repository.js";
 import { WorkflowRuntime } from "../../daemon/src/domain/workflow-runtime.js";
 import { buildExecutionView } from "../../daemon/src/domain/execution-view.js";
@@ -38,7 +39,7 @@ function fixture() {
   const queue = new QueueRepository(db, bus, { validateRig: () => true });
   const jobs = new WatchdogJobsRepository(db); queue.attachWatchdogJobsRepository(jobs);
   const stop = queue.startWaitReminders();
-  const runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue, watchdogJobsRepo: jobs });
+  const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue, watchdogJobsRepo: jobs });
   const projection = async () => await buildExecutionView({ db, slicesRoot: () => join(root, "missions"), exec: () => { throw new Error("No repository in this fixture"); } }, { mission }) as unknown as ExecutionViewSnap;
   const snapshot = async (): Promise<FleetSnapshot> => ({ ...emptySnapshot(), execution: await projection(), executionMission: mission, hydratedAt: new Date().toISOString(), hosts: [{ name: "fixture", reachable: true, rigs: [{ name: "example", pods: [{ name: "orch", agents: [{ name: "orch.lead", session: owner, spec: "analyst", runtime: "codex", model: "gpt-6", context: null, tokens: null, status: "active", live: true }] }] }] }] });
   return { root, missionPath, project, projectBytes, db, queue, jobs, runtime, projection, snapshot, close: () => { stop(); db.close(); rmSync(root, { recursive: true, force: true }); } };

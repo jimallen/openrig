@@ -1,5 +1,6 @@
 // Must stay first: pins the daemon cwd before any module evaluates a path.
 import "./daemon-cwd-anchor.js";
+import { nodeCredentialFileReader } from "./adapters/node-credential-file-reader.js";
 import { decideTerminalToken, listenerTokenProblem } from "./domain/terminal-token-policy.js";
 import { readOrCreateTerminalToken } from "./adapters/terminal-token-file.js";
 import { serve, type ServerType } from "@hono/node-server";
@@ -176,7 +177,7 @@ export function startStuckSweepScheduler(deps: {
   const runOnce = (): void => {
     // runStuckSweep never throws (failure is recorded loudly on the status surface);
     // the catch is the never-crash-the-daemon belt for the promise chain itself.
-    void runStuckSweep({ db, queueRepo, status }).catch((err: unknown) => {
+    void runStuckSweep({ db, queueRepo, status, credentialFiles: nodeCredentialFileReader }).catch((err: unknown) => {
       console.error(`[stuck-sweep] scheduler error: ${err instanceof Error ? err.message : String(err)}`);
     });
   };

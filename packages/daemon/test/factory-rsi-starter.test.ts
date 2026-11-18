@@ -12,6 +12,7 @@
 //
 // VM-only doctrine: authored here, executed at the coherent VM lease.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -67,7 +68,7 @@ describe("OPR.0.4.6.FAC2 factory-rsi factory workflow", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus, queueRepo });
   });
 
   afterEach(() => db.close());

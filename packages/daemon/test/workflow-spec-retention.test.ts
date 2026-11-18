@@ -1,6 +1,7 @@
 // #511: deleting or renaming a workflow spec file must not remove a cached version that an
 // unfinished workflow instance is pinned to. The deleted file still leaves the library; the
 // pinned version stays readable by name and version until that work ends.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, renameSync, unlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,7 +62,7 @@ describe("workflow spec file removal keeps versions pinned by unfinished work (#
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     const queueRepo = new QueueRepository(db, bus, { validateRig: () => true });
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
     tick = 0;
     // Each scan caches one second after the latest write, as the scanner sees files on disk.
     cache = new WorkflowSpecCache(db, () => new Date((base + tick + 1) * 1000));

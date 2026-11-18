@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -298,7 +299,7 @@ describe("FAC-1 C4: replay pins — zero role-resolution inventory reads on BOTH
     tmp = mkdtempSync(join(tmpdir(), "wf-c4-"));
     specPath = join(tmp, "replay.yaml");
     writeFileSync(specPath, ROLE_ONLY_SPEC);
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
   });
 
   afterEach(() => {

@@ -1,3 +1,4 @@
+import type { CredentialFileReader } from "../credential-file.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, isAbsolute } from "node:path";
@@ -102,7 +103,8 @@ function application(key: string): string {
 }
 
 /** Additive safe view of existing owners. No mutation, host probe, provider call or repair. */
-export function settingsBrowser(store: SettingsStore, gateway: Record<string, unknown> | null = null, home = getOpenRigHome()) {
+/** `credentialFiles` (workspaces-o9o.151) reads hosts.yaml under the credential rule. */
+export function settingsBrowser(credentialFiles: CredentialFileReader, store: SettingsStore, gateway: Record<string, unknown> | null = null, home = getOpenRigHome()) {
   const read = readConnectionConfiguration(home);
   const redact = read.text;
   const entries: BrowserEntry[] = [];
@@ -198,7 +200,7 @@ export function settingsBrowser(store: SettingsStore, gateway: Record<string, un
 
   const hostPath = join(home, "hosts.yaml");
   const hostFile = sourceFile(hostPath);
-  const hosts = loadHostRegistry(hostPath);
+  const hosts = loadHostRegistry(credentialFiles, hostPath);
   sources.push({ id: "hosts", state: hosts.ok ? "available" : hostFile.state === "available" ? "malformed" : hostFile.state,
     path: safePath(hostPath), detail: "Authored registered targets only; no connection or readiness probe." });
   if (hosts.ok) hosts.registry.hosts.forEach((host) => {

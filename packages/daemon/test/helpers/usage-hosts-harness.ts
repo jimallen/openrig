@@ -3,6 +3,7 @@
 // port). Only the native readers are scripted: they count their reads and never start a process, so no codex or
 // claude binary, login or PATH is involved. Homes are temp folders under os.tmpdir() (usage-hosts-*), removed on
 // close. A hub is a host given a host registry naming the others.
+import { nodeCredentialFileReader } from "../../src/adapters/node-credential-file-reader.js";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -192,7 +193,7 @@ export class UsageHost {
       c.set("settingsStore" as never, this.settings as never);
       if (registry) {
         c.set("hostRegistryLoader" as never, ((): HostRegistryLoadResult =>
-          Array.isArray(registry) ? { ok: true, registry: { hosts: registry } } : loadHostRegistry(registry.path)) as never);
+          Array.isArray(registry) ? { ok: true, registry: { hosts: registry } } : loadHostRegistry(nodeCredentialFileReader, registry.path)) as never);
       }
       await next();
       if (this.opts.rewrite && (c.req.path.startsWith("/api/provider/") || c.req.path === "/api/config") && c.res.headers.get("content-type")?.includes("json")) {

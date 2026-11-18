@@ -11,6 +11,7 @@
 // `declared_not_enforced_v1` advisory (warning; ok stays true) —
 // zero keys in the silent third state.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -76,7 +77,7 @@ describe("FR-8: continue is an honest read-only inspector — label AND wire agr
     const bus = new EventBus(db);
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     const queueRepo = new QueueRepository(db, bus, { validateRig: () => true });
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     tmp = mkdtempSync(join(tmpdir(), "wf-honesty-"));
     specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);

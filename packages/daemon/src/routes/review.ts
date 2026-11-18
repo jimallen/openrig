@@ -26,6 +26,7 @@ import { applyBriefSpine } from "../domain/review/brief-spine.js";
 import { composeFleet } from "../domain/review/fleet-compose.js";
 import { defaultHostRegistryPath, loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import type { HostRegistryLoadResult } from "../domain/hosts/hosts-registry-reader.js";
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 
 function getGatherer(c: { get(key: string): unknown }): ReviewGatherer | null {
   return (c.get("reviewGatherer") as ReviewGatherer | undefined) ?? null;
@@ -83,12 +84,13 @@ export function reviewRoutes(): Hono {
   app.get("/fleet", async (c) => {
     const gatherer = getGatherer(c);
     if (!gatherer) return c.json({ error: "review_composer_unavailable" }, 503);
-    const registryLoader = (c.get("hostRegistryLoader" as never) as (() => HostRegistryLoadResult) | undefined) ?? loadHostRegistry;
+    const registryLoader = (c.get("hostRegistryLoader" as never) as (() => HostRegistryLoadResult) | undefined) ?? (() => loadHostRegistry(nodeCredentialFileReader));
     const registryProbe = (c.get("hostRegistryExists" as never) as (() => boolean) | undefined) ?? (() => fs.existsSync(defaultHostRegistryPath()));
     const fleet = await composeFleet({
       composeLocalRig: () => gatherer.composeRig(),
       loadRegistry: registryLoader,
       registryExists: registryProbe,
+      credentialFiles: nodeCredentialFileReader,
       // View time enters at the edge; the union never derives host time state.
       nowIso: new Date().toISOString(),
     });

@@ -1,6 +1,7 @@
 // Browser boundary on a real Node listener (@hono/node-server) and the real WebSocket upgrade
 // path (@hono/node-server 2's own upgradeWebSocket, workspaces-o9o.125), plus real CLI/TUI/daemon-to-daemon request constructors.
 // Inert handlers only.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
@@ -185,7 +186,7 @@ describe("real request constructors against the real route table on a real liste
 
   it("daemon-to-daemon remoteJsonRequest (no Origin) reaches the daemon by IP and localhost", async () => {
     for (const url of [`http://127.0.0.1:${port}`, `http://localhost:${port}`]) {
-      const r = await remoteJsonRequest({ id: "peer", transport: "http", url }, "/api/ps", { method: "GET", timeoutMs: 3000, env: {} });
+      const r = await remoteJsonRequest({ id: "peer", transport: "http", url }, "/api/ps", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 3000, env: {} });
       expect(r.ok, url).toBe(true);
     }
   });

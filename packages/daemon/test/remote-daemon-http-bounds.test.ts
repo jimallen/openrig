@@ -2,6 +2,7 @@
 // followed (and their bodies not read), and a bearer resolution the caller made. All are off unless a call asks, so
 // every other remote command keeps today's behaviour (the default cases below, beside remote-daemon-http.test.ts
 // unchanged).
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,13 +32,13 @@ const json = (body: unknown, chunked = false): http.RequestListener => (_req, re
 describe("maxBytes", () => {
   it("an answer within the bound is read and parsed as before", async () => {
     const host = await serve(json({ ok: 1 }));
-    expect(await remoteJsonRequest(host, "/x", { method: "GET", timeoutMs: 2_000, maxBytes: 100 })).toEqual({ ok: true, status: 200, payload: { ok: 1 } });
+    expect(await remoteJsonRequest(host, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000, maxBytes: 100 })).toEqual({ ok: true, status: 200, payload: { ok: 1 } });
   });
 
   it("over the bound, by its declared length or while streaming, is a failure that is never parsed", async () => {
     for (const chunked of [false, true]) {
       const host = await serve(json({ pad: "x".repeat(10_000) }, chunked));
-      expect(await remoteJsonRequest(host, "/x", { method: "GET", timeoutMs: 2_000, maxBytes: 4_096 })).toEqual({
+      expect(await remoteJsonRequest(host, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000, maxBytes: 4_096 })).toEqual({
         ok: false, kind: "network", status: 200, tooLarge: true, detail: "answer larger than 4096 bytes",
       });
     }
@@ -45,7 +46,7 @@ describe("maxBytes", () => {
 
   it("absent, there is no bound (today's default)", async () => {
     const host = await serve(json({ pad: "x".repeat(10_000) }, true));
-    const res = await remoteJsonRequest(host, "/x", { method: "GET", timeoutMs: 2_000 });
+    const res = await remoteJsonRequest(host, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000 });
     expect(res.ok && (res.payload as { pad: string }).pad.length).toBe(10_000);
   });
 });
@@ -55,10 +56,10 @@ describe("redirect", () => {
     const seen: string[] = [];
     const target = await serve((req, res) => { seen.push(`${req.method} ${req.url}`); json({ reached: true })(req, res); });
     const relay = await serve((req, res) => { res.writeHead(307, { Location: `${target.url}${req.url}` }); res.end(); });
-    const manual = await remoteJsonRequest(relay, "/api/provider/usage/refresh", { method: "POST", body: { provider: "codex" }, timeoutMs: 2_000, redirect: "manual" });
+    const manual = await remoteJsonRequest(relay, "/api/provider/usage/refresh", { credentialFiles: NO_CREDENTIAL_FILES, method: "POST", body: { provider: "codex" }, timeoutMs: 2_000, redirect: "manual" });
     expect(manual).toMatchObject({ ok: false, kind: "http", status: 307 });
     expect(seen).toEqual([]);
-    const followed = await remoteJsonRequest(relay, "/x", { method: "GET", timeoutMs: 2_000 });
+    const followed = await remoteJsonRequest(relay, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000 });
     expect(followed).toEqual({ ok: true, status: 200, payload: { reached: true } });
     expect(seen).toEqual(["GET /x"]);
   });
@@ -68,7 +69,7 @@ describe("manual redirect body", () => {
   it("manual: a 3xx whose body never finishes is classified at once, without reading the body", async () => {
     const relay = await serve((_req, res) => { res.writeHead(307, { Location: "http://127.0.0.1:9/x", "content-type": "application/json" }); res.write("{"); });
     const started = Date.now();
-    expect(await remoteJsonRequest(relay, "/x", { method: "GET", timeoutMs: 2_000, redirect: "manual" })).toEqual({ ok: false, kind: "http", status: 307, detail: "" });
+    expect(await remoteJsonRequest(relay, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000, redirect: "manual" })).toEqual({ ok: false, kind: "http", status: 307, detail: "" });
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
@@ -79,10 +80,10 @@ describe("resolvedBearer", () => {
     const host = await serve((req, res) => { seen.push(req.headers.authorization); json({ ok: 1 })(req, res); });
     const env: Record<string, string | undefined> = { XB: "token-one" };
     const withEnv = { ...host, bearer_env: "XB" };
-    const resolved = resolveBearer(withEnv, { env });
+    const resolved = resolveBearer(withEnv, { credentialFiles: NO_CREDENTIAL_FILES, env });
     env["XB"] = "token-two";
-    await remoteJsonRequest(withEnv, "/x", { method: "GET", timeoutMs: 2_000, env, resolvedBearer: resolved });
-    await remoteJsonRequest(withEnv, "/x", { method: "GET", timeoutMs: 2_000, env });
+    await remoteJsonRequest(withEnv, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000, env, resolvedBearer: resolved });
+    await remoteJsonRequest(withEnv, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000, env });
     expect(seen).toEqual(["Bearer token-one", "Bearer token-two"]);
   });
 
@@ -90,9 +91,9 @@ describe("resolvedBearer", () => {
     const seen: string[] = [];
     const host = await serve((req, res) => { seen.push(String(req.url)); json({})(req, res); });
     const withEnv = { ...host, bearer_env: "XB_UNSET" };
-    const resolved = resolveBearer(withEnv, { env: {} });
-    expect(await remoteJsonRequest(withEnv, "/x", { method: "GET", timeoutMs: 2_000, resolvedBearer: resolved }))
-      .toEqual(await remoteJsonRequest(withEnv, "/x", { method: "GET", timeoutMs: 2_000, env: {} }));
+    const resolved = resolveBearer(withEnv, { credentialFiles: NO_CREDENTIAL_FILES, env: {} });
+    expect(await remoteJsonRequest(withEnv, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000, resolvedBearer: resolved }))
+      .toEqual(await remoteJsonRequest(withEnv, "/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2_000, env: {} }));
     expect(seen).toEqual([]);
   });
 });

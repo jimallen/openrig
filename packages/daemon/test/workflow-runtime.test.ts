@@ -18,6 +18,7 @@
 // VM proof `fr1-midtxn-process-kill` (ACK Rev-2); the throw-injection
 // tests here are the unit-level pins, not a replacement for it.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,7 +82,7 @@ function buildRuntime(db: Database.Database) {
   // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
   // close needs a SAME-DB intent store to make its wake durable.
   queueRepo.attachOutbox(new OutboxHandler(db));
-  const runtime = new WorkflowRuntime({ exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
+  const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
   return { bus, queueRepo, runtime };
 }
 

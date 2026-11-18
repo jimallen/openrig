@@ -10,6 +10,7 @@
 //     (graceful fallback — surface still works, no indicator)
 //   - route-order: literal /specs not shadowed by /:instance_id catchall
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
@@ -74,7 +75,7 @@ describe("GET /api/workflow/specs", () => {
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     eventBus = new EventBus(db);
     const queueRepo = new QueueRepository(db, eventBus, { validateRig: () => true });
-    runtime = new WorkflowRuntime({ db, eventBus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus, queueRepo });
     cleanupRoot = mkdtempSync(join(tmpdir(), "specs-route-"));
     builtinDir = join(cleanupRoot, "builtin", "workflow-specs");
     operatorDir = join(cleanupRoot, "operator");

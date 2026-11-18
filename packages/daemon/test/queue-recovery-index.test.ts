@@ -1,5 +1,6 @@
 // Migration 099: the recovery and dedup lookups read idx_queue_items_recovery_tags instead of scanning
 // and parsing every queue row, and still choose exactly the row the unindexed queries chose.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { migrate } from "../src/db/migrate.js";
@@ -59,7 +60,7 @@ describe("recovery and dedup lookups use the partial tag index (migration 099)",
     db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = 'stuck'").run(new Date(Date.now() - 3 * 3_600_000).toISOString());
     const prepare = db.prepare.bind(db); const seen: string[] = [];
     vi.spyOn(db, "prepare").mockImplementation((sql: string) => { if (sql.includes("tags LIKE ?") && sql.includes("ts_created DESC")) seen.push(sql); return prepare(sql); });
-    await runStuckSweep({ db, queueRepo: repo, status: createStuckSweepStatus(), resolveOrchestrator: () => null,
+    await runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, status: createStuckSweepStatus(), resolveOrchestrator: () => null,
       isRegisteredHost: () => false, unclaimedAgeMinutes: 60, log: () => {} });
     vi.restoreAllMocks();
     expect(seen.length).toBeGreaterThan(0);

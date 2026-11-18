@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -91,7 +92,7 @@ describe("workflow routes (PL-004 Phase D)", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     app = buildApp({ eventBus: bus, runtime });
     tmp = mkdtempSync(join(tmpdir(), "wf-routes-"));
     specPath = join(tmp, "spec.yaml");
@@ -179,7 +180,7 @@ describe("workflow routes (PL-004 Phase D)", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     rejectingQueueRepo.attachOutbox(new OutboxHandler(db));
-    const rejectingRuntime = new WorkflowRuntime({
+    const rejectingRuntime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       eventBus: bus,
       queueRepo: rejectingQueueRepo,
@@ -399,7 +400,7 @@ describe("FR-5 route contract: instance_version_conflict is HTTP 409 with expect
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo2.attachOutbox(new OutboxHandler(db2));
-    const runtime2 = new WorkflowRuntime({ db: db2, eventBus: bus2, queueRepo: queueRepo2 });
+    const runtime2 = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db: db2, eventBus: bus2, queueRepo: queueRepo2 });
     const app2 = buildApp({ eventBus: bus2, runtime: runtime2 });
     const tmp2 = mkdtempSync(join(tmpdir(), "wf-route-409-"));
     const specPath2 = join(tmp2, "spec.yaml");
@@ -486,7 +487,7 @@ describe("FR-7 route contract: strict-validation rejections are structured 400s,
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo3.attachOutbox(new OutboxHandler(db3));
-    const runtime3 = new WorkflowRuntime({ db: db3, eventBus: bus3, queueRepo: queueRepo3 });
+    const runtime3 = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db: db3, eventBus: bus3, queueRepo: queueRepo3 });
     app3 = buildApp({ eventBus: bus3, runtime: runtime3 });
     tmp3 = mkdtempSync(join(tmpdir(), "wf-route-400-"));
   });
@@ -575,7 +576,7 @@ describe("workflow routes — WF-2 structured error boundaries", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     app = buildApp({ eventBus: bus, runtime });
     tmp = mkdtempSync(join(tmpdir(), "wf2-routes-"));
     prevHome = process.env.OPENRIG_HOME;
@@ -713,7 +714,7 @@ describe("workflow routes — FAC-1 bound-rig HTTP status mapping (guard blocker
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     app = buildApp({ eventBus: bus, runtime });
     rigRepo = new RigRepository(db);
     podRepo = new PodRepository(db);

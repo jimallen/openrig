@@ -21,6 +21,7 @@
 import type { AggregatedPayload, PerHostStatus } from "../hosts/fanout-contract.js";
 import { LOCAL_HOST_ID } from "../hosts/fanout-contract.js";
 import type { HostRegistryLoadResult } from "../hosts/hosts-registry-reader.js";
+import type { CredentialFileReader } from "../credential-file.js";
 import { resolveHost } from "../hosts/hosts-registry-reader.js";
 import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
 
@@ -44,6 +45,8 @@ export interface AttentionAggregatorDeps {
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
   readFile?: (path: string) => string;
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   /** Test override; production uses ATTENTION_READ_TIMEOUT_MS. */
   timeoutMs?: number;
   concurrency?: number;
@@ -79,6 +82,7 @@ async function readHostAttention(hostId: string, reg: HostRegistryLoadResult, de
     fetchImpl: deps.fetchImpl,
     env: deps.env,
     readFile: deps.readFile,
+    credentialFiles: deps.credentialFiles,
   });
   if (res.ok) {
     const arr = Array.isArray(res.payload) ? (res.payload as AttentionItem[]) : [];

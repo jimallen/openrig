@@ -1,6 +1,7 @@
 // Seat Messaging S4h: a message to a seat on another host. Two real databases, two real pumps, the real route and the real SessionTransport,
 // joined by a fetch that calls the far app in process, so every far answer is the route's own. The far seat's gate and hop are stubs: the real
 // pair of daemons is in cross-host-messages.real.test.ts.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
@@ -305,7 +306,7 @@ describe("an arrival from another host", () => {
 describe("the sender's daemon", () => {
   const registry: HostRegistryLoadResult = { ok: true, registry: { hosts: [{ id: "sparky", transport: "http", url: "http://far:1" }] } };
   let farSide: Side; let near: Side; let farDown: boolean; let requests: string[];
-  const daemons = (fetchImpl: typeof fetch) => new FarDaemons({ selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl, capabilityTtlMs: 0 });
+  const daemons = (fetchImpl: typeof fetch) => new FarDaemons({ credentialFiles: NO_CREDENTIAL_FILES, selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl, capabilityTtlMs: 0 });
   const bridge = (app: () => Hono): typeof fetch => async (input, init) => {
     const url = String(input);
     requests.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
@@ -502,7 +503,7 @@ describe("the sender's daemon", () => {
 
   it("answers far_legacy for an ssh host and for text the pump can't carry", async () => {
     const ssh: HostRegistryLoadResult = { ok: true, registry: { hosts: [{ id: "sparky", transport: "ssh", target: "s" }] } };
-    const local = side({ gated: false, far: new FarDaemons({ selfHost: () => NEAR, loadRegistry: () => ssh, fetchImpl: bridge(() => farSide.app) }) });
+    const local = side({ gated: false, far: new FarDaemons({ credentialFiles: NO_CREDENTIAL_FILES, selfHost: () => NEAR, loadRegistry: () => ssh, fetchImpl: bridge(() => farSide.app) }) });
     expect(await (await sendFar({ deliveryId: "m10" }, local.app)).json()).toMatchObject({ outcome: "far_legacy" });
     expect(await (await sendFar({ deliveryId: "m11", text: "/compact" })).json()).toMatchObject({ outcome: "far_legacy" });
     expect(rowCount(local.db) + rowCount(near.db)).toBe(0);
@@ -579,7 +580,7 @@ describe("the sender's daemon reads its far daemon", () => {
   it("reads the capability once per TTL", async () => {
     const { fetchImpl, requests } = answering(capable);
     let now = 0;
-    const far = new FarDaemons({ selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl, clock: () => now, capabilityTtlMs: 1000 });
+    const far = new FarDaemons({ credentialFiles: NO_CREDENTIAL_FILES, selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl, clock: () => now, capabilityTtlMs: 1000 });
     expect(await far.capability("sparky")).toBe("capable");
     now = 999;
     expect(await far.capability("sparky")).toBe("capable");
@@ -591,7 +592,7 @@ describe("the sender's daemon reads its far daemon", () => {
 
   it("this host with no id yet carries nothing: the send is far_legacy, the gate cannot say, the hop refuses", async () => {
     const { fetchImpl, requests } = answering(capable);
-    const far = new FarDaemons({ selfHost: () => null, loadRegistry: () => registry, fetchImpl });
+    const far = new FarDaemons({ credentialFiles: NO_CREDENTIAL_FILES, selfHost: () => null, loadRegistry: () => registry, fetchImpl });
     const near = side({ gated: false, far });
     const res = await post(near.app, "/api/messages/send-far", { host: "sparky", session: FAR_SEAT, text: "x" });
     expect(await res.json()).toMatchObject({ outcome: "far_legacy" });
@@ -608,14 +609,14 @@ describe("the sender's daemon reads its far daemon", () => {
       capable(app);
       app.get("/api/messages/takes", (c) => c.json({ takes: true, seat: "canon@far" }));
     });
-    const near = side({ gated: false, far: new FarDaemons({ selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl }) });
+    const near = side({ gated: false, far: new FarDaemons({ credentialFiles: NO_CREDENTIAL_FILES, selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl }) });
     await post(near.app, "/api/messages/send-far", { host: "sparky", session: "short", text: "x", deliveryId: "m1", waitMs: 0 });
     expect(rowOf(near.db, "m1")?.destination_session).toBe(farSeatName("sparky", "canon@far"));
   });
 
   it("health names a far seat's held message and why, once it is stuck", async () => {
     const down: typeof fetch = async () => { throw new Error("connection refused"); };
-    const far = new FarDaemons({ selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl: down });
+    const far = new FarDaemons({ credentialFiles: NO_CREDENTIAL_FILES, selfHost: () => NEAR, loadRegistry: () => registry, fetchImpl: down });
     const near = side({ gated: false, far });
     const seat = farSeatName("sparky", FAR_SEAT);
     near.store.accept({ id: messageId("m1"), seat, sender: LOCAL_SENDER, body: "b" });

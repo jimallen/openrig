@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
@@ -48,7 +49,7 @@ describe("custody diagnostics after reopening an atomic handoff", () => {
     const prepare = vi.spyOn(db, "prepare");
     try {
       expect(repo.getById(source.qitemId)?.handoffAdvisory).toBeUndefined();
-      const sweep = await runStuckSweep({ db, queueRepo: repo, resolveOrchestrator: () => null,
+      const sweep = await runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, resolveOrchestrator: () => null,
         isRegisteredHost: () => false, log: () => {} });
       expect(sweep.outcome).toBe("clean");
       expect(prepare.mock.calls.some(([sql]) => sql.includes("FROM queue_items s"))).toBe(false);
@@ -72,7 +73,7 @@ describe("custody diagnostics after reopening an atomic handoff", () => {
       if (custody === "verified-remote") await post(source.qitemId, "update", {
         transitionNote: `custody-verified: ${target} synthetic remote verification disposition`,
       });
-      const sweep = () => runStuckSweep({ db, queueRepo: repo, resolveOrchestrator: () => null,
+      const sweep = () => runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, resolveOrchestrator: () => null,
         isRegisteredHost: () => false, unclaimedAgeMinutes: 60, log: () => {} });
       const first = await sweep();
       expect(first.outcome).toBe(custody === "missing" ? "findings" : "clean");

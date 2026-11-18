@@ -10,6 +10,7 @@
 //        qitem via the shipped machinery); approval hands the bearer over
 //        exactly once; deny/expiry persists nothing.
 
+import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hono } from "hono";
 import http from "node:http";
@@ -73,7 +74,7 @@ describe("hosts-registry writer twin — P3 byte parity with the CLI addHostEntr
     const pathB = join(dirB, "hosts.yaml");
     for (const entry of SEQUENCE) {
       expect(cliAddHostEntry(entry, pathA).ok).toBe(true);
-      expect(daemonAddHostEntry(entry, pathB).ok).toBe(true);
+      expect(daemonAddHostEntry(nodeCredentialFileReader, entry, pathB).ok).toBe(true);
     }
     expect(readFileSync(pathB, "utf8")).toBe(readFileSync(pathA, "utf8"));
   });
@@ -89,7 +90,7 @@ describe("hosts-registry writer twin — P3 byte parity with the CLI addHostEntr
       { id: "x", transport: "http", url: "http://x", bearer_env: "T", bearer_file: "/f" },
     ]) {
       const a = cliAddHostEntry(bad, pathA);
-      const b = daemonAddHostEntry(bad, pathB);
+      const b = daemonAddHostEntry(nodeCredentialFileReader, bad, pathB);
       expect(a.ok).toBe(false);
       expect(b.ok).toBe(false);
       // The error text embeds each writer's own registry PATH — normalize
@@ -523,7 +524,7 @@ describe("local pair-client seam — POST /pair + GET /pair/:id (the browser's w
     const tokenPath = join(secretsDir, "host-vps-paired.token");
     mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
     writeFileSync(tokenPath, "live-credential\n", { mode: 0o600 });
-    expect(daemonAddHostEntry({ id: "vps-paired", transport: "http", url: "http://old-target:7433", bearer_file: tokenPath }).ok).toBe(true);
+    expect(daemonAddHostEntry(nodeCredentialFileReader, { id: "vps-paired", transport: "http", url: "http://old-target:7433", bearer_file: tokenPath }).ok).toBe(true);
     const yamlBefore = readFileSync(join(home, "hosts.yaml"), "utf8");
 
     const res = await app.request("/api/hosts/pair", {
@@ -611,7 +612,7 @@ describe("local pair-client seam — POST /pair + GET /pair/:id (the browser's w
 
     // The TOCTOU window preflight cannot close: a conflicting entry lands
     // during the approval wait. addHostEntry stays authoritative.
-    expect(daemonAddHostEntry({ id: "vps-race", transport: "http", url: "http://racer:7433", bearer_env: "RACER_TOKEN" }).ok).toBe(true);
+    expect(daemonAddHostEntry(nodeCredentialFileReader, { id: "vps-race", transport: "http", url: "http://racer:7433", bearer_env: "RACER_TOKEN" }).ok).toBe(true);
     const yamlBefore = readFileSync(join(home, "hosts.yaml"), "utf8");
 
     targetState = { status: "approved", token: "issued-bearer" };

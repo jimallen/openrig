@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -100,7 +101,7 @@ describe("WF-1 FR-2 completion fixback — deadline on the read surfaces", () =>
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    writerRuntime = new WorkflowRuntime({ exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
+    writerRuntime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
     tmp = mkdtempSync(join(tmpdir(), "wf-deadline-read-"));
     specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);
@@ -122,7 +123,7 @@ describe("WF-1 FR-2 completion fixback — deadline on the read surfaces", () =>
 
   /** A reader app whose runtime clock sits `offsetSeconds` in the future. */
   function readerAppAt(offsetSeconds: number): Hono {
-    const reader = new WorkflowRuntime({
+    const reader = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       eventBus: bus,
       queueRepo,

@@ -17,6 +17,7 @@
 //                          user-facing finding is verification-required/indeterminate, never
 //                          a declaration of absence. Selection is by DESTINATION + obligation
 //                          shape across ALL states, never by tag.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { migrate } from "../src/db/migrate.js";
@@ -76,7 +77,7 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
   async function runSweep(overrides: Record<string, unknown> = {}) {
     const mod = await sweepMod();
     const status = mod.createStuckSweepStatus();
-    const result = await mod.runStuckSweep({
+    const result = await mod.runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       queueRepo: repo,
       status,
@@ -617,7 +618,7 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     const mod = await sweepMod();
     const status = mod.createStuckSweepStatus();
     const loud: string[] = [];
-    const result = await mod.runStuckSweep({
+    const result = await mod.runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES,
       db: brokenDb,
       queueRepo: repo, // the repo works; the sweep's db leg is what breaks
       status,
@@ -979,7 +980,7 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
   async function runSweep(overrides: Record<string, unknown> = {}) {
     const mod = await sweepMod();
     const status = mod.createStuckSweepStatus();
-    const result = await mod.runStuckSweep({
+    const result = await mod.runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       queueRepo: repo,
       status,
@@ -1489,7 +1490,7 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
   }
   async function sweep() {
     const mod = await sweepMod();
-    return mod.runStuckSweep({ db, queueRepo: repo, status: mod.createStuckSweepStatus(), resolveOrchestrator: () => null,
+    return mod.runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, status: mod.createStuckSweepStatus(), resolveOrchestrator: () => null,
       unclaimedAgeMinutes: 60, log: () => {}, isRegisteredHost: () => false });
   }
   async function findingsFor(qitemId: string): Promise<QueueItem[]> {

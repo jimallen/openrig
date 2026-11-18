@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,7 +44,7 @@ describe("S06 lifecycle HTTP surface", () => {
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     const queue = new QueueRepository(db, bus, { validateRig: () => true });
     queue.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue });
     app = new Hono();
     app.use("*", async (c, next) => {
       c.set("eventBus" as never, bus);

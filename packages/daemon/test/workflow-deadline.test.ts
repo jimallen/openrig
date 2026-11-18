@@ -14,6 +14,7 @@
 // evidence in trail + event — and specs under budget see ZERO guard
 // observability.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -251,7 +252,7 @@ describe("FR-2 named test: claimed → unclaimed → overdue (the arch third sta
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
     tmp = mkdtempSync(join(tmpdir(), "wf-deadline-"));
     specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);
@@ -370,7 +371,7 @@ describe("FR-6: loop_guards.max_hops enforced at projection (G4 — migration 03
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
     events = [];
     bus.subscribe((e) => events.push(e as never));
     tmp = mkdtempSync(join(tmpdir(), "wf-maxhops-"));

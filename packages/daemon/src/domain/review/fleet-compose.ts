@@ -39,6 +39,7 @@ import type {
 import type { PerHostStatus } from "../hosts/fanout-contract.js";
 import { LOCAL_HOST_ID } from "../hosts/fanout-contract.js";
 import type { HostRegistryLoadResult } from "../hosts/hosts-registry-reader.js";
+import type { CredentialFileReader } from "../credential-file.js";
 import { resolveHost } from "../hosts/hosts-registry-reader.js";
 import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
 
@@ -228,6 +229,8 @@ export interface FleetComposeDeps {
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
   readFile?: (path: string) => string;
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   /** Test override for the TOTAL elapsed budget; never per-host/per-wave. */
   timeoutMs?: number;
   concurrency?: number;
@@ -281,6 +284,7 @@ async function readHostComposedRig(hostId: string, reg: HostRegistryLoadResult, 
     fetchImpl: deps.fetchImpl,
     env: deps.env,
     readFile: deps.readFile,
+    credentialFiles: deps.credentialFiles,
   });
   if (res.ok) {
     const composed = parseComposedRig(res.payload);

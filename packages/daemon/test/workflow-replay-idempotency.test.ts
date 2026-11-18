@@ -14,6 +14,7 @@
 // N+1) throws structured instance_version_conflict naming
 // expected/actual and its WHOLE transaction rolls back.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,7 +92,7 @@ describe("FR-5: waiting-replay absorption + the version guard", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     tmp = mkdtempSync(join(tmpdir(), "wf-replay-"));
     specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);

@@ -13,6 +13,7 @@
 import type { AggregatedPayload, PerHostStatus } from "../hosts/fanout-contract.js";
 import { LOCAL_HOST_ID, resolvesToLocalHost } from "../hosts/fanout-contract.js";
 import type { HostEntry, HostRegistryLoadResult, HttpHostEntry } from "../hosts/hosts-registry-reader.js";
+import type { CredentialFileReader } from "../credential-file.js";
 import { remoteJsonRequest, resolveBearer, type RemoteJsonResult } from "../hosts/remote-daemon-http.js";
 import { claudeUsageIdentityKey } from "./claude-usage-windows.js";
 import { codexUsageIdentityKey } from "./codex-usage-windows.js";
@@ -216,6 +217,8 @@ export interface UsageHostsDeps {
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
   readFile?: (path: string) => string;
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   readTimeoutMs?: number;
   viewDeadlineMs?: number;
   concurrency?: number;
@@ -387,8 +390,8 @@ const HOST_CALL = { maxBytes: USAGE_HOSTS_MAX_BYTES, redirect: "manual" as const
  * is read again on the next call; nothing is cached.
  */
 async function exchange(host: HttpHostEntry, path: string, opts: { method: "GET" | "POST"; body?: unknown; timeoutMs: number },
-  deps: Pick<UsageHostsDeps, "fetchImpl" | "env" | "readFile">): Promise<RemoteJsonResult> {
-  const resolvedBearer = resolveBearer(host, { env: deps.env, readFile: deps.readFile });
+  deps: Pick<UsageHostsDeps, "fetchImpl" | "env" | "readFile" | "credentialFiles">): Promise<RemoteJsonResult> {
+  const resolvedBearer = resolveBearer(host, { env: deps.env, readFile: deps.readFile, credentialFiles: deps.credentialFiles });
   const res = await remoteJsonRequest(host, path, {
     ...opts,
     ...HOST_CALL,
@@ -396,6 +399,7 @@ async function exchange(host: HttpHostEntry, path: string, opts: { method: "GET"
     fetchImpl: deps.fetchImpl,
     env: deps.env,
     readFile: deps.readFile,
+    credentialFiles: deps.credentialFiles,
   });
   const sent = resolvedBearer.ok ? resolvedBearer.token : undefined;
   return res.ok ? { ...res, payload: scrubBearer(res.payload, sent) } : { ...res, detail: scrubBearer(res.detail, sent) as string };
@@ -659,7 +663,7 @@ export class UsageRefreshLegs {
   }
 
   /** One leg to a registry host's own refresh route, bounded by the provider's refresh deadline. */
-  remote(host: HostEntry, provider: ProviderKind, deps: Pick<UsageHostsDeps, "fetchImpl" | "env" | "readFile">): Promise<UsageRefreshLeg> {
+  remote(host: HostEntry, provider: ProviderKind, deps: Pick<UsageHostsDeps, "fetchImpl" | "env" | "readFile" | "credentialFiles">): Promise<UsageRefreshLeg> {
     const now = this.opts.now ?? (() => new Date().toISOString());
     return this.run(host.id, provider, async () => {
       if (host.transport !== "http") {

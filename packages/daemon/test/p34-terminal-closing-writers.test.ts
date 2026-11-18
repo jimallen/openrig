@@ -30,6 +30,7 @@
 // packet would satisfy the assert against an unrelated successor: a check that can
 // only pass. Its no-false-positive control is RED 4b (next increment).
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -136,7 +137,7 @@ function makeHarness(): Harness {
   // stages an intent, not whether the store exists. A harness without an outbox
   // could not tell "not staged" from "nowhere to stage it".
   repo.attachOutbox(outbox);
-  const runtime = new WorkflowRuntime({
+  const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
     db, eventBus: bus, queueRepo: repo,
     exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" },
   });

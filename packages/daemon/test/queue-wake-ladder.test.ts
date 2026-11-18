@@ -12,6 +12,7 @@
 // The ladder's state IS the transition log (AM-P3-F6): attempts, rungs, and suspension are
 // derived from markers at every tick, so a daemon restart resumes at the exact position —
 // forgotten-ladder and reset-count are both REDs below.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { migrate } from "../src/db/migrate.js";
@@ -555,7 +556,7 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
     const baton = await mkBaton();
     setNudgeResult(baton.qitemId, "failed:tmux session not found", 10);
     await tick(); // one attempt marker → live ladder
-    await runStuckSweep({
+    await runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       queueRepo: repo,
       status: createStuckSweepStatus(),
@@ -584,7 +585,7 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
     ageMarkers(baton.qitemId, 30);
     await tick(); // operator rung + exhausted
     const sweep = () =>
-      runStuckSweep({
+      runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES,
         db,
         queueRepo: repo,
         status: createStuckSweepStatus(),

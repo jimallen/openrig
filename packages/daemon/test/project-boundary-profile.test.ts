@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -144,7 +145,7 @@ describe("project-owned boundary profile", () => {
       migrate(db, ALL_MIGRATIONS);
       const bus = new EventBus(db);
       const queue = new QueueRepository(db, bus, { validateRig: () => true });
-      const runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue });
+      const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue });
       const created = await runtime.instantiateLifecycle({ missionPath, operationKey: "release", rootObjective: "Ship release", createdBySession: "orch@example" });
       const instanceId = created.instance.instanceId;
       expect(runtime.inspect(instanceId).boundaryObligations.map((s) => s.stepId)).toEqual(successor ? [...ids, "activate-successor"] : ids);

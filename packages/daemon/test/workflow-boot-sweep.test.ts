@@ -11,6 +11,7 @@
 //   - zero in-flight instances = a no-op with no side effects;
 //   - one observable summary line naming counts.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,7 +99,7 @@ describe("runWorkflowBootSweep (FR-4)", () => {
       },
     });
     watchdogRepo = new WatchdogJobsRepository(db);
-    runtime = new WorkflowRuntime({
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       eventBus: bus,
       queueRepo,

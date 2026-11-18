@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -99,7 +100,7 @@ describe("FAC-1 C2: workflow instance bound rig (migration 052)", () => {
     writeFileSync(defaultSpecPath, SPEC_WITH_DEFAULT);
     noTargetSpecPath = join(tmp, "no-target.yaml");
     writeFileSync(noTargetSpecPath, SPEC_NO_TARGET);
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
   });
 
   afterEach(() => {

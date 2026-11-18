@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
+import { nodeCredentialFileReader } from "./node-credential-file-reader.js";
 import type { HostDirectory } from "../domain/seat-messaging/reply-path.js";
 
 /**
@@ -13,7 +14,7 @@ export class RegistryHostDirectory implements HostDirectory {
   constructor(private readonly paths: { registry?: string; bindings?: string } = {}) {}
 
   nameFor(hostId: string): string | null {
-    const loaded = loadHostRegistry(this.paths.registry);
+    const loaded = loadHostRegistry(nodeCredentialFileReader, this.paths.registry);
     if (!loaded.ok) return null;
     const hosts = loaded.registry.hosts;
     const learned = learnedSelfIds(this.paths.bindings ?? getDefaultOpenRigPath("host-bindings.json"));

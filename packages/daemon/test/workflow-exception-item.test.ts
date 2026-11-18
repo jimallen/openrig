@@ -8,6 +8,7 @@
 // write-gate fallback, and the happy-path zero-items negative (FR-5's
 // teeth — zero items of ANY routing).
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,7 +89,7 @@ describe("WF-5 FR-2 class (a): born-in-txn exception item", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       eventBus: bus,
       queueRepo,

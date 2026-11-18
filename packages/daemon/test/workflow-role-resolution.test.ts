@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -251,7 +252,7 @@ describe("FAC-1 C3: the six owner-resolution call sites on a bound rig", () => {
     const rigA = rigRepo.createRig("factory-a");
     rigAId = rigA.id;
     tmp = mkdtempSync(join(tmpdir(), "wf-fac1-"));
-    runtime = new WorkflowRuntime({ exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
   });
 
   afterEach(() => {

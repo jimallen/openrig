@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,7 +51,7 @@ describe("authored mission boundary with event-first wait", () => {
     jobs = new WatchdogJobsRepository(db);
     queue.attachWatchdogJobsRepository(jobs);
     stopEvents = queue.startWaitReminders();
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue, watchdogJobsRepo: jobs });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue, watchdogJobsRepo: jobs });
     scheduler = new WatchdogScheduler({ jobsRepo: jobs, policyEngine: new WatchdogPolicyEngine({
       jobsRepo: jobs, historyLog: new WatchdogHistoryLog(db), eventBus: bus,
       deliver: async ({ message }) => { delivered.push(message); return { status: "ok" }; },

@@ -9,6 +9,7 @@
 // durability, and the waiting-resume regression pin (the shipped waiting
 // path is untouched — resume rejects it, project continues it).
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -114,7 +115,7 @@ describe("WF-5 FR-4: resume (redrive)", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       eventBus: bus,
       queueRepo,

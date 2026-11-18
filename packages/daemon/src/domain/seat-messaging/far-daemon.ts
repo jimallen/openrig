@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
 import { loadHostRegistry, resolveHost, type HostRegistryLoadResult, type HttpHostEntry } from "../hosts/hosts-registry-reader.js";
 import { SEAT_MESSAGE_ID_PREFIX } from "../outbox-handler.js";
+import type { CredentialFileReader } from "../credential-file.js";
 import type { GateLookup, LastHop, LastHopResult, MessageId, SeatGate, SeatMessage } from "./ports.js";
 import type { SeatDirectory, SeatFate, SeatMessagingPorts, SenderReturn, SenderReturnResult } from "./pump-ports.js";
 
@@ -58,6 +59,8 @@ export type FarAcceptAnswer = { readonly ok: true } | { readonly ok: false; read
 export interface FarDaemonsDeps {
   selfHost: () => string | null;
   loadRegistry?: () => HostRegistryLoadResult;
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   fetchImpl?: typeof fetch;
   clock?: () => number;
   capabilityTtlMs?: number;
@@ -77,14 +80,14 @@ export class FarDaemons {
   get selfHost(): string | null { return this.deps.selfHost(); }
 
   private httpHost(hostId: string): HttpHostEntry | null {
-    const registry = (this.deps.loadRegistry ?? loadHostRegistry)();
+    const registry = (this.deps.loadRegistry ?? (() => loadHostRegistry(this.deps.credentialFiles)))();
     if (!registry.ok) return null;
     const resolved = resolveHost(registry.registry, hostId);
     return resolved.ok && resolved.host.transport === "http" ? resolved.host : null;
   }
 
   private request(host: HttpHostEntry, path: string, method: "GET" | "POST", body?: unknown) {
-    return remoteJsonRequest(host, path, { method, body, timeoutMs: FAR_REQUEST_TIMEOUT_MS, fetchImpl: this.deps.fetchImpl });
+    return remoteJsonRequest(host, path, { method, body, timeoutMs: FAR_REQUEST_TIMEOUT_MS, fetchImpl: this.deps.fetchImpl, credentialFiles: this.deps.credentialFiles });
   }
 
   /** Read at most once per TTL. A far daemon that does not answer keeps its last known value: it is down, which says nothing of its build. */

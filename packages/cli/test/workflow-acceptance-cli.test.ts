@@ -12,6 +12,7 @@ import { EventBus } from "../../daemon/src/domain/event-bus.js";
 import { OutboxHandler } from "../../daemon/src/domain/outbox-handler.js";
 import { QueueRepository } from "../../daemon/src/domain/queue-repository.js";
 import { WorkflowRuntime } from "../../daemon/src/domain/workflow-runtime.js";
+import { NO_CREDENTIAL_FILES } from "../../daemon/test/helpers/credential-files.js";
 import { workflowRoutes } from "../../daemon/src/routes/workflow.js";
 import { DaemonClient } from "../src/client.js";
 import { realDeps } from "../src/commands/daemon.js";
@@ -54,7 +55,7 @@ describe("workflow project typed acceptance — real CLI to HTTP boundary", () =
       transport: { send: async () => ({ ok: true, verified: true }) },
     });
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
 
     const app = new Hono();
     app.get("/healthz", (c) => c.json({ status: "ok" }));

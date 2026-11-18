@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { getDefaultOpenRigPath } from "../../openrig-compat.js";
 import { VIRTUAL_DOMAIN_TOKENS } from "../session-name.js";
+import type { CredentialFileReader } from "../credential-file.js";
 
 export interface SshHostEntry {
   id: string;
@@ -75,7 +76,9 @@ export function defaultHostRegistryPath(): string {
 
 /** Load + validate the operator's hosts registry (read-only). Mirrors the CLI
  *  loader's error surfaces so operators see one vocabulary everywhere. */
-export function loadHostRegistry(path: string = defaultHostRegistryPath()): HostRegistryLoadResult {
+/** `credentialFiles` (workspaces-o9o.151) reads the registry under the credential rule; it comes first and is required, so every
+ *  caller is wired explicitly. */
+export function loadHostRegistry(credentialFiles: CredentialFileReader, path: string = defaultHostRegistryPath()): HostRegistryLoadResult {
   if (!existsSync(path)) {
     return {
       ok: false,

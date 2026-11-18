@@ -20,6 +20,7 @@
 // re-running the add re-converges (add-time validation = load-time
 // validation, verbatim).
 
+import type { CredentialFileReader } from "../credential-file.js";
 import { existsSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
@@ -34,13 +35,14 @@ export type AddHostResult =
   | { ok: true; path: string; entry: HostEntry }
   | { ok: false; error: string };
 
-export function addHostEntry(rawEntry: Record<string, unknown>, path: string = defaultHostRegistryPath()): AddHostResult {
+/** `credentialFiles` (workspaces-o9o.151) reads the existing registry under the credential rule. */
+export function addHostEntry(credentialFiles: CredentialFileReader, rawEntry: Record<string, unknown>, path: string = defaultHostRegistryPath()): AddHostResult {
   // Load what exists; a MISSING file is a valid starting point for `add`
   // (the verb exists so operators never hand-create the YAML), but a present-
   // but-invalid file is a loud error — never silently clobber operator state.
   let existing: HostEntry[] = [];
   if (existsSync(path)) {
-    const loaded = loadHostRegistry(path);
+    const loaded = loadHostRegistry(credentialFiles, path);
     if (!loaded.ok) {
       return { ok: false, error: `refusing to modify an invalid registry: ${loaded.error}` };
     }

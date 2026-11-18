@@ -15,6 +15,7 @@
 // Deployed entrypoints: startup.ts runs runWakeLadderTick (scheduler), drainPendingWakeIntents, runStuckSweep, the workflow
 // keepalive / boot sweep (WorkflowRuntime.reconcileStuckExceptions), scanWorkflowSpecFolder; server.ts mounts routes/workflow.ts
 // (listInstancesWithDeadline) and the spec library (scanWorkflowSpecs); the restore route calls reconcileNodeRuntimeTruth.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync, utimesSync } from "node:fs";
@@ -492,7 +493,7 @@ describe("workflow readers", () => {
     const bus = new EventBus(db);
     db.prepare("INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')").run();
     queueRepo = new QueueRepository(db, bus, { validateRig: () => true, transport: { send: async () => ({ ok: true, verified: true }) } });
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     tmp = mkdtempSync(join(tmpdir(), "w1-wf-"));
     specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);

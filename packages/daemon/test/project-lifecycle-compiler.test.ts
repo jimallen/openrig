@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,7 +51,7 @@ execution:
     migrate(db, ALL_MIGRATIONS);
     const bus = new EventBus(db);
     const queue = new QueueRepository(db, bus, { validateRig: () => true });
-    return { db, runtime: new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue }) };
+    return { db, runtime: new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue }) };
   }
 
   it("keeps a missing project manifest a structured lifecycle 404", async () => {

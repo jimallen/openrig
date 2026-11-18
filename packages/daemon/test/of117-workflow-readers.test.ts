@@ -8,6 +8,7 @@
 //
 // Deployed entrypoints: server.ts mounts routes/workflow.ts (WorkflowRuntime.listInstancesWithDeadline, specCache.listAll);
 // startup.ts runs runWorkflowBootSweep at boot; the projector reads WorkflowInstanceStore / WorkflowSpecCache by id.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,7 +60,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
   queueRepo = new QueueRepository(db, bus, { validateRig: () => true, transport: { send: async () => ({ ok: true, verified: true }) } });
   watchdogRepo = new WatchdogJobsRepository(db);
-  runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo, watchdogJobsRepo: watchdogRepo });
+  runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo, watchdogJobsRepo: watchdogRepo });
   tmp = mkdtempSync(join(tmpdir(), "of117-wf-"));
   specPath = join(tmp, "spec.yaml");
   writeFileSync(specPath, SPEC);

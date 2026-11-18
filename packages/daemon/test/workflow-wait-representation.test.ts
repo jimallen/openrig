@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +38,7 @@ describe("workflow authored waiting re-presentation", () => {
     queueRepo = new QueueRepository(db, bus, { validateRig: () => true });
     queueRepo.attachOutbox(new OutboxHandler(db));
     watchdogRepo = new WatchdogJobsRepository(db);
-    runtime = new WorkflowRuntime({ exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo, watchdogJobsRepo: watchdogRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo, watchdogJobsRepo: watchdogRepo });
     tmp = mkdtempSync(join(tmpdir(), "workflow-authored-wait-"));
     specPath = join(tmp, "workflow.yaml");
     writeFileSync(specPath, AUTHORED_WAIT_SPEC);
@@ -89,7 +90,7 @@ describe("workflow authored waiting re-presentation", () => {
     const reconstructedBus = new EventBus(db);
     const reconstructedQueue = new QueueRepository(db, reconstructedBus, { validateRig: () => true });
     reconstructedQueue.attachOutbox(new OutboxHandler(db));
-    const reconstructed = new WorkflowRuntime({
+    const reconstructed = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       db,
       eventBus: reconstructedBus,
       queueRepo: reconstructedQueue,

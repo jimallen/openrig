@@ -22,6 +22,7 @@ import { MultiRigLauncher } from "../domain/topology/multi-rig-launcher.js";
 import { remoteUpLeaf } from "../domain/topology/remote-up-leaf.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import type { HttpHostEntry } from "../domain/hosts/hosts-registry-reader.js";
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
 import { rigAdviceHandle, rigAdviceHandleIn } from "../domain/rig-ref.js";
 import { setOff } from "../domain/running-name-guard.js";
@@ -392,8 +393,8 @@ upRoutes.post("/", async (c) => {
       // The SHIPPED remote single-rig leaf (POST {host}/api/up). Path-form
       // refs resolve on the REMOTE daemon's filesystem — the shipped
       // remote-up semantics, unchanged.
-      launchRemote: (source, host) => remoteUpLeaf({ sourceRef: source, autoApprove, nonInterruptive }, host as HttpHostEntry),
-      loadRegistry: () => loadHostRegistry(),
+      launchRemote: (source, host) => remoteUpLeaf({ sourceRef: source, autoApprove, nonInterruptive }, host as HttpHostEntry, { credentialFiles: nodeCredentialFileReader }),
+      loadRegistry: () => loadHostRegistry(nodeCredentialFileReader),
     });
 
     const aggregate = await launcher.launch(manifestRes.manifest);

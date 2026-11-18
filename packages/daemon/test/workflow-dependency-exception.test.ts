@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,7 +47,7 @@ describe("dependency failure ownership and occurrence-local recovery", () => {
       send: async (_target, body) => { sent.push(body); return { ok: false, reason: "controlled terminal is stopped" }; },
     } });
     queue.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue });
     dir = mkdtempSync(join(tmpdir(), "dependency-exception-"));
   });
   afterEach(() => { db.close(); vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }); });

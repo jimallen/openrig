@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -299,7 +300,7 @@ describe("FAC-3 C2: FR-5 member-exists instantiate advisory", () => {
     seedSeat(buildRigId, "acme-build", "dev", "cold1", { sessionStatus: null });
     seedSeat(buildRigId, "acme-build", "ops", "term1", { runtime: "terminal" });
     tmp = mkdtempSync(join(tmpdir(), "wf-fac3-advisory-"));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
   });
 
   afterEach(() => {
@@ -527,7 +528,7 @@ describe("FAC-3 C2: FR-5 member-exists instantiate advisory", () => {
     minimalDb.prepare(`INSERT INTO rigs (id, name) VALUES ('r-min', 'acme-build')`).run();
     const minimalBus = new EventBus(minimalDb);
     const minimalRepo = new QueueRepository(minimalDb, minimalBus, { validateRig: () => true });
-    const minimalRuntime = new WorkflowRuntime({ db: minimalDb, eventBus: minimalBus, queueRepo: minimalRepo });
+    const minimalRuntime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db: minimalDb, eventBus: minimalBus, queueRepo: minimalRepo });
     // The probe itself DOES throw on this schema (the precondition that
     // makes this regression meaningful — if it ever stops throwing, the
     // test still passes but the precondition assert documents the seam).

@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,7 +64,7 @@ describe.each(["serial", "dependency"])("workflow registered-human selection at 
     terminal = vi.fn<TransportSend>(async () => ({ ok: true })); // the transport's own result shape; every row asserts it is never called
     queue = new QueueRepository(db, bus, { validateRig: () => true, transport: { send: terminal } });
     queue.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue });
     specPath = join(dir, "workflow.yaml");
     writeFileSync(specPath, spec);
   });

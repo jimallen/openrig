@@ -29,6 +29,7 @@ import { deriveCrossHostSuccessorId, matchesRecordedHandoffTarget, type QueueIte
 import { stalledPickupFinding } from "./queue-pickup.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { loadHostRegistry } from "./hosts/hosts-registry-reader.js";
+import type { CredentialFileReader } from "./credential-file.js";
 import { isUnreadableRowError } from "./unreadable-row.js";
 import { namedRows } from "./named-rows.js";
 
@@ -144,6 +145,8 @@ export interface StuckSweepDeps {
    *  hosts.yaml once per sweep pass, and an unavailable registry degrades honestly to
    *  verification-required (more indeterminate findings, never a false verdict). */
   isRegisteredHost?: (hostId: string) => boolean;
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
 }
 
 export interface StuckSweepFindingAction {
@@ -204,11 +207,11 @@ function custodyVerifiedTargets(db: Database.Database, qitemId: string): Set<str
 /** Default registry view for the proof-at-write arm: the operator's hosts.yaml, read
  *  lazily once per sweep pass. Registry unavailable → NO host is registered → every
  *  host-qualified target stays verification-required (honest degradation, logged once). */
-function defaultIsRegisteredHost(log: (line: string) => void): (hostId: string) => boolean {
+function defaultIsRegisteredHost(log: (line: string) => void, credentialFiles: CredentialFileReader): (hostId: string) => boolean {
   let known: Set<string> | null | undefined;
   return (hostId: string) => {
     if (known === undefined) {
-      const loaded = loadHostRegistry();
+      const loaded = loadHostRegistry(credentialFiles);
       if (loaded.ok) {
         known = new Set<string>();
         for (const host of loaded.registry.hosts) {
@@ -382,7 +385,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     const ageMinutes = deps.unclaimedAgeMinutes ?? resolveStuckSweepUnclaimedAgeMinutes();
     const resolveOrch =
       deps.resolveOrchestrator ?? ((session: string) => defaultResolveOrchestrator(deps.db, session));
-    const isRegisteredHost = deps.isRegisteredHost ?? defaultIsRegisteredHost(log);
+    const isRegisteredHost = deps.isRegisteredHost ?? defaultIsRegisteredHost(log, deps.credentialFiles);
     const candidates: Candidate[] = [];
 
     // Half 1 — claimed-never-closed. The claimant holds the obligation; the finding

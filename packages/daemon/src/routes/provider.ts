@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { getSelfHostId, LOCAL_HOST_ID } from "../domain/hosts/fanout-contract.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 import type { ProviderService } from "../domain/provider/provider-service.js";
 import type { ProviderKind } from "../domain/provider/provider-types.js";
 import {
@@ -107,7 +108,8 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
     message: `${what} needs usage windows on this daemon. Turn them on with: rig config set provider.usage_windows true`,
   });
   const hostsDeps = (c: Context, only: string[] | undefined): UsageHostsDeps => ({
-    loadRegistry: (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? (() => loadHostRegistry()),
+    loadRegistry: (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? (() => loadHostRegistry(nodeCredentialFileReader)),
+    credentialFiles: nodeCredentialFileReader,
     selfHostId: getSelfHostId(),
     ...(only ? { only } : {}),
     lastRefresh: (hostId) => legs.lastFor(hostId),

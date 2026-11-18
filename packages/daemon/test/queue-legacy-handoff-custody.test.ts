@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { createDb } from "../src/db/connection.js";
@@ -32,7 +33,7 @@ describe("recorded legacy cross-host custody", () => {
       await next();
     });
     app.route("/api/queue", queueRoutes());
-    const sweep = () => runStuckSweep({ db, queueRepo: repo, resolveOrchestrator: () => null,
+    const sweep = () => runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, resolveOrchestrator: () => null,
       isRegisteredHost: () => true, unclaimedAgeMinutes: 60, log: () => {} });
     return { repo, app, sweep };
   }

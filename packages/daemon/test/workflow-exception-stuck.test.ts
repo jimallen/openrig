@@ -4,6 +4,7 @@
 // spec is uncached, and missed-item re-creation (the crash-surviving
 // guarantee's honest twin: one OPEN item per occurrence at all times).
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,7 +66,7 @@ describe("WF-5 FR-2 class (b): detection-time stuck exception items", () => {
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     const queueRepo = new QueueRepository(db, bus, { validateRig: () => true });
     queueRepo.attachOutbox(new OutboxHandler(db));
-    const runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     const watchdogJobsRepo = new WatchdogJobsRepository(db);
     const ensurer = makeEnsureStuckExceptionItem({
       db,

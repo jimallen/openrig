@@ -6,6 +6,7 @@
 // never silent thinning), the registry is lazy, and the local leg INVOKES
 // the injected query (reuse, not reimplementation).
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect } from "vitest";
 import { aggregateAttention, ATTENTION_READ_TIMEOUT_MS } from "../src/domain/feed/attention-aggregator.js";
 import type { AttentionAggregatorDeps } from "../src/domain/feed/attention-aggregator.js";
@@ -25,7 +26,7 @@ function attentionResponse(items: unknown[]): Response {
 }
 
 function deps(overrides: Partial<AttentionAggregatorDeps> = {}): AttentionAggregatorDeps {
-  return {
+  return { credentialFiles: NO_CREDENTIAL_FILES,
     listLocalAttention: () => [{ qitemId: "local-1" }],
     listSubscriptions: () => [],
     loadRegistry: () => ({ ok: true, registry: REGISTRY }),

@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -57,7 +58,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     await queue.update({ qitemId: waiter.qitemId, actorSession: "owner@rig", state: "blocked", blockedOn: blocker.qitemId, wakeAfterSeconds: 300, wakeMaxSeconds: 2400, wakeMessage: waiter.body });
     return { blocker: blocker.qitemId, waiter: waiter.qitemId, job: queue.getParkWakeStatus(waiter.qitemId)!.ref };
   }
-  const sweep = () => runStuckSweep({ db, queueRepo: queue, now: new Date(), unclaimedAgeMinutes: 60, resolveOrchestrator: () => "orch@rig", isRegisteredHost: () => false });
+  const sweep = () => runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: queue, now: new Date(), unclaimedAgeMinutes: 60, resolveOrchestrator: () => "orch@rig", isRegisteredHost: () => false });
 
   it("keeps working-owner waits quiet, wakes once for change, and repairs a missed event on the next tick", async () => {
     const { blocker, waiter, job } = await waiting();

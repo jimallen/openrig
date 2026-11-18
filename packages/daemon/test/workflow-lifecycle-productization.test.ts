@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -154,7 +155,7 @@ describe("S06 lifecycle productization", () => {
     });
     queueRepo.attachOutbox(new OutboxHandler(db));
     watchdogRepo = new WatchdogJobsRepository(db);
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo, watchdogJobsRepo: watchdogRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo, watchdogJobsRepo: watchdogRepo });
     dir = mkdtempSync(join(tmpdir(), "workflow-lifecycle-"));
   });
 
@@ -246,7 +247,7 @@ describe("S06 lifecycle productization", () => {
     expect([left.replayed, right.replayed].sort()).toEqual([false, true]);
     const before = mutationCounts();
 
-    const restarted = new WorkflowRuntime({ db, eventBus: new EventBus(db), queueRepo });
+    const restarted = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: new EventBus(db), queueRepo });
     const replay = await restarted.instantiate(input);
     expect(replay.replayed).toBe(true);
     expect(replay.instance.instanceId).toBe(left.instance.instanceId);

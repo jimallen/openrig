@@ -9,6 +9,7 @@
 // session row carries the NEWEST id. `ORDER BY id DESC LIMIT 1` therefore picks the archived row; only a
 // live-first rule picks the live one. Live and archived nodes differ in runtime, cwd and resume token so
 // each site's answer names which rig it resolved.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -129,7 +130,7 @@ describe("name-keyed latest-row lookups resolve a live rig before an archived on
     // Live seat has exited; the archived predecessor is (stale) 'running'.
     db.prepare("UPDATE sessions SET status = 'exited' WHERE id = ?").run(live.sessionId);
     const eventBus = new EventBus(db);
-    const runtime = new WorkflowRuntime({ db, eventBus, queueRepo: new QueueRepository(db, eventBus, { validateRig: () => true }) });
+    const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus, queueRepo: new QueueRepository(db, eventBus, { validateRig: () => true }) });
     const probe = (runtime as unknown as { seatLivenessCheck(ref: string): { alive: boolean; reason?: string } }).seatLivenessCheck;
     expect(probe(NAME)).toEqual({ alive: false, reason: "session_status_exited" });
   });

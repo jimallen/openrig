@@ -84,6 +84,7 @@ import type { SkillLibraryDiscoveryService } from "./domain/skill-library-discov
 import { configRoutes } from "./routes/config.js";
 import { hostsRoutes } from "./routes/hosts.js";
 import { hostReadThrough } from "./domain/hosts/read-through.js";
+import { nodeCredentialFileReader } from "./adapters/node-credential-file-reader.js";
 import { jsonBodyErrorHandler, trackJsonBodyParseErrors } from "./middleware/json-body-error.js";
 import { getSelfHostId, getSelfHostIdSource } from "./domain/hosts/fanout-contract.js";
 import { contextPacksRoutes } from "./routes/context-packs.js";
@@ -691,7 +692,7 @@ export function createApp(deps: CreateAppDeps): Hono {
   // requests carrying a remote envelope with a structured MH-3-boundary
   // error, never forwarding them. Absent/local host param falls through to
   // the existing handlers untouched (the FR-2 zero-regression negative).
-  app.use("/api/*", hostReadThrough());
+  app.use("/api/*", hostReadThrough(nodeCredentialFileReader));
 
   app.get("/healthz", (c) => {
     // OPR.0.4.3.21 — enrich the health surface with event-loop wedge evidence

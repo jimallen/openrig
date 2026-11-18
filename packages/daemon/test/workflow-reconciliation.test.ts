@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +40,7 @@ describe("one preserved running graph and recoverable revision decision", () => 
     bus = new EventBus(db); sends = [];
     queue = new QueueRepository(db, bus, { validateRig: () => true, transport: { send: async (_to, message) => { sends.push(message); return { ok: true, verified: true }; } } });
     queue.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue });
   });
   afterEach(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
   const steps = () => project.lifecycle.profiles.release.workflow.steps as any[];

@@ -13,6 +13,7 @@
 //     once a frontier packet is overdue — steering a restored agent to
 //     re-project. Operator-registered jobs keep POC always-send parity.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,7 +103,7 @@ describe("FR-3: keepalive auto-arm in-txn + disarm", () => {
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
     watchdogRepo = new WatchdogJobsRepository(db);
-    runtime = new WorkflowRuntime({
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" },
       db,
       eventBus: bus,
@@ -279,7 +280,7 @@ describe("FR-3/FR-2: the deadline-gated keepalive policy behavior", () => {
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
     watchdogRepo = new WatchdogJobsRepository(db);
-    runtime = new WorkflowRuntime({
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES,
       exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" },
       db,
       eventBus: bus,

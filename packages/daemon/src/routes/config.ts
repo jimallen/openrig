@@ -12,6 +12,7 @@
 // edit surface for operators + agents. This route exists for the UI;
 // agents stay on CLI-shell-out per the shipped openrig-user-settings skill.
 
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 import { Hono } from "hono";
 import { settingsBrowser } from "../domain/user-settings/settings-browser.js";
 import {
@@ -42,7 +43,7 @@ export function configRoutes(opts: { home?: string } = {}): Hono {
       const gateway = c.get("gatewaySubsystem" as never) as { status(): Record<string, unknown> } | undefined;
       let observed: Record<string, unknown> | null = null;
       try { observed = gateway?.status() ?? null; } catch { /* configuration still browsable */ }
-      return c.json(settingsBrowser(store, observed, opts.home));
+      return c.json(settingsBrowser(nodeCredentialFileReader, store, observed, opts.home));
     }
     // OPR.0.4.4.15: dynamic-class enumeration rides ADDITIVELY beside the
     // static settings map (existing consumers of `settings` unaffected).

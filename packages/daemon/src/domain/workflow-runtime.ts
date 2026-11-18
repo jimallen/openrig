@@ -45,6 +45,7 @@ import {
 } from "./workflow-projector.js";
 import { loadHostRegistry } from "./hosts/hosts-registry-reader.js";
 import type { HostRegistryLookupFn } from "./workflow-validator.js";
+import type { CredentialFileReader } from "./credential-file.js";
 import { WorkflowSpecCache, WorkflowSpecError } from "./workflow-spec-cache.js";
 import { WorkflowStepTrailLog } from "./workflow-step-trail-log.js";
 import {
@@ -78,6 +79,8 @@ const OPEN_QUEUE_STATES = ["pending", "in-progress", "blocked"] as const;
 
 export interface WorkflowRuntimeDeps {
   guidanceLibrary?: GuidanceInput["library"];
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   db: Database.Database;
   eventBus: EventBus;
   queueRepo: QueueRepository;
@@ -164,6 +167,7 @@ export class WorkflowRuntime {
   private readonly now: () => Date;
   private readonly watchdogJobsRepo: WatchdogJobsRepository | undefined;
   private readonly exceptionDial?: WorkflowRuntimeDeps["exceptionDial"];
+  private readonly credentialFiles: CredentialFileReader;
 
   constructor(deps: WorkflowRuntimeDeps) {
     this.guidanceLibrary = deps.guidanceLibrary;
@@ -173,6 +177,7 @@ export class WorkflowRuntime {
     this.now = deps.now ?? (() => new Date());
     this.watchdogJobsRepo = deps.watchdogJobsRepo;
     this.exceptionDial = deps.exceptionDial;
+    this.credentialFiles = deps.credentialFiles;
     this.specCache = new WorkflowSpecCache(this.db, this.now);
     this.instanceStore = new WorkflowInstanceStore(this.db, this.now);
     this.trailLog = new WorkflowStepTrailLog(this.db);
@@ -341,7 +346,7 @@ export class WorkflowRuntime {
    * validator's host_not_registered issue, never a silent pass).
    */
   private hostRegistryLookup: HostRegistryLookupFn = (hostId: string) => {
-    const loaded = loadHostRegistry();
+    const loaded = loadHostRegistry(this.credentialFiles);
     if (!loaded.ok) return { registered: false, registeredIds: [] };
     const ids = loaded.registry.hosts.map((h) => h.id);
     return { registered: ids.includes(hostId), registeredIds: ids };

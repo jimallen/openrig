@@ -19,6 +19,7 @@ import type { AttentionItem } from "../domain/feed/attention-aggregator.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
 import { getSelfHostId, resolvesToLocalHost } from "../domain/hosts/fanout-contract.js";
 import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { deriveCurrentWork, deriveRole, deriveWorkCandidates, type RoleOrientation } from "../domain/current-work.js";
 import type { WhoamiService } from "../domain/whoami-service.js";
@@ -247,7 +248,7 @@ export function queueRoutes(): Hono {
   > {
     const registryLoader =
       (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ??
-      loadHostRegistry;
+      (() => loadHostRegistry(nodeCredentialFileReader));
     const fetchImpl = c.get("remoteFetchImpl" as never) as typeof fetch | undefined;
     const fail = (detail: string, failureClass: string, remoteStatus?: number, outcome?: "indeterminate"): { ok: false; response: Response } => ({
       ok: false,
@@ -271,6 +272,7 @@ export function queueRoutes(): Hono {
       body: forwardBody,
       timeoutMs: QUEUE_FORWARD_TIMEOUT_MS,
       fetchImpl,
+      credentialFiles: nodeCredentialFileReader,
       headers: c.req.header(ORIGIN_UNKNOWN_HEADER) === "true" ? { [ORIGIN_UNKNOWN_HEADER]: "true" } : undefined,
     });
     if (res.ok) {
@@ -926,13 +928,14 @@ export function queueRoutes(): Hono {
     // Same DI style as every other context dep — tests/QA inject a loader;
     // production falls back to the shared S11 reader over the operator's
     // real hosts.yaml.
-    const registryLoader = (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? loadHostRegistry;
+    const registryLoader = (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? (() => loadHostRegistry(nodeCredentialFileReader));
     const payload = await aggregateAttention({
       // The SAME repo query the /list attention path runs, same open-state
       // default — invoked, not duplicated.
       listLocalAttention: () => repo.listAttention({ state: ["pending", "in-progress", "blocked"] }) as unknown as AttentionItem[],
       listSubscriptions: () => (store ? store.listFeedHostSubscriptions() : []),
       loadRegistry: registryLoader,
+      credentialFiles: nodeCredentialFileReader,
     });
     return c.json(payload);
   });

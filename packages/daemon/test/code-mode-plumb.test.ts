@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi, type Mock } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
@@ -312,7 +313,7 @@ describe("code_mode: legacy (non-pod) restore passes the persisted declaration t
     class NoCodexResume extends CodexResumeAdapter {
       override canResume(): boolean { return false; }
     }
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore,
       nodeLauncher, tmuxAdapter: tmux, claudeResume: new RecordingClaudeResume(tmux), codexResume: new NoCodexResume(tmux) });
     expect((await restore.restore(snapshot.id)).ok).toBe(true);
@@ -368,7 +369,7 @@ describe("finding 4: a restore resumes the conversation in the mode it was launc
     class NoCodexResume extends CodexResumeAdapter {
       override canResume(): boolean { return false; }
     }
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore,
       nodeLauncher, tmuxAdapter: tmux, claudeResume: new RecordingClaudeResume(tmux), codexResume: new NoCodexResume(tmux) });
     expect((await restore.restore(snapshot.id)).ok).toBe(true);
@@ -426,7 +427,7 @@ describe("finding 4: a restore resumes the conversation in the mode it was launc
       checkReady: vi.fn(async () => ({ ready: true })),
       launchHarness,
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux, claudeResume: new ClaudeResumeAdapter(tmux), codexResume: new CodexResumeAdapter(tmux) });
     const up = await restore.restore(down.snapshotId!, { adapters: { "claude-code": adapter } });
@@ -489,7 +490,7 @@ describe("code_mode: the pod-aware restore's FRESH relaunch (no resume token) bi
       checkReady: vi.fn(async () => ({ ready: true })),
       launchHarness,
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux, claudeResume: new ClaudeResumeAdapter(tmux), codexResume: new CodexResumeAdapter(tmux) });
     // `rig up --existing <rig> --fresh exec.cos`: the seat skips the resume attempt and is relaunched fresh (`fresh-primed`).

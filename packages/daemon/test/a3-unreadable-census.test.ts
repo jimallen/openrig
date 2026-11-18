@@ -4,6 +4,7 @@
 //
 // Deployed entrypoints: routes/workflow.ts (GET /operations/:key -> WorkflowRuntime.recoverOperation; POST /:id/revision ->
 // reviseGraph) and WorkflowRuntime.instantiate (workflow-runtime.ts) read the operation-key readback; startup.ts constructs the runtime.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,7 +54,7 @@ describe("workflow-reconciliation recoverGraphOperation (the operation-key idemp
     bus = new EventBus(db);
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
     const queueRepo = new QueueRepository(db, bus, { validateRig: () => true, transport: { send: async () => ({ ok: true, verified: true }) } });
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo, watchdogJobsRepo: new WatchdogJobsRepository(db) });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo, watchdogJobsRepo: new WatchdogJobsRepository(db) });
     tmp = mkdtempSync(join(tmpdir(), "a3-census-"));
     specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);

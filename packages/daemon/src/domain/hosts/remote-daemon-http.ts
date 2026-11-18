@@ -21,8 +21,11 @@
 
 import { readFileSync } from "node:fs";
 import type { HttpHostEntry } from "./hosts-registry-reader.js";
+import type { CredentialFileReader } from "../credential-file.js";
 
 export interface RemoteJsonDeps {
+  /** workspaces-o9o.151: how a bearer_file is read (the credential rule); required, so no caller can read one unchecked. */
+  credentialFiles: CredentialFileReader;
   /** Injected for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;

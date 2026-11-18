@@ -4,6 +4,7 @@
 // classification vocabulary) — these tests pin the mirrored semantics and
 // that failures surface the EXISTING classes, never a new taxonomy.
 
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect } from "vitest";
 import { remoteUpLeaf } from "../src/domain/topology/remote-up-leaf.js";
 import type { HttpHostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
@@ -27,7 +28,7 @@ function fetchStub(status: number, payload?: unknown, capture?: { url?: string; 
 describe("remoteUpLeaf — bearer resolution (mirrors CLI resolveRemoteBearer)", () => {
   it("bearer_env: missing/empty env is a permission-gate failure, no request sent", async () => {
     let called = false;
-    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, {
+    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, { credentialFiles: NO_CREDENTIAL_FILES,
       env: {},
       fetchImpl: (async () => {
         called = true;
@@ -41,7 +42,7 @@ describe("remoteUpLeaf — bearer resolution (mirrors CLI resolveRemoteBearer)",
   });
 
   it("bearer_file: unreadable and empty files are permission-gate failures", async () => {
-    const unreadable = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, {
+    const unreadable = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, { credentialFiles: NO_CREDENTIAL_FILES,
       readFile: () => {
         throw new Error("ENOENT");
       },
@@ -49,7 +50,7 @@ describe("remoteUpLeaf — bearer resolution (mirrors CLI resolveRemoteBearer)",
     expect(unreadable.error).toContain("[permission-gate]");
     expect(unreadable.error).toContain("not readable");
 
-    const empty = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, { readFile: () => "  " });
+    const empty = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, { credentialFiles: NO_CREDENTIAL_FILES, readFile: () => "  " });
     expect(empty.error).toContain("[permission-gate]");
     expect(empty.error).toContain("is empty");
   });
@@ -61,7 +62,7 @@ describe("remoteUpLeaf — the shipped POST /api/up transport", () => {
     const res = await remoteUpLeaf(
       { sourceRef: "specs/factory.yaml", autoApprove: true },
       HOST_FILE, // trailing-slash url — normalized
-      { readFile: () => "tok-123\n", fetchImpl: fetchStub(200, { status: "completed" }, capture) },
+      { credentialFiles: NO_CREDENTIAL_FILES, readFile: () => "tok-123\n", fetchImpl: fetchStub(200, { status: "completed" }, capture) },
     );
     expect(res).toEqual({ ok: true });
     expect(capture.url).toBe("http://vps-f:7433/api/up");
@@ -71,13 +72,13 @@ describe("remoteUpLeaf — the shipped POST /api/up transport", () => {
   });
 
   it("401/403 classifies permission-gate; 4xx/5xx classifies remote-command-failed with the remote error text verbatim", async () => {
-    const auth = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, {
+    const auth = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, { credentialFiles: NO_CREDENTIAL_FILES,
       env: { VPS_B_TOKEN: "t" },
       fetchImpl: fetchStub(401),
     });
     expect(auth.error).toContain("[permission-gate]");
 
-    const failed = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, {
+    const failed = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, { credentialFiles: NO_CREDENTIAL_FILES,
       env: { VPS_B_TOKEN: "t" },
       fetchImpl: fetchStub(409, { error: "Already in progress for this source" }),
     });
@@ -95,7 +96,7 @@ describe("remoteUpLeaf — the shipped POST /api/up transport", () => {
         sawSignal = init?.signal instanceof AbortSignal;
         init?.signal?.addEventListener("abort", () => reject(new DOMException("This operation was aborted", "AbortError")));
       })) as typeof fetch;
-    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, {
+    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, { credentialFiles: NO_CREDENTIAL_FILES,
       env: { VPS_B_TOKEN: "t" },
       fetchImpl: neverSettling,
       timeoutMs: 25,
@@ -118,7 +119,7 @@ describe("remoteUpLeaf — the shipped POST /api/up transport", () => {
           headers: { "Content-Type": "application/json" },
         }),
       )) as typeof fetch;
-    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, {
+    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, { credentialFiles: NO_CREDENTIAL_FILES,
       env: { VPS_B_TOKEN: "t" },
       fetchImpl: stalledBody,
       timeoutMs: 25,
@@ -131,7 +132,7 @@ describe("remoteUpLeaf — the shipped POST /api/up transport", () => {
   });
 
   it("G-R2B1-1: a COMPLETE error body within the deadline still yields the classified failure with the remote text verbatim (no regression)", async () => {
-    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, {
+    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, { credentialFiles: NO_CREDENTIAL_FILES,
       env: { VPS_B_TOKEN: "t" },
       fetchImpl: fetchStub(500, { error: "boom from remote" }),
       timeoutMs: 5_000,
@@ -146,7 +147,7 @@ describe("remoteUpLeaf — the shipped POST /api/up transport", () => {
   });
 
   it("network failure classifies remote-daemon-unreachable naming host + url", async () => {
-    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, {
+    const res = await remoteUpLeaf({ sourceRef: "r" }, HOST_ENV, { credentialFiles: NO_CREDENTIAL_FILES,
       env: { VPS_B_TOKEN: "t" },
       fetchImpl: (async () => {
         throw new Error("ECONNREFUSED");

@@ -7,6 +7,8 @@
 // zero-regression negative: absent/local host param reaches the existing
 // handler with no forward attempted.
 
+import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import {
@@ -58,7 +60,7 @@ function makeApp(opts: { fetchResponse?: () => Response; env?: Record<string, st
     set("remoteFetchImpl", fakeFetch);
     await next();
   });
-  app.use("/api/*", hostReadThrough());
+  app.use("/api/*", hostReadThrough(nodeCredentialFileReader));
   app.get("/api/rigs/summary", (c) => {
     localHits.push(c.req.path);
     return c.json({ rigs: ["local-rig"] });
@@ -287,7 +289,7 @@ describe("remoteRawRequest — the transport leg's own discipline", () => {
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       })) as typeof fetch;
-    const res = await remoteRawRequest(HOST, "/api/ps", {
+    const res = await remoteRawRequest(HOST, "/api/ps", { credentialFiles: NO_CREDENTIAL_FILES,
       timeoutMs: 25,
       fetchImpl: hangingFetch,
       env: { RAW_TOKEN: "tok" },
@@ -298,7 +300,7 @@ describe("remoteRawRequest — the transport leg's own discipline", () => {
   it("non-2xx origin statuses are ok:true passthrough results (P3), with content-type + body text", async () => {
     const fakeFetch = (async () =>
       new Response("<h1>origin 500</h1>", { status: 500, headers: { "Content-Type": "text/html" } })) as typeof fetch;
-    const res = await remoteRawRequest(HOST, "/api/ps", { timeoutMs: 1000, fetchImpl: fakeFetch, env: { RAW_TOKEN: "tok" } });
+    const res = await remoteRawRequest(HOST, "/api/ps", { credentialFiles: NO_CREDENTIAL_FILES, timeoutMs: 1000, fetchImpl: fakeFetch, env: { RAW_TOKEN: "tok" } });
     expect(res).toEqual({ ok: true, status: 500, contentType: "text/html", bodyText: "<h1>origin 500</h1>" });
   });
 });

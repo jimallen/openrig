@@ -13,6 +13,7 @@
 // Deployed entrypoints: routes/workflow.ts GET /:instance_id calls WorkflowRuntime.exceptionObligations; startup.ts wires
 // reconcileStuckExceptions (boot sweep, keepalive policy, project()) and makeEnsureStuckExceptionItem; WorkflowRuntime.resume
 // reaches closeFailureExceptions; startup.ts runs runWakeLadderTick (scheduler).
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -87,7 +88,7 @@ describe("OF-159: workflow runtime exception items", () => {
     const bus = new EventBus(db);
     repo = new QueueRepository(db, bus, { validateRig: () => true });
     repo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: repo });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: repo });
     errors = [];
     vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
   });
@@ -252,7 +253,7 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
     db.prepare("INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')").run();
     const queueRepo = new QueueRepository(db, bus, { validateRig: () => true });
     queueRepo.attachOutbox(new OutboxHandler(db));
-    const runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     const watchdogJobsRepo = new WatchdogJobsRepository(db);
     const ensureLines: string[] = [];
     const ensurer = makeEnsureStuckExceptionItem({ db, queueRepo, log: (line: string) => ensureLines.push(line), resolveRoute: (n, v, c) => runtime.resolveExceptionRouteFor(n, v, c), humanFallbackSeat: "human@host" });

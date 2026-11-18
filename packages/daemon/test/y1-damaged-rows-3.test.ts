@@ -16,6 +16,7 @@
 // Deployed entrypoints: startup.ts runs runWakeLadderTick (scheduler) and wires queueRecoveryOwnsWake into the waiting view;
 // routes/snapshots.ts calls deriveRestoreAttemptReceipt; routes/review.ts serves ReviewGatherer.composeRig; routes/queue.ts
 // serves listRecentTransitions; routes/slices.ts and the SliceDetailProjector call findSliceWorkflowBinding.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -259,7 +260,7 @@ describe("OF-143: the stuck-exception ensurer does not open a second item beside
     db.prepare("INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')").run();
     const queueRepo = new QueueRepository(db, bus, { validateRig: () => true });
     queueRepo.attachOutbox(new OutboxHandler(db));
-    const runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
+    const runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     const watchdogJobsRepo = new WatchdogJobsRepository(db);
     const ensureLines: string[] = [];
     const ensurer = makeEnsureStuckExceptionItem({ db, queueRepo, log: (line: string) => ensureLines.push(line), resolveRoute: (n, v, c) => runtime.resolveExceptionRouteFor(n, v, c), humanFallbackSeat: "human@host" });

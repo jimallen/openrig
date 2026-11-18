@@ -1,3 +1,4 @@
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,7 +85,7 @@ describe("dependency graph re-entry through a routed exit", () => {
     } });
     queue.attachOutbox(new OutboxHandler(db));
     clock = undefined;
-    runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue, now: () => clock ?? new Date() });
+    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo: queue, now: () => clock ?? new Date() });
     dir = mkdtempSync(join(tmpdir(), "dependency-reentry-"));
   });
   afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });

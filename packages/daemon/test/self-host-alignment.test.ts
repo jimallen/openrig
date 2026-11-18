@@ -11,6 +11,7 @@
 // implemented here — see the driver report: the hosts registry has no self-row
 // marking to compare against (routed to arch, no registry migration per fence).
 
+import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { Hono } from "hono";
 import {
@@ -45,7 +46,7 @@ function makeApp() {
     set("remoteFetchImpl", fakeFetch);
     await next();
   });
-  app.use("/api/*", hostReadThrough());
+  app.use("/api/*", hostReadThrough(nodeCredentialFileReader));
   app.get("/api/rigs/summary", (c) => { localHits.push(c.req.path); return c.json({ rigs: ["local-rig"] }); });
   return { app, fetchCalls, localHits };
 }

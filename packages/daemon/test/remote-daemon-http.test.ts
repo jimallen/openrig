@@ -5,6 +5,8 @@
 // remote-up-leaf's own tests keep pinning its shipped error strings, which
 // proves the consumer formatting; these tests pin the structured result.
 
+import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect } from "vitest";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -35,7 +37,7 @@ function fetchStub(status: number, payload?: unknown, capture?: { url?: string; 
 describe("remoteJsonRequest — structured outcomes (never hangs, never throws)", () => {
   it("bearer failure short-circuits with kind=bearer; no request is sent", async () => {
     let called = false;
-    const res = await remoteJsonRequest(HOST, "/api/x", {
+    const res = await remoteJsonRequest(HOST, "/api/x", { credentialFiles: NO_CREDENTIAL_FILES,
       method: "GET",
       timeoutMs: 1000,
       env: {},
@@ -51,7 +53,7 @@ describe("remoteJsonRequest — structured outcomes (never hangs, never throws)"
 
   it("GET carries the bearer, no Content-Type/body; trailing-slash url joins cleanly; 2xx returns the parsed payload", async () => {
     const capture: { url?: string; init?: RequestInit } = {};
-    const res = await remoteJsonRequest(HOST, "/api/queue/list?attention=1", {
+    const res = await remoteJsonRequest(HOST, "/api/queue/list?attention=1", { credentialFiles: NO_CREDENTIAL_FILES,
       method: "GET",
       timeoutMs: 1000,
       env: ENV,
@@ -69,7 +71,7 @@ describe("remoteJsonRequest — structured outcomes (never hangs, never throws)"
 
   it("POST serializes the body with Content-Type", async () => {
     const capture: { url?: string; init?: RequestInit } = {};
-    await remoteJsonRequest(HOST, "/api/up", {
+    await remoteJsonRequest(HOST, "/api/up", { credentialFiles: NO_CREDENTIAL_FILES,
       method: "POST",
       body: { sourceRef: "r" },
       timeoutMs: 1000,
@@ -85,26 +87,26 @@ describe("remoteJsonRequest — structured outcomes (never hangs, never throws)"
       new Promise<Response>((_res, reject) => {
         init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
       })) as typeof fetch;
-    const res = await remoteJsonRequest(HOST, "/api/x", { method: "GET", timeoutMs: 20, env: ENV, fetchImpl: neverSettling });
+    const res = await remoteJsonRequest(HOST, "/api/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 20, env: ENV, fetchImpl: neverSettling });
     expect(res).toMatchObject({ ok: false, kind: "timeout", phase: "request" });
   });
 
   it("headers-then-stalled-body → kind=timeout phase=body carrying the status (the G-R2B1-1 class, now structural)", async () => {
     const stalled = (async () =>
       new Response(new ReadableStream({ start() {} }), { status: 500, headers: { "Content-Type": "application/json" } })) as typeof fetch;
-    const res = await remoteJsonRequest(HOST, "/api/x", { method: "GET", timeoutMs: 20, env: ENV, fetchImpl: stalled });
+    const res = await remoteJsonRequest(HOST, "/api/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 20, env: ENV, fetchImpl: stalled });
     expect(res).toMatchObject({ ok: false, kind: "timeout", phase: "body", status: 500 });
   });
 
   it("non-2xx with a JSON error body → kind=http with the remote text; non-JSON body → empty detail (status is the honest fact)", async () => {
-    const withText = await remoteJsonRequest(HOST, "/api/x", { method: "GET", timeoutMs: 1000, env: ENV, fetchImpl: fetchStub(409, { error: "conflict!" }) });
+    const withText = await remoteJsonRequest(HOST, "/api/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 1000, env: ENV, fetchImpl: fetchStub(409, { error: "conflict!" }) });
     expect(withText).toMatchObject({ ok: false, kind: "http", status: 409, detail: "conflict!" });
-    const nonJson = await remoteJsonRequest(HOST, "/api/x", { method: "GET", timeoutMs: 1000, env: ENV, fetchImpl: fetchStub(500) });
+    const nonJson = await remoteJsonRequest(HOST, "/api/x", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 1000, env: ENV, fetchImpl: fetchStub(500) });
     expect(nonJson).toMatchObject({ ok: false, kind: "http", status: 500, detail: "" });
   });
 
   it("network failure → kind=network with the error message", async () => {
-    const res = await remoteJsonRequest(HOST, "/api/x", {
+    const res = await remoteJsonRequest(HOST, "/api/x", { credentialFiles: NO_CREDENTIAL_FILES,
       method: "GET",
       timeoutMs: 1000,
       env: ENV,
@@ -141,7 +143,7 @@ describe("anonymous (URL-only) http host — no Authorization header, no request
 
   it("remoteJsonRequest: URL-only host sends NO Authorization header; 2xx still returns payload", async () => {
     const capture: { url?: string; init?: RequestInit } = {};
-    const res = await remoteJsonRequest(ANON, "/api/queue/list", {
+    const res = await remoteJsonRequest(ANON, "/api/queue/list", { credentialFiles: NO_CREDENTIAL_FILES,
       method: "GET",
       timeoutMs: 1000,
       env: {},
@@ -154,7 +156,7 @@ describe("anonymous (URL-only) http host — no Authorization header, no request
 
   it("remoteRawRequest: URL-only host sends NO Authorization header; origin answer is ok:true", async () => {
     const capture: { url?: string; init?: RequestInit } = {};
-    const res = await remoteRawRequest(ANON, "/api/ps", {
+    const res = await remoteRawRequest(ANON, "/api/ps", { credentialFiles: NO_CREDENTIAL_FILES,
       timeoutMs: 1000,
       env: {},
       fetchImpl: fetchStub(200, { rigs: [] }, capture),
@@ -166,7 +168,7 @@ describe("anonymous (URL-only) http host — no Authorization header, no request
 
   it("configured bearer_env host still carries Authorization (fail-closed path unchanged)", async () => {
     const capture: { url?: string; init?: RequestInit } = {};
-    await remoteJsonRequest(HOST, "/api/x", {
+    await remoteJsonRequest(HOST, "/api/x", { credentialFiles: NO_CREDENTIAL_FILES,
       method: "GET",
       timeoutMs: 1000,
       env: ENV,
@@ -209,13 +211,13 @@ describe("remote response body transport — native HTTP consumers", () => {
         set("hostRegistryLoader", () => ({ ok: true, registry: { hosts: [host] } }));
         await next();
       });
-      app.use("/api/*", hostReadThrough());
+      app.use("/api/*", hostReadThrough(nodeCredentialFileReader));
       let localHits = 0;
       app.get("/api/rigs/summary", c => { localHits++; return c.json({ local: true }); });
       try {
-        const up = await remoteUpLeaf({ sourceRef: "fixture" }, host, { timeoutMs: 2000, env: {} });
-        const json = await remoteJsonRequest(host, "/api/rigs/summary", { method: "GET", timeoutMs: 2000, env: {} });
-        const raw = await remoteRawRequest(host, "/api/rigs/summary", { timeoutMs: 2000, env: {} });
+        const up = await remoteUpLeaf({ sourceRef: "fixture" }, host, { credentialFiles: NO_CREDENTIAL_FILES, timeoutMs: 2000, env: {} });
+        const json = await remoteJsonRequest(host, "/api/rigs/summary", { credentialFiles: NO_CREDENTIAL_FILES, method: "GET", timeoutMs: 2000, env: {} });
+        const raw = await remoteRawRequest(host, "/api/rigs/summary", { credentialFiles: NO_CREDENTIAL_FILES, timeoutMs: 2000, env: {} });
         const edge = await app.request("/api/rigs/summary?host=fixture-edge");
         const edgeBody = await edge.text();
         expect(requests).toEqual(["POST /api/up", "GET /api/rigs/summary", "GET /api/rigs/summary", "GET /api/rigs/summary"]);

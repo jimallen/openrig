@@ -7,6 +7,7 @@
 // through BOTH validators and must agree verdict-for-verdict; a divergence
 // here means one twin drifted.
 
+import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
 import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,7 +89,7 @@ describe("hosts-registry reader — CLI/daemon validator parity (shared fixtures
 
 describe("hosts-registry reader — daemon behaviors", () => {
   it("missing file returns the canonical what/why/fix error, never a throw", () => {
-    const res = loadHostRegistry("/nonexistent/hosts.yaml");
+    const res = loadHostRegistry(nodeCredentialFileReader, "/nonexistent/hosts.yaml");
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toContain("host registry not found at /nonexistent/hosts.yaml");
   });
@@ -97,7 +98,7 @@ describe("hosts-registry reader — daemon behaviors", () => {
     const dir = mkdtempSync(join(tmpdir(), "hosts-reg-"));
     const p = join(dir, "hosts.yaml");
     writeFileSync(p, "hosts:\n  - id: vps-1\n    transport: http\n    url: http://vps-1:7433\n    bearer_env: VPS1_TOKEN\n");
-    const res = loadHostRegistry(p);
+    const res = loadHostRegistry(nodeCredentialFileReader, p);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.registry.hosts[0]).toMatchObject({ id: "vps-1", transport: "http" });
     rmSync(dir, { recursive: true, force: true });

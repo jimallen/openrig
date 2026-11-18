@@ -1,3 +1,5 @@
+// workspaces-o9o.151: the one production CredentialFileReader, handed to every domain service that reads hosts.yaml or a bearer file.
+import { nodeCredentialFileReader } from "./adapters/node-credential-file-reader.js";
 import { sessionCodeMode } from "./domain/claude-code-mode.js";
 import { fileURLToPath } from "node:url";
 import { CodexRolloutOpenCalls } from "./adapters/codex-rollout-open-calls.js";
@@ -1403,7 +1405,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       },
     },
   }) : NO_SEAT_MESSAGING_PORTS);
-  const farDaemons = new FarDaemons({ selfHost: getSelfHostId });
+  const farDaemons = new FarDaemons({ selfHost: getSelfHostId, credentialFiles: nodeCredentialFileReader });
   const realSeatMessagingPorts = withFarSeats(localSeatMessagingPorts, farDaemons, (id) => seatMessages.senderOf(id));
   const seatMessagingPorts = opts?.wrapSeatMessagingPorts?.(realSeatMessagingPorts) ?? realSeatMessagingPorts;
   const heldMessages = new GuardHeldMessages(deliveryGuard);
@@ -1912,6 +1914,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     | undefined;
   if (queueRepoForWorkflow) {
     workflowRuntime = new WorkflowRuntime({
+      credentialFiles: nodeCredentialFileReader,
       guidanceLibrary: contextPackLibrary,
       db,
       eventBus,
@@ -2300,7 +2303,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       },
       listRigNames: () => rigRepo.listRigs().map((r) => r.name),
       resolveHost: (id) => {
-        const res = loadHostRegistry();
+        const res = loadHostRegistry(nodeCredentialFileReader);
         if (!res.ok) return null;
         const r = resolveHostInRegistry(res.registry, id);
         return r.ok ? r.host : null;

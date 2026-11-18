@@ -13,12 +13,15 @@
 
 import type { HttpHostEntry } from "../hosts/hosts-registry-reader.js";
 import { remoteJsonRequest } from "../hosts/remote-daemon-http.js";
+import type { CredentialFileReader } from "../credential-file.js";
 
 export interface RemoteUpLeafDeps {
   /** Injected for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
   readFile?: (path: string) => string;
+  /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   /** Bounded remote-up deadline (rev1-r2 R2-B1). Defaults to the
    *  long-running rig-up budget — remote bootstrap legitimately runs
    *  minutes, but never forever. Passed EXPLICITLY to the shared core
@@ -44,7 +47,7 @@ export interface RemoteUpBody {
 export async function remoteUpLeaf(
   body: RemoteUpBody,
   host: HttpHostEntry,
-  deps: RemoteUpLeafDeps = {},
+  deps: RemoteUpLeafDeps,
 ): Promise<{ ok: boolean; error?: string }> {
   const timeoutMs = deps.timeoutMs ?? REMOTE_UP_TIMEOUT_MS;
   const url = `${host.url.replace(/\/$/, "")}/api/up`;
@@ -55,6 +58,7 @@ export async function remoteUpLeaf(
     fetchImpl: deps.fetchImpl,
     env: deps.env,
     readFile: deps.readFile,
+    credentialFiles: deps.credentialFiles,
   });
   if (res.ok) return { ok: true };
 

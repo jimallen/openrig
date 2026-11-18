@@ -20,6 +20,7 @@
 // any of this logic runs — the local path is unchanged by construction
 // (FR-2 zero-regression negative).
 
+import type { CredentialFileReader } from "../credential-file.js";
 import type { Context, Next } from "hono";
 import { getSelfHostId, resolvesToLocalHost } from "./fanout-contract.js";
 import { loadHostRegistry, resolveHost } from "./hosts-registry-reader.js";
@@ -83,7 +84,8 @@ const MH3_BOUNDARY_MESSAGE =
 /** The param-intercept middleware (arch E2 ruling). Mounted on /api/* ahead
  *  of the route table; consumes the `?host=` envelope for remote reads and
  *  passes everything else through untouched. */
-export function hostReadThrough() {
+/** `credentialFiles` (workspaces-o9o.151) reads hosts.yaml and bearer files under the credential rule. */
+export function hostReadThrough(credentialFiles: CredentialFileReader) {
   return async (c: Context, next: Next) => {
     const hostParam = c.req.query("host");
     // local / absent host param short-circuits to the existing handler. 51-09
@@ -115,7 +117,7 @@ export function hostReadThrough() {
     // structured error, never a blind network attempt. Same injected-loader
     // seam as the write twin (tests swap it; production reads the registry).
     const registryLoader =
-      (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? loadHostRegistry;
+      (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? (() => loadHostRegistry(credentialFiles));
     const fetchImpl = c.get("remoteFetchImpl" as never) as typeof fetch | undefined;
     const fail = (detail: string, failureClass: string, remoteStatus?: number) =>
       c.json({ error: "remote_read_failed", hostId, failureClass, ...(remoteStatus !== undefined ? { remoteStatus } : {}), detail }, 502);
@@ -139,6 +141,7 @@ export function hostReadThrough() {
     const res = await remoteRawRequest(resolved.host, forwardPath, {
       timeoutMs: READ_THROUGH_TIMEOUT_MS,
       fetchImpl,
+      credentialFiles,
     });
     if (res.ok) {
       // Arch P3: the origin ANSWERED — its status/content-type/body ARE the

@@ -6,6 +6,7 @@ import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { LOCAL_HOST_ID, getSelfHostId } from "../domain/hosts/fanout-contract.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
 import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 
 /** OPR.0.4.4.15 FR-4 — the remote-action deadline class (a transactional
  *  write, not a bootstrap; named at this call-site per the arch
@@ -355,7 +356,7 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
       // own route). NOTHING is written to the LOCAL mission_control_actions
       // here — the origin host's audit row + this structured passthrough
       // are THE record (R15-3; local outbound audit log DROPPED by arch).
-      const registryLoader = (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? loadHostRegistry;
+      const registryLoader = (c.get("hostRegistryLoader" as never) as (() => ReturnType<typeof loadHostRegistry>) | undefined) ?? (() => loadHostRegistry(nodeCredentialFileReader));
       const fetchImpl = c.get("remoteFetchImpl" as never) as typeof fetch | undefined;
       const hostId = body.hostId;
       const fail = (detail: string, failureClass: string, remoteStatus?: number) =>
@@ -377,6 +378,7 @@ export function missionControlRoutes(opts?: MissionControlRoutesOpts): Hono {
         body: forwardBody,
         timeoutMs: REMOTE_ACTION_TIMEOUT_MS,
         fetchImpl,
+        credentialFiles: nodeCredentialFileReader,
         headers: {
           "X-OpenRig-Session": identity.session,
           "X-OpenRig-Relay": getSelfHostId() ?? "unknown",

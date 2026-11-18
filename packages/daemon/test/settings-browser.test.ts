@@ -1,3 +1,4 @@
+import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -15,7 +16,7 @@ import { channelStateDigest } from "../src/domain/gateway/channel-operations.js"
 let home: string, store: SettingsStore;
 const credential = "fixture-private-bot-value";
 let external: ReturnType<typeof vi.fn>;
-const read = () => settingsBrowser(store, null, home);
+const read = () => settingsBrowser(nodeCredentialFileReader, store, null, home);
 const entry = (key: string) => read().entries.find((e) => e.key === key)!;
 function snapshot(dir: string): Record<string, string> {
   return Object.fromEntries(readdirSync(dir, { withFileTypes: true }).flatMap((d): Array<[string, string]> => {
@@ -160,9 +161,9 @@ describe("passive CONFIG read view", () => {
   it("separates configured enablement from matching/changed and missing running observations", () => {
     const cfg = { ...DEFAULT_CONFIG, enabled: false };
     saveConfig(cfg, home);
-    const matching = settingsBrowser(store, { state: "active", connector: { configurationDigest: channelStateDigest(cfg) } }, home);
+    const matching = settingsBrowser(nodeCredentialFileReader, store, { state: "active", connector: { configurationDigest: channelStateDigest(cfg) } }, home);
     expect(matching.sources.find((s) => s.id === "slack")?.detail).toContain("Disabled; applied matching");
-    const changed = settingsBrowser(store, { state: "active", connector: { configurationDigest: "old" } }, home);
+    const changed = settingsBrowser(nodeCredentialFileReader, store, { state: "active", connector: { configurationDigest: "old" } }, home);
     expect(changed.sources.find((s) => s.id === "slack")?.detail).toContain("applied changed");
     expect(read().sources.find((s) => s.id === "slack")?.detail).toContain("applied unverified");
   });
