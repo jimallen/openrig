@@ -61,8 +61,10 @@ export interface StubRuntimeAdapterDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Launch-attempt id minting (tests inject; defaults to randomUUID). */
   newLaunchId?: () => string;
-  /** workspaces-o9o.136: the daemon's HOME, which every seat's env inherits (hc-seat.ts seatEnvironment); the preseed record goes under it.
-   *  Defaults to process.env.HOME. Empty or unset: no record is written, and the runner reports the miss. */
+  /** workspaces-o9o.136: the HOME the daemon gives every seat (startup.ts daemonHome, set as HOME in launchSessionEnv); the preseed record
+   *  goes under it. ONE source: the caller passes it, and the adapter never reads HOME from the env itself (verify-qa review: with HOME
+   *  unset the env has none while the seat is still given os.homedir()). Absent or empty: no record is written, and the runner reports
+   *  the miss. */
   daemonHome?: string;
 }
 
@@ -91,7 +93,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
     this.runnerEntryPath = deps.runnerEntryPath;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.newLaunchId = deps.newLaunchId ?? (() => randomUUID());
-    this.daemonHome = deps.daemonHome !== undefined ? deps.daemonHome : process.env.HOME;
+    this.daemonHome = deps.daemonHome;
   }
 
   async listInstalled(_binding: NodeBinding): Promise<InstalledResource[]> {

@@ -282,10 +282,12 @@ export const STUB_CLOCK_ANNOUNCEMENT = "OPENRIG_TEST_CLOCK_NOW active — timest
 /** workspaces-o9o.136: the pane line saying whether this launch's preseed record is under `home` (stubPreseedPath). */
 export function preseedLine(home: string | undefined, sessionName: string, launchId: string): string {
   if (home) {
-    try {
-      const record = JSON.parse(nodeFs.readFileSync(stubPreseedPath(home, sessionName), "utf8")) as { launchId?: unknown };
-      if (record.launchId === launchId) return "[stub-runner] preseed: trust reached|";
-    } catch { /* absent or unreadable: not reached */ }
+    const at = stubPreseedPath(home, sessionName);
+    let record: { launchId?: unknown } | null = null;
+    try { record = JSON.parse(nodeFs.readFileSync(at, "utf8")) as { launchId?: unknown }; } catch { /* absent or unreadable: not reached */ }
+    // verify-qa review (CoS ruling): the record is CONSUMED, whichever launch it names, so nothing accumulates under the daemon's HOME.
+    try { nodeFs.rmSync(at, { force: true }); } catch { /* a record that cannot be removed changes nothing about this report */ }
+    if (record?.launchId === launchId) return "[stub-runner] preseed: trust reached|";
   }
   return `[stub-runner] preseed NOT reached: no record for this launch under HOME=${home ?? "unset"}|`;
 }

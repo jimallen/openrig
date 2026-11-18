@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StubRuntimeAdapter } from "../src/adapters/stub-runtime-adapter.js";
+import { StubRuntimeAdapter, type StubRuntimeAdapterDeps } from "../src/adapters/stub-runtime-adapter.js";
 import { stubSeatSidecarPath } from "../src/adapters/stub-runner-protocol.js";
 import { mockTmuxAdapter } from "./helpers/test-app.js";
 
@@ -52,6 +52,23 @@ describe("the stub runner reports whether the daemon's preseed reached its HOME"
     expect(out).not.toContain("trust reached");
   });
 
+  // verify-qa review (CoS ruling): the runner CONSUMES the record, so nothing accumulates under the daemon's HOME.
+  it("the runner deletes this launch's record once it has read it", async () => {
+    const home = temp();
+    mkdirSync(dirname(preseedPath(home, "dev@rig")), { recursive: true });
+    writeFileSync(preseedPath(home, "dev@rig"), JSON.stringify({ launchId: "launch-136" }));
+    expect(await runnerOutput(home, "launch-136")).toContain("trust reached");
+    expect(existsSync(preseedPath(home, "dev@rig"))).toBe(false);
+  });
+
+  it("a stale record (another launch's) is deleted too, and is not this launch's preseed", async () => {
+    const home = temp();
+    mkdirSync(dirname(preseedPath(home, "dev@rig")), { recursive: true });
+    writeFileSync(preseedPath(home, "dev@rig"), JSON.stringify({ launchId: "launch-earlier" }));
+    expect(await runnerOutput(home, "launch-136")).toContain("preseed NOT reached");
+    expect(existsSync(preseedPath(home, "dev@rig"))).toBe(false);
+  });
+
   it("a record left by ANOTHER launch is not this launch's preseed", async () => {
     const home = temp();
     mkdirSync(dirname(preseedPath(home, "dev@rig")), { recursive: true });
@@ -73,7 +90,7 @@ describe("the stub adapter preseeds under the daemon's HOME before the runner st
       hasSession: async () => true,
       getPaneCommand: async () => "node",
     });
-    const adapter = new StubRuntimeAdapter({
+    const deps: StubRuntimeAdapterDeps = {
       tmux,
       runnerEntryPath: "/r.js",
       newLaunchId: () => "launch-136",
@@ -85,8 +102,10 @@ describe("the stub adapter preseeds under the daemon's HOME before the runner st
         exists: (p: string) => p === stubSeatSidecarPath(cwd) || files.has(p),
         mkdirp: () => {},
       },
-    } as never);
-    return { files, order, run: adapter.launchHarness({ tmuxSession: "dev@rig", cwd } as never, { name: "dev@rig" }) };
+    };
+    const adapter = new StubRuntimeAdapter(deps);
+    const binding = { tmuxSession: "dev@rig", cwd } as Parameters<StubRuntimeAdapter["launchHarness"]>[0];
+    return { files, order, run: adapter.launchHarness(binding, { name: "dev@rig" }) };
   }
 
   it("writes {launchId} at <daemon HOME>/.openrig-stub/preseed/<session> before the launch command", async () => {
@@ -96,6 +115,19 @@ describe("the stub adapter preseeds under the daemon's HOME before the runner st
     expect(JSON.parse(files.get(at) ?? "null")).toEqual({ launchId: "launch-136" });
     expect(order.indexOf(`write ${at}`)).toBeGreaterThanOrEqual(0);
     expect(order.indexOf(`write ${at}`)).toBeLessThan(order.indexOf("launch-command"));
+  });
+
+  // verify-qa review (CoS ruling, one source): the adapter writes under the HOME it is GIVEN, never one it reads from the env itself.
+  it("an adapter given no daemonHome writes no record, even with HOME set in the env", async () => {
+    const saved = process.env.HOME;
+    process.env.HOME = "/env-home-not-the-source";
+    try {
+      const { files, run } = launch(undefined);
+      expect((await run).ok).toBe(true);
+      expect([...files.keys()].some((p) => p.includes(".openrig-stub"))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.HOME; else process.env.HOME = saved;
+    }
   });
 
   it("a daemon with no HOME writes no record and still launches (the runner then reports the miss)", async () => {
