@@ -12,7 +12,11 @@ export function checkAbi(deps: {
   openNativeDatabase?: () => NativeOpenResult;
 }): CheckAbiResult;
 
-export function openInChildProcess(
-  addonPath: string,
-  spawnSync: typeof import("node:child_process").spawnSync,
-): NativeOpenResult;
+/** The part of child_process.spawnSync that openInChildProcess uses (tests pass a stand-in). */
+export type SpawnSyncLike = (
+  command: string,
+  args: string[],
+  options: { encoding: "utf8"; timeout: number },
+) => { error?: Error; signal?: string | null; status: number | null; stderr?: string | null };
+
+export function openInChildProcess(addonPath: string, spawnSync: SpawnSyncLike): NativeOpenResult;
