@@ -294,6 +294,9 @@ console.log(JSON.stringify({ CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ??
       homedir: home, exists: fs.existsSync, mkdirp: p => { fs.mkdirSync(p, { recursive: true }); },
       readFile: p => fs.readFileSync(p, "utf8"), writeFile: (p, t) => fs.writeFileSync(p, t),
       copyFile: fs.copyFileSync, readdir: p => fs.readdirSync(p),
+      // The no-follow state write both bootstrap and Code Mode go through (o9o.123/o9o.176) needs these, as the daemon wires them (startup.ts).
+      lstat: p => { try { const st = fs.lstatSync(p); return st.isSymbolicLink() ? "symlink" : st.isFile() ? "file" : st.isDirectory() ? "directory" : "other"; } catch { return null; } },
+      writeFileNoFollow: (p, t) => { const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600); try { fs.writeFileSync(fd, t, "utf8"); } finally { fs.closeSync(fd); } },
     };
     const adapter = new ClaudeCodeAdapter({ tmux: {} as TmuxAdapter, fsOps, claudeManagedLaunch: managed });
     return { root, cwd, home, seatHome, managed, adapter, node };

@@ -204,6 +204,9 @@ describe("ClaudeCodeAdapter Context Collector Provisioning", () => {
       mkdirp: (p: string) => { dirsMade.push(p); },
       copyFile: (src: string, dest: string) => { written[dest] = `copied:${src}`; },
       homedir: "/home/tester",
+      // The no-follow state write both bootstrap and Code Mode go through (o9o.123/o9o.176) needs these; map-backed here, as the daemon wires real ones (startup.ts).
+      lstat: (p: string): "file" | null => (p in written ? "file" : null),
+      writeFileNoFollow: (p: string, c: string) => { written[p] = c; },
     };
   }
 
