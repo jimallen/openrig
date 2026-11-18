@@ -15,6 +15,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Symptom: the twin accessibility scan (workspaces-o9o.130) found 42 elements on 6 surfaces (/context, /lab/card-previews, /rigs/rig_alpha, /topology and two topology drill-downs) breaking axe's aria-prohibited-attr rule: an aria-label on a plain span or div, whose role cannot carry a name, so screen readers ignored it. They were the context ring, the activity dot on rig and topology nodes, and the progress card's bar.
 - Now each names itself through a role that allows it: the dots, rings, glyphs, heatmap cells and the queue-count chip are images, and the progress bar is a progressbar with its value. Every other span or div that did the same (ten in all) is fixed too: the acceptance pill keeps its visible text as its name, and a specs leaf's extra detail is read as hidden text. No accessibility rule is turned off.
 
+### No new hard-coded palette colours in the web UI (workspaces-o9o.164)
+
+- A hard-coded Tailwind palette colour class (`text-red-600`, `bg-white`, `border-stone-100`, ...) is the same colour in light and dark, so it ignores the theme. The 565 in `packages/ui/src` today (classified on the o9o.164 bead) are recorded per file and class in `packages/ui/test/palette-class-baseline.json`.
+- `palette-class-baseline.test.ts` fails on a palette class above that baseline, and on a baseline entry above today's count, so the baseline can only shrink. After removing palette classes, run `npx tsx test/palette-classes.ts --update` from `packages/ui`; it refuses a rise. No colour changed.
+
 ### A markdown document never adds a second h1 to its page (workspaces-o9o.171)
 
 - Symptom: `/project/mission/<id>` rendered two h1 elements: the page title, and the steering document's own `# ...` heading.
