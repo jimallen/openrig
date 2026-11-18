@@ -140,7 +140,8 @@ export type HcNotice =
   | { kind: "missed" }
   | { kind: "stream_dead"; why: string }
   | { kind: "disconnected"; why: string }
-  | { kind: "connected"; coreId: string; version: string }
+  /** coreId: the core's `hello.core.id` when it sent one; an older hc sends none (workspaces-o9o.165, verify-sec F4). */
+  | { kind: "connected"; coreId?: string; version: string }
   | { kind: "core_started" }
   | { kind: "refused"; refusal: HcCoreRefusedError };
 
@@ -594,7 +595,8 @@ export class HcCoreWatch {
     }
     live = stream;
     this.stream = stream;
-    this.notify({ kind: "connected", coreId: stream.hello.core.id, version: stream.hello.version });
+    const coreId = stream.hello.core?.id;
+    this.notify({ kind: "connected", ...(coreId !== undefined ? { coreId } : {}), version: stream.hello.version });
     return { closed };  // wrapped: an async function would otherwise wait for the promise it returns
   }
 
