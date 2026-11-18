@@ -62,6 +62,26 @@ describe("SettingsTab — User Settings v0", () => {
     expect(screen.getByTestId("setting-workspace.root").textContent).toContain("source: default");
   });
 
+  // workspaces-o9o.159: a daemon can omit a key (another version; the UI twin sent 3 of 13). The page crashed on the first
+  // missing one ("Cannot read properties of undefined (reading 'value')"). Now that row says the daemon did not report it,
+  // offers no Edit (there is nothing to edit against), and every other row renders as usual.
+  it("a key the daemon does not report renders an honest row, not a crash, and the other rows render", async () => {
+    const response = makeSettingsResponse();
+    delete (response.settings as Record<string, unknown>)["workspace.catalog_path"];
+    delete (response.settings as Record<string, unknown>)["daemon.host"];
+    mockFetch.mockResolvedValue(jsonResponse(response));
+    render(createTestRouter({ component: () => <SettingsTab />, path: "/" }));
+
+    await waitFor(() => expect(screen.getByTestId("settings-tab")).toBeDefined());
+    for (const key of ["workspace.catalog_path", "daemon.host"]) {
+      const row = screen.getByTestId(`setting-${key}`);
+      expect(row.textContent, key).toContain("Not reported by this daemon");
+      expect(screen.queryByTestId(`setting-${key}-edit`), key).toBeNull();
+    }
+    expect(screen.getByTestId("setting-workspace.root").textContent).toContain("source: default");
+    expect(screen.getByTestId("setting-workspace.root-edit")).toBeDefined();
+  });
+
   it("Edit + Save sends POST to /api/config/:key with the value", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     mockFetch.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {

@@ -22,6 +22,7 @@ import {
   rigStatusByRig,
   launchPlanByRig,
   hostsResponse,
+  configResponse,
   packageInfoById,
   installsByPackage,
   packageValidateResult,
@@ -72,15 +73,7 @@ function route(pathname: string, search: URLSearchParams): Response {
   }
   // Settings (useSettings, staleTime:0). workspace.root unblocks the /project surface
   // (useWorkspaceName); preview settings keep the terminal pane consistent.
-  if (pathname === "/api/config") {
-    return json({
-      settings: {
-        "workspace.root": { value: "/Users/x/code/workspace", source: "config", defaultValue: "" },
-        "ui.preview.default_lines": { value: 100, source: "default", defaultValue: 100 },
-        "ui.preview.refresh_interval_seconds": { value: 3, source: "default", defaultValue: 3 },
-      },
-    });
-  }
+  if (pathname === "/api/config") return json(configResponse);
   if (pathname.startsWith("/api/spec-library") || pathname.startsWith("/api/library")) return json(specLibrary);
   // Workspace slices (the /project surface; missions derive from these).
   // The corrective demo slices merge into the base list (same fictional family).

@@ -20,6 +20,7 @@ import type { RigStatusObject } from "../src/hooks/useRigStatus.js";
 import type { LaunchPlan } from "../src/hooks/useLaunchPlan.js";
 import type { HostsResponse } from "../src/hooks/useHosts.js";
 import type { PackageInfo, InstallSummary } from "../src/hooks/usePackageDetail.js";
+import type { SettingsResponse, ResolvedSetting } from "../src/hooks/useSettings.js";
 
 export const rigSummary: RigSummary[] = [
   { id: "rig_alpha", name: "acme-build", nodeCount: 11, hasServices: true, latestSnapshotAt: "2025-09-01T01:40:00.000Z", latestSnapshotId: "snap_a_204" },
@@ -384,4 +385,45 @@ export const packagePlanResult = {
     { exportType: "agent", exportName: "relay-seat", classification: "config_mutation", targetPath: ".claude/agents/relay-seat.md", deferred: false, policyStatus: "rejected" },
   ],
   actionable: 1, deferred: 1, conflicts: 1, noOps: 1, rejected: 1,
+};
+
+// workspaces-o9o.159: GET /api/config, typed. It used to send 3 of the settings, and /settings crashed on the first key it
+// lacked; it now sends every fixed key so the page renders in full (the page also tolerates a missing key now). Values are
+// the daemon's defaults for a home at /Users/x (settings-store.ts getDefaultValue); the workspace root and the preview
+// lines (100, as the twin always showed; default 50) are set in the config file. ui.terminal.max_live_terminals is left
+// out: the daemon leaves it unset (settings-browser.ts), so a real daemon omits it too.
+const dflt = (value: string | number | boolean): ResolvedSetting => ({ value, source: "default", defaultValue: value });
+export const configResponse: SettingsResponse = {
+  settings: {
+    "daemon.port": dflt(7433),
+    "daemon.host": dflt("127.0.0.1"),
+    "db.path": dflt("/Users/x/.openrig/openrig.sqlite"),
+    "transcripts.enabled": dflt(true),
+    "transcripts.path": dflt("/Users/x/.openrig/transcripts"),
+    "workspace.root": { value: "/Users/x/code/workspace", source: "file", defaultValue: "/Users/x/.openrig/workspace" },
+    "workspace.slices_root": dflt("/Users/x/code/workspace/missions"),
+    "workspace.steering_path": dflt("/Users/x/code/workspace/STEERING.md"),
+    "workspace.specs_root": dflt("/Users/x/code/workspace/specs"),
+    "workspace.projects_root": dflt("/Users/x/code/workspace/projects"),
+    "workspace.catalog_path": dflt("/Users/x/code/workspace/workspace.yaml"),
+    "files.allowlist": dflt(""),
+    "progress.scan_roots": dflt(""),
+    "ui.preview.refresh_interval_seconds": dflt(3),
+    "ui.preview.max_pins": dflt(4),
+    "ui.preview.default_lines": { value: 100, source: "file", defaultValue: 50 },
+    "agents.advisor_session": dflt(""),
+    "agents.operator_session": dflt(""),
+    "feed.subscriptions.action_required": dflt(true),
+    "feed.subscriptions.approvals": dflt(true),
+    "feed.subscriptions.shipped": dflt(true),
+    "feed.subscriptions.progress": dflt(true),
+    "feed.subscriptions.audit_log": dflt(false),
+    "policies.claude_compaction.enabled": dflt(false),
+    "policies.claude_compaction.threshold_percent": dflt(80),
+    "policies.claude_compaction.pre_compact_instruction": dflt(""),
+    "policies.claude_compaction.compact_instruction": dflt(""),
+    "policies.claude_compaction.message_inline": dflt(""),
+    "policies.claude_compaction.message_file_path": dflt(""),
+    "policies.claude_compaction.post_restore_audit_instruction": dflt(""),
+  },
 };

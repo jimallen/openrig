@@ -21,11 +21,32 @@ import {
 interface SettingsRowProps {
   label: string;
   settingKey: SettingsKey;
-  resolved: ResolvedSetting;
+  /** Absent when the daemon does not report this key (another daemon version). */
+  resolved: ResolvedSetting | undefined;
   testIdPrefix: string;
 }
 
-function SettingsRow({ label, settingKey, resolved, testIdPrefix }: SettingsRowProps) {
+/** workspaces-o9o.159: a key the daemon does not report renders an honest row (no Edit: there is nothing to edit
+ *  against) instead of crashing the page. No hooks here, so the two branches never change the hook order. */
+function SettingsRow({ resolved, ...rest }: SettingsRowProps) {
+  return resolved ? <ResolvedSettingsRow {...rest} resolved={resolved} /> : <UnreportedSettingsRow {...rest} />;
+}
+
+function UnreportedSettingsRow({ label, settingKey, testIdPrefix }: Omit<SettingsRowProps, "resolved">) {
+  return (
+    <div
+      data-testid={`${testIdPrefix}-${settingKey}`}
+      className="border border-outline-variant/40 bg-surface-lowest/[0.08] px-3 py-2 space-y-1"
+    >
+      <div className="font-mono text-[10px] text-on-surface truncate">{label}</div>
+      <div className="font-mono text-[9px] text-on-surface-variant">
+        Not reported by this daemon ({settingKey}). Check it with <span className="text-on-surface">rig config get {settingKey}</span>.
+      </div>
+    </div>
+  );
+}
+
+function ResolvedSettingsRow({ label, settingKey, resolved, testIdPrefix }: Omit<SettingsRowProps, "resolved"> & { resolved: ResolvedSetting }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(resolved.value ?? ""));
   const [error, setError] = useState<string | null>(null);

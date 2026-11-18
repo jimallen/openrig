@@ -52,7 +52,9 @@ export type SettingsKey =
   | `feed.subscriptions.${string}.enabled`;
 
 export interface SettingsResponse {
-  settings: Record<SettingsKey, ResolvedSetting>;
+  /** workspace-o9o.159: Partial: a daemon reports the keys it knows, so another version can omit one (the UI twin sent 3
+   *  of 13 and /settings crashed). Every reader handles a missing key. */
+  settings: Partial<Record<SettingsKey, ResolvedSetting>>;
   /** OPR.0.4.4.15 — additive dynamic-class enumeration: persisted per-host
    *  feed subscriptions. Absent on pre-slice daemons (defensive-optional). */
   feedHostSubscriptions?: Array<{ hostId: string; enabled: boolean }>;

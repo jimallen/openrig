@@ -73,7 +73,7 @@ function pad2(n: number): string {
 
 /** Read a string ConfigStore setting from the useSettings payload. */
 function readSetting(
-  data: { settings?: Record<string, { value?: unknown }> } | undefined,
+  data: { settings?: Record<string, { value?: unknown } | undefined> } | undefined,
   key: string,
 ): string {
   const v = data?.settings?.[key]?.value;

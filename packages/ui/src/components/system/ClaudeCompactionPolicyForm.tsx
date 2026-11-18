@@ -90,7 +90,7 @@ export function ClaudeCompactionPolicyForm() {
 }
 
 interface PolicyFormBodyProps {
-  data: Record<string, { value: unknown }>;
+  data: Record<string, { value: unknown } | undefined>;
   setSetting: ReturnType<typeof useSetSetting>;
 }
 

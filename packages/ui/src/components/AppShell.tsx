@@ -185,7 +185,7 @@ const RAIL_ICONS: RailIconSpec[] = [
 // V1 Phase 4 P4-4 helpers — config-driven Advisor / Operator click resolution.
 
 function readSettingString(
-  data: { settings?: Record<string, { value?: unknown }> } | undefined,
+  data: { settings?: Record<string, { value?: unknown } | undefined> } | undefined,
   key: string,
 ): string {
   if (!data || !data.settings) return "";

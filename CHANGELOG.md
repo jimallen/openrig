@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The Settings page shows a setting the daemon does not report, instead of crashing (workspaces-o9o.159)
+
+- Symptom: the web UI's Settings page crashed ("Cannot read properties of undefined (reading 'value')") when the daemon's `/api/config` answer lacked a key the page lists. The UI twin sent 3 of the 13 and crashed; a daemon of another version can omit a key too, and the daemon leaves `ui.terminal.max_live_terminals` unset.
+- Now such a row says it was not reported by this daemon and names the `rig config get` command, with no Edit button; every other row renders as before. The settings response type now marks every key as optional, so code that reads a setting must handle a missing one; the other readers already did.
+- The UI twin's `/api/config` sends every fixed key, typed, at the daemon's defaults, so its Settings page renders in full.
+
 ### Green text is readable on every light surface (workspaces-o9o.120)
 
 - Symptom: green text (approved plan entries, running seats, success marks) used the brand green, 3.78:1 on the light page and 3.03:1 on the darkest light surface; measured 3.78:1 rendered in the install plan and the topology table.

@@ -88,7 +88,7 @@ export function useFeedSubscriptions(): UseFeedSubscriptionsResult {
   const { data, error } = useSettings();
   const setSetting = useSetSetting();
 
-  const settings = data?.settings as Record<string, { value: unknown }> | undefined;
+  const settings = data?.settings as Record<string, { value: unknown } | undefined> | undefined;
   const unavailable = !!error || !settings;
 
   const state: FeedSubscriptionState = unavailable
