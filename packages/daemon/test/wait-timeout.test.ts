@@ -10,19 +10,19 @@ import { waitFor } from "./helpers/pda-runner-rig.js";
 const EVIDENCE = String.raw`after (\d+) ms \(1-minute load \d+\.\d{2} on \d+ cores\)`;
 
 describe("workspaces-o9o.174: a shared test wait that times out reports the time it waited and the load", () => {
-  it("RED: test/hc-private-core until()", async () => {
+  it("test/hc-private-core until() reports the time it waited and the load", async () => {
     await expect(coreUntil(() => 0, (v) => v === 1, "the probe", 30)).rejects.toThrow(new RegExp(`^timed out waiting for the probe ${EVIDENCE}; last: 0$`));
   });
 
-  it("RED: helpers/hc-private-core waitUntil()", async () => {
+  it("helpers/hc-private-core waitUntil() reports the time it waited and the load", async () => {
     await expect(waitUntil(async () => 0, (v) => v === 1, "the probe", 30)).rejects.toThrow(new RegExp(`^timed out waiting for the probe ${EVIDENCE}$`));
   });
 
-  it("RED: helpers/pi-runner-pane until()", async () => {
+  it("helpers/pi-runner-pane until() reports the time it waited and the load", async () => {
     await expect(paneUntil(async () => 0, (v) => v === 1, "the probe", 30)).rejects.toThrow(new RegExp(`^timed out waiting for the probe ${EVIDENCE}; last: 0$`));
   });
 
-  it("RED: helpers/pda-runner-rig waitFor()", async () => {
+  it("helpers/pda-runner-rig waitFor() reports the time it waited and the load", async () => {
     await expect(waitFor(() => false, "the probe", 30)).rejects.toThrow(new RegExp(`^timed out waiting for: the probe ${EVIDENCE}$`));
   });
 
