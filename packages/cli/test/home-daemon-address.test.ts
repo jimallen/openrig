@@ -11,6 +11,7 @@ import { DaemonClient, DaemonConnectionError } from "../src/client.js";
 import { getDaemonStatus, statusGuardMessage, stopDaemon } from "../src/daemon-lifecycle.js";
 import { homeWithoutDaemonAddress, isNonDefaultOpenRigHome, NO_HOME_DAEMON_ACTION, NO_HOME_DAEMON_URL } from "../src/home-daemon-address.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
+import { stubConfigStore } from "./helpers/stub-config-store.js";
 
 let scratch = "";
 const ADDRESS_ENV = ["OPENRIG_URL", "RIGGED_URL", "OPENRIG_PORT", "RIGGED_PORT", "OPENRIG_HOST", "RIGGED_HOST", "RIGGED_HOME"];
@@ -54,12 +55,16 @@ describe("o9o.181: which homes are the default", () => {
     vi.stubEnv("OPENRIG_PORT", "28181");
     expect(homeWithoutDaemonAddress()).toBeNull();
     vi.stubEnv("OPENRIG_PORT", undefined);
+    vi.stubEnv("OPENRIG_HOST", "127.0.0.2");
+    expect(homeWithoutDaemonAddress()).toBeNull();
+    vi.stubEnv("OPENRIG_HOST", undefined);
     fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ daemon: { port: 28182 } }));
     expect(homeWithoutDaemonAddress()).toBeNull();
     fs.rmSync(path.join(home, "config.json"));
     // A store that cannot say where its values came from: a non-default value is configured, the built-in one is not.
-    expect(homeWithoutDaemonAddress({ configStore: { resolve: () => ({ daemon: { port: 28183, host: "127.0.0.1" } }) as never } })).toBeNull();
-    expect(homeWithoutDaemonAddress({ configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" } }) as never } })).not.toBeNull();
+    expect(homeWithoutDaemonAddress({ configStore: stubConfigStore({ daemon: { port: 28183, host: "127.0.0.1" } }) })).toBeNull();
+    expect(homeWithoutDaemonAddress({ configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.2" } }) })).toBeNull();
+    expect(homeWithoutDaemonAddress({ configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" } }) })).not.toBeNull();
     // The default home keeps today's fallback: the same empty home, named as <user home>/.openrig, names no reason.
     const userHome = path.join(scratch, "user");
     fs.mkdirSync(path.join(userHome, ".openrig"), { recursive: true });

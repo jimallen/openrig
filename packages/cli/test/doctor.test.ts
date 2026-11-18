@@ -341,6 +341,18 @@ describe("runDoctorChecks", () => {
     }
   });
 
+  // workspaces-o9o.181: the hermetic fixture home is not the default home, and this store names no port (it holds only the built-in
+  // 127.0.0.1:7433). An occupied port there is not this home's daemon, and doctor must not probe it to find out whose it is.
+  it("o9o.181: port in use, and this non-default home names no daemon -> fail with the reason, and no health probe", async () => {
+    const fetch = vi.fn(async (_url: string) => ({ ok: true }));
+    const deps = makeDeps({ checkPort: async () => false, fetch });
+    const { portCheck } = runDoctorChecks(deps);
+    const result = await portCheck;
+    expect(result.status).toBe("fail");
+    expect(result.reason).toContain("names no daemon of its own");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("port in use by OpenRig daemon -> pass", async () => {
     const origFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => ({ ok: true })) as unknown as typeof fetch;
