@@ -26,13 +26,13 @@ import { nodeShimFiles } from "../src/adapters/node-shim-files.js";
 function makeApp(sentinelOracle: object, sentinelInvalidator?: object) {
   const app = new Hono();
   app.use("*", async (c, next) => {
-    c.set("rigRepo" as never, { db: {} } as never);
-    c.set("sessionRegistry" as never, {} as never);
-    c.set("discoveryRepo" as never, {} as never);
-    c.set("eventBus" as never, {} as never);
-    c.set("tmuxAdapter" as never, {} as never);
-    c.set("seatActivityService" as never, sentinelOracle as never);
-    if (sentinelInvalidator) c.set("occupantInvalidator" as never, sentinelInvalidator as never);
+    c.set("rigRepo" as never, { db: {} });
+    c.set("sessionRegistry" as never, {});
+    c.set("discoveryRepo" as never, {});
+    c.set("eventBus" as never, {});
+    c.set("tmuxAdapter" as never, {});
+    c.set("seatActivityService" as never, sentinelOracle);
+    if (sentinelInvalidator) c.set("occupantInvalidator" as never, sentinelInvalidator);
     await next();
   });
   app.route("/api/seat", seatRoutes);

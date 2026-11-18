@@ -218,7 +218,7 @@ describe("KernelBootTracker — bootstrap result transitions", () => {
     });
     tracker.startBooting("rig.yaml", Promise.resolve({
       runId: "t", status: "failed", stages: [], errors: ["preflight: tmux missing"], warnings: [],
-    } as never));
+    }));
     await flush();
     const status = tracker.getStatus();
     expect(status.kernelState).toBe("bootstrap_failed");

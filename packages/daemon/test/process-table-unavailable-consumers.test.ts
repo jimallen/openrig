@@ -63,12 +63,12 @@ describe("o9o.72 B: a resume hook on an unreadable process table keeps the armed
     registry.updateBinding(node.id, { tmuxSession: name, tmuxPane: "%1" });
     const app = new Hono();
     app.use("*", async (c, next) => {
-      c.set("tmuxAdapter" as never, { getPanePid: async () => 100 } as never);
-      c.set("listProcesses" as never, listProcesses as never);
-      c.set("agentActivityStore" as never, new AgentActivityStore({ db, eventBus }) as never);
+      c.set("tmuxAdapter" as never, { getPanePid: async () => 100 });
+      c.set("listProcesses" as never, listProcesses);
+      c.set("agentActivityStore" as never, new AgentActivityStore({ db, eventBus }));
       c.set("activityHookToken" as never, "fixture" as never);
-      c.set("sessionRegistry" as never, registry as never);
-      c.set("eventBus" as never, eventBus as never);
+      c.set("sessionRegistry" as never, registry);
+      c.set("eventBus" as never, eventBus);
       await next();
     });
     app.route("/api/activity", activityRoutes);
@@ -108,12 +108,12 @@ describe("o9o.72 E: a Claude sidecar is not captured as current while the proces
 
   it("capture skips this cycle with process_table_unavailable", async () => {
     expect(await deriveResumeToken({ runtime: "claude-code", sessionName: "seat@rig" },
-      { contextUsageStore: store, claudeProcessStartedAt: unreadableStart } as never)).toEqual({ outcome: "skipped", reason: "process_table_unavailable" });
+      { contextUsageStore: store, claudeProcessStartedAt: unreadableStart })).toEqual({ outcome: "skipped", reason: "process_table_unavailable" });
   });
 
   it("control: any other unknown start time still captures, as today", async () => {
     expect(await deriveResumeToken({ runtime: "claude-code", sessionName: "seat@rig" },
-      { contextUsageStore: store, claudeProcessStartedAt: unknownStart } as never)).toMatchObject({ outcome: "captured", token });
+      { contextUsageStore: store, claudeProcessStartedAt: unknownStart })).toMatchObject({ outcome: "captured", token });
   });
 
   it.each([["unreadable", unreadableStart, false], ["unknown", unknownStart, true]] as const)(

@@ -125,7 +125,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const failing = vi.fn(async () => { throw new Error("ps died"); });
     const failed = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: failing as never,
+      resolveHomeDirByPid: failing,
       readFromLogs: () => undefined,
     });
     await expect(failed.resolveUngatedLegacy(44)).rejects.toThrow("ps died");
@@ -138,7 +138,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const resolveHome = vi.fn(() => new Promise<string>((r) => { release = r; }));
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       readFromLogs: (_pid, home) => (home === "/other/home" ? "thread-9" : undefined),
     });
     const a = resolver.resolveUngatedLegacy(77);
@@ -158,7 +158,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const resolveHome = vi.fn(async () => "/home/me");
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       readFromLogs: () => undefined,
     });
     expect(await resolver.resolveUngatedLegacy(88)).toBeUndefined();
@@ -186,7 +186,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const resolveHome = vi.fn(async () => liveHome);
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       readFromLogs: (_pid, home) => (home === "/home/old" ? "old-thread" : home === "/home/new" ? "new-thread" : undefined),
       homeTtlMs: 60_000,
       now: () => t,
@@ -211,7 +211,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const resolveHome = vi.fn(async () => liveHome);
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       readFromLogs: (_pid, home) => (home === "/home/old" ? "old-thread" : home === "/home/new" ? "new-thread" : undefined),
       homeTtlMs: 60_000,
       now: () => 0, // clock frozen INSIDE the TTL — only identity can invalidate
@@ -247,7 +247,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
       const resolveHome = vi.fn((_pid: number) => new Promise<string>((r) => { waiters.set(`p${++probeSeq}`, r); }));
       const resolver = new CodexThreadIdResolver({
         defaultHome: "/home/me",
-        resolveHomeDirByPid: resolveHome as never,
+        resolveHomeDirByPid: resolveHome,
         readFromLogs: (_pid, home) => (home === "/home/old" ? "old-thread" : home === "/home/new" ? "new-thread" : undefined),
         homeTtlMs: 60_000,
         now: () => 0,
@@ -298,7 +298,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
       // live under a non-default home); the zero-subprocess contract is for
       // the HIT path. The probe honestly answers "default home".
       const homeProbes = vi.fn(async () => home);
-      const resolver = new CodexThreadIdResolver({ defaultHome: home, resolveHomeDirByPid: homeProbes as never });
+      const resolver = new CodexThreadIdResolver({ defaultHome: home, resolveHomeDirByPid: homeProbes });
 
       // The NEW occupant (started 19:30) must NOT receive the retired thread.
       expect(await resolver.resolve(4242, "Sun Aug 23 19:30:00 2026")).toBeUndefined();
@@ -342,7 +342,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
       db.close();
 
       const homeProbes = vi.fn(async () => home);
-      const resolver = new CodexThreadIdResolver({ defaultHome: home, resolveHomeDirByPid: homeProbes as never });
+      const resolver = new CodexThreadIdResolver({ defaultHome: home, resolveHomeDirByPid: homeProbes });
       expect(await resolver.resolve(4242, "Sun Aug 23 19:30:00 2026")).toBeUndefined();
 
       // r2 round-6 superseded round-5's same-second acceptance: ownership
@@ -386,7 +386,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
         .run(startTs, "pid:4242:retired-process-uuid", "retired-thread");
       db.close();
 
-      const resolver = new CodexThreadIdResolver({ defaultHome: home, resolveHomeDirByPid: (async () => home) as never });
+      const resolver = new CodexThreadIdResolver({ defaultHome: home, resolveHomeDirByPid: (async () => home) });
       // The ambiguous second fails closed: the retired row must not resolve…
       expect(await resolver.resolve(4242, "Sun Aug 23 19:30:00 2026")).toBeUndefined();
       // …and even B's OWN same-second row stays unresolved (undecidable ownership).
@@ -424,7 +424,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const resolveHome = vi.fn(async () => "/other/home");
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       readFromLogs: (_pid, home) => (home === "/other/home" ? "thread-x" : undefined),
       now: () => t,
     });
@@ -466,7 +466,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const resolveHome = vi.fn(async () => "/other/home");
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       readFromLogs: (_pid, home) => (home === "/other/home" ? "thread-x" : undefined),
       now: () => t,
     });
@@ -493,7 +493,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     const resolveHome = vi.fn(async () => liveHome);
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       // Only the NEW occupant's home ever yields a gated row; the retired
       // occupant's rows fail the strict ts > startTs gate (round-6).
       readFromLogs: (_pid, home) => (home === "/home/new" ? "new-thread" : undefined),
@@ -529,7 +529,7 @@ describe("OPR.0.5.3.10 — one census per cycle", () => {
     );
     const resolver = new CodexThreadIdResolver({
       defaultHome: "/home/me",
-      resolveHomeDirByPid: resolveHome as never,
+      resolveHomeDirByPid: resolveHome,
       readFromLogs: (_pid, home) => (home === "/home/new" ? "new-thread" : undefined),
       now: () => t,
     });

@@ -34,9 +34,9 @@ function fixture(alphaMissions = "missions") {
   const legacy = project(join(workspace, "legacy"), "legacy", "judge@rig");
   const app = new Hono();
   app.use("*", async (c, next) => {
-    c.set("sliceIndexer" as never, { isReady: () => true, slicesRoot: legacy.missions, invalidate: () => {} } as never);
-    c.set("proofSourceWatch" as never, { observation: () => ({ state: "watching", revision: "workspace-1" }) } as never); // the selected workspace's watcher
-    c.set("settingsStore" as never, { resolveOne: (key: string) => ({ value: key === "workspace.root" ? workspace : join(workspace, "workspace.yaml") }) } as never);
+    c.set("sliceIndexer" as never, { isReady: () => true, slicesRoot: legacy.missions, invalidate: () => {} });
+    c.set("proofSourceWatch" as never, { observation: () => ({ state: "watching", revision: "workspace-1" }) }); // the selected workspace's watcher
+    c.set("settingsStore" as never, { resolveOne: (key: string) => ({ value: key === "workspace.root" ? workspace : join(workspace, "workspace.yaml") }) });
     await next();
   });
   app.route("/api/proof", proofRoutes());
@@ -180,8 +180,8 @@ describe("project-qualified proof scope (#132)", () => {
     const sibling = join(ws, "other-project", "secret.md"); write(sibling, "not this project's evidence\n");
     const app = new Hono();
     app.use("*", async (c, next) => {
-      c.set("sliceIndexer" as never, { isReady: () => true, slicesRoot: join(root, "missions"), invalidate: () => {} } as never);
-      c.set("settingsStore" as never, { resolveOne: (key: string) => ({ value: key === "workspace.root" ? ws : join(ws, "workspace.yaml") }) } as never);
+      c.set("sliceIndexer" as never, { isReady: () => true, slicesRoot: join(root, "missions"), invalidate: () => {} });
+      c.set("settingsStore" as never, { resolveOne: (key: string) => ({ value: key === "workspace.root" ? ws : join(ws, "workspace.yaml") }) });
       await next();
     });
     app.route("/api/proof", proofRoutes());
@@ -222,8 +222,8 @@ describe("project-qualified proof scope (#132)", () => {
     mission(join(ws, "bare"), {});   // no policy anywhere under its own root
     const app = new Hono();
     app.use("*", async (c, next) => {
-      c.set("sliceIndexer" as never, { isReady: () => true, slicesRoot: join(ws, "missions"), invalidate: () => {} } as never);
-      c.set("settingsStore" as never, { resolveOne: (key: string) => ({ value: key === "workspace.root" ? ws : join(ws, "workspace.yaml") }) } as never);
+      c.set("sliceIndexer" as never, { isReady: () => true, slicesRoot: join(ws, "missions"), invalidate: () => {} });
+      c.set("settingsStore" as never, { resolveOne: (key: string) => ({ value: key === "workspace.root" ? ws : join(ws, "workspace.yaml") }) });
       await next();
     });
     app.route("/api/proof", proofRoutes());

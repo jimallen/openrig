@@ -26,7 +26,7 @@ function mkTmux(counter: { captures: number }) {
       counter.captures++;
       return "some pane output\n> awaiting input";
     },
-  } as never;
+  };
 }
 
 function entries(sessionName: string) {
@@ -42,7 +42,7 @@ function mkStructural(
   return {
     getStructuralActivity: () =>
       state ? { state, reason: `structural_${state}`, evidence: "pane", observedAt } : null,
-  } as never;
+  };
 }
 
 const staleHook: AgentActivity = {
@@ -117,7 +117,7 @@ describe("5b — structural ACTIVITY signal (lifted into the default derivation,
 
   it("MF1 fold-fallback: once the REAL service invalidates the obs (capture outage), attachAgentActivity falls back to the honest stale hook — no false-live", async () => {
     let content: string | null = "⠋ Working… esc to interrupt";
-    const svc = new SeatStructuralActivityService({ capturePaneContent: async () => content } as never);
+    const svc = new SeatStructuralActivityService({ capturePaneContent: async () => content });
     await svc.pollSeat("s@rig"); // agent_active cached
     const call = async () =>
       (await attachAgentActivity(entries("s@rig"), {

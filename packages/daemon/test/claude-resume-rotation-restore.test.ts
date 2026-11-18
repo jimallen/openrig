@@ -63,12 +63,12 @@ describe("managed Claude full down/up", () => {
       const activity = new AgentActivityStore({ db, eventBus });
       const hooks = new Hono();
       hooks.use("*", async (c, next) => {
-        c.set("tmuxAdapter" as never, tmux as never);
-        c.set("listProcesses" as never, hookProcesses as never);
-        c.set("agentActivityStore" as never, activity as never);
+        c.set("tmuxAdapter" as never, tmux);
+        c.set("listProcesses" as never, hookProcesses);
+        c.set("agentActivityStore" as never, activity);
         c.set("activityHookToken" as never, "fixture" as never);
-        c.set("sessionRegistry" as never, sessionRegistry as never);
-        c.set("eventBus" as never, eventBus as never);
+        c.set("sessionRegistry" as never, sessionRegistry);
+        c.set("eventBus" as never, eventBus);
         await next();
       });
       hooks.route("/api/activity", activityRoutes);
@@ -142,7 +142,7 @@ describe("managed Claude full down/up", () => {
         sendVerify: async () => { throw new Error("unexpected input from clear-attention"); } });
       const admin = new Hono();
       admin.use("*", async (c,next) => {
-        c.set("seatAttentionReconciler" as never, clear as never);
+        c.set("seatAttentionReconciler" as never, clear);
         c.set("terminalBearerToken" as never, "fixture" as never); await next();
       });
       admin.route("/api/sessions", sessionAdminRoutes);

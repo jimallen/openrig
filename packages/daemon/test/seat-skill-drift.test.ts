@@ -199,7 +199,7 @@ describe.each([["claude-code", ".claude"], ["codex", ".agents"]] as const)("work
       runtimeAdapters: { [runtime]: adapter },
       listProcesses,
       seatStartupSource: inst,
-    } as never);
+    });
     restore = new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore, nodeLauncher, tmuxAdapter: tmux,
       claudeResume: { canResume: () => false, resume: vi.fn() } as never,
@@ -315,7 +315,7 @@ describe.each([["claude-code", ".claude"], ["codex", ".agents"]] as const)("work
 
     const outcome = await restore.restore(down.snapshotId!, {
       adapters: { [runtime]: adapter }, fsOps: { exists: (p: string) => fs.existsSync(p) }, freshLogicalIds: ["dev.impl"], startupFrom: "stored",
-    } as never);
+    });
 
     expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
     const node = outcome.ok ? outcome.result.nodes.find((n) => n.logicalId === "dev.impl") : undefined;
@@ -386,7 +386,7 @@ describe.each([["claude-code", ".claude"], ["codex", ".agents"]] as const)("work
 
     const outcome = await restore.restore(down.snapshotId!, {
       adapters: { [runtime]: adapter }, fsOps: { exists: (p: string) => fs.existsSync(p) }, freshLogicalIds: ["dev.impl"],
-    } as never);
+    });
 
     expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
     expect(onDisk()).toEqual(["alpha", "beta"]);
@@ -421,7 +421,7 @@ describe.each([["claude-code", ".claude"], ["codex", ".agents"]] as const)("work
     await launchRig();
     retarget("bbbbbbb");
 
-    const plan = await service.planFresh({ seatRef: SESSION, fresh: true, stop: true, startupFrom: "stored" } as never);
+    const plan = await service.planFresh({ seatRef: SESSION, fresh: true, stop: true, startupFrom: "stored" });
 
     expect(plan.ok, JSON.stringify(plan)).toBe(true);
     const warnings = plan.ok ? plan.warnings : undefined;
@@ -561,7 +561,7 @@ edges: []
 
     const outcome = await restore.restore(down.snapshotId!, {
       adapters: { "claude-code": adapter }, fsOps: { exists: (p: string) => fs.existsSync(p) }, freshLogicalIds: ["dev.impl", "dev.qa"], startupFrom: "stored",
-    } as never);
+    });
 
     expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
     const rows = db.prepare("SELECT seq, type, payload FROM events WHERE type IN ('seat.skills_drift_observed', 'restore.completed') ORDER BY seq").all() as Array<{ seq: number; type: string; payload: string }>;
