@@ -188,12 +188,33 @@ function shown(value: string): string {
 export function rawHeader(c: Context, name: "host" | "origin"): string | undefined | null {
   const raw = (c.env as { incoming?: { rawHeaders?: unknown } } | undefined)?.incoming?.rawHeaders;
   if (!Array.isArray(raw)) return c.req.header(name);
+  return rawHeaderOf(raw, name);
+}
+
+/** One header from a Node request's `rawHeaders`: undefined when absent, null when duplicated (ambiguous). */
+export function rawHeaderOf(raw: readonly unknown[], name: "host" | "origin"): string | undefined | null {
   const values: string[] = [];
   for (let i = 0; i + 1 < raw.length; i += 2) {
     if (String(raw[i]).toLowerCase() === name) values.push(String(raw[i + 1]));
   }
   if (values.length === 0) return undefined;
   return values.length === 1 ? values[0]! : null;
+}
+
+/** workspaces-o9o.125: whether a WebSocket upgrade's Host must be decided here before the Node adapter sees it. @hono/node-server 2
+ *  builds a URL from the Host before the app runs and answers 400 (or 500) itself when it cannot, so the boundary never decides.
+ *  A malformed or URL-rejected Host (empty, "a b", "1.2.3.4.5") is one the adapter cannot carry, so the boundary decides it first.
+ *  Absent is not one (the adapter supplies a default), nor is a duplicated Host: the adapter carries the first, and the boundary
+ *  refuses the duplicate from the raw headers, as over plain HTTP. */
+export function upgradeHostNeedsEarlyDecision(host: string | undefined | null): boolean {
+  if (host === undefined || host === null) return false;
+  if (parseHostHeader(host).kind === "malformed") return true;
+  try {
+    new URL(`http://${host}/`);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function bearerFrom(header: string | undefined): string | null {

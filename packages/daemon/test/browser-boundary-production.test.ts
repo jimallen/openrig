@@ -7,12 +7,12 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import type Database from "better-sqlite3";
 import { browserBoundary } from "../src/middleware/browser-boundary.js";
-import type { NodeWebSocketOption } from "../src/adapters/node-websocket.js";
+import type { NodeListenerOptions } from "../src/adapters/node-websocket.js";
 import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
 
 type Server = ReturnType<typeof serve>;
-const listen = (fetch: Hono["fetch"], websocket?: NodeWebSocketOption) => new Promise<{ server: Server; port: number }>((resolve) => {
-  const server = serve({ fetch, port: 0, hostname: "127.0.0.1", ...(websocket ? { websocket } : {}) }, (info) => resolve({ server, port: info.port }));
+const listen = (fetch: Hono["fetch"], options?: NodeListenerOptions) => new Promise<{ server: Server; port: number }>((resolve) => {
+  const server = serve({ fetch, port: 0, hostname: "127.0.0.1", ...options }, (info) => resolve({ server, port: info.port }));
 });
 const close = (s: Server) => new Promise<void>((r) => (s as unknown as net.Server).close(() => r()));
 
@@ -51,7 +51,7 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
       withWebSocket: true,
       appDeps: { webUiEnabled: true, browserBoundaryObserver: (d) => decisions.push(d.code ?? d.outcome) },
     });
-    ({ server, port } = await listen(built.app.fetch as Hono["fetch"], built.websocketOption!()));
+    ({ server, port } = await listen(built.app.fetch as Hono["fetch"], built.listenerOptions!()));
   });
   afterAll(async () => { await close(server); db.close(); });
 
@@ -85,21 +85,38 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
     ["empty Origin", (p: number) => [`Host: 127.0.0.1:${p}`, "Origin: "], "browser_origin_refused"],
     ["duplicate Origin", (p: number) => [`Host: 127.0.0.1:${p}`, `Origin: http://127.0.0.1:${p}`, "Origin: http://evil.example"], "browser_origin_refused"],
   ] as const) {
-    it(`${name}: refused on the upgrade path, by the boundary or before the app, with zero route effects`, async () => {
+    it(`${name}: refused on the upgrade path with one decision and zero route effects`, async () => {
       const r = await upgradeCase(headers(port));
       console.log(`F1-UPGRADE ${name}`, JSON.stringify(r));
-      // workspaces-o9o.125: @hono/node-server 2 answers an upgrade whose Host is empty with 400 before the app runs (it
-      // cannot build the request URL), so the boundary never sees it; every other form reaches the boundary and is
-      // refused there. Either way nothing opens and the route never runs; plain HTTP below shows the boundary's own 403.
-      if (r.status.includes(" 400 ")) expect(r.decisions).toEqual([]);
-      else {
-        expect(r.status).toContain("403");
-        expect(r.decisions).toEqual([code]);
-      }
-      expect(r.status).not.toContain("101");
+      // workspaces-o9o.125 (verify-sec): @hono/node-server 2 answers an upgrade whose Host it cannot turn into a URL (empty,
+      // malformed) with its own 400 before the app runs. The listener's createServer sends such an upgrade through the app
+      // first, so the boundary decides it, as it does over plain HTTP.
+      expect(r.status).toContain("403");
+      expect(r.decisions).toEqual([code]);
       expect(r.routeEffects).toBe(0);
     });
   }
+
+  // workspaces-o9o.125: Hosts the boundary reads as well formed but the URL standard rejects ("1.2.3.4.5"), or that are malformed
+  // ("a b", "x@y"), never reach the adapter's own 400 or 500: the boundary decides them.
+  for (const host of ["1.2.3.4.5", "a b", "x@y"]) {
+    it(`Host ${JSON.stringify(host)}: the boundary refuses the upgrade (403 untrusted_host), once, and nothing runs`, async () => {
+      const r = await upgradeCase([`Host: ${host}`, `Origin: http://127.0.0.1:${port}`]);
+      expect(r.status).toContain("403");
+      expect(r.decisions).toEqual(["untrusted_host"]);
+      expect(r.routeEffects).toBe(0);
+    });
+  }
+
+  // Measured residual (workspaces-o9o.125): an IPv6 literal the URL standard rewrites ([::ffff:127.0.0.1] becomes [::ffff:7f00:1])
+  // is one the boundary accepts, so it is not diverted; the adapter refuses it 400 before the app. No refusal is missed and
+  // nothing opens; only the boundary's "allow" is never reached.
+  it("an IPv6 Host the URL standard rewrites: the adapter refuses it (400), nothing opens, no decision", async () => {
+    const r = await upgradeCase([`Host: [::ffff:127.0.0.1]:${port}`, `Origin: http://127.0.0.1:${port}`]);
+    expect(r.status).toContain("400");
+    expect(r.decisions).toEqual([]);
+    expect(r.routeEffects).toBe(0);
+  });
 
   it("the same shapes over plain HTTP are refused as well", async () => {
     for (const headers of [
@@ -120,7 +137,7 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
 });
 
 // workspaces-o9o.125: the terminal WebSocket on @hono/node-server 2's own upgradeWebSocket, through the production
-// createAppWithWebSocket and its websocketOption. A daemon that listens beyond loopback carries a terminal token
+// createAppWithWebSocket and its listenerOptions. A daemon that listens beyond loopback carries a terminal token
 // (workspaces-o9o.78; the decision is pinned in terminal-token-policy.test.ts): there an upgrade opens only with it. A
 // loopback-only daemon has none and opens without one. The boundary (Host, Origin) answers before the token check either way.
 describe("o9o.125: the production terminal WebSocket on @hono/node-server 2", () => {
@@ -139,7 +156,7 @@ describe("o9o.125: the production terminal WebSocket on @hono/node-server 2", ()
       tmux: tmux() as never, withWebSocket: true,
       appDeps: { webUiEnabled: true, terminalBearerToken, browserBoundaryObserver: (d) => seen.push(d.code ?? d.outcome) },
     });
-    const { server, port } = await listen(app.app.fetch as Hono["fetch"], app.websocketOption!());
+    const { server, port } = await listen(app.app.fetch as Hono["fetch"], app.listenerOptions!());
     built.push({ server, port, db });
     return port;
   }

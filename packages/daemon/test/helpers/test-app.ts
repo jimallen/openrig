@@ -303,7 +303,7 @@ export function createTestApp(
     wireRuntimeAdapters?: boolean;
     /** Extra or overriding createApp deps (browser-boundary route tests inject inert spies). */
     appDeps?: Partial<import("../../src/server.js").AppDeps>;
-    /** Build through createAppWithWebSocket (production upgrade path) and return its websocketOption, for serve(). */
+    /** Build through createAppWithWebSocket (production upgrade path) and return its listenerOptions, for serve(). */
     withWebSocket?: boolean;
     /**
      * Agent Starter v1 vertical M2 R2: optionally expose the in-test
@@ -470,13 +470,13 @@ export function createTestApp(
     ...(opts?.seatLeases ? { seatLeases: opts.seatLeases } : {}),
     ...opts?.appDeps,
   };
-  // withWebSocket: the production createAppWithWebSocket path, returning its websocketOption (workspaces-o9o.125).
-  const built: { app: ReturnType<typeof createApp>; websocketOption?: () => import("../../src/adapters/node-websocket.js").NodeWebSocketOption } = opts?.withWebSocket
+  // withWebSocket: the production createAppWithWebSocket path, returning its listenerOptions (workspaces-o9o.125).
+  const built: { app: ReturnType<typeof createApp>; listenerOptions?: () => import("../../src/adapters/node-websocket.js").NodeListenerOptions } = opts?.withWebSocket
     ? createAppWithWebSocket(testAppDeps as never)
     : { app: createApp(testAppDeps as never) };
   const app = built.app;
   return {
-    app, websocketOption: built.websocketOption, rigRepo, sessionRegistry, eventBus, nodeLauncher, snapshotRepo,
+    app, listenerOptions: built.listenerOptions, rigRepo, sessionRegistry, eventBus, nodeLauncher, snapshotRepo,
     snapshotCapture, checkpointStore, restoreOrchestrator,
     rigSpecExporter, rigSpecPreflight, rigInstantiator,
     packageRepo, installRepo, installEngine, installVerifier,

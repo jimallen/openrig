@@ -179,20 +179,22 @@ observer (`:497`), JSON body-parse error tracking, which turns a malformed body 
 recording, the browser boundary on `/api/*` (`:647`, Host and Origin checks; see
 `OPENRIG_ALLOWED_HOSTS` and `OPENRIG_ALLOWED_ORIGINS`), and host read-through.
 
-`createAppWithWebSocket(deps)` (`server.ts:940`) sets `enableNodeWebSocket` and
+`createAppWithWebSocket(deps)` (`server.ts:941`) sets `enableNodeWebSocket` and
 calls `createApp`; the terminal WebSocket is registered only when the web UI is
 also enabled (`server.ts:789`), with `@hono/node-server` 2's own `upgradeWebSocket`
-(workspaces-o9o.125; it replaced the deprecated `@hono/node-ws`). It then returns a
-`websocketOption`, which `index.ts` gives each listener's `serve()` as a fresh
-`{ server: WebSocketServer }` (`adapters/node-websocket.ts`). Otherwise only the
-terminal route's bearer-auth handler is registered (`registerTerminalAuthOnly`, `:794`)
+(workspaces-o9o.125; it replaced the deprecated `@hono/node-ws`). It then returns
+`listenerOptions`, which `index.ts` spreads into each listener's `serve()`: a fresh
+`{ server: WebSocketServer }` and a `createServer` whose server sends an upgrade the
+adapter cannot carry (a Host it cannot turn into a URL) through the app first, so the
+browser boundary decides it (`adapters/node-websocket.ts`). Otherwise only the
+terminal route's bearer-auth handler is registered (`registerTerminalAuthOnly`, `:795`)
 and no listener answers an upgrade.
 
 ## 4. Startup sequence (`createDaemon`)
 
 `createDaemon(opts?)` is `packages/daemon/src/startup.ts:359` (async, returns
 `DaemonResult`). It returns `{ app, db, deps, contextMonitor, eventLoopMonitor }`,
-plus `websocketOption` while the terminal WebSocket is on and `hcCoreWatch` when
+plus `listenerOptions` while the terminal WebSocket is on and `hcCoreWatch` when
 there is an hc core (`startup.ts:3019`). In source order, it:
 
 1. Opens SQLite and applies all 96 migrations (`migrate(db, ALL_MIGRATIONS)`,

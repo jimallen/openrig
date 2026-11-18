@@ -29,7 +29,7 @@ describe("one browser boundary on the production API and terminal routes", () =>
     });
     app = built.app;
     await new Promise<void>((resolve) => {
-      server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: built.websocketOption!() }, (info) => { port = info.port; resolve(); });
+      server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", ...built.listenerOptions!() }, (info) => { port = info.port; resolve(); });
     });
   });
   afterAll(async () => {

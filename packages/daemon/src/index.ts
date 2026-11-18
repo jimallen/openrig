@@ -319,7 +319,7 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   // OF-220: dates processes by the OS boot clock where there is one (Linux), so a stored start time names the true second.
   installProcessStartClock(createProcessStartClock(process.platform, new FileBootInstantStore(path.join(OPENRIG_HOME, BOOT_INSTANT_FILE))));
 
-  const { app, contextMonitor, deps, eventLoopMonitor, hcCoreWatch, websocketOption } = await createDaemon({
+  const { app, contextMonitor, deps, eventLoopMonitor, hcCoreWatch, listenerOptions } = await createDaemon({
     dbPath,
     bearerToken,
     terminalBearerToken,
@@ -364,7 +364,7 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   const servers: ServerType[] = [];
   for (const host of bindHosts) {
-    const srv = serve({ fetch: app.fetch, port: p, hostname: host, ...(websocketOption ? { websocket: websocketOption() } : {}) }, (info) => {
+    const srv = serve({ fetch: app.fetch, port: p, hostname: host, ...(listenerOptions ? listenerOptions() : {}) }, (info) => {
       // workspaces-o9o.78: the decision above was made from the bind plan; the address actually bound must agree (fail closed).
       const listenProblem = listenerTokenProblem(info.address, terminalBearerToken);
       if (listenProblem) {

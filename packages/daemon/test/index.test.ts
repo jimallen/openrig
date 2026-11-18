@@ -85,22 +85,24 @@ describe("daemon startServer", () => {
     const { startServer } = await import("../src/index.js");
     await startServer(7441);
     expect(serveMock.mock.calls.length).toBeGreaterThan(0);
-    for (const [options] of serveMock.mock.calls) expect(options).not.toHaveProperty("websocket");
+    for (const [options] of serveMock.mock.calls) { expect(options).not.toHaveProperty("websocket"); expect(options).not.toHaveProperty("createServer"); }
 
     serveMock.mockClear();
     let made = 0;
-    const websocketOption = vi.fn(() => ({ server: { listener: ++made } }));
+    const createServer = vi.fn();
+    const listenerOptions = vi.fn(() => ({ websocket: { server: { listener: ++made } }, createServer }));
     createDaemonMock.mockResolvedValue({
       app: { fetch: vi.fn() },
       contextMonitor: { start: vi.fn(), stop: vi.fn() },
       deps: {},
-      websocketOption,
+      listenerOptions,
     });
     await startServer(7442);
     const calls = serveMock.mock.calls;
     expect(calls.length).toBeGreaterThan(0);
-    expect(websocketOption).toHaveBeenCalledTimes(calls.length);
+    expect(listenerOptions).toHaveBeenCalledTimes(calls.length);
     expect(calls.map(([options]) => options.websocket)).toEqual(calls.map((_c, i) => ({ server: { listener: i + 1 } })));
+    for (const [options] of calls) expect(options.createServer).toBe(createServer);
   });
 
   describe("OF-208 real simctl is switched on only by the production entrypoint on the user's own home", () => {

@@ -120,7 +120,7 @@ import { proofRoutes } from "./routes/proof.js";
 import { scopeApproveRoutes } from "./routes/scope-approve.js";
 import { registerTerminalAuthOnly, registerTerminalWs, type HcTerminalDeps } from "./routes/terminal-ws.js";
 import { upgradeWebSocket } from "@hono/node-server";
-import { newNodeWebSocketOption, type NodeWebSocketOption } from "./adapters/node-websocket.js";
+import { newNodeListenerOptions, type NodeListenerOptions } from "./adapters/node-websocket.js";
 import { steeringRoutes } from "./routes/steering.js";
 import { healthSummaryRoutes } from "./routes/health-summary.js";
 import { attentionRoutes } from "./routes/attention.js";
@@ -787,8 +787,9 @@ export function createApp(deps: CreateAppDeps): Hono {
   app.route("/api/compaction", compactionRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
   // The terminal WebSocket only serves the web UI, so it exists only while the web UI is on.
   if (deps.enableNodeWebSocket && deps.webUiEnabled === true) {
-    // workspaces-o9o.125: @hono/node-server 2's own upgradeWebSocket; each listener gets its option from websocketOption.
-    _lastWebSocketOption = newNodeWebSocketOption;
+    // workspaces-o9o.125: @hono/node-server 2's own upgradeWebSocket; each listener gets its serve() options from listenerOptions:
+    // its own WebSocketServer, and a server on which the boundary decides an upgrade the adapter cannot carry.
+    _lastListenerOptions = () => newNodeListenerOptions(app.fetch as never);
     registerTerminalWs(app, upgradeWebSocket, { bearerToken: deps.terminalBearerToken ?? null, ...(deps.hcTerminal ? { hc: deps.hcTerminal } : {}) });
   } else if (deps.enableNodeWebSocket) {
     registerTerminalAuthOnly(app, { bearerToken: deps.terminalBearerToken ?? null });
@@ -933,14 +934,14 @@ function requestIsFromLoopback(c: Parameters<typeof getConnInfo>[0]): boolean {
   }
 }
 
-let _lastWebSocketOption: (() => NodeWebSocketOption) | null = null;
+let _lastListenerOptions: (() => NodeListenerOptions) | null = null;
 
-/** The app, and when its terminal WebSocket is on (the web UI enabled) the `websocket` option to give each `serve()`.
- *  Without it a listener answers no upgrade, as before. */
-export function createAppWithWebSocket(deps: CreateAppDeps): { app: Hono; websocketOption?: () => NodeWebSocketOption } {
+/** The app, and when its terminal WebSocket is on (the web UI enabled) the options to give each `serve()` (`websocket` and
+ *  `createServer`, fresh per listener). Without them a listener answers no upgrade, as before. */
+export function createAppWithWebSocket(deps: CreateAppDeps): { app: Hono; listenerOptions?: () => NodeListenerOptions } {
   deps.enableNodeWebSocket = true;
-  _lastWebSocketOption = null;
+  _lastListenerOptions = null;
   const app = createApp(deps);
-  const websocketOption = _lastWebSocketOption ?? undefined;
-  return { app, ...(websocketOption ? { websocketOption } : {}) };
+  const listenerOptions = _lastListenerOptions ?? undefined;
+  return { app, ...(listenerOptions ? { listenerOptions } : {}) };
 }
