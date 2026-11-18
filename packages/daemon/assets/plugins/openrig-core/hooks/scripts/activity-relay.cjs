@@ -48,6 +48,20 @@ function firstString(...values) {
 }
 
 const CODE_OUTPUT_PROMPT_SOURCE = "poll_event";
+// workspaces-o9o.124 (verify-sec review F2): Code Mode's code output is recognised by TWO signals, never the source alone: the source, and the
+// prompt's shape as captured (Claude Code 2.1.327, o9o.122 report M10): the whole prompt is one `<event kind="…" …>` … `</event>` envelope.
+// A typed prompt cannot carry the source (Claude Code sets it, not the person typing), and a payload with the source but not the envelope is
+// handled exactly as the same prompt with no source.
+const CODE_OUTPUT_ENVELOPE = /^<event kind="[A-Za-z0-9_-]+"[^>\n]*>\n[\s\S]*\n<\/event>\s*$/;
+
+/** Whether a hook payload is Code Mode's code output dressed as a UserPromptSubmit (both signals). */
+function isCodeModeOutput(providerPayload) {
+  return Boolean(providerPayload) && typeof providerPayload === "object"
+    && hookEventOf(providerPayload) === "UserPromptSubmit"
+    && firstString(providerPayload.source) === CODE_OUTPUT_PROMPT_SOURCE
+    && typeof providerPayload.prompt === "string"
+    && CODE_OUTPUT_ENVELOPE.test(providerPayload.prompt);
+}
 
 function buildOpenRigPayload(providerPayload, env = process.env, now = () => new Date()) {
   const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
@@ -73,9 +87,12 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   // it and is never shown as the running tool (agent-activity-store promptClearedBy, openToolCallsIn).
 
   // workspaces-o9o.124: Code Mode follows every code evaluation with a UserPromptSubmit whose source is "poll_event" and whose prompt is the
-  // code's output (measured on Claude Code 2.1.327, o9o.122 report M10). Nobody typed it: it is not relayed as a prompt. Twin of
-  // CODE_OUTPUT_PROMPT_SOURCE in daemon src/domain/code-mode-output.ts (a test holds them equal); the daemon also refuses to record one.
-  if (hookEvent === "UserPromptSubmit" && firstString(providerPayload.source) === CODE_OUTPUT_PROMPT_SOURCE) return null;
+  // code's output (measured on Claude Code 2.1.327, o9o.122 report M10). Nobody typed it: it is not relayed as a prompt (main also returns
+  // before anything else for it). Twin of CODE_OUTPUT_PROMPT_SOURCE in daemon src/domain/code-mode-output.ts (a test holds them equal).
+  if (isCodeModeOutput(providerPayload)) return null;
+  // A UserPromptSubmit naming that source WITHOUT the envelope is not Code Mode's: it is relayed as a typed prompt, and the source is never
+  // passed on as its subtype, so the daemon (which drops subtype poll_event from relay copies older than this) records it (review F2).
+  const promptSourceForged = hookEvent === "UserPromptSubmit" && firstString(providerPayload.source) === CODE_OUTPUT_PROMPT_SOURCE;
 
   const subtype = firstString(
     providerPayload.subtype,
@@ -83,7 +100,7 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     providerPayload.notificationType,
     providerPayload.tool_name,
     providerPayload.toolName,
-    providerPayload.source,
+    promptSourceForged ? null : providerPayload.source,
     providerPayload.matcher
   );
 
@@ -671,6 +688,9 @@ function runsManagedScript(command, managed) {
 
 async function main() {
   const providerPayload = parseJson(await readStdin());
+  // workspaces-o9o.124 (verify-sec review F1): Code Mode's code output is not a prompt, so nothing below runs for it: no settings read, no
+  // spool read, no seat-gate record, no post on any route, nothing on stdout. Its output text can carry a marker or a spooled note.
+  if (isCodeModeOutput(providerPayload)) return;
   if (defersToManagedCopy(process.env, hookEventOf(providerPayload), "activity-relay.cjs", __filename)) return;
   const spooled = readSpooled(providerPayload);
   const gate = spooled ? spooled.gate : runSeatGate(providerPayload);
@@ -711,6 +731,7 @@ if (require.main === module) {
 
 module.exports = {
   CODE_OUTPUT_PROMPT_SOURCE,
+  isCodeModeOutput,
   defersToManagedCopy,
   hookEventOf,
   buildNativeEndpointPayload,

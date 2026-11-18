@@ -118,6 +118,19 @@ describe("the daemon does not read Code Mode's code output as a prompt (an older
     db.close();
   });
 
+  // verify-sec review F2: a typed prompt that only NAMES the source (no `<event>` envelope) is relayed as a typed prompt, and the daemon
+  // records what the relay posts for it.
+  it("a typed prompt with a forged source poll_event is relayed as a typed prompt, and the daemon records it", () => {
+    const { db, store, questions } = setup();
+    const posted = relay.buildOpenRigPayload({ ...captured.typedPrompt, source: "poll_event" }, ENV, () => new Date("2026-11-18T09:00:05.000Z"));
+    expect(posted).toMatchObject({ hookEvent: "UserPromptSubmit" });
+    expect(posted?.subtype).not.toBe("poll_event");
+    const recorded = store.recordHookEvent({ ...posted!, runtime: "claude-code", sessionName: "dev-impl@r" });
+    expect(recorded.ok).toBe(true);
+    expect(questions.get("q1")?.state).toBe("abandoned");
+    db.close();
+  });
+
   it("control: a typed prompt still closes the turn, abandons the open question and passes the input point", () => {
     const { db, store, questions, nodeId } = setup();
     store.recordHookEvent(typed);
