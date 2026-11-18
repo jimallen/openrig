@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -130,10 +131,10 @@ describe("complete human notifications", () => {
 
   it("runs queue→wire→complete quiet multipart delivery→done and bounded Feed history without a human decision", async () => {
     const item = await repo.create({ ...request, humanIntent: "update", body: "The release is ready. No action needed.", humanDetail: "Known limit: this is synthetic delivery proof.", tags: ["escalation"] });
-    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
+    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
     const posts: Array<Record<string, unknown>> = [];
-    const wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
     stops.push(() => wire.stop()); wire.startServices?.();
     const [alert] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({});
     expect(wire.dispatcher.dispatch("post_message", request.destinationSession, alert)).toMatchObject({ ok: true });

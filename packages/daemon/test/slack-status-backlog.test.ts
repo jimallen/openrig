@@ -4,6 +4,7 @@
 // button clicks that failed to land and await the retry loop. Across a restart
 // the per-process counter resets to zero while the durable file keeps growing,
 // so an operator had to read the raw JSONL to learn that messages were stuck.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,7 +31,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
 
   const configure = (enabled: boolean) => {
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled, channel: "C-TEST", secretsEnvFile: secrets }, home);
   };
   const record = (i: number) => JSON.stringify({ ev: { type: "message", text: `stuck ${i}` }, at: "2026-10-08T00:00:00Z", attempts: i + 1 }) + "\n";
@@ -42,7 +43,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
   const writeActionBacklog = (entries: number) => writeRecords("slack-inbound-action-deadletter.jsonl", entries);
   const build = () => {
     const repo = new QueueRepository(db, new EventBus(db));
-    return buildSlackGatewayWire({ home, queueRepo: repo });
+    return buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo });
   };
 
   it("reports the retained dead-letter records awaiting retry on an enabled connector", () => {

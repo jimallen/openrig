@@ -1440,7 +1440,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
-    humanReadiness: (address) => healthHumanReadiness(OPENRIG_HOME, address, deps.gatewaySubsystem?.status().state === "active"),
+    humanReadiness: (address) => healthHumanReadiness(nodeCredentialFileReader, OPENRIG_HOME, address, deps.gatewaySubsystem?.status().state === "active"),
   });
   // OPR.0.4.3.20 FR-4 — inject contextUsageStore so refresh() can null-fill a
   // Claude token from the sidecar during periodic/manual snapshot refresh.
@@ -3010,6 +3010,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     wire: () => buildSlackGatewayWire({
       home: OPENRIG_HOME,
       queueRepo: queueRepoInstance,
+      credentialFiles: nodeCredentialFileReader,
       resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract),
       log: (m) => console.log(`[gateway] ${m}`),
     }),

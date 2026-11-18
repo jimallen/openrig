@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -270,7 +271,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     const posts: Array<Record<string, unknown>> = [];
-    const wire = buildSlackGatewayWire({
+    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
@@ -359,7 +360,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       });
     };
 
-    const firstWire = buildSlackGatewayWire({
+    const firstWire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
@@ -378,7 +379,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       firstWire.stop();
     }
 
-    const replayWire = buildSlackGatewayWire({
+    const replayWire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
@@ -441,7 +442,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       });
     };
 
-    const firstWire = buildSlackGatewayWire({
+    const firstWire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
@@ -457,7 +458,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       firstWire.stop();
     }
 
-    const replayWire = buildSlackGatewayWire({
+    const replayWire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },

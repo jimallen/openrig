@@ -2,6 +2,7 @@
 // connection's echo of it counts. A multipart post's supplemental parts go into the primary's
 // thread and reach the subsystem only through onPostedPart; they must register too, or a lost echo
 // of one never counts as a miss.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,11 +37,11 @@ describe("echo registration for every post", () => {
   it("registers a multipart post's supplemental part, so its echo alone confirms delivery", async () => {
     const item = await repo.create({ ...request, humanIntent: "update", humanDetail: "Known limit: synthetic delivery.", tags: ["escalation"] });
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
     const sockets: WsLike[] = [];
     let posts = 0;
-    const wire = buildSlackGatewayWire({
+    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       fetchImpl: async (url) => {
         if (String(url).endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://example.invalid/socket" });

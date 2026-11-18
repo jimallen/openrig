@@ -4,6 +4,7 @@
 // tests drive the real wire: a replayed decision for a row that has left the active states posts
 // nothing and the row says why; one for a still-open row still posts; and enable drains the
 // buffer's undelivered retries along with the active backlog.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,13 +36,13 @@ describe("a retained Slack post replayed after its row closed", () => {
     home = mkdtempSync(join(tmpdir(), "slack-stale-"));
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
-    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
+    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets }, home);
   });
   afterEach(() => { for (const stop of stops.splice(0)) stop(); db.close(); rmSync(home, { recursive: true, force: true }); });
 
   const wire = (fetchImpl: FetchImpl) => {
-    const w = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
+    const w = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
     stops.push(() => w.stop());
     return w;
   };

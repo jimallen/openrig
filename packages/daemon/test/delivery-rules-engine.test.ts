@@ -9,6 +9,7 @@
 // exhausts in the same breath, and no digest/deferral machinery exists.
 // Every section below fails at base for exactly those reasons.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -313,6 +314,7 @@ describe("OPR.0.5.6.1 §3 — the gateway consults the engine before dispatch", 
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     return buildSlackGatewayWire({
+      credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
@@ -454,6 +456,7 @@ describe("OPR.0.5.6.1 §4 — the C/D digest flush (v3: transport truth first, r
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     return buildSlackGatewayWire({
+      credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
@@ -924,6 +927,7 @@ describe("OPR.0.5.6.1 §8 — the production composition is live (R2 B-1/B-2/B-3
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     return buildSlackGatewayWire({
+      credentialFiles: TMP_CREDENTIAL_FILES,
       home,
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },

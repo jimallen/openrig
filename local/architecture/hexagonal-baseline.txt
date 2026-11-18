@@ -109,7 +109,6 @@ src/domain/gateway/connections-projection.ts node:fs value upstream
 src/domain/gateway/dispatch-buffer.ts node:fs value upstream
 src/domain/gateway/human-registry.ts node:fs value upstream
 src/domain/gateway/slack/config.ts node:fs value upstream
-src/domain/gateway/slack/secrets.ts node:fs value upstream
 src/domain/gateway/slack/slack-delivery.ts node:fs value upstream
 src/domain/gateway/slack/slack-subsystem.ts node:fs value upstream
 src/domain/gateway/slack/state-store.ts node:fs value upstream

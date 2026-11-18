@@ -1,6 +1,7 @@
 // #192 — the channel map through the REAL Slack wire: queue rows → buildSlackGatewayWire →
 // injected fetch (no network) and a fake socket. Made-up channel IDs and rig names only.
 // The map changes where items POST; inbound routing and history recovery stay as on main.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,10 +53,10 @@ describe("#192 channel map through the real Slack wire", () => {
   function rewire(channelMap: ChannelMapEntry[] | undefined, inbound = false, defaultChannel = "C0DEFAULT"): void {
     wire?.stop();
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, `SLACK_BOT_TOKEN=xox` + `b-EXAMPLE-fake\n${inbound ? "SLACK_APP_TOKEN=xapp-EXAMPLE-fake\n" : ""}`);
+    writeFileSync(secrets, `SLACK_BOT_TOKEN=xox` + `b-EXAMPLE-fake\n${inbound ? "SLACK_APP_TOKEN=xapp-EXAMPLE-fake\n" : ""}`, { mode: 0o600 });
     const cfg: SlackConnectorConfig = { ...DEFAULT_CONFIG, enabled: true, channel: defaultChannel, secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", ...(channelMap ? { channelMap } : {}) };
     saveConfig(cfg, home);
-    wire = buildSlackGatewayWire({
+    wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
       inboundMaxConnects: 1,
@@ -451,10 +452,10 @@ describe("#192 channel map through the real Slack wire", () => {
   it("logs, and keeps posting through, a map entry field written by a newer OpenRig", async () => {
     const logs: string[] = [];
     const secrets = join(home, "fake.env");
-    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
+    writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     writeFileSync(join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, channel: "C0DEFAULT", secretsEnvFile: secrets,
       channelMap: [{ match: "pr@my-rig", channel: "C0EXAMPLE2", inbound: "lead@my-rig" }] }));
-    wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, log: (m) => logs.push(m),
+    wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, log: (m) => logs.push(m),
       fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
     stops.push(() => wire.stop()); wire.startServices?.();
     expect(logs.some((l) => l.includes("IGNORING unsupported field(s) channelMap[0].inbound"))).toBe(true);

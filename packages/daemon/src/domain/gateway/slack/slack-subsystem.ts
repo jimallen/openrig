@@ -12,6 +12,7 @@
 // the relay's history IS the subsystem's history — enabling the subsystem replays nothing the
 // relay already delivered (the enable-time backlog rule survives the cutover by construction).
 
+import type { CredentialFileReader } from "../../credential-file.js";
 import { setOff } from "../../active-occupant.js";
 import { ChannelRecovery } from "./channel-recovery.js";
 import { channelStateDigest } from "../channel-operations.js";
@@ -22,7 +23,7 @@ import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from ".
 import { DispatchBuffer } from "../dispatch-buffer.js";
 import { downloadPrivateFile, isSlackHost, postChatMessage } from "./slack-api.js";
 import { loadConfig } from "./config.js";
-import { resolveSecret } from "./secrets.js";
+import { checkEnvFilePermissions, resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
 import { makeQueuePorts } from "./queue-access.js";
 import { SlackOutboundDriver, OUTBOUND_OP, type OutboundPostPayload } from "./outbound-driver.js";
@@ -60,6 +61,8 @@ const SECRET_APP = "SLACK_APP_TOKEN";
 export interface SlackWireOpts {
   home: string;
   queueRepo: QueueRepository;
+  /** workspaces-o9o.151: reads the secrets env file under the credential rule (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   log?: (msg: string) => void;
   /** Injectable seams (tests): fetch, websocket factory, sweep cadence, registry surface. */
   fetchImpl?: FetchImpl;
@@ -211,14 +214,20 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const ignored = unsupportedChannelMapFields(cfg);
   if (ignored.length) log(`slack channel map: IGNORING unsupported field(s) ${ignored.join(", ")} (written by a newer OpenRig?); \`rig slack status\` names them`);
   const envFile = cfg.secretsEnvFile ?? undefined;
-  const bot = resolveSecret(SECRET_BOT, { envFile });
-  const app = resolveSecret(SECRET_APP, { envFile });
+  const bot = resolveSecret(SECRET_BOT, { envFile, credentialFiles: opts.credentialFiles });
+  const app = resolveSecret(SECRET_APP, { envFile, credentialFiles: opts.credentialFiles });
+  // workspaces-o9o.151: a refused secrets file is never read, so its tokens stay unresolved and the wire below is inert; the
+  // daemon still starts. Say why, naming the file and the fix (CoS decision 3).
+  const secretsRefusal = envFile ? checkEnvFilePermissions(envFile, opts.credentialFiles) : null;
+  if (secretsRefusal) log(`slack secrets file refused, so its tokens are not used: ${secretsRefusal}`);
 
   const outboundReady = cfg.enabled && bot !== null && cfg.channel !== null;
   const inboundReady = cfg.enabled && app !== null;
 
   if (!outboundReady && !inboundReady) {
-    const missing = !cfg.enabled ? `connector disabled (${setOff("rig slack enable")})` : !bot ? "SLACK_BOT_TOKEN unresolved" : "channel unconfigured";
+    const missing = !cfg.enabled ? `connector disabled (${setOff("rig slack enable")})`
+      : !bot ? (secretsRefusal ? `SLACK_BOT_TOKEN unresolved: ${secretsRefusal}` : "SLACK_BOT_TOKEN unresolved")
+      : "channel unconfigured";
     log(`slack delivery not configured (${missing}) — wire is inert; dispatches would be refused honestly`);
     const inert = buildInProcessWire({
       home: opts.home,

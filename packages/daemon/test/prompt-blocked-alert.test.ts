@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,7 +55,7 @@ describe("prompt-blocked outstanding work reaches the configured route", () => {
     const secrets = join(home, "slack.env");
     writeFileSync(secrets, "SLACK_BOT_TOKEN=fixture-only\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "CFIXTURE", secretsEnvFile: secrets }, home);
-    const wire = buildSlackGatewayWire({ home, queueRepo: repo,
+    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo,
       registry: { loadHumanRegistry: load, resolveSlackHandle },
       fetchImpl: async (url, init) => {
         expect(String(url)).toBe("https://slack.com/api/chat.postMessage");

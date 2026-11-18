@@ -11,6 +11,7 @@ import { parseAddress, resolveAddress } from "./markdown-address.js";
 import { loadHumanRegistry } from "./gateway/human-registry.js";
 import { loadConfig } from "./gateway/slack/config.js";
 import { resolveSecret } from "./gateway/slack/secrets.js";
+import type { CredentialFileReader } from "./credential-file.js";
 import { resolveHumanDeliveryReadiness } from "./gateway/human-readiness.js";
 
 /** Local evidence files only. Unsupported addresses retain unavailable truth.
@@ -125,12 +126,13 @@ export function healthAuthority(workspace: string, checkpoints: HealthCheckpoint
 
 /** Connector-specific readiness lives behind the transport-neutral diagnosis port.
  * No notification is posted here; the existing gateway owns posting and receipts. */
-export async function healthHumanReadiness(home: string, address: string, gatewayActive: boolean) {
+/** `credentialFiles` (workspaces-o9o.151) reads the Slack secrets env file under the credential rule. */
+export async function healthHumanReadiness(credentialFiles: CredentialFileReader, home: string, address: string, gatewayActive: boolean) {
   const registry = loadHumanRegistry(home);
   const human = registry.ok ? registry.entities.find((h) => h.address === address) : undefined;
   if (!human) return { ready: false, reason: "registered human primary connector unavailable" };
   const cfg = loadConfig(home);
-  const token = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined });
+  const token = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined, credentialFiles });
   const readiness = await resolveHumanDeliveryReadiness({
     human,
     config: cfg,

@@ -28,6 +28,7 @@ import {
 import { realLocalHostFacts } from "../host-readiness-facts.js";
 import { buildSeatPathHeadCheck, type SeatProcess } from "../seat-path-head.js";
 import { readSeatProcesses } from "../seat-process-environments.js";
+import { configuredSlackSecretsEnvFile, judgeSlackSecretsFile } from "../slack-secrets-check.js";
 
 interface DoctorCheck {
   name: string;
@@ -73,6 +74,9 @@ export interface DoctorDeps {
   readSeatProcesses?: () => SeatProcess[] | null;
   /** The OpenRig instance whose seats that row judges (default: this CLI's OPENRIG_HOME). */
   openrigHome?: string;
+  /** workspaces-o9o.151: the Slack connector's configured secrets file. Set, it adds the slack_secrets row (rig doctor sets it;
+   *  rig setup, which shares these checks, does not). */
+  slackSecretsEnvFile?: () => Promise<string | null>;
 }
 
 /**
@@ -237,6 +241,8 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
 
   if (hcProbe.available) asyncChecks.push(buildHcCoreCheck(deps));
   asyncChecks.push(buildSpecConformanceCheck(deps));
+  const slackSecretsEnvFile = deps.slackSecretsEnvFile;
+  if (slackSecretsEnvFile) asyncChecks.push(slackSecretsEnvFile().then((f) => judgeSlackSecretsFile(f)));
 
   return { checks, portCheck, asyncChecks };
 }
@@ -363,6 +369,7 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         mkdirp: (dirPath: string) => mkdirSync(dirPath, { recursive: true }),
         checkWritable: (dirPath: string) => accessSync(dirPath, constants.W_OK),
         specPath: opts.spec ? path.resolve(opts.spec) : undefined,
+        slackSecretsEnvFile: () => configuredSlackSecretsEnvFile(getOpenRigHome()),
         // Returns null on ANY failure to read the live side. The conformance check treats null as
         // "unknown" and skips — an unreachable daemon must never read as a matching topology.
         fetchHostRows: async (input) => {

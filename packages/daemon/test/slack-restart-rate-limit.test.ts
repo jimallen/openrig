@@ -7,6 +7,7 @@
 // either post lands. This test drives the REAL wire: stop run 1 inside the wait
 // (the wire's stop aborts it), let run 2 replay and deliver, then give the stale
 // run its old window to misbehave — exactly one post may ever succeed.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +42,7 @@ describe("restart inside the rate-limit wait", () => {
 
   it("posts exactly once when the gateway is restarted while the retry is waiting", async () => {
     const item = await repo.create(request);
-    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
+    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets }, home);
 
     let wire1Posts = 0;
@@ -63,7 +64,7 @@ describe("restart inside the rate-limit wait", () => {
       return reply({ ok: true, ts: "fresh.1" });
     };
 
-    const wire1 = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: fetch1 });
+    const wire1 = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: fetch1 });
     stops.push(() => wire1.stop());
     const [alert] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({});
     expect(wire1.dispatcher.dispatch("post_message", request.destinationSession, alert)).toMatchObject({ ok: true });
@@ -72,7 +73,7 @@ describe("restart inside the rate-limit wait", () => {
     // The restart: stop run 1 mid-wait (the wire's stop must cancel the pending retry),
     // then build run 2 and start its services — replayPending re-enters the same decision.
     wire1.stop();
-    const wire2 = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: fetch2 });
+    const wire2 = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: fetch2 });
     stops.push(() => wire2.stop());
     wire2.startServices?.();
 

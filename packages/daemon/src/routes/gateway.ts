@@ -7,6 +7,7 @@
 //     config. Returns the honest online-status line.
 //   POST /api/gateway/slack/disable — flip enabled=false and restart (the wire becomes inert).
 
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 import { connectionsProjection } from "../domain/gateway/connections-projection.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { Hono } from "hono";
@@ -42,7 +43,7 @@ export function gatewayRoutes(opts: {
     const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
     let status: Record<string, unknown> | null = null;
     try { status = subsystem?.status() ?? null; } catch { /* unavailable is preserved */ }
-    return c.json(connectionsProjection(opts.home ?? OPENRIG_HOME, status,
+    return c.json(connectionsProjection(nodeCredentialFileReader, opts.home ?? OPENRIG_HOME, status,
       c.get("settingsStore" as never) as SettingsStore | undefined));
   });
 
@@ -69,7 +70,7 @@ export function gatewayRoutes(opts: {
     const human = registry.entities.find((candidate) => candidate.entityId === entityId);
     if (!human) return c.json({ error: "human_not_found", entityId }, 404);
     const cfg = loadConfig(home);
-    const botToken = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined });
+    const botToken = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined, credentialFiles: nodeCredentialFileReader });
     const readiness = await resolveHumanDeliveryReadiness({ human, config: cfg, gatewayState, botToken });
     return c.json({ ok: true, readiness });
   });

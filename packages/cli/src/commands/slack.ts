@@ -11,6 +11,7 @@
 //
 // Secrets posture unchanged: 0600 env file / SLACK_* env at call time, never in config,
 // never in the repo.
+import { nodeCredentialFileReader } from "@openrig/daemon/credential-file";
 import { setOff } from "@openrig/daemon/command-text";
 import { Command } from "commander";
 import { DaemonClient } from "../client.js";
@@ -121,8 +122,8 @@ const CHANNEL_MAP_APPLY =
 function resolveSecrets(surface: SlackSurface, cfg: SlackConnectorConfig): { bot: string | null; app: string | null } {
   const envFile = cfg.secretsEnvFile ?? undefined;
   return {
-    bot: surface.resolveSecret(SECRET_BOT, { envFile }),
-    app: surface.resolveSecret(SECRET_APP, { envFile }),
+    bot: surface.resolveSecret(SECRET_BOT, { envFile, credentialFiles: nodeCredentialFileReader }),
+    app: surface.resolveSecret(SECRET_APP, { envFile, credentialFiles: nodeCredentialFileReader }),
   };
 }
 
@@ -180,7 +181,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
       const cfg = surface.loadConfig(deps.home);
       const s = resolveSecrets(surface, cfg);
       const readiness = surface.staticReadiness(cfg, s.bot !== null, s.app !== null);
-      const permWarn = cfg.secretsEnvFile ? surface.checkEnvFilePermissions(cfg.secretsEnvFile) : null;
+      const permWarn = cfg.secretsEnvFile ? surface.checkEnvFilePermissions(cfg.secretsEnvFile, nodeCredentialFileReader) : null;
       // A channel-map warning (#192) is not missing setup: it must not send the operator to the manifest.
       const unconfigured = readiness.some((r) => !r.ok && r.label !== "channel-map");
       const next = unconfigured ? `First step: ${MANIFEST_FIRST_STEP}.` : null;

@@ -12,6 +12,7 @@
 // Deployed entrypoints: server.ts mounts routes/queue.ts (QueueRepository, InboxHandler, OutboxHandler), routes/workflow.ts
 // (WorkflowRuntime, WorkflowInstanceStore, WorkflowSpecCache) and routes/watchdog.ts (WatchdogHistoryLog); startup.ts runs
 // drainPendingWakeIntents, runStuckSweep and runWorkflowBootSweep.
+import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { Hono } from "hono";
@@ -241,7 +242,7 @@ describe("queue items: one damaged saved column names its row; the rows beside i
       db.prepare("UPDATE queue_items SET ts_created = '2000-01-01T00:00:00.000Z' WHERE qitem_id = ?").run(badUnclaimed.qitemId);
       for (const row of [badOverdue, badUndelivered, badUnclaimed]) damage(row.qitemId, "tags", NOT_JSON);
       const lines: string[] = [];
-      const result = await runStuckSweep({ db, queueRepo: repo, log: (line: string) => lines.push(line), now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null } as never);
+      const result = await runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, log: (line: string) => lines.push(line), now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null } as never);
       expect(lines.filter((l) => l.includes("SWEEP FAILED")), lines.join("\n")).toEqual([]);
       for (const row of [badOverdue, badUndelivered, badUnclaimed]) {
         expect(lines, row.qitemId).toContain(`[stuck-sweep] ${row.qitemId} skipped: its saved tags is not readable JSON (repair or remove the row)`);
@@ -254,7 +255,7 @@ describe("queue items: one damaged saved column names its row; the rows beside i
     describe("the other by-id lookups name a damaged row and skip it; the good overdue row still gets its finding", () => {
       const sweep = async () => {
         const lines: string[] = [];
-        const result = await runStuckSweep({ db, queueRepo: repo, log: (line: string) => lines.push(line), now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null } as never);
+        const result = await runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, log: (line: string) => lines.push(line), now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null } as never);
         return { lines, result };
       };
       const skipped = (id: string) => `[stuck-sweep] ${id} skipped: its saved tags is not readable JSON (repair or remove the row)`;
@@ -318,7 +319,7 @@ describe("queue items: one damaged saved column names its row; the rows beside i
         db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(`["recovery-for:${stuck.qitemId}", "x`, recovery.qitemId);
         const recorded: Array<{ outcome: string; findings?: number }> = [];
         const status = { record: (outcome: "clean" | "findings" | "failed", detail?: { error?: string; findings?: number }) => { recorded.push({ outcome, findings: detail?.findings }); } };
-        const result = await runStuckSweep({ db, queueRepo: repo, log: () => {}, now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null, status } as never);
+        const result = await runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: repo, log: () => {}, now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null, status } as never);
         expect(result.findings.map((f) => f.action)).toEqual(["unreadable"]);
         expect(recorded).toEqual([{ outcome: "findings", findings: 0 }]);
       });

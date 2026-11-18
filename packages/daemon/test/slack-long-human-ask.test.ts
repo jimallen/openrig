@@ -1,6 +1,7 @@
 // #897 — a human ask longer than one Slack message is delivered as numbered replies in the
 // primary's thread instead of being refused, and an ask that still can't be posted tells the
 // seat that asked.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -486,10 +487,10 @@ describe("long human asks (#897)", () => {
     const repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
     const huge = "word ".repeat((SLACK_SECTION_CAP * MAX_HUMAN_MESSAGE_PARTS) / 5 + 1000);
     const item = await repo.create({ ...request, body: huge });
-    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
+    const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets }, home);
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => reply({ ok: true, ts: "1.1" }));
-    const wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
+    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
     try {
       wire.startServices?.();
       const [alert] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({});

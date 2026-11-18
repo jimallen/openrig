@@ -1,3 +1,4 @@
+import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -26,10 +27,10 @@ it("authenticates with unquoted, single-quoted and double-quoted file secrets", 
     const envFile = join(scratch, "secret.env");
     for (const quote of ["", "'", '"']) {
       writeFileSync(envFile, `SLACK_BOT_TOKEN=${quote}${token}${quote}\n`, { mode: 0o600 });
-      const resolved = resolveSecret("SLACK_BOT_TOKEN", { env: {}, envFile });
+      const resolved = resolveSecret("SLACK_BOT_TOKEN", { credentialFiles: nodeCredentialFileReader, env: {}, envFile });
       expect(resolved).toBe(token);
       expect((await callWebApi("auth.test", resolved!, {}, fetchImpl, 1000)).ok).toBe(true);
-      expect(resolveSecret("SLACK_BOT_TOKEN", { env: { SLACK_BOT_TOKEN: "env-wins" }, envFile })).toBe("env-wins");
+      expect(resolveSecret("SLACK_BOT_TOKEN", { credentialFiles: nodeCredentialFileReader, env: { SLACK_BOT_TOKEN: "env-wins" }, envFile })).toBe("env-wins");
     }
   } finally {
     server.closeAllConnections();

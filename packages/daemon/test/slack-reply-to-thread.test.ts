@@ -3,6 +3,7 @@
 // resolves THAT item. Reuse is allowed only while no reply there could answer a human
 // decision. The thread choice is recorded once, before the first post; a missing/closed
 // root posts top-level and the row says so (the verify result reads it).
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -116,10 +117,10 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
     let wire: ReturnType<typeof buildSlackGatewayWire>;
     let inboundSocket: WsLike;
     beforeEach(() => {
-      const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n");
+      const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
       posts = [];
-      wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+      wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
     });
 
@@ -184,11 +185,11 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
     // Rebuild the wire with inbound Socket Mode on a fake socket; returns a human-reply sender.
     async function connectInbound(): Promise<(threadTs: string | undefined, ts: string) => Promise<void>> {
       const secrets = join(home, "fake.env");
-      writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+      writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n", { mode: 0o600 });
       const sockets: WsLike[] = [];
       const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
       wire.stop();
-      wire = buildSlackGatewayWire({
+      wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
         home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
         resolveHumanReply: makeHumanReplyResolver(repo, contract),
         wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
@@ -471,7 +472,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       await deliver(first.qitemId);
       wire.stop();
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OTHER", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE" }, home);
-      wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+      wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
       const update = await repo.create({ ...request, humanIntent: "update", replyTo: first.qitemId });
       await deliver(update.qitemId);
@@ -531,7 +532,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       };
       const rebuild = () => {
         wire.stop();
-        wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
+        wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
         stops.push(() => wire.stop()); wire.startServices?.();
       };
       rebuild();

@@ -105,7 +105,7 @@ function application(key: string): string {
 /** Additive safe view of existing owners. No mutation, host probe, provider call or repair. */
 /** `credentialFiles` (workspaces-o9o.151) reads hosts.yaml under the credential rule. */
 export function settingsBrowser(credentialFiles: CredentialFileReader, store: SettingsStore, gateway: Record<string, unknown> | null = null, home = getOpenRigHome()) {
-  const read = readConnectionConfiguration(home);
+  const read = readConnectionConfiguration(home, credentialFiles);
   const redact = read.text;
   const entries: BrowserEntry[] = [];
   const sources: BrowserSource[] = [];
@@ -147,7 +147,7 @@ export function settingsBrowser(credentialFiles: CredentialFileReader, store: Se
     }
   }
 
-  const c = connectionsProjection(home, gateway, store, read);
+  const c = connectionsProjection(credentialFiles, home, gateway, store, read);
   sources.push({ id: "slack", state: read.sourceState, path: safePath(read.configPath),
     detail: c.configuration ? (c.configuration.enabled ? "Enabled" : "Disabled") + "; applied " + c.running.applied + "; external reach unverified."
       : "Configuration unavailable; no disabled/default success inferred." });

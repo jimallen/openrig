@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -214,7 +215,7 @@ describe("S22 OpenRig skill router coverage", () => {
       writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
       const posts: Array<Record<string, unknown>> = [];
-      const wire = buildSlackGatewayWire({
+      const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
         home,
         queueRepo: repo,
         registry: { loadHumanRegistry: () => registry, resolveSlackHandle },

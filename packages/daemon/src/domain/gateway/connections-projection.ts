@@ -1,3 +1,4 @@
+import type { CredentialFileReader } from "../credential-file.js";
 import { closeSync, fstatSync, openSync, readSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -8,7 +9,8 @@ import { channelStateDigest, type ChannelOperation } from "./channel-operations.
 import type { SettingsStore } from "../user-settings/settings-store.js";
 
 /** Shared passive read context. Raw values and the redactor stay inside the domain. */
-export function readConnectionConfiguration(home: string) {
+/** `credentialFiles` (workspaces-o9o.151) reads the Slack secrets env file under the credential rule. */
+export function readConnectionConfiguration(home: string, credentialFiles: CredentialFileReader) {
   let cfg: SlackConnectorConfig | null = null;
   const configPath = configPathFor(home);
   let configState = "unavailable";
@@ -38,8 +40,8 @@ export function readConnectionConfiguration(home: string) {
   let app: string | null = null;
   let secretsAvailable = true;
   try {
-    bot = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg?.secretsEnvFile ?? undefined });
-    app = resolveSecret("SLACK_APP_TOKEN", { envFile: cfg?.secretsEnvFile ?? undefined });
+    bot = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg?.secretsEnvFile ?? undefined, credentialFiles });
+    app = resolveSecret("SLACK_APP_TOKEN", { envFile: cfg?.secretsEnvFile ?? undefined, credentialFiles });
   } catch { secretsAvailable = false; }
   const text = (v: unknown): string | null => {
     if (typeof v !== "string") return null;
@@ -51,8 +53,8 @@ export function readConnectionConfiguration(home: string) {
 }
 
 /** Passive evidence only. No provider client, queue writer, or service activation. */
-export function connectionsProjection(home: string, gateway: Record<string, unknown> | null, settings?: SettingsStore,
-  read = readConnectionConfiguration(home)) {
+export function connectionsProjection(credentialFiles: CredentialFileReader, home: string, gateway: Record<string, unknown> | null, settings?: SettingsStore,
+  read = readConnectionConfiguration(home, credentialFiles)) {
   const { cfg, configPath, configState, sourceState, bot, app, secretsAvailable, text } = read;
   const connector = gateway?.connector as Record<string, unknown> | undefined;
   const inbound = connector?.inbound as Record<string, unknown> | undefined;

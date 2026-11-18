@@ -1,9 +1,11 @@
+import { NO_CREDENTIAL_FILES, credentialFilesFrom } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig, saveConfig, configFileExists, staticReadiness, DEFAULT_CONFIG } from "../src/domain/gateway/slack/config.js";
-import { parseEnvFile, resolveSecret, checkEnvFilePermissions, type SecretFsOps } from "../src/domain/gateway/slack/secrets.js";
+import { parseEnvFile, resolveSecret, checkEnvFilePermissions } from "../src/domain/gateway/slack/secrets.js";
+import { credentialFileRefusal, type CredentialFileReader } from "../src/domain/credential-file.js";
 
 describe("Slice-11 config — first-class + honest unconfigured (item 5)", () => {
   let home: string;
@@ -99,26 +101,28 @@ describe("Slice-11 secrets — resolution + hygiene (item 7 + 10)", () => {
   });
 
   it("resolveSecret: env var wins; env-file fallback; null when unset", () => {
-    const fsops: SecretFsOps = { readFileSync: () => "SLACK_WEBHOOK_URL=https://from-file", statMode: () => 0o600 };
+    const credentialFiles = credentialFilesFrom({ "/x": "SLACK_WEBHOOK_URL=https://from-file" });
     // env var precedence
-    expect(resolveSecret("SLACK_WEBHOOK_URL", { env: { SLACK_WEBHOOK_URL: "https://from-env" }, envFile: "/x", fsops })).toBe("https://from-env");
+    expect(resolveSecret("SLACK_WEBHOOK_URL", { env: { SLACK_WEBHOOK_URL: "https://from-env" }, envFile: "/x", credentialFiles })).toBe("https://from-env");
     // env-file fallback
-    expect(resolveSecret("SLACK_WEBHOOK_URL", { env: {}, envFile: "/x", fsops })).toBe("https://from-file");
+    expect(resolveSecret("SLACK_WEBHOOK_URL", { env: {}, envFile: "/x", credentialFiles })).toBe("https://from-file");
     // B4: the NORMAL OPENRIG_SLACK_* alias (OPENRIG_ + name) resolves
-    expect(resolveSecret("SLACK_APP_TOKEN", { env: { OPENRIG_SLACK_APP_TOKEN: "xapp-EXAMPLE-fake" } })).toBe("xapp-EXAMPLE-fake");
-    expect(resolveSecret("SLACK_WEBHOOK_URL", { env: { OPENRIG_SLACK_WEBHOOK_URL: "https://from-alias" } })).toBe("https://from-alias");
+    expect(resolveSecret("SLACK_APP_TOKEN", { credentialFiles: NO_CREDENTIAL_FILES, env: { OPENRIG_SLACK_APP_TOKEN: "xapp-EXAMPLE-fake" } })).toBe("xapp-EXAMPLE-fake");
+    expect(resolveSecret("SLACK_WEBHOOK_URL", { credentialFiles: NO_CREDENTIAL_FILES, env: { OPENRIG_SLACK_WEBHOOK_URL: "https://from-alias" } })).toBe("https://from-alias");
     // B4 regression pin: the DOUBLED OPENRIG_SLACK_SLACK_* form must NOT resolve
-    expect(resolveSecret("SLACK_APP_TOKEN", { env: { OPENRIG_SLACK_SLACK_APP_TOKEN: "doubled-wrong" } })).toBeNull();
+    expect(resolveSecret("SLACK_APP_TOKEN", { credentialFiles: NO_CREDENTIAL_FILES, env: { OPENRIG_SLACK_SLACK_APP_TOKEN: "doubled-wrong" } })).toBeNull();
     // unresolved → null (honest)
-    expect(resolveSecret("MISSING", { env: {} })).toBeNull();
+    expect(resolveSecret("MISSING", { credentialFiles: NO_CREDENTIAL_FILES, env: {} })).toBeNull();
   });
 
-  it("checkEnvFilePermissions flags group/world-readable secret files (item 10)", () => {
-    const strict: SecretFsOps = { readFileSync: () => "", statMode: () => 0o600 };
-    const loose: SecretFsOps = { readFileSync: () => "", statMode: () => 0o644 };
-    const absent: SecretFsOps = { readFileSync: () => "", statMode: () => null };
+  it("checkEnvFilePermissions flags group/world-readable secret files (item 10; o9o.151: any refusal, with its fix)", () => {
+    const strict = credentialFilesFrom({ "/s.env": "" });
+    const loose: CredentialFileReader = {
+      read: (p, policy) => ({ ok: false, problem: "group_or_other_access", message: credentialFileRefusal(p, policy, "group_or_other_access") }),
+    };
+    const absent = NO_CREDENTIAL_FILES;
     expect(checkEnvFilePermissions("/s.env", strict)).toBeNull();
-    expect(checkEnvFilePermissions("/s.env", loose)).toMatch(/0600/);
+    expect(checkEnvFilePermissions("/s.env", loose)).toMatch(/\/s\.env.*chmod 600/);
     expect(checkEnvFilePermissions("/s.env", absent)).toBeNull();
   });
 });

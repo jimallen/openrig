@@ -2,6 +2,7 @@
 // Slack renders them as buttons; a click (block_actions over Socket Mode) records that
 // question's answer on the same item, and the decision resolves once every question has one.
 // A typed reply in the thread still resolves the decision as before ("Other").
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -188,7 +189,7 @@ describe("structured human questions (#193)", () => {
     let wire: ReturnType<typeof buildSlackGatewayWire>;
     beforeEach(async () => {
       const secrets = join(home, "fake.env");
-      writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
+      writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n", { mode: 0o600 });
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
       posts = [];
       failThreadPosts = 0;
@@ -199,6 +200,7 @@ describe("structured human questions (#193)", () => {
       const realResolve = makeHumanReplyResolver(repo, contract);
       resolveOverride = undefined;
       wire = buildSlackGatewayWire(wireOpts = {
+        credentialFiles: TMP_CREDENTIAL_FILES,
         home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
         resolveHumanReply: (input) => (resolveOverride ?? realResolve)(input),
         wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
