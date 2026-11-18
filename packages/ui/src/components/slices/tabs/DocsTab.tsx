@@ -60,7 +60,7 @@ export function DocsTab({ sliceName, tree }: { sliceName: string; tree: DocsTree
           </button>
         ))}
       </aside>
-      <main className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest" data-testid="docs-viewer">
+      <section aria-label="Document" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest" data-testid="docs-viewer">
         {!selected && (
           <div className="m-auto p-4 font-mono text-[10px] text-on-surface-variant">Select a file from the tree</div>
         )}
@@ -81,7 +81,7 @@ export function DocsTab({ sliceName, tree }: { sliceName: string; tree: DocsTree
             )}
           </div>
         )}
-      </main>
+      </section>
     </div>
   );
 }

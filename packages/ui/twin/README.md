@@ -60,6 +60,23 @@ real-interface change BREAKS the twin build = compile-time drift detection. (Pro
    force-refetch hooks). For SSE-driven surfaces, add events to `feedEvents`.
 3. `TWIN_ROUTE=<route> npm run twin:build` and screenshot.
 
+## Accessibility scan: `npm run twin:a11y` (workspaces-o9o.130)
+
+```
+CHROME_BIN=<chrome> npm run twin:a11y -- --out <dir> [--no-sandbox] [--only <surface id>[,<id>...]]
+```
+
+Builds the twin for every surface in `twin/capture/a11y-report.ts` (each route of `src/routes.tsx`, plus the dialogs the
+twin can open), opens it in headless Chrome, and runs axe-core's own `axe.min.js` with its **default rules** (none
+disabled or filtered) in light and dark. Writes `a11y-report.md` (violations by rule, then the surfaces and themes each
+hit) and `a11y-report.json`.
+
+- A route the twin has no fixture for is listed in `NOT_SCANNED` with the reason; a test fails if a route is in neither list.
+- A page that crashes to the router's error screen is a failed scan with the error, never a scan of the error screen.
+- `--no-sandbox`: only where Chrome cannot use its sandbox (unprivileged user namespaces disabled, e.g. Ubuntu 23.10+).
+- It is a manual script, not part of `npm test` (one twin build per route). The fast check that axe runs at all,
+  `test/a11y-axe.test.tsx`, is part of `npm test`.
+
 ## Known follow-up
 
 Graph rigNode badges read STALE/UNKNOWN — the per-node LIVE activity comes from the SSE

@@ -88,7 +88,7 @@ export function FilesWorkspace() {
             </>
           )}
         </aside>
-        <main data-testid="files-content-pane" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
+        <section aria-label="File content" data-testid="files-content-pane" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
           {!selectedRoot && (
             <div className="m-auto p-4 font-mono text-[10px] text-on-surface-variant">
               Select an allowlist root to browse.
@@ -107,7 +107,7 @@ export function FilesWorkspace() {
               onToggleEditMode={() => setEditMode((v) => !v)}
             />
           )}
-        </main>
+        </section>
       </div>
     </div>
   );

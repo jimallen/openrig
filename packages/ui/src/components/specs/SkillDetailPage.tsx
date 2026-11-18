@@ -203,7 +203,7 @@ export function SkillDetailPage({
           )}
         </aside>
 
-        <main data-testid="skill-detail-viewer" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
+        <section aria-label="Skill file" data-testid="skill-detail-viewer" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
           {!selectedFile ? (
             <div data-testid="skill-detail-viewer-no-selection" className="p-4 font-mono text-[10px] text-on-surface-variant">
               Select a file from the tree.
@@ -211,7 +211,7 @@ export function SkillDetailPage({
           ) : (
             <SkillFileContent skillId={skill.id} path={selectedFile} />
           )}
-        </main>
+        </section>
       </div>
     </div>
   );

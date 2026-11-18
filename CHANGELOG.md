@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### An accessibility scan of the web UI, and its first fixes (workspaces-o9o.130)
+
+- New: `npm run twin:a11y` (in `packages/ui`) runs axe-core's default rules (none disabled) over every route of the UI twin and the dialogs it can open, in light and dark, and writes a report by rule and surface (`twin/README.md`). A test fails if a route is neither scanned nor listed as not scanned with a reason, and a page that crashes in the twin is a failed scan rather than a scan of the error screen. axe-core 4.14.1 is a dev dependency of `packages/ui`; `test/a11y-axe.test.tsx` checks it runs, as part of `npm test`.
+- Fixed from the first scan: the audit history filters' verb select had no accessible name (critical) and its since/until fields were named only by a tooltip; four detail panes (files, a slice's docs, plugin and skill files) nested their own `main` landmark inside the app's.
+- Filed: the remaining 7 rules (workspaces-o9o.152 to .158) and the twin's /settings crash (workspaces-o9o.159). First scan: 104 scans, 24 clean, 12 rules, 299 elements; with the fixes: 26 clean, 7 rules, 287 elements.
+
 ### The queue-handoff skill says what to do when a close's outcome is unknown (workspaces-o9o.166)
 
 - Symptom: a seat whose `rig queue handoff`, `handoff-and-complete` or `update --state done` ended in a daemon error had no guidance. These verbs print "The command was not delivered." when the connection drops after the request was sent, even if the close had committed (only `queue create` marks that as an unknown outcome). In the 2026-08-05 incident, completed work was read as not done for about 5 hours.

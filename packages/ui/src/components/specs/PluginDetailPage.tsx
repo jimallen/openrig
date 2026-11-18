@@ -214,7 +214,7 @@ export function PluginDetailPage({ pluginId }: PluginDetailPageProps) {
           )}
         </aside>
 
-        <main data-testid="plugin-detail-viewer" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
+        <section aria-label="Plugin file" data-testid="plugin-detail-viewer" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
           {!selectedFile ? (
             <div data-testid="plugin-detail-viewer-no-selection" className="p-4 font-mono text-[10px] text-on-surface-variant">
               Select a file from the tree.
@@ -222,7 +222,7 @@ export function PluginDetailPage({ pluginId }: PluginDetailPageProps) {
           ) : (
             <PluginFileContent pluginId={pluginId} path={selectedFile} />
           )}
-        </main>
+        </section>
       </div>
     </div>
   );

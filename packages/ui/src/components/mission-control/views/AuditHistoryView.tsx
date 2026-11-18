@@ -77,6 +77,7 @@ export function AuditHistoryView() {
         />
         <select
           data-testid="mc-audit-filter-action-verb"
+          aria-label="Action verb"
           value={actionVerb}
           onChange={(e) => setActionVerb(e.target.value)}
           className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-xs"
@@ -100,6 +101,7 @@ export function AuditHistoryView() {
           <input
             type="datetime-local"
             data-testid="mc-audit-filter-since"
+            aria-label="Since"
             value={since}
             onChange={(e) => setSince(e.target.value)}
             className="flex-1 border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-[11px]"
@@ -108,6 +110,7 @@ export function AuditHistoryView() {
           <input
             type="datetime-local"
             data-testid="mc-audit-filter-until"
+            aria-label="Until"
             value={until}
             onChange={(e) => setUntil(e.target.value)}
             className="flex-1 border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-[11px]"
