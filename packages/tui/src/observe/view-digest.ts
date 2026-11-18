@@ -4,10 +4,13 @@
 // paths, previews, tokens) is never copied out.
 import type { FleetSnapshot, LoadState } from "../types.js";
 
-export const VIEW_DIGEST_LIMITS = { rigs: 500, agentsPerRig: 200, agents: 5000 } as const;
+/** Every variable-length field is bounded (verify-qa2 review): each list and each string. With all of them at their caps a reply stays under
+ *  1 MB (pinned). `truncated` is true whenever anything was cut. */
+export const VIEW_DIGEST_LIMITS = { rigs: 500, agentsPerRig: 200, agents: 2000, hostsDown: 100, chars: 100 } as const;
 
 export interface ViewDigestAgent { name: string; session?: string; status: string }
-export interface ViewDigestRig { host: string; name: string; id?: string; reachable: boolean; agents: ViewDigestAgent[] }
+/** agentCount is the rig's whole agent count in the snapshot, whatever the agent list's caps cut (compared with ps's nodeCount). */
+export interface ViewDigestRig { host: string; name: string; id?: string; reachable: boolean; agentCount: number; agents: ViewDigestAgent[] }
 export interface ViewDigest {
   /** When the TUI last confirmed its read of the daemon (ISO), null before the first. */
   readAt: string | null;
@@ -27,28 +30,35 @@ export function describeView(input: { snapshot: FleetSnapshot; load: LoadState |
   const { snapshot, load } = input;
   const rigs: ViewDigestRig[] = [];
   let totalRigs = 0, totalAgents = 0, keptAgents = 0, truncated = false;
+  const cap = (text: string): string => {
+    if (text.length <= limits.chars) return text;
+    truncated = true;
+    return text.slice(0, limits.chars);
+  };
   for (const host of snapshot.hosts) {
     for (const rig of host.rigs) {
       totalRigs++;
       const agents: ViewDigestAgent[] = [];
+      let agentCount = 0;
       for (const pod of rig.pods) {
         for (const agent of pod.agents) {
-          totalAgents++;
+          totalAgents++; agentCount++;
           if (agents.length >= limits.agentsPerRig || keptAgents >= limits.agents) { truncated = true; continue; }
-          agents.push({ name: agent.name, ...(agent.session ? { session: agent.session } : {}), status: agent.status });
+          agents.push({ name: cap(agent.name), ...(agent.session ? { session: cap(agent.session) } : {}), status: cap(agent.status) });
           keptAgents++;
         }
       }
       if (rigs.length >= limits.rigs) { truncated = true; continue; }
-      rigs.push({ host: host.name, name: rig.name, ...(rig.id ? { id: rig.id } : {}), reachable: host.reachable, agents });
+      rigs.push({ host: cap(host.name), name: cap(rig.name), ...(rig.id ? { id: cap(rig.id) } : {}), reachable: host.reachable, agentCount, agents });
     }
   }
+  if (snapshot.hostsDown.length > limits.hostsDown) truncated = true;
   return {
     readAt: typeof load?.lastSuccessAt === "number" ? new Date(load.lastSuccessAt).toISOString() : null,
     stale: load?.stale === true,
     settled: load?.settled === true,
     rigs,
-    hostsDown: snapshot.hostsDown.map((h) => h.hostId),
+    hostsDown: snapshot.hostsDown.slice(0, limits.hostsDown).map((h) => cap(h.hostId)),
     counts: { rigs: totalRigs, agents: totalAgents },
     truncated,
   };

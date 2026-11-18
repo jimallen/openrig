@@ -73,7 +73,7 @@ describe("the socket 'view' query (o9o.172)", () => {
       const raw = JSON.stringify(await q("view"));
       for (const sentinel of [secretish, pathish, paneish]) expect(raw).not.toContain(sentinel);
       const allowed = new Set(["ok", "instanceId", "view", "readAt", "stale", "settled", "rigs", "hostsDown", "counts", "truncated",
-        "host", "name", "id", "reachable", "agents", "session", "status"]);
+        "host", "name", "id", "reachable", "agentCount", "agents", "session", "status"]);
       const keys = new Set<string>();
       const walk = (v: unknown) => { if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { keys.add(k); walk(x); } };
       walk(JSON.parse(raw));
@@ -100,6 +100,49 @@ describe("the socket 'view' query (o9o.172)", () => {
     });
     await withSocket(demoSnapshot(), null, async (q) => {
       expect((await q("view")).view).toMatchObject({ readAt: null, settled: false });
+    });
+  });
+
+  // verify-qa2 review: EVERY variable-length field is bounded: each list AND each string, and truncated says when anything was cut.
+  it("hostsDown is capped (100) and says truncated", async () => {
+    const snapshot = demoSnapshot();
+    snapshot.hostsDown = Array.from({ length: 10_000 }, (_v, i) => ({ hostId: `host-${i}`, status: "unreachable" }));
+    await withSocket(snapshot, null, async (q) => {
+      const view = (await q("view")).view as { hostsDown: string[]; truncated: boolean };
+      expect(view.hostsDown).toHaveLength(100);
+      expect(view.truncated).toBe(true);
+    });
+  });
+
+  it("every string is capped (100 characters) and says truncated", async () => {
+    const snapshot = demoSnapshot();
+    const long = "n".repeat(1_000_000);
+    const host = snapshot.hosts[0]!;
+    host.name = long;
+    host.rigs[0]!.name = long;
+    host.rigs[0]!.pods[0]!.agents[0]!.name = long;
+    host.rigs[0]!.pods[0]!.agents[0]!.status = long;
+    snapshot.hostsDown = [{ hostId: long, status: "unreachable" }];
+    await withSocket(snapshot, null, async (q) => {
+      const res = await q("view");
+      const raw = JSON.stringify(res);
+      expect(raw.length).toBeLessThan(200_000);
+      const view = res.view as { rigs: Array<{ host: string; name: string; agents: Array<{ name: string; status: string }> }>; hostsDown: string[]; truncated: boolean };
+      for (const s of [view.rigs[0]!.host, view.rigs[0]!.name, view.rigs[0]!.agents[0]!.name, view.rigs[0]!.agents[0]!.status, view.hostsDown[0]!]) expect(s.length).toBe(100);
+      expect(view.truncated).toBe(true);
+    });
+  });
+
+  it("the largest possible digest (every list full, every string at its cap) is under 1 MB", async () => {
+    const snapshot = demoSnapshot();
+    const s100 = "x".repeat(5000);
+    const agent = { ...snapshot.hosts[0]!.rigs[0]!.pods[0]!.agents[0]!, name: s100, session: s100, status: s100 };
+    snapshot.hosts = [{ ...snapshot.hosts[0]!, name: s100, rigs: Array.from({ length: 600 }, (_v, i) => ({ ...snapshot.hosts[0]!.rigs[0]!, id: s100, name: `${i}${s100}`,
+      pods: [{ ...snapshot.hosts[0]!.rigs[0]!.pods[0]!, agents: Array.from({ length: 300 }, () => agent) }] })) }];
+    snapshot.hostsDown = Array.from({ length: 500 }, () => ({ hostId: s100, status: "unreachable" }));
+    await withSocket(snapshot, null, async (q) => {
+      const raw = JSON.stringify(await q("view"));
+      expect(raw.length).toBeLessThan(1_000_000);
     });
   });
 
