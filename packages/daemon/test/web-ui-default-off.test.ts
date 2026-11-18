@@ -131,7 +131,9 @@ describe("web UI default off (ui.enabled)", () => {
     expect(offUpgrade.upgraded).toBe(false);
     expect(offUpgrade.status).toBe(404);
     const onUpgrade = await request(onPort, `/api/terminal/seat-1?token=${TOKEN}`, UPGRADE);
-    expect(onUpgrade.status, onUpgrade.body).not.toBe(404);
+    // workspaces-o9o.125: it upgrades (101), not merely "not 404": without the websocket option a listener answers the
+    // upgrade as a plain request (500), which "not 404" let through.
+    expect(onUpgrade.upgraded, `${onUpgrade.status} ${onUpgrade.body}`).toBe(true);
     // A browser upgrade (own-UI Origin) is refused by the /api browser boundary while the UI is off.
     const offBrowser = await request(offPort, `/api/terminal/seat-1?token=${TOKEN}`, { ...UPGRADE, Origin: `http://127.0.0.1:${offPort}` });
     expect(offBrowser.upgraded).toBe(false);
