@@ -10,6 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### A non-default OPENRIG_HOME never falls back to the default daemon (workspaces-o9o.181)
+
+- Symptom: with a temporary `OPENRIG_HOME` that had no `daemon.json` and no configured port, the CLI used the built-in `127.0.0.1:7433`, which on a seat's host is the live daemon. Twice on 2026-11-18 a probe with a temporary home read and wrote the live daemon that way.
+- Now a home other than `~/.openrig` (compared by real path) that names no daemon of its own (no `daemon.json`; no `daemon.port` or `daemon.host` in its `config.json`, `OPENRIG_PORT` or `OPENRIG_HOST`) resolves no daemon. The CLI refuses each request before sending anything and says why, with the fix: set `OPENRIG_URL`, or start a daemon for that home. `rig daemon status` reports stopped with the reason and probes nothing (a live sibling home still makes it unverified and names both paths), `rig daemon stop` has no target, and `rig doctor` fails its port check without a health probe.
+- Unchanged: `OPENRIG_URL`, the home's own `daemon.json`, a configured port or host, and the default home's fallback.
+
 ### The seat guard reads Code Mode's REPL code (workspaces-o9o.131)
 
 - Symptom (verify-sec2, from o9o.122): in Claude Code's Code Mode each piece of code reaches `PreToolUse` as tool `REPL` with the JavaScript in `tool_input.code`, but `rig-body-guard` was installed on `Bash` only and read only `tool_input.command`. The shell calls inside the code arrive as `Bash` and were checked; the code itself was not. Measured on Claude Code 2.1.327: in Code Mode every shell call goes through REPL code (a direct `Bash` call is refused with "Bash is only available inside REPL").
