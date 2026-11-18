@@ -6,7 +6,7 @@
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { Command } from "commander";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { DaemonClient, DaemonConnectionError } from "../src/client.js";
@@ -22,6 +22,12 @@ import { agentCommand } from "../src/commands/agent.js";
 import { createMcpServer } from "../src/mcp-server.js";
 import { runRemoteHttpOp } from "../src/remote-host-ops.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
+
+
+// workspaces-o9o.181: the hermetic fixture home is not ~/.openrig, so a daemon status there needs a port this home names, or it
+// reads "no daemon" before any fixture daemon is reached. Port 1: every client here is given its fixture's URL, so this port
+// only feeds the mocked status probe; a path that missed its URL would land on a dead port, never the default 7433.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "1"); });
 
 const servers: Server[] = [];
 afterEach(async () => {

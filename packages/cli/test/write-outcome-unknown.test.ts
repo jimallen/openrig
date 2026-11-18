@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import { Command } from "commander";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { DaemonClient, DaemonConnectionError } from "../src/client.js";
 import { runProgram } from "../src/cli-error.js";
 import { queueCommand, type QueueDeps } from "../src/commands/queue.js";
@@ -17,6 +17,12 @@ import { healthCommand, type HealthDeps } from "../src/commands/health.js";
 import { printTransportFailureForTest } from "../src/commands/send.js";
 import { STATE_FILE, type DaemonState } from "../src/daemon-lifecycle.js";
 import { asLifecycleDeps } from "./helpers/mock-lifecycle-deps.js";
+
+
+// workspaces-o9o.181: the hermetic fixture home is not ~/.openrig, so a daemon status there needs a port this home names, or it
+// reads "no daemon" before any fixture daemon is reached. Port 1: every client here is given its fixture's URL, so this port
+// only feeds the mocked status probe; a path that missed its URL would land on a dead port, never the default 7433.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "1"); });
 
 const servers: Server[] = [];
 afterEach(async () => {
