@@ -79,12 +79,12 @@ const SHIPPED_ROOTS = shippedRoots({
 // Jim, 2026-11-18 (o9o.137): a STRICT guard. After a fourth review found a verb the list missed ("File the issue with upstream
 // maintainers.") and a read-only link the verb check flagged before its exception ran, the CoS ruled within that decision: no
 // verb matching at all, so there is no verb list left to race. ANY shipped sentence that names an upstream recipient is
-// flagged, whatever it says: mvschwarz (every upstream URL holds it), hello@openrig.dev, the word upstream, the maintainers,
-// OpenRig support. Every legitimate one, read-only issue links included, is on the reviewed allowlist,
+// flagged, whatever it says: mvschwarz (every upstream URL holds it), the upstream site openrig.dev (any path, and its mail
+// address hello@openrig.dev), the word upstream, the maintainers, OpenRig support, the OpenRig team. Every legitimate one, read-only issue links included, is on the reviewed allowlist,
 // fork-report-route.allowlist.json (file, exact sentence, reason), and an entry that no longer matches fails the guard. The
 // older phrase patterns ("open an issue", ...) are gone too (re-review nit): they flagged a sentence that names no upstream
 // recipient at all, such as one about this repository's own issues.
-const RECIPIENT = /\bupstream\b|\bmaintainers?\b|mvschwarz|hello@openrig\.dev|\bOpenRig support\b/i;
+const RECIPIENT = /\bupstream\b|\bmaintainers?\b|mvschwarz|\bopenrig\.dev\b|\bOpenRig (?:support|team)\b/i;
 
 function flagged(sentence) {
   return RECIPIENT.test(sentence);
@@ -194,6 +194,14 @@ test('the matcher flags every sentence that names an upstream recipient, whateve
     '- Claude usage limits may not be detected: [#99](https://github.com/mvschwarz/openrig/issues/99).',
     "report it to this fork's own intake, never upstream.",
     'Ask the maintainers.',
+    // The CoS's diff check: recipients the old phrase list caught, now named as recipients (the team, the upstream site).
+    'send the OpenRig team a useful report when you are still stuck',
+    '## 6. Submit it to openrig.dev/rigs',
+    'Submit it to openrig.dev/rigs and tell us how it went.',
+    'Read https://www.openrig.dev/help/agents first.',
+    'Write to hello@openrig.dev.',
+    // Strict: "OpenRig team" is a recipient even in its generic sense; legitimate uses go on the allowlist with their reason.
+    'This is the universal operating floor for every OpenRig team.',
   ]) assert.equal(upstreamSubmissions(sentence).length, 1, sentence);
   assert.equal(upstreamSubmissions('Report problems\nupstream, please.').length, 1, 'a sentence across two lines');
   for (const sentence of [
@@ -202,7 +210,8 @@ test('the matcher flags every sentence that names an upstream recipient, whateve
     // A sentence about this repository's own issues names no upstream recipient (re-review nit: the old phrase rule flagged it).
     'Open an issue in this local repository for internal tracking.',
     'OpenRig supports Node.js 22 and 24.',
-    'This is the universal operating floor for every OpenRig team.',
+    // A word boundary: a hostname that merely ends in openrig.dev is not the upstream site.
+    'Fetch it from notopenrig.devices.example.',
   ]) assert.deepEqual(upstreamSubmissions(sentence), [], sentence);
   // Two list items, or two paragraphs, are never one sentence.
   assert.deepEqual(upstreamSubmissions('- report it here\n- the docs live elsewhere'), []);

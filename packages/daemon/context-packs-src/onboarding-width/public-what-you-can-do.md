@@ -688,8 +688,8 @@ working arrangement becomes something someone else can instantiate.
   finding names its file. `rig bundle create` and `rig up <link>` name the bundle after
   `rig.yaml`'s `name`.
   `rig bundle create --context-pack <dir>` and `--project-dir <dir>` carry a context pack or a
-  project with it, and `docs/reference/publishing-a-rig-bundle.md` explains how to share it on
-  openrig.dev/rigs.
+  project with it, and `docs/reference/publishing-a-rig-bundle.md` explains how to share it;
+  nothing from this fork goes to the upstream catalogue at openrig.dev/rigs.
 - **`rig bootstrap`** — spec file to running rig in one command. **`rig requirements`** — what this
   spec needs installed first.
 - **`rig plugin show` / `used-by` / `validate`** — what a plugin actually gives an agent, and

@@ -21,6 +21,11 @@
  },
  {
   "file": "docs/reference/getting-started.md",
+  "sentence": "If permission prompts are slowing you down, consider the [workshop bundle](https://openrig.dev/rigs/workshop).",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
+ },
+ {
+  "file": "docs/reference/getting-started.md",
   "sentence": "[dajiaohuang](https://github.com/dajiaohuang) [ran OpenRig 0.6.6 under WSL2](https://github.com/mvschwarz/openrig/issues/88#issuecomment-6043925546) on Ubuntu 24.04, with Node.js 24.14.1, tmux 3.4, Codex CLI 0.161.0 and Pi (`@earendil-works/pi-coding-agent`) 1.0.4, headless, as the distribution's root user.",
   "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
  },
@@ -106,8 +111,18 @@
  },
  {
   "file": "docs/reference/publishing-a-rig-bundle.md",
+  "sentence": "A rig bundle is a whole OpenRig team that someone else can install and run: the rig spec, its agents, their instructions and skills, and its documentation.",
+  "reason": "Uses 'OpenRig team' for a team of agents a person runs (a rig), not the upstream project's people; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/publishing-a-rig-bundle.md",
   "sentence": "This build is a private fork: it never sends a bundle to the upstream catalogue at openrig.dev/rigs (see section 6).",
   "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "docs/reference/publishing-a-rig-bundle.md",
+  "sentence": "On openrig.dev/rigs, pick a configuration and the page gives you one command to paste, which fetches exactly that configuration from GitHub.",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
  },
  {
   "file": "docs/reference/publishing-a-rig-bundle.md",
@@ -123,6 +138,86 @@
   "file": "docs/reference/rig-spec.md",
   "sentence": "If a full rig restore leaves an OMP seat in `attention_required` or `failed`, `rig seat clear-attention` cannot yet reconcile it to `operator_recovered`, even with `--reason`, because restore reconciliation only verifies Claude Code and Codex processes ([#41](https://github.com/mvschwarz/openrig/issues/41)).",
   "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$id\": \"https://openrig.dev/schemas/bundle-behaviour.v1.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/source\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/configurationId\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/packageDigest\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/assembler\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/assembler\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/member\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-behaviour.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/runtime\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-common.v1.schema.json",
+  "sentence": "\"$id\": \"https://openrig.dev/schemas/bundle-common.v1.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-configurations.v1.schema.json",
+  "sentence": "\"$id\": \"https://openrig.dev/schemas/bundle-configurations.v1.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-configurations.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/member\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-configurations.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/runtime\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-status.v1.schema.json",
+  "sentence": "\"$id\": \"https://openrig.dev/schemas/bundle-status.v1.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-status.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/configurationId\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-status.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/packageDigest\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/bundle-status.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/runtime\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
  },
  {
   "file": "docs/reference/schemas/fixtures/invalid/behaviour/not-generated-with-sections.json",
@@ -225,6 +320,61 @@
   "reason": "Schema test fixture: an example repository URL inside fixture data, not prose a reader acts on."
  },
  {
+  "file": "docs/reference/schemas/registry-entry.v1.schema.json",
+  "sentence": "\"$id\": \"https://openrig.dev/schemas/registry-entry.v1.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/registry-entry.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/source\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/registry-entry.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/configurationId\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/registry-entry.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/packageDigest\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/registry-entry.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/assembler\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/run-record.v1.schema.json",
+  "sentence": "\"$id\": \"https://openrig.dev/schemas/run-record.v1.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/run-record.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/source\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/run-record.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/configurationId\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/run-record.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/packageDigest\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/run-record.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/assembler\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "docs/reference/schemas/run-record.v1.schema.json",
+  "sentence": "\"$ref\": \"https://openrig.dev/schemas/bundle-common.v1.json#/$defs/runtime\"",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
   "file": "docs/reference/slack-app-setup.md",
   "sentence": "> here does not match what Slack shows you, report it to this fork's own intake, never upstream",
   "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
@@ -260,6 +410,11 @@
   "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
  },
  {
+  "file": "packages/cli/src/daemon-reachability.ts",
+  "sentence": ": `the help guide (https://www.openrig.dev/help/agents), section \"${HELP_SECTION}\"`;",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
+ },
+ {
   "file": "packages/cli/src/lib/context-git.ts",
   "sentence": "const upstream = optionalGit(checkout, [\"rev-parse\", \"--abbrev-ref\", \"--symbolic-full-name\", \"@{upstream}\"]);",
   "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
@@ -288,6 +443,21 @@
   "file": "packages/cli/src/lib/context-git.ts",
   "sentence": "git(checkout, [\"merge\", \"--no-edit\", \"@{upstream}\"]);",
   "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/restore-packet/schema-validator.ts",
+  "sentence": "$id: \"https://openrig.dev/schemas/restore-summary.schema.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/cli/src/schemas/restore-summary.schema.json",
+  "sentence": "\"$id\": \"https://openrig.dev/schemas/restore-summary.schema.json\",",
+  "reason": "A JSON Schema identifier ($id or $ref) under openrig.dev/schemas: a name for the schema, not a link a reader is sent to; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/assets/guidance/CULTURE-default.md",
+  "sentence": "This is the universal operating floor for every OpenRig team.",
+  "reason": "Uses 'OpenRig team' for a team of agents a person runs (a rig), not the upstream project's people; nothing is sent anywhere."
  },
  {
   "file": "packages/daemon/assets/guidance/openrig-start.md",
@@ -365,6 +535,16 @@
   "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
  },
  {
+  "file": "packages/daemon/assets/skills/rigs/SKILL.md",
+  "sentence": "If `rig` itself won't run, use https://www.openrig.dev/help/agents.",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
+ },
+ {
+  "file": "packages/daemon/assets/skills/rigs/SKILL.md",
+  "sentence": "Getting started: https://openrig.dev/docs/getting-started",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
+ },
+ {
   "file": "packages/daemon/context-packs-src/help/help.md",
   "sentence": "This build is a private fork: the upstream project's version of this page, online at [openrig.dev/help/agents](https://www.openrig.dev/help/agents), is a read-only reference, and its contact routes are the upstream project's, never this fork's.",
   "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
@@ -440,6 +620,16 @@
   "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
  },
  {
+  "file": "packages/daemon/context-packs-src/onboarding-width/public-what-you-can-do.md",
+  "sentence": "`rig bundle create --context-pack <dir>` and `--project-dir <dir>` carry a context pack or a project with it, and `docs/reference/publishing-a-rig-bundle.md` explains how to share it; nothing from this fork goes to the upstream catalogue at openrig.dev/rigs.",
+  "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/context-packs-src/reference/getting-started.md",
+  "sentence": "If permission prompts are slowing you down, consider the [workshop bundle](https://openrig.dev/rigs/workshop).",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
+ },
+ {
   "file": "packages/daemon/context-packs-src/reference/getting-started.md",
   "sentence": "[dajiaohuang](https://github.com/dajiaohuang) [ran OpenRig 0.6.6 under WSL2](https://github.com/mvschwarz/openrig/issues/88#issuecomment-6043925546) on Ubuntu 24.04, with Node.js 24.14.1, tmux 3.4, Codex CLI 0.161.0 and Pi (`@earendil-works/pi-coding-agent`) 1.0.4, headless, as the distribution's root user.",
   "reason": "A read-only link to a known upstream issue, or to the upstream issue list: read for an explanation; nothing is posted there."
@@ -473,6 +663,11 @@
   "file": "packages/daemon/specs/agents/shared/skills/core/openrig-skills/SKILL.md",
   "sentence": "Run `rig context get help`: the one help guide for your installed version, from symptom to next step, known problems, and, if you are still stuck, a report to this fork's own intake (the openrig rig's Chief of Staff), never upstream.",
   "reason": "This fork's own wording: it names upstream only to forbid submitting there, or to say upstream material is read-only (o9o.137; Jim: nothing goes upstream)."
+ },
+ {
+  "file": "packages/daemon/specs/agents/shared/skills/core/openrig-software-factory/SKILL.md",
+  "sentence": "--- name: openrig-software-factory description: >- Use when a user wants a continuing software team for a real repository, or has a first OpenRig team and needs a repeatable path for reviewed work and later tasks.",
+  "reason": "Uses 'OpenRig team' for a team of agents a person runs (a rig), not the upstream project's people; nothing is sent anywhere."
  },
  {
   "file": "packages/daemon/specs/agents/shared/skills/core/watchdog/SKILL.md",
@@ -545,14 +740,29 @@
   "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
  },
  {
+  "file": "packages/daemon/specs/rigs/launch/demo/CULTURE.md",
+  "sentence": "It shows the full OpenRig team shape in a form we are willing to stand behind for new users.",
+  "reason": "Uses 'OpenRig team' for a team of agents a person runs (a rig), not the upstream project's people; nothing is sent anywhere."
+ },
+ {
   "file": "packages/daemon/specs/rigs/launch/factory/topology/seats/orch-lead/CRAFT.md",
   "sentence": "- You are the shock absorber, not the wire: absorb upstream churn, relay only settled decisions.",
   "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
  },
  {
   "file": "packages/daemon/specs/rigs/launch/kernel/agents/operator/agent/guidance/role.md",
+  "sentence": "Not built in: it installs from its listing on openrig.dev/rigs, a GitHub folder link pinned to a reviewed commit.",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
+ },
+ {
+  "file": "packages/daemon/specs/rigs/launch/kernel/agents/operator/agent/guidance/role.md",
   "sentence": "Read the commit and its configurations from https://raw.githubusercontent.com/mvschwarz/openrig-registry/main/registry/workshop.yaml, fetched fresh, for example with `curl -fsSL <that link>`.",
   "reason": "Fetches or cites the upstream source (an install script, release notes, a bundle, the registry, the plugin repository or README): a read of published material, not a report or a submission."
+ },
+ {
+  "file": "packages/daemon/specs/rigs/launch/kernel/agents/operator/agent/guidance/role.md",
+  "sentence": "If permission prompts are slowing the person down, point them to https://openrig.dev/rigs/workshop: the bundle ships with broad access and non-interruptive mode, bypassing permission prompts and supported harness warning dialogs.",
+  "reason": "A read-only link to the upstream site (its help guide, its getting-started docs, or a bundle's listing to install from): read for reference; nothing is sent there."
  },
  {
   "file": "packages/daemon/specs/rigs/launch/kernel/agents/operator/agent/guidance/role.md",
@@ -578,6 +788,11 @@
   "file": "packages/daemon/src/domain/active-lens-store.ts",
   "sentence": "// workflow_specs cache — that's an upstream concern at the route",
   "reason": "Uses 'upstream' in its general sense (an earlier stage of a pipeline, a git tracking branch, or a vendored skill's source project), not the OpenRig project; nothing is sent anywhere."
+ },
+ {
+  "file": "packages/daemon/src/domain/activity-taxonomy.ts",
+  "sentence": "// diagnoses, ratified at product/from-openrig.dev/taxonomy-agent-state-ADDENDUM-2026-08-26.md",
+  "reason": "A source comment citing a design note by its folder name (product/from-openrig.dev/), not a link or a recipient."
  },
  {
   "file": "packages/daemon/src/domain/bundle-skills-router.ts",
