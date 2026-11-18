@@ -32,6 +32,14 @@ export type DrawerSelection =
   | { type: "sub-spec"; data: SubSpecPreviewData }
   | null;
 
+/** The drawer's accessible name per kind (axe aria-dialog-name, o9o.130): a role="dialog" must be named. */
+const DRAWER_LABEL: Record<NonNullable<DrawerSelection>["type"], string> = {
+  system: "System",
+  qitem: "Queue item",
+  file: "File",
+  "sub-spec": "Sub-spec preview",
+};
+
 interface SharedDetailDrawerProps {
   selection: DrawerSelection;
   onClose: () => void;
@@ -86,6 +94,7 @@ export function SharedDetailDrawer({
         width="wide"
         onClose={onClose}
         testId="shared-detail-drawer"
+        aria-label={DRAWER_LABEL[selection.type]}
         // top-14 starts below the universal top bar (h-14, fixed at top); bottom-0
         // anchors to viewport bottom so the drawer fills the remaining height.
         // Bounce-fix #3 width-coupling: 38rem (lg:w-[38rem]) per VellumSheet wide preset.

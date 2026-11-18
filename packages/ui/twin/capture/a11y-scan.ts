@@ -6,6 +6,7 @@
 // client library is added. Writes a11y-report.json and a11y-report.md to --out.
 //
 // Usage: tsx twin/capture/a11y-scan.ts --out <dir> [--chrome <binary>] [--no-sandbox] [--only <surface id>[,<id>...]]
+//   [--start-timeout-ms <ms>]  how long Chrome has to start and answer the DevTools protocol (default 20000).
 //   --no-sandbox: pass it where Chrome cannot use its sandbox (a host with unprivileged user namespaces disabled, e.g.
 //   Ubuntu 23.10+). The page is the twin's own file:// build.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -14,7 +15,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { NOT_SCANNED, SURFACES, crashMessage, renderMarkdown, summarizeByRule, type ScanRecord, type Surface, type Theme, type Violation } from "./a11y-report.js";
+import { DIALOGS_NOT_SCANNED, NOT_SCANNED, SURFACES, crashMessage, renderMarkdown, summarizeByRule, type ScanRecord, type Surface, type Theme, type Violation } from "./a11y-report.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.resolve(__dirname, "..", "..");
@@ -38,7 +39,9 @@ function parseArgs(argv: string[]) {
     if (next !== undefined && !next.startsWith("--")) { out[a.slice(2)] = next; i++; } else { out[a.slice(2)] = ""; }
   }
   if (!out["out"]) fail("missing required flag --out <dir>");
-  return { out: path.resolve(out["out"]), chrome: out["chrome"] || undefined, noSandbox: "no-sandbox" in out, only: out["only"] ? out["only"].split(",") : null };
+  const startTimeoutMs = out["start-timeout-ms"] ? Number(out["start-timeout-ms"]) : 20_000;
+  if (!Number.isInteger(startTimeoutMs) || startTimeoutMs <= 0) fail("--start-timeout-ms must be a positive integer");
+  return { out: path.resolve(out["out"]), chrome: out["chrome"] || undefined, noSandbox: "no-sandbox" in out, only: out["only"] ? out["only"].split(",") : null, startTimeoutMs };
 }
 
 /** The same lookup as twin-capture.ts: --chrome, CHROME_BIN, the macOS apps, then PATH. */
@@ -63,9 +66,14 @@ class Cdp {
       if (msg.error) p.reject(new Error(msg.error.message)); else p.resolve(msg.result);
     });
   }
-  static async connect(url: string): Promise<Cdp> {
+  static async connect(url: string, timeoutMs: number): Promise<Cdp> {
     const ws = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => { ws.addEventListener("open", () => resolve()); ws.addEventListener("error", () => reject(new Error(`cannot connect to ${url}`))); });
+    try {
+      await withTimeout(new Promise<void>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve());
+        ws.addEventListener("error", () => reject(new Error(`cannot connect to ${url}`)));
+      }), timeoutMs, `Chrome did not answer the DevTools protocol within ${timeoutMs} ms`);
+    } catch (e) { ws.close(); throw e; }
     return new Cdp(ws);
   }
   send<T = unknown>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
@@ -78,17 +86,40 @@ class Cdp {
   close() { this.ws.close(); }
 }
 
-async function launch(chrome: string, noSandbox: boolean): Promise<{ proc: ChildProcess; url: string; profile: string }> {
-  const profile = mkdtempSync(path.join(os.tmpdir(), "twin-a11y-"));
-  const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", ...(noSandbox ? ["--no-sandbox"] : []), "about:blank"];
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+
+/** What the scan created outside itself: filled in as each is created, so cleanup sees it even when start-up fails. */
+interface Held { proc?: ChildProcess; profile?: string }
+
+/** Start Chrome and return its DevTools URL. The profile and the process are recorded in `held` the moment they exist. */
+async function launch(chrome: string, noSandbox: boolean, timeoutMs: number, held: Held): Promise<string> {
+  held.profile = mkdtempSync(path.join(os.tmpdir(), "twin-a11y-"));
+  const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${held.profile}`, "--no-first-run", ...(noSandbox ? ["--no-sandbox"] : []), "about:blank"];
   const proc = spawn(chrome, args, { stdio: ["ignore", "ignore", "pipe"] });
-  const url = await new Promise<string>((resolve, reject) => {
+  held.proc = proc;
+  return withTimeout(new Promise<string>((resolve, reject) => {
     let buf = "";
     proc.stderr!.on("data", (d: Buffer) => { buf += d.toString(); const m = /DevTools listening on (ws:\/\/\S+)/.exec(buf); if (m) resolve(m[1]!); });
+    proc.on("error", (e) => reject(new Error(`chrome could not start: ${e.message}`)));
     proc.on("exit", (code) => reject(new Error(`chrome exited (${code}) before listening: ${buf.trim().split("\n").slice(-1)[0] ?? ""}`)));
-    setTimeout(() => reject(new Error("chrome did not start within 20 s")), 20_000);
-  });
-  return { proc, url, profile };
+  }), timeoutMs, `chrome did not start within ${timeoutMs} ms`);
+}
+
+/** Stop Chrome (TERM, then KILL after 5 s) and only then remove its profile: Chrome writes to the profile until it exits. */
+async function release(held: Held): Promise<void> {
+  const proc = held.proc;
+  if (proc && proc.exitCode === null && proc.signalCode === null) {
+    await new Promise<void>((resolve) => {
+      const kill = setTimeout(() => proc.kill("SIGKILL"), 5000);
+      proc.once("exit", () => { clearTimeout(kill); resolve(); });
+      proc.kill("SIGTERM");
+    });
+  }
+  if (held.profile) rmSync(held.profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -159,10 +190,14 @@ async function main() {
   const surfaces = args.only ? SURFACES.filter((s) => args.only!.includes(s.id)) : SURFACES;
   if (surfaces.length === 0) fail("--only matched no surface");
   mkdirSync(args.out, { recursive: true });
-  const { proc, url, profile } = await launch(chrome, args.noSandbox);
-  const cdp = await Cdp.connect(url);
+  const held: Held = {};
+  let cdp: Cdp | undefined;
+  let started = false;
   const records: ScanRecord[] = [];
   try {
+    // Inside the cleanup scope: a Chrome that never answers is stopped and its profile removed like any other.
+    cdp = await Cdp.connect(await launch(chrome, args.noSandbox, args.startTimeoutMs, held), args.startTimeoutMs);
+    started = true;
     let built = "";
     for (const surface of surfaces) {
       if (surface.route !== built) {
@@ -177,15 +212,15 @@ async function main() {
       }
     }
   } finally {
-    // The report first: a cleanup failure must not lose the scan.
-    writeFileSync(path.join(args.out, "a11y-report.json"), JSON.stringify({ axeVersion, commit, records, rules: summarizeByRule(records), notScanned: NOT_SCANNED }, null, 1));
-    writeFileSync(path.join(args.out, "a11y-report.md"), renderMarkdown(records, NOT_SCANNED, { axeVersion, commit }));
-    process.stdout.write(`report: ${path.join(args.out, "a11y-report.md")}\n`);
-    cdp.close();
-    // Chrome writes to its profile until it exits, so the profile is removed after the exit (bounded), with retries.
-    await new Promise<void>((resolve) => { proc.once("exit", () => resolve()); proc.kill("SIGTERM"); setTimeout(() => { proc.kill("SIGKILL"); resolve(); }, 5000); });
-    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    // The report first (only for a scan that started): a cleanup failure must not lose it.
+    if (started) {
+      writeFileSync(path.join(args.out, "a11y-report.json"), JSON.stringify({ axeVersion, commit, records, rules: summarizeByRule(records), notScanned: NOT_SCANNED, dialogsNotScanned: DIALOGS_NOT_SCANNED }, null, 1));
+      writeFileSync(path.join(args.out, "a11y-report.md"), renderMarkdown(records, NOT_SCANNED, { axeVersion, commit }, DIALOGS_NOT_SCANNED));
+      process.stdout.write(`report: ${path.join(args.out, "a11y-report.md")}\n`);
+    }
+    cdp?.close();
+    await release(held);
   }
 }
 
-void main();
+main().catch((e: unknown) => fail((e as Error).message));

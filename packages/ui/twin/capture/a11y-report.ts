@@ -30,6 +30,8 @@ export const SURFACES: Surface[] = [
   page("/topology/seat/$rigId/$logicalId", "/topology/seat/rig_alpha/lead.coordinator"),
   page("/project/mission/$missionId", "/project/mission/release-1.0.0"),
   page("/project/slice/$sliceId", "/project/slice/EX.1.0.0.01"),
+  // The corrective demo slice: the only seeded Review media (plan, delivered and walkthrough sections).
+  page("/project/slice/$sliceId", "/project/slice/EX.2.0.0.07"),
   page("/specs/library/$entryId", "/specs/library/spec_build_rig"),
   page("/specs/$specKind/$specName", "/specs/rig/acme-build"),
   page("/rigs/$rigId", "/rigs/rig_alpha"),
@@ -48,7 +50,54 @@ export const SURFACES: Surface[] = [
     id: "dialog: open in terminal (TerminalLauncher)", route: "/topology/rig/rig_alpha", pattern: "/topology/rig/$rigId",
     open: { click: '[data-testid="terminal-launcher-button"]', expect: '[data-testid="terminal-launcher-dialog"]' },
   },
+  // Non-Radix dialogs (role="dialog" by hand). The drawer is one component with one body per selection kind.
+  {
+    id: "dialog: queue item drawer (SharedDetailDrawer qitem)", route: "/for-you", pattern: "/for-you",
+    open: { click: '[data-testid^="feed-card-show-context-"]', expect: '[data-testid="shared-detail-drawer"]' },
+  },
+  {
+    id: "dialog: file drawer (SharedDetailDrawer file)", route: "/project/slice/EX.2.0.0.07", pattern: "/project/slice/$sliceId",
+    open: { click: '[data-testid="plan-full-prd"]', expect: '[data-testid="shared-detail-drawer"]' },
+  },
+  {
+    id: "dialog: image lightbox (Lightbox)", route: "/project/slice/EX.2.0.0.07", pattern: "/project/slice/$sliceId",
+    open: { click: '[data-testid="plan-artifact-stack-mockup.png-image"]', expect: '[data-testid="proof-lightbox"]' },
+  },
 ];
+
+/**
+ * Dialogs the twin cannot open, with why: every dialog component (dialogComponents) is scanned through a SURFACES entry
+ * or named here, and so is every drawer kind and image-dialog opener the inventory counts. Each is a gap in the scan.
+ */
+export const DIALOGS_NOT_SCANNED: Array<{ dialog: string; reason: string }> = [
+  { dialog: "SharedDetailDrawer sub-spec", reason: "opened from RigSpecDisplay's member rows; the twin has no rig spec to review (/specs/rig shows \"No RigSpec Selected\")" },
+  { dialog: "SharedDetailDrawer system", reason: "no opener: nothing in src sets a \"system\" selection" },
+  { dialog: "ProofImageViewer", reason: "FeedCard opens it from a card's proof screenshots, and no fixture card has a proof preview; TestsVerificationTab's opener is mounted nowhere" },
+  { dialog: "Lightbox (ProofTab)", reason: "ProofTab opens it from a proof capture, and the twin has no proof captures" },
+  { dialog: "SnapshotPanel", reason: "mounted nowhere in src" },
+];
+
+/** The component a dialog surface opens: the first word inside the id's parentheses. */
+export function dialogComponentOf(surface: Surface): string | null {
+  const m = /\(([A-Za-z0-9]+)/.exec(surface.id);
+  return surface.open && m ? m[1]! : null;
+}
+
+/**
+ * Every component in a source tree that renders a dialog: a hand-written role="dialog" (or alertdialog), or a Radix
+ * DialogContent / AlertDialogContent, or a VellumSheet (whose role="dialog" lives in the ui primitive). The ui primitives
+ * themselves are not components a person opens, so src/components/ui/ is skipped. `files`: path -> source.
+ */
+export function dialogComponents(files: Record<string, string>): string[] {
+  const out = new Set<string>();
+  for (const [file, text] of Object.entries(files)) {
+    if (file.includes("/components/ui/")) continue;
+    if (/role=["{]+(alert)?dialog/.test(text) || /<(DialogContent|AlertDialogContent|VellumSheet)\b/.test(text)) {
+      out.add(file.split("/").pop()!.replace(/\.tsx?$/, ""));
+    }
+  }
+  return [...out].sort();
+}
 
 /** Routes the twin has no fixture for, with why. Each is a gap in the scan, reported as one. */
 export const NOT_SCANNED: Array<{ pattern: string; reason: string }> = [
@@ -128,7 +177,12 @@ export function summarizeByRule(records: ScanRecord[]): RuleSummary[] {
 }
 
 /** The report: totals, one section per rule (surfaces and themes it hit), then the failed scans and the routes not scanned. */
-export function renderMarkdown(records: ScanRecord[], notScanned: Array<{ pattern: string; reason: string }>, meta: { axeVersion: string; commit: string }): string {
+export function renderMarkdown(
+  records: ScanRecord[],
+  notScanned: Array<{ pattern: string; reason: string }>,
+  meta: { axeVersion: string; commit: string },
+  dialogsNotScanned: Array<{ dialog: string; reason: string }> = [],
+): string {
   const ok = records.filter((r) => r.ok);
   const failed = records.filter((r): r is Extract<ScanRecord, { ok: false }> => !r.ok);
   const rules = summarizeByRule(records);
@@ -151,5 +205,9 @@ export function renderMarkdown(records: ScanRecord[], notScanned: Array<{ patter
   }
   lines.push("## Routes not scanned", "");
   for (const n of notScanned) lines.push(`- ${n.pattern}: ${n.reason}`);
+  if (dialogsNotScanned.length) {
+    lines.push("", "## Dialogs not scanned", "");
+    for (const d of dialogsNotScanned) lines.push(`- ${d.dialog}: ${d.reason}`);
+  }
   return lines.join("\n") + "\n";
 }

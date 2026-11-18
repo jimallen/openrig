@@ -1,13 +1,20 @@
 // workspaces-o9o.130: the pure half of twin:a11y (twin/capture/a11y-report.ts). The scan accounts for every route of
 // src/routes.tsx (scanned, or listed as not scanned with a reason), and axe-core's results fold into a report by rule.
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
-  NOT_SCANNED, SURFACES, crashMessage, renderMarkdown, routePatterns, summarizeByRule, unaccountedRoutes, type ScanRecord, type Violation,
+  DIALOGS_NOT_SCANNED, NOT_SCANNED, SURFACES, crashMessage, dialogComponentOf, dialogComponents, renderMarkdown, routePatterns, summarizeByRule, unaccountedRoutes, type ScanRecord, type Violation,
 } from "../twin/capture/a11y-report.js";
 
 const routesSource = readFileSync(path.resolve(__dirname, "..", "src", "routes.tsx"), "utf8");
+const SRC = path.resolve(__dirname, "..", "src");
+/** Every .ts/.tsx file under src, path -> source. */
+const srcFiles: Record<string, string> = Object.fromEntries(
+  (readdirSync(SRC, { recursive: true }) as string[])
+    .filter((f) => /\.tsx?$/.test(f))
+    .map((f) => [path.join(SRC, f), readFileSync(path.join(SRC, f), "utf8")]),
+);
 
 describe("twin:a11y covers every route (o9o.130)", () => {
   it("every route in src/routes.tsx is scanned or listed as not scanned, with a reason", () => {
@@ -31,6 +38,45 @@ describe("twin:a11y covers every route (o9o.130)", () => {
     const dialogs = SURFACES.filter((s) => s.open);
     expect(dialogs.length).toBeGreaterThanOrEqual(3);
     for (const d of dialogs) expect(d.open!.click && d.open!.expect, d.id).toBeTruthy();
+  });
+});
+
+describe("twin:a11y covers every dialog (o9o.130, verify-qa2 finding 1)", () => {
+  it("every dialog component in src is scanned through a dialog surface or named as not scanned, with a reason", () => {
+    const found = dialogComponents(srcFiles);
+    // Positive control on the census itself: the hand-written ones and the Radix ones are both seen.
+    expect(Object.keys(srcFiles).length).toBeGreaterThan(200);
+    expect(found).toEqual(expect.arrayContaining(["Lightbox", "ProofImageViewer", "SharedDetailDrawer", "LaunchRecoveryModal", "TerminalLauncher"]));
+    const scanned = new Set(SURFACES.map(dialogComponentOf).filter(Boolean));
+    const named = new Set(DIALOGS_NOT_SCANNED.map((d) => d.dialog.split(" ")[0]));
+    expect(found.filter((c) => !scanned.has(c) && !named.has(c))).toEqual([]);
+    for (const d of DIALOGS_NOT_SCANNED) expect(d.reason.length, d.dialog).toBeGreaterThan(0);
+  });
+
+  it("the census sees a hand-written role=dialog, a Radix DialogContent and a VellumSheet, and skips the ui primitives", () => {
+    expect(dialogComponents({
+      "/x/components/A.tsx": '<div role="dialog" aria-label="a">',
+      "/x/components/B.tsx": "<DialogContent>",
+      "/x/components/C.tsx": "<VellumSheet open>",
+      "/x/components/D.tsx": '<div role="region">',
+      "/x/components/ui/vellum-sheet.tsx": '<div role="dialog">',
+    })).toEqual(["A", "B", "C"]);
+  });
+
+  it("the drawer is scanned for both kinds the twin can open, and the lightbox from the seeded Review media", () => {
+    const ids = SURFACES.filter((s) => s.open).map((s) => s.id);
+    expect(ids).toEqual(expect.arrayContaining([
+      "dialog: queue item drawer (SharedDetailDrawer qitem)",
+      "dialog: file drawer (SharedDetailDrawer file)",
+      "dialog: image lightbox (Lightbox)",
+    ]));
+    expect(SURFACES.find((s) => s.id === "dialog: image lightbox (Lightbox)")!.route).toBe("/project/slice/EX.2.0.0.07");
+  });
+
+  it("the report lists the dialogs not scanned", () => {
+    const md = renderMarkdown([], NOT_SCANNED, { axeVersion: "4.14.1", commit: "abc1234" }, DIALOGS_NOT_SCANNED);
+    expect(md).toContain("## Dialogs not scanned");
+    for (const d of DIALOGS_NOT_SCANNED) expect(md).toContain(`- ${d.dialog}: ${d.reason}`);
   });
 });
 
