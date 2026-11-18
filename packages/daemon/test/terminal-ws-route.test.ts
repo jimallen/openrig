@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { Hono } from "hono";
-import { createNodeWebSocket } from "@hono/node-ws";
-import { serve, type ServerType } from "@hono/node-server";
+import { newNodeWebSocketOption } from "../src/adapters/node-websocket.js";
+import { serve, upgradeWebSocket, type ServerType } from "@hono/node-server";
 import http from "node:http";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
@@ -48,10 +48,8 @@ beforeAll(async () => {
     await next();
   });
   app.use("/api/*", browserBoundary({ webUiEnabled: true, bearerTokens: [TOKEN], warn: () => {} }));
-  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-  registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: TOKEN });
-  server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-  injectWebSocket(server);
+  registerTerminalWs(app, upgradeWebSocket, { bearerToken: TOKEN });
+  server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
   PORT = await listeningPort(server);
 });
 
@@ -144,10 +142,8 @@ describe("terminal WebSocket DNS rebinding and origin protection", () => {
       webUiEnabled: true, bearerTokens: [], warn: () => {},
       allowedOrigins: "https://custom-dashboard.corp,https://custom-dashboard.corp:8443",
     }));
-    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: null });
-    noAuthServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-    injectWebSocket(noAuthServer);
+    registerTerminalWs(app, upgradeWebSocket, { bearerToken: null });
+    noAuthServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     NO_AUTH_PORT = await listeningPort(noAuthServer);
   });
 
@@ -269,10 +265,8 @@ describe("terminal WebSocket input ordering", () => {
       });
       await next();
     });
-    const { injectWebSocket: inject3, upgradeWebSocket: upgrade3 } = createNodeWebSocket({ app: app3 });
-    registerTerminalWs(app3, upgrade3 as never, { bearerToken: ORDER_TOKEN });
-    orderServer = serve({ fetch: app3.fetch, port: 0, hostname: "127.0.0.1" });
-    inject3(orderServer);
+    registerTerminalWs(app3, upgradeWebSocket, { bearerToken: ORDER_TOKEN });
+    orderServer = serve({ fetch: app3.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     ORDER_PORT = await listeningPort(orderServer);
   });
 
@@ -320,10 +314,8 @@ describe("terminal WebSocket lifecycle (session death)", () => {
       });
       await next();
     });
-    const { injectWebSocket: inject2, upgradeWebSocket: upgrade2 } = createNodeWebSocket({ app: app2 });
-    registerTerminalWs(app2, upgrade2 as never, { bearerToken: LIFECYCLE_TOKEN, livenessIntervalMs: 100 });
-    lifecycleServer = serve({ fetch: app2.fetch, port: 0, hostname: "127.0.0.1" });
-    inject2(lifecycleServer);
+    registerTerminalWs(app2, upgradeWebSocket, { bearerToken: LIFECYCLE_TOKEN, livenessIntervalMs: 100 });
+    lifecycleServer = serve({ fetch: app2.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     LIFECYCLE_PORT = await listeningPort(lifecycleServer);
   });
 
@@ -391,10 +383,8 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
       });
       await next();
     });
-    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: BROKER_TOKEN });
-    brokerServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-    injectWebSocket(brokerServer);
+    registerTerminalWs(app, upgradeWebSocket, { bearerToken: BROKER_TOKEN });
+    brokerServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     BROKER_PORT = await listeningPort(brokerServer);
   });
 
@@ -486,10 +476,8 @@ describe("terminal WebSocket detach-during-attach race", () => {
       });
       await next();
     });
-    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: RACE_TOKEN });
-    raceServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-    injectWebSocket(raceServer);
+    registerTerminalWs(app, upgradeWebSocket, { bearerToken: RACE_TOKEN });
+    raceServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     RACE_PORT = await listeningPort(raceServer);
   });
 
@@ -550,10 +538,8 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
       });
       await next();
     });
-    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: EARLY_TOKEN });
-    earlyServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-    injectWebSocket(earlyServer);
+    registerTerminalWs(app, upgradeWebSocket, { bearerToken: EARLY_TOKEN });
+    earlyServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     EARLY_PORT = await listeningPort(earlyServer);
   });
 
@@ -590,7 +576,7 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
   }, 2 * WS_EVENT_CEILING_MS);
 });
 
-// Exercise the real WebSocket callback: node-ws does not await async onOpen.
+// Exercise the real WebSocket callback: @hono/node-server's upgradeWebSocket does not await async onOpen.
 describe("terminal WebSocket attach rejection", () => {
   it.each(["probe", "pipe"])("closes a rejected %s viewer and accepts a later viewer", async (stage) => {
     let fail = true;
@@ -618,10 +604,8 @@ describe("terminal WebSocket attach rejection", () => {
     });
     app.use("/api/*", browserBoundary({ webUiEnabled: true, bearerTokens: [TOKEN], warn: () => {} }));
     app.get("/healthz", (c) => c.text("ok"));
-    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: TOKEN });
-    const localServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-    injectWebSocket(localServer);
+    registerTerminalWs(app, upgradeWebSocket, { bearerToken: TOKEN });
+    const localServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     await new Promise<void>((resolve) => {
       if (localServer.listening) resolve();
       else localServer.once("listening", resolve);

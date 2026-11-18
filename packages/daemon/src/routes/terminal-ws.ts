@@ -87,12 +87,7 @@ export function registerTerminalAuthOnly(app: Hono, opts: { bearerToken: string 
 
 export function registerTerminalWs(
   app: Hono,
-  upgradeWebSocket: Parameters<typeof import("@hono/node-ws").createNodeWebSocket>[0] extends { app: infer _A } ? never : never,
-  opts: { bearerToken: string | null; hc?: HcTerminalDeps },
-): void;
-export function registerTerminalWs(
-  app: Hono,
-  upgradeWebSocket: (createHandler: (c: unknown) => unknown) => unknown,
+  upgradeWebSocket: typeof import("@hono/node-server").upgradeWebSocket,
   opts: { bearerToken: string | null; livenessIntervalMs?: number; hc?: HcTerminalDeps },
 ): void {
   const terminalAuth = terminalAuthMiddleware(opts);

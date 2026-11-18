@@ -179,16 +179,21 @@ observer (`:497`), JSON body-parse error tracking, which turns a malformed body 
 recording, the browser boundary on `/api/*` (`:647`, Host and Origin checks; see
 `OPENRIG_ALLOWED_HOSTS` and `OPENRIG_ALLOWED_ORIGINS`), and host read-through.
 
-`createAppWithWebSocket(deps)` (`server.ts:893`) sets `enableNodeWebSocket` and
+`createAppWithWebSocket(deps)` (`server.ts:940`) sets `enableNodeWebSocket` and
 calls `createApp`; the terminal WebSocket is registered only when the web UI is
-also enabled (`server.ts:756`). Otherwise only its bearer-auth handler is
-registered (`registerTerminalAuthOnly`, `:762`).
+also enabled (`server.ts:789`), with `@hono/node-server` 2's own `upgradeWebSocket`
+(workspaces-o9o.125; it replaced the deprecated `@hono/node-ws`). It then returns a
+`websocketOption`, which `index.ts` gives each listener's `serve()` as a fresh
+`{ server: WebSocketServer }` (`adapters/node-websocket.ts`). Otherwise only the
+terminal route's bearer-auth handler is registered (`registerTerminalAuthOnly`, `:794`)
+and no listener answers an upgrade.
 
 ## 4. Startup sequence (`createDaemon`)
 
-`createDaemon(opts?)` is `packages/daemon/src/startup.ts:287` (async, returns
-`DaemonResult`). It returns `{ app, db, deps, contextMonitor, eventLoopMonitor,
-injectWebSocket }` (`startup.ts:2506`). In source order, it:
+`createDaemon(opts?)` is `packages/daemon/src/startup.ts:359` (async, returns
+`DaemonResult`). It returns `{ app, db, deps, contextMonitor, eventLoopMonitor }`,
+plus `websocketOption` while the terminal WebSocket is on and `hcCoreWatch` when
+there is an hc core (`startup.ts:3019`). In source order, it:
 
 1. Opens SQLite and applies all 96 migrations (`migrate(db, ALL_MIGRATIONS)`,
    `startup.ts:298`).

@@ -29,10 +29,14 @@ describe("packaging: cli mirrors the vendored daemon's runtime deps (OPR.0.4.1.3
     expect(missing).toEqual([]);
   });
 
-  it("declares @hono/node-ws at the daemon's range (the 0.4.0 fresh-install break)", () => {
-    // The exact regression: node-ws present in daemon, absent in cli.
-    expect(cliDeps["@hono/node-ws"]).toBeDefined();
-    expect(cliDeps["@hono/node-ws"]).toBe(daemonDeps["@hono/node-ws"]);
+  it("declares the terminal WebSocket's packages at the daemon's range (the 0.4.0 fresh-install break)", () => {
+    // The 0.4.0 regression was @hono/node-ws in the daemon and absent in cli. Since workspaces-o9o.125 the daemon's
+    // WebSocket is @hono/node-server 2's own upgradeWebSocket over a ws WebSocketServer, so those two carry it.
+    for (const dep of ["@hono/node-server", "ws"]) {
+      expect(daemonDeps[dep], dep).toBeDefined();
+      expect(cliDeps[dep], dep).toBe(daemonDeps[dep]);
+    }
+    expect(daemonDeps["@hono/node-ws"]).toBeUndefined();
   });
 
   it("keeps mirrored shared deps at matching ranges (no drift between cli + daemon)", () => {

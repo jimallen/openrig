@@ -180,7 +180,7 @@ function shown(value: string): string {
 
 /**
  * One request header as the client sent it. Node adapters expose the original request as
- * `c.env.incoming`, whose `rawHeaders` keep duplicates and empty values; @hono/node-ws builds
+ * `c.env.incoming`, whose `rawHeaders` keep duplicates and empty values; @hono/node-server's WebSocket upgrade builds
  * its Request from the collapsed `incoming.headers`, which keep only the first duplicate and
  * drop empty values. Returns `undefined` when absent and `null` when duplicated (ambiguous).
  * Without a Node request (tests, other adapters) it falls back to the Request headers.

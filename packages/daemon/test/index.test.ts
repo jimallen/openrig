@@ -41,7 +41,6 @@ describe("daemon startServer", () => {
       app: { fetch: vi.fn() },
       contextMonitor: { start: vi.fn(), stop: vi.fn() },
       deps: {},
-      injectWebSocket: vi.fn(),
     });
     delete process.env.OPENRIG_HOST;
     delete process.env.RIGGED_HOST;
@@ -82,6 +81,28 @@ describe("daemon startServer", () => {
     );
   });
 
+  it("gives each listener's serve() its own websocket option while the terminal WebSocket is on, and none otherwise (workspaces-o9o.125)", async () => {
+    const { startServer } = await import("../src/index.js");
+    await startServer(7441);
+    expect(serveMock.mock.calls.length).toBeGreaterThan(0);
+    for (const [options] of serveMock.mock.calls) expect(options).not.toHaveProperty("websocket");
+
+    serveMock.mockClear();
+    let made = 0;
+    const websocketOption = vi.fn(() => ({ server: { listener: ++made } }));
+    createDaemonMock.mockResolvedValue({
+      app: { fetch: vi.fn() },
+      contextMonitor: { start: vi.fn(), stop: vi.fn() },
+      deps: {},
+      websocketOption,
+    });
+    await startServer(7442);
+    const calls = serveMock.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    expect(websocketOption).toHaveBeenCalledTimes(calls.length);
+    expect(calls.map(([options]) => options.websocket)).toEqual(calls.map((_c, i) => ({ server: { listener: i + 1 } })));
+  });
+
   describe("OF-208 real simctl is switched on only by the production entrypoint on the user's own home", () => {
     const enable = vi.fn();
     const savedVitest = process.env["VITEST"];
@@ -91,7 +112,6 @@ describe("daemon startServer", () => {
         app: { fetch: vi.fn() },
         contextMonitor: { start: vi.fn(), stop: vi.fn() },
         deps: { simulatorLifecycle: { enableRealSimctl: enable, startSweepTimer: vi.fn() } },
-        injectWebSocket: vi.fn(),
       });
     });
     afterEach(() => {

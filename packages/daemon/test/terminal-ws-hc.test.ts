@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Hono } from "hono";
-import { createNodeWebSocket } from "@hono/node-ws";
-import { serve, type ServerType } from "@hono/node-server";
+import { newNodeWebSocketOption } from "../src/adapters/node-websocket.js";
+import { serve, upgradeWebSocket, type ServerType } from "@hono/node-server";
 import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -63,10 +63,8 @@ describe.skipIf(!HC)("the terminal WebSocket on herdr-core (private core)", () =
     core.start();
     socket = resolveHcSocket(core.env, core.env.HOME);
     const app = new Hono();  // no tmuxAdapter is set on the context: the route must not need one
-    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: null, hc: { client: core.client } });
-    server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-    injectWebSocket(server);
+    registerTerminalWs(app, upgradeWebSocket, { bearerToken: null, hc: { client: core.client } });
+    server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     if (!server.listening) await once(server, "listening");
     port = (server.address() as AddressInfo).port;
     await launch("dialog@rig");
@@ -131,8 +129,7 @@ describe.skipIf(!HC)("the terminal WebSocket on herdr-core (private core)", () =
   it("marks a person's typing as human input under the seat's delivery guard, when the daemon has one", async () => {
     const log: string[] = [];
     const guarded = new Hono();
-    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app: guarded });
-    registerTerminalWs(guarded, upgradeWebSocket as never, {
+    registerTerminalWs(guarded, upgradeWebSocket, {
       bearerToken: null,
       hc: {
         client: core.client,
@@ -143,8 +140,7 @@ describe.skipIf(!HC)("the terminal WebSocket on herdr-core (private core)", () =
         },
       },
     });
-    const other = serve({ fetch: guarded.fetch, port: 0, hostname: "127.0.0.1" });
-    injectWebSocket(other);
+    const other = serve({ fetch: guarded.fetch, port: 0, hostname: "127.0.0.1", websocket: newNodeWebSocketOption() });
     if (!other.listening) await once(other, "listening");
     const ws = new WebSocket(`ws://127.0.0.1:${(other.address() as AddressInfo).port}/api/terminal/dialog%40rig`);
     try {

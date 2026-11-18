@@ -119,7 +119,8 @@ import { telemetryRoutes } from "./routes/telemetry.js";
 import { proofRoutes } from "./routes/proof.js";
 import { scopeApproveRoutes } from "./routes/scope-approve.js";
 import { registerTerminalAuthOnly, registerTerminalWs, type HcTerminalDeps } from "./routes/terminal-ws.js";
-import { createNodeWebSocket } from "@hono/node-ws";
+import { upgradeWebSocket } from "@hono/node-server";
+import { newNodeWebSocketOption, type NodeWebSocketOption } from "./adapters/node-websocket.js";
 import { steeringRoutes } from "./routes/steering.js";
 import { healthSummaryRoutes } from "./routes/health-summary.js";
 import { attentionRoutes } from "./routes/attention.js";
@@ -784,14 +785,11 @@ export function createApp(deps: CreateAppDeps): Hono {
   // OPR.0.4.3.14 — manual compaction trigger (same terminal-bearer posture as
   // transport, since it drives a send into the target seat).
   app.route("/api/compaction", compactionRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let injectWebSocket: (server: any) => void = () => {};
   // The terminal WebSocket only serves the web UI, so it exists only while the web UI is on.
   if (deps.enableNodeWebSocket && deps.webUiEnabled === true) {
-    const ws = createNodeWebSocket({ app });
-    injectWebSocket = ws.injectWebSocket as never;
-    _lastInjectWebSocket = injectWebSocket;
-    registerTerminalWs(app, ws.upgradeWebSocket as never, { bearerToken: deps.terminalBearerToken ?? null, ...(deps.hcTerminal ? { hc: deps.hcTerminal } : {}) });
+    // workspaces-o9o.125: @hono/node-server 2's own upgradeWebSocket; each listener gets its option from websocketOption.
+    _lastWebSocketOption = newNodeWebSocketOption;
+    registerTerminalWs(app, upgradeWebSocket, { bearerToken: deps.terminalBearerToken ?? null, ...(deps.hcTerminal ? { hc: deps.hcTerminal } : {}) });
   } else if (deps.enableNodeWebSocket) {
     registerTerminalAuthOnly(app, { bearerToken: deps.terminalBearerToken ?? null });
   }
@@ -935,13 +933,14 @@ function requestIsFromLoopback(c: Parameters<typeof getConnInfo>[0]): boolean {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _lastInjectWebSocket: ((server: any) => void) | null = null;
+let _lastWebSocketOption: (() => NodeWebSocketOption) | null = null;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createAppWithWebSocket(deps: CreateAppDeps): { app: Hono; injectWebSocket: (server: any) => void } {
+/** The app, and when its terminal WebSocket is on (the web UI enabled) the `websocket` option to give each `serve()`.
+ *  Without it a listener answers no upgrade, as before. */
+export function createAppWithWebSocket(deps: CreateAppDeps): { app: Hono; websocketOption?: () => NodeWebSocketOption } {
   deps.enableNodeWebSocket = true;
-  _lastInjectWebSocket = null;
+  _lastWebSocketOption = null;
   const app = createApp(deps);
-  return { app, injectWebSocket: _lastInjectWebSocket ?? (() => {}) };
+  const websocketOption = _lastWebSocketOption ?? undefined;
+  return { app, ...(websocketOption ? { websocketOption } : {}) };
 }

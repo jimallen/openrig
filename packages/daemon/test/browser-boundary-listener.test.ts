@@ -1,12 +1,13 @@
 // Browser boundary on a real Node listener (@hono/node-server) and the real WebSocket upgrade
-// path (@hono/node-ws), plus real CLI/TUI/daemon-to-daemon request constructors. Inert handlers only.
+// path (@hono/node-server 2's own upgradeWebSocket, workspaces-o9o.125), plus real CLI/TUI/daemon-to-daemon request constructors.
+// Inert handlers only.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { Hono } from "hono";
-import { serve } from "@hono/node-server";
-import { createNodeWebSocket } from "@hono/node-ws";
+import { serve, upgradeWebSocket } from "@hono/node-server";
+import { newNodeWebSocketOption, type NodeWebSocketOption } from "../src/adapters/node-websocket.js";
 import WebSocket from "ws";
 import { browserBoundary } from "../src/middleware/browser-boundary.js";
 import { terminalAuthMiddleware } from "../src/routes/terminal-ws.js";
@@ -18,9 +19,9 @@ import { DaemonClient as TuiDaemonClient } from "../../tui/src/daemon-client.js"
 const SELF = "openrig-vm.taile8a08.ts.net";
 type Server = ReturnType<typeof serve>;
 
-function listen(app: Hono, hostname: string): Promise<{ server: Server; port: number }> {
+function listen(app: Hono, hostname: string, websocket?: NodeWebSocketOption): Promise<{ server: Server; port: number }> {
   return new Promise((resolve, reject) => {
-    const server = serve({ fetch: app.fetch, port: 0, hostname }, (info) => resolve({ server, port: info.port }));
+    const server = serve({ fetch: app.fetch, port: 0, hostname, ...(websocket ? { websocket } : {}) }, (info) => resolve({ server, port: info.port }));
     (server as unknown as net.Server).once("error", reject);
   });
 }
@@ -58,7 +59,6 @@ describe("mirror of the server.ts order on a real listener: boundary, then termi
 
   beforeAll(async () => {
     const app = new Hono();
-    const ws = createNodeWebSocket({ app });
     app.use("/api/*", browserBoundary({
       webUiEnabled: true, bearerTokens: [], hostName: () => "box-1.local",
       discoverSelfNames: async () => [SELF], warn: () => {},
@@ -66,9 +66,8 @@ describe("mirror of the server.ts order on a real listener: boundary, then termi
     }));
     app.get("/api/ping", (c) => { handled++; return c.json({ ok: true }); });
     app.get("/api/terminal/:s", terminalAuthMiddleware({ bearerToken: null }) as never,
-      ws.upgradeWebSocket(() => ({ onOpen: (_e, socket) => { opened++; socket.close(); } })));
-    ({ server, port } = await listen(app, "127.0.0.1"));
-    ws.injectWebSocket(server);
+      upgradeWebSocket(() => ({ onOpen: (_e, socket) => { opened++; socket.close(); } })));
+    ({ server, port } = await listen(app, "127.0.0.1", newNodeWebSocketOption()));
     try { v6 = await listen(app, "::1"); } catch { v6 = null; }
     await new Promise((r) => setTimeout(r, 20));
   });
@@ -83,16 +82,19 @@ describe("mirror of the server.ts order on a real listener: boundary, then termi
       expect((await raw(port, { Host: host })).status, host).toBe(200);
     }
     expect(handled - before).toBe(5);
-    // @hono/node-server 1.19.11 answers 400 "Invalid host header" before the app when the URL-normalized
-    // hostname differs from the raw Host (case); a lowercase trailing dot passes through and the
-    // boundary normalizes it.
+    // workspaces-o9o.125: the boundary, not the adapter, decides a name written in another case or with a trailing dot.
+    // @hono/node-server 1.x answered 400 to LOCALHOST before the app ran; 2.x passes both forms to the app, and the
+    // boundary, which compares a name lowercased with one trailing dot removed, accepts both as localhost and records it.
+    const d0 = decisions.length;
     const upper = await raw(port, { Host: `LOCALHOST:${port}` });
     const dotted = await raw(port, { Host: `localhost.:${port}` });
     console.log(`ADAPTER-HOST-FORM LOCALHOST -> ${upper.status}; localhost. -> ${dotted.status}`);
-    expect(upper.status).toBe(400);
+    expect(upper.status).toBe(200);
     expect(dotted.status).toBe(200);
-    expect(handled - before).toBe(6);
-    for (const host of [`evil.example:${port}`, `other-vm.taile8a08.ts.net:${port}`]) {
+    expect(decisions.slice(d0)).toEqual(["allow", "allow"]);
+    expect(handled - before).toBe(7);
+    // An unknown name stays refused in any case and with a trailing dot.
+    for (const host of [`evil.example:${port}`, `EVIL.EXAMPLE:${port}`, `evil.example.:${port}`, `Evil.Example.:${port}`, `other-vm.taile8a08.ts.net:${port}`]) {
       const r = await raw(port, { Host: host });
       expect(r.status, host).toBe(403);
       expect(JSON.parse(r.body).code).toBe("untrusted_host");
@@ -102,7 +104,7 @@ describe("mirror of the server.ts order on a real listener: boundary, then termi
       console.log(`MALFORMED-HOST-FORM ${JSON.stringify(host)} -> ${r.status} ${r.body.slice(0, 80)}`);
       expect(r.status, host).not.toBe(200);
     }
-    expect(handled - before).toBe(6);
+    expect(handled - before).toBe(7);
   });
 
   it("IPv6 loopback listener: [::1] Host is accepted", async () => {

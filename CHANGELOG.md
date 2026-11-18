@@ -27,6 +27,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - Now such a row says it was not reported by this daemon and names the `rig config get` command, with no Edit button; every other row renders as before. The settings response type now marks every key as optional, so code that reads a setting must handle a missing one; the other readers already did.
 - The UI twin's `/api/config` sends every fixed key, typed, at the daemon's defaults, so its Settings page renders in full.
 
+### The daemon runs on @hono/node-server 2; the terminal WebSocket uses its built-in support (workspaces-o9o.125)
+
+- `@hono/node-server` 2.1.9 replaces 1.x in the daemon and its CLI mirror. `@hono/node-ws` is dropped: its last release, 1.3.1, accepts only node-server 1, and its README now says the package is deprecated in favour of node-server 2's own `upgradeWebSocket`. `ws` becomes a direct dependency, because the daemon now builds the WebSocketServer itself.
+- Each listener's `serve()` gets its own `WebSocketServer`, from `createAppWithWebSocket`'s `websocketOption` (`adapters/node-websocket.ts`). Closing one listener therefore leaves the others' upgrades working. With the web UI off, no listener answers an upgrade, as before.
+- The browser boundary is still OpenRig's own Host and Origin check. 1.x refused `Host: LOCALHOST` with 400 before the app ran; 2.x passes it, and `localhost.`, to the boundary. The boundary compares names lowercased with one trailing dot removed, so it accepts both as `localhost` and records the decision. An unknown name stays refused in any case and with a trailing dot. One adapter refusal remains: an upgrade with an empty Host gets 400 from 2.x before the app runs, while plain HTTP gets the boundary's 403. In both cases nothing opens.
+- The terminal WebSocket is unchanged for its clients. On a real listener it refuses an upgrade without the terminal token, or with a wrong one, when the daemon has one (beyond loopback, workspaces-o9o.78), opens with it, and opens tokenless on a loopback-only daemon. The boundary refuses an unknown Origin or Host first.
+- The `serveStatic` advisory GHSA-rmxm-3fg6-px4f is fixed in 2.x; the daemon never used `serveStatic`. `@modelcontextprotocol/sdk` still resolves its own `@hono/node-server` 1.19.11, which its range (`^1.19.9 || ^2.0.5`) allows.
+
 ### Green text is readable on every light surface (workspaces-o9o.120)
 
 - Symptom: green text (approved plan entries, running seats, success marks) used the brand green, 3.78:1 on the light page and 3.03:1 on the darkest light surface; measured 3.78:1 rendered in the install plan and the topology table.

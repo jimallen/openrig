@@ -115,7 +115,7 @@ describe("the daemon keeps the watch (source pins: startServer binds ports, so i
   it("startup.ts keeps what connectHcCore returns and passes its own client", () => {
     const startup = read("startup.ts");
     expect(startup).toMatch(/const hcCoreWatch = hcClient \? await connectHcCore\(\{ socketPath: hcClient\.socketPath, client: hcClient, onCoreVersion: /);
-    expect(startup).toMatch(/return \{ app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket, \.\.\.\(hcCoreWatch \? \{ hcCoreWatch \} : \{\}\) \}/);
+    expect(startup).toMatch(/return \{ app, db, deps, contextMonitor, eventLoopMonitor, \.\.\.\(websocketOption \? \{ websocketOption \} : \{\}\), \.\.\.\(hcCoreWatch \? \{ hcCoreWatch \} : \{\}\) \}/);
   });
   it("index.ts stops it in the shutdown phases", () => {
     expect(read("index.ts")).toMatch(/\["hc-core-watch", \(\) => hcCoreWatch\?\.stop\(\)\]/);

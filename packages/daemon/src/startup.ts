@@ -285,8 +285,8 @@ interface DaemonResult {
   eventLoopMonitor: import("./domain/event-loop-monitor.js").EventLoopMonitor;
   /** The watch on the hc core (absent when an injected tmux exec keeps the tmux host); index.ts stops it on shutdown. */
   hcCoreWatch?: HcCoreWatch;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  injectWebSocket: (server: any) => void;
+  /** The `websocket` option for each listener's `serve()`, present while the terminal WebSocket is on (workspaces-o9o.125). */
+  websocketOption?: () => import("./adapters/node-websocket.js").NodeWebSocketOption;
 }
 
 const KNOWN_PROVIDER_AUTH_ENV = new Set([
@@ -3014,7 +3014,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
   deps.farDaemons = farDaemons;
   if (hcAdapter) deps.hcTerminal = { client: hcAdapter.client, ...(deliveryGuard ? { guard: deliveryGuard } : {}) };
-  const { app, injectWebSocket } = createAppWithWebSocket(deps);
+  const { app, websocketOption } = createAppWithWebSocket(deps);
 
-  return { app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket, ...(hcCoreWatch ? { hcCoreWatch } : {}) };
+  return { app, db, deps, contextMonitor, eventLoopMonitor, ...(websocketOption ? { websocketOption } : {}), ...(hcCoreWatch ? { hcCoreWatch } : {}) };
 }

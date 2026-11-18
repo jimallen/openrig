@@ -37,12 +37,6 @@ export async function createDaemon({ dbPath }) {
   const app = new Hono(); app.get('/healthz', c => c.json({ status: 'ok' }));
   return { app, db,
     contextMonitor: { start() {} }, eventLoopMonitor: { stop() {} },
-    injectWebSocket(server) {
-      server.on('upgrade', (req, socket) => {
-        socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: fixture\r\n\r\n');
-        socket.on('end', () => socket.end());
-      });
-    },
     deps: {
       rigRepo: { db }, settingsStore: { resolveOne: () => ({ value: false }) },
       psProjectionService: { setPeriodicSnapshotState() {} },

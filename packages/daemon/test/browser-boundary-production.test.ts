@@ -7,11 +7,12 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import type Database from "better-sqlite3";
 import { browserBoundary } from "../src/middleware/browser-boundary.js";
+import type { NodeWebSocketOption } from "../src/adapters/node-websocket.js";
 import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
 
 type Server = ReturnType<typeof serve>;
-const listen = (fetch: Hono["fetch"]) => new Promise<{ server: Server; port: number }>((resolve) => {
-  const server = serve({ fetch, port: 0, hostname: "127.0.0.1" }, (info) => resolve({ server, port: info.port }));
+const listen = (fetch: Hono["fetch"], websocket?: NodeWebSocketOption) => new Promise<{ server: Server; port: number }>((resolve) => {
+  const server = serve({ fetch, port: 0, hostname: "127.0.0.1", ...(websocket ? { websocket } : {}) }, (info) => resolve({ server, port: info.port }));
 });
 const close = (s: Server) => new Promise<void>((r) => (s as unknown as net.Server).close(() => r()));
 
@@ -50,8 +51,7 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
       withWebSocket: true,
       appDeps: { webUiEnabled: true, browserBoundaryObserver: (d) => decisions.push(d.code ?? d.outcome) },
     });
-    ({ server, port } = await listen(built.app.fetch as Hono["fetch"]));
-    built.injectWebSocket!(server);
+    ({ server, port } = await listen(built.app.fetch as Hono["fetch"], built.websocketOption!()));
   });
   afterAll(async () => { await close(server); db.close(); });
 
@@ -85,11 +85,18 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
     ["empty Origin", (p: number) => [`Host: 127.0.0.1:${p}`, "Origin: "], "browser_origin_refused"],
     ["duplicate Origin", (p: number) => [`Host: 127.0.0.1:${p}`, `Origin: http://127.0.0.1:${p}`, "Origin: http://evil.example"], "browser_origin_refused"],
   ] as const) {
-    it(`${name}: refused on the upgrade path with one decision and zero route effects`, async () => {
+    it(`${name}: refused on the upgrade path, by the boundary or before the app, with zero route effects`, async () => {
       const r = await upgradeCase(headers(port));
       console.log(`F1-UPGRADE ${name}`, JSON.stringify(r));
-      expect(r.status).toContain("403");
-      expect(r.decisions).toEqual([code]);
+      // workspaces-o9o.125: @hono/node-server 2 answers an upgrade whose Host is empty with 400 before the app runs (it
+      // cannot build the request URL), so the boundary never sees it; every other form reaches the boundary and is
+      // refused there. Either way nothing opens and the route never runs; plain HTTP below shows the boundary's own 403.
+      if (r.status.includes(" 400 ")) expect(r.decisions).toEqual([]);
+      else {
+        expect(r.status).toContain("403");
+        expect(r.decisions).toEqual([code]);
+      }
+      expect(r.status).not.toContain("101");
       expect(r.routeEffects).toBe(0);
     });
   }
@@ -102,13 +109,82 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
     ]) {
       const status = await rawRequest(port, "GET /api/ps HTTP/1.1", [...headers, "Connection: close"]);
       console.log("F1-HTTP", JSON.stringify(headers), status);
-      expect(status).not.toContain(" 200 ");
+      expect(status).toContain(" 403 ");
     }
   });
 
   it("genuinely absent Host (HTTP/1.0, non-browser) is still admitted", async () => {
     const status = await rawRequest(port, "GET /api/ps HTTP/1.0", []);
     expect(status).toContain("200");
+  });
+});
+
+// workspaces-o9o.125: the terminal WebSocket on @hono/node-server 2's own upgradeWebSocket, through the production
+// createAppWithWebSocket and its websocketOption. A daemon that listens beyond loopback carries a terminal token
+// (workspaces-o9o.78; the decision is pinned in terminal-token-policy.test.ts): there an upgrade opens only with it. A
+// loopback-only daemon has none and opens without one. The boundary (Host, Origin) answers before the token check either way.
+describe("o9o.125: the production terminal WebSocket on @hono/node-server 2", () => {
+  const TOKEN = "tok-" + "c".repeat(24);
+  const ok = async () => ({ ok: true });
+  const tmux = () => ({
+    ...mockTmuxAdapter(), hasSession: async () => { effects++; return true; },
+    setWindowOption: ok, startPipePane: ok, stopPipePane: ok, sendKeys: ok, sendText: ok, resizeWindow: ok,
+  });
+  let effects = 0;
+  const seen: string[] = [];
+  const built: Array<{ server: Server; port: number; db: Database.Database }> = [];
+  async function start(terminalBearerToken: string | null) {
+    const db = createFullTestDb();
+    const app = createTestApp(db, {
+      tmux: tmux() as never, withWebSocket: true,
+      appDeps: { webUiEnabled: true, terminalBearerToken, browserBoundaryObserver: (d) => seen.push(d.code ?? d.outcome) },
+    });
+    const { server, port } = await listen(app.app.fetch as Hono["fetch"], app.websocketOption!());
+    built.push({ server, port, db });
+    return port;
+  }
+  let tokened = 0;
+  let tokenless = 0;
+  beforeAll(async () => { tokened = await start(TOKEN); tokenless = await start(null); });
+  afterAll(async () => { for (const b of built) { await close(b.server); b.db.close(); } });
+
+  async function upgrade(port: number, path: string, headers: string[]) {
+    const e0 = effects;
+    const status = await rawRequest(port, `GET ${path} HTTP/1.1`, [...headers, ...UPGRADE]);
+    await settle();
+    return { status, effects: effects - e0 };
+  }
+  const own = (port: number) => [`Host: 127.0.0.1:${port}`, `Origin: http://127.0.0.1:${port}`];
+
+  it("with a terminal token: refused 401 without it or with a wrong one, and opens (101) with it", async () => {
+    const none = await upgrade(tokened, "/api/terminal/seat-1", own(tokened));
+    const wrong = await upgrade(tokened, `/api/terminal/seat-1?token=${"tok-" + "d".repeat(24)}`, own(tokened));
+    const right = await upgrade(tokened, `/api/terminal/seat-1?token=${TOKEN}`, own(tokened));
+    console.log("O9O125-TOKEN", JSON.stringify({ none, wrong, right }));
+    expect(none.status).toContain("401");
+    expect(none.effects).toBe(0);
+    expect(wrong.status).toContain("401");
+    expect(wrong.effects).toBe(0);
+    expect(right.status).toContain("101");
+    expect(right.effects).toBeGreaterThan(0);
+  });
+
+  it("without a terminal token (loopback only): opens without one", async () => {
+    const r = await upgrade(tokenless, "/api/terminal/seat-1", own(tokenless));
+    expect(r.status).toContain("101");
+    expect(r.effects).toBeGreaterThan(0);
+  });
+
+  it("the boundary answers first: an unknown Origin or Host is refused 403 even with the token, and nothing opens", async () => {
+    const s0 = seen.length;
+    const origin = await upgrade(tokened, `/api/terminal/seat-1?token=${TOKEN}`, [`Host: 127.0.0.1:${tokened}`, "Origin: http://evil.example"]);
+    const host = await upgrade(tokened, `/api/terminal/seat-1?token=${TOKEN}`, [`Host: EVIL.EXAMPLE.:${tokened}`]);
+    const noTokenOrigin = await upgrade(tokenless, "/api/terminal/seat-1", [`Host: 127.0.0.1:${tokenless}`, "Origin: http://evil.example"]);
+    expect(origin.status).toContain("403");
+    expect(host.status).toContain("403");
+    expect(noTokenOrigin.status).toContain("403");
+    expect(origin.effects + host.effects + noTokenOrigin.effects).toBe(0);
+    expect(seen.slice(s0)).toEqual(["browser_origin_refused", "untrusted_host", "browser_origin_refused"]);
   });
 });
 

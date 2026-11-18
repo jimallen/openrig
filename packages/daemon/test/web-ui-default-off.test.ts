@@ -49,12 +49,11 @@ function fixture(extra: Partial<AppDeps>) {
 }
 
 async function listen(deps: AppDeps): Promise<number> {
-  const { app, injectWebSocket } = createAppWithWebSocket(deps);
+  const { app, websocketOption } = createAppWithWebSocket(deps);
   let server: ServerType | undefined;
   const port = await new Promise<number>((resolve) => {
-    server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, (info) => resolve(info.port));
+    server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1", ...(websocketOption ? { websocket: websocketOption() } : {}) }, (info) => resolve(info.port));
   });
-  injectWebSocket(server);
   cleanups.push(() => server?.close());
   return port;
 }
