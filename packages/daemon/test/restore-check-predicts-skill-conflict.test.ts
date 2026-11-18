@@ -6,6 +6,7 @@
 //
 // Deployed entrypoint: startup.ts constructs RestoreOrchestrator (seatStartupSource: podInstantiator, whose reader
 // does the skill reconcile in a read-only pass first) and server.ts mounts routes/restore-check.ts and routes/up.ts.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -171,7 +172,7 @@ describe("OF-32 N6: restore-check and the plan predict the skill-conflict refusa
       checkReady: async () => ({ ready: true }),
     };
     reconciler = vi.fn(reconcileSkillLoadout);
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: { ...FIXTURE_SPEC_SOURCE_TRUST, roots: () => trustedRoots },

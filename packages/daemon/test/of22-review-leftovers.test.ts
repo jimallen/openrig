@@ -4,6 +4,7 @@
 //  - S1/S2: the two startup.ts wires of the live-first helpers, reached through the seams production startup already
 //    has (the model-divergence monitor is a dynamically imported module; the classifier lease manager is on deps).
 //  - lease: a relaunch of the classifier seat, measured against the real NodeLauncher.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -156,7 +157,7 @@ describe("classifier lease across a relaunch of the classifier seat (OF-22 lease
   beforeAll(() => {
     homes = fs.mkdtempSync(path.join(os.tmpdir(), "of22-homes-"));
     fs.mkdirSync(path.join(homes, "codex"), { recursive: true });
-    fs.writeFileSync(path.join(homes, "codex", "auth.json"), "{}");
+    fs.writeFileSync(path.join(homes, "codex", "auth.json"), "{}", { mode: 0o600 }); // o9o.151: as Codex writes its login
     process.env["OPENRIG_HOME"] = path.join(homes, "openrig");
     process.env["CODEX_HOME_DEFAULT"] = path.join(homes, "codex");
   });
@@ -185,7 +186,7 @@ describe("classifier lease across a relaunch of the classifier seat (OF-22 lease
       listSessions: async () => [], listWindows: async () => [], listPanes: async () => [],
       hasSession: async () => false, sendText: async () => ({ ok: true as const }), sendKeys: async () => ({ ok: true as const }),
     } as unknown as TmuxAdapter;
-    launcher = new NodeLauncher({ db, rigRepo, sessionRegistry: registry, eventBus, tmuxAdapter: tmux });
+    launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry: registry, eventBus, tmuxAdapter: tmux });
     // The classifier seat is up and holds the lease.
     const first = await launcher.launchNode(rigId, "dev.impl");
     if (!first.ok) throw new Error("first launch failed");

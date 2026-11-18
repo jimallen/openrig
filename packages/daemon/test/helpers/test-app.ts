@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./credential-files.js";
 import { rigInstallRootSchema } from "../../src/db/migrations/096_rig_install_root.js";
 import { threadPartMapSchema } from "../../src/db/migrations/097_thread_part_map.js";
 import { queueTransitionsQitemIdOrderSchema } from "../../src/db/migrations/098_queue_transitions_qitem_id_order.js";
@@ -320,7 +321,7 @@ export function createTestApp(
   const tmux = opts?.tmux ?? mockTmuxAdapter();
   // Default root: resolves through OPENRIG_HOME to the hermetic per-run test home (test/hermetic-env.setup.ts).
   const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles() });
-  const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+  const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const snapshotRepo = new SnapshotRepository(db);
   const checkpointStore = new CheckpointStore(db);
   const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });

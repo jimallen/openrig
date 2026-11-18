@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { migrate } from "../src/db/migrate.js";
@@ -68,7 +69,7 @@ async function fixture() {
   await guard.lifecycle([nodes.worker!.id], async () => {
     sessionRegistry.clearBinding(nodes.worker!.id);
     guard.rebindLifecycle(nodes.worker!.id);
-    expect(await new NodeLauncher(deps).launchNode(rig.id, "worker", {
+    expect(await new NodeLauncher({ ...deps, credentialFiles: TMP_CREDENTIAL_FILES }).launchNode(rig.id, "worker", {
       cwd: INERT_DIR, sessionName: "worker@fixture",
     })).toMatchObject({ ok: true, binding: { tmuxPane: "%0" } });
   });

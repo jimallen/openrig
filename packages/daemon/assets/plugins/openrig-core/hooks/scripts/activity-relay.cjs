@@ -165,8 +165,8 @@ function canonicalJson(value) {
 //      from the tmux session env.
 // workspaces-o9o.151: an INLINE COPY of the daemon's credential rule (packages/daemon/src/domain/credential-file.ts, the secret
 // kind, ACTIVITY_ENDPOINT_POLICY's 16 KiB cap): this script runs in a seat and cannot import the daemon. Open the name itself with
-// O_NOFOLLOW|O_NONBLOCK (a link is refused, a FIFO cannot hang the hook), fstat the descriptor, require a plain file owned by this
-// user with no group/other bits, cap the size, read that descriptor. Any failure is null, and the caller no-ops on the file.
+// O_NOFOLLOW|O_NONBLOCK (a link is refused, a FIFO cannot hang the hook), fstat the descriptor, require a plain file with one name
+// (no hard link), owned by this user with no group/other bits, cap the size, read that descriptor. Any failure is null, and the caller no-ops on the file.
 // activity-endpoint-credential.test.ts runs one fixture table through this and the daemon's readers and requires the same verdicts.
 const ACTIVITY_ENDPOINT_MAX_BYTES = 16 * 1024;
 function readSecretFileSafely(fs, file) {
@@ -179,7 +179,7 @@ function readSecretFileSafely(fs, file) {
   try {
     const st = fs.fstatSync(fd);
     const uid = typeof process.getuid === "function" ? process.getuid() : -1;
-    if (!st.isFile() || st.uid !== uid || (st.mode & 0o077) !== 0 || st.size > ACTIVITY_ENDPOINT_MAX_BYTES) return null;
+    if (!st.isFile() || st.nlink !== 1 || st.uid !== uid || (st.mode & 0o077) !== 0 || st.size > ACTIVITY_ENDPOINT_MAX_BYTES) return null;
     const buf = Buffer.alloc(ACTIVITY_ENDPOINT_MAX_BYTES + 1);
     let n = 0;
     for (;;) {

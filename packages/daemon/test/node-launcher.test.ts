@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -86,7 +87,7 @@ describe("NodeLauncher", () => {
     tmuxOptionDefaults?: TmuxOptionDefaultsApplier,
     shimFiles?: ShimFiles,
   ) {
-    return new NodeLauncher({
+    return new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
       db,
       rigRepo,
       sessionRegistry,
@@ -165,7 +166,7 @@ describe("NodeLauncher", () => {
     const launchCodexSeat = async (policy?: CodexConfigWritePolicy) => {
       const rig = rigRepo.createRig("of183-rig");
       rigRepo.addNode(rig.id, "verify-qa", { role: "qa", runtime: "codex" });
-      const launcher = new NodeLauncher({
+      const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: mockTmuxAdapter(),
         sessionEnv: { OPENRIG_HOME: fx.scratchOpenrigHome, CODEX_HOME: fx.codexHome },
         ...(policy ? { codexConfigWritePolicy: policy } : {}),
@@ -228,7 +229,7 @@ describe("NodeLauncher", () => {
     rigRepo.addNode(rig.id, "omp-worker", { role: "worker", runtime: "omp" });
     rigRepo.addNode(rig.id, "claude-worker", { role: "worker", runtime: "claude-code" });
     const envs: Record<string, Record<string, string> | undefined> = {};
-    const launcher = new NodeLauncher({
+    const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
       db, rigRepo, sessionRegistry, eventBus,
       tmuxAdapter: mockTmuxAdapter({ createSession: async (name, _cwd, env) => { envs[name] = env; return { ok: true }; } }),
       sessionEnv: { OPENRIG_HOME: "/home" },
@@ -616,7 +617,7 @@ describe("NodeLauncher", () => {
 
     expect(
       () =>
-        new NodeLauncher({
+        new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
           db,
           rigRepo: otherRepo, // different handle
           sessionRegistry,
@@ -644,7 +645,7 @@ describe("NodeLauncher", () => {
       const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: "/tmp/test-transcripts", enabled: true });
       vi.spyOn(transcriptStore, "ensureTranscriptDir").mockReturnValue(true);
 
-      const launcher = new NodeLauncher({
+      const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, transcriptStore,
       });
 
@@ -668,7 +669,7 @@ describe("NodeLauncher", () => {
       const transcriptStore = new TranscriptStore({ files: nodeTranscriptFiles(), transcriptsRoot: "/tmp/test-transcripts", enabled: true });
       vi.spyOn(transcriptStore, "ensureTranscriptDir").mockReturnValue(false);
 
-      const launcher = new NodeLauncher({
+      const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, transcriptStore,
       });
 
@@ -688,7 +689,7 @@ describe("NodeLauncher", () => {
       const createSpy = vi.fn<(name: string, cwd?: string, env?: Record<string, string>) => Promise<TmuxResult>>()
         .mockResolvedValue({ ok: true });
       const tmux = mockTmuxAdapter({ createSession: createSpy });
-      const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
 
       const result = await launcher.launchNode(rig.id, "dev1-impl");
       expect(result.ok).toBe(true);

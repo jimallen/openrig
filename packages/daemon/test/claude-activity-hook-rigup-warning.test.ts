@@ -4,6 +4,7 @@
 // rides along in the materialize result (→ up route → CLI). It must NOT gate startup, and it
 // must NOT appear when delivery is possible. Validation is the SHARED module the adapter uses.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -78,7 +79,7 @@ function setup(activityAssets: { relayPath?: string; manifestPath?: string }, ex
   const sessionRegistry = new SessionRegistry(db);
   const eventBus = new EventBus(db);
   const tmux = mockTmux();
-  const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+  const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const files: Record<string, string> = { [`${RIG_ROOT}/agents/impl/agent.yaml`]: AGENT_YAML, ...extraFiles };
   const inst = new PodRigInstantiator({

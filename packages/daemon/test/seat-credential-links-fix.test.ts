@@ -3,6 +3,7 @@
 // F2: a Codex seat's auth.json link is made only to a shared CODEX_HOME/auth.json that passes the codex-auth policy, and an existing
 // destination is judged too: a failing source, or a link someone made to another file, refuses the seat's launch naming the file
 // and the fix; a link someone made is never silently replaced. Every fixture sets its own mode; the values are fake.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -39,7 +40,7 @@ describe("F2: a Codex seat's auth.json link is made and kept only to a shared lo
   const shared = () => nodePath.join(dir, "codex");
   const openrigHome = () => nodePath.join(dir, "openrig");
   const seatAuth = () => nodePath.join(codexSeatHomePath(openrigHome(), "dev@r"), "auth.json");
-  const launch = () => ensureCodexSeatHome("dev@r", { openrigHome: openrigHome(), sharedCodexHome: shared(), log: () => {} });
+  const launch = () => ensureCodexSeatHome("dev@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome: openrigHome(), sharedCodexHome: shared(), log: () => {} });
   beforeEach(() => { fs.mkdirSync(shared(), { mode: 0o700 }); fs.mkdirSync(openrigHome(), { mode: 0o700 }); });
 
   it("CONTROL: a 0600 shared auth.json of ours is linked", async () => {

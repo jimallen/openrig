@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -49,7 +50,7 @@ describe("a relaunch of a seat: the generation always moves, the conversation mo
   beforeAll(async () => {
     homes = await fs.mkdtemp(path.join(os.tmpdir(), "occ-conv-"));
     await fs.mkdir(path.join(homes, "codex"), { recursive: true });
-    await fs.writeFile(path.join(homes, "codex", "auth.json"), "{}");
+    await fs.writeFile(path.join(homes, "codex", "auth.json"), "{}", { mode: 0o600 }); // o9o.151: Codex writes its login 0600; others-readable refuses the launch
     process.env["OPENRIG_HOME"] = path.join(homes, "openrig");
     process.env["CODEX_HOME_DEFAULT"] = path.join(homes, "codex");
   });
@@ -125,7 +126,7 @@ describe("a relaunch of a seat: the generation always moves, the conversation mo
     let hop: StubHop;
     let pump: MessagePump;
     let now: number;
-    const launcher = () => new NodeLauncher({ db, rigRepo, sessionRegistry: registry, eventBus: new EventBus(db), tmuxAdapter: mockTmux() });
+    const launcher = () => new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry: registry, eventBus: new EventBus(db), tmuxAdapter: mockTmux() });
     const bodies = () => hop.calls.map((c) => c.body);
     /** A relaunch: the seat's binding is released (it went down) and launched again, the way restore and `rig seat launch --fresh` do it. */
     const relaunch = async (opts: { continuesConversation?: boolean; freshStart?: boolean; occupantKind?: "fresh" } = {}) => {

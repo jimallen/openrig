@@ -6,6 +6,7 @@
 // with the production path judge on a real filesystem: a fake Homebrew-style install under a prefix that holds .git, in a
 // trusted base outside temp, with Homebrew's modes, and the rig recorded from a spec INSIDE that install's specs folder (as the
 // kernel boot records the bundled kernel spec). The install is laid out as <prefix>/opt/openrig/daemon (see build()).
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -88,7 +89,7 @@ describe("o9o.91: a fresh launch from the running install's own spec, under a gi
     };
     const specRoots = () => [path.join(daemonDir, "specs")];
     const trust = specSourceTrustOf({ specRoots, io: DEFAULT_PATH_JUDGE_IO, ...(runningInstall ? { runningInstall } : {}) });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     const inst = new PodRigInstantiator({
       specSourceTrust: trust,

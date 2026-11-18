@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -145,7 +146,7 @@ describe("AS-T09: Continuity + snapshot/restore evolution", () => {
     ctx.sessionRegistry.updateStatus(session.id, "exited");
 
     const mockTmux = { createSession: vi.fn(async () => ({ ok: true })), killSession: vi.fn(async () => ({ ok: true })), listSessions: vi.fn(async () => []), hasSession: vi.fn(async () => false), sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })), listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []) } as any;
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
 
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus,
@@ -267,7 +268,7 @@ describe("AS-T09: Continuity + snapshot/restore evolution", () => {
     };
 
     const mockTmux = { createSession: vi.fn(async () => ({ ok: true })), killSession: vi.fn(async () => ({ ok: true })), listSessions: vi.fn(async () => []), hasSession: vi.fn(async () => true), sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })), listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []) } as any;
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
 
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus,

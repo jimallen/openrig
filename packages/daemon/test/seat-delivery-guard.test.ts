@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { TerminalSessionBroker } from "../src/terminal/TerminalSessionBroker.js";
 import { ClaudeCompactionEnforcer } from "../src/domain/claude-compaction-enforcer.js";
 import { ModelDivergenceMonitor } from "../src/domain/model-divergence/model-divergence-monitor.js";
@@ -406,7 +407,7 @@ it("automatic reminder records retained custody and no delivered fire or input",
  it("whole lifecycle refuses launch, teardown, stop, clean and delete before effects with typed HTTP refusal",async()=>{
   const f=httpFixture();await f.guard.set("a",true,"person","draft");
   const snapshot={db:f.db,capture:vi.fn()} as never;
-  const launcher=new NodeLauncher({db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,eventBus:f.bus,tmuxAdapter:f.tmux});
+  const launcher=new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,eventBus:f.bus,tmuxAdapter:f.tmux});
   const teardown=new RigTeardownOrchestrator({db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,eventBus:f.bus,tmuxAdapter:f.tmux,snapshotCapture:snapshot});
   await expect(launcher.launchNode("rig","worker")).rejects.toMatchObject({code:"typing_guard_enabled"});
   await expect(teardown.teardown("rig",{delete:true,force:true})).rejects.toMatchObject({code:"typing_guard_enabled"});
@@ -422,7 +423,7 @@ it("automatic reminder records retained custody and no delivered fire or input",
  it("fresh launch off rebinds the original lease, then protection prevents lifecycle and stale writes",async()=>{
   const f=queueFixture();f.db.exec("INSERT INTO nodes(id,rig_id,logical_id) VALUES ('c','rig','fresh');");
   vi.mocked(f.tmux.listPanes).mockImplementation(async name=>[{id:name==="r00-test-fresh"?"%3":f.guard.target(name).pane!} as never]);
-  const launcher=new NodeLauncher({db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,eventBus:f.bus,tmuxAdapter:f.tmux});
+  const launcher=new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,eventBus:f.bus,tmuxAdapter:f.tmux});
   const launched=await launcher.launchNode("rig","fresh");expect(launched.ok).toBe(true);
   expect(f.guard.target("c")).toMatchObject({pane:"%3",session:"r00-test-fresh"});
   await f.guard.set("c",true,"person","draft");const count=f.writes.length;
@@ -441,7 +442,7 @@ it("automatic reminder records retained custody and no delivered fire or input",
   const commands:string[]=[];const tmux=new TmuxAdapter(async command=>{commands.push(command);return command.includes("display-message")?"$44\n":"";});tmux.deliveryGuard=f.guard;
   vi.spyOn(tmux,"listPanes").mockResolvedValue([{id:"%3"} as never]);
   vi.spyOn(f.bus,"persistWithinTransaction").mockImplementation(()=>{throw Error("injected DB failure");});
-  const launcher=new NodeLauncher({db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,eventBus:f.bus,tmuxAdapter:tmux});
+  const launcher=new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,eventBus:f.bus,tmuxAdapter:tmux});
   expect(await launcher.launchNode("rig","fresh")).toMatchObject({ok:false,code:"db_error"});
   expect(commands.at(-1)).toBe("tmux kill-session -t '$44'");expect(f.guard.target("c").pane).toBeNull();f.db.close();
  });

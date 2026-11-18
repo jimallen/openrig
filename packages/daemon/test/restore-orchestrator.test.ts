@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from "vitest";
 import { ProcessTableUnavailableError } from "../src/domain/native-process-lineage.js";
 import { mkTemp } from "./helpers/temp-roots.js";
@@ -153,7 +154,7 @@ describe("RestoreOrchestrator", () => {
     serviceOrchestrator?: import("../src/domain/service-orchestrator.js").ServiceOrchestrator;
   }) {
     const tmux = opts?.tmux ?? mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     return new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -525,7 +526,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(() => new RestoreOrchestrator({
       db, rigRepo: otherRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
-      checkpointStore, nodeLauncher: new NodeLauncher({ db: otherDb, rigRepo: otherRepo, sessionRegistry: new SessionRegistry(otherDb), eventBus: new EventBus(otherDb), tmuxAdapter: tmux }),
+      checkpointStore, nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: otherDb, rigRepo: otherRepo, sessionRegistry: new SessionRegistry(otherDb), eventBus: new EventBus(otherDb), tmuxAdapter: tmux }),
       tmuxAdapter: tmux, claudeResume: mockClaudeResume(), codexResume: mockCodexResume(),
     })).toThrow(/same db handle/);
 
@@ -539,7 +540,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(() => new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo: otherSnapshotRepo, snapshotCapture,
-      checkpointStore, nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      checkpointStore, nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       tmuxAdapter: tmux, claudeResume: mockClaudeResume(), codexResume: mockCodexResume(),
     })).toThrow(/snapshotRepo.*same db handle/);
 
@@ -561,7 +562,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(() => new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture: otherSnapshotCapture,
-      checkpointStore, nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      checkpointStore, nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       tmuxAdapter: tmux, claudeResume: mockClaudeResume(), codexResume: mockCodexResume(),
     })).toThrow(/snapshotCapture.*same db handle/);
 
@@ -574,7 +575,7 @@ describe("RestoreOrchestrator", () => {
     const otherSessionRegistry = new SessionRegistry(otherDb);
     const otherEventBus = new EventBus(otherDb);
     const tmux = mockTmux();
-    const otherLauncher = new NodeLauncher({
+    const otherLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
       db: otherDb, rigRepo: otherRigRepo, sessionRegistry: otherSessionRegistry,
       eventBus: otherEventBus, tmuxAdapter: tmux,
     });
@@ -1150,7 +1151,7 @@ describe("RestoreOrchestrator", () => {
       }
       return "";
     });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: realTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: realTmux });
     const orch = new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: realTmux,
@@ -4347,7 +4348,7 @@ describe("RestoreOrchestrator", () => {
     // is still written prior to launch and asserted below regardless
     // of capture-tick outcomes.
 
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, transcriptStore });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, transcriptStore });
     const orch = new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -4382,7 +4383,7 @@ describe("RestoreOrchestrator", () => {
     const tmux = mockTmux();
     tmux.createSession = createSessionSpy;
 
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const orch = new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -4417,7 +4418,7 @@ describe("RestoreOrchestrator", () => {
       const tmux = mockTmux();
       tmux.createSession = createSessionSpy;
 
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const orch = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -5470,7 +5471,7 @@ describe("RestoreOrchestrator", () => {
         // resumeToken deliberately absent
       });
       const tmux = mockTmux();
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const launchSpy = vi.spyOn(nodeLauncher, "launchNode");
       const orch = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
@@ -5834,7 +5835,7 @@ describe("RestoreOrchestrator", () => {
     claude: ClaudeResumeAdapter,
     listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>,
   ) {
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     return new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -6537,7 +6538,7 @@ describe("RestoreOrchestrator", () => {
         withBinding: "worker",
       });
       const tmux = mockTmux();
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const launchSpy = vi.spyOn(nodeLauncher, "launchNode");
       const orch = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore, nodeLauncher, tmuxAdapter: tmux,

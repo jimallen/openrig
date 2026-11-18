@@ -1,3 +1,4 @@
+import type { CredentialFileReader } from "./credential-file.js";
 import { conversationCodeMode, recordSessionCodeMode } from "./claude-code-mode.js";
 import type Database from "better-sqlite3";
 import { claudeConfigDirLaunchRefusal } from "./claude-config-dir.js";
@@ -210,6 +211,8 @@ interface SeatHandoverServiceDeps {
   codexConfigWritePolicy?: import("./codex-config-write-policy.js").CodexConfigWritePolicy;
   /** workspaces-o9o.10: forwarded to the successor launcher for the no-model warning. */
   claudeHomeRead?: import("./claude-config-dir.js").ClaudeHomeReader;
+  /** workspaces-o9o.151: the successor launcher judges a codex seat's auth.json link with it (required: the route wires it). */
+  credentialFiles: CredentialFileReader;
   /** workspaces-o9o.50: the git worktree shim's file port, handed to the successor launcher this service builds. */
   shimFiles?: import("./git-worktree-shim.js").ShimFiles;
   /**
@@ -319,6 +322,7 @@ export class SeatHandoverService {
       ...(deps.codexConfigWritePolicy ? { codexConfigWritePolicy: deps.codexConfigWritePolicy } : {}),
       ...(deps.seatCwdFault ? { seatCwdFault: deps.seatCwdFault } : {}),
       ...(deps.claudeHomeRead ? { claudeHomeRead: deps.claudeHomeRead } : {}),
+      credentialFiles: deps.credentialFiles,
       ...(deps.shimFiles ? { shimFiles: deps.shimFiles } : {}),
     });
     this.captureDeps = {

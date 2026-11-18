@@ -3,6 +3,7 @@
 // seat is permanently `already_bound`) is demonstrated inside the P5 pin against
 // the real NodeLauncher, so the committed RED models the runtime relation, not a
 // fixture of the author's imagination.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -428,7 +429,7 @@ describe("SeatLifecycleService", () => {
     // The seat dies outside any supported verb (clean exit): tmux gone, DB stale.
     tmux.setAlive(a.sessionName, false);
 
-    const launcher = new NodeLauncher({
+    const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux.adapter,
     });
 

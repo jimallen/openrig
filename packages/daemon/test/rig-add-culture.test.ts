@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import fs from "node:fs";
@@ -91,7 +92,7 @@ async function runningRig() {
   const sessionRegistry = new SessionRegistry(db);
   const eventBus = new EventBus(db);
   const tmux = mockTmux();
-  const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+  const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const claude = new ClaudeCodeAdapter({ tmux, fsOps: realFs(home), sleep: async () => {}, sessionIdFactory: () => "sess-add" });
   const resolverFs: AgentResolverFsOps = { readFile: (p) => fs.readFileSync(p, "utf-8"), exists: (p) => fs.existsSync(p) };

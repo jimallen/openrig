@@ -1,6 +1,7 @@
 // OF-32 stage 1: a rig records where its spec came from, in the spelling the operator chose. A spec library link
 // keeps its link path (the release it points at can move); the launch itself still runs from the real file
 // (68bbb9e6), so this record changes nothing about first launch.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -110,7 +111,7 @@ describe("OF-32 PodRigInstantiator records the spec source when it creates the r
     };
     const inst = new PodRigInstantiator({
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus,
-      nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       startupOrchestrator: new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
       adapters: { "claude-code": adapter },

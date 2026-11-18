@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1098,7 +1099,7 @@ description: Custom rig policy
       replacementStarted: false,
     }));
 
-    const handoverService = new SeatHandoverService({
+    const handoverService = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
       db,
       rigRepo,
       sessionRegistry: registry,

@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
@@ -76,7 +77,7 @@ describe("RigInstantiator", () => {
 
   function createInstantiator(opts?: { tmux?: TmuxAdapter }) {
     const tmux = opts?.tmux ?? mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const preflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "" });
     return new RigInstantiator({ db, rigRepo, sessionRegistry, eventBus, nodeLauncher, preflight });
   }
@@ -257,7 +258,7 @@ describe("RigInstantiator", () => {
     const tmux = mockTmux();
     expect(() => new RigInstantiator({
       db, rigRepo: otherRepo, sessionRegistry, eventBus,
-      nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       preflight: new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "" }),
     })).toThrow(/same db handle/);
     otherDb.close();
@@ -270,7 +271,7 @@ describe("RigInstantiator", () => {
     const otherPreflight = new RigSpecPreflight({ rigRepo: otherRepo, tmuxAdapter: tmux, exec: async () => "" });
     expect(() => new RigInstantiator({
       db, rigRepo, sessionRegistry, eventBus,
-      nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       preflight: otherPreflight,
     })).toThrow(/preflight.*same db handle/);
     otherDb.close();
@@ -530,7 +531,7 @@ describe("RigInstantiator", () => {
   it("launch warnings propagate into InstantiateResult.warnings", async () => {
     const tmux = mockTmux();
     // Mock launchNode to return warnings via NodeLauncher transcript integration
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     // Override launchNode to simulate transcript warning
     const originalLaunch = nodeLauncher.launchNode.bind(nodeLauncher);
     vi.spyOn(nodeLauncher, "launchNode").mockImplementation(async (...args) => {

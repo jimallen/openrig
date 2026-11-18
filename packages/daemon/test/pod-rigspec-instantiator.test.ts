@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -90,7 +91,7 @@ describe("PodRigInstantiator", () => {
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
     const tmux = mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const adapter = mockAdapter();
     const codexAdapter = mockAdapter("codex");
@@ -449,7 +450,7 @@ profiles:
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
     const tmux = mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const adapter = mockAdapter();
     const fsOps = mockFs({
@@ -725,7 +726,7 @@ profiles:
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
     const tmux = mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
 
     // Startup orchestrator that fails for qa
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
@@ -779,7 +780,7 @@ profiles:
     const rigRepo = new RigRepository(db);
     expect(() => new PodRigInstantiator({
       db: db2, rigRepo, podRepo: new PodRepository(db2), sessionRegistry: new SessionRegistry(db2),
-      eventBus: new EventBus(db2), nodeLauncher: new NodeLauncher({ db: db2, rigRepo: new RigRepository(db2), sessionRegistry: new SessionRegistry(db2), eventBus: new EventBus(db2), tmuxAdapter: mockTmux() }),
+      eventBus: new EventBus(db2), nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: db2, rigRepo: new RigRepository(db2), sessionRegistry: new SessionRegistry(db2), eventBus: new EventBus(db2), tmuxAdapter: mockTmux() }),
       startupOrchestrator: new StartupOrchestrator({ db: db2, sessionRegistry: new SessionRegistry(db2), eventBus: new EventBus(db2), tmuxAdapter: mockTmux() }),
       fsOps: mockFs({}), adapters: {},
     })).toThrow(/same db handle/);
@@ -1273,7 +1274,7 @@ profiles:
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
     const tmux = mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     // Adapter that fails at project (after launch)
     const failAdapter = {
       runtime: "claude-code",
@@ -1478,7 +1479,7 @@ state: 2-named
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"),
       [`${RIG_ROOT}/agents/qa/agent.yaml`]: agentYaml("qa"),
     });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     // Startup orchestrator that returns attention_required for ALL nodes
     // (simulates trust-gate on a disposable workspace).
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
@@ -1549,7 +1550,7 @@ state: 2-named
     const tail = "PANE-TAIL-SENTINEL [oh-my-zsh] Would you like to update? [Y/n]";
     function instantiator(fail: (logicalNodeId: string) => boolean, statusOf: (logicalNodeId: string) => "failed" | "attention_required" = () => "failed") {
       const ctx = setup({ [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"), [`${RIG_ROOT}/agents/qa/agent.yaml`]: agentYaml("qa") });
-      const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: ctx.tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: ctx.tmux });
       const startupOrch = new StartupOrchestrator({ db: ctx.db, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: ctx.tmux });
       startupOrch.startNode = async (input) => {
         const logicalId = ctx.rigRepo.getRig(input.rigId)!.nodes.find((n) => n.id === input.nodeId)!.logicalId;
@@ -1618,7 +1619,7 @@ state: 2-named
     const { db, rigRepo, sessionRegistry, eventBus, podRepo, adapter, codexAdapter, tmux } = setup({
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"),
     });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     startupOrch.startNode = async (input) => {
       sessionRegistry.updateStartupStatus(input.sessionId, "attention_required");
@@ -1657,7 +1658,7 @@ state: 2-named
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"),
       [`${RIG_ROOT}/agents/qa/agent.yaml`]: agentYaml("qa"),
     });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const origStartNode = startupOrch.startNode.bind(startupOrch);
     let callCount = 0;
@@ -1715,7 +1716,7 @@ state: 2-named
     const { db, rigRepo, sessionRegistry, eventBus, podRepo, adapter, codexAdapter, tmux } = setup({
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"),
     });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     startupOrch.startNode = async (input) => {
       sessionRegistry.updateStartupStatus(input.sessionId, "failed");
@@ -1750,7 +1751,7 @@ state: 2-named
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl"),
       [`${RIG_ROOT}/agents/qa/agent.yaml`]: agentYaml("qa"),
     });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     let callCount = 0;
     startupOrch.startNode = async (input) => {

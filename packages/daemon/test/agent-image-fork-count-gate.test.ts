@@ -7,6 +7,7 @@
 // post-launch fork-count bump is gated on startupResult.ok===true.
 // Asserts via a spy on the library's recordConsumption method.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -146,7 +147,7 @@ describe("agent_image fork_count gating on launch outcome", () => {
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
     const tmux = mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const failingAdapter = mockFailingAdapter();
     const fsOps = mockFs({ [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl") });
@@ -184,7 +185,7 @@ describe("agent_image fork_count gating on launch outcome", () => {
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
     const tmux = mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const succeedingAdapter = mockSucceedingAdapter();
     const fsOps = mockFs({ [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl") });

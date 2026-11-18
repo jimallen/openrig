@@ -1,5 +1,6 @@
 // OPR.0.3.4.11 — launchNodeSubset tests: managed partial restore for held seats.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -71,7 +72,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     listProcesses = vi.fn(async () => processes);
     const checkpointStore = new CheckpointStore(db);
     const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux as any });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux as any });
     orchestrator = new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux as any,

@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "../../daemon/test/helpers/credential-files.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { Hono } from "hono";
@@ -63,7 +64,7 @@ it.each(["valid", "unknown path", "wrong token", "no token", "PID reused", "logi
       capturePaneContent: async () => mode === "login required" ? "Not logged in · Run /login" : "Restored conversation\n❯\n⏵⏵ accept edits on",
       sendText, sendKeys,
     } as unknown as TmuxAdapter;
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore, nodeLauncher, tmuxAdapter: tmux,
       // These launch adapters must never be reached by read-only reconciliation.
       claudeResume: { resume: () => { throw new Error("no launch"); } } as never,

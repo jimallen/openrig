@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkTemp } from "./helpers/temp-roots.js";
 import { promises as fs } from "node:fs";
@@ -1228,7 +1229,7 @@ describe("git-worktree-shim", () => {
     const rig = rigRepo.createRig("shim-path");
     rigRepo.addNode(rig.id, "exec-cos", { role: "coordinator", runtime: "claude-code" });
     rigRepo.addNode(rig.id, "verify-qa", { role: "qa", runtime: "codex" });
-    const launcher = new NodeLauncher({
+    const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
       sessionEnv: { OPENRIG_HOME: openrigHome, PATH: process.env.PATH },
       shimFiles: nodeShimFiles,

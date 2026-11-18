@@ -9,6 +9,7 @@
 // A1 ambiguity failure fires FIRST — shared wording, zero resume, zero
 // NodeLauncher, zero replacement occupant.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -109,7 +110,7 @@ describe("OPR.0.5.7.1 — D1 ambiguity precedes the continuity_state=restoring s
 
     const tmux = mockTmux();
     const claude = mockClaudeResume();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const orch = new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux,

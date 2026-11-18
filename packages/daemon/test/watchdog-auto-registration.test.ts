@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -488,7 +489,7 @@ describe("W2c watchdog auto-registration — mint altitude", () => {
         db: Database.Database,
         observer: typeof observer,
       ) => SessionRegistry)(db, observer);
-      const launcher = new NodeLauncher({
+      const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES,
         db,
         rigRepo,
         sessionRegistry,

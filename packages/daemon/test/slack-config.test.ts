@@ -1,4 +1,4 @@
-import { NO_CREDENTIAL_FILES, credentialFilesFrom } from "./helpers/credential-files.js";
+import { NO_CREDENTIAL_FILES, TMP_CREDENTIAL_FILES, credentialFilesFrom } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -119,6 +119,7 @@ describe("Slice-11 secrets — resolution + hygiene (item 7 + 10)", () => {
     const strict = credentialFilesFrom({ "/s.env": "" });
     const loose: CredentialFileReader = {
       read: (p, policy) => ({ ok: false, problem: "group_or_other_access", message: credentialFileRefusal(p, policy, "group_or_other_access") }),
+      inspect: (p, policy) => ({ ok: false, problem: "group_or_other_access", message: credentialFileRefusal(p, policy, "group_or_other_access") }),
     };
     const absent = NO_CREDENTIAL_FILES;
     expect(checkEnvFilePermissions("/s.env", strict)).toBeNull();

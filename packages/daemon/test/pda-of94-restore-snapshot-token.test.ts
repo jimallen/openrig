@@ -12,6 +12,7 @@
 //   - other seats are read from their live rows, which is right: a seat that is not being restored drives the agent its
 //     live row names (the one it was launched on and recorded), and when it is restored later its own check runs.
 // Production consequence pinned: a restore that would put a second seat on a held agent must type nothing.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -91,7 +92,7 @@ describe("OF-94: a restore whose snapshot token differs from the live sessions r
     const restore = new RestoreOrchestrator({
       db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, eventBus, snapshotRepo: h.snapshotRepo,
       snapshotCapture: h.snapshotCapture, checkpointStore: new CheckpointStore(h.db),
-      nodeLauncher: new NodeLauncher({ db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, eventBus, tmuxAdapter: h.tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, eventBus, tmuxAdapter: h.tmux }),
       tmuxAdapter: h.tmux,
       claudeResume: { canResume: () => false, resume: vi.fn() } as never, codexResume: { canResume: () => false, resume: vi.fn() } as never,
       pdaResume: new PdaResumeAdapter(adapter), listProcesses: async () => [],

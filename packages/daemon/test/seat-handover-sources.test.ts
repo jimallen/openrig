@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -100,7 +101,7 @@ describe("SeatHandoverService source execution (OPR.0.5.5.5)", () => {
   }
 
   function newService(): SeatHandoverService {
-    return new SeatHandoverService({
+    return new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
       db,
       rigRepo,
       sessionRegistry,

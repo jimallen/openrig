@@ -1,3 +1,4 @@
+import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
 import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
 import { OutboxHandler } from "../domain/outbox-handler.js";
 import { Hono } from "hono";
@@ -117,6 +118,7 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const rigRepo = c.get("rigRepo" as never) as RigRepository;
   const service = new SeatHandoverService({
+    credentialFiles: nodeCredentialFileReader, // workspaces-o9o.151: judges a codex successor seat's auth.json link
     db: rigRepo.db,
     rigRepo,
     sessionRegistry: c.get("sessionRegistry" as never) as SessionRegistry,

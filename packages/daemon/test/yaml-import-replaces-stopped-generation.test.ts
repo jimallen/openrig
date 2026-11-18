@@ -2,6 +2,7 @@
 // rig with the same name, so the guard saw two targets for every seat name. An explicit YAML import now
 // archives prior same-name generations confirmed stopped, atomically with creating the replacement.
 // Real PodRigInstantiator.instantiate over a fixture DB; tmux, runtime adapters and files are fakes.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import { resolve } from "node:path";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -61,7 +62,7 @@ function setup(probe: Probe | undefined, opts: { launchOk?: boolean; attention?:
   }
   const inst = new PodRigInstantiator({
     db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus,
-    nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+    nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
     startupOrchestrator,
     fsOps: {
       readFile: (p: string) => { if (p === AGENT_FILE) return 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []'; throw new Error(`Not found: ${p}`); },

@@ -151,7 +151,7 @@ export function copyOntoFresh(
     // workspaces-o9o.151: and the credential rule on the same fd (ours, no group/other bits, capped), so a swap after the callers'
     // checks still cannot copy a secret others could read or another user wrote.
     const uid = typeof process.getuid === "function" ? process.getuid() : -1;
-    if (judgeOpenedCredentialFile({ isFile: st.isFile(), uid: st.uid, mode: st.mode, size: st.size }, CODEX_AUTH_POLICY, uid) !== null) return false;
+    if (judgeOpenedCredentialFile({ isFile: st.isFile(), nlink: st.nlink, uid: st.uid, mode: st.mode, size: st.size }, CODEX_AUTH_POLICY, uid) !== null) return false;
     if (expectSrc && (st.dev !== expectSrc.dev || st.ino !== expectSrc.ino)) return false; // swapped in the window
     const size = st.size;
     data = Buffer.allocUnsafe(size);

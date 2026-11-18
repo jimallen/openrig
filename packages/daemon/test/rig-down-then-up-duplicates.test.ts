@@ -6,6 +6,7 @@
 // Deployed entrypoint: startup.ts constructs RigTeardownOrchestrator, RestoreOrchestrator and SeatLifecycleService;
 // routes/up.ts picks the snapshot `rig up --existing` restores from (the pre-down snapshot while it still matches the
 // occupants). Nothing here touches a real tmux: the harness tmux is an in-memory table of live session names.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRestoreHarness, type RestoreHarness } from "./helpers/restore-fresh-harness.js";
@@ -142,7 +143,7 @@ describe("rig up --existing after rig down, for a seat with more than one live r
     expect(node.error).toContain(`rig seat launch 'dev.impl@team' --fresh --reason "<why>"`);
 
     const eventBus = new EventBus(h.db);
-    const nodeLauncher = new NodeLauncher({ db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, eventBus, tmuxAdapter: h.tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, eventBus, tmuxAdapter: h.tmux });
     const startupOrchestrator = new StartupOrchestrator({ db: h.db, sessionRegistry: h.sessionRegistry, eventBus, tmuxAdapter: h.tmux, sleep: async () => undefined });
     const service = new SeatLifecycleService({
       db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, eventBus, tmuxAdapter: h.tmux, nodeLauncher, startupOrchestrator,

@@ -15,7 +15,7 @@
 // Deployed entrypoints: startup.ts runs runWakeLadderTick (scheduler), drainPendingWakeIntents, runStuckSweep, the workflow
 // keepalive / boot sweep (WorkflowRuntime.reconcileStuckExceptions), scanWorkflowSpecFolder; server.ts mounts routes/workflow.ts
 // (listInstancesWithDeadline) and the spec library (scanWorkflowSpecs); the restore route calls reconcileNodeRuntimeTruth.
-import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
+import { NO_CREDENTIAL_FILES, TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync, utimesSync } from "node:fs";
@@ -395,7 +395,7 @@ describe("OF-136: one damaged events.payload row does not throw for every row as
       const checkpointStore = new CheckpointStore(db);
       const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
       const tmuxAdapter = new TmuxAdapter(async () => "");
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter });
       const orchestrator = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore, nodeLauncher, tmuxAdapter,
         claudeResume: new ClaudeResumeAdapter(tmuxAdapter), codexResume: new CodexResumeAdapter(tmuxAdapter),

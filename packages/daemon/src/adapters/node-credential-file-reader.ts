@@ -15,25 +15,30 @@ function refuse(path: string, policy: CredentialFilePolicy, problem: CredentialF
   return { ok: false, problem, message: credentialFileRefusal(path, policy, problem) };
 }
 
+/**
+ * Where to open, per the policy (the open never follows a link, so the file opened is held to the whole rule): with a linkTarget (one of
+ * SEAT_CREDENTIAL_LINKS) a link is followed only when it resolves to exactly that file; without one, the path itself, so a link is
+ * refused by the open. Shared by read and inspect (o9o.151 fix: inspect had skipped it, refusing the correct seat link).
+ */
+function resolveLinkTarget(path: string, policy: CredentialFilePolicy): { target: string } | { problem: CredentialFileProblem } {
+  if (policy.linkTarget === undefined) return { target: path };
+  try {
+    if (!fs.lstatSync(path).isSymbolicLink()) return { target: path };
+    const real = fs.realpathSync(path);
+    let expected: string;
+    try { expected = fs.realpathSync(policy.linkTarget); } catch { return { problem: "unexpected_link_target" }; }
+    return real === expected ? { target: real } : { problem: "unexpected_link_target" };
+  } catch (err) {
+    return { problem: (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable" };
+  }
+}
+
 /** Read `path` under `policy`. Never throws for a file problem: a refusal names the file and the fix. */
 export function readCredentialFile(path: string, policy: CredentialFilePolicy, options: CredentialFileReadOptions = {}): CredentialFileRead {
   const currentUid = options.currentUid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
-  let target = path;
-  if (policy.linkTarget !== undefined) {
-    // One of SEAT_CREDENTIAL_LINKS: a link at the file is followed only when it resolves to exactly the known shared file, and
-    // that real path is then opened with O_NOFOLLOW below, so the target is held to the whole rule (ours, no group/other, capped).
-    try {
-      if (fs.lstatSync(path).isSymbolicLink()) {
-        const real = fs.realpathSync(path);
-        let expected: string;
-        try { expected = fs.realpathSync(policy.linkTarget); } catch { return refuse(path, policy, "unexpected_link_target"); }
-        if (real !== expected) return refuse(path, policy, "unexpected_link_target");
-        target = real;
-      }
-    } catch (err) {
-      return refuse(path, policy, (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable");
-    }
-  }
+  const resolved = resolveLinkTarget(path, policy);
+  if ("problem" in resolved) return refuse(path, policy, resolved.problem);
+  const target = resolved.target;
   let fd: number;
   try {
     fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
@@ -44,7 +49,7 @@ export function readCredentialFile(path: string, policy: CredentialFilePolicy, o
   }
   try {
     const st = fs.fstatSync(fd);
-    const problem = judgeOpenedCredentialFile({ isFile: st.isFile(), uid: st.uid, mode: st.mode, size: st.size }, policy, currentUid);
+    const problem = judgeOpenedCredentialFile({ isFile: st.isFile(), nlink: st.nlink, uid: st.uid, mode: st.mode, size: st.size }, policy, currentUid);
     if (problem) return refuse(path, policy, problem);
     const buf = Buffer.alloc(policy.maxBytes + 1);
     let n = 0;
@@ -63,7 +68,10 @@ export function readCredentialFile(path: string, policy: CredentialFilePolicy, o
 }
 
 /** The port's production implementation. */
-export const nodeCredentialFileReader: CredentialFileReader = { read: (path, policy) => readCredentialFile(path, policy) };
+export const nodeCredentialFileReader: CredentialFileReader = {
+  read: (path, policy) => readCredentialFile(path, policy),
+  inspect: (path, policy) => inspectCredentialFile(path, policy),
+};
 
 /**
  * For a secret file the daemon itself owns and writes (the terminal token, the activity-hook token): the o9o.78 precedent. A link,
@@ -83,7 +91,8 @@ export function narrowOwnSecretFile(path: string, policy: CredentialFilePolicy, 
   }
   try {
     const st = fs.fstatSync(fd);
-    const problem: CredentialFileProblem | null = !st.isFile() ? "not_regular_file" : st.uid !== currentUid ? "wrong_owner" : null;
+    // Before any chmod (ruling (c)): a hard-linked name would let the fchmod change another name's file.
+    const problem: CredentialFileProblem | null = !st.isFile() ? "not_regular_file" : st.nlink > 1 ? "hard_linked" : st.uid !== currentUid ? "wrong_owner" : null;
     if (problem) return { ok: false, problem, message: credentialFileRefusal(path, policy, problem) };
     if ((st.mode & 0o077) !== 0) fs.fchmodSync(fd, 0o600);
     return null;
@@ -99,9 +108,11 @@ export function narrowOwnSecretFile(path: string, policy: CredentialFilePolicy, 
  */
 export function inspectCredentialFile(path: string, policy: CredentialFilePolicy, options: CredentialFileReadOptions = {}): { ok: true } | (CredentialFileRead & { ok: false }) {
   const currentUid = options.currentUid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
+  const resolved = resolveLinkTarget(path, policy);
+  if ("problem" in resolved) return { ok: false, problem: resolved.problem, message: credentialFileRefusal(path, policy, resolved.problem) };
   let fd: number;
   try {
-    fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    fd = fs.openSync(resolved.target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     const problem: CredentialFileProblem = code === "ENOENT" ? "missing" : code === "ELOOP" || code === "EMLINK" ? "symlink" : "unreadable";
@@ -109,7 +120,7 @@ export function inspectCredentialFile(path: string, policy: CredentialFilePolicy
   }
   try {
     const st = fs.fstatSync(fd);
-    const problem = judgeOpenedCredentialFile({ isFile: st.isFile(), uid: st.uid, mode: st.mode, size: st.size }, policy, currentUid);
+    const problem = judgeOpenedCredentialFile({ isFile: st.isFile(), nlink: st.nlink, uid: st.uid, mode: st.mode, size: st.size }, policy, currentUid);
     return problem ? { ok: false, problem, message: credentialFileRefusal(path, policy, problem) } : { ok: true };
   } finally {
     fs.closeSync(fd);

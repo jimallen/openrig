@@ -24,21 +24,38 @@ export interface CredentialFilePolicy {
 }
 
 export type CredentialFileProblem =
-  | "missing" | "symlink" | "unexpected_link_target" | "not_regular_file" | "wrong_owner" | "group_or_other_access"
+  | "missing" | "symlink" | "unexpected_link_target" | "not_regular_file" | "hard_linked" | "wrong_owner" | "group_or_other_access"
   | "group_or_other_write" | "too_large" | "unreadable";
 
 export type CredentialFileRead =
   | { ok: true; content: string }
   | { ok: false; problem: CredentialFileProblem; message: string };
 
-/** The outbound port: read one credential file under a policy. Never throws for a file problem; returns the refusal. */
+/** The outbound port: read one credential file under a policy, or judge it without reading it. Never throws for a file problem;
+ *  returns the refusal. */
 export interface CredentialFileReader {
   read(path: string, policy: CredentialFilePolicy): CredentialFileRead;
+  /** The same verdict without reading the content (o9o.151 fix: a file OpenRig vouches for but has no business reading). */
+  inspect(path: string, policy: CredentialFilePolicy): { ok: true } | (CredentialFileRead & { ok: false });
+}
+
+/**
+ * A credential file the rule refused, raised where the refusal must stop an operation instead of degrading it (o9o.151 fix, CoS
+ * ruling (a): a Codex seat whose shared login fails the codex-auth policy is not launched at all, while an ordinary seeding failure
+ * keeps its shared-home fallback). The message names the file and the fix.
+ */
+export class CredentialFileRefusedError extends Error {
+  constructor(readonly file: string, readonly problem: CredentialFileProblem, message: string) {
+    super(message);
+    this.name = "CredentialFileRefusedError";
+  }
 }
 
 /** The facts about the opened file the rule judges (an adapter supplies them from fstat). */
 export interface OpenedFileFacts {
   isFile: boolean;
+  /** Hard links to the inode (o9o.151 fix, ruling (c)): more than one means another name reaches the same bytes. */
+  nlink: number;
   uid: number;
   mode: number;
   size: number;
@@ -50,6 +67,7 @@ export interface OpenedFileFacts {
  */
 export function judgeOpenedCredentialFile(facts: OpenedFileFacts, policy: CredentialFilePolicy, currentUid: number): CredentialFileProblem | null {
   if (!facts.isFile) return "not_regular_file";
+  if (facts.nlink > 1) return "hard_linked";
   if (facts.uid !== currentUid) return "wrong_owner";
   if (policy.kind === "secret" && (facts.mode & 0o077) !== 0) return "group_or_other_access";
   if (policy.kind === "registry" && (facts.mode & 0o022) !== 0) return "group_or_other_write";
@@ -67,6 +85,8 @@ export function credentialFileRefusal(path: string, policy: CredentialFilePolicy
       return `${it} is a symbolic link; a credential file is read only as a plain file, so replace the link with the file itself`;
     case "unexpected_link_target":
       return `${it} is a symbolic link to somewhere other than ${policy.linkTarget ?? "its known shared file"}; OpenRig follows a seat credential link only to that file, so remove the link (OpenRig re-makes it at the next launch) or replace it with the file itself`;
+    case "hard_linked":
+      return `${it} is a hard link (another name reaches the same file); a credential file must have one name, so make it a separate copy (cp, then rm the extra name)`;
     case "not_regular_file":
       return `${it} is not a regular file (a directory, pipe, device or socket); it must be a plain file`;
     case "wrong_owner":

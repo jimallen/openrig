@@ -1,6 +1,7 @@
 // OF-32 stage 2: `rig seat launch --fresh` re-reads the rig's spec as it is now. The live failure: a rig launched
 // from a spec library link (library -> current -> release <sha>) kept delivering the first release's role and
 // culture to every fresh seat, because fresh launch replayed the absolute paths stored at first launch.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -144,7 +145,7 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
       checkReady: async () => ({ ready: true }),
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: { ...FIXTURE_SPEC_SOURCE_TRUST, roots: () => trustedRoots },

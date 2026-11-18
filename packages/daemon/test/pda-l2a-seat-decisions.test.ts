@@ -7,6 +7,7 @@
 // The decisions read the adapter's declaration (`freshStart`, `startupContent`), never the runtime's name, so the
 // harness rows below use the existing claude-code fixtures with an adapter that declares what pda declares.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
@@ -220,7 +221,7 @@ describe("census row 15: a seat whose runtime has no fresh start has no handover
     const sessionRegistry = new SessionRegistry(db);
     const tmuxCalls: string[] = [];
     const tmux = new Proxy({}, { get: (_t, name) => async () => { tmuxCalls.push(String(name)); return { ok: true }; } }) as TmuxAdapter;
-    const service = new SeatHandoverService({
+    const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
       db, rigRepo, sessionRegistry, discoveryRepo: new DiscoveryRepository(db), eventBus: new EventBus(db), tmuxAdapter: tmux,
       runtimeAdapters: { pda: withholding(), codex: { runtime: "codex" } as unknown as RuntimeAdapter }, sleep: async () => {},
     });

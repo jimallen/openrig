@@ -1,6 +1,7 @@
 // Shared fixture for tests that run the REAL restore orchestrator and the restore-check over the same seat states
 // (restore-check-predicts-refusals.test.ts). Same world as restore-fresh-reread.test.ts: a spec library link, three
 // releases, a Claude adapter that records what it delivers, an in-memory tmux.
+import { TMP_CREDENTIAL_FILES } from "./credential-files.js";
 import { vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -153,7 +154,7 @@ export function createRestoreHarness(): RestoreHarness {
     launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
     checkReady: async () => ({ ready: true }),
   };
-  const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+  const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
   const specSourceTrust: SpecSourceTrust = { ...FIXTURE_SPEC_SOURCE_TRUST };
   const inst = new PodRigInstantiator({

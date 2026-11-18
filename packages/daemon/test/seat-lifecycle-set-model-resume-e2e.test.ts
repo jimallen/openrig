@@ -14,6 +14,7 @@
 // Evidence-class note (honest): this is an EVIDENCE leg, not a defect fix — the
 // mechanism was already correct, so there is no RED for it; it strengthens proof
 // item 1 from citation+persistence to a driven real resume.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -118,7 +119,7 @@ describe("S5 F4: set-model then a REAL managed successor runs the canonical mode
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const codexAdapter = new CodexRuntimeAdapter({ tmux: realTmux as any, fsOps: realFsOps() as any, listProcesses: () => [] }) as any;
-      const service = new SeatHandoverService({
+      const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         tmuxAdapter: realTmux as any, runtimeAdapters: { codex: codexAdapter },

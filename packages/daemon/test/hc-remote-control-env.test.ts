@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { mockTmuxAdapter } from "./helpers/test-app.js";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -220,7 +221,7 @@ describe("NodeLauncher", () => {
       createSession: async (...args: unknown[]) => { calls.push(args); return createResult; },
       killSession: async (): Promise<TmuxResult> => ({ ok: true }), listPanes: async () => [],
     });
-    const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter });
+    const launcher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter });
     const result = await launcher.launchNode(rig.id, "dev1-impl");
     db.close();
     return { calls, result };

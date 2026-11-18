@@ -6,6 +6,7 @@
 //   <shared-docs>/missions/primitive-hardening/
 //   slices/lifecycle-reboot-recovery-scenario-matrix/
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -296,7 +297,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore,
       });
       const tmux = mockTmuxForRestore({ hasSession: false }); // session does not exist yet
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const orchestrator = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -410,7 +411,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         const fast = { pollMs: 1, maxWaitMs: 1, settleMs: 0, sleep: async () => {} };
         const orchestrator = new RestoreOrchestrator({
           db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
-          checkpointStore, nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }), tmuxAdapter: tmux,
+          checkpointStore, nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }), tmuxAdapter: tmux,
           claudeResume: runtime === "claude-code" ? new ClaudeResumeAdapter(resumeTmux, fast) : mockClaudeResumeReturning({ ok: true }),
           codexResume: runtime === "codex" ? new CodexResumeAdapter(resumeTmux, fast) : mockCodexResumeReturning({ ok: true }),
         });
@@ -523,7 +524,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
           db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore,
         });
         const tmux = mockTmuxForRestore({ hasSession: false });
-        const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+        const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
 
         // Codex adapter stub returns the same shape the real adapter would
         // emit for auth-refusal: { ok: false, code: "attention_required",
@@ -608,7 +609,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
           db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore,
         });
         const tmux = mockTmuxForRestore();
-        const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+        const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
 
         const rig = rigRepo.createRig("r96");
         // Pod-aware setup mirrors restore-orchestrator.test.ts:1296-1362
@@ -707,7 +708,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         listPanes: vi.fn(async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }]),
         getPanePid: vi.fn(async () => 1234),
       } as unknown as TmuxAdapter;
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       // Dispatch by sessionName so test doesn't depend on iteration order.
       const claudeStub = {
         canResume: vi.fn((type: string | null) => type === "claude_name" || type === "claude_id"),
@@ -813,7 +814,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore,
       });
       const tmux = mockTmuxForRestore({ hasSession: false });
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const orchestrator = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -880,7 +881,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
       });
       tmux.listPanes = vi.fn(async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }]);
       tmux.getPanePid = vi.fn(async () => 1234);
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const orchestrator = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -1077,7 +1078,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore,
       });
       const tmux = mockTmuxForRestore();
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const orchestrator = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,
@@ -1120,7 +1121,7 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore,
       });
       const tmux = mockTmuxForRestore();
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const orchestrator = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,

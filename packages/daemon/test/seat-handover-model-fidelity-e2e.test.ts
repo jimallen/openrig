@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -115,7 +116,7 @@ describe("seat-handover model-fidelity money-proof (real codex, private hc core)
       // its real fresh-launch command construction, which emits -m.
       const codexAdapter = new CodexRuntimeAdapter({ tmux: realTmux, fsOps: realFsOps(), listProcesses: () => [] }) as any;
 
-      const service = new SeatHandoverService({
+      const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
         tmuxAdapter: realTmux, runtimeAdapters: { codex: codexAdapter },
         seatCwdFault: () => null, // fixture seat folders are fake paths

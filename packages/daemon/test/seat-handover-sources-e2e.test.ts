@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, afterAll } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -103,7 +104,7 @@ describe("seat-handover source execution e2e (private hc core)", () => {
         },
         async checkReady() { return { ready: true }; },
       };
-      const service = new SeatHandoverService({
+      const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
         tmuxAdapter: adapter(), runtimeAdapters: { codex: marker as any },
         readinessTimeoutMs: 3000, sleep,
@@ -161,7 +162,7 @@ describe("seat-handover source execution e2e (private hc core)", () => {
         },
         async checkReady() { return { ready: true }; },
       };
-      const service = new SeatHandoverService({
+      const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
         tmuxAdapter: adapter(), runtimeAdapters: { codex: marker as any },
         // Production-shaped resolver: DECLARES addresses; the service existence-
@@ -231,7 +232,7 @@ describe("seat-handover source execution e2e (private hc core)", () => {
       },
       async checkReady() { return ready; },
     };
-    const service = new SeatHandoverService({
+    const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
       db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
       tmuxAdapter: adapter(), runtimeAdapters: { codex: marker as any },
       readinessTimeoutMs: 1500, sleep,

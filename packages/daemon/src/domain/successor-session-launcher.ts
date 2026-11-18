@@ -1,3 +1,4 @@
+import { CredentialFileRefusedError, type CredentialFileReader } from "./credential-file.js";
 import { ulid } from "ulid";
 import { claudeConfigDirLaunchRefusal, claudeHomeNoModelFinding, seatClaudeConfigDirEnv, type ClaudeHomeReader } from "./claude-config-dir.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -119,6 +120,7 @@ export class SuccessorSessionLauncher {
   private sleep: (ms: number) => Promise<void>;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
   private codexConfigWritePolicy: CodexConfigWritePolicy | null;
+  private readonly credentialFiles: CredentialFileReader;
   private exitPollMs: number;
   private exitTimeoutMs: number;
   private seatCwdFault: (cwd: string) => SeatCwdFault | null;
@@ -150,6 +152,8 @@ export class SuccessorSessionLauncher {
       tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
       /** OF-183: whether this daemon may change the shared Codex config.toml a seat home links to. Absent = unrestricted. */
       codexConfigWritePolicy?: CodexConfigWritePolicy;
+      /** workspaces-o9o.151: judges a codex seat's auth.json link and the shared login (required). */
+      credentialFiles: CredentialFileReader;
       /** Cutover retiree-exit poll interval + total bounded timeout (per graceful/forced phase). */
       exitPollMs?: number;
       exitTimeoutMs?: number;
@@ -160,7 +164,7 @@ export class SuccessorSessionLauncher {
       /** workspaces-o9o.50: the git worktree shim's file port, as NodeLauncher takes it: the successor's PATH starts with
        *  <OPENRIG_HOME>/rig-bin, refreshed first. Absent: no shim on PATH and nothing is written (most unit tests). */
       shimFiles?: ShimFiles;
-    } = {},
+    },
   ) {
     this.seatCwdFault = opts.seatCwdFault ?? ((cwd) => getSeatCwdFault(cwd));
     this.tmuxAdapter = tmuxAdapter;
@@ -174,6 +178,7 @@ export class SuccessorSessionLauncher {
     this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.tmuxOptionDefaults = opts.tmuxOptionDefaults ?? null;
     this.codexConfigWritePolicy = opts.codexConfigWritePolicy ?? null;
+    this.credentialFiles = opts.credentialFiles;
     this.exitPollMs = opts.exitPollMs ?? 100;
     this.exitTimeoutMs = opts.exitTimeoutMs ?? 3_000;
     this.claudeHomeRead = opts.claudeHomeRead ?? null;
@@ -230,10 +235,16 @@ export class SuccessorSessionLauncher {
           openrigHome: this.sessionEnv?.["OPENRIG_HOME"],
           sharedCodexHome: this.sessionEnv?.["CODEX_HOME"],
           ...(this.codexConfigWritePolicy ? { configWritePolicy: this.codexConfigWritePolicy } : {}),
+          credentialFiles: this.credentialFiles,
         });
         env["CODEX_HOME"] = seatHome.path;
         seatHomeWarnings.push(...seatHome.warnings); // OF-115: returned as warnings; the handover result carries them and rig seat handover prints them
       } catch (err) {
+        // workspaces-o9o.151 (ruling (a)): a credential refusal stops the handover before the retiree is touched; only an ordinary
+        // seeding failure keeps the shared-home fallback.
+        if (err instanceof CredentialFileRefusedError) {
+          return { ok: false, code: "seat_credential_refused", step: "resolve_pane", replacementStarted: false, message: `${departingSession}: ${err.message}` };
+        }
         // seeding failed — keep the sessionEnv projection, and say so (a fresh launch says it too)
         seatHomeWarnings.push(`codex per-seat CODEX_HOME seeding failed (${err instanceof Error ? err.message : String(err)}); the successor launches on the shared home and may inherit a foreign session identity`);
       }

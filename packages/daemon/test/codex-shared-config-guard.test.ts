@@ -5,6 +5,7 @@
 //
 // These rows pin the consequence, not the mechanism: a daemon that is not the host's installed OpenRig leaves the
 // shared config byte-identical through EVERY writer, and the installed daemon still writes through the same writers.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -345,7 +346,7 @@ describe("OF-183 the shared ~/.codex/config.toml, seat-home trust mirror", () =>
   });
 
   const launch = (configWritePolicy?: CodexConfigWritePolicy) =>
-    ensureCodexSeatHome("dev-impl@r", { openrigHome, sharedCodexHome: hostCodex, log: (m: string) => logs.push(m), ...(configWritePolicy ? { configWritePolicy } : {}) });
+    ensureCodexSeatHome("dev-impl@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: hostCodex, log: (m: string) => logs.push(m), ...(configWritePolicy ? { configWritePolicy } : {}) });
 
   it("CONTROL: the installed daemon mirrors the trust to the seat key in the shared file", async () => {
     const before = fs.readFileSync(hostConfig);

@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -57,7 +58,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { await fs.rm(tmp, { recursive: true, force: true }); });
 
-const launch = (session = "dev-impl@r") => ensureCodexSeatHome(session, { openrigHome, sharedCodexHome: shared, log } as never);
+const launch = (session = "dev-impl@r") => ensureCodexSeatHome(session, { openrigHome, sharedCodexHome: shared, log, credentialFiles: TMP_CREDENTIAL_FILES } as never);
 const seatKeyOf = async (home: { path: string }) => path.join(await fs.realpath(home.path), "config.toml");
 const read = () => fs.readFile(sharedConfig, "utf-8");
 /** The text of the `[hooks.state."<key>"]` table (header excluded), or undefined when absent. */

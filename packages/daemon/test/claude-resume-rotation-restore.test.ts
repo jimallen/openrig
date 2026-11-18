@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { Hono } from "hono";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { activityRoutes } from "../src/routes/activity.js";
@@ -127,7 +128,7 @@ describe("managed Claude full down/up", () => {
         fsOps: {
         exists: () => false, readFile: () => "", writeFile: () => {}, mkdirp: () => {}, copyFile: () => {},
       } });
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
         checkpointStore, nodeLauncher, tmuxAdapter: tmux, claudeResume: new ClaudeResumeAdapter(tmux),
         codexResume: new CodexResumeAdapter(tmux), listProcesses });

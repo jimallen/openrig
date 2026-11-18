@@ -6,6 +6,7 @@
 //
 // The real SeatLifecycleService.launchFresh runs here, as in relaunch-message-race.test.ts: tmux is a fake that stops and starts sessions in
 // memory, the process table and the seat's leases and folder are fakes of their ports.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -102,7 +103,7 @@ describe("o9o.8: rig seat launch --fresh --stop checks the seat's leases, its ag
     deps = {
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
       listProcesses: async () => processes,
-      nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       startupOrchestrator: new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined }),
       runtimeAdapters: { "claude-code": adapter, pi: { ...adapter, runtime: "pi" } },
       relaunchChecks,

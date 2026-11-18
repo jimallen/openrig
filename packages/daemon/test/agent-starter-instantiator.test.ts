@@ -15,6 +15,7 @@
 // - Composition with `session_source.mode: "rebuild"` works
 //   independently (both apply on fresh_start; per slice schema).
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -151,7 +152,7 @@ function setupWithStarter(opts: {
   const sessionRegistry = new SessionRegistry(db);
   const eventBus = new EventBus(db);
   const tmux = mockTmux();
-  const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+  const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const adapter = mockAdapter("claude-code");
   const codexAdapter = mockAdapter("codex");

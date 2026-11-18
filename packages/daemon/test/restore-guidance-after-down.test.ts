@@ -12,6 +12,7 @@
 // is unchanged. A block that can't be put back is disclosed without changing the seat's native
 // status, and the rig is not fully_restored.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -196,7 +197,7 @@ describe("a seat's guidance across rig down then rig up --existing (exact resume
     };
     const restore = new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore,
-      nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       tmuxAdapter: tmux, claudeResume, codexResume,
       // The pane's process tree shows the same native session resumed (the joined-resume proof).
       listProcesses: async () => [

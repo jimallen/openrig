@@ -2,6 +2,7 @@
 // is now, exactly as `rig seat launch --fresh` does, with the same `stored` escape. An exact resume keeps its saved
 // context. The snapshot hazard: a restore from a snapshot older than a re-read fresh launch used to write the
 // snapshot's old startup files back over the seat's newer saved context.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import type { StartupFrom } from "../src/domain/seat-startup-source.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
@@ -155,7 +156,7 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
       launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
       checkReady: async () => ({ ready: true }),
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: { ...FIXTURE_SPEC_SOURCE_TRUST, roots: () => trustedRoots },

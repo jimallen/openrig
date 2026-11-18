@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import type Database from "better-sqlite3";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -109,7 +110,7 @@ describe("SeatHandoverService", () => {
 
   function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }, seatCwdFault: () => SeatCwdFault | null = () => null,
     extra: Record<string, unknown> = {}): SeatHandoverService {
-    return new SeatHandoverService({
+    return new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
       ...extra,
       db,
       rigRepo,
@@ -864,7 +865,7 @@ describe("SeatHandoverService", () => {
     afterEach(() => { rmSync(claudeHome, { recursive: true, force: true }); });
 
     function claudeService(): SeatHandoverService {
-      return new SeatHandoverService({
+      return new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
         tmuxAdapter: tmux(),
         now: () => new Date("2026-04-24T18:30:00.000Z"),
@@ -910,7 +911,7 @@ describe("SeatHandoverService", () => {
     const home = mkdtempSync(`${tmpdir()}/sh-shim-home-`);
     try {
       seedSeat({ runtime: "claude-code", model: "opus" });
-      const service = new SeatHandoverService({
+      const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
         tmuxAdapter: tmux(),
         now: () => new Date("2026-04-24T18:30:00.000Z"),
@@ -1026,7 +1027,7 @@ describe("SeatHandoverService", () => {
     sendText.mockImplementation(async () => { orderedCalls.push("send_text"); return { ok: true }; });
     sendKeys.mockImplementation(async () => { orderedCalls.push("submit"); return { ok: true }; });
     const sleepSpy = async (ms: number) => { sleeps.push(ms); if (orderedCalls[orderedCalls.length - 1] === "send_text") orderedCalls.push(`sleep(${ms})`); };
-    service = new SeatHandoverService({
+    service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
       db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
       tmuxAdapter: tmux(),
       now: () => new Date("2026-04-24T18:30:00.000Z"),

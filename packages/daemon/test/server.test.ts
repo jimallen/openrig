@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect } from "vitest";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -264,7 +265,7 @@ describe("Hono server (production app)", () => {
     const cs2 = new CheckpointStore(db2);
     const cap2 = new SnapshotCapture({ db: db2, rigRepo: r2, sessionRegistry: s2, eventBus: e2, snapshotRepo: sr2, checkpointStore: cs2 });
     const tmux2 = mockTmuxAdapter();
-    const nl2 = new NodeLauncher({ db: db2, rigRepo: r2, sessionRegistry: s2, eventBus: e2, tmuxAdapter: tmux2 });
+    const nl2 = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: db2, rigRepo: r2, sessionRegistry: s2, eventBus: e2, tmuxAdapter: tmux2 });
     const otherOrch = new RestoreOrchestrator({
       db: db2, rigRepo: r2, sessionRegistry: s2, eventBus: e2,
       snapshotRepo: sr2, snapshotCapture: cap2, checkpointStore: cs2,

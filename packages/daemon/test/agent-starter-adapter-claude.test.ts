@@ -7,6 +7,7 @@
 // exercises `guidance_merge` and writes the starter content into the
 // per-seat CLAUDE.md managed block.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
@@ -105,7 +106,7 @@ describe("Agent Starter v1 vertical — real Claude adapter delivery (M2 R2)", (
       const sessionRegistry = new SessionRegistry(db);
       const eventBus = new EventBus(db);
       const tmux = mockTmux();
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
 
       // Real ClaudeCodeAdapter. The fs seam is pre-loaded with the

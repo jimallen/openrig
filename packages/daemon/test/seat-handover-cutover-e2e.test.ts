@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import { HcAdapter } from "../src/adapters/hc-adapter.js";
@@ -79,7 +80,7 @@ describe("seat-handover cutover money-proof (private hc core, both retiree-exit 
           },
           async checkReady() { return { ready: true }; },
         };
-        const service = new SeatHandoverService({
+        const service = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
           db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
           tmuxAdapter: adapter, runtimeAdapters: { codex: marker as any },
           predecessorRecapResolver: () => ({ recap: [{ role: "user", content: "finish A5" }, { role: "assistant", content: "A5 landed; handing to v2" }], recordPath: "/tmp/pred-record.jsonl" }),

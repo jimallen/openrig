@@ -1,5 +1,6 @@
 // `rig edge add|list` (daemon side): put an edge back between existing seats after `rig remove` + `rig add` lost the cross-pod ones.
 // Each row names the consequence for the kernel: stuck-item escalation reads delegates_to edges, restore orders launches by them.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
@@ -171,7 +172,7 @@ describe("rig edge add / list", () => {
       const tmuxAdapter = mockTmuxAdapter();
       const orchestrator = new RestoreOrchestrator({
         db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture, checkpointStore,
-        nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter }), tmuxAdapter,
+        nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter }), tmuxAdapter,
         claudeResume: new ClaudeResumeAdapter(tmuxAdapter), codexResume: new CodexResumeAdapter(tmuxAdapter),
       });
       const orderOf = async () => {

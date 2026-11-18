@@ -4,6 +4,7 @@
 // changed a skill was delivered only in part, with no warning, and a seat whose cwd lost a skill folder was not repaired.
 // A seat that replays its stored context (`--startup-from stored`, a seat not listed with --fresh, an exact resume)
 // keeps the stored behaviour: no reconcile.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -163,7 +164,7 @@ describe("OF-32 N6: a seat that re-reads its spec reconciles the re-read release
       checkReady: async () => ({ ready: true }),
     };
     reconciler = vi.fn(reconcileSkillLoadout);
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,

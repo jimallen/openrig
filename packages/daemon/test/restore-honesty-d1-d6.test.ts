@@ -17,6 +17,7 @@
 // full. The former replay opt-in surface is REMOVED WHOLE — the absence pin
 // below proves no encoding of it survives in this child's source or tests.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -119,7 +120,7 @@ describe("OPR.0.5.7.1 repair child — D1 four-way occupant truth + D6a uncondit
 
   function createOrchestrator(opts?: { claude?: ClaudeResumeAdapter; tmux?: TmuxAdapter }) {
     const tmux = opts?.tmux ?? mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     return new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux,

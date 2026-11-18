@@ -727,6 +727,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { startupCodexConfigWritePolicy } = await import("./domain/codex-config-write-policy.js");
   const codexConfigWritePolicy = startupCodexConfigWritePolicy(import.meta.dirname, OPENRIG_HOME);
   const nodeLauncher = new NodeLauncher({
+    credentialFiles: nodeCredentialFileReader, // workspaces-o9o.151: judges a codex seat's auth.json link
     db,
     rigRepo,
     sessionRegistry,

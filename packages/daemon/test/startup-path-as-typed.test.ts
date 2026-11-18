@@ -1,6 +1,7 @@
 // OF-99: a seat whose agent_ref is a path through a symlink keeps its startup files recorded under the path AS TYPED,
 // so a fresh launch, a restore and a compaction restore replay whatever the link points to NOW, not the release that was
 // current when the pod was added. (The kernel rig `path:~/.agents-release/current/agents/rsi-engineer` pinned d4f6a482.)
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import type { StartupFrom } from "../src/domain/seat-startup-source.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
@@ -184,7 +185,7 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
       launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
       checkReady: async () => ({ ready: true }),
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,

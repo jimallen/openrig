@@ -71,6 +71,7 @@ describe("every reader of activity-endpoint.json takes its token only from a pla
     { name: "0620 (group can write)", make: plain(0o620), accepted: false },
     { name: "a symlink to a 0600 file", make: (p) => { const t = p + ".real"; plain(0o600)(t); fs.symlinkSync(t, p); }, accepted: false },
     { name: "a directory", make: (p) => fs.mkdirSync(p, { mode: 0o700 }), accepted: false },
+    { name: "a hard link (a second name reaches the same 0600 file)", make: (p) => { plain(0o600)(p); fs.linkSync(p, p + ".second-name"); }, accepted: false },
     { name: "a FIFO (the open must not hang)", make: (p) => execFileSync("mkfifo", ["-m", "600", p]), accepted: false },
     { name: "over the 16 KiB cap", make: (p) => { fs.writeFileSync(p, JSON.stringify({ baseUrl: "http://127.0.0.1:1", token: FILE_TOKEN, pad: "x".repeat(17 * 1024) })); fs.chmodSync(p, 0o600); }, accepted: false },
   ];

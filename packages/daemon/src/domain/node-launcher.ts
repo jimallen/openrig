@@ -1,3 +1,4 @@
+import { CredentialFileRefusedError, type CredentialFileReader } from "./credential-file.js";
 import type Database from "better-sqlite3";
 import { claudeConfigDirLaunchRefusal, claudeHomeNoModelFinding, seatClaudeConfigDirEnv, type ClaudeHomeReader } from "./claude-config-dir.js";
 import type { RigRepository } from "./rig-repository.js";
@@ -78,6 +79,8 @@ interface NodeLauncherDeps {
   tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
   /** OF-183: whether this daemon may change the shared Codex config.toml a seat home links to. Absent = unrestricted. */
   codexConfigWritePolicy?: CodexConfigWritePolicy;
+  /** workspaces-o9o.151: judges a codex seat's auth.json link and the shared login (required: wired in startup.ts). */
+  credentialFiles: CredentialFileReader;
   /** workspaces-o9o.50: the git worktree shim's file port. Absent: the seat gets no shim on PATH and nothing is written
    *  (most unit tests). The daemon wires src/adapters/node-shim-files.ts at startup. */
   shimFiles?: ShimFiles;
@@ -95,6 +98,7 @@ export class NodeLauncher {
   private claudeHomeRead: ClaudeHomeReader | undefined;
   private defaultSilenceWindowSeconds: number;
   private codexConfigWritePolicy: CodexConfigWritePolicy | null;
+  private readonly credentialFiles: CredentialFileReader;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
   private shimFiles: ShimFiles | undefined;
 
@@ -124,6 +128,7 @@ export class NodeLauncher {
     this.defaultSilenceWindowSeconds = deps.defaultSilenceWindowSeconds ?? 3;
     this.tmuxOptionDefaults = deps.tmuxOptionDefaults ?? null;
     this.codexConfigWritePolicy = deps.codexConfigWritePolicy ?? null;
+    this.credentialFiles = deps.credentialFiles;
   }
 
   async launchNode(
@@ -236,12 +241,18 @@ export class NodeLauncher {
           openrigHome: this.sessionEnv["OPENRIG_HOME"],
           sharedCodexHome: this.sessionEnv["CODEX_HOME"],
           ...(this.codexConfigWritePolicy ? { configWritePolicy: this.codexConfigWritePolicy } : {}),
+          credentialFiles: this.credentialFiles,
         });
         openRigEnv["CODEX_HOME"] = seatHome.path;
         // OF-115: a profile withheld for carrying a seat identity, or a shared config.toml that sets one, is told to the
         // operator in the launch result, not only on the daemon console.
         codexSeatWarnings.push(...seatHome.warnings);
       } catch (err) {
+        // workspaces-o9o.151 (ruling (a)): a credential refusal stops the launch, before any session is made; only an ordinary
+        // seeding failure falls back to the shared home.
+        if (err instanceof CredentialFileRefusedError) {
+          return { ok: false, code: "seat_credential_refused", message: `${logicalId}: ${err.message}` };
+        }
         codexSeatWarnings.push(
           `codex per-seat CODEX_HOME seeding failed (${err instanceof Error ? err.message : String(err)}); seat launches on the shared home and may inherit a foreign session identity`,
         );

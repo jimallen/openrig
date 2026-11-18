@@ -1,5 +1,6 @@
 // S4f, handover packets through the pump: the real SeatHandoverService, MessagePump, MessageStore and delivery guard on a real database; only the
 // gate, the hop and the seat host are stubs. The real daemon on a private core is seat-handover-pump.real.test.ts.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
@@ -88,7 +89,7 @@ describe("handover packets through the pump", () => {
     const runtime = Object.assign(new StubRuntimeAdapter({ tmux: adapter, runtime: "codex" }), {
       launchHarness: async () => { launching(); return { ok: true as const, resumeToken: "tok", resumeType: "codex_id" }; }, checkReady: async () => ({ ready: true }),
     });
-    const handovers = new SeatHandoverService({
+    const handovers = new SeatHandoverService({ credentialFiles: TMP_CREDENTIAL_FILES,
       db, rigRepo: new RigRepository(db), sessionRegistry: sessions, discoveryRepo: new DiscoveryRepository(db), eventBus: new EventBus(db), tmuxAdapter: adapter,
       now: () => new Date("2026-04-24T18:30:00.000Z"), seatCwdFault: () => null, runtimeAdapters: { codex: runtime }, readinessTimeoutMs: 50, sleep: async () => {},
       contextUsageStore: { readSidecar: () => null } as never, resumeTokenCapturer: { captureCodexThreadId: async () => null } as never, packetWaitMs: waitMs,

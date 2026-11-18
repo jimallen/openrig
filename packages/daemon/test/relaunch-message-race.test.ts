@@ -5,6 +5,7 @@
 // The real SeatLifecycleService.launchFresh runs here, with the real MessageStore, MessagePump and PumpHandOff wired on its tmux adapter as the
 // daemon wires them (startup.ts). The gate and the last hop are fakes: the gate answers by (id, nonce) as every real gate does, and the hop
 // records what it was given. tmux is a fake that stops and starts sessions in memory.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
@@ -110,7 +111,7 @@ describe("o9o.7: a message the old occupant took around rig seat launch --fresh 
     service = new SeatLifecycleService({
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux,
       listProcesses: async () => [{ pid: 4242, ppid: 1, pgid: 4242, tpgid: 4242, executableName: "claude", command: "claude --session-id fresh-native-uuid", startedAt: "Sat Jan  1 12:00:00 2000" }],
-      nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
       startupOrchestrator: new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined }),
       runtimeAdapters: { "claude-code": adapter },
     });

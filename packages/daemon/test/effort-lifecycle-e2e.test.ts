@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -186,7 +187,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       getPaneCommand: vi.fn(async () => "claude"),
     } as any;
 
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db,
       rigRepo: ctx.rigRepo,
@@ -322,7 +323,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       getPaneCommand: vi.fn(async () => "codex"),
     } as any;
 
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db,
       rigRepo: ctx.rigRepo,
@@ -442,7 +443,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
     expect((tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toContain("--effort 'high'");
 
     // 2. Config refresh: effort is removed from the resolved config
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: tmux });
     const instantiator = new PodRigInstantiator({
       db: ctx.db,
       rigRepo: ctx.rigRepo,
@@ -517,7 +518,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       getPaneCommand: vi.fn(async () => "claude"),
     } as any;
 
-    const restoreNodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const restoreNodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db,
       rigRepo: ctx.rigRepo,
@@ -567,7 +568,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
       sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "codex"),
     } as any;
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus,
       snapshotRepo: ctx.snapshotRepo, snapshotCapture: ctx.snapshotCapture, checkpointStore: ctx.checkpointStore,
@@ -603,7 +604,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
       sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "claude"),
     } as any;
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus,
       snapshotRepo: ctx.snapshotRepo, snapshotCapture: ctx.snapshotCapture, checkpointStore: ctx.checkpointStore,
@@ -648,7 +649,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
         sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
         listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => runtime === "codex" ? "codex" : "claude"),
       } as any;
-      const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
       const restoreOrch = new RestoreOrchestrator({
         db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus,
         snapshotRepo: ctx.snapshotRepo, snapshotCapture: ctx.snapshotCapture, checkpointStore: ctx.checkpointStore,
@@ -684,7 +685,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
       sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "codex"),
     } as any;
-    const nodeLauncher = new NodeLauncher({ db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus, tmuxAdapter: mockTmux });
     const restoreOrch = new RestoreOrchestrator({
       db: ctx.db, rigRepo: ctx.rigRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus,
       snapshotRepo: ctx.snapshotRepo, snapshotCapture: ctx.snapshotCapture, checkpointStore: ctx.checkpointStore,

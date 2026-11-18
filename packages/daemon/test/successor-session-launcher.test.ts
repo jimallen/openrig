@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -72,7 +73,7 @@ describe("SuccessorSessionLauncher", () => {
     overrides: Partial<ConstructorParameters<typeof SuccessorSessionLauncher>[2]> = {},
   ): SuccessorSessionLauncher {
     const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand, capturePaneContent } as unknown as TmuxAdapter;
-    return new SuccessorSessionLauncher(tmux, discoveryRepo, {
+    return new SuccessorSessionLauncher(tmux, discoveryRepo, { credentialFiles: TMP_CREDENTIAL_FILES,
       sessionEnv: { OPENRIG_HOME: seatHomes, HOME: "/daemon-home", CODEX_HOME: sharedCodexHome },
       newId: () => "01ABCDEFG",
       runtimeAdapters: { codex: fakeAdapter("codex") },
@@ -391,9 +392,27 @@ describe("SuccessorSessionLauncher", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 0 });
   });
 
+  it("o9o.151 ruling (a): a shared Codex login the rule refuses stops the handover before the retiree is touched", async () => {
+    const codex = fs.mkdtempSync(path.join(os.tmpdir(), "successor-refused-codex-"));
+    try {
+      fs.writeFileSync(path.join(codex, "auth.json"), '{"note":"login"}');
+      fs.chmodSync(path.join(codex, "auth.json"), 0o644);
+      const result = await launcher(undefined, codex).createSuccessor({
+        node: { id: "node-1", runtime: "codex", cwd: "/w" },
+        departingSessionName: "dev-impl@rig",
+        occupantGeneration: "g-1",
+      });
+      expect(result).toMatchObject({ ok: false, code: "seat_credential_refused", replacementStarted: false });
+      expect(signalPaneProcess).not.toHaveBeenCalled();
+      expect(respawnPane).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(codex, { recursive: true, force: true });
+    }
+  });
+
   it("carries the supplied generation exactly and never lets ambient session env override it", async () => {
     const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand, capturePaneContent } as unknown as TmuxAdapter;
-    const subject = new SuccessorSessionLauncher(tmux, discoveryRepo, {
+    const subject = new SuccessorSessionLauncher(tmux, discoveryRepo, { credentialFiles: TMP_CREDENTIAL_FILES,
       sessionEnv: { OPENRIG_OCCUPANT_GENERATION: "stale-ambient-generation" },
       newId: () => "01ABCDEFG",
       runtimeAdapters: { codex: fakeAdapter("codex") },
@@ -549,7 +568,7 @@ describe("SuccessorSessionLauncher", () => {
 
     function timedLauncher(timeoutMs?: number, readinessSettings?: Pick<SettingsStore, "resolveOne">): SuccessorSessionLauncher {
       const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand, capturePaneContent } as unknown as TmuxAdapter;
-      return new SuccessorSessionLauncher(tmux, discoveryRepo, {
+      return new SuccessorSessionLauncher(tmux, discoveryRepo, { credentialFiles: TMP_CREDENTIAL_FILES,
         runtimeAdapters: { codex: fakeAdapter("codex") },
         readinessTimeoutMs: timeoutMs ?? (readinessSettings ? undefined : 30_000),
         readinessSettings,
@@ -670,7 +689,7 @@ describe("SuccessorSessionLauncher", () => {
 
   it("no runtime adapter for the seat's runtime → structured failure, preserved seat NOT killed", async () => {
     const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand, capturePaneContent } as unknown as TmuxAdapter;
-    const noAdapter = new SuccessorSessionLauncher(tmux, discoveryRepo, { newId: () => "01ABCDEFG", runtimeAdapters: {}, exitPollMs: 1, exitTimeoutMs: 5, seatCwdFault: () => null });
+    const noAdapter = new SuccessorSessionLauncher(tmux, discoveryRepo, { credentialFiles: TMP_CREDENTIAL_FILES, newId: () => "01ABCDEFG", runtimeAdapters: {}, exitPollMs: 1, exitTimeoutMs: 5, seatCwdFault: () => null });
     const res = await noAdapter.createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "a@r" });
     expect(res).toMatchObject({ ok: false, step: "start_agent", code: "successor_runtime_unsupported" });
     expect(killSession).not.toHaveBeenCalled();
@@ -887,7 +906,7 @@ describe("SuccessorSessionLauncher", () => {
   describe("a seat whose folder is gone (OF-124)", () => {
     function launcherWith(seatCwdFault?: (cwd: string) => { kind: "missing" } | { kind: "not_directory"; what: string } | null): SuccessorSessionLauncher {
       const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand, capturePaneContent } as unknown as TmuxAdapter;
-      return new SuccessorSessionLauncher(tmux, discoveryRepo, {
+      return new SuccessorSessionLauncher(tmux, discoveryRepo, { credentialFiles: TMP_CREDENTIAL_FILES,
         sessionEnv: { OPENRIG_HOME: seatHomes }, newId: () => "01ABCDEFG", runtimeAdapters: { codex: fakeAdapter("codex") },
         readinessTimeoutMs: 50, sleep: async () => {}, exitPollMs: 1, exitTimeoutMs: 5,
         ...(seatCwdFault ? { seatCwdFault } : {}),

@@ -4,6 +4,7 @@
 // selection (its owner row in the skill ownership manifest) with what the spec selects now, read without writing,
 // warns when they differ, records `seat.skills_drift_observed`, and `rig seat status` shows it until a later fresh
 // launch of the seat replaces it.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -182,7 +183,7 @@ describe.each([["claude-code", ".claude"], ["codex", ".agents"]] as const)("work
       ? [{ pid: 4242, ppid: 1, pgid: 4242, tpgid: 4242, executableName: "codex", command: "/opt/native/codex -m model", startedAt: "Sat Jan  1 12:00:00 2000" }]
       : [];
     reconciler = vi.fn(reconcileSkillLoadout);
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,
@@ -527,7 +528,7 @@ edges: []
       launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
       checkReady: async () => ({ ready: true }),
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     const inst = new PodRigInstantiator({
       specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,

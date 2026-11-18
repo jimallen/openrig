@@ -3,6 +3,7 @@
 // `stored / not_in_spec` (a seat listed with --fresh whose member the spec no longer declares keeps its saved setup).
 // These are the reviewer's probes PS1, PS2 and PS3 (rev-of32s3c-probes.test.ts). Test-only; the harness is a copy of
 // restore-fresh-reread.test.ts's so this file does not collide with parallel edits to it.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -151,7 +152,7 @@ describe("N-C1: restore startup source kinds no_saved_context and not_in_spec", 
       launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
       checkReady: async () => ({ ready: true }),
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,

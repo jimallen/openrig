@@ -1,6 +1,7 @@
 // A seat's own Claude config home (`claude_config_dir`, `rig seat set-claude-home`): one canonical spelling, stored on
 // the node, carried by every launch path, and never the default home spelled out. Fixture homes and a fake `claude`
 // only: no native Claude, no real user configuration. Proves OpenRig's routing, not Claude's login or lookup.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -140,7 +141,7 @@ describe("persistence and the fresh launch env", () => {
       hasSession: async () => false, sendText: async () => ({ ok: true as const }), sendKeys: async () => ({ ok: true as const }),
     });
     const openrigHome = scratch("ccd-openrig-");
-    return new NodeLauncher({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: tmux, sessionEnv: { OPENRIG_HOME: openrigHome } });
+    return new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: tmux, sessionEnv: { OPENRIG_HOME: openrigHome } });
   }
 
   it("a seat with a home launches with CLAUDE_CONFIG_DIR set to it; a seat without one gets none", async () => {
@@ -168,7 +169,7 @@ describe("persistence and the fresh launch env", () => {
         killSession: async () => ({ ok: true as const }), listPanes: async () => [],
         hasSession: async () => false, sendText: async () => ({ ok: true as const }), sendKeys: async () => ({ ok: true as const }),
       });
-      return new NodeLauncher({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: tmux,
+      return new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: tmux,
         sessionEnv: { OPENRIG_HOME: scratch("ccd-openrig-") }, claudeHomeRead: fsRead });
     }
     function home(settings?: string): string {

@@ -10,6 +10,7 @@
 // snapshots and events table identical before and after. Test-only; the harness is a copy of restore-fresh-reread's.
 // Boundary: these rows do not assert how many seats are probed on the live path (probing stops at the first live seat);
 // that is pinned by restore-orchestrator.test.ts "N-2: probing stops at the first live seat (1 probe of 3)".
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -158,7 +159,7 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
       launchHarness: async () => ({ ok: true, resumeToken: "native-uuid", resumeType: "claude_session_id" }),
       checkReady: async () => ({ ready: true }),
     };
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,

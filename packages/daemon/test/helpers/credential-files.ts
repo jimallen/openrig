@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readCredentialFile } from "../../src/adapters/node-credential-file-reader.js";
+import { inspectCredentialFile, readCredentialFile } from "../../src/adapters/node-credential-file-reader.js";
 import { credentialFileRefusal, type CredentialFileReader } from "../../src/domain/credential-file.js";
 
 /**
@@ -12,6 +12,7 @@ import { credentialFileRefusal, type CredentialFileReader } from "../../src/doma
  */
 export const NO_CREDENTIAL_FILES: CredentialFileReader = {
   read: (path, policy) => ({ ok: false, problem: "missing", message: credentialFileRefusal(path, policy, "missing") }),
+  inspect: (path, policy) => ({ ok: false, problem: "missing", message: credentialFileRefusal(path, policy, "missing") }),
 };
 
 /** A reader over an in-memory map of path → content; any other path is missing. */
@@ -19,6 +20,9 @@ export function credentialFilesFrom(files: Record<string, string>): CredentialFi
   return {
     read: (p, policy) => Object.prototype.hasOwnProperty.call(files, p)
       ? { ok: true, content: files[p]! }
+      : { ok: false, problem: "missing", message: credentialFileRefusal(p, policy, "missing") },
+    inspect: (p, policy) => Object.prototype.hasOwnProperty.call(files, p)
+      ? { ok: true }
       : { ok: false, problem: "missing", message: credentialFileRefusal(p, policy, "missing") },
   };
 }
@@ -28,13 +32,13 @@ export function credentialFilesFrom(files: Record<string, string>): CredentialFi
  * any other path (the operator's ~/.openrig/hosts.yaml above all) answers "missing". For a test that writes a real registry or
  * bearer file and points OPENRIG_HOME at it, without reaching the real one when it does not.
  */
+/** True when `p` is under the OS temp directory, in either spelling (on macOS os.tmpdir() is a /var/... link to /private/var/...). */
+function underTmp(p: string): boolean {
+  const abs = path.resolve(p);
+  return [os.tmpdir(), fs.realpathSync(os.tmpdir())].some((t) => abs === t || abs.startsWith(t + path.sep));
+}
+
 export const TMP_CREDENTIAL_FILES: CredentialFileReader = {
-  read: (p, policy) => {
-    const abs = path.resolve(p);
-    // Both spellings of the temp dir: on macOS os.tmpdir() is a /var/... link to /private/var/...
-    const under = [os.tmpdir(), fs.realpathSync(os.tmpdir())].some((t) => abs === t || abs.startsWith(t + path.sep));
-    return under
-      ? readCredentialFile(p, policy)
-      : { ok: false, problem: "missing", message: credentialFileRefusal(p, policy, "missing") };
-  },
+  read: (p, policy) => (underTmp(p) ? readCredentialFile(p, policy) : { ok: false, problem: "missing", message: credentialFileRefusal(p, policy, "missing") }),
+  inspect: (p, policy) => (underTmp(p) ? inspectCredentialFile(p, policy) : { ok: false, problem: "missing", message: credentialFileRefusal(p, policy, "missing") }),
 };

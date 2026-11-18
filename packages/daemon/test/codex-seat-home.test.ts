@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -43,7 +44,7 @@ afterEach(async () => {
 describe("codex-seat-home", () => {
   it("places the seat home under <openrigHome>/codex-seats/<session>, keeping @", async () => {
     expect(sanitizeSessionForPath("verify-qa@jims-team")).toBe("verify-qa@jims-team");
-    const home = await ensureCodexSeatHome("verify-qa@jims-team", { openrigHome, sharedCodexHome: shared });
+    const home = await ensureCodexSeatHome("verify-qa@jims-team", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     expect(home.path).toBe(codexSeatHomePath(openrigHome, "verify-qa@jims-team"));
     const stat = await fs.lstat(home.path);
     expect(stat.isDirectory()).toBe(true);
@@ -63,7 +64,7 @@ describe("codex-seat-home", () => {
   });
 
   it("symlinks shared account material but copies profile fragments", async () => {
-    const home = await ensureCodexSeatHome("verify-qa@jims-team", { openrigHome, sharedCodexHome: shared });
+    const home = await ensureCodexSeatHome("verify-qa@jims-team", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     const auth = await fs.lstat(path.join(home.path, "auth.json"));
     expect(auth.isSymbolicLink()).toBe(true);
     const pkgs = await fs.lstat(path.join(home.path, "packages"));
@@ -90,18 +91,18 @@ describe("codex-seat-home", () => {
   });
 
   it("is idempotent and never overwrites a working seat home", async () => {
-    const first = await ensureCodexSeatHome("exec-cos@jims-team", { openrigHome, sharedCodexHome: shared });
+    const first = await ensureCodexSeatHome("exec-cos@jims-team", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     // operator/scratch writes inside the seat home must survive a re-seed
     await fs.writeFile(path.join(first.path, "notes.md"), "seat work product");
     await fs.writeFile(path.join(shared, "new-thing"), "x");
-    const second = await ensureCodexSeatHome("exec-cos@jims-team", { openrigHome, sharedCodexHome: shared });
+    const second = await ensureCodexSeatHome("exec-cos@jims-team", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     expect(second.path).toBe(first.path);
     expect(await fs.readFile(path.join(first.path, "notes.md"), "utf8")).toBe("seat work product");
   });
 
   it("tolerates a missing shared codex home (codex bootstraps its own state)", async () => {
     await fs.rm(shared, { recursive: true, force: true });
-    const home = await ensureCodexSeatHome("build-impl@jims-team", { openrigHome, sharedCodexHome: shared });
+    const home = await ensureCodexSeatHome("build-impl@jims-team", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     const stat = await fs.lstat(home.path);
     expect(stat.isDirectory()).toBe(true);
     expect(home.linked).toHaveLength(0);
@@ -112,23 +113,23 @@ describe("codex-seat-home", () => {
 describe("copied profiles never carry a seat identity (OF-43)", () => {
   const DIRTY = 'approval_policy = "never"\n[shell_environment_policy.set]\nOPENRIG_SESSION_NAME = "verify-ops@jims-team"\n';
   it("control: a clean shared profile is copied and nothing is refused", async () => {
-    const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const home = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     expect(home.copiedProfiles).toEqual(["rig-yolo.config.toml"]);
     expect(home.refusedProfiles).toEqual([]);
   });
   it("does not copy a shared profile that sets an identity variable, and says which, never the value", async () => {
     await fs.writeFile(path.join(shared, "rig-yolo.config.toml"), DIRTY);
     const logs: string[] = [];
-    const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: (m) => logs.push(m) });
+    const home = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: (m) => logs.push(m) });
     expect(home.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
     await expect(fs.lstat(path.join(home.path, "rig-yolo.config.toml"))).rejects.toThrow();
     expect(logs.join("\n")).toContain("OPENRIG_SESSION_NAME");
     expect(logs.join("\n")).not.toContain("verify-ops");
   });
   it("moves an already-copied profile aside on a later launch, then copies the clean source", async () => {
-    const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     await fs.writeFile(path.join(first.path, "rig-yolo.config.toml"), DIRTY);
-    const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const again = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
     const asides = (await fs.readdir(first.path)).filter((f) => f.startsWith("rig-yolo.config.toml.refused-openrig-identity"));
     expect(asides).toHaveLength(1);
@@ -144,28 +145,28 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     expect(codexProfileIdentityVars(text)).toEqual([name]);
   });
   it("a second refusal keeps the first moved-aside copy (nothing is overwritten)", async () => {
-    const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     const copy = path.join(first.path, "rig-yolo.config.toml");
     const editA = DIRTY + "# seat edit A\n";
     const editB = DIRTY + "# seat edit B\n";
     await fs.writeFile(copy, editA);
-    await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     await fs.writeFile(copy, editB);
-    await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     const asides = (await fs.readdir(first.path)).filter((f) => f.startsWith("rig-yolo.config.toml.refused-openrig-identity"));
     expect(asides).toHaveLength(2);
     const bodies = await Promise.all(asides.map((f) => fs.readFile(path.join(first.path, f), "utf8")));
     expect(bodies.sort()).toEqual([editA, editB]);
   });
   it("two refusals in the same millisecond still keep both copies", async () => {
-    const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     const copy = path.join(first.path, "rig-yolo.config.toml");
     const spy = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     try {
       await fs.writeFile(copy, DIRTY + "# A\n");
-      await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       await fs.writeFile(copy, DIRTY + "# B\n");
-      await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
     } finally {
       spy.mockRestore();
     }
@@ -178,7 +179,7 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     // CODEX_HOME: the foreign-identity hazard OF-43 exists to close. The race is made deterministic by removing the
     // copy at the exact step the other launch would have.
     const seatCopy = async () => {
-      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       await fs.writeFile(path.join(first.path, "rig-yolo.config.toml"), DIRTY);
       return first.path;
     };
@@ -191,7 +192,7 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
         await fs.unlink(existingPath);
         return realLink(existingPath, newPath);
       });
-      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const again = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
       expect(await fs.readFile(path.join(home, "rig-yolo.config.toml"), "utf8")).not.toContain("OPENRIG_");
     });
@@ -204,7 +205,7 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
         await realUnlink(target);
         return realUnlink(target); // the other launch's removal came first: this one is ENOENT
       });
-      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const again = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
       expect(await fs.readFile(copy, "utf8")).not.toContain("OPENRIG_");
       // the other launch's aside copy is intact
@@ -214,12 +215,12 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     it("an error that is not 'already gone' still fails the launch loudly (the launcher reports it)", async () => {
       await seatCopy();
       vi.spyOn(fs, "link").mockRejectedValueOnce(Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }));
-      await expect(ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} })).rejects.toThrow(/EACCES/);
+      await expect(ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} })).rejects.toThrow(/EACCES/);
     });
 
     it("four launches at once on a dirty profile all finish and leave a clean profile", async () => {
       const home = await seatCopy();
-      const results = await Promise.all([1, 2, 3, 4].map(() => ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} })));
+      const results = await Promise.all([1, 2, 3, 4].map(() => ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} })));
       expect(results).toHaveLength(4);
       expect(await fs.readFile(path.join(home, "rig-yolo.config.toml"), "utf8")).not.toContain("OPENRIG_");
       const asides = (await fs.readdir(home)).filter((f) => f.includes(".refused-openrig-identity-"));
@@ -233,13 +234,13 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
 
   describe("a seat profile that is a symlink (OF-115)", () => {
     it("a link to a file that carries an identity is moved aside as the link; the file it pointed at is not touched", async () => {
-      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       const elsewhere = path.join(tmp, "operator-profile.toml");
       await fs.writeFile(elsewhere, DIRTY);
       const copy = path.join(first.path, "rig-yolo.config.toml");
       await fs.rm(copy);
       await fs.symlink(elsewhere, copy);
-      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const again = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
       // the seat now has a regular, clean file under the profile's name
       expect((await fs.lstat(copy)).isFile()).toBe(true);
@@ -254,23 +255,23 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     });
 
     it("control: a link to a clean file is left as it is", async () => {
-      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       const elsewhere = path.join(tmp, "operator-clean.toml");
       await fs.writeFile(elsewhere, 'approval_policy = "never"\n');
       const copy = path.join(first.path, "rig-yolo.config.toml");
       await fs.rm(copy);
       await fs.symlink(elsewhere, copy);
-      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const again = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(again.refusedProfiles).toEqual([]);
       expect((await fs.lstat(copy)).isSymbolicLink()).toBe(true);
     });
 
     it("control: a dangling link is left as it is (nothing to read, nothing to move)", async () => {
-      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       const copy = path.join(first.path, "rig-yolo.config.toml");
       await fs.rm(copy);
       await fs.symlink(path.join(tmp, "nowhere.toml"), copy);
-      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const again = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(again.refusedProfiles).toEqual([]);
       expect((await fs.lstat(copy)).isSymbolicLink()).toBe(true);
     });
@@ -279,7 +280,7 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
   describe("what is withheld is told to the operator (OF-115)", () => {
     it("a withheld shared profile is in `warnings`, by name and variable, never by value", async () => {
       await fs.writeFile(path.join(shared, "rig-yolo.config.toml"), DIRTY);
-      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const home = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(home.warnings).toHaveLength(1);
       expect(home.warnings[0]).toContain("rig-yolo.config.toml");
       expect(home.warnings[0]).toContain("OPENRIG_SESSION_NAME");
@@ -287,22 +288,22 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     });
 
     it("a moved-aside seat copy is in `warnings`", async () => {
-      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const first = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       await fs.writeFile(path.join(first.path, "rig-yolo.config.toml"), DIRTY);
-      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const again = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(again.warnings).toHaveLength(1);
       expect(again.warnings[0]).toContain("moved profile rig-yolo.config.toml aside");
     });
 
     it("control: a clean launch has no warnings", async () => {
-      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const home = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(home.warnings).toEqual([]);
     });
 
     it("a shared config.toml that sets an identity variable is reported (every seat reads it), not withheld", async () => {
       await fs.writeFile(path.join(shared, "config.toml"), '[shell_environment_policy.set]\nOPENRIG_NODE_ID = "n-other"\nRIGGED_SESSION_NAME = "s-other"\n');
       const logs: string[] = [];
-      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: (m) => logs.push(m) });
+      const home = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: (m) => logs.push(m) });
       expect(home.warnings).toHaveLength(1);
       expect(home.warnings[0]).toContain("config.toml");
       expect(home.warnings[0]).toContain("OPENRIG_NODE_ID, RIGGED_SESSION_NAME");
@@ -315,7 +316,7 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
 
     it("control: a shared config.toml with no identity variable adds no warning", async () => {
       await fs.writeFile(path.join(shared, "config.toml"), '[projects."/x"]\ntrust_level = "trusted"\n# OPENRIG_SESSION_NAME is injected\n');
-      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const home = await ensureCodexSeatHome("a-b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared, log: () => {} });
       expect(home.warnings).toEqual([]);
     });
   });
@@ -364,7 +365,7 @@ describe("seat hook trust follows the shared config's trust", () => {
       entry(`${sharedConfig}:session_start:0:0`, HASH_SS0) +
       entry(`${sharedConfig}:session_start:1:0`, HASH_SS1) +
       entry("/elsewhere/.codex/hooks.json:stop:0:0", "sha256:other"));
-    const home = await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    const home = await ensureCodexSeatHome("dev-qa@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     const seatKey = path.join(await fs.realpath(home.path), "config.toml");
     const after = await fs.readFile(sharedConfig, "utf-8");
     expect(after).toContain(entry(`${seatKey}:session_start:0:0`, HASH_SS0).trimEnd());
@@ -372,16 +373,16 @@ describe("seat hook trust follows the shared config's trust", () => {
     expect(after).not.toContain(`${seatKey}:stop:0:0`); // another file's trust is not this file's
     expect(after.match(/sha256:other/g)?.length).toBe(1);
 
-    await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    await ensureCodexSeatHome("dev-qa@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     expect(await fs.readFile(sharedConfig, "utf-8")).toBe(after); // idempotent
   });
 
   it("carries over trust given after the seat home already existed", async () => {
     const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
     await fs.writeFile(sharedConfig, STOP_HOOK);
-    const home = await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    const home = await ensureCodexSeatHome("dev-qa@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     await fs.appendFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, HASH_STOP));
-    await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    await ensureCodexSeatHome("dev-qa@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     const seatKey = path.join(await fs.realpath(home.path), "config.toml");
     expect(await fs.readFile(sharedConfig, "utf-8")).toContain(entry(`${seatKey}:stop:0:0`, HASH_STOP).trimEnd());
   });
@@ -393,7 +394,7 @@ describe("seat hook trust follows the shared config's trust", () => {
     const sharedConfig = path.join(shared, "config.toml");
     await fs.writeFile(sharedConfig, entry(`${await fs.realpath(sharedConfig)}:stop:0:0`, "sha256:x"));
     const before = await fs.readFile(sharedConfig, "utf-8");
-    await ensureCodexSeatHome("own@r", { openrigHome, sharedCodexHome: shared });
+    await ensureCodexSeatHome("own@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     expect(await fs.readFile(sharedConfig, "utf-8")).toBe(before);
     expect(await fs.readFile(path.join(home, "config.toml"), "utf-8")).toBe("");
   });
@@ -421,9 +422,9 @@ describe("seat hook trust follows the shared config's trust", () => {
   it("one failed sync does not stop later syncs of the same config", async () => {
     const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
     await fs.writeFile(sharedConfig, `[hooks.state."${sharedConfig}:\\U0001F600"]\ntrusted_hash = "sha256:x"\n`);
-    await ensureCodexSeatHome("a@r", { openrigHome, sharedCodexHome: shared }); // mirror throws, swallowed
+    await ensureCodexSeatHome("a@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared }); // mirror throws, swallowed
     await fs.writeFile(sharedConfig, STOP_HOOK + entry(`${sharedConfig}:stop:0:0`, HASH_STOP));
-    const home = await ensureCodexSeatHome("b@r", { openrigHome, sharedCodexHome: shared });
+    const home = await ensureCodexSeatHome("b@r", { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared });
     const seatKey = path.join(await fs.realpath(home.path), "config.toml");
     expect(await fs.readFile(sharedConfig, "utf-8")).toContain(`${seatKey}:stop:0:0`);
   });
@@ -433,7 +434,7 @@ describe("seat hook trust follows the shared config's trust", () => {
     await fs.writeFile(sharedConfig, STOP_HOOK + entry(`${sharedConfig}:stop:0:0`, HASH_STOP));
     await fs.chmod(sharedConfig, 0o600);
     const seats = Array.from({ length: 8 }, (_, i) => `s${i}@r`);
-    const homes = await Promise.all(seats.map((s) => ensureCodexSeatHome(s, { openrigHome, sharedCodexHome: shared })));
+    const homes = await Promise.all(seats.map((s) => ensureCodexSeatHome(s, { credentialFiles: TMP_CREDENTIAL_FILES, openrigHome, sharedCodexHome: shared })));
     const after = await fs.readFile(sharedConfig, "utf-8");
     for (const h of homes) expect(after).toContain(`${path.join(await fs.realpath(h.path), "config.toml")}:stop:0:0`);
     expect((await fs.readdir(shared)).filter((f) => f.includes(".openrig-"))).toEqual([]);

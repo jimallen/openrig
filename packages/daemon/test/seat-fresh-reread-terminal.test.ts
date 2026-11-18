@@ -2,6 +2,7 @@
 // `rig seat launch --fresh`. The live failure (Sparky, 2026-10-21): the re-read resolved every member's agent_ref, and
 // builtin:terminal has no agent to resolve, so the fresh start was refused with "Cannot resolve agent_ref" although the
 // same seat had started at first boot. It worked only through `--startup-from stored`.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -91,7 +92,7 @@ describe("OF-71 a builtin:terminal seat starts fresh from its re-read spec", () 
       setSessionOption: vi.fn(async () => ({ ok: true as const })),
     } as unknown as TmuxAdapter;
     const terminal = new TerminalAdapter();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       specSourceTrust: { ...FIXTURE_SPEC_SOURCE_TRUST, roots: () => [root] },

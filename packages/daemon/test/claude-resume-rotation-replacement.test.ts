@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { Hono } from "hono";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { activityRoutes } from "../src/routes/activity.js";
@@ -161,7 +162,7 @@ describe("a recorded Claude resume rotation after the qualifying process", () =>
     };
     const adapter = new ClaudeCodeAdapter({ tmux, listProcesses: readiness, sleep: async () => {}, claudeManagedLaunch: managed,
       fsOps: { exists: () => false, readFile: () => "", writeFile: () => {}, mkdirp: () => {}, copyFile: () => {} } });
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const restore = new RestoreOrchestrator({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux, claudeResume: new ClaudeResumeAdapter(tmux, { listProcesses, maxWaitMs: 0, sleep: async () => {}, claudeManagedLaunch: managed }),
       codexResume: new CodexResumeAdapter(tmux), listProcesses });

@@ -4,6 +4,7 @@
 // `deliverStartup`'s `guidance_merge` branch writes the starter content
 // into the per-seat AGENTS.md managed block.
 
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -96,7 +97,7 @@ describe("Agent Starter v1 vertical — real Codex adapter delivery (M2 R2)", ()
       const sessionRegistry = new SessionRegistry(db);
       const eventBus = new EventBus(db);
       const tmux = mockTmux();
-      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
       const startupOrch = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
 
       const codexFs = mockCodexFs({

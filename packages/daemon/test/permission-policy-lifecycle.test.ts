@@ -1,3 +1,4 @@
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 // OPR.0.4.8.3 Seam B — Guard-correction lifecycle pins (NOT-CLEAR at 9e94c274), RED-first.
 // Production-altitude proofs for the four findings:
@@ -147,7 +148,7 @@ describe("F1 — rig-level custom provenance is RESTART-COMPLETE", () => {
     const orch = new RestoreOrchestrator({
       db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
       snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
-      nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
       tmuxAdapter: tmux,
       claudeResume,
       codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
@@ -293,7 +294,7 @@ describe("F3 — unreadable custom content at restore uses the PERSISTED posture
     const orch = new RestoreOrchestrator({
       db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
       snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
-      nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
       tmuxAdapter: tmux,
       claudeResume,
       codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
@@ -440,7 +441,7 @@ describe("GF1 — READABLE but malformed/unusable custom content uses the PERSIS
     const orch = new RestoreOrchestrator({
       db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
       snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
-      nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
+      nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
       tmuxAdapter: tmux,
       claudeResume,
       codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
@@ -527,7 +528,7 @@ describe("GF2 — the COMPLETE production-altitude launch/restore matrix", () =>
         listProcesses: async () => [
           { pid: 1234, ppid: 1, command: "claude --resume tok-pod" },
         ],
-        nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
+        nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
         tmuxAdapter: tmux,
         claudeResume: stubOf<ClaudeResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
         codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),
@@ -681,7 +682,7 @@ describe("ABSENCE = locked floor at every lifecycle surface (R2 HIGH at 954d97a0
       const orch = new RestoreOrchestrator({
         db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
         snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
-        nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
+        nodeLauncher: new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
         tmuxAdapter: tmux,
         claudeResume,
         codexResume: stubOf<CodexResumeAdapter>({ canResume: vi.fn(() => false), resume: vi.fn() }),

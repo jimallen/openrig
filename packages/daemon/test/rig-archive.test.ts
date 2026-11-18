@@ -4,6 +4,7 @@
 // row + topology + snapshots, restore stays reachable) and is explicitly
 // contrasted against `down --delete`, which removes the rigs row and makes
 // RestoreOrchestrator return `rig_not_found`. Archive MUST NOT take the delete path.
+import { TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -65,7 +66,7 @@ describe("rig archive affordance (OPR.0.3.3.19)", () => {
 
   function createOrchestrator() {
     const tmux = mockTmux();
-    const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+    const nodeLauncher = new NodeLauncher({ credentialFiles: TMP_CREDENTIAL_FILES, db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     return new RestoreOrchestrator({
       db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
       checkpointStore, nodeLauncher, tmuxAdapter: tmux,
