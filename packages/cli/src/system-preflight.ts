@@ -1,3 +1,4 @@
+import { homeBindRefusal, NO_HOME_BIND_ACTION } from "./home-daemon-address.js";
 import net from "node:net";
 import { execSync } from "node:child_process";
 import { accessSync, mkdirSync, constants } from "node:fs";
@@ -40,6 +41,8 @@ interface PreflightDeps {
 }
 
 interface RunOverrides {
+  /** workspaces-o9o.181: the port came from an explicit --port, not from the configuration (or its built-in default). */
+  portExplicit?: boolean;
   port?: number;
   host?: string;
 }
@@ -171,7 +174,20 @@ export class SystemPreflight {
     // 3. Writable OpenRig home + transcript path
     checks.push(buildWritableHomeCheck(config, openrigHome));
 
-    // 4. Daemon port availability
+    // 4. Daemon port availability.
+    // workspaces-o9o.181: a home other than ~/.openrig that names no port of its own never starts on, or probes, the default
+    // port. The one resolver is asked first; on a refusal neither the daemon status nor the port is probed.
+    const bindRefusal = homeBindRefusal({ explicitPort: overrides?.portExplicit === true, configStore: this.deps.configStore });
+    if (bindRefusal !== null) {
+      checks.push({
+        name: "port_available",
+        ok: false,
+        error: bindRefusal,
+        reason: "A daemon for this home needs a port of its own; the default port belongs to the default home.",
+        fix: NO_HOME_BIND_ACTION,
+      });
+      return { ready: false, checks };
+    }
     const status = await this.deps.getDaemonStatus();
     const daemonOnSameEndpoint =
       status.state === "running" &&

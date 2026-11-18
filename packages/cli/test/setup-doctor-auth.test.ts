@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { runSetup, type SetupDeps } from "../src/commands/setup.js";
 import { HC_TESTED_VERSION } from "../src/tmux-health.js";
 import { stubConfigStore } from "./helpers/stub-config-store.js";
+
+
 
 const originalExitCode = process.exitCode;
 afterEach(() => {
@@ -34,7 +36,8 @@ function fixture(options: {
     setup: { ...common, writeFile: vi.fn(), mkdirp: vi.fn() },
     doctor: {
       ...common, baseDir: "/fixture/cli/dist", checkPort: async () => true,
-      configStore: stubConfigStore({ daemon: { host: "127.0.0.1", port: 7433 }, db: { path: "/fixture/openrig.sqlite" }, transcripts: { enabled: true, path: "/fixture/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
+      // workspaces-o9o.181: a port this home names (the fixture home is not ~/.openrig, and doctor asks the resolver first).
+      configStore: stubConfigStore({ daemon: { host: "127.0.0.1", port: 7444 }, db: { path: "/fixture/openrig.sqlite" }, transcripts: { enabled: true, path: "/fixture/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
       mkdirp: vi.fn(), checkWritable: vi.fn(), fetch: async () => ({ ok: false }),
       readHcHello: async () => ({ kind: "no_core" as const, detail: "fixture: no core" }),
     },

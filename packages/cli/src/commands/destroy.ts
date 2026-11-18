@@ -2,7 +2,8 @@ import { Command } from "commander";
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigStore } from "../config-store.js";
-import { formatDaemonHostForUrl } from "../client.js";
+import { formatDaemonHostForUrl, localDaemonUrl } from "../client.js";
+import { resolveHomeDaemon } from "../home-daemon-address.js";
 import { realDeps } from "./daemon.js";
 import { getDefaultOpenRigPath, getPreferredOpenRigHome, readOpenRigEnv } from "../openrig-compat.js";
 import {
@@ -43,6 +44,11 @@ function resolveRuntimeConfig(configStore: Pick<ConfigStore, "resolve">): Resolv
     warnings.push(`Ignoring ${overrideUrl} from OPENRIG_URL/RIGGED_URL because rig destroy only operates on local state.`);
   }
 
+  // workspaces-o9o.181: the one resolver says which daemon this home means. destroy works on local state only, so an
+  // OPENRIG_URL is ignored (warned above); this home's daemon.json, then its configured target. A non-default home that
+  // names neither means no daemon: no listener is probed or signalled (it would otherwise be the default port's daemon).
+  const home = resolveHomeDaemon({ explicitUrl: "", recordedUrl: localDaemonUrl(), configStore });
+  const recorded = home.kind === "recorded" ? new URL(home.url) : null;
   try {
     const config = configStore.resolve();
     return {
@@ -50,8 +56,9 @@ function resolveRuntimeConfig(configStore: Pick<ConfigStore, "resolve">): Resolv
         stateRoot,
         dbPath: config.db.path === defaultDbPath ? effectiveDefaultDbPath : config.db.path,
         transcriptsPath: config.transcripts.path === defaultTranscriptsPath ? effectiveDefaultTranscriptsPath : config.transcripts.path,
-        daemonHost: config.daemon.host,
-        daemonPort: config.daemon.port,
+        daemonHost: recorded ? recorded.hostname.replace(/^\[|\]$/g, "") : config.daemon.host,
+        daemonPort: recorded ? Number(recorded.port) || config.daemon.port : config.daemon.port,
+        ...(home.kind === "none" ? { noDaemon: home.reason } : {}),
       },
       warnings,
     };
@@ -64,6 +71,8 @@ function resolveRuntimeConfig(configStore: Pick<ConfigStore, "resolve">): Resolv
         transcriptsPath: effectiveDefaultTranscriptsPath,
         daemonHost: "127.0.0.1",
         daemonPort: 7433,
+        // An unreadable config keeps these compatibility defaults only for the default home (the resolver said so).
+        ...(home.kind === "none" ? { noDaemon: home.reason } : {}),
       },
       warnings,
     };
@@ -136,7 +145,9 @@ function printPlan(
   console.log("DESTROY PLAN");
   console.log(`  scope: ${scope}`);
   console.log(`  state root: ${runtimeConfig.stateRoot}`);
-  console.log(`  daemon: http://${formatDaemonHostForUrl(runtimeConfig.daemonHost)}:${runtimeConfig.daemonPort}`);
+  console.log(runtimeConfig.noDaemon !== undefined
+    ? "  daemon: none (this OPENRIG_HOME names no daemon of its own; nothing will be probed or signalled)"
+    : `  daemon: http://${formatDaemonHostForUrl(runtimeConfig.daemonHost)}:${runtimeConfig.daemonPort}`);
   console.log(`  backup: ${backup ? "enabled" : "disabled"}`);
   console.log(`  tmux-bound seats: ${scope === "all" ? `${managedTmuxSessions.length} (this build runs no tmux: any stops the run before state is touched)` : "not looked at"}`);
   console.log(`  hc cleanup: ${scope === "all" ? `enabled (${managedHcSeats.length} managed seat${managedHcSeats.length === 1 ? "" : "s"})` : "disabled"}`);

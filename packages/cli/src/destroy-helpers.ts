@@ -12,6 +12,9 @@ export interface DestroyRuntimeConfig {
   transcriptsPath: string;
   daemonHost: string;
   daemonPort: number;
+  /** workspaces-o9o.181: set when this OPENRIG_HOME names no daemon of its own (the one resolver, home-daemon-address.ts):
+   *  destroy then probes and signals no listener at all, so it can never reach the default port's daemon. */
+  noDaemon?: string;
 }
 
 export interface DestroyTarget {
@@ -26,6 +29,9 @@ export interface DestroyPlan {
   stateRoot: string;
   daemonHost: string;
   daemonPort: number;
+  /** workspaces-o9o.181: set when this OPENRIG_HOME names no daemon of its own (the one resolver, home-daemon-address.ts):
+   *  destroy then probes and signals no listener at all, so it can never reach the default port's daemon. */
+  noDaemon?: string;
   managedTmuxSessions: string[];
   /** Canonical seat names whose binding is `hc` (or that have no binding at all), each killed by terminal. */
   managedHcSeats: string[];
@@ -217,6 +223,7 @@ export function buildDestroyPlan(
     stateRoot: config.stateRoot,
     daemonHost: config.daemonHost,
     daemonPort: config.daemonPort,
+    ...(config.noDaemon !== undefined ? { noDaemon: config.noDaemon } : {}),
     managedTmuxSessions,
     managedHcSeats,
     seatEnumerationFailures,
@@ -253,7 +260,11 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
   let daemonStopped = false;
   let portCleared = false;
 
-  if (isLocalHost(plan.daemonHost)) {
+  if (plan.noDaemon !== undefined) {
+    // workspaces-o9o.181: this home names no daemon, so it holds no port: nothing is probed or signalled.
+    warnings.push(`This OPENRIG_HOME names no daemon of its own; no listener was probed or signalled. ${plan.noDaemon}`);
+    portCleared = true;
+  } else if (isLocalHost(plan.daemonHost)) {
     const before = await deps.inspectListener(plan.daemonHost, plan.daemonPort);
     if (before.kind === "openrig") {
       const listenerPid = deps.findListeningPid(plan.daemonPort);

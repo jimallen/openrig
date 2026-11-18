@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { buildDaemonEnv, resolveBindIntent, verifyRequiredListeners } from "../src/daemon-lifecycle.js";
 
 // OPR.0.5.5.20 — injected routing environment must never silently become daemon bind
@@ -140,6 +140,12 @@ describe("S20 — the restored listener gate: adoption fails loudly on a dropped
 import { startDaemon, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import { vi } from "vitest";
 import { EventEmitter } from "node:events";
+
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 function gateDeps(tailBehavior: (attempt: number) => "ok" | "throw-timeout" | "throw-refused") {
   let tailAttempts = 0;

@@ -2,7 +2,7 @@
 // Tests verify composition (slice-02 /api/up called, never private restore),
 // headless flags, honest reporting, kernel invariant, and idempotency.
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { Command } from "commander";
 import { startCommand } from "../src/commands/start.js";
@@ -10,6 +10,12 @@ import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import { printedSeatLaunchCommands, runPrintedSeatCommand } from "./helpers/advised-command.js";
 import { HC_TESTED_VERSION } from "../src/tmux-health.js";
+
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "0"); }); // 0: the real preflight opens no socket (never the default port)
+afterEach(() => { vi.unstubAllEnvs(); });
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {

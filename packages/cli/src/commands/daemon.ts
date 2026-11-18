@@ -250,7 +250,7 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
             getDaemonStatus: () => getDaemonStatus(getDeps()),
             openrigHome: OPENRIG_DIR,
           });
-        const preflightResult = await preflight.run({ port: effectivePort, host: effectiveHost });
+        const preflightResult = await preflight.run({ port: effectivePort, host: effectiveHost, portExplicit: Boolean(opts.port) });
         if (!preflightResult.ready) {
           for (const check of preflightResult.checks.filter((c) => !c.ok)) {
             console.error(`✗ ${check.name}: ${check.error}`);
@@ -266,6 +266,7 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
         const state = await startDaemon(
           {
             port: effectivePort,
+            portExplicit: Boolean(opts.port),
             host: hostForDaemon,
             db: opts.db ?? config.db.path,
             transcriptsEnabled: config.transcripts.enabled,

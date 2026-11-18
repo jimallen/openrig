@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ConfigStore } from "../config-store.js";
 import { formatDaemonHostForUrl } from "../client.js";
 import { DAEMON_STATE_POLICY, readOwnFile } from "@openrig/daemon/credential-file";
+import { NO_HOME_DAEMON_URL, resolveHomeDaemon } from "../home-daemon-address.js";
 
 // `rig crash-cart --json` — the daemon-DOWN recovery verdict emit (plan c015d9ed §C3, coupling ruling
 // option A). Prints ONE JSON = the 3-state detector verdict + (on DOWN) the discovery — READ-ONLY, a
@@ -68,12 +69,36 @@ function existsOrThrow(path: string): boolean {
  * + C2 read VERBATIM (rail 2) with live probes + read-only IO. This is real-run glue over the tested
  * emit/detector/read cores.
  */
+/**
+ * workspaces-o9o.181: the daemon crash-cart probes, from the one resolver (OPENRIG_URL, this home's daemon.json, its
+ * configured target). The detector is always given this address, so it never reaches its own 127.0.0.1:7433 default. A home
+ * that names no daemon gets the no-daemon address, and the returned fetch never sends to it: its probe reads as refused.
+ */
+export function crashCartDaemonTarget(
+  recorded: { host?: string; port: number } | undefined,
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
+): { openrigUrl: string; fetch: (url: string, init?: { signal?: AbortSignal }) => Promise<Response> } {
+  const target = resolveHomeDaemon({
+    recordedUrl: recorded ? `http://${formatDaemonHostForUrl(recorded.host ?? "127.0.0.1")}:${recorded.port}` : undefined,
+  });
+  const openrigUrl = target.kind === "none"
+    ? NO_HOME_DAEMON_URL
+    : target.kind === "configured" ? `http://${formatDaemonHostForUrl(target.host)}:${target.port}` : target.url;
+  const guarded = (url: string, init?: { signal?: AbortSignal }): Promise<Response> =>
+    url.startsWith(NO_HOME_DAEMON_URL)
+      ? Promise.reject(Object.assign(new Error(target.kind === "none" ? target.reason : "no daemon"), { code: "ECONNREFUSED" }))
+      : fetchImpl(url, init);
+  return { openrigUrl, fetch: guarded };
+}
+
 async function realEmit(): Promise<CrashCartEmit> {
   const cc = await import("@openrig/daemon/crash-cart");
   const home = openrigHome();
-  const openrigUrl = process.env.OPENRIG_URL;
-  const probeClassified = (url: string) =>
-    cc.probeHealthz(url, { fetch: (u, init) => fetch(u, init as RequestInit), timeoutMs: 700 });
+  // workspaces-o9o.181: the one resolver says which daemon this home means (OPENRIG_URL, its daemon.json, its configured
+  // target); the detector is always given that address, so it never reaches its own 127.0.0.1:7433 default. A home that
+  // names no daemon gets the no-daemon address, which is never fetched: its probe reads as refused, and nothing is sent.
+  const { openrigUrl, fetch: guardedFetch } = crashCartDaemonTarget(cc.readDaemonJson(home), fetch);
+  const probeClassified = (url: string) => cc.probeHealthz(url, { fetch: guardedFetch, timeoutMs: 700 });
   const detectDeps = {
     openrigHome: home,
     readDaemonJson: cc.readDaemonJson,
@@ -91,9 +116,8 @@ async function realEmit(): Promise<CrashCartEmit> {
           ? `alive (pid ${state.pid})`
           : `dead (pid ${state.pid})`
         : "no daemon.json";
-      const url = openrigUrl
-        ? `${openrigUrl.replace(/\/$/, "")}/healthz`
-        : `http://${formatDaemonHostForUrl(state?.host ?? "127.0.0.1")}:${state?.port ?? 7433}/healthz`;
+      // workspaces-o9o.181: always the resolved address (above); no fallback of its own.
+      const url = `${openrigUrl.replace(/\/$/, "")}/healthz`;
       const probeResult = await probeClassified(url);
       return { pidState, probeResult, failedSignal: `healthz ${probeResult} at ${url}` };
     },

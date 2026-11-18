@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import net from "node:net";
@@ -9,6 +9,8 @@ import { HC_GENERATION, HC_TESTED_VERSION, probeHcInstall, type HcHelloOutcome }
 import { ConfigStore } from "../src/config-store.js";
 import { preflightCommand } from "../src/commands/preflight.js";
 import type { DaemonStatus } from "../src/daemon-lifecycle.js";
+
+
 
 type HcMode = "healthy" | "missing" | "wrong_version" | "untested_version" | "untested_core" | "other_generation" | "core_version" | "no_core" | "refused" | "unreadable";
 
@@ -64,6 +66,9 @@ describe("SystemPreflight", () => {
     daemonStatus?: Partial<DaemonStatus>;
   }) {
     const configPath = join(tmpDir, "config.json");
+    // workspaces-o9o.181: the test fixture home is not ~/.openrig, so a start needs a port of its own. Port 0 is always
+    // available to the preflight, which then opens no socket at all.
+    writeFileSync(configPath, JSON.stringify({ daemon: { port: 0 } }));
     const config = new ConfigStore(configPath);
     // Point writable paths to tmpDir
     const homeDir = join(tmpDir, ".openrig");

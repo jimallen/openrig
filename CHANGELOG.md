@@ -10,11 +10,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
-### A non-default OPENRIG_HOME never falls back to the default daemon (workspaces-o9o.181)
+### A non-default OPENRIG_HOME never reaches or starts on the default daemon (workspaces-o9o.181)
 
-- Symptom: with a temporary `OPENRIG_HOME` that had no `daemon.json` and no configured port, the CLI used the built-in `127.0.0.1:7433`, which on a seat's host is the live daemon. Twice on 2026-11-18 a probe with a temporary home read and wrote the live daemon that way.
-- Now a home other than `~/.openrig` (compared by real path) that names no daemon of its own (no `daemon.json`; no `daemon.port` or `daemon.host` in its `config.json`, `OPENRIG_PORT` or `OPENRIG_HOST`) resolves no daemon. The CLI refuses each request before sending anything and says why, with the fix: set `OPENRIG_URL`, or start a daemon for that home. `rig daemon status` reports stopped with the reason and probes nothing (a live sibling home still makes it unverified and names both paths), `rig daemon stop` has no target, and `rig doctor` fails its port check without a health probe.
-- Unchanged: `OPENRIG_URL`, the home's own `daemon.json`, a configured port or host, and the default home's fallback.
+- Symptom: with a temporary `OPENRIG_HOME` that had no `daemon.json` and no configured port, the CLI used the built-in `127.0.0.1:7433`, which on a seat's host is the live daemon. Twice on 2026-11-18 a probe with a temporary home read and wrote the live daemon that way. `rig destroy` in such a home would inspect the default port's daemon and could signal its process.
+- Now one resolver says which daemon a home means, and every path asks it before any probe, request or bind: the client, `rig daemon status` and `stop`, `rig doctor`, `rig crash-cart`, `rig destroy`, the preflight and every start (`rig daemon start`, `rig start`, `rig up`, and the commands that start the daemon for you). A home means `OPENRIG_URL`, then its `daemon.json`, then its configured `daemon.port` / `daemon.host`; the default home `~/.openrig` keeps the built-in `127.0.0.1:7433`.
+- A home other than `~/.openrig` that names none of these resolves no daemon: requests are refused before anything is sent, status reports it stopped with the reason, stop has nothing to stop, doctor fails its port check without probing, and destroy probes and signals no listener.
+- Behaviour change: with a custom `OPENRIG_HOME` and a fresh config, starting a daemon now asks for a port. Set `OPENRIG_PORT`, `rig config set daemon.port <port>`, or pass `rig daemon start --port <port>`; or set `OPENRIG_URL` to the daemon you mean. See [Instance layout](docs/reference/instance-layout.md).
 
 ### The seat guard reads Code Mode's REPL code (workspaces-o9o.131)
 

@@ -6,9 +6,9 @@ import path from "node:path";
 import net from "node:net";
 import { execSync } from "node:child_process";
 import { resolveDaemonPath } from "../daemon-lifecycle.js";
-import { formatDaemonHostForUrl, terminalAuthHeaders } from "../client.js";
+import { formatDaemonHostForUrl, localDaemonUrl, terminalAuthHeaders } from "../client.js";
 import { ConfigStore } from "../config-store.js";
-import { homeWithoutDaemonAddress } from "../home-daemon-address.js";
+import { resolveHomeDaemon } from "../home-daemon-address.js";
 import { buildWritableHomeCheck } from "../system-preflight.js";
 import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, readHcHello, type HcHelloOutcome } from "../tmux-health.js";
 import { parse as parseYaml } from "yaml";
@@ -57,6 +57,8 @@ export interface DoctorDeps {
   mkdirp?: (path: string) => void;
   checkWritable?: (path: string) => void;
   fetch?: (url: string) => Promise<{ ok: boolean; json?: () => Promise<unknown> }>;
+  /** workspaces-o9o.181: the endpoint this home's daemon.json records, for the one resolver. Absent: none recorded. */
+  recordedDaemonUrl?: () => string | undefined;
   /**
    * Build B — path to a rig spec to check against the RUNNING rig of the same name (`--spec`).
    *
@@ -112,7 +114,6 @@ export async function runHostReadinessChecks(deps: DoctorDeps, options: { seatSh
   return [...daemonHostRows(response, options.seatShell), ...local];
 }
 
-const DEFAULT_PORT = 7433;
 
 function defaultCheckPort(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -219,27 +220,51 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
   checks.push(buildSeatPathHeadCheck(deps.readSeatProcesses(), deps.openrigHome ?? getOpenRigHome()));
 
   // 7. Port availability (async) — daemon already running on that port counts as OK.
-  // OPR.0.4.7 slice-05 item-4b: resolve the daemon host+port ONCE from config and use
-  // BOTH for checkPort, healthz, and messages (a daemon on a non-default
-  // configured host/port must not be reported missing). Defaults stay 127.0.0.1:7433.
-  const daemonHost = config.daemon.host ?? "127.0.0.1";
-  const daemonPort = config.daemon.port ?? DEFAULT_PORT;
-  const daemonBase = `http://${formatDaemonHostForUrl(daemonHost)}:${daemonPort}`;
+  // workspaces-o9o.181: the one resolver says which daemon this home means BEFORE anything is probed. A home that names
+  // none is reported without probing; an explicit OPENRIG_URL or this home's recorded endpoint is asked directly; only a
+  // configured target (OPR.0.4.7 slice-05 item-4b: host AND port, for checkPort, healthz and messages) is bind-checked.
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const portCheck = deps.checkPort(daemonPort, daemonHost).then(async (available): Promise<DoctorCheck> => {
-    if (available) {
-      return { name: "port", status: "pass", message: `Port ${daemonHost}:${daemonPort} available.` };
-    }
-    // workspaces-o9o.181: a home that names no daemon must not probe the default address to see whose daemon holds it.
-    const noHomeDaemon = homeWithoutDaemonAddress({ configStore: deps.configStore });
-    if (noHomeDaemon !== null) {
-      return {
+  const home = resolveHomeDaemon({ configStore: deps.configStore, recordedUrl: deps.recordedDaemonUrl?.() });
+  const portCheck = home.kind === "none"
+    ? Promise.resolve<DoctorCheck>({
         name: "port",
         status: "fail",
-        message: `Port ${daemonHost}:${daemonPort} is in use, and this OPENRIG_HOME names no daemon of its own.`,
-        reason: noHomeDaemon,
+        message: "This OPENRIG_HOME names no daemon of its own; nothing was probed.",
+        reason: home.reason,
         fix: `Give this home its own port with ${setOff("rig config set daemon.port <port>")}, or set OPENRIG_URL to the daemon you mean.`,
-      };
+      })
+    : home.kind !== "configured"
+      ? (async (): Promise<DoctorCheck> => {
+          try {
+            const res = await fetchFn(`${home.url.replace(/\/+$/, "")}/healthz`);
+            if (res.ok) return { name: "port", status: "pass", message: `The daemon this home means (${home.url}) answers.` };
+          } catch { /* no answer */ }
+          return {
+            name: "port",
+            status: "fail",
+            message: `The daemon this home means (${home.url}, from ${home.kind === "explicit" ? "OPENRIG_URL" : "daemon.json"}) did not answer.`,
+            reason: "Commands that need the daemon will fail until it answers.",
+            fix: `Check it with ${setOff("rig daemon status")}; if it is down, start it.`,
+          };
+        })()
+      : configuredPortCheck(deps, home.host, home.port, fetchFn);
+
+  const asyncChecks: Promise<DoctorCheck>[] = [portCheck];
+
+  if (hcProbe.available) asyncChecks.push(buildHcCoreCheck(deps));
+  asyncChecks.push(buildSpecConformanceCheck(deps));
+  const slackSecretsEnvFile = deps.slackSecretsEnvFile;
+  if (slackSecretsEnvFile) asyncChecks.push(slackSecretsEnvFile().then((f) => judgeSlackSecretsFile(f)));
+
+  return { checks, portCheck, asyncChecks };
+}
+
+/** workspaces-o9o.181: the port check for a configured target (OPR.0.4.7 slice-05 item-4b: the configured host AND port). */
+function configuredPortCheck(deps: DoctorDeps, daemonHost: string, daemonPort: number, fetchFn: NonNullable<DoctorDeps["fetch"]>): Promise<DoctorCheck> {
+  const daemonBase = `http://${formatDaemonHostForUrl(daemonHost)}:${daemonPort}`;
+  return deps.checkPort(daemonPort, daemonHost).then(async (available): Promise<DoctorCheck> => {
+    if (available) {
+      return { name: "port", status: "pass", message: `Port ${daemonHost}:${daemonPort} available.` };
     }
     // Port in use — check if it's our daemon via healthz
     try {
@@ -256,15 +281,13 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
       fix: `Stop the process using port ${daemonPort}, or start the daemon on a different port with: rig daemon start --port <port>`,
     };
   });
+}
 
-  const asyncChecks: Promise<DoctorCheck>[] = [portCheck];
-
-  if (hcProbe.available) asyncChecks.push(buildHcCoreCheck(deps));
-  asyncChecks.push(buildSpecConformanceCheck(deps));
-  const slackSecretsEnvFile = deps.slackSecretsEnvFile;
-  if (slackSecretsEnvFile) asyncChecks.push(slackSecretsEnvFile().then((f) => judgeSlackSecretsFile(f)));
-
-  return { checks, portCheck, asyncChecks };
+/** workspaces-o9o.181: the base URL of the daemon this home means, for doctor's live reads; null when it means none. */
+function homeDaemonBase(): string | null {
+  const home = resolveHomeDaemon({ recordedUrl: localDaemonUrl() });
+  if (home.kind === "none") return null;
+  return home.kind === "configured" ? `http://${formatDaemonHostForUrl(home.host)}:${home.port}` : home.url.replace(/\/+$/, "");
 }
 
 /** The running core's side of seat-host health: its protocol generation and version. It reads the core's socket and
@@ -411,6 +434,7 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         readCodexConfig: (p: string) => readCredentialFile(p, CODEX_CONFIG_POLICY), // o9o.160: Codex config under the credential rule
         exec: (c: string) => execSync(c, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }),
         checkPort: defaultCheckPort,
+        recordedDaemonUrl: localDaemonUrl,
         configStore: new ConfigStore(),
         mkdirp: (dirPath: string) => mkdirSync(dirPath, { recursive: true }),
         checkWritable: (dirPath: string) => accessSync(dirPath, constants.W_OK),
@@ -420,16 +444,14 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         // Returns null on ANY failure to read the live side. The conformance check treats null as
         // "unknown" and skips — an unreachable daemon must never read as a matching topology.
         fetchHostRows: async (input) => {
-          if (homeWithoutDaemonAddress() !== null) return null; // workspaces-o9o.181: no daemon for this home: unknown, never the default
-          const cfg = new ConfigStore().resolve();
-          const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
+          const base = homeDaemonBase(); // workspaces-o9o.181: the one resolver; no daemon for this home: unknown, never the default
+          if (base === null) return null;
           return fetchDaemonHostRows(fetch, base, terminalAuthHeaders(), input);
         },
         fetchLiveLogicalIds: async (rigName: string): Promise<string[] | null> => {
-          if (homeWithoutDaemonAddress() !== null) return null; // workspaces-o9o.181: as above
+          const base = homeDaemonBase(); // workspaces-o9o.181: as above
+          if (base === null) return null;
           try {
-            const cfg = new ConfigStore().resolve();
-            const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
             const rigsRes = await fetch(`${base}/api/rigs`);
             if (!rigsRes.ok) return null;
             const rigs = (await rigsRes.json()) as Array<{ id?: string; name?: string }>;

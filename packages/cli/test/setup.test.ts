@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createProgram } from "../src/index.js";
 import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
@@ -6,6 +6,8 @@ import { buildDefaultDoctorDeps, setupCommand, runSetup, goldenPathNextSteps, pe
 import type { DoctorDeps } from "../src/commands/doctor.js";
 import { HC_TESTED_VERSION } from "../src/tmux-health.js";
 import { stubConfigStore } from "./helpers/stub-config-store.js";
+
+
 
 function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
   return {
@@ -465,7 +467,8 @@ describe("rig setup", () => {
         return "";
       },
       checkPort: async () => true,
-      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
+      // workspaces-o9o.181: a port this home names (the fixture home is not ~/.openrig, and doctor asks the resolver first).
+      configStore: stubConfigStore({ daemon: { port: 7444, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
       platform: "darwin",
       readFile: () => null,
       mkdirp: () => {},
@@ -514,7 +517,7 @@ describe("rig setup", () => {
         return "";
       },
       checkPort: async () => true,
-      configStore: stubConfigStore({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
+      configStore: stubConfigStore({ daemon: { port: 7444, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts", lines: 1000, pollIntervalSeconds: 2 } }),
       platform: "darwin",
       readFile: () => null,
       mkdirp: () => {},

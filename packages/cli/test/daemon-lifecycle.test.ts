@@ -201,7 +201,9 @@ describe("Daemon Lifecycle", () => {
       try {
         const acquireStartLock = vi.fn(() => acquireDaemonStartLock(OPENRIG_DIR));
         const deps = startableDeps({ acquireStartLock });
-        await expect(startDaemon({ port: 7433, db: "openrig.sqlite" }, deps)).rejects.toThrow(
+        // workspaces-o9o.181: an explicit port, so the start reaches the home check this row is about (a home with no port
+        // of its own is refused even earlier, also before any write; home-daemon-paths.test.ts pins that).
+        await expect(startDaemon({ port: 7433, portExplicit: true, db: "openrig.sqlite" }, deps)).rejects.toThrow(
           `${OPENRIG_DIR}: expected instance-home, found user-home`,
         );
         expect(acquireStartLock).not.toHaveBeenCalled();

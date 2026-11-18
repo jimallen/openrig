@@ -1,9 +1,15 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
 import { askCommand } from "../src/commands/ask.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
 import type { WakeRunner } from "../src/ask-wake.js";
+
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
   return new Promise(async (resolve) => {

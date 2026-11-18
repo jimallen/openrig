@@ -1,11 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ConfigStore } from "./config-store.js";
 import { getOpenRigHome, readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout, FetchTimeoutError } from "./fetch-with-timeout.js";
 import { readLocalOrigin } from "./local-origin.js";
 import { DAEMON_STATE_POLICY, readCredentialFile, readOwnFile, TERMINAL_TOKEN_POLICY } from "@openrig/daemon/credential-file";
-import { homeWithoutDaemonAddress, NO_HOME_DAEMON_ACTION, NO_HOME_DAEMON_URL } from "./home-daemon-address.js";
+import { homeWithoutDaemonAddress, NO_HOME_DAEMON_ACTION, NO_HOME_DAEMON_URL, resolveHomeDaemon } from "./home-daemon-address.js";
 
 export function terminalAuthHeaders(): Record<string, string> {
   const token = resolveTerminalToken();
@@ -206,7 +205,7 @@ interface DaemonClientOptions {
 /** A refused daemon.json is said once per process (stderr), not on every client. */
 let daemonStateRefusalSaid = false;
 
-function localDaemonUrl(): string | undefined {
+export function localDaemonUrl(): string | undefined {
   // Resolve at construction time: embedders may change OPENRIG_HOME after import.
   // workspaces-o9o.160: daemon.json chooses where the terminal token is sent, so it is read under the credential rule: a link or
   // another user's file is not used (said once); group/other write on our own file is narrowed. Absent: no recorded endpoint.
@@ -275,23 +274,13 @@ export class DaemonClient {
     if (baseUrl) {
       this.baseUrl = baseUrl;
     } else {
-      const envUrl = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");
-      if (envUrl) {
-        this.baseUrl = envUrl;
-      } else {
-        // --port/--host can differ from configured startup defaults. Match the
-        // lifecycle-aware commands by preferring this home's recorded endpoint.
-        const localUrl = localDaemonUrl();
-        if (localUrl) {
-          this.baseUrl = localUrl;
-        } else if (homeWithoutDaemonAddress() !== null) {
-          // workspaces-o9o.181: a non-default home never falls back to the built-in default daemon address.
-          this.baseUrl = NO_HOME_DAEMON_URL;
-        } else {
-          const config = new ConfigStore().resolve(); // env > file > defaults
-          this.baseUrl = `http://${formatDaemonHostForUrl(config.daemon.host)}:${config.daemon.port}`;
-        }
-      }
+      // workspaces-o9o.181: the one resolver says which daemon this home means: OPENRIG_URL, then this home's recorded
+      // endpoint (--port/--host can differ from configured startup defaults), then its configured target. A non-default
+      // home that names none of them gets the no-daemon address, never the built-in default.
+      const home = resolveHomeDaemon({ recordedUrl: localDaemonUrl() });
+      this.baseUrl = home.kind === "none"
+        ? NO_HOME_DAEMON_URL
+        : home.kind === "configured" ? `http://${formatDaemonHostForUrl(home.host)}:${home.port}` : home.url;
     }
 
     this.fetchImpl = options?.fetchImpl ?? fetch;

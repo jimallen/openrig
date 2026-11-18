@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -6,6 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { startDaemon, STATE_FILE, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import { acquireDaemonStartLock } from "../src/daemon-start-lock.js";
+
+
+// workspaces-o9o.181: these rows exercise the configured-daemon fallback. The hermetic fixture home is not the default
+// home, and a non-default home never falls back to the built-in daemon address, so the port is configured explicitly here.
+beforeEach(() => { vi.stubEnv("OPENRIG_PORT", "7433"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 afterEach(() => vi.useRealTimers());
 function fixture() {

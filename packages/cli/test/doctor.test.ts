@@ -1,9 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createProgram } from "../src/index.js";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { HC_GENERATION, HC_TESTED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
 import { stubConfigStore } from "./helpers/stub-config-store.js";
+
+
 
 const defaultConfig = {
   daemon: { port: 7433, host: "127.0.0.1" },
@@ -30,7 +32,7 @@ function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
       return "";
     },
     checkPort: async () => true,
-    configStore: stubConfigStore(defaultConfig),
+    configStore: configuredStore(defaultConfig),
     platform: "darwin",
     mkdirp: () => {},
     checkWritable: () => {},
@@ -345,7 +347,7 @@ describe("runDoctorChecks", () => {
   // 127.0.0.1:7433). An occupied port there is not this home's daemon, and doctor must not probe it to find out whose it is.
   it("o9o.181: port in use, and this non-default home names no daemon -> fail with the reason, and no health probe", async () => {
     const fetch = vi.fn(async (_url: string) => ({ ok: true }));
-    const deps = makeDeps({ checkPort: async () => false, fetch });
+    const deps = makeDeps({ checkPort: async () => false, fetch, configStore: stubConfigStore(defaultConfig) });
     const { portCheck } = runDoctorChecks(deps);
     const result = await portCheck;
     expect(result.status).toBe("fail");

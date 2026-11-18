@@ -8,7 +8,7 @@ import type { DaemonStartLock } from "./daemon-start-lock.js";
 import { rebaseRelativePath, rebaseRelativePathEnv } from "@openrig/daemon/daemon-path-env";
 import { DAEMON_STOP_WAIT_MS, DAEMON_SHUTDOWN_RECEIPT, type DaemonShutdownReceipt } from "@openrig/daemon/daemon-shutdown";
 import { ConfigStore } from "./config-store.js";
-import { homeWithoutDaemonAddress, NO_HOME_DAEMON_ACTION } from "./home-daemon-address.js";
+import { homeBindRefusal, NO_HOME_BIND_ACTION, NO_HOME_DAEMON_ACTION, NO_HOME_DAEMON_URL, resolveHomeDaemon } from "./home-daemon-address.js";
 import { readLocalOrigin } from "./local-origin.js";
 import { daemonStartRefusal, seatDaemonControlRefusal } from "./seat-daemon-guard.js";
 import { OPENRIG_HOME, LEGACY_RIGGED_HOME, readOpenRigEnv } from "./openrig-compat.js";
@@ -179,6 +179,8 @@ export function printDaemonNotRunning(opts?: { json?: boolean }): void {
 
 export interface StartOptions {
   port?: number;
+  /** workspaces-o9o.181: the port came from an explicit --port, not from the configuration (or its built-in default). */
+  portExplicit?: boolean;
   host?: string;
   db?: string;
   transcriptsEnabled?: boolean;
@@ -426,19 +428,16 @@ async function checkPid(state: DaemonState, deps: LifecycleDeps): Promise<"openr
   }
 }
 
-function resolveConfiguredDaemonTarget(): { host: string; port: number } {
-  try {
-    const config = new ConfigStore().resolve();
-    return {
-      host: config.daemon.host,
-      port: config.daemon.port,
-    };
-  } catch {
-    return {
-      host: DEFAULT_HOST,
-      port: DEFAULT_PORT,
-    };
-  }
+/**
+ * workspaces-o9o.181: this home's configured daemon target, through the one resolver (home-daemon-address.ts), for callers
+ * that have already handled an explicit OPENRIG_URL and this home's daemon.json. `none` carries why the home names no daemon;
+ * the caller probes nothing then. An unreadable config keeps the default home's built-in fallback, as before.
+ */
+function resolveConfiguredDaemonTarget(): { host: string; port: number } | { none: string } {
+  const home = resolveHomeDaemon({ explicitUrl: "", recordedUrl: undefined });
+  if (home.kind === "none") return { none: home.reason };
+  if (home.kind === "configured") return { host: home.host, port: home.port };
+  return { host: DEFAULT_HOST, port: DEFAULT_PORT }; // unreachable: no explicit or recorded address was passed
 }
 
 /**
@@ -639,6 +638,10 @@ export async function startDaemon(opts: StartOptions, deps: LifecycleDeps): Prom
   // none, and none starts a core with no runtime location of its own (seat-daemon-guard.ts).
   const refusal = daemonStartRefusal();
   if (refusal !== null) throw new Error(refusal);
+  // workspaces-o9o.181: a home other than ~/.openrig that names no port of its own never starts on, or probes, the default
+  // port: refuse before the home is prepared, the start lock is taken, state is read or anything is probed (CoS ruling A).
+  const bindRefusal = homeBindRefusal({ explicitPort: opts.portExplicit === true });
+  if (bindRefusal !== null) throw new Error(`${bindRefusal} ${NO_HOME_BIND_ACTION}`);
   if (!deps.acquireStartLock) throw new Error("Daemon startup requires a local launch reservation");
   // workspaces-o9o.36 (verify-sec round 3): the start lock is the first write into the OpenRig home. Before it, a home that is the user's
   // home or above it is refused (read-only, on real paths), and a home its owner cannot enter (0600) is opened to 0700.
@@ -911,10 +914,12 @@ export async function stopDaemon(deps: LifecycleDeps): Promise<"stopped" | "no-t
   const state = readState(deps);
   const explicitUrl = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");
   // workspaces-o9o.181: a non-default home that names no daemon has nothing to stop; never probe the default address.
-  if (!state && !explicitUrl && homeWithoutDaemonAddress() !== null) return "no-target";
   const configured = resolveConfiguredDaemonTarget();
+  if (!state && !explicitUrl && "none" in configured) return "no-target";
   const stateUrl = state ? `http://${formatDaemonHostForUrl(state.host ?? DEFAULT_HOST)}:${state.port}` : undefined;
-  const target = stateUrl ?? explicitUrl?.replace(/\/+$/, "") ?? `http://${formatDaemonHostForUrl(configured.host)}:${configured.port}`;
+  const configuredUrl = "none" in configured ? undefined : `http://${formatDaemonHostForUrl(configured.host)}:${configured.port}`;
+  // A home that names no daemon has a state file or an explicit address here; it never reaches the configured target.
+  const target = stateUrl ?? explicitUrl?.replace(/\/+$/, "") ?? configuredUrl ?? NO_HOME_DAEMON_URL;
   if (stateUrl && explicitUrl && new URL(explicitUrl).origin !== new URL(stateUrl).origin) {
     throw new Error(`Cannot stop safely: addressed ${explicitUrl}/healthz does not match local PID ${state!.pid} at ${stateUrl}/healthz; no signal sent.`);
   }
@@ -1051,14 +1056,14 @@ export async function getDaemonStatus(
   if (!state) {
     // workspaces-o9o.181: a non-default home with no daemon.json and no configured port or host names no daemon. Do not
     // probe the built-in default address, which on a seat's host is the live daemon.
-    const noHomeDaemon = homeWithoutDaemonAddress();
-    if (noHomeDaemon !== null) {
+    const configured = resolveConfiguredDaemonTarget();
+    if ("none" in configured) {
+      const noHomeDaemon = configured.none;
       // The wrong-home hint (1ae863d2) still applies, unprobed: a live sibling home or a HOME-MOVED marker keeps the status
       // "unverified" and names both paths, as before.
       const siblingHint = findSiblingHome(deps);
       return siblingHint ? { state: "unverified", siblingHint, noHomeDaemon } : { state: "stopped", noHomeDaemon };
     }
-    const configured = resolveConfiguredDaemonTarget();
     try {
       const res = await probeHealthzWithSettle(deps, `http://${formatDaemonHostForUrl(configured.host)}:${configured.port}/healthz`);
       const ev = await readHealthEvidence(res);
