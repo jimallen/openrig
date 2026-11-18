@@ -146,7 +146,7 @@ describe("enumeration guard: every claude seat-launch builder threads remote_con
 
   it("claude-code-adapter: all 3 shell templates and both managed argv builders carry the fragment", () => {
     const src = read("adapters/claude-code-adapter.ts");
-    const templates = [...src.matchAll(/`(?:\$\{claudeResumeLaunchPrefix\([^)]*\)\})?(?:\$\{rendererPrefix\})?claude \$\{[^`]*`/g)].map(m => m[0])
+    const templates = [...src.matchAll(/`(?:\$\{claudeResumeLaunchPrefix\([^)]*\)\})?(?:\$\{rendererPrefix\})?(?:\$\{codeModePrefix\})?claude \$\{[^`]*`/g)].map(m => m[0])
       .filter(t => /--resume|--session-id|--fork-session/.test(t));
     expect(templates).toHaveLength(3);
     for (const t of templates) expect(t, `shell template must thread remoteControlArg:\n${t}`).toContain("${remoteControlArg}");

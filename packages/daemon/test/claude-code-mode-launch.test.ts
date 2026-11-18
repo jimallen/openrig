@@ -4,7 +4,7 @@ import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
-import { claudeProbeCommand } from "../src/domain/resume-metadata-refresher.js";
+import { claudeProbeCommand, ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
 import { seatCodeModeOfSession } from "../src/domain/claude-code-mode.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -250,6 +250,20 @@ describe("the probe's per-session read of the seat's declaration (seatCodeModeOf
     expect(seatCodeModeOfSession(db, "no-such-session")).toBe(false);
     db.exec("ALTER TABLE nodes DROP COLUMN code_mode");
     expect(seatCodeModeOfSession(db, on.id)).toBe(false);
+    db.close();
+  });
+});
+
+describe("the refresher hands the probe the seat's code_mode only when it is declared", () => {
+  const session = { sessionId: "sess-1", sessionName: "dev-impl@r", runtime: "claude-code", resumeType: "claude_id", resumeToken: "abc-123", cwd: "/repo" };
+  it.each([[true], [false]])("declared=%s", async (declared) => {
+    const db = createFullTestDb();
+    const probe = vi.fn(async (_n: string, _t: string, _c?: string | null, _h?: string | null, _m?: boolean) => "resumable" as const);
+    const refresher = new ResumeMetadataRefresher({ sessionRegistry: new SessionRegistry(db), tmuxAdapter: tmuxStub({}), probeClaudeResume: probe,
+      sleep: async () => {}, seatCodeMode: () => declared });
+    await refresher.refresh([session]);
+    // An undeclared seat's call is exactly the four arguments it always was; a declared one adds `true`.
+    expect(probe.mock.calls).toEqual([declared ? ["dev-impl@r", "abc-123", "/repo", null, true] : ["dev-impl@r", "abc-123", "/repo", null]]);
     db.close();
   });
 });

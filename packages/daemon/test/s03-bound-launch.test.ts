@@ -353,7 +353,7 @@ describe("S03 bound launch across existing paths", () => {
     const startup = readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
     expect(startup).toContain("new ClaudeManagedLaunch(db, { ...launchSessionEnv, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR },");
     // Native comms step 3 adds the inbox setting beside the same helper.
-    expect(startup).toContain("new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment, nativeInboxEnabled: nativeClaudeEnabled })");
+    expect(startup).toContain("new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment, nativeInboxEnabled: nativeClaudeEnabled,");
     expect(startup).toContain("new ClaudeCodeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, claudeManagedLaunch,");
   });
   it("does not submit after a context change following a valid paste; preserves partial-input semantics", async () => {

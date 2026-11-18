@@ -227,7 +227,9 @@ export class ResumeMetadataRefresher {
           }
           continue;
         }
-        const probe = await this.probeClaudeResume(session.sessionName, session.resumeToken, session.cwd ?? null, this.seatClaudeConfigDir(session), this.seatCodeMode(session));
+        // workspaces-o9o.123: the code_mode argument only for a seat that declares it, so every other seat's probe call is unchanged.
+        const codeMode = this.seatCodeMode(session);
+        const probe = await this.probeClaudeResume(session.sessionName, session.resumeToken, session.cwd ?? null, this.seatClaudeConfigDir(session), ...(codeMode ? [true] : []));
         // OPR.0.4.3.20 FR-6 §2.1b — record the probe result WITHOUT clearing:
         // `not_resumable`/`inconclusive` marks the present token stale (the plan
         // surfaces it as `stale — re-verify`), `resumable` stamps freshness. The

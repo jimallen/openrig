@@ -834,6 +834,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     ["permission_policy", 7, "permissionPolicy", "builtin:yolo"],
     ["remote_control", "yes", "remoteControl", true],
     ["ask_in_modal", "yes", "askInModal", true],
+    ["code_mode", "yes", "codeMode", true],
     ["claude_config_dir", "relative/home", "claudeConfigDir", "/tmp"],
     ["session_source", "str", "sessionSource", { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } }],
     ["starter_ref", "st", "starterRef", { name: "st-ok" }],
@@ -849,7 +850,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
   it("census: every MEMBER_KEYS entry is classified, and each dual-spelling field has a shadow row", () => {
     const dual = [...new Set(rows.map((r) => r[0]))].sort();
     expect([...SINGLE_SPELLING, ...dual].sort()).toEqual([...MEMBER_KEYS].sort());
-    expect(dual).toHaveLength(12);
+    expect(dual).toHaveLength(13);
   });
 
   // Snake_case-only non-string / empty values: rig up rejects each; the old string-only read erased
