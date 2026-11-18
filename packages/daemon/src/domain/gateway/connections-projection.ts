@@ -1,5 +1,5 @@
-import type { CredentialFileReader } from "../credential-file.js";
-import { closeSync, fstatSync, openSync, readSync, readFileSync } from "node:fs";
+import { credentialFileOpsFrom, readOwnFileWith, SLACK_CONNECTOR_POLICY, type CredentialFileReader } from "../credential-file.js";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { loadConfig, configPathFor, DEFAULT_CONFIG, type SlackConnectorConfig } from "./slack/config.js";
@@ -9,6 +9,11 @@ import { channelStateDigest, type ChannelOperation } from "./channel-operations.
 import type { SettingsStore } from "../user-settings/settings-store.js";
 
 /** Shared passive read context. Raw values and the redactor stay inside the domain. */
+const connectorFileOps = credentialFileOpsFrom(
+  { constants, openSync, fstatSync, readSync, fchmodSync, closeSync, lstatSync, realpathSync },
+  () => (typeof process.getuid === "function" ? process.getuid() : -1),
+);
+
 /** `credentialFiles` (workspaces-o9o.151) reads the Slack secrets env file under the credential rule. */
 export function readConnectionConfiguration(home: string, credentialFiles: CredentialFileReader) {
   let cfg: SlackConnectorConfig | null = null;
@@ -18,8 +23,10 @@ export function readConnectionConfiguration(home: string, credentialFiles: Crede
   let fields: string[] = [];
   try {
     let bytes: string | null = null;
-    try { bytes = readFileSync(configPath, "utf8"); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    // workspaces-o9o.160: under the credential rule (as loadConfig reads it); a refusal leaves the source "unavailable".
+    const read = readOwnFileWith(connectorFileOps, configPath, SLACK_CONNECTOR_POLICY);
+    if (read.ok) bytes = read.content;
+    else if (read.problem !== "missing") throw new Error(read.message);
     sourceState = bytes === null ? "missing" : "malformed";
     if (bytes !== null) {
       const raw = JSON.parse(bytes);

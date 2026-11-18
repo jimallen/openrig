@@ -11,6 +11,10 @@ import { getOpenRigHome } from "../../../openrig-compat.js";
 import { OWNER_NOTIFICATION_LEVELS, type OwnerNotificationLevel } from "../../queue-transition-log.js";
 import { BASELINE_REQUIRED_SCOPES } from "./capabilities.js";
 import { unsupportedChannelMapFields, validateChannelMap, type ChannelMapEntry } from "./channel-map.js";
+import { credentialFileOpsFrom, readOwnFileWith, SLACK_CONNECTOR_POLICY } from "../../credential-file.js";
+
+/** workspaces-o9o.160: slack-connector.json under the credential rule's procedure, with the node:fs this module already imports. */
+const connectorFileOps = credentialFileOpsFrom(fs, () => (typeof process.getuid === "function" ? process.getuid() : -1));
 
 export interface SlackConnectorConfig {
   enabled: boolean;
@@ -77,8 +81,12 @@ export function configPathFor(home?: string): string {
 export function loadConfig(home?: string): SlackConnectorConfig {
   const p = configPathFor(home);
   let raw: Partial<SlackConnectorConfig> & { alertTag?: unknown };
+  // workspaces-o9o.160: it names the Slack secrets file, so a link or another user's file is not used (Slack stays off, as with a
+  // refused secrets file); group/other write on our own file is narrowed.
+  const read = readOwnFileWith(connectorFileOps, p, SLACK_CONNECTOR_POLICY);
+  if (!read.ok) return { ...DEFAULT_CONFIG };
   try {
-    raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<SlackConnectorConfig> & { alertTag?: unknown };
+    raw = JSON.parse(read.content) as Partial<SlackConnectorConfig> & { alertTag?: unknown };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -92,7 +100,7 @@ export function saveConfig(cfg: SlackConnectorConfig, home?: string): string {
   validateConfig(cfg);
   const p = configPathFor(home);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+  fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o644 }); // o9o.160: created so nobody else may change it
   return p;
 }
 
