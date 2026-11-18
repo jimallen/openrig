@@ -1003,7 +1003,8 @@ function findSiblingHome(deps: LifecycleDeps): DaemonStatus["siblingHint"] {
       const sibling = path.join(parent, entry);
       const stateFile = path.join(sibling, "daemon.json");
       if (!deps.exists(stateFile)) continue;
-      const raw = deps.readFile(stateFile);
+      // workspaces-o9o.160: a live sibling turns "stopped" into "unverified", so its daemon.json goes through the rule seam too.
+      const raw = (deps.readStateFile ?? deps.readFile)(stateFile);
       if (!raw) continue;
       try {
         const parsed = JSON.parse(raw) as { pid?: number };

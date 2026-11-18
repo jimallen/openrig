@@ -4,12 +4,16 @@
 // and its real target is judged and narrowed. Every fixture sets its own mode.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { DaemonClient } from "../src/client.js";
 import { ConfigStore } from "../src/config-store.js";
 import { getDaemonStatus, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import { realDeps } from "../src/commands/daemon.js";
+import Database from "better-sqlite3";
+import { readLocalOrigin } from "../src/local-origin.js";
+import { crashCartCommand } from "../src/commands/crash-cart.js";
 
 let dir: string;
 beforeEach(() => {
@@ -96,5 +100,147 @@ describe("the lifecycle reads daemon.json through its rule seam (o9o.160)", () =
     put(path.join(dir, "state.json"), STATE, 0o664);
     expect(deps.readStateFile?.(path.join(dir, "state.json"))).toBe(STATE);
     expect(fs.statSync(path.join(dir, "state.json")).mode & 0o777).toBe(0o644);
+  });
+});
+
+// o9o.160 review (verify-sec2): three more daemon.json readers, each now under the same rule.
+describe("the local origin's launch record is a daemon.json that passes the rule (o9o.160 review)", () => {
+  const seed = (file: string, id: string) => {
+    const db = new Database(file);
+    db.exec("CREATE TABLE self_host_identity (singleton INTEGER PRIMARY KEY, host_id TEXT)");
+    db.prepare("INSERT INTO self_host_identity VALUES (1, ?)").run(id);
+    db.close();
+  };
+  // The configured default database lives in the suite's fixture home (ConfigStore captures it at import), not in `dir`.
+  const defaultDb = (): string => String(new ConfigStore().resolveWithSource("db.path").value);
+  beforeEach(() => {
+    vi.stubEnv("OPENRIG_DB", "");
+    vi.stubEnv("RIGGED_DB", "");
+    seed(path.join(dir, "launch.sqlite"), "launch-origin");
+  });
+  afterEach(() => { fs.rmSync(defaultDb(), { force: true }); });
+  const record = () => JSON.stringify({ db: path.join(dir, "launch.sqlite") });
+
+  it("CONTROL: a plain daemon.json of ours chooses the database the origin is read from", () => {
+    put(path.join(dir, "daemon.json"), record(), 0o600);
+    expect(readLocalOrigin()).toBe("launch-origin");
+  });
+
+  it("a daemon.json that is a link does not choose the database, so its origin never reaches a request", async () => {
+    put(path.join(dir, "elsewhere.json"), record(), 0o600);
+    fs.symlinkSync(path.join(dir, "elsewhere.json"), path.join(dir, "daemon.json"));
+    seed(defaultDb(), "default-origin"); // a refused record gives no origin, not the default database's
+    expect(readLocalOrigin()).toBeUndefined();
+    vi.stubEnv("OPENRIG_URL", "http://forwarded-endpoint:7433");
+    vi.stubEnv("OPENRIG_SESSION_NAME", "rig-admin@ops");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sent: Array<Record<string, string>> = [];
+    const client = new DaemonClient("http://127.0.0.1:12345", { fetchImpl: (async (url, init) => {
+      sent.push((init?.headers ?? {}) as Record<string, string>);
+      return new Response(JSON.stringify(String(url).endsWith("/healthz") ? { selfHostId: "parent-origin" } : { ok: true }));
+    }) as typeof fetch });
+    await client.post("/write", {});
+    expect(sent.at(-1)?.["X-OpenRig-Session"]).toBe("rig-admin@ops");
+    expect(JSON.stringify(sent)).not.toContain("launch-origin");
+    errors.mockRestore();
+  });
+
+  it("CONTROL: with no daemon.json the configured default database gives the origin", () => {
+    seed(defaultDb(), "default-origin");
+    expect(readLocalOrigin()).toBe("default-origin");
+  });
+
+  it("a daemon.json of ours others can change is narrowed (never refused) and chooses the database", () => {
+    put(path.join(dir, "daemon.json"), record(), 0o664);
+    expect(readLocalOrigin()).toBe("launch-origin");
+    expect(fs.statSync(path.join(dir, "daemon.json")).mode & 0o777).toBe(0o644);
+  });
+});
+
+describe("crash-cart's discovery reads a daemon.json that passes the rule (o9o.160 review)", () => {
+  // The daemon is down: OPENRIG_URL and the record name a port this test bound and closed (refused, never the live daemon's).
+  // The record names this test's own live pid, so a record that is used refuses the direct read on that pid.
+  const deadPort = async (): Promise<number> => {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (address === null || typeof address === "string") throw new Error("no port");
+    return address.port;
+  };
+  const record = (port: number) => JSON.stringify({ pid: process.pid, port, host: "127.0.0.1", db: path.join(dir, "missing.sqlite") });
+  const runCart = async (port: number): Promise<{ state: string; refusal?: string; discovery?: unknown }> => {
+    vi.stubEnv("OPENRIG_URL", `http://127.0.0.1:${port}`);
+    const lines: string[] = [];
+    await crashCartCommand({ write: (line) => { lines.push(line); } }).parseAsync(["--json"], { from: "user" });
+    expect(lines).toHaveLength(1);
+    return JSON.parse(lines[0] ?? "{}") as { state: string; refusal?: string; discovery?: unknown };
+  };
+
+  it("CONTROL: a plain daemon.json of ours with a live pid is what the cart judges by", async () => {
+    const port = await deadPort();
+    put(path.join(dir, "daemon.json"), record(port), 0o600);
+    const out = await runCart(port);
+    expect(JSON.stringify(out)).toContain(`pid ${process.pid}`);
+  });
+
+  it("a daemon.json that is a link is refused by the rule, never used for the pid or the database", async () => {
+    const port = await deadPort();
+    put(path.join(dir, "elsewhere.json"), record(port), 0o600);
+    fs.symlinkSync(path.join(dir, "elsewhere.json"), path.join(dir, "daemon.json"));
+    const out = await runCart(port);
+    expect(out.state).toBe("down");
+    expect(out.refusal).toContain("symbolic link");
+    expect(out.refusal).not.toContain(`pid ${process.pid}`);
+  });
+
+  it("CONTROL: with no daemon.json the cart goes on to the configured database, no refusal about the record", async () => {
+    const out = await runCart(await deadPort());
+    expect(out.state).toBe("down");
+    // The database step decides from here: the fixture home's database is read, or its absence is the refusal.
+    expect(out.discovery !== undefined || /daemon DB not found/.test(out.refusal ?? "")).toBe(true);
+  });
+
+  it("a daemon.json of ours others can change is narrowed (never refused) and judged by", async () => {
+    const port = await deadPort();
+    put(path.join(dir, "daemon.json"), record(port), 0o664);
+    const out = await runCart(port);
+    expect(JSON.stringify(out)).toContain(`pid ${process.pid}`);
+    expect(fs.statSync(path.join(dir, "daemon.json")).mode & 0o777).toBe(0o644);
+  });
+});
+
+describe("the sibling-home hint reads daemon.json through the rule seam (o9o.160 review)", () => {
+  const refused: LifecycleDeps["fetch"] = async () => {
+    throw Object.assign(new Error("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+  };
+  const sibling = "/fake/home/.openrig-build-vm-x/daemon.json";
+  const lifecycle = (readStateFile: (p: string) => string | null): LifecycleDeps => ({
+    spawn: () => { throw new Error("not spawned in this test"); },
+    fetch: refused,
+    kill: () => true,
+    readFile: (p) => (p === sibling ? STATE : null),
+    readStateFile,
+    writeFile: () => {},
+    removeFile: () => {},
+    exists: (p) => p === sibling,
+    mkdirp: () => {},
+    openForAppend: () => 3,
+    isProcessAlive: (pid) => pid === 4242,
+    sleep: async () => {},
+    homeDir: "/fake/home/.openrig",
+    listDir: (p) => (p === "/fake/home" ? [".openrig", ".openrig-build-vm-x"] : []),
+  });
+
+  it("CONTROL: a sibling state the seam returns, with a live pid, makes the status unverified and names the sibling", async () => {
+    const s = await getDaemonStatus(lifecycle((p) => (p === sibling ? STATE : null)));
+    expect(s.state).toBe("unverified");
+    expect(s.siblingHint?.siblingHome).toBe("/fake/home/.openrig-build-vm-x");
+  });
+
+  it("a sibling daemon.json the rule refuses gives no hint, even if readFile would return it", async () => {
+    const s = await getDaemonStatus(lifecycle(() => null));
+    expect(s.state).toBe("stopped");
+    expect(s.siblingHint).toBeUndefined();
   });
 });

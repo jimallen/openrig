@@ -1,9 +1,10 @@
 import { Command } from "commander";
-import { copyFileSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigStore } from "../config-store.js";
 import { formatDaemonHostForUrl } from "../client.js";
+import { DAEMON_STATE_POLICY, readOwnFile } from "@openrig/daemon/credential-file";
 
 // `rig crash-cart --json` — the daemon-DOWN recovery verdict emit (plan c015d9ed §C3, coupling ruling
 // option A). Prints ONE JSON = the 3-state detector verdict + (on DOWN) the discovery — READ-ONLY, a
@@ -39,9 +40,13 @@ function openrigHome(): string {
  *  the detector's readDaemonJson omits it). */
 function readDaemonJsonWithDb(home: string): { pid: number; port: number; host?: string; db: string } | undefined {
   const p = join(home, "daemon.json");
-  if (!existsOrThrow(p)) return undefined;
+  // workspaces-o9o.160: the record's pid decides whether the cart refuses and its db which database it copies, so it is read
+  // under the credential rule. A record the rule refuses (a link, another user's file) is a refusal naming the fix, never used.
+  const read = readOwnFile(p, DAEMON_STATE_POLICY);
+  if (!read.ok && read.problem === "missing") return undefined;
+  if (!read.ok) throw new Error(`Cannot read recorded daemon state at ${p}: ${read.message}`);
   try {
-    const j = JSON.parse(readFileSync(p, "utf8")) as { pid?: unknown; port?: unknown; host?: unknown; db?: unknown };
+    const j = JSON.parse(read.content) as { pid?: unknown; port?: unknown; host?: unknown; db?: unknown };
     if (typeof j.pid === "number" && typeof j.port === "number" && typeof j.db === "string") {
       return { pid: j.pid, port: j.port, host: typeof j.host === "string" ? j.host : undefined, db: j.db };
     }
