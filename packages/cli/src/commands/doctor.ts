@@ -1,5 +1,6 @@
 import { CODEX_CONFIG_POLICY, readCredentialFile, type CredentialFileRead } from "@openrig/daemon/credential-file";
 import { Command } from "commander";
+import { setOff } from "@openrig/daemon/command-text";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import net from "node:net";
@@ -237,7 +238,7 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
         status: "fail",
         message: `Port ${daemonHost}:${daemonPort} is in use, and this OPENRIG_HOME names no daemon of its own.`,
         reason: noHomeDaemon,
-        fix: `Give this home its own port (rig config set daemon.port <port>), or set OPENRIG_URL to the daemon you mean.`,
+        fix: `Give this home its own port with ${setOff("rig config set daemon.port <port>")}, or set OPENRIG_URL to the daemon you mean.`,
       };
     }
     // Port in use — check if it's our daemon via healthz
