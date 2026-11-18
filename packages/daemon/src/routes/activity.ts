@@ -592,6 +592,10 @@ activityRoutes.post("/hooks", async (c) => {
     generation: stringOrNull(body.generation),
   });
 
+  // workspaces-o9o.124: Code Mode's code output from a relay copy older than o9o.124. A valid hook the daemon chose not to record, not a fault.
+  if (!result.ok && result.code === "code_output_not_a_prompt") {
+    return c.json({ ok: true, ignored: "code_output" });
+  }
   if (!result.ok) {
     const status = result.code === "missing_session_identity" ? 400 : 404;
     return c.json({ ok: false, code: result.code, error: result.error }, status);

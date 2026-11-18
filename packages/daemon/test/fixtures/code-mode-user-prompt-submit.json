@@ -1,0 +1,26 @@
+{
+  "_provenance": "workspaces-o9o.124: UserPromptSubmit hook payloads captured by build-arch (o9o.122 report, M10) on Claude Code 2.1.327 with Code Mode on, 2026-11-18. Prompt bodies, keys and source values are byte-for-byte as captured; ids and paths are replaced with neutral values.",
+  "codeOutput": {
+    "session_id": "00000000-0000-4000-8000-000000000124",
+    "transcript_path": "/work/claude-home/projects/-work-seat/00000000-0000-4000-8000-000000000124.jsonl",
+    "cwd": "/work/seat",
+    "scratchpad_dir": "/work/scratchpad",
+    "prompt_id": "00000000-0000-4000-8000-0000000001a4",
+    "permission_mode": "bypassPermissions",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "<event kind=\"repl-eval\" at=\"2026-11-18T08:58:39.982Z\" eval=\"3\" ms=\"129\" status=\"settled\">\n<result>[\n  {\n    command: 'echo eta',\n    result: {\n      stdout: 'eta',\n      stderr: '',\n      interrupted: false,\n      isImage: false,\n      returnCodeInterpretation: undefined,\n      noOutputExpected: false,\n      backgroundTaskId: undefined,\n      backgroundedByUser: undefined,\n      backgroundedByTurnAbort: undefined,\n      backgroundedToDeliverMessage: undefined,\n      backgroundedForAgentReport: undefined,\n      timedOutAfterMs: undefined,\n      subagentCapApplied: undefined,\n      backgroundEndsWithFinalResponse: undefined,\n      backgroundCwdHint: undefined,\n      dangerouslyDisableSandbox: undefined,\n      persistedOutputPath: undefined,\n      persistedOutputSize: undefined,\n      memoryLimitNote: undefined,\n      triggeredNote: undefined,\n      staleReadFileStateHint: undefined,\n      ghRateLimitHint: undefined,\n      gitOperation: undefined,\n      bashEditDiff: undefined\n    }\n  },\n  {\n    command: 'echo theta',\n    result: {\n      stdout: 'theta',\n      stderr: '',\n      interrupted: false,\n      isImage: false,\n      returnCodeInterpretation: undefined,\n      noOutputExpected: false,\n      backgroundTaskId: undefined,\n      backgroundedByUser: undefined,\n      backgroundedByTurnAbort: undefined,\n      backgroundedToDeliverMessage: undefined,\n      backgroundedForAgentReport: undefined,\n      timedOutAfterMs: undefined,\n      subagentCapApplied: undefined,\n      backgroundEndsWithFinalResponse: undefined,\n      backgroundCwdHint: undefined,\n      dangerouslyDisableSandbox: undefined,\n      persistedOutputPath: undefined,\n      persistedOutputSize: undefined,\n      memoryLimitNote: undefined,\n      triggeredNote: undefined,\n      staleReadFileStateHint: undefined,\n      ghRateLimitHint: undefined,\n      gitOperation: undefined,\n      bashEditDiff: undefined\n    }\n  }\n]</result>\n</event>",
+    "source": "poll_event",
+    "session_title": "probe-seat"
+  },
+  "typedPrompt": {
+    "session_id": "00000000-0000-4000-8000-000000000124",
+    "transcript_path": "/work/claude-home/projects/-work-seat/00000000-0000-4000-8000-000000000124.jsonl",
+    "cwd": "/work/seat",
+    "scratchpad_dir": "/work/scratchpad",
+    "prompt_id": "00000000-0000-4000-8000-0000000001a4",
+    "permission_mode": "bypassPermissions",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "Again, in ONE piece of code, run two Bash calls: echo eta, and echo theta. Return each output or error exactly. Do nothing else.",
+    "session_title": "probe-seat"
+  }
+}

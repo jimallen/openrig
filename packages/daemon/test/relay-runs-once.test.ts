@@ -137,6 +137,18 @@ describe("workspaces-o9o.33: the activity relay runs once per hook when the open
     expect(posts("/api/activity/question-wait")).toHaveLength(1);
   });
 
+  // workspaces-o9o.124: the real relay process, fed the captured Code Mode code output (UserPromptSubmit source poll_event), posts no hook
+  // activity; the captured typed prompt from the same session is posted as before.
+  it("Code Mode's captured code output posts no hook activity; the typed prompt beside it does", async () => {
+    const { readFileSync } = await import("node:fs");
+    const captured = JSON.parse(readFileSync(resolve(import.meta.dirname, "fixtures", "code-mode-user-prompt-submit.json"), "utf8")) as Record<string, Record<string, unknown>>;
+    writeManagedSettings(EVENTS.map(([e]) => e));
+    await runHook(managed("activity-relay.cjs"), captured.codeOutput!, false);
+    expect(posts("/api/activity/hooks", "UserPromptSubmit")).toHaveLength(0);
+    await runHook(managed("activity-relay.cjs"), captured.typedPrompt!, false);
+    expect(posts("/api/activity/hooks", "UserPromptSubmit")).toHaveLength(1);
+  });
+
   it("the plugin copy still relays where the project's settings carry no managed copy (OpenRig's hooks off): one post, not none", async () => {
     writeManagedSettings([]);
     await runHook(plugin("activity-relay.cjs"), { hook_event_name: "Stop" }, true);

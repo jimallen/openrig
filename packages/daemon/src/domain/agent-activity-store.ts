@@ -1,3 +1,4 @@
+import { isCodeOutputPrompt } from "./code-mode-output.js";
 import type Database from "better-sqlite3";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
@@ -34,7 +35,9 @@ export type QuestionAskRecorder = NonNullable<AgentActivity["recordedBy"]>;
 
 export type RecordHookActivityResult =
   | { ok: true; activity: AgentActivity; event: PersistedEvent }
-  | { ok: false; code: "missing_session_identity" | "session_not_found"; error: string };
+  | { ok: false; code: "missing_session_identity" | "session_not_found"; error: string }
+  /** workspaces-o9o.124: Code Mode's code output, relayed as a UserPromptSubmit by a relay copy older than o9o.124. Not recorded. */
+  | { ok: false; code: "code_output_not_a_prompt"; error: string };
 
 interface AgentActivityStoreDeps {
   db: Database.Database;
@@ -97,6 +100,11 @@ export class AgentActivityStore {
   }
 
   recordHookEvent(input: HookActivityInput): RecordHookActivityResult {
+    // workspaces-o9o.124: Code Mode's code output is not a prompt. Recorded, it would close the turn mid-turn, abandon an open AskUserQuestion
+    // (onActivityRecorded) and pass the seat's input point (seat-messaging/input-point.ts reads the recorded rows), so it is not recorded at all.
+    if (isCodeOutputPrompt(input.hookEvent, input.subtype)) {
+      return { ok: false, code: "code_output_not_a_prompt", error: "Code Mode code output (UserPromptSubmit source poll_event) is not a prompt; not recorded" };
+    }
     if (!input.sessionName && !input.nodeId) {
       return {
         ok: false,

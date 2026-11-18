@@ -47,6 +47,8 @@ function firstString(...values) {
   return null;
 }
 
+const CODE_OUTPUT_PROMPT_SOURCE = "poll_event";
+
 function buildOpenRigPayload(providerPayload, env = process.env, now = () => new Date()) {
   const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
   const nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
@@ -69,6 +71,11 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   // OF-278 / workspaces-o9o.4 F3: an AskUserQuestion start IS relayed, with its call id: the daemon ties the question to its own call, so a
   // late end of an earlier question cannot answer it. The question itself is reported by its PermissionRequest; a start never displaces
   // it and is never shown as the running tool (agent-activity-store promptClearedBy, openToolCallsIn).
+
+  // workspaces-o9o.124: Code Mode follows every code evaluation with a UserPromptSubmit whose source is "poll_event" and whose prompt is the
+  // code's output (measured on Claude Code 2.1.327, o9o.122 report M10). Nobody typed it: it is not relayed as a prompt. Twin of
+  // CODE_OUTPUT_PROMPT_SOURCE in daemon src/domain/code-mode-output.ts (a test holds them equal); the daemon also refuses to record one.
+  if (hookEvent === "UserPromptSubmit" && firstString(providerPayload.source) === CODE_OUTPUT_PROMPT_SOURCE) return null;
 
   const subtype = firstString(
     providerPayload.subtype,
@@ -703,6 +710,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CODE_OUTPUT_PROMPT_SOURCE,
   defersToManagedCopy,
   hookEventOf,
   buildNativeEndpointPayload,
