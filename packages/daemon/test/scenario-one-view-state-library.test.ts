@@ -13,7 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FILE = resolve(HERE, "../../test-system/scenarios/one-view-state-after-mutation-storm.yaml");
 const ok: ActionResult = { code: 0, stdout: "", stderr: "" };
 
-function run(opts: { seedPlantsForeignRig?: boolean; tuiLags?: boolean }) {
+function run(opts: { seedPlantsForeignRig?: boolean; tuiLags?: boolean; tuiScreen?: string }) {
   const loaded = loadScenarioFile(FILE);
   if (!loaded.ok) throw new Error(`#10 does not load: ${JSON.stringify(loaded.errors)}`);
   const scenario = loaded.loaded.scenario;
@@ -31,7 +31,8 @@ function run(opts: { seedPlantsForeignRig?: boolean; tuiLags?: boolean }) {
       }
       if (surface === "tui_socket") {
         const address = opts.tuiLags ? { instance: "tui-1", section: "topology", rig: "stale-rig" } : { instance: "tui-1", section: "topology" };
-        return { ok: true, instanceId: "tui-1", state: { ok: true, screen: "topology", drill: [], address } };
+        const screen = opts.tuiScreen ?? "topology";
+        return { ok: true, instanceId: "tui-1", state: { ok: true, screen, drill: [], address: { ...address, section: screen } } };
       }
       return null;
     },
@@ -39,9 +40,10 @@ function run(opts: { seedPlantsForeignRig?: boolean; tuiLags?: boolean }) {
     sleep: async () => {},
     defaults: { withinMs: 3000, pollIntervalMs: 1000 },
   });
+  const tuiStep = scenario.steps.findIndex((s) => "expect" in s && (s.expect as { surface?: string }).surface === "tui_socket");
   const equalityStep = scenario.steps.findIndex((s) => "expect" in s && "equals" in (s.expect as object));
   const seedStep = scenario.steps.findIndex((s) => "seed_regression" in s);
-  return { result, equalityStep, seedStep };
+  return { result, equalityStep, seedStep, tuiStep };
 }
 
 describe("#10 one-view-state-after-mutation-storm pins the seed it declares", () => {
@@ -60,6 +62,13 @@ describe("#10 one-view-state-after-mutation-storm pins the seed it declares", ()
     const r = await result;
     expect(r.verdict).toBe("FAIL");
     expect(r.failedStep).toBe(equalityStep);
+  });
+
+  it("the TUI leg asserts the TUI's own state, not only ok: a TUI on another screen fails at that leg", async () => {
+    const { result, tuiStep } = run({ tuiScreen: "queue" });
+    const r = await result;
+    expect(r.verdict).toBe("FAIL");
+    expect(r.failedStep).toBe(tuiStep);
   });
 
   it("NOT COVERED, as its header declares: a TUI showing a stale rig is not caught (R-21)", async () => {
