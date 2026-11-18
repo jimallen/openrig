@@ -76,31 +76,18 @@ const SHIPPED_ROOTS = shippedRoots({
   tracked: trackedPath,
 });
 
-// Each is a way of telling a reader to submit something upstream.
-const UPSTREAM_SUBMISSION = [
-  /hello@openrig\.dev/i,
-  /github\.com\/mvschwarz\/[\w.-]+\/(?:issues\/new|discussions|compare|pulls?\b)/i,
-  /\bopen an issue\b/i,
-  /\bsend a pull request\b/i,
-  /\bopen a pull request to\b/i,
-  /report (?:\w+ ){0,3}to the OpenRig team/i,
-  /OpenRig team an? (?:\w+ )?report/i,
-  /\bsubmit(?:ting)? it to openrig\.dev/i,
-  /contact OpenRig support/i,
-  /tell us how it went/i,
-];
-
 // Jim, 2026-11-18 (o9o.137): a STRICT guard. After a fourth review found a verb the list missed ("File the issue with upstream
 // maintainers.") and a read-only link the verb check flagged before its exception ran, the CoS ruled within that decision: no
 // verb matching at all, so there is no verb list left to race. ANY shipped sentence that names an upstream recipient is
 // flagged, whatever it says: mvschwarz (every upstream URL holds it), hello@openrig.dev, the word upstream, the maintainers,
 // OpenRig support. Every legitimate one, read-only issue links included, is on the reviewed allowlist,
 // fork-report-route.allowlist.json (file, exact sentence, reason), and an entry that no longer matches fails the guard. The
-// phrase patterns above stay, as sentences flagged too.
+// older phrase patterns ("open an issue", ...) are gone too (re-review nit): they flagged a sentence that names no upstream
+// recipient at all, such as one about this repository's own issues.
 const RECIPIENT = /\bupstream\b|\bmaintainers?\b|mvschwarz|hello@openrig\.dev|\bOpenRig support\b/i;
 
 function flagged(sentence) {
-  return UPSTREAM_SUBMISSION.some((pattern) => pattern.test(sentence)) || RECIPIENT.test(sentence);
+  return RECIPIENT.test(sentence);
 }
 
 // A sentence may wrap across lines, so lines are joined into blocks first. A block ends at a blank line and before a line that
@@ -209,12 +196,11 @@ test('the matcher flags every sentence that names an upstream recipient, whateve
     'Ask the maintainers.',
   ]) assert.equal(upstreamSubmissions(sentence).length, 1, sentence);
   assert.equal(upstreamSubmissions('Report problems\nupstream, please.').length, 1, 'a sentence across two lines');
-  // The phrase patterns still flag a sentence that names no recipient word.
-  for (const sentence of ['> open an issue or send a pull request', 'send the OpenRig team a useful report when you are still stuck',
-    '## 6. Submit it to openrig.dev/rigs', "You're welcome to run it and tell us how it went."]) assert.equal(upstreamSubmissions(sentence).length, 1, sentence);
   for (const sentence of [
     // No recipient: the fork's own route, and "OpenRig supports" (a word boundary, not the support desk).
     "send the report to the openrig rig's Chief of Staff, who files it.",
+    // A sentence about this repository's own issues names no upstream recipient (re-review nit: the old phrase rule flagged it).
+    'Open an issue in this local repository for internal tracking.',
     'OpenRig supports Node.js 22 and 24.',
     'This is the universal operating floor for every OpenRig team.',
   ]) assert.deepEqual(upstreamSubmissions(sentence), [], sentence);
