@@ -168,3 +168,170 @@ export function seatCredentialLinkPolicy(link: SeatCredentialLink, sharedFile: s
   const base = SEAT_CREDENTIAL_LINKS[link].policy;
   return sharedFile ? { ...base, linkTarget: sharedFile } : base;
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The procedure (o9o.160, CoS 11-18 13:38Z option B): the rule's open/judge/narrow/read steps, as pure functions over an injected
+// CredentialFileOps, so the fs adapter and the domain modules that already do their own file I/O (SettingsStore, crash-cart's
+// readDaemonJson; moving their I/O out of domain/ is o9o.161) run ONE procedure. This module imports nothing.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+/** The file operations the procedure needs. Errors carry the errno `code` (ENOENT, ELOOP, EMLINK, ...). */
+export interface CredentialFileOps {
+  /** Open read-only, never following a symlink at the name and never blocking (a FIFO cannot hang): O_RDONLY|O_NOFOLLOW|O_NONBLOCK. */
+  openNoFollow(path: string): number;
+  fstat(fd: number): OpenedFileFacts;
+  /** Read into `buf` at `offset`, up to `length` bytes, from the current position; 0 at end of file. */
+  read(fd: number, buf: Uint8Array, offset: number, length: number): number;
+  fchmod(fd: number, mode: number): void;
+  close(fd: number): void;
+  /** lstat(path).isSymbolicLink(); throws (ENOENT) when absent. */
+  isSymbolicLink(path: string): boolean;
+  realpath(path: string): string;
+  /** The uid a file must belong to (the process's own). */
+  currentUid(): number;
+}
+
+type Refusal = CredentialFileRead & { ok: false };
+
+function errnoCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function refusal(path: string, policy: CredentialFilePolicy, problem: CredentialFileProblem): Refusal {
+  return { ok: false, problem, message: credentialFileRefusal(path, policy, problem) };
+}
+
+function openProblem(err: unknown): CredentialFileProblem {
+  const code = errnoCode(err);
+  // ELOOP (Linux) / EMLINK (macOS) is O_NOFOLLOW meeting a symlink.
+  return code === "ENOENT" ? "missing" : code === "ELOOP" || code === "EMLINK" ? "symlink" : "unreadable";
+}
+
+/** The one problem a policy may downgrade to a warning (group/other write on a registry OpenRig does not own). */
+function warnedProblem(path: string, policy: CredentialFilePolicy, problem: CredentialFileProblem | null): CredentialFileWarning | undefined {
+  if (problem !== "group_or_other_write" || policy.groupOrOtherWrite !== "warn") return undefined;
+  return { problem, message: credentialFileRefusal(path, policy, problem) };
+}
+
+/**
+ * Where to open, per the policy's link mode (the open itself never follows, so the file opened is held to the whole rule):
+ * - linkTarget (SEAT_CREDENTIAL_LINKS): a link is followed only when it resolves to exactly that file;
+ * - followLinks (config.json, a supported dotfiles layout): a link is followed to its real target, wherever it is;
+ * - neither: the path itself, so a link is refused by the open.
+ */
+function resolveLinkedTarget(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): { target: string } | { problem: CredentialFileProblem } {
+  if (policy.linkTarget === undefined && !policy.followLinks) return { target: path };
+  try {
+    if (!ops.isSymbolicLink(path)) return { target: path };
+    const real = ops.realpath(path);
+    if (policy.linkTarget === undefined) return { target: real };
+    let expected: string;
+    try { expected = ops.realpath(policy.linkTarget); } catch { return { problem: "unexpected_link_target" }; }
+    return real === expected ? { target: real } : { problem: "unexpected_link_target" };
+  } catch (err) {
+    return { problem: errnoCode(err) === "ENOENT" ? "missing" : "unreadable" };
+  }
+}
+
+/** Read `path` under `policy` with `ops`. Never throws for a file problem: a refusal names the file and the fix. */
+export function readCredentialFileWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): CredentialFileRead {
+  const resolved = resolveLinkedTarget(ops, path, policy);
+  if ("problem" in resolved) return refusal(path, policy, resolved.problem);
+  let fd: number;
+  try { fd = ops.openNoFollow(resolved.target); } catch (err) { return refusal(path, policy, openProblem(err)); }
+  try {
+    const problem = judgeOpenedCredentialFile(ops.fstat(fd), policy, ops.currentUid());
+    const warning = warnedProblem(path, policy, problem);
+    if (problem && !warning) return refusal(path, policy, problem);
+    const buf = new Uint8Array(policy.maxBytes + 1);
+    let n = 0;
+    for (;;) {
+      const got = ops.read(fd, buf, n, buf.length - n);
+      if (got === 0) break;
+      n += got;
+      if (n > policy.maxBytes) return refusal(path, policy, "too_large");
+    }
+    const content = new TextDecoder().decode(buf.subarray(0, n));
+    return warning ? { ok: true, content, warning } : { ok: true, content };
+  } catch {
+    return refusal(path, policy, "unreadable");
+  } finally {
+    ops.close(fd);
+  }
+}
+
+/**
+ * For a file OpenRig itself owns and writes: the o9o.78 precedent. A link (unless the policy follows it), a non-file or another
+ * user's file is refused; a plain file of ours is narrowed on the opened descriptor (so the file narrowed is the file checked): a
+ * secret to 0600, a registry by clearing its group/other WRITE bits only. Null when it is now fit to read; the refusal otherwise.
+ */
+export function narrowOwnFileWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): Refusal | null {
+  const resolved = resolveLinkedTarget(ops, path, policy);
+  if ("problem" in resolved) return refusal(path, policy, resolved.problem);
+  let fd: number;
+  try { fd = ops.openNoFollow(resolved.target); } catch (err) { return refusal(path, policy, openProblem(err)); }
+  try {
+    const st = ops.fstat(fd);
+    // Before any chmod (o9o.151 ruling (c)): a hard-linked name would let the fchmod change another name's file.
+    const problem: CredentialFileProblem | null = !st.isFile ? "not_regular_file" : st.nlink > 1 ? "hard_linked" : st.uid !== ops.currentUid() ? "wrong_owner" : null;
+    if (problem) return refusal(path, policy, problem);
+    if (policy.kind === "secret" && (st.mode & 0o077) !== 0) ops.fchmod(fd, 0o600);
+    if (policy.kind === "registry" && (st.mode & 0o022) !== 0) ops.fchmod(fd, st.mode & 0o7777 & ~0o022);
+    return null;
+  } finally {
+    ops.close(fd);
+  }
+}
+
+/** narrowOwnFileWith then readCredentialFileWith: the read for a file OpenRig owns. */
+export function readOwnFileWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): CredentialFileRead {
+  return narrowOwnFileWith(ops, path, policy) ?? readCredentialFileWith(ops, path, policy);
+}
+
+/** Judge a credential file WITHOUT reading it (the operator's Pi login before a seat is linked to it). No content in the result. */
+export function inspectCredentialFileWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): { ok: true; warning?: CredentialFileWarning } | Refusal {
+  const resolved = resolveLinkedTarget(ops, path, policy);
+  if ("problem" in resolved) return refusal(path, policy, resolved.problem);
+  let fd: number;
+  try { fd = ops.openNoFollow(resolved.target); } catch (err) { return refusal(path, policy, openProblem(err)); }
+  try {
+    const problem = judgeOpenedCredentialFile(ops.fstat(fd), policy, ops.currentUid());
+    const warning = warnedProblem(path, policy, problem);
+    if (problem && !warning) return refusal(path, policy, problem);
+    return warning ? { ok: true, warning } : { ok: true };
+  } finally {
+    ops.close(fd);
+  }
+}
+
+/** The node:fs surface credentialFileOpsFrom uses, typed structurally so this module imports nothing. */
+export interface NodeFsLike {
+  constants: { O_RDONLY: number; O_NOFOLLOW: number; O_NONBLOCK: number };
+  openSync(path: string, flags: number): number;
+  fstatSync(fd: number): { isFile(): boolean; nlink: number; uid: number; mode: number; size: number };
+  readSync(fd: number, buffer: Uint8Array, offset: number, length: number, position: null): number;
+  fchmodSync(fd: number, mode: number): void;
+  closeSync(fd: number): void;
+  lstatSync(path: string): { isSymbolicLink(): boolean };
+  realpathSync(path: string): string;
+}
+
+/** CredentialFileOps over a node:fs-shaped module: the adapter passes node:fs; a domain module that already imports node:fs (under
+ *  the hexagonal baseline) passes that, so every reader runs this one procedure. */
+export function credentialFileOpsFrom(fs: NodeFsLike, currentUid: () => number): CredentialFileOps {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+  return {
+    openNoFollow: (path) => fs.openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK),
+    fstat: (fd) => {
+      const st = fs.fstatSync(fd);
+      return { isFile: st.isFile(), nlink: st.nlink, uid: st.uid, mode: st.mode, size: st.size };
+    },
+    read: (fd, buf, offset, length) => fs.readSync(fd, buf, offset, length, null),
+    fchmod: (fd, mode) => fs.fchmodSync(fd, mode),
+    close: (fd) => fs.closeSync(fd),
+    isSymbolicLink: (path) => fs.lstatSync(path).isSymbolicLink(),
+    realpath: (path) => fs.realpathSync(path),
+    currentUid,
+  };
+}

@@ -30,6 +30,11 @@ describe("the credential-file surface", () => {
     }
   });
 
+  it("the rule and its procedure import nothing at all (o9o.160, CoS: the domain module is pure; I/O is injected)", () => {
+    const text = readFileSync(join(SRC, "domain/credential-file.ts"), "utf8");
+    expect(text.match(/^\s*import\b|\bimport\(|\brequire\(/gm) ?? []).toEqual([]);
+  });
+
   it("reaches three files and only node:fs (the rule itself imports nothing)", () => {
     const seen = new Set<string>();
     const external = new Set<string>();
