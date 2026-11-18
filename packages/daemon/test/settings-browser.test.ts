@@ -1,7 +1,7 @@
 import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-reader.js";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { stringify } from "yaml";
@@ -143,6 +143,15 @@ describe("passive CONFIG read view", () => {
     const key = read().entries.find((e) => e.group === "hosts" && e.value === "first.example")!.key;
     writeFileSync(file, stringify({ hosts: [b, a] }));
     expect(read().entries.find((e) => e.key === key)?.value).toBe("first.example");
+  });
+
+  it("shows a hosts.yaml the credential rule refuses as unavailable, not malformed (o9o.151)", () => {
+    const file = join(home, "hosts.yaml");
+    writeFileSync(file, stringify({ hosts: [{ id: "first", transport: "ssh", target: "first.example" }] }));
+    chmodSync(file, 0o664); // the group can change it: refused, never read
+    const result = read();
+    expect(result.sources.find((s) => s.id === "hosts")?.state).toBe("unavailable");
+    expect(result.entries.some((e) => e.group === "hosts")).toBe(false);
   });
 
   it("isolates malformed host, health and human sources and refreshes away old values", () => {

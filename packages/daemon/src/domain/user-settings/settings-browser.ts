@@ -1,4 +1,4 @@
-import type { CredentialFileReader } from "../credential-file.js";
+import { HOSTS_REGISTRY_POLICY, type CredentialFileReader } from "../credential-file.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, isAbsolute } from "node:path";
@@ -199,9 +199,12 @@ export function settingsBrowser(credentialFiles: CredentialFileReader, store: Se
   }
 
   const hostPath = join(home, "hosts.yaml");
-  const hostFile = sourceFile(hostPath);
+  // workspaces-o9o.151: the registry's state comes from the credential rule, not a raw read: a file the rule refuses is
+  // "unavailable" (never read), not "malformed".
+  const hostRead = credentialFiles.read(hostPath, HOSTS_REGISTRY_POLICY);
+  const hostFileState: State = hostRead.ok ? "available" : hostRead.problem === "missing" ? "missing" : "unavailable";
   const hosts = loadHostRegistry(credentialFiles, hostPath);
-  sources.push({ id: "hosts", state: hosts.ok ? "available" : hostFile.state === "available" ? "malformed" : hostFile.state,
+  sources.push({ id: "hosts", state: hosts.ok ? "available" : hostFileState === "available" ? "malformed" : hostFileState,
     path: safePath(hostPath), detail: "Authored registered targets only; no connection or readiness probe." });
   if (hosts.ok) hosts.registry.hosts.forEach((host) => {
     const prefix = "hosts." + subjectKey(host.id) + ".";
