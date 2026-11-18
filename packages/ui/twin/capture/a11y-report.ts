@@ -86,13 +86,15 @@ export function dialogComponentOf(surface: Surface): string | null {
 /**
  * Every component in a source tree that renders a dialog: a hand-written role="dialog" (or alertdialog), or a Radix
  * DialogContent / AlertDialogContent, or a VellumSheet (whose role="dialog" lives in the ui primitive). The ui primitives
- * themselves are not components a person opens, so src/components/ui/ is skipped. `files`: path -> source.
+ * themselves are not components a person opens, so src/components/ui/ is skipped. Comments are stripped first: a comment
+ * that mentions a dialog does not make one. `files`: path -> source.
  */
 export function dialogComponents(files: Record<string, string>): string[] {
   const out = new Set<string>();
   for (const [file, text] of Object.entries(files)) {
     if (file.includes("/components/ui/")) continue;
-    if (/role=["{]+(alert)?dialog/.test(text) || /<(DialogContent|AlertDialogContent|VellumSheet)\b/.test(text)) {
+    const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+    if (/role=["{]+(alert)?dialog/.test(code) || /<(DialogContent|AlertDialogContent|VellumSheet)\b/.test(code)) {
       out.add(file.split("/").pop()!.replace(/\.tsx?$/, ""));
     }
   }

@@ -59,6 +59,7 @@ describe("twin:a11y covers every dialog (o9o.130, verify-qa2 finding 1)", () => 
       "/x/components/B.tsx": "<DialogContent>",
       "/x/components/C.tsx": "<VellumSheet open>",
       "/x/components/D.tsx": '<div role="region">',
+      "/x/components/E.tsx": '// a role="dialog" must be named\n/* <DialogContent> */\n<div role="region">',
       "/x/components/ui/vellum-sheet.tsx": '<div role="dialog">',
     })).toEqual(["A", "B", "C"]);
   });
