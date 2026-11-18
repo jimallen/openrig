@@ -18,6 +18,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { profileProblem, reap, startToken, type ProcessIdentity } from "./owned-chrome.js";
 import { DIALOGS_NOT_SCANNED, NOT_SCANNED, SURFACES, crashMessage, renderMarkdown, summarizeByRule, type ScanRecord, type Surface, type Theme, type Violation } from "./a11y-report.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,49 +103,36 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
 }
 
 /** What the scan created outside itself: filled in as each is created, so cleanup sees it even when start-up fails. */
-interface Held { proc?: ChildProcess; profile?: string; reaper?: ChildProcess }
+interface Held { proc?: ChildProcess; chrome?: ProcessIdentity; profile?: string; tmpRoot?: string; reaper?: ChildProcess }
+
+/** This scanner's own identity, read once at start: the reaper is given it, so it is captured before anything can die. */
+const OWNER: ProcessIdentity = { pid: process.pid, start: startToken(process.pid) };
+const REAPER = path.join(__dirname, "owned-chrome.ts");
 
 /**
- * workspaces-o9o.184: the owner-death reaper. A detached shell that outlives this scanner (its own session, so a stop of the
- * scanner's process tree does not take it), watches the scanner's pid AND start time (a reused pid is not the scanner), and
- * when the scanner is gone stops Chrome itself (its pid and start time, recorded at launch) and every process whose arguments
- * hold the profile path (Chrome's helpers), TERM then KILL, and removes the profile. The path is a fresh mkdtemp, so it names this scan's Chrome only; it reaches the watchdog through
- * its environment, so the watchdog's own arguments never match it. ps and kill only: Linux and macOS alike.
+ * Start Chrome and return its DevTools URL. The profile and the process are recorded in `held` the moment they exist.
+ * workspaces-o9o.184 (verify-sec review): the profile is checked to be this run's (owned-chrome.ts profileProblem) before
+ * anything uses it; Chrome's identity (pid and start time) is read synchronously right after the spawn, while Chrome is
+ * still this process's unreaped child, so its pid cannot have been reused; and the owner-death reaper is started with both
+ * identities already captured, so a scanner that dies before the reaper's first look is still seen as gone.
  */
-const REAPER = String.raw`owner=$1; chrome=$2; start=$(ps -o lstart= -p "$owner" 2>/dev/null); cstart=$(ps -o lstart= -p "$chrome" 2>/dev/null)
-[ -n "$start" ] || exit 0
-while [ "$(ps -o lstart= -p "$owner" 2>/dev/null)" = "$start" ]; do sleep 1; done
-for sig in TERM KILL; do
-  pids=$(ps -axo pid=,args= | while read -r pid args; do case $args in *"$TWIN_A11Y_PROFILE"*) echo "$pid" ;; esac; done)
-  if [ -n "$cstart" ] && [ "$(ps -o lstart= -p "$chrome" 2>/dev/null)" = "$cstart" ]; then pids="$pids $chrome"; fi
-  [ -n "$pids" ] || break
-  kill -$sig $pids 2>/dev/null
-  sleep 2
-done
-rm -rf "$TWIN_A11Y_PROFILE"`;
-
-/** The pids of processes whose arguments hold `profile` (this scan's Chrome and its helpers), from ps. */
-function holdersOf(profile: string): number[] {
-  const out = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).stdout ?? "";
-  return out.split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-    return m && m[2]!.includes(profile) && Number(m[1]) !== process.pid ? [Number(m[1])] : [];
-  });
-}
-
-/** Start Chrome and return its DevTools URL. The profile and the process are recorded in `held` the moment they exist. */
 async function launch(chrome: string, noSandbox: boolean, timeoutMs: number, held: Held): Promise<string> {
-  held.profile = mkdtempSync(path.join(os.tmpdir(), "twin-a11y-"));
+  const tmpRoot = path.resolve(os.tmpdir());
+  held.profile = mkdtempSync(path.join(tmpRoot, "twin-a11y-"));
+  held.tmpRoot = tmpRoot;
+  const problem = profileProblem(held.profile, tmpRoot);
+  if (problem !== null) throw new Error(`refusing to run Chrome: ${problem}`);
+  // The reaper exists BEFORE Chrome, with this scanner's identity already captured: no instant in which Chrome runs unwatched.
+  const reaper = spawn(process.execPath, [...process.execArgv, REAPER, "reap-when-gone", String(OWNER.pid), OWNER.start, held.profile, tmpRoot],
+    { detached: true, stdio: ["pipe", "ignore", "ignore"] });
+  reaper.unref();
+  (reaper.stdin as unknown as { unref?: () => void }).unref?.();
+  held.reaper = reaper;
   const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${held.profile}`, "--no-first-run", ...(noSandbox ? ["--no-sandbox"] : []), "about:blank"];
   const proc = spawn(chrome, args, { stdio: ["ignore", "ignore", "pipe"] });
   held.proc = proc;
-  // Armed in the same tick Chrome is spawned (nothing awaited in between), with Chrome's own pid: from here on, this scanner
-  // dying cannot leave Chrome, its helpers or the profile behind, even a Chrome whose arguments no longer show the profile.
-  const reaper = spawn("/bin/sh", ["-c", REAPER, "twin-a11y-reaper", String(process.pid), String(proc.pid ?? 0)], {
-    detached: true, stdio: "ignore", env: { ...process.env, TWIN_A11Y_PROFILE: held.profile },
-  });
-  reaper.unref();
-  held.reaper = reaper;
+  held.chrome = { pid: proc.pid ?? 0, start: proc.pid ? startToken(proc.pid) : "" };
+  if (held.chrome.start) reaper.stdin?.write(`chrome ${held.chrome.pid} ${held.chrome.start}\n`);
   return withTimeout(new Promise<string>((resolve, reject) => {
     let buf = "";
     proc.stderr!.on("data", (d: Buffer) => { buf += d.toString(); const m = /DevTools listening on (ws:\/\/\S+)/.exec(buf); if (m) resolve(m[1]!); });
@@ -154,9 +142,10 @@ async function launch(chrome: string, noSandbox: boolean, timeoutMs: number, hel
 }
 
 /**
- * Stop Chrome (TERM, then KILL after 5 s), then any helper still holding the profile (o9o.184: a helper can outlive the main
- * process and keep writing), and only then remove the profile. A profile that still cannot be removed is a warning naming
- * it, not a failure: the scan's result stands. Last, the reaper is stopped: nothing is left for it to do.
+ * Stop Chrome (TERM, then KILL after 5 s, through this process's own child handle), then anything still holding this run's
+ * exact profile flag, each re-checked right before its signal, and remove the profile only if it is this run's (owned-chrome.ts
+ * reap). A refusal or a profile that cannot be removed is a warning naming it, not a failure: the scan's result stands. Last,
+ * the reaper is stopped through its own child handle: nothing is left for it to do.
  */
 async function release(held: Held): Promise<void> {
   const proc = held.proc;
@@ -167,20 +156,15 @@ async function release(held: Held): Promise<void> {
       proc.kill("SIGTERM");
     });
   }
-  if (held.profile) {
-    for (const sig of ["SIGTERM", "SIGKILL"] as const) {
-      const pids = holdersOf(held.profile);
-      if (pids.length === 0) break;
-      for (const pid of pids) { try { process.kill(pid, sig); } catch { /* gone */ } }
-      await sleep(1000);
-    }
+  if (held.profile && held.tmpRoot) {
     try {
-      rmSync(held.profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      const r = reap({ profile: held.profile, tmpRoot: held.tmpRoot, ...(held.chrome && held.chrome.start ? { chrome: held.chrome } : {}) });
+      if (r.refused !== null) process.stderr.write(`twin:a11y warning — cleanup refused: ${r.refused}\n`);
     } catch (e) {
       process.stderr.write(`twin:a11y warning — could not remove the Chrome profile ${held.profile}: ${(e as Error).message}\n`);
     }
   }
-  if (held.reaper && held.reaper.exitCode === null) { try { held.reaper.kill("SIGKILL"); } catch { /* gone */ } }
+  if (held.reaper && held.reaper.exitCode === null && held.reaper.signalCode === null) { try { held.reaper.kill("SIGKILL"); } catch { /* gone */ } }
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

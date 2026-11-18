@@ -13,18 +13,30 @@ const TSX_ROOT = path.join(UI, "..", "..", "node_modules", ".bin", "tsx");
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(path.join(os.tmpdir(), "a11y-cleanup-test-")); });
-afterEach(() => {
-  // A stand-in the scanner failed to stop must not outlive the test (it would, under a mutated scanner).
+/**
+ * workspaces-o9o.184 (verify-sec review): a stand-in the scanner failed to stop must not outlive the test, and no other
+ * process may be signalled for it. Every stand-in records its pid AND its own start token (<name>.pid, <name>.start, in
+ * owned-chrome.ts startToken's format), and is signalled only while that start token still matches: never a bare pid.
+ */
+async function stopRecordedStandIns(): Promise<void> {
+  const { startToken } = await import("../twin/capture/owned-chrome.js");
   for (const f of readdirSync(dir).filter((n) => n.endsWith(".pid"))) {
-    try { process.kill(Number(readFileSync(path.join(dir, f), "utf8").trim()), "SIGKILL"); } catch { /* already gone */ }
+    const pid = Number(readFileSync(path.join(dir, f), "utf8").trim());
+    const startFile = path.join(dir, f.replace(/\.pid$/, ".start"));
+    if (!existsSync(startFile)) continue;
+    const start = readFileSync(startFile, "utf8").trim();
+    if (start && startToken(pid) === start) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
   }
+}
+afterEach(async () => {
+  await stopRecordedStandIns();
   rmSync(dir, { recursive: true, force: true });
 });
 
 /** A stand-in Chrome: records its pid and its arguments, optionally prints a DevTools line, then waits. */
 function standIn(name: string, devtoolsLine: string | null): string {
   const p = path.join(dir, name);
-  writeFileSync(p, `#!/usr/bin/env bash\necho $$ > "${dir}/${name}.pid"\nprintf "%s\\n" "$@" > "${dir}/${name}.args"\n${devtoolsLine ? `echo "${devtoolsLine}" >&2\n` : ""}exec sleep 120\n`);
+  writeFileSync(p, `#!/usr/bin/env bash\necho $$ > "${dir}/${name}.pid"\necho "$(if [ -r /proc/$$/stat ]; then echo "proc:$(sed 's/.*) //' /proc/$$/stat | cut -d' ' -f20)"; else echo "ps:$(ps -o lstart= -p $$ | sed 's/^ *//;s/ *$//')"; fi)" > "${dir}/${name}.start"\nprintf "%s\\n" "$@" > "${dir}/${name}.args"\n${devtoolsLine ? `echo "${devtoolsLine}" >&2\n` : ""}exec sleep 120\n`);
   chmodSync(p, 0o755);
   return p;
 }
@@ -92,20 +104,29 @@ describe("twin:a11y start-up failure leaves nothing behind (o9o.130)", () => {
 
 /** A stand-in Chrome with a HELPER: the helper carries the profile path in its arguments, as Chrome's own helpers do, and
  *  (when `scribble`) keeps writing into the profile after the main process is gone. */
-function standInWithHelper(name: string, devtoolsLine: string | null, scribble: boolean): string {
+function standInWithHelper(name: string, devtoolsLine: string | null, scribble: boolean, opts: { killParent?: boolean; decoys?: boolean; flagInTitle?: boolean } = {}): string {
   const p = path.join(dir, name);
-  const helper = scribble
-    ? `( trap '' TERM; exec -a "chrome-helper --user-data-dir=$profile" bash -c 'trap "" TERM; while :; do mkdir -p "$0/Default" 2>/dev/null; date > "$0/Default/x.$RANDOM" 2>/dev/null; sleep 0.05; done' "$profile" ) &`
-    : `( exec -a "chrome-helper --user-data-dir=$profile" sleep 120 ) &`;
+  const TOKEN = (v: string) => `$(if [ -r /proc/${v}/stat ]; then echo "proc:$(sed 's/.*) //' /proc/${v}/stat | cut -d' ' -f20)"; else echo "ps:$(ps -o lstart= -p ${v} | sed 's/^ *//;s/ *$//')"; fi)`;
+  // $BASHPID inside $( ) would be the command substitution's own subshell: capture the subshell's pid first.
+  const record = (file: string) => `me=$BASHPID; echo $me > "${dir}/${file}.pid"; echo "${TOKEN("$me")}" > "${dir}/${file}.start"`;
+  const body = scribble
+    ? `trap '' TERM; exec -a "chrome-helper --user-data-dir=$profile" bash -c 'trap "" TERM; while :; do mkdir -p "$0/Default" 2>/dev/null; date > "$0/Default/x.$RANDOM" 2>/dev/null; sleep 0.05; done' "$profile"`
+    : `exec -a "chrome-helper --user-data-dir=$profile" sleep 120`;
   writeFileSync(p, [
     "#!/usr/bin/env bash",
+    // The scanner dying before its reaper could look (o9o.184, verify-sec 1): the stand-in kills its parent first thing.
+    opts.killParent ? "kill -KILL $PPID" : "",
     `echo $$ > "${dir}/${name}.pid"`,
+    `echo "${TOKEN("$$")}" > "${dir}/${name}.start"`,
     `printf "%s\\n" "$@" > "${dir}/${name}.args"`,
     'profile=""; for a in "$@"; do case $a in --user-data-dir=*) profile=${a#--user-data-dir=} ;; esac; done',
-    helper,
-    `echo $! > "${dir}/${name}.helper.pid"`,
+    // Decoys name the profile only as a substring, never as the exact flag: not this run's Chrome (verify-sec 2).
+    opts.decoys ? `( ${record(`${name}.decoy1`)}; exec -a "decoy --user-data-dir=$profile/sub" sleep 120 ) &` : "",
+    opts.decoys ? `( ${record(`${name}.decoy2`)}; exec -a "decoy $profile" sleep 120 ) &` : "",
+    `( ${record(`${name}.helper`)}; ${body} ) &`,
     devtoolsLine ? `echo "${devtoolsLine}" >&2` : "",
-    "exec sleep 120",
+    // Real Chrome keeps the profile flag in its process title; a stand-in that `exec`s sleep loses it unless it re-sets it.
+    opts.flagInTitle ? 'exec -a "chrome-standin --user-data-dir=$profile" sleep 120' : "exec sleep 120",
   ].join("\n") + "\n");
   chmodSync(p, 0o755);
   return p;
@@ -116,7 +137,8 @@ function fakeNpm(hang: boolean): string {
   const bin = path.join(dir, "fakebin");
   mkdirSync(bin, { recursive: true });
   // A hanging stand-in records its pid, so afterEach stops it even when a broken scanner never times the build out.
-  writeFileSync(path.join(bin, "npm"), `#!/usr/bin/env bash\n${hang ? `echo $$ > "${dir}/npm.helper.pid"\nexec sleep 600` : "exit 0"}\n`);
+  const TOKEN = `$(if [ -r /proc/$$/stat ]; then echo "proc:$(sed 's/.*) //' /proc/$$/stat | cut -d' ' -f20)"; else echo "ps:$(ps -o lstart= -p $$ | sed 's/^ *//;s/ *$//')"; fi)`;
+  writeFileSync(path.join(bin, "npm"), `#!/usr/bin/env bash\n${hang ? `echo $$ > "${dir}/npm.helper.pid"\necho "${TOKEN}" > "${dir}/npm.helper.start"\nexec sleep 600` : "exit 0"}\n`);
   chmodSync(path.join(bin, "npm"), 0o755);
   return bin;
 }
@@ -185,11 +207,6 @@ const helperPidOf = (name: string) => Number(readFileSync(path.join(dir, `${name
 const until = async (ok: () => boolean, ms: number) => { const end = Date.now() + ms; while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 100)); return ok(); };
 
 describe("twin:a11y leaves nothing behind when the scanner itself dies, or a helper is busy (o9o.184)", () => {
-  afterEach(() => {
-    for (const f of readdirSync(dir).filter((n) => n.endsWith(".helper.pid"))) {
-      try { process.kill(Number(readFileSync(path.join(dir, f), "utf8").trim()), "SIGKILL"); } catch { /* gone */ }
-    }
-  });
 
   it("the scanner killed mid-run (SIGKILL): its Chrome, Chrome's helper and the profile are gone within seconds", async () => {
     const held: net.Socket[] = [];
@@ -206,6 +223,45 @@ describe("twin:a11y leaves nothing behind when the scanner itself dies, or a hel
       expect(helper).toBeGreaterThan(0);
       expect(profile.startsWith(path.join(dir, "tmp", "twin-a11y-"))).toBe(true);
       expect(await until(() => !alive(pid) && !alive(helper) && !existsSync(profile), 10_000)).toBe(true);
+    } finally {
+      for (const s of held) s.destroy();
+      server.close();
+    }
+  }, 45_000);
+
+  it("the scanner dying before its reaper could look (killed by its own Chrome, first thing): Chrome, helper and profile are still reaped", async () => {
+    const held: net.Socket[] = [];
+    const server = net.createServer((sock) => { held.push(sock); });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const name = "chrome-kills-parent";
+      const r = await runScan2(standInWithHelper(name, `DevTools listening on ws://127.0.0.1:${port}/devtools/browser/x`, false, { killParent: true, flagInTitle: true }),
+        ["--start-timeout-ms", "20000", "--only", "/"]);
+      expect(r.signal).toBe("SIGKILL");
+      expect(await until(() => existsSync(path.join(dir, `${name}.helper.pid`)), 5_000), "positive control: the helper started").toBe(true);
+      const pid = pidOf(name), helper = helperPidOf(name), profile = profileOf(name)!;
+      expect(await until(() => !alive(pid) && !alive(helper) && !existsSync(profile), 10_000)).toBe(true);
+    } finally {
+      for (const s of held) s.destroy();
+      server.close();
+    }
+  }, 45_000);
+
+  it("a process naming the profile only as a substring is not this run's Chrome: it survives the reap", async () => {
+    const held: net.Socket[] = [];
+    const server = net.createServer((sock) => { held.push(sock); });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const name = "chrome-with-decoys";
+      const r = await runScan2(standInWithHelper(name, `DevTools listening on ws://127.0.0.1:${port}/devtools/browser/x`, false, { decoys: true }),
+        ["--start-timeout-ms", "20000", "--only", "/"], { killAfterPid: name });
+      expect(r.signal).toBe("SIGKILL");
+      const decoys = [1, 2].map((i) => Number(readFileSync(path.join(dir, `${name}.decoy${i}.pid`), "utf8").trim()));
+      expect(decoys.every((d) => d > 0), "positive control: both decoys started").toBe(true);
+      expect(await until(() => !alive(pidOf(name)) && !alive(helperPidOf(name)), 10_000), "Chrome and its exact-flag helper are reaped").toBe(true);
+      expect(decoys.map(alive)).toEqual([true, true]);
     } finally {
       for (const s of held) s.destroy();
       server.close();
@@ -239,4 +295,64 @@ describe("twin:a11y leaves nothing behind when the scanner itself dies, or a hel
       } finally { dev.close(); }
     }, 60_000);
   }
+});
+
+// o9o.184 (verify-sec 3): nothing is selected or removed unless the profile is this run's: a non-empty, absolute,
+// whitespace-free, real directory owned by this user, named twin-a11y-XXXXXX, directly in the run's temp folder.
+describe("owned-chrome: the profile boundary (o9o.184)", () => {
+  it("names each way a path is not this run's profile, and passes the real one", async () => {
+    const mod = await import("../twin/capture/owned-chrome.js").catch(() => null);
+    expect(mod?.profileProblem, "owned-chrome.ts exports profileProblem").toBeTypeOf("function");
+    const { profileProblem } = mod!;
+    const root = path.join(dir, "tmproot");
+    mkdirSync(root, { recursive: true });
+    const real = mkdtempSync(path.join(root, "twin-a11y-"));
+    expect(profileProblem(real, root)).toBeNull();
+    const other = mkdtempSync(path.join(root, "other-"));
+    const elsewhere = mkdtempSync(path.join(dir, "twin-a11y-"));
+    const link = path.join(root, "twin-a11y-LINKAA");
+    (await import("node:fs")).symlinkSync(elsewhere, link);
+    for (const [label, profile] of [
+      ["empty", ""], ["relative", "twin-a11y-AAAAAA"], ["the temp folder itself", root], ["its parent", dir],
+      ["a sibling not named twin-a11y-", other], ["a twin-a11y- folder in another folder", elsewhere],
+      ["a symlink named like a profile", link], ["a profile that does not exist", path.join(root, "twin-a11y-ZZZZZZ")],
+      ["whitespace", path.join(root, "twin-a11y-A B CD")],
+    ] as const) expect(profileProblem(profile, root), label).not.toBeNull();
+  });
+
+  it("a signal goes only to the same process: a changed start time, or a missing exact profile flag, sends nothing", async () => {
+    const mod = await import("../twin/capture/owned-chrome.js").catch(() => null);
+    expect(mod?.signalIfStill, "owned-chrome.ts exports signalIfStill").toBeTypeOf("function");
+    const { signalIfStill, startToken } = mod!;
+    const child = spawn("bash", ["-c", "exec -a \"x --user-data-dir=/nowhere/twin-a11y-AAAAAA\" sleep 60"], { stdio: "ignore" });
+    try {
+      await new Promise((r) => setTimeout(r, 300));
+      const real = { pid: child.pid!, start: startToken(child.pid!) };
+      expect(real.start, "positive control: the start token is readable").not.toBe("");
+      expect(signalIfStill({ ...real, start: `${real.start}0` }, "SIGTERM", null), "a different start time").toBe(false);
+      expect(signalIfStill(real, "SIGTERM", "/nowhere/twin-a11y-BBBBBB"), "another profile").toBe(false);
+      expect(signalIfStill(real, "SIGTERM", "/nowhere/twin-a11y-AAAAA"), "a prefix of the profile").toBe(false);
+      expect(alive(child.pid!)).toBe(true);
+      expect(signalIfStill(real, "SIGTERM", "/nowhere/twin-a11y-AAAAAA"), "the same process, the exact flag").toBe(true);
+    } finally { child.kill("SIGKILL"); }
+  });
+
+  it("reap refuses a profile that is not this run's: nothing is signalled, nothing is removed", async () => {
+    const mod = await import("../twin/capture/owned-chrome.js").catch(() => null);
+    expect(mod?.reap, "owned-chrome.ts exports reap").toBeTypeOf("function");
+    const root = path.join(dir, "tmproot2");
+    mkdirSync(root, { recursive: true });
+    // A process carrying the EXACT flag for the would-be profile: a refusal must not signal it.
+    const victim = spawn("bash", ["-c", `exec -a "x --user-data-dir=${root}" sleep 60`], { stdio: "ignore" });
+    try {
+      await new Promise((r) => setTimeout(r, 300));
+      for (const profile of ["", root, dir]) {
+        const r = mod!.reap({ profile, tmpRoot: path.dirname(root) });
+        expect(r.refused, `refused: ${profile}`).not.toBeNull();
+        expect(r.signalled).toBe(0);
+      }
+      expect(existsSync(root)).toBe(true);
+      expect(alive(victim.pid!)).toBe(true);
+    } finally { victim.kill("SIGKILL"); }
+  });
 });
