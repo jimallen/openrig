@@ -115,7 +115,8 @@ function standInWithHelper(name: string, devtoolsLine: string | null, scribble: 
 function fakeNpm(hang: boolean): string {
   const bin = path.join(dir, "fakebin");
   mkdirSync(bin, { recursive: true });
-  writeFileSync(path.join(bin, "npm"), `#!/usr/bin/env bash\n${hang ? "exec sleep 600" : "exit 0"}\n`);
+  // A hanging stand-in records its pid, so afterEach stops it even when a broken scanner never times the build out.
+  writeFileSync(path.join(bin, "npm"), `#!/usr/bin/env bash\n${hang ? `echo $$ > "${dir}/npm.helper.pid"\nexec sleep 600` : "exit 0"}\n`);
   chmodSync(path.join(bin, "npm"), 0o755);
   return bin;
 }
