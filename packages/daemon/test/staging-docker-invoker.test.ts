@@ -19,6 +19,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect } from "vitest";
 import { makeRealStagingDocker } from "./helpers/staging-docker-invoker.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 /** True once no process with this pid exists (an unreaped zombie still counts as alive, so poll
  *  briefly: the orphan is reparented and reaped by init or a subreaper). */
@@ -46,8 +47,9 @@ function descendantScript(pidFile: string): string {
 async function waitForPidFiles(pidFiles: string[], withinMs = 10_000): Promise<void> {
   const deadline = Date.now() + withinMs;
   const ready = (file: string) => fs.existsSync(file) && /^\d+\s*$/.test(fs.readFileSync(file, "utf8"));
+  const waitStarted = Date.now();
   while (!pidFiles.every(ready)) {
-    if (Date.now() > deadline) throw new Error(`descendants never started: ${pidFiles.filter((f) => !ready(f)).join(", ")}`);
+    if (Date.now() > deadline) throw waitTimedOut(`descendants never started: ${pidFiles.filter((f) => !ready(f)).join(", ")}`, waitStarted);
     await new Promise((resolveWait) => setTimeout(resolveWait, 25));
   }
 }

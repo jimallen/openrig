@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HC, PrivateCore as TestPrivateCore } from "./hc-private-core.js";
 import { PrivateCore as HelperPrivateCore } from "./helpers/hc-private-core.js";
 import { hasProcFs } from "./helpers/orphan-reaper.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(here, "fixtures", "private-core-owner-kill-worker.mts");
@@ -85,13 +86,14 @@ async function startWorker(helper: "test" | "helpers"): Promise<{ worker: ChildP
   createInterface({ input: worker.stdout! }).on("line", (line) => { try { messages.push(JSON.parse(line) as WorkerMeta); } catch { stderr += line; } });
   const until = Date.now() + 30_000;
   let meta: WorkerMeta | undefined;
+  const waitStarted = Date.now();
   for (;;) {
     meta ??= messages.find((m) => m.type === "root");
     if (meta && !metas.includes(meta)) metas.push(meta);
     const failed = messages.find((m) => m.type === "error");
     if (failed) throw new Error(`worker failed: ${failed.error}; stderr: ${stderr}`);
     if (meta && messages.some((m) => m.type === "ready")) return { worker, meta };
-    if (worker.exitCode !== null || Date.now() > until) throw new Error(`worker not ready (exit ${worker.exitCode}); stderr: ${stderr}`);
+    if (worker.exitCode !== null || Date.now() > until) throw waitTimedOut(`worker not ready (exit ${worker.exitCode}); stderr: ${stderr}`, waitStarted);
     await sleep(25);
   }
 }

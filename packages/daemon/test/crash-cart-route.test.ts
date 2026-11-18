@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { crashCartRoutes, __resetFleetAttempts } from "../src/routes/crash-cart.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 beforeEach(() => __resetFleetAttempts());
 
@@ -51,12 +52,13 @@ async function getStatus(app: Hono, id: string): Promise<StatusBody> {
 
 // Poll the status endpoint until the background fleet restore reports done.
 async function pollUntilDone(app: Hono, id: string): Promise<StatusBody> {
+  const waitStarted = Date.now();
   for (let i = 0; i < 200; i++) {
     const body = await getStatus(app, id);
     if (body.done) return body;
     await new Promise((r) => setTimeout(r, 0));
   }
-  throw new Error("fleet restore never reported done");
+  throw waitTimedOut("fleet restore never reported done", waitStarted);
 }
 
 describe("POST /api/crash-cart/restore-fleet — the async conductor batch verb", () => {

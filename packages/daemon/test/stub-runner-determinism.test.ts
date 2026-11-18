@@ -6,6 +6,7 @@ import { createServer, type Server } from "node:http";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { StubScript } from "../src/adapters/stub-script.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Slice 51-01 items 6-8 — R3: the FULL stub-level determinism pin. PRD §5 guarantees
 // "no wall-clock/RNG in the stub's OWN behavior": running the SAME script twice under
@@ -35,9 +36,10 @@ interface RunResult { pane: string; events: Record<string, unknown>[]; markerCre
 async function waitFor(pred: () => boolean, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   // eslint-disable-next-line no-constant-condition
+  const waitStarted = Date.now();
   while (true) {
     if (pred()) return;
-    if (Date.now() > deadline) throw new Error(`condition not met within ${timeoutMs}ms`);
+    if (Date.now() > deadline) throw waitTimedOut(`condition not met within ${timeoutMs}ms`, waitStarted);
     await new Promise((r) => setTimeout(r, 50));
   }
 }

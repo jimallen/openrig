@@ -6,6 +6,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SLOW_OUTPUT_CHUNKS } from "../src/adapters/stub-runner.js";
 import type { StubScript } from "../src/adapters/stub-script.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Slice 51-01 items 6-8 — slow_output real-spawn observable: the WIRED runner renders
 // the deterministic multi-part chunk sequence to a REAL pane (the production-identical
@@ -20,9 +21,10 @@ const SEAT = "dev-worker@slow-output-e2e";
 async function waitFor(pred: () => boolean, timeoutMs = 12_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   // eslint-disable-next-line no-constant-condition
+  const waitStarted = Date.now();
   while (true) {
     if (pred()) return;
-    if (Date.now() > deadline) throw new Error(`condition not met within ${timeoutMs}ms`);
+    if (Date.now() > deadline) throw waitTimedOut(`condition not met within ${timeoutMs}ms`, waitStarted);
     await new Promise((r) => setTimeout(r, 50));
   }
 }

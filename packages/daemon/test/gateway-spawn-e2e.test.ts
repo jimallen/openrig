@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 // M1 A4a — REAL-SPAWN liveness proof. The lessons idle-process-needs-refd-handle +
 // in-memory-test-path-hides-real-spawn-bugs are explicit: an in-process test CANNOT prove a
@@ -52,7 +53,7 @@ function waitFor(pred: () => boolean, ms = 10000): Promise<void> {
     const start = Date.now();
     const iv = setInterval(() => {
       if (pred()) { clearInterval(iv); resolve(); }
-      else if (Date.now() - start > ms) { clearInterval(iv); reject(new Error("waitFor timeout")); }
+      else if (Date.now() - start > ms) { clearInterval(iv); reject(waitTimedOut("waitFor timeout", start)); }
     }, 25);
   });
 }

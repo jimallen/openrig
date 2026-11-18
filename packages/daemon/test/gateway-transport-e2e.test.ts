@@ -11,6 +11,7 @@ import {
   type CapabilityDescriptor,
   type OutboundDecision,
 } from "../src/domain/gateway/protocol.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 // M1 A4a — proof-9 over a REAL unix socket (not an in-memory sink): the gateway out-dials a
 // stub connector, exchanges newline-framed JSON, and we prove:
@@ -77,7 +78,7 @@ function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
     const start = Date.now();
     const iv = setInterval(() => {
       if (pred()) { clearInterval(iv); resolve(); }
-      else if (Date.now() - start > ms) { clearInterval(iv); reject(new Error("waitFor timeout")); }
+      else if (Date.now() - start > ms) { clearInterval(iv); reject(waitTimedOut("waitFor timeout", start)); }
     }, 10);
   });
 }

@@ -11,15 +11,17 @@ import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const run = promisify(execFile);
 const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
 async function until(predicate: () => boolean) {
+  const waitStarted = Date.now();
   for (let i = 0; i < 200; i++) {
     if (predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 25));
   }
-  throw new Error("Fixture did not return to its shell prompt");
+  throw waitTimedOut("Fixture did not return to its shell prompt", waitStarted);
 }
 
 // The real adapters and an hc terminal deliver to an interactive Bash with an rc-defined
@@ -64,21 +66,23 @@ describe.skipIf(!findHc() || !fs.existsSync("/bin/bash"))("classic Claude intera
 
   /** The terminal once it has finished (the launch ended the pane shell), or a failure after 10 s. */
   async function terminalFinished(name: string): Promise<{ exit_code?: number | null; reason?: string | null }> {
+    const waitStarted = Date.now();
     for (let i = 0; i < 400; i++) {
       const terminal = await scratch.client().call<{ state: string; exit_code?: number | null; reason?: string | null }>("terminal.get", { terminal: hcTerminalName(name) });
       if (terminal.state === "finished") return terminal;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    throw new Error(`the pane shell of ${name} did not end after the launch`);
+    throw waitTimedOut(`the pane shell of ${name} did not end after the launch`, waitStarted);
   }
 
   async function foregroundReported(name: string): Promise<void> {
+    const waitStarted = Date.now();
     for (let i = 0; i < 400; i++) {
       const terminal = await scratch.client().call<{ foreground?: { name?: string } | null }>("terminal.get", { terminal: hcTerminalName(name) });
       if (terminal.foreground?.name) return;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    throw new Error(`hc never reported a foreground process for ${name}`);
+    throw waitTimedOut(`hc never reported a foreground process for ${name}`, waitStarted);
   }
 
   // HcInput.sendShellCommand reads the pane shell from `terminal.foreground`, which hc fills in about 0.4 s after the terminal starts

@@ -39,6 +39,7 @@
 
 import { execFile } from "node:child_process";
 import type { RigSeatSession } from "./eval-rig-provider.js";
+import { waitTimedOut } from "./wait-timeout.js";
 
 export type RigExec = (args: string[]) => Promise<string>;
 
@@ -396,9 +397,10 @@ export function createRigCliSession(options: RigCliSessionOptions): { spawn: () 
           // carries a TERMINAL stop_reason — never content-stability (the 80-byte-footer bug). The
           // graded value is assistant/tool OUTPUT TEXT ONLY — never the user prompt, never the JSON
           // envelope. Custody is enforced per-case: an intervening user input fails the case closed.
+          const waitStarted = Date.now();
           for (;;) {
             if (Date.now() > deadline) {
-              throw new Error(`captureSince: seat '${sessionName}' did not complete a native turn within ${timeoutMs}ms (no terminal stop_reason observed; did not go stable is retired as a done-signal)`);
+              throw waitTimedOut(`captureSince: seat '${sessionName}' did not complete a native turn within ${timeoutMs}ms (no terminal stop_reason observed; did not go stable is retired as a done-signal)`, waitStarted);
             }
             await sleep(pollMs);
             const rec = await tolerantRead(failures);

@@ -20,6 +20,7 @@ import {
 import { spawnScenarioDaemon } from "./helpers/scenario-daemon.js";
 import { runScenarioFile, ScenarioTeardownError } from "./helpers/scenario-pipeline.js";
 import { prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 let hasTmux = false;
 try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); hasTmux = true; } catch { /* optional dependency */ }
@@ -56,6 +57,7 @@ function tmuxFixture() {
 /** A `tmux -D` server started through the scaffold's wrapper, detached, as the daemon's startServer does at boot. */
 async function startScaffoldTmuxServer(scaffold: HermeticScaffold): Promise<ProcessIdentity> {
   spawn("/bin/sh", ["-c", "tmux -D </dev/null >/dev/null 2>&1 &"], { env: scaffold.env, stdio: "ignore" });
+  const waitStarted = Date.now();
   for (let i = 0; i < 400; i++) {
     const server = fs.existsSync(scaffold.tmuxSocketPath) ? await ownedTmuxServer(scaffold.tmuxSocketPath, scaffold.tmuxEnv) : null;
     if (server !== null) {
@@ -64,7 +66,7 @@ async function startScaffoldTmuxServer(scaffold: HermeticScaffold): Promise<Proc
     }
     await sleep(25);
   }
-  throw new Error("the scaffold's tmux -D server never answered");
+  throw waitTimedOut("the scaffold's tmux -D server never answered", waitStarted);
 }
 /**
  * Pids of processes whose argument list carries `needle`; with `label`, only the watchdogs armed under that label

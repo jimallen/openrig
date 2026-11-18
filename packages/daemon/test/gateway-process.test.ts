@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { runGatewayProcess, type GatewayProcessHandle } from "../src/domain/gateway/gateway-process.js";
 import { DispatchBuffer } from "../src/domain/gateway/dispatch-buffer.js";
 import { encodeGatewayMessage, decodeGatewayMessage, type CapabilityDescriptor, type OutboundDecision } from "../src/domain/gateway/protocol.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 // M1 A4a — the process BRAIN in-process (fast, fine-grained). This does NOT prove liveness
 // (a spawned process's silent-exit is masked by vitest's own event loop — that is proven by
@@ -42,7 +43,7 @@ const closeStub = (s: Stub): Promise<void> => new Promise((res) => { for (const 
 function waitFor(pred: () => boolean, ms = 4000): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now();
-    const iv = setInterval(() => { if (pred()) { clearInterval(iv); resolve(); } else if (Date.now() - start > ms) { clearInterval(iv); reject(new Error("waitFor timeout")); } }, 15);
+    const iv = setInterval(() => { if (pred()) { clearInterval(iv); resolve(); } else if (Date.now() - start > ms) { clearInterval(iv); reject(waitTimedOut("waitFor timeout", start)); } }, 15);
   });
 }
 
