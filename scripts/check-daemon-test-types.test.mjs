@@ -90,6 +90,18 @@ test("`as unknown as`, a `<any>x` assertion and ts-ignore / ts-expect-error each
   assert.deepEqual(counts, { "test/c.test.ts": 1, "test/d.test.ts": 2, "test/e.test.ts": 2 });
 });
 
+// workspaces-o9o.167: `as never` is assignable to every type, so it hides a fixture's shape exactly as `as any` does (two drifted
+// restore fixtures hid behind it in o9o.162). It counts; `never` as a type, a `satisfies never` check and `as unknown as never` (counted
+// once) do not add escapes of their own.
+test("`as never` counts as a cast escape; `never` in a type position does not, and `as unknown as never` counts once", () => {
+  const counts = countCastEscapesByFile({
+    "test/g.test.ts": "f({ ok: false } as never); const h = (x as never)[0]; const v = w as never;",
+    "test/h.test.ts": "function fail(): never { throw new Error(); } const n: never[] = []; const s = v satisfies never; type T = Promise<never>;",
+    "test/i.test.ts": "const a = b as unknown as never; const c = d as neverMind;",
+  });
+  assert.deepEqual(counts, { "test/g.test.ts": 3, "test/i.test.ts": 1 });
+});
+
 // OF-127 review: a killed or truncated tsc run must not be read as the errors it managed to print.
 test("a tsc run that errored, was killed, or exited other than 0 or 2 is a problem; 0 and 2 are not", () => {
   assert.equal(tscRunProblem({ status: 0, signal: null }), undefined);

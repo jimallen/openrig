@@ -12,7 +12,8 @@
 //    "(no file)" instead of being ignored once positioned errors exist, and any line that says
 //    `error TSnnnn:` but fits none of the recognised shapes fails the check loudly;
 //  - type-system escape hatches in a daemon test file are ratcheted the same way against
-//    scripts/daemon-test-cast-baseline.json: `as any`, `as unknown as`, a `<any>x` assertion, and
+//    scripts/daemon-test-cast-baseline.json: `as any`, `as unknown as`, `as never` (assignable to every type, so it hides a
+//    fixture's shape the same way; workspaces-o9o.167), a `<any>x` assertion, and
 //    `@ts-ignore` / `@ts-expect-error` each hide exactly the signal this check exists for. (Plain `!` is not
 //    counted: it asserts one fact and is erased; `Record<string, any>` style annotations are not casts.)
 //  - a tsc run that was killed, could not start, or exited with anything but 0 or 2 fails the check
@@ -50,7 +51,7 @@ export function unrecognisedErrorLines(tscOutput) {
 
 // `<any>x` only as a prefix assertion: not preceded by an identifier, `]`, `)` or `>` (that is `Array<any>`,
 // `vi.fn<any>(`), and followed by the start of an operand.
-const CAST_ESCAPE = /\bas any\b|\bas unknown as\b|(?<![\w\])>])<any>(?=\s*[\w(\[{"'`!])|@ts-(?:ignore|expect-error)\b/g;
+const CAST_ESCAPE = /\bas any\b|\bas unknown as\b|\bas never\b|(?<![\w\])>])<any>(?=\s*[\w(\[{"'`!])|@ts-(?:ignore|expect-error)\b/g;
 
 /** Count type-system escape hatches per file for { relativePath: sourceText }. */
 export function countCastEscapesByFile(sources) {
@@ -175,7 +176,7 @@ function main() {
       console.error("Fix them; the baseline (scripts/daemon-test-type-baseline.json) can only shrink.");
     }
     if (casts.regressions.length > 0) {
-      console.error("daemon test type-check: new cast escapes (`as any`, `as unknown as`, `<any>`, `@ts-ignore`) in daemon tests; narrow the type or fix the fixture instead:");
+      console.error("daemon test type-check: new cast escapes (`as any`, `as unknown as`, `as never`, `<any>`, `@ts-ignore`) in daemon tests; narrow the type or fix the fixture instead:");
       for (const r of casts.regressions) console.error(`  ${r.file}: ${r.count} cast escapes, baseline allows ${r.allowed}`);
       console.error("The allowance (scripts/daemon-test-cast-baseline.json) can only shrink.");
     }
