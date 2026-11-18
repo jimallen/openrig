@@ -29,20 +29,27 @@
 #   ride queue/stream, where the 51-06 fix must surface the divergence.
 scenario: kill-daemon-mid-handoff
 topology: ./dev-pair-stub.yaml
+# workspaces-o9o.132 (ROUTING R-17, setup half): `send` creates no queue item, so the in-progress handoff is
+# established the way queue-baton-survives-restart does it: a claimed env.queue precondition, applied after `up`.
+env:
+  queue:
+    - id: handoff-1
+      source: harness@dev-pair-stub
+      destination: dev-qa@dev-pair-stub
+      summary: "kill-daemon-mid-handoff: the handoff in flight when the daemon dies"
+      claim: true
 steps:
   - up: {}
   # Drive an executed handoff: impl hands work to qa; qa claims and executes it.
   - send: {to: dev-qa@dev-pair-stub, text: "execute cleanup task (receipt on disk)"}
-  # Real queue = BARE ARRAY QueueItem[] {qitemId,state,destinationSession,…}. NOTE (R-17,
-  # routed): a `send` creates a STREAM item, not a queue item — faithfully establishing an
-  # in-progress handoff needs an `env.queue` precondition + claim (as #2 does) or a queue
-  # action verb. Until R-17 resolves, this leg observes [] (expected-RED, consistent with
-  # the scenario's 51-06 RED-first posture). Shape shown shipped-correct for the flip.
+  # Real queue = BARE ARRAY QueueItem[] {qitemId,state,destinationSession,…}. The env.queue
+  # precondition above (R-17 setup) makes this the claimed handoff, in progress.
   - expect:
       surface: queue
       within: 20s
       match:
-        - state: in-progress
+        - qitemId: handoff-1
+          state: in-progress
           destinationSession: dev-qa@dev-pair-stub
   # Kill the scenario-local daemon in the window AFTER execution, BEFORE the closure
   # write commits — the exact incident shape.
