@@ -159,6 +159,8 @@ describe("the real CLI entry (src/index.ts) on an unsupported or broken Node", (
       expect(r.status, r.stderr).toBe(1);
       expect(r.stderr).toContain(version);
       expect(r.stderr).toMatch(/22, 24 (or|and) 26/);
+      // Refused, not warned: the command itself never ran (with the gate passed, ps reaches the dead daemon URL and says so).
+      expect(r.stderr + r.stdout).not.toContain("Daemon did not respond");
     }
   });
 
