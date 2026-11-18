@@ -29,6 +29,19 @@ $OPENRIG_HOME/
   secrets/                # local connector and host secrets
 ```
 
+## Files that hold or route credentials
+
+`config.json`, `daemon.json`, `hosts.yaml`, `slack-connector.json`, the token files and `secrets/` hold a credential or choose where
+one is sent, so OpenRig reads them only as plain files owned by you (workspaces-o9o.151, o9o.160): a secret file must be readable
+by nobody else, and a registry such as `config.json` or `hosts.yaml` changeable by nobody else. A refusal names the file and the fix.
+
+Links are treated differently by file, on purpose:
+
+- `config.json` may be a symbolic link (a dotfiles layout): its writer follows the link, and the rule judges, and narrows, the file
+  the link points at.
+- `daemon.json` and `hosts.yaml` may not: `daemon.json`'s writer replaces the name, and a link there would choose the address the
+  terminal token is sent to. Replace such a link with the file itself.
+
 The initializer creates only missing managed entries. It never overwrites an
 existing file, and it checks every managed path before the first write. A path
 with the wrong type is reported by its exact location; unrelated user-owned
