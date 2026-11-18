@@ -24,7 +24,7 @@ describe("postinstall ABI check", () => {
     });
     expect(result.ok).toBe(false);
     expect(addonCalled).toBe(false);
-    expect(messageOf(result)).toContain("requires Node.js 22 or 24");
+    expect(messageOf(result)).toContain("requires Node.js 22, 24 or 26");
     expect(messageOf(result)).toContain("Node 20 is no longer supported");
     expect(messageOf(result)).toContain("v20.20.2");
     expect(messageOf(result)).toContain("nvm install 22");
@@ -64,7 +64,7 @@ describe("postinstall ABI check", () => {
       loadNativeAddon: () => {},
     });
     expect(result.ok).toBe(false);
-    expect(messageOf(result)).toContain("requires Node.js 22 or 24");
+    expect(messageOf(result)).toContain("requires Node.js 22, 24 or 26");
     expect(messageOf(result)).toContain("nvm install 22");
   });
 
@@ -126,15 +126,22 @@ describe("postinstall ABI check", () => {
     expect(addonCalled).toBe(false);
   });
 
-  it("warns but passes on an untested even major above 24 when the database opens", () => {
+  it("warns but passes on an untested even major ABOVE the supported range (28) when the database opens", () => {
+    const result = checkAbi({
+      nodeVersion: "v28.0.0",
+      loadNativeAddon: () => {},
+      openNativeDatabase: () => ({ ok: true }),
+    });
+    expect(result).toEqual({ ok: true, warning: expect.stringContaining("Node 28 is untested") });
+  });
+
+  it("passes on Node 26 (now a supported even LTS) with no warning when the database opens (workspaces-o9o.121)", () => {
     const result = checkAbi({
       nodeVersion: "v26.1.0",
       loadNativeAddon: () => {},
       openNativeDatabase: () => ({ ok: true }),
     });
-    // The whole ok result, not a narrowed field: an ok:true that lost or changed its warning fails here.
-    expect(result).toEqual({ ok: true, warning: expect.stringContaining("Node 26 is untested") });
-    expect(result).toEqual({ ok: true, warning: expect.stringContaining("Supported: Node.js 22 and 24") });
+    expect(result).toEqual({ ok: true });
   });
 
   it("does not warn on supported majors", () => {

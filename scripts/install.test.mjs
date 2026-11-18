@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 const script = path.join(import.meta.dirname, "install.sh");
 const source = fs.readFileSync(script, "utf8");
 const nodeAdvice = [
-  "Node.js 22 or 24 with npm",
+  "Node.js 22, 24 or 26 with npm",
   "Distribution packages can be older; check node --version.",
   "official Node installer",
   "Linux route (NodeSource or nvm)",

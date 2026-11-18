@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 // Postinstall native-SQLite check for @openrig/cli.
-// OpenRig supports Node.js 22 and 24. better-sqlite3 13 requires Node 22 or
+// OpenRig supports Node.js 22, 24 and 26 (workspaces-o9o.121). better-sqlite3 13 requires Node 22 or
 // newer; on Node 20 it installs and loads, then crashes (SIGSEGV) the first
 // time a database is opened. This check refuses unsupported majors BEFORE any
 // native code runs, then proves the binding can actually open a database.
 // The open runs in a child process so a native crash is reported, not silent.
 
-const SUPPORTED_MAJORS = [22, 24];
+const SUPPORTED_MAJORS = [22, 24, 26];
 
 const box = (lines) =>
   [
@@ -37,7 +37,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
     return {
       ok: false,
       message: box([
-        "@openrig/cli requires Node.js 22 or 24 (LTS).",
+        "@openrig/cli requires Node.js 22, 24 or 26 (even LTS).",
         `Current: ${nodeVersion}`,
         "",
         "Node 20 is no longer supported: the SQLite binding",
@@ -55,7 +55,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
         "@openrig/cli does not support odd-numbered Node releases.",
         `Current: ${nodeVersion}`,
         "",
-        "Supported: Node.js 22 and 24 (LTS).",
+        "Supported: Node.js 22, 24 and 26 (even LTS).",
         "",
         FIX_INSTALL,
       ]),
@@ -69,7 +69,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
         `Node ${major} is untested with @openrig/cli.`,
         `Current: ${nodeVersion}`,
         "",
-        "Supported: Node.js 22 and 24 (LTS). The SQLite check below",
+        "Supported: Node.js 22, 24 and 26 (even LTS). The SQLite check below",
         "passed, but other behavior on this Node is unverified.",
       ]);
 
@@ -117,7 +117,7 @@ export function checkAbi({ nodeVersion, loadNativeAddon, openNativeDatabase }) {
             `Current: ${nodeVersion}`,
             "",
             "Fix:  npm rebuild better-sqlite3",
-            "If that fails, reinstall with Node 22 or 24:",
+            "If that fails, reinstall with Node 22, 24 or 26:",
             "      nvm install 22 && npm install -g @openrig/cli",
           ]) + `  Detail: ${opened.detail}\n`,
       };

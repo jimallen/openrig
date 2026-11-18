@@ -40,7 +40,7 @@ repository, and we're happy to link to it.
 
 ## Setting up
 
-Node `^22 || ^24` and a working `tmux` are required. Then:
+Node `^22 || ^24 || ^26` and a working `tmux` are required. Then:
 
 ```bash
 git clone https://github.com/mvschwarz/openrig.git

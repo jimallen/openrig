@@ -263,7 +263,8 @@ describe("runDoctorChecks", () => {
     ["v23.11.1", "fail"],
     ["v24.21.0", "pass"],
     ["v25.8.0", "fail"],
-    ["v26.1.0", "warn"],
+    ["v26.1.0", "pass"],   // workspaces-o9o.121: Node 26 is supported
+    ["v28.0.0", "warn"],   // an even major ABOVE the supported range stays untested
   ] as const)("Node %s → node_version %s", (version, status) => {
     const saved = process.version;
     Object.defineProperty(process, "version", { value: version, writable: true });
@@ -272,14 +273,14 @@ describe("runDoctorChecks", () => {
       const nodeCheck = checks.find((c) => c.name === "node_version");
       expect(nodeCheck?.status).toBe(status);
       if (status !== "pass") expect(nodeCheck?.message).toContain(status === "warn" ? "untested" : "not supported");
-      if (status === "fail") expect(nodeCheck?.fix).toContain("Node 22 or 24");
+      if (status === "fail") expect(nodeCheck?.fix).toContain("Node 22, 24 or 26");
     } finally {
       Object.defineProperty(process, "version", { value: saved, writable: true });
     }
   });
 
-  // The check reads process.version, so the rows pin it: a runner on Node 26 (even major above 24, untested) otherwise turns the
-  // "passes" row into a "warn" (measured on macOS, Node 26.9.0), and one on Node 20 into a "fail".
+  // The check reads process.version, so the rows pin it: a runner on an unsupported major (e.g. Node 20 or an odd release) would
+  // otherwise turn a "passes" row into a "fail"/"warn". Node 22, 24 and 26 are supported (workspaces-o9o.121).
   function withNodeVersion<T>(version: string, run: () => T): T {
     const original = Object.getOwnPropertyDescriptor(process, "version")!;
     Object.defineProperty(process, "version", { value: version, configurable: true });
@@ -291,9 +292,9 @@ describe("runDoctorChecks", () => {
     expect(checks.find((c) => c.name === "node_version")).toMatchObject({ status: "pass", message: "Node v22.12.0" });
   });
 
-  it("Node version check warns, not fails, on an untested even major above 24 (26)", () => {
+  it("Node version check passes on Node 26 (now a supported even LTS) (workspaces-o9o.121)", () => {
     const { checks } = withNodeVersion("v26.9.0", () => runDoctorChecks(makeDeps()));
-    expect(checks.find((c) => c.name === "node_version")).toMatchObject({ status: "warn" });
+    expect(checks.find((c) => c.name === "node_version")).toMatchObject({ status: "pass", message: "Node v26.9.0" });
   });
 
   it("writable_home missing -> fail with guidance", () => {

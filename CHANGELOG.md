@@ -25,6 +25,12 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 - A hard-coded Tailwind palette colour class (`text-red-600`, `bg-white`, `border-stone-100`, ...) is the same colour in light and dark, so it ignores the theme. The 565 in `packages/ui/src` today (classified on the o9o.164 bead) are recorded per file and class in `packages/ui/test/palette-class-baseline.json`.
 - `palette-class-baseline.test.ts` fails on a palette class above that baseline, and on a baseline entry above today's count, so the baseline can only shrink. After removing palette classes, run `npx tsx test/palette-classes.ts --update` from `packages/ui`; it refuses a rise. No colour changed.
 
+### Node.js 26 is a supported version (workspaces-o9o.121)
+
+- The engines range widens to `^22 || ^24 || ^26` (root and `@openrig/daemon`; `@openrig/cli` stays `>=22`), and the Node support policy — `check-abi.mjs` `SUPPORTED_MAJORS`, `node-support.ts` `SUPPORTED_NODE_MAJORS` (used by `rig doctor`/`rig preflight`), and `check-engines.test.mjs` `LTS_ENGINE` — now lists 22, 24 and 26. Jim's call (2026-11-18).
+- Why it is safe: better-sqlite3 13 is Node-API (one platform prebuild, no ABI suffix, no native build at install), so Node 26 loads the same binary as 22/24; the full suite is green on Node 26 after workspaces-o9o.133 fixed the Node-26 proof-source watcher. The docs stating the supported range are updated; the frozen release notes are left as history.
+- Residual (filed as a separate unit): npm 11 (bundled with Node 24 and 26) gates a registry package's install scripts by default, so `npm install -g @openrig/cli` skips the `check-abi.mjs` postinstall guard — the native binding still loads from the prebuild, but the Node-major check belongs in the CLI runtime, not only the postinstall.
+
 ### A markdown document never adds a second h1 to its page (workspaces-o9o.171)
 
 - Symptom: `/project/mission/<id>` rendered two h1 elements: the page title, and the steering document's own `# ...` heading.

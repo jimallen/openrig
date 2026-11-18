@@ -47,7 +47,7 @@ install_main() {
     '        On macOS, an installing agent offers Ghostty; rig setup --ghostty attempts it after acceptance.' \
     'This broader setup is optional for the manual selected-provider path.' \
     'The wrapper does not log in, choose a permission policy, launch a team or open a kernel conversation.' \
-    'Node advice: Node.js 22 or 24 with npm; use 22 on Apple silicon.' \
+    'Node advice: Node.js 22, 24 or 26 with npm; use 22 on Apple silicon.' \
     'Distribution packages can be older; check node --version.' \
     'Use the official Node installer, or the Linux route (NodeSource or nvm):' \
     'https://github.com/mvschwarz/openrig/blob/main/docs/reference/getting-started.md' \
@@ -60,7 +60,7 @@ install_main() {
   fi
   for install_tool in node npm; do
     if ! command -v "$install_tool" >/dev/null 2>&1; then
-      printf 'Missing prerequisite: %s. Install Node.js 22 or 24 with npm, then retry.\nDistribution packages can be older; check node --version.\nUse the official Node installer, or the Linux route (NodeSource or nvm):\nhttps://github.com/mvschwarz/openrig/blob/main/docs/reference/getting-started.md\n' "$install_tool" >&2
+      printf 'Missing prerequisite: %s. Install Node.js 22, 24 or 26 with npm, then retry.\nDistribution packages can be older; check node --version.\nUse the official Node installer, or the Linux route (NodeSource or nvm):\nhttps://github.com/mvschwarz/openrig/blob/main/docs/reference/getting-started.md\n' "$install_tool" >&2
       install_failed 127 '[1/4] prerequisite check'
     fi
   done

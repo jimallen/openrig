@@ -96,7 +96,7 @@ describe("SystemPreflight", () => {
     const nodeCheck = result.checks.find((c) => c.name === "node_version");
     expect(nodeCheck!.ok).toBe(false);
     expect(nodeCheck!.error).toContain("v18.19.0");
-    expect(nodeCheck!.fix).toContain("Node 22 or 24");
+    expect(nodeCheck!.fix).toContain("Node 22, 24 or 26");
   });
 
   it.each([
@@ -105,14 +105,15 @@ describe("SystemPreflight", () => {
     ["v23.11.1", false, false],
     ["v24.21.0", true, false],
     ["v25.8.0", false, false],
-    ["v26.1.0", true, true],
+    ["v26.1.0", true, false],   // workspaces-o9o.121: Node 26 supported, no warning
+    ["v28.0.0", true, true],     // an even major above the range: passes with an untested warning
   ] as const)("Node %s → node_version ok=%s, warning=%s", async (version, ok, warned) => {
     Object.defineProperty(process, "version", { value: version, writable: true });
     const result = await createPreflight().run({ port: 0 });
     const nodeCheck = result.checks.find((c) => c.name === "node_version")!;
     expect(nodeCheck.ok).toBe(ok);
     expect(Boolean(nodeCheck.warning)).toBe(warned);
-    if (!ok) expect(nodeCheck.fix).toContain("Node 22 or 24");
+    if (!ok) expect(nodeCheck.fix).toContain("Node 22, 24 or 26");
     if (warned) expect(nodeCheck.warning).toContain("untested");
   });
 

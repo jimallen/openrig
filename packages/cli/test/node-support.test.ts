@@ -10,7 +10,8 @@ const MATRIX: Array<[string, "supported" | "too_old" | "odd" | "untested"]> = [
   ["v23.11.1", "odd"],
   ["v24.21.0", "supported"],
   ["v25.8.0", "odd"],
-  ["v26.1.0", "untested"],
+  ["v26.1.0", "supported"],   // workspaces-o9o.121: Node 26 is now a supported even LTS
+  ["v28.0.0", "untested"],    // an even major above the supported range stays untested
 ];
 
 describe("classifyNodeVersion", () => {
@@ -21,9 +22,9 @@ describe("classifyNodeVersion", () => {
     else expect(out.message).toContain(kind === "untested" ? "untested" : "not supported");
   });
 
-  it("names 22 and 24 in every refusal fix", () => {
+  it("names 22, 24 or 26 in every refusal fix", () => {
     for (const v of ["v20.20.2", "v23.11.1", "v25.8.0"]) {
-      expect(classifyNodeVersion(v).fix).toContain("Node 22 or 24");
+      expect(classifyNodeVersion(v).fix).toContain("Node 22, 24 or 26");
     }
   });
 });
