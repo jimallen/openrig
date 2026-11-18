@@ -27,7 +27,8 @@ and becomes standing infrastructure instead of a hand-built probe.
   mid_turn_death, restore}. `usage_limit` is real-runtime-only and MUST fail validation
   loud in a stub topology — no scenario here names it.
 - Assertions ride the shipped-observable surface set ONLY: `ps` · `queue` · `stream` ·
-  `scope` · `pane` · `transcript` · `tui_socket` · `policy_provenance`. `proof` is
+  `scope` · `pane` · `transcript` · `tui_socket` · `tui_view` · `policy_provenance`. `tui_view` reads the TUI's
+  `view` verb, the digest of the world it renders, so a TUI can join a cross-surface `equals` (R-21). `proof` is
   reserved: the scenario runner has no read binding for it (`rig proof show` exists, but
   no scenario surface reads it), and the validator rejects it. No internal DB pokes.
 

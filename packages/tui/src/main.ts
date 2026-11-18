@@ -390,6 +390,8 @@ async function run(): Promise<void> {
       refreshFromActivity();
     },
     currentContext: () => commandContext(),
+    // workspaces-o9o.172 — the "view" OBSERVE verb reads the snapshot this TUI renders from, and when it last confirmed it.
+    observeView: () => ({ snapshot, load: live?.load() ?? null }),
   });
 
   if (socket.path !== socketPath) controlSocketPath = socket.path;

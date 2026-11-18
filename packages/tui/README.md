@@ -73,8 +73,12 @@ Up/Down scroll by default; Right enters links, then Up/Down and Enter follow the
 
 Agents: `tmux send-keys` of any command is the always-available floor; the
 control socket is the addressable-screen API — one command per line, one JSON
-reply per line, plus two read-only queries, `state` and `commands` (the command
-registry with live availability):
+reply per line, plus three read-only queries: `state` (where the screen is),
+`commands` (the command registry with live availability) and `view` (a digest of
+the world the TUI renders: every rig it holds with its host and agents, the hosts it
+could not read, and `readAt`, when it last confirmed its read; names and status
+only, no pane text, paths or credentials; bounded at 500 rigs and 5000 agents, with
+`truncated` past that). The read-only queries never change the view:
 
     printf 'agent dev.impl\n' | nc -U ~/.openrig/run/tui-tui-1.sock
 

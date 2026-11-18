@@ -10,6 +10,8 @@
 //      ACT/PRODUCE verb lands here because the socket is an API. Any extension
 //      crossing either line routes to arch-lead BEFORE building.
 // The only non-grammar verb is "state" — a read-only state query (OBSERVE).
+import { describeView } from "./observe/view-digest.js";
+import type { FleetSnapshot, LoadState } from "./types.js";
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
 import fs from "node:fs";
@@ -90,6 +92,8 @@ interface ControlSocketOptions {
   currentContext?: () => string;
   /** Standalone terminals can use an independent endpoint on a collision. */
   fallbackOnCollision?: boolean;
+  /** workspaces-o9o.172 — the snapshot every topology view is rendered from, and its load state, for the read-only "view" verb. */
+  observeView?: () => { snapshot: FleetSnapshot; load: LoadState | null };
 }
 
 export async function createControlSocket(options: ControlSocketOptions): Promise<ControlSocket> {
@@ -209,6 +213,17 @@ async function createReservedControlSocket(options: ControlSocketOptions): Promi
         if (line === "commands") {
           conn.write(
             JSON.stringify({ ok: true, instanceId: view.instanceId, commands: serializeCommands(currentContext()) }) + "\n",
+          );
+          continue;
+        }
+        // workspaces-o9o.172 — the third OBSERVE verb: a bounded digest of the world the TUI renders (names and status only). Read-only:
+        // it never reaches the dispatch below and never calls onMutation. A TUI started without the port answers ok:false, not a view.
+        if (line === "view") {
+          const observed = options.observeView?.();
+          conn.write(
+            JSON.stringify(observed
+              ? { ok: true, instanceId: view.instanceId, view: describeView(observed) }
+              : { ok: false, instanceId: view.instanceId, error: "this TUI does not observe a snapshot" }) + "\n",
           );
           continue;
         }

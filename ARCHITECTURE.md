@@ -254,7 +254,7 @@ and no model cost.
    `packages/daemon/test/helpers/scenario-schema.ts`. Step verbs: `up`, `down`, `send`, `restart`,
    `restore`, `emit`, `mutate`, `policy`, `seed_regression`, `daemon`, plus `expect`. `expect` may
    only read shipped surfaces: `ps`, `queue`, `stream`, `scope`, `pane`, `transcript`,
-   `tui_socket`, `policy_provenance`. `up: { fails: { contains: "<text>" } }` expects the launch
+   `tui_socket`, `tui_view` (the TUI's own view of the world, workspaces-o9o.172), `policy_provenance`. `up: { fails: { contains: "<text>" } }` expects the launch
    to fail: the step passes only when `rig up` exits non-zero with the text in its output (for a
    seat a stub script holds short of ready or ends before ready; `packages/test-system/scripts/README.md`).
 3. Today the runner binds `up` (including a per-step `up: {topology}` for a second rig), `down`,

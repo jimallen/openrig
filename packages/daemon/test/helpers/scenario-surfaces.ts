@@ -100,7 +100,9 @@ export async function readSurface(
     case "policy_provenance":
       return jsonRig(["policy", "effective", "--json"], ctx);
     case "tui_socket":
-      return readTuiSocket(ctx, opts);
+      return readTuiSocket(ctx, opts, "state");
+    case "tui_view":
+      return readTuiSocket(ctx, opts, "view");
     default:
       // Defense-in-depth: a RESERVED value (e.g. "proof") smuggled past the
       // validator by a cast still fails loud and named, never fabricated.
@@ -127,12 +129,12 @@ async function jsonRig(args: string[], ctx: SurfaceContext): Promise<unknown> {
 }
 
 /**
- * Query the TUI control socket's OBSERVE verb: connect, send exactly `state`, and
- * parse the one-line JSON reply. Sending any other line is a MUTATION — the reader
- * sends only `state`. Path from OPENRIG_TUI_SOCKET (the scenario helper sets it
+ * Query one of the TUI control socket's OBSERVE verbs: connect, send exactly that verb (`state`, the navigation address; `view`, the
+ * digest of the world the TUI renders, workspaces-o9o.172), and parse the one-line JSON reply. Any other line is a MUTATION, so the
+ * verb is typed to the two OBSERVE lines and nothing else is ever sent. Path from OPENRIG_TUI_SOCKET (the scenario helper sets it
  * when a TUI is up).
  */
-function readTuiSocket(ctx: SurfaceContext, opts: ReadSurfaceOptions): Promise<unknown> {
+function readTuiSocket(ctx: SurfaceContext, opts: ReadSurfaceOptions, verb: "state" | "view"): Promise<unknown> {
   const sockPath = ctx.readEnv.OPENRIG_TUI_SOCKET;
   if (!sockPath) {
     return Promise.reject(
@@ -146,9 +148,9 @@ function readTuiSocket(ctx: SurfaceContext, opts: ReadSurfaceOptions): Promise<u
     const bound = waitBound(timeoutMs);
     const timer = setTimeout(() => {
       conn.destroy();
-      reject(waitTimedOut("tui_socket `state` query timed out", bound));
+      reject(waitTimedOut(`tui_socket \`${verb}\` query timed out`, bound));
     }, bound.ms);
-    conn.on("connect", () => conn.write("state\n"));
+    conn.on("connect", () => conn.write(`${verb}\n`));
     conn.on("data", (b) => {
       buf += b.toString();
       const nl = buf.indexOf("\n");

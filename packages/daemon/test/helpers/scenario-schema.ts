@@ -38,6 +38,8 @@ export const EXPECT_SURFACES = [
   "pane",
   "transcript",
   "tui_socket",
+  // workspaces-o9o.172 (R-21): the TUI's OBSERVE verb "view", a digest of the world it renders (rigs, agents, readAt).
+  "tui_view",
   "policy_provenance",
 ] as const;
 
@@ -242,10 +244,10 @@ function validateEnvStepCrossRequirements(
       );
     }
   }
-  if (surfacesRead.has("tui_socket") && env?.tui !== true) {
+  if ((surfacesRead.has("tui_socket") || surfacesRead.has("tui_view")) && env?.tui !== true) {
     push(
       "TUI_NOT_DECLARED",
-      "env.tui: true is required when any step expects the tui_socket surface — the control socket exists only inside the TUI the pipeline provisions on opt-in",
+      "env.tui: true is required when any step expects the tui_socket or tui_view surface — the control socket exists only inside the TUI the pipeline provisions on opt-in",
       "env.tui",
     );
   }

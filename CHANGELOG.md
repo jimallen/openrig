@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The TUI says what world it is showing (workspaces-o9o.172)
+
+- Symptom: the TUI's control socket could say where the screen is (`state`) and which commands exist (`commands`), but not what it shows, so nothing could check that the TUI agrees with `rig ps` and `rig queue`.
+- Now a third read-only query, `view`, returns a digest of the world the TUI renders: every rig it holds, with its host and its agents (name, session, status), the hosts it could not read, and `readAt`, when it last confirmed its read. It carries names and status only (no pane text, paths or credentials), is bounded (500 rigs, 5000 agents, `truncated` past that), and never changes the view. Scenarios read it as the `tui_view` surface.
+
 ### A seat whose guard cannot run refuses kill commands, and `rig doctor` names it (workspaces-o9o.173)
 
 - Symptom: when a Claude seat's rig-body guard could not run (its node or guard script missing, for example after a node upgrade removed the daemon's node, or the guard crashing or timing out), the wrapper's degraded check refused only a `rig` command with a backtick or `$(`. Every other command ran, broad kills included: `pkill -f vitest` stopped other seats' processes as if no guard existed.
