@@ -19,7 +19,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, "..");
 const DOCKERFILE = join(REPO_ROOT, "docker", "testbed", "Dockerfile");
 
-const ENGINES_LTS_MAJORS = new Set([20, 22, 24]); // mirrors scripts/check-engines LTS constraint
+// Derived from the engines range (root package.json), not hand-coded, so widening engines (e.g.
+// workspaces-o9o.121 added Node 26) carries here without a second edit: `^22 || ^24 || ^26` -> {22,24,26}.
+const ENGINES_RANGE = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")).engines.node;
+const ENGINES_LTS_MAJORS = new Set([...ENGINES_RANGE.matchAll(/\^(\d+)/g)].map((m) => Number(m[1])));
+assert.ok(ENGINES_LTS_MAJORS.size > 0, `could not derive LTS majors from engines range "${ENGINES_RANGE}"`);
 
 function readDockerfile() {
   return readFileSync(DOCKERFILE, "utf8");
@@ -60,7 +64,7 @@ test("node is pinned via ARG NODE_VERSION to an in-range (even LTS) engines vers
   const m = text.match(/^ARG\s+NODE_VERSION=(\d+)\.(\d+)\.(\d+)\b/m);
   assert.ok(m, "must declare ARG NODE_VERSION=<x.y.z> with a concrete default");
   const major = Number(m[1]);
-  assert.ok(ENGINES_LTS_MAJORS.has(major), `NODE_VERSION major ${major} must be in {20,22,24} (engines LTS)`);
+  assert.ok(ENGINES_LTS_MAJORS.has(major), `NODE_VERSION major ${major} must be in the engines range {${[...ENGINES_LTS_MAJORS].join(",")}}`);
 });
 
 test("OpenRig is installed from a COPY'd local tarball, NEVER the npm registry", () => {

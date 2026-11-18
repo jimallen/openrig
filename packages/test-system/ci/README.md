@@ -112,7 +112,7 @@ on the host-to-container staging adapter's unsupported per-seat-script path.
 
 Any developer or agent can use the same script with a prepared SSH Docker executor;
 there is no seat-owner or per-run approval requirement. Use a private checkout with
-the normal Node 22/24 development dependencies. Source build/pack runs on the client;
+the normal Node 22, 24 or 26 development dependencies. Source build/pack runs on the client;
 Docker image construction and the scenario run at the selected daemon.
 
 ```sh

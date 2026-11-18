@@ -24,7 +24,7 @@ history](../releases/v0.5.15.md#known-compatibility-limitation)). Native
 Windows isn't supported. On Windows, use WSL2: it's the Windows route OpenRig
 supports, though OpenRig's automated tests don't run on it yet. One user's
 [working setup](#wsl2-a-reported-working-setup) is below. Node 20 and
-odd-numbered releases (23, 25 and so on) are not supported; Node 26 and later
+odd-numbered releases (23, 25 and so on) are not supported; Node 28 and later
 even-numbered releases are untested.
 
 **Choose permissions before starting the team.** Ordinary OpenRig launches use
