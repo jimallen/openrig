@@ -1193,15 +1193,22 @@ function backgroundRefusal(kind) {
 
 // workspaces-o9o.131 (Jim's decision, round 3): the Code Mode REPL guard decides STRUCTURALLY, with a real JS parser (vendored acorn
 // 8.19.0, byte-identical — see vendor/acorn.VENDORED). Comments, whitespace, parentheses, computed/optional member forms and string
-// escapes all collapse in the AST, so the regex normaliser's blind spots are gone. On the AST it refuses:
-//   - any reference to the GLOBAL Function value: an identifier `Function` read as a value and NOT bound in any enclosing scope, and
-//     globalThis/self/window.Function in any member form (a local `const Function`, a param named Function, and `obj.Function` on some
-//     other object are NOT the global and are allowed);
-//   - any `.constructor` member access (a .constructor chain reaches the Function constructor);
-//   - any member access resolving to process.binding / process.dlopen (bare process, or global.process);
-//   - `child_process` named in a REAL import()/require() CALL (a member method named import/require is not that call).
-// Every string and template-literal value is still scanned by the shell rules (code builds its commands as strings). Code the parser
-// cannot parse is refused (fail closed). A name assembled at run time (globalThis["Func" + "tion"]) is the documented residual.
+// escapes all collapse in the AST, so the regex normaliser's blind spots are gone.
+//
+// Round 4 (verify-sec FAIL on the parser, CoS rulings "to close the alias chase"): the earlier rounds chased each escape vector
+// (global.Function, const p=process; p.binding, const r=require; r(...), module.require(...)) and alias tracking was found to be its own
+// race. The rule is now a single reference rule, no alias tracking: ANY unshadowed reference to one of the dangerous GLOBAL identifiers
+//   process, require, module, Function, global, globalThis, self, window
+// refuses, however it is used — bare, aliased (const p = process references process), as a member object (global.process, module.require),
+// as a call callee (require("x"), Function("x")), typeof, .call/.apply, anything. The REFERENCE itself refuses; we never follow where the
+// value goes. Code Mode code has no need of these. SCOPE is per the language, so a LOCAL binding of any of those names is NOT the global and
+// is allowed: a `const Function`/`let process`, a parameter named Function, a named class `class Function {}`, and a `var Function` hoisted to
+// the enclosing function (even from a nested block) all shadow the global; `obj.Function`/`obj.require(...)` on some other object is not a
+// reference to the global at all. Two refusals are kept as defence in depth BEYOND the identifier rule, because neither names a dangerous
+// identifier: any `.constructor` member access (a .constructor chain reaches the Function constructor), and `child_process` named in a REAL
+// dynamic import() call. Every string and template-literal value is still scanned by the shell rules (code builds its commands as strings).
+// Code the parser cannot parse is refused (fail closed). A name assembled at run time (globalThis["Func" + "tion"] — and globalThis itself is
+// now refused, so this needs a non-global handle) is the documented residual.
 
 let acornModule;
 function requireAcorn() {
@@ -1209,7 +1216,9 @@ function requireAcorn() {
   return acornModule;
 }
 
-const GLOBAL_OBJECTS = new Set(["globalThis", "self", "window"]);
+// The global identifiers a reference to which refuses, however used (CoS ruling, round 4). A local binding of any of these names shadows
+// the global and is allowed (scope, below).
+const DANGEROUS_GLOBALS = new Set(["process", "require", "module", "Function", "global", "globalThis", "self", "window"]);
 
 /** Add every name a binding pattern introduces to `set`. */
 function collectPatternNames(node, set) {
@@ -1235,22 +1244,28 @@ function hoistBlockBindings(body, set) {
   }
 }
 
+const AST_SKIP_KEYS = new Set(["type", "start", "end", "loc", "range"]);
+const FUNCTION_NODES = new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+
+/** Add every `var` name declared anywhere in a subtree to `set`, NOT crossing into a nested function (var is function-scoped, so a
+ *  `var Function` in a nested block hoists to the enclosing function and shadows the global there). */
+function collectVarNames(node, set) {
+  if (!node || typeof node.type !== "string" || FUNCTION_NODES.has(node.type)) return;
+  if (node.type === "VariableDeclaration" && node.kind === "var") for (const d of node.declarations) collectPatternNames(d.id, set);
+  for (const key of Object.keys(node)) {
+    if (AST_SKIP_KEYS.has(key)) continue;
+    const child = node[key];
+    if (Array.isArray(child)) { for (const c of child) collectVarNames(c, set); }
+    else if (child && typeof child.type === "string") collectVarNames(child, set);
+  }
+}
+
 /** The non-computed property name of a member/property node, from an Identifier key or a string/single-quasi template literal. */
 function staticKeyName(node, computed) {
   if (!computed) return node.type === "Identifier" ? node.name : null;
   if (node.type === "Literal" && typeof node.value === "string") return node.value;
   if (node.type === "TemplateLiteral" && node.expressions.length === 0 && node.quasis.length === 1) return node.quasis[0].value.cooked;
   return null;
-}
-
-/** Whether a member/call object resolves to the global `process`: a bare unshadowed `process`, or global.process. */
-function resolvesToProcess(node, scopes) {
-  if (node.type === "Identifier") return node.name === "process" && !isBound("process", scopes);
-  if (node.type === "MemberExpression") {
-    const key = staticKeyName(node.property, node.computed);
-    return key === "process" && node.object.type === "Identifier" && GLOBAL_OBJECTS.has(node.object.name) && !isBound(node.object.name, scopes);
-  }
-  return false;
 }
 
 function isBound(name, scopes) { for (const s of scopes) if (s.has(name)) return true; return false; }
@@ -1266,44 +1281,27 @@ function findReplApiViolation(ast) {
     if (node.type === "Literal" && typeof node.value === "string") strings.push(node.value);
     if (node.type === "TemplateLiteral") for (const q of node.quasis) if (q.value.cooked != null) strings.push(q.value.cooked);
 
-    // A reference to the global Function value.
-    if (node.type === "Identifier" && node.name === "Function" && role === "ref" && !isBound("Function", scopes)) {
-      found = { kind: "repl-api", command: "the Function constructor" }; return;
+    // Round 4: ANY unshadowed reference to a dangerous global identifier refuses, however used (no alias tracking).
+    if (node.type === "Identifier" && role === "ref" && DANGEROUS_GLOBALS.has(node.name) && !isBound(node.name, scopes)) {
+      found = { kind: "repl-api", command: `the global \`${node.name}\`` }; return;
     }
 
-    if (node.type === "MemberExpression") {
-      const key = staticKeyName(node.property, node.computed);
-      // .constructor chain.
-      if (key === "constructor") { found = { kind: "repl-api", command: "a .constructor access (reaches the Function constructor)" }; return; }
-      // global.Function (globalThis/self/window.Function).
-      if (key === "Function" && node.object.type === "Identifier" && GLOBAL_OBJECTS.has(node.object.name) && !isBound(node.object.name, scopes)) {
-        found = { kind: "repl-api", command: "the Function constructor" }; return;
-      }
-      // process.binding / process.dlopen.
-      if ((key === "binding" || key === "dlopen") && resolvesToProcess(node.object, scopes)) {
-        found = { kind: "repl-api", command: `process.${key}` }; return;
-      }
-      // Descend: object is a reference; a computed property is a reference, a static one is a name (skip).
-      visit(node.object, scopes, "ref");
-      if (node.computed) visit(node.property, scopes, "ref");
-      return;
+    // Defence in depth beyond the identifier rule (neither names a dangerous identifier):
+    //   - a `.constructor` member access reaches the Function constructor through any object's prototype chain;
+    if (node.type === "MemberExpression" && staticKeyName(node.property, node.computed) === "constructor") {
+      found = { kind: "repl-api", command: "a .constructor access (reaches the Function constructor)" }; return;
     }
-
-    // require("child_process") / import("node:child_process") as real calls.
-    if (node.type === "CallExpression" || node.type === "ImportExpression") {
-      const isImport = node.type === "ImportExpression" || (node.callee && node.callee.type === "Import");
-      const isRequire = node.type === "CallExpression" && node.callee && node.callee.type === "Identifier" && node.callee.name === "require" && !isBound("require", scopes);
+    //   - `child_process` named in a REAL dynamic import() call (import is a keyword, not an identifier the rule above catches).
+    if (node.type === "ImportExpression" || (node.type === "CallExpression" && node.callee && node.callee.type === "Import")) {
       const arg = node.type === "ImportExpression" ? node.source : (node.arguments && node.arguments[0]);
-      if ((isImport || isRequire) && arg) {
-        const spec = staticKeyName(arg, true);
-        if (typeof spec === "string" && /(^|[:/])child_process$/.test(spec)) { found = { kind: "repl-api", command: "child_process" }; return; }
-      }
+      const spec = arg ? staticKeyName(arg, true) : null;
+      if (typeof spec === "string" && /(^|[:/])child_process$/.test(spec)) { found = { kind: "repl-api", command: "child_process" }; return; }
     }
 
-    // Generic descent with scope pushes and role-aware slots.
+    // Generic descent with scope pushes and role-aware slots. A non-computed member property / object key is a NAME, not a reference (skip).
     const childScopes = pushScope(node, scopes);
     for (const key of Object.keys(node)) {
-      if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "range") continue;
+      if (AST_SKIP_KEYS.has(key)) continue;
       const child = node[key];
       if (Array.isArray(child)) { for (const c of child) visit(c, childScopes, childRole(node, key)); }
       else if (child && typeof child.type === "string") {
@@ -1315,21 +1313,28 @@ function findReplApiViolation(ast) {
     }
   }
 
-  // A child in "ref" role is read as a value; binding ids/keys are not references.
+  // A child in "ref" role is read as a value; binding ids/keys/labels are not references.
   function childRole(node, key) {
     if (node.type === "VariableDeclarator" && key === "id") return "bind";
-    if ((node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") && (key === "id" || key === "params")) return "bind";
-    if (node.type === "ClassDeclaration" && key === "id") return "bind";
+    if (FUNCTION_NODES.has(node.type) && (key === "id" || key === "params")) return "bind";
+    if ((node.type === "ClassDeclaration" || node.type === "ClassExpression") && key === "id") return "bind";
     if (node.type === "CatchClause" && key === "param") return "bind";
+    // Import specifiers are binding names (and the module-export name they alias), never a reference to a local value.
+    if (node.type === "ImportSpecifier" || node.type === "ImportDefaultSpecifier" || node.type === "ImportNamespaceSpecifier") return "bind";
+    // A statement label is not a value reference (`process: for (...)`).
+    if ((node.type === "LabeledStatement" || node.type === "BreakStatement" || node.type === "ContinueStatement") && key === "label") return "bind";
     return "ref";
   }
 
   function pushScope(node, scopes) {
     let names = null;
-    if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+    if (FUNCTION_NODES.has(node.type)) {
       names = new Set(); for (const p of node.params) collectPatternNames(p, names);
-      if (node.id && node.type !== "FunctionDeclaration") names.add(node.id.name);
+      if (node.id && node.type !== "FunctionDeclaration") names.add(node.id.name);       // a named function expression binds its own name
       if (node.body && node.body.type === "BlockStatement") hoistBlockBindings(node.body.body, names);
+      if (node.body) collectVarNames(node.body, names);                                    // `var` hoists to the whole function, nested blocks included
+    } else if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+      names = new Set(); if (node.id) names.add(node.id.name);                             // the class name is in scope inside the class body
     } else if (node.type === "BlockStatement" || node.type === "StaticBlock") {
       names = new Set(); hoistBlockBindings(node.body, names);
     } else if (node.type === "CatchClause") {
@@ -1343,7 +1348,7 @@ function findReplApiViolation(ast) {
   }
 
   const top = new Set();
-  if (ast.type === "Program") hoistBlockBindings(ast.body, top);
+  if (ast.type === "Program") { hoistBlockBindings(ast.body, top); for (const s of ast.body) collectVarNames(s, top); }
   visit(ast, [top], "ref");
   return { violation: found, strings };
 }

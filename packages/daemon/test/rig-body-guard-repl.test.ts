@@ -82,6 +82,28 @@ const DENY: Array<{ note: string; code: string; kind: RegExp }> = [
   { note: "window.Function member form", code: `window.Function("return 1")()`, kind: /^repl-api$/ },
   { note: ".constructor through optional chaining", code: `const o = {}; o?.constructor`, kind: /^repl-api$/ },
   { note: "unparseable code refused (fail closed), no risk words", code: `const x = (1 +`, kind: /^unparseable-repl$/ },
+  // workspaces-o9o.131 round 4 (verify-sec FAIL on the parser; CoS ruling "close the alias chase"): ANY unshadowed reference to a dangerous
+  // global identifier (process, require, module, Function, global, globalThis, self, window) refuses, HOWEVER used — the reference itself, no
+  // alias tracking. These are the verify-sec probes the alias-following round-1 parser let through.
+  { note: "global.Function(...) — a reference to `global`", code: `global.Function("return 1")()`, kind: /^repl-api$/ },
+  { note: "global.process.binding — a reference to `global`", code: `global.process.binding("x")`, kind: /^repl-api$/ },
+  { note: "global.process.dlopen — a reference to `global`", code: `global.process.dlopen(m, "/x.node")`, kind: /^repl-api$/ },
+  { note: "static alias: const p = process; p.binding(...)", code: `const p = process; p.binding("x")`, kind: /^repl-api$/ },
+  { note: "static alias: const p = globalThis.process; p.dlopen(...)", code: `const p = globalThis.process; p.dlopen(m, "/x.node")`, kind: /^repl-api$/ },
+  { note: "static alias: const r = require; r('child_process')", code: `const r = require; r("child_process")`, kind: /^repl-api$/ },
+  { note: "module.require('child_process') — a reference to `module`", code: `module.require("child_process")`, kind: /^repl-api$/ },
+  { note: "require('child_process') as a real call — a reference to `require`", code: `require("child_process").execSync("ls")`, kind: /^repl-api$/ },
+  { note: "a bare reference to process", code: `const p = process; p`, kind: /^repl-api$/ },
+  { note: "a bare reference to require (no call)", code: `const r = require; r`, kind: /^repl-api$/ },
+  { note: "a bare reference to module", code: `const m = module; m`, kind: /^repl-api$/ },
+  { note: "a bare reference to global", code: `const g = global; g`, kind: /^repl-api$/ },
+  { note: "a bare reference to globalThis", code: `const g = globalThis; g`, kind: /^repl-api$/ },
+  { note: "a bare reference to self", code: `const s = self; s`, kind: /^repl-api$/ },
+  { note: "a bare reference to window", code: `const w = window; w`, kind: /^repl-api$/ },
+  { note: "globalThis['child_process'] — a reference to `globalThis` refuses (round-4 reclassification of the old ALLOW)", code: `const m = globalThis["child_process"]; typeof m`, kind: /^repl-api$/ },
+  // Scope boundaries (make the var-hoist precise, not a blanket allow): a `var`/`let` named like a global binds only where the language says.
+  { note: "a var Function inside a NESTED function does not shadow an outer global Function reference", code: `function inner() { var Function; } Function("return 1")()`, kind: /^repl-api$/ },
+  { note: "a let process in a sibling block does not shadow a later global process reference", code: `{ let process = { pid: 1 }; } process.binding("x")`, kind: /^repl-api$/ },
 ];
 
 const ALLOW: Array<{ note: string; code: string }> = [
@@ -116,9 +138,17 @@ const ALLOW: Array<{ note: string; code: string }> = [
   { note: "obj.Function is a property on another object, not the global", code: `const o = { Function: 1 }; o.Function` },
   { note: "a member method named require is not the require() call", code: `const api = { require(x) { return x; } }; api.require("child_process")` },
   { note: "a member method named import is not import()", code: `const api = { import(x) { return x; } }; api.import("node:child_process")` },
-  { note: "globalThis[child_process] is a property access on a non-global, not a require/import", code: `const m = globalThis["child_process"]; typeof m` },
   { note: "a class constructor method is a definition, not a .constructor access", code: `class Pt { constructor(x) { this.x = x; } } new Pt(1).x` },
   { note: "a LOCAL const named require is not the global require() call", code: `const require = (x) => x; require("child_process")` },
+  // workspaces-o9o.131 round 4: scope is per the language — a LOCAL binding of a dangerous name is NOT the global (CoS ruling (2)).
+  { note: "const C = class Function {} — the class NAME is a binding, not a reference to the global Function", code: `const C = class Function {}; new C()` },
+  { note: "a var Function hoisted from a nested block shadows the global across the whole function", code: `function f() { { var Function; } return Function; } f()` },
+  { note: "a named class expression's own name is in scope in its body, not the global Function", code: `const C = class Function { m() { return Function; } }; new C().m()` },
+  { note: "a local const named module shadows the global module", code: `const module = { x: 1 }; module.x` },
+  { note: "a local let named globalThis shadows the global", code: `{ let globalThis = {}; globalThis.foo = 1; globalThis.foo }` },
+  { note: "a param named process is local", code: `((process) => process.pid)({ pid: 1 })` },
+  { note: "a local const named self shadows the global", code: `const self = { x: 2 }; self.x` },
+  { note: "a statement label named like a global is a label, not a value reference", code: `process: for (const x of [1]) { if (x) break process; }` },
 ];
 
 describe("o9o.131: the seat guard reads REPL code", () => {

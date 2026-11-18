@@ -177,9 +177,15 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
     expect(hook("", { ...gone, raw: '{"tool_name" : "REPL","tool_input":{"code":"1+1"}}' })).toMatchObject(REFUSED);     // space before the colon
     expect(hook("", { ...gone, raw: '{\n  "tool_name":\n    "REPL",\n  "tool_input": { "code": "1+1" }\n}' })).toMatchObject(REFUSED);  // pretty-printed, newlines
     expect(hook("", { ...gone, raw: '{"tool_input":{"code":"1+1"},"tool_name":"REPL"}' })).toMatchObject(REFUSED);         // tool_name last
+    // workspaces-o9o.131 round 4 (verify-sec FAIL): refuse when ANY tool_name field is REPL, not just the first one met. A nested
+    // '"tool_name":"Bash"' inside tool_input, placed BEFORE the top-level "tool_name":"REPL", masked it under round 3 (first match was Bash).
+    expect(hook("", { ...gone, raw: '{"tool_input":{"tool_name":"Bash","code":"1+1"},"tool_name":"REPL"}' })).toMatchObject(REFUSED);   // nested Bash masks top REPL
+    expect(hook("", { ...gone, raw: '{"tool_input":{"tool_name":"Bash"},"tool_name":"REPL","x":1}' })).toMatchObject(REFUSED);         // nested Bash first, REPL then a trailing field
+    expect(hook("", { ...gone, raw: '{\n  "tool_input": { "tool_name": "Bash", "code": "1+1" },\n  "tool_name": "REPL"\n}' })).toMatchObject(REFUSED); // same, pretty-printed
     // Control: a Bash call with the same cwd, a backtick and no rig in its command still runs (the REPL refusal is REPL-only).
     expect(hook("", { ...gone, raw: JSON.stringify({ cwd: "/home/u/Work/openrig", tool_name: "Bash", tool_input: { command: "echo `date`" } }) })).toMatchObject(ALLOWED);
     expect(hook("", { ...gone, raw: '{\n  "tool_name": "Bash",\n  "tool_input": { "command": "ls -la" }\n}' })).toMatchObject(ALLOWED);  // pretty-printed Bash: not refused
+    expect(hook("", { ...gone, raw: '{"tool_name":"Bash","tool_input":{"tool_name":"Bash","command":"ls"}}' })).toMatchObject(ALLOWED);  // a nested harmless tool_name, no REPL anywhere: still runs
     expect(hook("ls -la", gone)).toMatchObject(ALLOWED);
   });
 
