@@ -667,11 +667,11 @@ describe("round 3: every rendered field checked, failures kept to their host, a 
     const file = path.join(dir, "bearer");
     const A = "SYNTHETIC-ROTATE-A-91f0", B = "SYNTHETIC-ROTATE-B-27c4";
     try {
-      fs.writeFileSync(file, A);
+      fs.writeFileSync(file, A, { mode: 0o600 }); // o9o.151: a bearer file others can read is refused
       // The refresh: the handler rotates the file to B, then answers with the A it was sent.
       const leg = await host("leg", { rewrite: (p, b) => {
         if (p !== "/api/provider/usage/refresh") return b;
-        fs.writeFileSync(file, B);
+        fs.writeFileSync(file, B, { mode: 0o600 });
         return { refresh: { at: NOW, outcome: "failed", reason: "rpc_error", detail: `sent ${A}`, coalesced: false } };
       } });
       const hub = await host("hub", { registry: [leg.entry({ bearer_file: file } as never)] });
@@ -681,9 +681,9 @@ describe("round 3: every rendered field checked, failures kept to their host, a 
       expect(later.hosts.find((h) => h.hostId === "leg")!.lastRefresh!.codex!.detail).toBe(BEARER_REDACTED);
 
       // The read: the status answer rotates the file to B before the settings fallback, which echoes B.
-      fs.writeFileSync(file, A);
+      fs.writeFileSync(file, A, { mode: 0o600 });
       const read = await host("read", { usageWindows: false, rewrite: (p, b) => {
-        if (p === "/api/provider/status") fs.writeFileSync(file, B);
+        if (p === "/api/provider/status") fs.writeFileSync(file, B, { mode: 0o600 });
         if (p !== "/api/config") return b;
         return { ...(b as Body), entries: ((b as { entries: Body[] }).entries).map((e) => (e["key"] === "provider.usage_windows" ? { ...e, value: `off ${B}` } : e)) };
       } });

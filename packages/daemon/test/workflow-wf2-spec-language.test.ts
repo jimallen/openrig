@@ -5,7 +5,7 @@
 // host-pin MH-3 boundary (FR-3), gate compilation to the shipped
 // primitives (FR-5), and the zero-regression spine (BR-3).
 
-import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
+import { NO_CREDENTIAL_FILES, TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -208,7 +208,7 @@ describe("OPR.0.4.6.WF2 — spec language", () => {
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
     tmp = mkdtempSync(join(tmpdir(), "wf2-lang-"));
-    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: TMP_CREDENTIAL_FILES, exceptionDial: { hostDefault: () => null, humanFallbackSeat: "human@host" }, db, eventBus: bus, queueRepo });
   });
 
   afterEach(() => {

@@ -19,7 +19,6 @@ export interface RemoteUpLeafDeps {
   /** Injected for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
-  readFile?: (path: string) => string;
   /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
   credentialFiles: CredentialFileReader;
   /** Bounded remote-up deadline (rev1-r2 R2-B1). Defaults to the
@@ -57,7 +56,6 @@ export async function remoteUpLeaf(
     timeoutMs,
     fetchImpl: deps.fetchImpl,
     env: deps.env,
-    readFile: deps.readFile,
     credentialFiles: deps.credentialFiles,
   });
   if (res.ok) return { ok: true };

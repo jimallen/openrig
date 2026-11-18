@@ -19,9 +19,8 @@
 // signal (a hand-built/proxied Response is not necessarily wired to the
 // controller — no trust in fetch internals).
 
-import { readFileSync } from "node:fs";
 import type { HttpHostEntry } from "./hosts-registry-reader.js";
-import type { CredentialFileReader } from "../credential-file.js";
+import { BEARER_FILE_POLICY, type CredentialFileReader } from "../credential-file.js";
 
 export interface RemoteJsonDeps {
   /** workspaces-o9o.151: how a bearer_file is read (the credential rule); required, so no caller can read one unchecked. */
@@ -29,7 +28,6 @@ export interface RemoteJsonDeps {
   /** Injected for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
-  readFile?: (path: string) => string;
 }
 
 export interface RemoteJsonOptions extends RemoteJsonDeps {
@@ -95,20 +93,23 @@ export type RemoteRawResult =
  *  fails (fail-closed). */
 export function resolveBearer(host: HttpHostEntry, deps: RemoteJsonDeps): { ok: true; token?: string } | { ok: false; detail: string } {
   const env = deps.env ?? process.env;
-  const readFile = deps.readFile ?? ((p: string) => readFileSync(p, "utf-8"));
   if (host.bearer_env) {
     const token = env[host.bearer_env]?.trim();
     if (token) return { ok: true, token };
     return { ok: false, detail: `bearer env var ${host.bearer_env} is not set or empty for host ${host.id}` };
   }
   if (host.bearer_file) {
-    try {
-      const token = readFile(host.bearer_file).trim();
-      if (token) return { ok: true, token };
-      return { ok: false, detail: `bearer file ${host.bearer_file} is empty for host ${host.id}` };
-    } catch {
-      return { ok: false, detail: `bearer file ${host.bearer_file} not readable for host ${host.id}` };
+    // workspaces-o9o.151: under the credential rule (a plain file of ours, no group/other bits, capped). Missing keeps its old
+    // wording; a refusal names the file and the fix, never the content.
+    const read = deps.credentialFiles.read(host.bearer_file, BEARER_FILE_POLICY);
+    if (!read.ok) {
+      return read.problem === "missing"
+        ? { ok: false, detail: `bearer file ${host.bearer_file} not readable for host ${host.id}` }
+        : { ok: false, detail: `bearer file refused for host ${host.id}: ${read.message}` };
     }
+    const token = read.content.trim();
+    if (token) return { ok: true, token };
+    return { ok: false, detail: `bearer file ${host.bearer_file} is empty for host ${host.id}` };
   }
   return { ok: true };
 }

@@ -44,7 +44,6 @@ export interface AttentionAggregatorDeps {
   loadRegistry: () => HostRegistryLoadResult;
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
-  readFile?: (path: string) => string;
   /** workspaces-o9o.151: reads hosts.yaml and bearer files under the credential rule (required: wired in startup.ts). */
   credentialFiles: CredentialFileReader;
   /** Test override; production uses ATTENTION_READ_TIMEOUT_MS. */
@@ -81,7 +80,6 @@ async function readHostAttention(hostId: string, reg: HostRegistryLoadResult, de
     timeoutMs: deps.timeoutMs ?? ATTENTION_READ_TIMEOUT_MS,
     fetchImpl: deps.fetchImpl,
     env: deps.env,
-    readFile: deps.readFile,
     credentialFiles: deps.credentialFiles,
   });
   if (res.ok) {

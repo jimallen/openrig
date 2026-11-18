@@ -1,4 +1,4 @@
-import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
+import { NO_CREDENTIAL_FILES, TMP_CREDENTIAL_FILES } from "./helpers/credential-files.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -576,7 +576,7 @@ describe("workflow routes — WF-2 structured error boundaries", () => {
     // P34: the W1 seam is fail-closed (MF2) — a nudge-intended terminal
     // close needs a SAME-DB intent store to make its wake durable.
     queueRepo.attachOutbox(new OutboxHandler(db));
-    runtime = new WorkflowRuntime({ credentialFiles: NO_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
+    runtime = new WorkflowRuntime({ credentialFiles: TMP_CREDENTIAL_FILES, db, eventBus: bus, queueRepo });
     app = buildApp({ eventBus: bus, runtime });
     tmp = mkdtempSync(join(tmpdir(), "wf2-routes-"));
     prevHome = process.env.OPENRIG_HOME;

@@ -1,9 +1,10 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { getDefaultOpenRigPath } from "./openrig-compat.js";
 import { VIRTUAL_DOMAIN_TOKENS } from "./session-name.js";
 import type { FailedStep } from "./cross-host-types.js";
+import { BEARER_FILE_POLICY, HOSTS_REGISTRY_POLICY, readCredentialFile } from "@openrig/daemon/credential-file";
 
 export type { FailedStep };
 
@@ -27,13 +28,16 @@ export function resolveRemoteBearer(host: HttpHostEntry): RemoteBearerResolution
     return { ok: false, failedStep: "permission-gate", error: `bearer env var ${host.bearer_env} is not set or empty for host ${host.id}` };
   }
   if (host.bearer_file) {
-    try {
-      const token = readFileSync(host.bearer_file, "utf-8").trim();
-      if (token) return { ok: true, token };
-      return { ok: false, failedStep: "permission-gate", error: `bearer file ${host.bearer_file} is empty for host ${host.id}` };
-    } catch {
-      return { ok: false, failedStep: "permission-gate", error: `bearer file ${host.bearer_file} not readable for host ${host.id}` };
+    // workspaces-o9o.151: under the credential rule, as the daemon reads it (remote-daemon-http.ts resolveBearer).
+    const read = readCredentialFile(host.bearer_file, BEARER_FILE_POLICY);
+    if (!read.ok) {
+      return read.problem === "missing"
+        ? { ok: false, failedStep: "permission-gate", error: `bearer file ${host.bearer_file} not readable for host ${host.id}` }
+        : { ok: false, failedStep: "permission-gate", error: `bearer file refused for host ${host.id}: ${read.message}` };
     }
+    const token = read.content.trim();
+    if (token) return { ok: true, token };
+    return { ok: false, failedStep: "permission-gate", error: `bearer file ${host.bearer_file} is empty for host ${host.id}` };
   }
   // No bearer configured is now a VALID anonymous host — a tokenless daemon
   // (host+VM are one founder-owned trust domain; the mesh is the auth
@@ -137,18 +141,16 @@ export function defaultHostRegistryPath(): string {
  * file returns a clear error pointing at the canonical path.
  */
 export function loadHostRegistry(path: string = defaultHostRegistryPath()): HostRegistryLoadResult {
-  if (!existsSync(path)) {
+  // workspaces-o9o.151: under the registry rule (a plain file of ours that nobody else can change, capped).
+  const read = readCredentialFile(path, HOSTS_REGISTRY_POLICY);
+  if (!read.ok && read.problem === "missing") {
     return {
       ok: false,
       error: `host registry not found at ${path}. Create it with a 'hosts:' array; transport: ssh (target + user) or http (url; optional bearer_env or bearer_file — omit both for a tokenless daemon).`,
     };
   }
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (err) {
-    return { ok: false, error: `failed to read host registry at ${path}: ${(err as Error).message}` };
-  }
+  if (!read.ok) return { ok: false, error: `refusing to read the host registry: ${read.message}` };
+  const raw = read.content;
   let parsed: unknown;
   try {
     parsed = parseYaml(raw);

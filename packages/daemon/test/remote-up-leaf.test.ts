@@ -4,7 +4,7 @@
 // classification vocabulary) — these tests pin the mirrored semantics and
 // that failures surface the EXISTING classes, never a new taxonomy.
 
-import { NO_CREDENTIAL_FILES } from "./helpers/credential-files.js";
+import { NO_CREDENTIAL_FILES, credentialFilesFrom } from "./helpers/credential-files.js";
 import { describe, it, expect } from "vitest";
 import { remoteUpLeaf } from "../src/domain/topology/remote-up-leaf.js";
 import type { HttpHostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
@@ -42,15 +42,11 @@ describe("remoteUpLeaf — bearer resolution (mirrors CLI resolveRemoteBearer)",
   });
 
   it("bearer_file: unreadable and empty files are permission-gate failures", async () => {
-    const unreadable = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, { credentialFiles: NO_CREDENTIAL_FILES,
-      readFile: () => {
-        throw new Error("ENOENT");
-      },
-    });
+    const unreadable = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, { credentialFiles: NO_CREDENTIAL_FILES });
     expect(unreadable.error).toContain("[permission-gate]");
     expect(unreadable.error).toContain("not readable");
 
-    const empty = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, { credentialFiles: NO_CREDENTIAL_FILES, readFile: () => "  " });
+    const empty = await remoteUpLeaf({ sourceRef: "r" }, HOST_FILE, { credentialFiles: credentialFilesFrom({ "/tok/f": "  " }) });
     expect(empty.error).toContain("[permission-gate]");
     expect(empty.error).toContain("is empty");
   });
@@ -62,7 +58,7 @@ describe("remoteUpLeaf — the shipped POST /api/up transport", () => {
     const res = await remoteUpLeaf(
       { sourceRef: "specs/factory.yaml", autoApprove: true },
       HOST_FILE, // trailing-slash url — normalized
-      { credentialFiles: NO_CREDENTIAL_FILES, readFile: () => "tok-123\n", fetchImpl: fetchStub(200, { status: "completed" }, capture) },
+      { credentialFiles: credentialFilesFrom({ "/tok/f": "tok-123\n" }), fetchImpl: fetchStub(200, { status: "completed" }, capture) },
     );
     expect(res).toEqual({ ok: true });
     expect(capture.url).toBe("http://vps-f:7433/api/up");

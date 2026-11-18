@@ -4,6 +4,7 @@ import { ConfigStore } from "./config-store.js";
 import { getOpenRigHome, readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout, FetchTimeoutError } from "./fetch-with-timeout.js";
 import { readLocalOrigin } from "./local-origin.js";
+import { readCredentialFile, TERMINAL_TOKEN_POLICY } from "@openrig/daemon/credential-file";
 
 export function terminalAuthHeaders(): Record<string, string> {
   const token = resolveTerminalToken();
@@ -44,17 +45,23 @@ export function remoteDaemonClient(
   return client;
 }
 
+/** A refused terminal-token file is said once per process (stderr), not on every request. */
+let terminalTokenRefusalSaid = false;
+
 function resolveTerminalToken(): string | null {
   const env = process.env.OPENRIG_TERMINAL_BEARER_TOKEN?.trim();
   if (env) return env;
-  try {
-    const homeDir = process.env.OPENRIG_HOME ?? path.join(process.env.HOME ?? "", ".openrig");
-    const tokenPath = path.join(homeDir, "terminal-token");
-    const token = fs.readFileSync(tokenPath, "utf-8").trim();
-    return token || null;
-  } catch {
-    return null;
+  const homeDir = process.env.OPENRIG_HOME ?? path.join(process.env.HOME ?? "", ".openrig");
+  const tokenPath = path.join(homeDir, "terminal-token");
+  // workspaces-o9o.151: read under the credential rule (no link, ours, no group/other bits, capped). A missing file sends no token,
+  // as before; a refused one sends none either, and says why once, naming the file and the fix.
+  const read = readCredentialFile(tokenPath, TERMINAL_TOKEN_POLICY);
+  if (read.ok) return read.content.trim() || null;
+  if (read.problem !== "missing" && !terminalTokenRefusalSaid) {
+    terminalTokenRefusalSaid = true;
+    process.stderr.write(`rig: not sending the terminal token: ${read.message}\n`);
   }
+  return null;
 }
 
 /** The OS code behind a failed connection (`EPERM`, `ECONNREFUSED`, …) when Node exposes one.

@@ -13,11 +13,10 @@
 // packages/daemon/test/hosts-registry-parity.test.ts, the same discipline as
 // the scope-audit CLI/daemon twins.
 
-import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { getDefaultOpenRigPath } from "../../openrig-compat.js";
 import { VIRTUAL_DOMAIN_TOKENS } from "../session-name.js";
-import type { CredentialFileReader } from "../credential-file.js";
+import { HOSTS_REGISTRY_POLICY, type CredentialFileReader } from "../credential-file.js";
 
 export interface SshHostEntry {
   id: string;
@@ -79,18 +78,16 @@ export function defaultHostRegistryPath(): string {
 /** `credentialFiles` (workspaces-o9o.151) reads the registry under the credential rule; it comes first and is required, so every
  *  caller is wired explicitly. */
 export function loadHostRegistry(credentialFiles: CredentialFileReader, path: string = defaultHostRegistryPath()): HostRegistryLoadResult {
-  if (!existsSync(path)) {
+  // workspaces-o9o.151: under the registry rule (a plain file of ours that nobody else can change, capped).
+  const read = credentialFiles.read(path, HOSTS_REGISTRY_POLICY);
+  if (!read.ok && read.problem === "missing") {
     return {
       ok: false,
       error: `host registry not found at ${path}. Create it with a 'hosts:' array; transport: ssh (target + user) or http (url; optional bearer_env or bearer_file — omit both for a tokenless daemon).`,
     };
   }
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (err) {
-    return { ok: false, error: `failed to read host registry at ${path}: ${(err as Error).message}` };
-  }
+  if (!read.ok) return { ok: false, error: `refusing to read the host registry: ${read.message}` };
+  const raw = read.content;
   let parsed: unknown;
   try {
     parsed = parseYaml(raw);

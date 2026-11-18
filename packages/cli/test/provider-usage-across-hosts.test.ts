@@ -333,10 +333,10 @@ describe("round 3 through the CLI", () => {
     const file = path.join(dir, "bearer");
     const A = "SYNTHETIC-ROTATE-CLI-A-5b2e", B = "SYNTHETIC-ROTATE-CLI-B-80d1";
     try {
-      fs.writeFileSync(file, A);
+      fs.writeFileSync(file, A, { mode: 0o600 }); // o9o.151: a bearer file others can read is refused
       const leg = await host("leg", { rewrite: (p, b) => {
         if (p !== "/api/provider/usage/refresh") return b;
-        fs.writeFileSync(file, B);
+        fs.writeFileSync(file, B, { mode: 0o600 });
         return { refresh: { at: NOW, outcome: "failed", reason: "rpc_error", detail: `sent ${A}`, coalesced: false } };
       } });
       const hub = await host("hub", { registry: [leg.entry({ bearer_file: file } as never)] });
