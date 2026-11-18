@@ -330,17 +330,18 @@ async function buildHcCoreCheck(deps: DoctorDeps): Promise<DoctorCheck> {
     // (core_not_this_instance); its log says so, and so does this check, which needs no running daemon. Judged with this shell's env,
     // the same rule the daemon applies to its own.
     const instance = outcome.kind === "hello" ? (deps.thisInstanceCore ?? (() => readThisInstanceCore(process.env)))() : null;
-    // An unreadable core.json refuses whatever the core reports; another id refuses; a core that reports no id cannot be verified
-    // (verify-sec, o9o.165 review F4): the daemon logs that and joins, and this check warns.
+    // An unreadable core.json refuses whatever the core reports; another id refuses. A core that reports no id (an older hc) is
+    // refused too once core.json names one (workspaces-87f, CoS ruling refining o9o.165 F4): the daemon refuses it as core_changed.
     const notMine = instance === null || outcome.kind !== "hello" ? null
       : instance.kind === "unreadable" ? notThisInstanceCore(instance, "")
       : outcome.coreId !== undefined ? notThisInstanceCore(instance, outcome.coreId)
       : null;
     if (!notMine && instance?.kind === "id" && outcome.kind === "hello" && outcome.coreId === undefined) {
       return {
-        name: "hc_core", status: "warn",
-        message: `hc core ${core.version}: cannot verify it is this instance's core: the core does not report its id.`,
-        reason: `This instance's state dir names core ${instance.id} (${instance.file}); an hc that reports no core id cannot be compared with it. The daemon logs the same and joins the core.`,
+        name: "hc_core", status: "fail",
+        message: `hc core ${core.version} does not report its id, but this instance's state dir names core ${instance.id}; the daemon refuses it and does not start.`,
+        reason: `This instance's core.json (${instance.file}) names core ${instance.id}. An hc that sends its id keeps sending it, so a core at this socket that sends none is taken for another core (core_changed).`,
+        fix: "Have the operator stop the core that is there, or run the daemon with the HOME that core was started with; then rerun 'rig doctor'. A seat does neither: it reports this to the operator.",
       };
     }
     if (notMine) {

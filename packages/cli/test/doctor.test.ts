@@ -248,12 +248,14 @@ describe("runDoctorChecks", () => {
         expect(await core(answering(), { thisInstanceCore: () => ({ kind: "none", file: FILE }) })).toMatchObject({ status: "pass" });
       });
 
-      // verify-sec review of o9o.165 (F4): a core that does not report its id cannot be verified against core.json.
-      it("warns when the core reports no id but this instance's state dir names one, naming the file", async () => {
+      // workspaces-87f (CoS ruling, refining o9o.165 F4): once core.json names an id, a core that sends none is refused by the daemon,
+      // so doctor fails it too, naming the file and the id.
+      it("fails when the core reports no id but this instance's state dir names one, naming the file and the id", async () => {
         const check = await core(answering(), { thisInstanceCore: () => ({ kind: "id", id: ID, file: FILE }) });
-        expect(check).toMatchObject({ status: "warn" });
-        expect(check?.message).toContain("cannot verify");
-        expect(check?.reason).toContain(FILE);
+        expect(check).toMatchObject({ status: "fail" });
+        expect(check?.message).toContain("does not report its id");
+        expect(`${check?.message} ${check?.reason}`).toContain(FILE);
+        expect(`${check?.message} ${check?.reason}`).toContain(ID);
       });
 
       it("fails on an unreadable core.json even when the core reports no id", async () => {

@@ -336,26 +336,48 @@ describe("HcCoreWatch against a scripted core", () => {
     expect(starts).toBe(0);
     rmSync(dir, { recursive: true, force: true });
   });
-  // verify-sec review (F4): a core that does not report its id cannot be verified; the daemon says so and joins (an older hc).
-  it("a core that reports no id is joined with a warning, not refused, even with an id named", async () => {
+  // CoS ruling on the 87f FAIL (refining o9o.165 F4): an id-less hello is joined, with the warning, ONLY while no id has ever been known
+  // for this core; once one is known (core.json, or an earlier hello that carried one), a hello without an id is refused as core_changed.
+  const idless = () => JSON.parse(JSON.stringify({ ...hello(), core: { name: "n" } }));  // a hello without core.id, as an older hc sends
+  const coreless = () => { const reply: Record<string, unknown> = { ...hello() }; delete reply.core; return reply; };
+  it.each([["no id", idless], ["no core object", coreless]])("a core whose hello has %s is refused (core_changed) when this instance's state dir names an id", async (_label, reply) => {
     const warnings: string[] = [];
-    const { core, notices, watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-x", file: "/s/herdr-core/default/core.json" }), warn: (m: string) => warnings.push(m) });
-    core.helloReply = () => JSON.parse(JSON.stringify({ ...hello(), core: { name: "n" } }));  // a hello without core.id, as an older hc might send
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-x", file: "/s/herdr-core/default/core.json" }), warn: (m: string) => warnings.push(m) });
+    core.helloReply = reply;
+    await expect(watch.start()).rejects.toMatchObject({ kind: "core_changed" });
+    expect(watch.state()).toBe("refused");
+    expect(core.subscribes).toBe(0);
+    expect(warnings).toEqual([]);
+  });
+  it.each([["no id", idless], ["no core object", coreless]])("never any id: a core whose hello has %s is joined with the warning, and the connected notice names no id", async (_label, reply) => {
+    const warnings: string[] = [];
+    const { core, notices, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }), warn: (m: string) => warnings.push(m) });
+    core.helloReply = reply;
     await watch.start();
     expect(watch.state()).toBe("streaming");
     expect(warnings.join("\n")).toContain("does not report its id");
-    // verify-sec nit: the connected notice names no core id rather than carrying an undefined one.
+    expect(watch.pinnedCoreId()).toBeUndefined();
     expect(notices.filter((n) => n.kind === "connected")).toStrictEqual([{ kind: "connected", version: HC_TESTED_VERSION }]);
   });
-  // A hello with no core object at all reads as id-less too: it is joined with the same warning, and the connect does not throw.
-  it("a core whose hello has no core object is joined with a warning, and the connected notice names no id", async () => {
+  it("core.json names an id only after the watch was made: a core without an id is still refused (core_changed)", async () => {
+    let reads = 0;
+    const { core, watch } = await setup({ thisInstanceCore: () => (reads++ === 0
+      ? { kind: "none", file: "/s/herdr-core/default/core.json" }
+      : { kind: "id", id: "core-x", file: "/s/herdr-core/default/core.json" }) });
+    expect(watch.pinnedCoreId()).toBeUndefined();
+    core.helloReply = idless;
+    await expect(watch.start()).rejects.toMatchObject({ kind: "core_changed" });
+  });
+  it("pin from an earlier id-bearing hello, then a hello without an id: refused (core_changed), and stops", async () => {
     const warnings: string[] = [];
-    const { core, notices, watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-x", file: "/s/herdr-core/default/core.json" }), warn: (m: string) => warnings.push(m) });
-    core.helloReply = () => { const reply: Record<string, unknown> = { ...hello() }; delete reply.core; return reply; };
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }), warn: (m: string) => warnings.push(m) });
     await watch.start();
-    expect(watch.state()).toBe("streaming");
-    expect(warnings.join("\n")).toContain("does not report its id");
-    expect(notices.filter((n) => n.kind === "connected")).toStrictEqual([{ kind: "connected", version: HC_TESTED_VERSION }]);
+    expect(watch.pinnedCoreId()).toBe("core-a");
+    core.helloReply = idless;
+    core.dropConnections();
+    await until(() => watch.state() === "refused", "the refusal");
+    expect(core.subscribes).toBe(1);
+    expect(warnings).toEqual([]);  // refused, never first logged as joined
   });
   it("pins the id this instance's state dir names before any connect, and streams from that core", async () => {
     const { notices, watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-a", file: "/s/herdr-core/default/core.json" }) });

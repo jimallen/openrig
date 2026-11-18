@@ -21,9 +21,15 @@ describe("HcHello: core and core.id are optional (workspaces-87f)", () => {
     expectTypeOf<HcHello["core"]>().toEqualTypeOf<{ id?: string; name?: string } | undefined>();
   });
 
-  it("verifyHello accepts a hello with no core, or a core with no id, even with an id pinned", () => {
-    expect(verifyHello(corelessHello(), { coreId: "core-a" })).toEqual({ verdict: "tested", version: HC_TESTED_VERSION });
-    expect(verifyHello(idlessHello(), { coreId: "core-a" })).toEqual({ verdict: "tested", version: HC_TESTED_VERSION });
+  // CoS ruling on the verify-sec FAIL (workspaces-87f): once an id is known for the core, a hello without one is another core.
+  it("verifyHello refuses a hello with no core, or a core with no id, once an id is pinned (core_changed)", () => {
+    expect(() => verifyHello(corelessHello(), { coreId: "core-a" })).toThrow(expect.objectContaining({ kind: "core_changed" }));
+    expect(() => verifyHello(idlessHello(), { coreId: "core-a" })).toThrow(expect.objectContaining({ kind: "core_changed" }));
+  });
+
+  it("verifyHello accepts a hello with no core, or a core with no id, while no id is pinned (an older hc that never sends one)", () => {
+    expect(verifyHello(corelessHello(), {})).toEqual({ verdict: "tested", version: HC_TESTED_VERSION });
+    expect(verifyHello(idlessHello(), {})).toEqual({ verdict: "tested", version: HC_TESTED_VERSION });
   });
 
   it("control: a core that names another id is still refused", () => {

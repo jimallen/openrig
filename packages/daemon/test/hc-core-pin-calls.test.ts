@@ -90,6 +90,20 @@ describe("a pinned core, after startup", () => {
     expect(core.asked).toEqual([]);
   });
 
+  it("refuses a call once a core without an id answers a pinned socket (core_changed), and sends nothing (workspaces-87f ruling)", async () => {
+    const core = await fakeCore(hello({ core: { name: "n" } }));
+    lifts.push(pinCallsToCore(core.path, watchOf("core-1")));
+    await expect(new HcClient(core.path).call("terminal.list")).rejects.toMatchObject({ name: "HcError", kind: "core_changed" });
+    expect(core.asked).toEqual([]);
+  });
+
+  it("serves a call to a core without an id while no id was ever pinned (an older hc)", async () => {
+    const core = await fakeCore(hello({ core: { name: "n" } }));
+    lifts.push(pinCallsToCore(core.path, watchOf(undefined)));
+    await expect(new HcClient(core.path).call("terminal.list")).resolves.toEqual({ ok: true });
+    expect(core.asked).toEqual(["terminal.list"]);
+  });
+
   it("follows the core id the watch pins later: unpinned at first (core was down at start), checked once the watch has seen one", async () => {
     const core = await fakeCore(hello({ core: { id: "core-2", name: "n" } }));
     const state: { id: string | undefined } = { id: undefined };

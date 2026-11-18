@@ -46,9 +46,13 @@ export function verifyHello(hello: HcHello, pin: HcCorePin = {}): Exclude<HcVers
     judged = judgeHcVersion(hello.version);
   }
   if (judged.verdict === "refused") throw new HcCoreRefusedError(`the core is refused: ${judged.reason}`, "unsupported_version");
-  // A core that reports no id (an older hc) cannot be judged by id; the watch says so (workspaces-o9o.165, verify-sec F4).
-  if (pin.coreId !== undefined && hello.core?.id !== undefined && hello.core.id !== pin.coreId) {
-    throw new HcCoreRefusedError("the core answering is not the one this daemon first saw", "core_changed");
+  // workspaces-87f (CoS ruling on verify-sec's FAIL, refining o9o.165 F4): once an id is known for the core, a hello that names
+  // another id, or none, is another core: the same core keeps sending its id. An id-less hello passes only while no id is known
+  // (an older hc that never sends one); the watch warns when it joins such a core.
+  if (pin.coreId !== undefined && hello.core?.id !== pin.coreId) {
+    throw new HcCoreRefusedError(hello.core?.id === undefined
+      ? `the core answering reports no id, but this daemon knows its core as ${pin.coreId}`
+      : "the core answering is not the one this daemon first saw", "core_changed");
   }
   return judged;
 }
@@ -539,13 +543,17 @@ export class HcCoreWatch {
     const instance = this.options.thisInstanceCore?.();
     const answeringId = presence.hello.core?.id;
     if (answeringId === undefined) {
-      // verify-sec F4: an older hc that reports no core id cannot be verified. An unreadable file still refuses; a named id is said
-      // to be unverified, in the log, and the core is joined.
+      // An older hc that reports no core id cannot be verified. An unreadable file still refuses (o9o.165 F4). workspaces-87f (CoS
+      // ruling): such a core is joined, with the warning, ONLY while no id has ever been known for this core; once one is known
+      // (this instance's core.json, or an earlier hello that carried one), a core without an id is refused as core_changed.
       if (instance?.kind === "unreadable") throw new HcCoreRefusedError(notThisInstanceCore(instance, "")!, "core_not_this_instance");
-      if (instance?.kind === "id") {
-        this.options.warn?.(`cannot verify that the hc core at ${socketPath} is this instance's: the core does not report its id `
-          + `(this instance's state dir names core ${instance.id}, ${instance.file}); joining it`);
+      const known = this.coreId ?? (instance?.kind === "id" ? instance.id : undefined);
+      if (known !== undefined) {
+        throw new HcCoreRefusedError(`refusing the hc core at ${socketPath}: it reports no id, but this instance's core is ${known}`
+          + `${instance?.kind === "id" ? ` (${instance.file})` : " (seen earlier)"}; an hc that sends its id keeps sending it`, "core_changed");
       }
+      this.options.warn?.(`cannot verify that the hc core at ${socketPath} is this instance's: the core does not report its id, and no id `
+        + "is known for this instance's core (an older hc); joining it");
     } else {
       const notMine = instance ? notThisInstanceCore(instance, answeringId) : null;
       if (notMine) throw new HcCoreRefusedError(notMine, "core_not_this_instance");
