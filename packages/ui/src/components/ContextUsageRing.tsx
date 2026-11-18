@@ -74,6 +74,7 @@ export function ContextUsageRing({ percent, fresh, availability, testIdSuffix }:
       className={`inline-block h-2.5 w-2.5 rounded-full border-2 bg-transparent ${TIER_BORDER_CLASS[tier]}${
         tier !== "unknown" && fresh === false ? " opacity-50" : ""
       }`}
+      role="img"
       aria-label={title || "context usage"}
       title={title || "context usage"}
     />

@@ -188,6 +188,7 @@ function Cells({ row }: { row: HeatmapRow }) {
           key={idx}
           data-testid={`mission-progress-heatmap-cell-${row.name}-${idx}`}
           data-done={item.done ? "true" : "false"}
+          role="img"
           aria-label={`${item.text} (${item.done ? "done" : "not done"})`}
           title={item.text}
           className={

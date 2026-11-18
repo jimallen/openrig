@@ -204,7 +204,6 @@ function AcceptanceRow({ item, idx }: { item: AcceptanceItem; idx: number }) {
         <span
           data-testid={`acceptance-pill-${idx}`}
           className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.10em] ${pillClass}`}
-          aria-label={pillLabel}
         >
           <span aria-hidden="true">{pillIcon}</span>
           <span>{pillLabel}</span>

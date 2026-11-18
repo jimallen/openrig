@@ -174,6 +174,7 @@ export function RigNode({ data }: { data: RigNodeData }) {
             data-testid={`activity-dot-${data.logicalId}`}
             data-activity-state={activityState}
             data-activity-source={activitySource}
+            role="img"
             aria-label={`activity: ${activityLabel}${timeInState ? ` ${timeInState.label}` : ""}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
             title={`activity: ${activityLabel}${timeInState ? ` ${timeInState.label}` : ""}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
           />

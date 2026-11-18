@@ -57,7 +57,7 @@ function AgentRowItem({
             title="Drill into the transcript (read-only, on demand)"
             className="flex min-w-0 cursor-pointer list-none items-center gap-2 text-left marker:hidden"
           >
-            <span className={glyph.cls} title={glyph.label} aria-label={glyph.label}>
+            <span className={glyph.cls} title={glyph.label} role="img" aria-label={glyph.label}>
               {glyph.char}
             </span>
             <span className="text-[12px] font-medium">{row.agentName}</span>

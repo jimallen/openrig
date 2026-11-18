@@ -145,10 +145,10 @@ function Section({
                   <div
                     data-testid={`specs-leaf-${entry.id}`}
                     title={entryAccessibleLabel(entry)}
-                    aria-label={entryAccessibleLabel(entry)}
                     className="flex min-w-0 items-center justify-between gap-2 truncate font-mono text-xs text-on-surface"
                   >
                     <LeafContent entry={entry} />
+                    {entry.meta ? <span className="sr-only"> · {entry.meta}</span> : null}
                   </div>
                 )}
               </li>

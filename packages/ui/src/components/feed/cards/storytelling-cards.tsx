@@ -327,6 +327,10 @@ export function ProgressCard({
           data-testid={`feed-card-progress-${source.missionId}-bar`}
           data-percent={pct}
           className="h-1.5 w-16 shrink-0 border border-outline-variant bg-surface-low overflow-hidden"
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
           aria-label={`Progress ${pct}%`}
         >
           <div

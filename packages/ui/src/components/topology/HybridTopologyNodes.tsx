@@ -180,6 +180,7 @@ function HybridAgentNodeInner({ data }: { data: HybridAgentNodeData }) {
           data-testid={`hybrid-activity-dot-${data.logicalId}`}
           data-activity-state={activityState}
           data-activity-source={activitySource}
+          role="img"
           aria-label={`activity: ${activityLabel}${timeInState ? ` ${timeInState.label}` : ""}${activitySource !== "hook" && activitySource !== "none" ? " (activity-grade)" : ""}`}
         />
       </div>

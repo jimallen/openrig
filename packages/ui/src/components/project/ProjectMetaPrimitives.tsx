@@ -244,6 +244,7 @@ export function QueueCountIcon({
     <span
       data-testid={testId}
       title={label}
+      role="img"
       aria-label={label}
       className="inline-flex shrink-0 items-center gap-1 border border-outline-variant bg-surface-lowest/45 px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-on-surface-variant"
     >

@@ -169,6 +169,7 @@ function NodeActivityIndicator({ node }: { node: NodeInventoryEntry }) {
         <span
           className="font-mono text-[8px] uppercase tracking-[0.10em] text-on-surface-variant"
           data-testid={`node-active-work-${node.logicalId}`}
+          role="img"
           aria-label="owns active work"
         >
           ●
