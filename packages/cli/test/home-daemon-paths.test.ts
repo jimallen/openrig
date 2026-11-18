@@ -308,6 +308,15 @@ describe("o9o.181 (verify-sec re-review): no config error can ever lead rig dest
     }
   }
 
+  it("a daemon.json recording port 80 (a URL drops it as the scheme default) is acted on at exactly port 80", async () => {
+    fs.writeFileSync(path.join(scratch, "daemon.json"), JSON.stringify({ pid: process.pid, port: 80 }));
+    const { deps, inspectListener } = destroySpies();
+    const output = await runDestroy(stores["resolve throws"], deps);
+    expect(output).toContain("daemon: http://127.0.0.1:80");
+    expect(inspectListener.mock.calls.length).toBeGreaterThan(0);
+    expect(inspectListener.mock.calls.every(([host, port]) => host === "127.0.0.1" && port === 80)).toBe(true);
+  });
+
   it("control: a valid daemon.json is exactly the endpoint destroy acts on, with the config unreadable, never 7433", async () => {
     fs.writeFileSync(path.join(scratch, "daemon.json"), JSON.stringify({ pid: process.pid, port: 28210 }));
     const { deps, inspectListener, findListeningPid } = destroySpies();

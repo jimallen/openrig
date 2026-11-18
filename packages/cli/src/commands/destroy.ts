@@ -45,7 +45,8 @@ export function destroyDaemonTarget(configStore: Pick<ConfigStore, "resolve">): 
     if (home.kind === "none") return { none: home.reason };
     if (home.kind === "recorded") {
       const url = new URL(home.url);
-      const port = Number(url.port);
+      // A URL drops its scheme's default port (http://h:80 has port ""), so a recorded 80 is read back as 80, not 0.
+      const port = url.port === "" ? (url.protocol === "https:" ? 443 : 80) : Number(url.port);
       if (!Number.isInteger(port) || port < 1 || port > 65535) return { none: `daemon.json records no usable port (${home.url}).` };
       return { host: url.hostname.replace(/^\[|\]$/g, ""), port };
     }
