@@ -1,7 +1,7 @@
 // hc cutover: how SessionTransport writes to a seat bound to herdr-core. One `terminal.send` replaces paste, a 200 ms
 // sleep and Enter; its silence is never retried from here; an audited prompt answer keeps the staged path and says it
 // may answer a dialog. tmux seats keep exactly the calls they had.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -21,13 +21,13 @@ import { CaptureObserver, hashSentText, type Observation } from "../src/domain/c
 const SEAT = "dev-impl@my-rig";
 const PENDING: HcPendingSend = { version: 1, seat: SEAT, address: "t4", token: null, sendStartedAtMs: 4_100_000_000_000, preTurn: 3, preStatus: "idle", preReported: true, commandLed: false, preScreen: null, pasteEchoes: false };
 
-type TmuxCalls = { sendText: ReturnType<typeof vi.fn>; sendKeys: ReturnType<typeof vi.fn>; capture: ReturnType<typeof vi.fn> };
+type TmuxCalls = { sendText: Mock<TmuxAdapter["sendText"]>; sendKeys: Mock<TmuxAdapter["sendKeys"]>; capture: Mock<TmuxAdapter["capturePaneContent"]> };
 
 function mockTmux(over: { capture?: (n: string, lines?: number) => Promise<string | null> } = {}): { tmux: TmuxAdapter; calls: TmuxCalls } {
   const calls: TmuxCalls = {
-    sendText: vi.fn(async (): Promise<TmuxResult> => ({ ok: true })),
-    sendKeys: vi.fn(async (): Promise<TmuxResult> => ({ ok: true })),
-    capture: vi.fn(over.capture ?? (async () => "idle\n❯ ")),
+    sendText: vi.fn<TmuxAdapter["sendText"]>(async (): Promise<TmuxResult> => ({ ok: true })),
+    sendKeys: vi.fn<TmuxAdapter["sendKeys"]>(async (): Promise<TmuxResult> => ({ ok: true })),
+    capture: vi.fn<TmuxAdapter["capturePaneContent"]>(over.capture ?? (async () => "idle\n❯ ")),
   };
   const tmux = tmuxStub({
     hasSession: async () => true,
