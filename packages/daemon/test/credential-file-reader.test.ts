@@ -126,7 +126,7 @@ describe("readCredentialFile: the seat credential links OpenRig makes, and no ot
   });
 });
 
-describe("o9o.160: files OpenRig owns are narrowed, another program's registry is warned about (CoS 11-18 13:32Z)", () => {
+describe("o9o.160: files OpenRig owns are narrowed; another program's registry is judged, never chmod-ed (CoS 11-18 13:32Z, 13:51Z)", () => {
   it("readOwnFile clears only the group/other WRITE bits of a registry of ours, and reads it", () => {
     const p = file("daemon.json", "{}", 0o664);
     expect(readOwnFile(p, DAEMON_STATE_POLICY)).toEqual({ ok: true, content: "{}" });
@@ -146,19 +146,16 @@ describe("o9o.160: files OpenRig owns are narrowed, another program's registry i
     expect(fs.statSync(real).mode & 0o777).toBe(0o664);
   });
 
-  it("a Codex config others can change is read with a warning naming the chmod, and is never chmod-ed", () => {
+  it("a Codex config others can change is refused, naming the chmod, and is never chmod-ed (census: every live one is clean)", () => {
     const p = file("config.toml", "model = 'x'\n", 0o664);
     const r = readCredentialFile(p, CODEX_CONFIG_POLICY);
-    expect(r).toMatchObject({ ok: true, content: "model = 'x'\n", warning: { problem: "group_or_other_write" } });
-    if (r.ok) expect(r.warning?.message).toContain("chmod go-w");
+    expect(r).toMatchObject({ ok: false, problem: "group_or_other_write" });
+    if (!r.ok) expect(r.message).toContain("chmod go-w");
     expect(fs.statSync(p).mode & 0o777).toBe(0o664);
   });
 
-  it("warn mode downgrades nothing else: a link is refused, and a clean file has no warning", () => {
-    const real = file("real.toml", "a = 1\n", 0o644);
-    fs.symlinkSync(real, path.join(dir, "config.toml"));
-    expect(readCredentialFile(path.join(dir, "config.toml"), CODEX_CONFIG_POLICY)).toMatchObject({ ok: false, problem: "symlink" });
-    expect(readCredentialFile(real, CODEX_CONFIG_POLICY)).toEqual({ ok: true, content: "a = 1\n" });
+  it("CONTROL: a Codex config others may read but not change is read", () => {
+    expect(readCredentialFile(file("config.toml", "a = 1\n", 0o644), CODEX_CONFIG_POLICY)).toEqual({ ok: true, content: "a = 1\n" });
   });
 
   it("config.json may be a link (CoS 13:36Z): its real target is read, and narrowed, not the link", () => {
@@ -181,7 +178,4 @@ describe("o9o.160: files OpenRig owns are narrowed, another program's registry i
     expect(readOwnFile(path.join(dir, "daemon.json"), DAEMON_STATE_POLICY)).toMatchObject({ ok: false, problem: "symlink" });
   });
 
-  it("CONTROL: without warn mode a registry others can change is refused", () => {
-    expect(readCredentialFile(file("hosts.yaml", "x", 0o664), REGISTRY)).toMatchObject({ ok: false, problem: "group_or_other_write" });
-  });
 });

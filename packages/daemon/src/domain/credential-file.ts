@@ -21,9 +21,6 @@ export interface CredentialFilePolicy {
   /** Set only through seatCredentialLinkPolicy (one of SEAT_CREDENTIAL_LINKS): a symlink AT the file is followed only when its
    *  real path is exactly this file's real path, and that target is then held to the whole rule. Unset, a link is refused. */
   linkTarget?: string;
-  /** A registry OpenRig does not own (Codex's config.toml): group/other write bits are reported, not refused; the content is
-   *  still returned with a warning (o9o.160, CoS: never chmod another program's file; warn unless the live census is clean). */
-  groupOrOtherWrite?: "warn";
   /** o9o.160 (CoS 11-18 13:36Z): the file may be a link to anywhere, its REAL target judged by the whole rule (and narrowed by
    *  readOwnFile). Only for config.json, whose writer deliberately follows a link (a supported dotfiles layout). */
   followLinks?: true;
@@ -33,14 +30,8 @@ export type CredentialFileProblem =
   | "missing" | "symlink" | "unexpected_link_target" | "not_regular_file" | "hard_linked" | "wrong_owner" | "group_or_other_access"
   | "group_or_other_write" | "too_large" | "unreadable";
 
-/** A finding on a file that was still read (only group_or_other_write, and only under groupOrOtherWrite: "warn"). */
-export interface CredentialFileWarning {
-  problem: "group_or_other_write";
-  message: string;
-}
-
 export type CredentialFileRead =
-  | { ok: true; content: string; warning?: CredentialFileWarning }
+  | { ok: true; content: string }
   | { ok: false; problem: CredentialFileProblem; message: string };
 
 /** The outbound port: read one credential file under a policy, or judge it without reading it. Never throws for a file problem;
@@ -138,10 +129,10 @@ export const DAEMON_STATE_POLICY: CredentialFilePolicy = { label: "the daemon st
 /** config.json may be a link (its writer follows one by design); daemon.json may not (its writer renames over the name). */
 export const OPENRIG_CONFIG_POLICY: CredentialFilePolicy = { label: "the OpenRig config file", kind: "registry", maxBytes: 1024 * 1024, followLinks: true };
 export const SLACK_CONNECTOR_POLICY: CredentialFilePolicy = { label: "the Slack connector config", kind: "registry", maxBytes: 256 * 1024 };
-/** o9o.160: Codex's config.toml chooses the provider credential. It is Codex's (or the operator's) file, never chmod-ed by OpenRig: a
- *  link OpenRig did not make or another user's file is refused; group/other write is a warning (rig doctor names it), until the
- *  live census decides (CoS 11-18 13:32Z). */
-export const CODEX_CONFIG_POLICY: CredentialFilePolicy = { label: "the Codex config", kind: "registry", maxBytes: 1024 * 1024, groupOrOtherWrite: "warn" };
+/** o9o.160: Codex's config.toml chooses the provider credential. It is Codex's (or the operator's) file and OpenRig never chmods it:
+ *  a link OpenRig did not make (SEAT_CREDENTIAL_LINKS codex-config), another user's file, or one others can change is refused
+ *  (CoS 11-18 13:51Z, from verify-ops' census: every live one, sparky and stu, has no group/other write; mbp unverified). */
+export const CODEX_CONFIG_POLICY: CredentialFilePolicy = { label: "the Codex config", kind: "registry", maxBytes: 1024 * 1024 };
 
 /**
  * The seat credential links OpenRig itself makes, and the only links the credential rule follows (o9o.151; CoS 11-18 11:34Z, from
@@ -208,12 +199,6 @@ function openProblem(err: unknown): CredentialFileProblem {
   return code === "ENOENT" ? "missing" : code === "ELOOP" || code === "EMLINK" ? "symlink" : "unreadable";
 }
 
-/** The one problem a policy may downgrade to a warning (group/other write on a registry OpenRig does not own). */
-function warnedProblem(path: string, policy: CredentialFilePolicy, problem: CredentialFileProblem | null): CredentialFileWarning | undefined {
-  if (problem !== "group_or_other_write" || policy.groupOrOtherWrite !== "warn") return undefined;
-  return { problem, message: credentialFileRefusal(path, policy, problem) };
-}
-
 /**
  * Where to open, per the policy's link mode (the open itself never follows, so the file opened is held to the whole rule):
  * - linkTarget (SEAT_CREDENTIAL_LINKS): a link is followed only when it resolves to exactly that file;
@@ -242,8 +227,7 @@ export function readCredentialFileWith(ops: CredentialFileOps, path: string, pol
   try { fd = ops.openNoFollow(resolved.target); } catch (err) { return refusal(path, policy, openProblem(err)); }
   try {
     const problem = judgeOpenedCredentialFile(ops.fstat(fd), policy, ops.currentUid());
-    const warning = warnedProblem(path, policy, problem);
-    if (problem && !warning) return refusal(path, policy, problem);
+    if (problem) return refusal(path, policy, problem);
     const buf = new Uint8Array(policy.maxBytes + 1);
     let n = 0;
     for (;;) {
@@ -253,7 +237,7 @@ export function readCredentialFileWith(ops: CredentialFileOps, path: string, pol
       if (n > policy.maxBytes) return refusal(path, policy, "too_large");
     }
     const content = new TextDecoder().decode(buf.subarray(0, n));
-    return warning ? { ok: true, content, warning } : { ok: true, content };
+    return { ok: true, content };
   } catch {
     return refusal(path, policy, "unreadable");
   } finally {
@@ -290,16 +274,14 @@ export function readOwnFileWith(ops: CredentialFileOps, path: string, policy: Cr
 }
 
 /** Judge a credential file WITHOUT reading it (the operator's Pi login before a seat is linked to it). No content in the result. */
-export function inspectCredentialFileWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): { ok: true; warning?: CredentialFileWarning } | Refusal {
+export function inspectCredentialFileWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): { ok: true } | Refusal {
   const resolved = resolveLinkedTarget(ops, path, policy);
   if ("problem" in resolved) return refusal(path, policy, resolved.problem);
   let fd: number;
   try { fd = ops.openNoFollow(resolved.target); } catch (err) { return refusal(path, policy, openProblem(err)); }
   try {
     const problem = judgeOpenedCredentialFile(ops.fstat(fd), policy, ops.currentUid());
-    const warning = warnedProblem(path, policy, problem);
-    if (problem && !warning) return refusal(path, policy, problem);
-    return warning ? { ok: true, warning } : { ok: true };
+    return problem ? refusal(path, policy, problem) : { ok: true };
   } finally {
     ops.close(fd);
   }

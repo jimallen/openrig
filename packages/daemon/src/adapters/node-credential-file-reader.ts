@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import {
   credentialFileOpsFrom, inspectCredentialFileWith, narrowOwnFileWith, readCredentialFileWith, readOwnFileWith,
-  type CredentialFileOps, type CredentialFilePolicy, type CredentialFileRead, type CredentialFileReader, type CredentialFileWarning,
+  type CredentialFileOps, type CredentialFilePolicy, type CredentialFileRead, type CredentialFileReader,
 } from "../domain/credential-file.js";
 
 export interface CredentialFileReadOptions {
@@ -45,6 +45,6 @@ export function readOwnFile(path: string, policy: CredentialFilePolicy, options:
 }
 
 /** Judge a credential file WITHOUT reading it (the operator's Pi login before a seat is linked to it). */
-export function inspectCredentialFile(path: string, policy: CredentialFilePolicy, options: CredentialFileReadOptions = {}): { ok: true; warning?: CredentialFileWarning } | (CredentialFileRead & { ok: false }) {
+export function inspectCredentialFile(path: string, policy: CredentialFilePolicy, options: CredentialFileReadOptions = {}): { ok: true } | (CredentialFileRead & { ok: false }) {
   return inspectCredentialFileWith(opsFor(options), path, policy);
 }
