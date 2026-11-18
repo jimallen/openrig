@@ -76,11 +76,11 @@ function BoardRowExpansion({ slot }: { slot: BoardSlot }) {
   return (
     <div data-testid={`board-expansion-${slot.slice}`} className="space-y-2 border-t border-outline-variant/60 bg-surface p-2">
       <div className="min-w-0 border border-outline-variant p-2">
-        <h5 className="font-mono text-[10px] uppercase text-on-surface-variant">INTENT</h5>
+        <h3 className="font-mono text-[10px] uppercase text-on-surface-variant">INTENT</h3>
         <MarkdownViewer content={d.intent.text ?? d.intent.degrade ?? ""} hideFrontmatter hideRawToggle />
       </div>
       <div className="min-w-0 border border-outline-variant p-2">
-        <h5 className="font-mono text-[10px] uppercase text-on-surface-variant">DELIVERED</h5>
+        <h3 className="font-mono text-[10px] uppercase text-on-surface-variant">DELIVERED</h3>
         {d.delivered.items.length === 0 ? (
           <p className="font-mono text-[11px] text-on-surface-variant">— no proof contract declared in the plan yet</p>
         ) : (
@@ -162,7 +162,7 @@ function Board({ review }: { review: ComposedMissionReview }) {
 
   return (
     <section data-testid="mission-board" className="space-y-3">
-      <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SLICES</h3>
+      <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SLICES</h2>
       {review.board.length === 0 ? (
         <p data-testid="board-empty" className="font-mono text-[11px] text-on-surface-variant">
           no slices yet
@@ -244,7 +244,7 @@ function Ledger({ review }: { review: ComposedMissionReview }) {
     <section data-testid="mission-ledger" className={cn(VELLUM_CARD, "overflow-hidden")}>
       <div data-testid="ledger-header" className="flex flex-wrap items-center justify-between gap-2 border-b border-outline-variant px-3 py-2">
         <div>
-          <h3 className="font-mono text-[10px] font-semibold uppercase tracking-wide text-on-surface">SETTLED</h3>
+          <h2 className="font-mono text-[10px] font-semibold uppercase tracking-wide text-on-surface">SETTLED</h2>
           <p className="font-mono text-[9px] uppercase tracking-wide text-on-surface-variant">completion ledger</p>
         </div>
         <p
@@ -314,7 +314,7 @@ export function MissionReviewTab({ missionId }: { missionId: string }) {
       {/* FR-8: the brief's What & why — the founder's words, verbatim, never edited. */}
       {data.intent ? (
         <section data-testid="mission-intent" className="border border-outline-variant p-3">
-          <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">WHAT &amp; WHY</h3>
+          <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">WHAT &amp; WHY</h2>
           <MarkdownViewer content={data.intent} hideFrontmatter hideRawToggle />
         </section>
       ) : null}
@@ -323,7 +323,7 @@ export function MissionReviewTab({ missionId }: { missionId: string }) {
           (never full cards at this altitude); each row deep-links into the
           slice Review tab anchored at the item. */}
       <section data-testid="mission-needs-you" className="space-y-1">
-        <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">NEEDS YOU</h3>
+        <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">NEEDS YOU</h2>
         {data.needsYou.items.length === 0 ? (
           <p className="font-mono text-[11px] text-on-surface-variant">{data.needsYou.provenance}</p>
         ) : (

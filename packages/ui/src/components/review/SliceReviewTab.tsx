@@ -143,7 +143,7 @@ function DeliveredSection({ d, ctx, attributed }: { d: ComposedSliceReview["deli
   });
   return (
     <section data-testid="delivered-section" className={cn(VELLUM_CARD, "space-y-0 p-0")}>
-      <h3 className="border-b border-outline-variant px-3 py-2 font-mono text-[11px] font-bold uppercase tracking-wide text-on-surface">Delivered</h3>
+      <h2 className="border-b border-outline-variant px-3 py-2 font-mono text-[11px] font-bold uppercase tracking-wide text-on-surface">Delivered</h2>
       {d.items.length === 0 ? (
         <p data-testid="delivered-empty" className="px-3 py-2 font-mono text-[11px] text-on-surface-variant">
           — no proof contract declared in the plan yet
@@ -280,7 +280,7 @@ export function SliceReviewTab({
           top-to-bottom: did intent become a correct plan become a correct
           build. Phase highlights the current focus, never hides a section. */}
       <section data-testid="intent-section" className={cn(VELLUM_CARD, "p-3")}>
-        <h3 className="mb-1 font-mono text-[11px] font-bold uppercase tracking-wide text-on-surface">Intent</h3>
+        <h2 className="mb-1 font-mono text-[11px] font-bold uppercase tracking-wide text-on-surface">Intent</h2>
         {data.intent.text ? (
           <MarkdownViewer content={data.intent.text} hideFrontmatter hideRawToggle />
         ) : (
@@ -294,7 +294,7 @@ export function SliceReviewTab({
       </section>
 
       <section data-testid="plan-section" className={cn(VELLUM_CARD, "space-y-2 p-3")}>
-        <h3 className="font-mono text-[11px] font-bold uppercase tracking-wide text-on-surface">Plan</h3>
+        <h2 className="font-mono text-[11px] font-bold uppercase tracking-wide text-on-surface">Plan</h2>
         {data.plan.concise.text ? (
           <MarkdownViewer content={data.plan.concise.text} hideFrontmatter hideRawToggle />
         ) : (
@@ -362,7 +362,7 @@ export function SliceReviewTab({
 
       {/* Band 4: SETTLED — the two deliberate stamps (§4). */}
       <section data-testid="settled-band" className={cn(VELLUM_CARD, "space-y-1 p-3")}>
-        <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SETTLED</h3>
+        <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">SETTLED</h2>
         <LockStamp lock={data.plan.lock} label="gate 1 · plan-lock (plan ↔ intent)" />
         <LockStamp lock={data.delivered.lock} label={data.readiness?.configured ? "historical proof-lock (current judgment shown above)" : "gate 2 · proof-lock (delivered ↔ plan) — recorded stamp"} />
       </section>

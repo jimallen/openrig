@@ -160,7 +160,7 @@ function FeedTreatment({ dense = false }: { dense?: boolean }) {
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-2">
           <Pill token={{ label: "Action required", tone: "danger", icon: CircleAlert }} compact={dense} />
-          <h3 className="font-mono text-sm text-on-surface">Review demo-seed triage proof packet</h3>
+          <h2 className="font-mono text-sm text-on-surface">Review demo-seed triage proof packet</h2>
         </div>
         <DateChip label="Today 4:18 PM" />
       </div>
@@ -197,7 +197,7 @@ function StoryTreatment() {
                 <Pill token={step.token} compact />
                 <DateChip label="12 min ago" />
               </div>
-              <h4 className="mt-2 font-mono text-[12px] text-on-surface">{step.title}</h4>
+              <h3 className="mt-2 font-mono text-[12px] text-on-surface">{step.title}</h3>
               <p className="mt-1 font-mono text-[10px] leading-relaxed text-on-surface">{step.body}</p>
             </div>
           );

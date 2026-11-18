@@ -493,9 +493,9 @@ export function FeedCard({
               ) : null}
             </div>
             {/* Title — legibility north star: 16px headline bold. */}
-            <h3 className="font-headline text-[16px] font-bold leading-tight text-on-surface truncate">
+            <h2 className="font-headline text-[16px] font-bold leading-tight text-on-surface truncate">
               {card.title}
-            </h3>
+            </h2>
           </div>
           <div className="flex items-start gap-2">
             <InlineDateMark value={card.createdAt} />

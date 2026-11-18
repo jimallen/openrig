@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Section headings no longer skip a level (workspaces-o9o.158)
+
+- Symptom: the For You feed's cards, the slice and mission review bands and the lab preview's cards sat two levels below their page title (an h3 straight under the h1), so a screen reader's heading outline had a gap; the accessibility scan flagged the first gap on each page.
+- Now each set of sibling sections moves up a level together (the feed cards and review bands are second-level headings; the mission review's board-row headings and the lab's step titles sit one below), so the outline matches the page. Nothing changes visually: no style targets a heading's tag.
+
 ### Status dots, rings and the progress bar are named for assistive technology (workspaces-o9o.154)
 
 - Symptom: the twin accessibility scan (workspaces-o9o.130) found 42 elements on 6 surfaces (/context, /lab/card-previews, /rigs/rig_alpha, /topology and two topology drill-downs) breaking axe's aria-prohibited-attr rule: an aria-label on a plain span or div, whose role cannot carry a name, so screen readers ignored it. They were the context ring, the activity dot on rig and topology nodes, and the progress card's bar.

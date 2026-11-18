@@ -139,7 +139,7 @@ export function AgentsBandView({
 
   return (
     <section id="agents" data-testid="agents-band" className={cn(VELLUM_CARD, "space-y-1 p-2")}>
-      <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">AGENTS</h3>
+      <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">AGENTS</h2>
       {/* FR-4: the one coordination-health line per scope. */}
       {band.coordinationHealth ? (
         <p data-testid="agents-health" className="font-mono text-[10px] text-on-surface-variant">

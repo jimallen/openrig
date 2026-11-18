@@ -161,7 +161,7 @@ export function NeedsYouAccordion({
 
   return (
     <section data-testid="needs-you-band" className={cn(VELLUM_CARD, "space-y-1 p-2")}>
-      <h3 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">NEEDS YOU</h3>
+      <h2 className="font-mono text-[10px] uppercase tracking-wide text-on-surface-variant">NEEDS YOU</h2>
       {band.items.length === 0 ? (
         <p data-testid="needs-you-empty" className="font-mono text-[11px] text-on-surface-variant">
           {band.provenance}
