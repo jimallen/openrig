@@ -6,6 +6,7 @@ import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import { hcTerminalName, SEAT_LABEL } from "../../src/adapters/hc-host.js";
 import { hcCountedSocketBytes, hcScratchBase, hcScratchFallback, hcServerUntilUp, hcSocketFits, HC_SOCKET_PATH_LIMIT } from "./hc-scratch.js";
 import { PrivateCoreGuard } from "./private-core-guard.js";
+import { waitTimedOut } from "./wait-timeout.js";
 
 /** The `hc` on PATH, or "" when there is none (the real-core suites skip). */
 export const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
@@ -60,11 +61,12 @@ export class PrivateCore {
 
 /** Polls until `read` answers what `ok` accepts (expect.poll works only inside a test, and the suites set up in beforeAll). */
 export async function waitUntil<T>(read: () => Promise<T>, ok: (value: T) => boolean, what: string, timeoutMs = 15_000): Promise<T> {
-  const until = Date.now() + timeoutMs;
+  const started = Date.now();
+  const until = started + timeoutMs;
   for (;;) {
     const value = await read();
     if (ok(value)) return value;
-    if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > until) throw waitTimedOut(`timed out waiting for ${what}`, started);
     await new Promise((r) => setTimeout(r, 100));
   }
 }

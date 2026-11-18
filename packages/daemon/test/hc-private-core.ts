@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { HcClient, resolveHcSocket } from "../src/adapters/hc-client.js";
 import { hcCountedSocketBytes, hcScratchBase, hcScratchFallback, hcServerUntilUp, hcSocketFits, HC_SOCKET_PATH_LIMIT } from "./helpers/hc-scratch.js";
 import { PrivateCoreGuard } from "./helpers/private-core-guard.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 export { hcServerUntilUp };
 
@@ -119,11 +120,12 @@ export class PrivateCore {
 }
 
 export async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, what: string, ms = 8000): Promise<T> {
-  const deadline = Date.now() + ms;
+  const started = Date.now();
+  const deadline = started + ms;
   for (;;) {
     const value = await read();
     if (accept(value)) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; last: ${JSON.stringify(value)?.slice(0, 300)}`);
+    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, started, `${JSON.stringify(value)?.slice(0, 300)}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }

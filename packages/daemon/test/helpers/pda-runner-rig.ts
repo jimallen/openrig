@@ -19,6 +19,7 @@ import {
   parsePdaRunnerState, pdaSeatPaths, type PdaRunnerState, type PdaSeatPaths,
 } from "../../src/adapters/pda-runner-protocol.js";
 import { startFakePda, type FakePda } from "./fake-pda.js";
+import { waitTimedOut } from "./wait-timeout.js";
 
 /** A valid pda token (43 base64url characters) that is also a canary: nothing else contains it. */
 export const BEARER = "CANARYbearer".padEnd(43, "A");
@@ -30,9 +31,10 @@ export { HOOK_TOKEN_MARKER, PDA_TOKEN_MARKER };
 export const sse = (event: unknown): string => `data: ${JSON.stringify(event)}\n\n`;
 
 export async function waitFor(cond: () => boolean, what: string, ms = 5000): Promise<void> {
-  const end = Date.now() + ms;
+  const started = Date.now();
+  const end = started + ms;
   while (!cond()) {
-    if (Date.now() > end) throw new Error(`timed out waiting for: ${what}`);
+    if (Date.now() > end) throw waitTimedOut(`timed out waiting for: ${what}`, started);
     await new Promise((r) => setTimeout(r, 5));
   }
 }
