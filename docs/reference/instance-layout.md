@@ -86,38 +86,6 @@ rig daemon start
 
 To use a daemon that already runs elsewhere instead, set `OPENRIG_URL` to it.
 
-## A home other than `~/.openrig` needs its own daemon address
-
-The default home, `~/.openrig`, owns the default daemon address,
-`127.0.0.1:7433`. Any other `$OPENRIG_HOME` must name its own daemon; it
-never falls back to the default address, which on a machine with a running
-default instance is that instance's daemon.
-
-A home names its daemon by any of these, checked in this order:
-
-- `OPENRIG_URL` (or `RIGGED_URL`): the daemon to reach.
-- its `daemon.json`: the address its own running daemon recorded at start.
-- a configured `daemon.port` or `daemon.host`: `OPENRIG_PORT` or
-  `OPENRIG_HOST`, or `daemon.port` / `daemon.host` in its `config.json`.
-
-A home that names none of these resolves no daemon. Commands that need one
-refuse before sending anything and say why: `rig daemon status` reports it
-stopped, `rig daemon stop` has nothing to stop, `rig doctor` fails its port
-check, and `rig destroy` probes and signals no listener.
-
-Starting a daemon needs a port of its own. With a custom `$OPENRIG_HOME` and a
-fresh `config.json`, `rig daemon start`, `rig start`, `rig up` and every
-command that starts the daemon for you refuse before probing or binding
-anything, and ask for one:
-
-```bash
-export OPENRIG_HOME=/path/to/another-home
-rig config set daemon.port 7444   # or: export OPENRIG_PORT=7444, or rig daemon start --port 7444
-rig daemon start
-```
-
-To use a daemon that already runs elsewhere instead, set `OPENRIG_URL` to it.
-
 ## Permissions
 
 An instance is private to the user who runs it. Seat conversations (Pi session
