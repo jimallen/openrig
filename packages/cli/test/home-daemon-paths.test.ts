@@ -249,3 +249,72 @@ describe("o9o.181: rig destroy plans no daemon for a home that names none (the o
     expect(printed.join("\n")).toContain("daemon: none (this OPENRIG_HOME names no daemon of its own");
   });
 });
+
+describe("o9o.181 (verify-sec re-review): no config error can ever lead rig destroy to a kill", () => {
+  const destroySpies = () => {
+    const inspectListener = vi.fn(async (_host: string, _port: number) => ({ kind: "openrig" as const }));
+    const findListeningPid = vi.fn((_port: number) => 4242);
+    const killProcess = vi.fn((_pid: number) => {});
+    const deps: DestroyDeps = {
+      stopDaemon: async () => {}, inspectListener, findListeningPid, killProcess,
+      exists: () => false, renamePath: () => {}, removePath: () => {}, mkdirp: () => {},
+      listManagedTmuxSessions: () => [], listManagedHcSeats: () => [], killHcSeat: async () => "missing",
+      sleep: async () => {}, now: () => new Date("2026-11-19T00:00:00Z"),
+    };
+    return { deps, inspectListener, findListeningPid, killProcess };
+  };
+  const runDestroy = async (configStore: { resolve: () => never } & Partial<{ resolveWithSource: (key: string) => never }>, deps: DestroyDeps) => {
+    const printed: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...line: unknown[]) => { printed.push(line.join(" ")); });
+    vi.spyOn(console, "error").mockImplementation((...line: unknown[]) => { printed.push(line.join(" ")); });
+    const program = new Command();
+    program.exitOverride();
+    program.addCommand(destroyCommand({ configStore, destroyDeps: deps }));
+    await program.parseAsync(["node", "rig", "destroy", "--state", "--yes", "--confirm", DESTROY_CONFIRM_TOKEN]);
+    return printed.join("\n");
+  };
+  const fail = (): never => { throw new Error("config.json: unexpected token"); };
+  const stores = {
+    "resolve throws": { resolve: fail },
+    "resolve and its source both throw": { resolve: fail, resolveWithSource: (_key: string): never => fail() },
+  };
+  const states: Record<string, string | null> = {
+    "no daemon.json": null,
+    "a corrupt daemon.json": "{not json",
+    "a daemon.json with no usable port": JSON.stringify({ pid: process.pid, port: 0 }),
+  };
+
+  for (const [homeLabel, defaultHome] of [["a non-default home", false], ["the default home", true]] as const) {
+    for (const [storeLabel, store] of Object.entries(stores)) {
+      for (const [stateLabel, state] of Object.entries(states)) {
+        it(`${homeLabel}, ${storeLabel}, ${stateLabel}: no daemon planned, nothing inspected, looked up or killed`, async () => {
+          let home = scratch;
+          if (defaultHome) {
+            const userHome = path.join(scratch, "user");
+            home = path.join(userHome, ".openrig");
+            fs.mkdirSync(home, { recursive: true });
+            vi.stubEnv("HOME", userHome);
+            vi.stubEnv("OPENRIG_HOME", home);
+          }
+          if (state !== null) fs.writeFileSync(path.join(home, "daemon.json"), state);
+          const { deps, inspectListener, findListeningPid, killProcess } = destroySpies();
+          const output = await runDestroy(store, deps);
+          expect(inspectListener).not.toHaveBeenCalled();
+          expect(findListeningPid).not.toHaveBeenCalled();
+          expect(killProcess).not.toHaveBeenCalled();
+          expect(output).toContain("daemon: none");
+        });
+      }
+    }
+  }
+
+  it("control: a valid daemon.json is exactly the endpoint destroy acts on, with the config unreadable, never 7433", async () => {
+    fs.writeFileSync(path.join(scratch, "daemon.json"), JSON.stringify({ pid: process.pid, port: 28210 }));
+    const { deps, inspectListener, findListeningPid } = destroySpies();
+    const output = await runDestroy(stores["resolve throws"], deps);
+    expect(output).toContain("daemon: http://127.0.0.1:28210");
+    expect(inspectListener.mock.calls.length).toBeGreaterThan(0);
+    expect(inspectListener.mock.calls.every(([host, port]) => host === "127.0.0.1" && port === 28210)).toBe(true);
+    expect(findListeningPid.mock.calls.every(([port]) => port === 28210)).toBe(true);
+  });
+});

@@ -32,6 +32,31 @@ interface ResolvedDestroyRuntime {
   warnings: string[];
 }
 
+/**
+ * workspaces-o9o.181 (verify-sec re-review): the one daemon rig destroy may probe and signal. There is NO compatibility default
+ * of any kind. destroy works on local state only, so OPENRIG_URL is ignored. This home's daemon.json means exactly that
+ * endpoint. A configured target counts only from a config that resolves here, never the resolver's built-in fallback for an
+ * unreadable one. A home that names neither, and ANY failure on the way, means no daemon: nothing is probed or signalled, so
+ * no config error can lead destroy to the default port's daemon.
+ */
+export function destroyDaemonTarget(configStore: Pick<ConfigStore, "resolve">): { host: string; port: number } | { none: string } {
+  try {
+    const home = resolveHomeDaemon({ explicitUrl: "", recordedUrl: localDaemonUrl(), configStore });
+    if (home.kind === "none") return { none: home.reason };
+    if (home.kind === "recorded") {
+      const url = new URL(home.url);
+      const port = Number(url.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return { none: `daemon.json records no usable port (${home.url}).` };
+      return { host: url.hostname.replace(/^\[|\]$/g, ""), port };
+    }
+    if (home.kind !== "configured") return { none: "rig destroy only acts on this home's own daemon." };
+    const config = configStore.resolve();
+    return { host: config.daemon.host, port: config.daemon.port };
+  } catch (err) {
+    return { none: `The daemon this OpenRig home means could not be resolved (${err instanceof Error ? err.message : String(err)}); nothing will be probed or signalled.` };
+  }
+}
+
 function resolveRuntimeConfig(configStore: Pick<ConfigStore, "resolve">): ResolvedDestroyRuntime {
   const warnings: string[] = [];
   const stateRoot = getPreferredOpenRigHome();
@@ -44,11 +69,10 @@ function resolveRuntimeConfig(configStore: Pick<ConfigStore, "resolve">): Resolv
     warnings.push(`Ignoring ${overrideUrl} from OPENRIG_URL/RIGGED_URL because rig destroy only operates on local state.`);
   }
 
-  // workspaces-o9o.181: the one resolver says which daemon this home means. destroy works on local state only, so an
-  // OPENRIG_URL is ignored (warned above); this home's daemon.json, then its configured target. A non-default home that
-  // names neither means no daemon: no listener is probed or signalled (it would otherwise be the default port's daemon).
-  const home = resolveHomeDaemon({ explicitUrl: "", recordedUrl: localDaemonUrl(), configStore });
-  const recorded = home.kind === "recorded" ? new URL(home.url) : null;
+  const daemon = destroyDaemonTarget(configStore);
+  const daemonFields = "none" in daemon
+    ? { daemonHost: "", daemonPort: 0, noDaemon: daemon.none }
+    : { daemonHost: daemon.host, daemonPort: daemon.port };
   try {
     const config = configStore.resolve();
     return {
@@ -56,23 +80,20 @@ function resolveRuntimeConfig(configStore: Pick<ConfigStore, "resolve">): Resolv
         stateRoot,
         dbPath: config.db.path === defaultDbPath ? effectiveDefaultDbPath : config.db.path,
         transcriptsPath: config.transcripts.path === defaultTranscriptsPath ? effectiveDefaultTranscriptsPath : config.transcripts.path,
-        daemonHost: recorded ? recorded.hostname.replace(/^\[|\]$/g, "") : config.daemon.host,
-        daemonPort: recorded ? Number(recorded.port) || config.daemon.port : config.daemon.port,
-        ...(home.kind === "none" ? { noDaemon: home.reason } : {}),
+        ...daemonFields,
       },
       warnings,
     };
   } catch (err) {
-    warnings.push(`Failed to read config; using compatibility defaults instead: ${err instanceof Error ? err.message : String(err)}`);
+    warnings.push(`Failed to read config; using the default database and transcripts paths instead: ${err instanceof Error ? err.message : String(err)}`);
     return {
       runtimeConfig: {
         stateRoot,
         dbPath: effectiveDefaultDbPath,
         transcriptsPath: effectiveDefaultTranscriptsPath,
-        daemonHost: "127.0.0.1",
-        daemonPort: 7433,
-        // An unreadable config keeps these compatibility defaults only for the default home (the resolver said so).
-        ...(home.kind === "none" ? { noDaemon: home.reason } : {}),
+        // workspaces-o9o.181 (verify-sec re-review): no compatibility daemon default. The daemon is this home's recorded
+        // endpoint or nothing (destroyDaemonTarget: an unreadable config never yields a configured target).
+        ...daemonFields,
       },
       warnings,
     };
