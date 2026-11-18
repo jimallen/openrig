@@ -28,6 +28,22 @@ describe("the runner's ledger lines", () => {
   });
 });
 
+// workspaces-o9o.132 review (verify-qa): a teardown failure after a run that returned keeps that run's whole result: a NOT_RUN keeps its
+// step, verb and reason, a HEALTHY_ONLY its seed, a FAIL its step and diff.
+describe("an ERROR that carries the run's own result says all of it", () => {
+  it.each([
+    [notRunStep, ["  the run itself: NOT_RUN", "    step 2 (mutate): no binding at v1"]],
+    [notRunEnv, ["  the run itself: NOT_RUN", "    env.pre_existing_tmux: R-14"]],
+    [healthy, ["  the run itself: HEALTHY_ONLY", "    seed NOT RUN at step 3 (class c1): host mode has no seed controller; CI arms it"]],
+    [failed, ["  the run itself: FAIL", "    step 1: x"]],
+    [pass, ["  the run itself: PASS"]],
+  ])("%#", (ran, tail) => {
+    if (ran.kind !== "result") throw new Error("a result outcome");
+    const lines = outcomeLines({ kind: "error", file: "/f.yaml", message: "daemon could not be stopped", ran: ran.result });
+    expect(lines).toEqual(["[ERROR] /f.yaml", "  daemon could not be stopped", ...tail]);
+  });
+});
+
 describe("the summary and the exit status", () => {
   it("counts each outcome in its own column; an ERROR is counted as failed", () => {
     expect(summaryLine(tally([pass, healthy, notRunStep, notRunEnv, failed, errored]))).toBe("6 scenarios: 1 passed, 1 healthy-only, 2 NOT RUN, 2 failed");

@@ -226,7 +226,7 @@ It does not hold or check the receipts above.
 | Piece | Where |
 |---|---|
 | `runtime: stub` adapter | `packages/daemon/src/adapters/stub-runtime-adapter.ts`, with `stub-runner.ts` (the process that runs in the pane), `stub-script.ts` (the launch-script format) and `stub-compaction.ts` / `stub-restore.ts` |
-| Scenario format and runner | `packages/daemon/test/helpers/scenario-*.ts`. Step verbs: `up`, `down`, `send`, `restart`, `daemon`, `seed_regression` are bound. `restore`, `emit`, `mutate`, `policy` parse but are unbound. Assertion surfaces: `ps`, `queue`, `stream`, `scope`, `pane`, `transcript`, `tui_socket`, `policy_provenance`. |
+| Scenario format and runner | `packages/daemon/test/helpers/scenario-*.ts`. Step verbs: `up` (including a per-step `up: {topology}`), `down`, `send`, `restart` and `daemon` are bound; `seed_regression` is bound where a fault controller is supplied (CI's container path). `restore`, `emit`, `mutate`, `policy` parse but are unbound. A step that is not bound is reported, never run and never passed: HEALTHY-ONLY for a seed with no controller, NOT RUN for the rest (workspaces-o9o.132). Assertion surfaces: `ps`, `queue`, `stream`, `scope`, `pane`, `transcript`, `tui_socket`, `policy_provenance`. |
 | Scenario library | `packages/test-system/scenarios/`: 16 scenarios, 7 stub topologies, `agents/`, `culture.md`, per-seat stub scripts in `scripts/` |
 | Runner fixtures | `packages/daemon/test/fixtures/scenarios/` (`scenario-01-per-seat-scripts`, `scenario-02-baton`, `scenario-10-one-view-state`) |
 | Host runner | `packages/daemon/scripts/run-scenarios.mjs` |
@@ -248,9 +248,10 @@ node --import tsx packages/daemon/scripts/run-scenarios.mjs packages/daemon/test
   `OPENRIG_TEST_CLOCK_NOW` are dropped rather than inherited. It does not touch the daemon or
   tmux server your own session uses.
 - It accepts YAML paths only. Any flag, including `--container`, is refused before anything runs.
-- It supplies no fault controller, so any scenario with a `seed_regression` step fails loudly
-  at that step. That includes the library's `queue-baton-survives-restart`. Use the container
-  path to run the seeded pair.
+- It supplies no fault controller, so a scenario whose only unbound step is its `seed_regression`
+  runs its healthy leg and is reported HEALTHY-ONLY, in its own column and never counted as passed
+  (workspaces-o9o.132). That includes the library's `queue-baton-survives-restart`. Use the
+  container path to run the seeded pair.
 - `scenario-10-one-view-state` declares its own normaliser for its cross-surface `equals`
   check. Whether it passes in host mode has not been verified.
 
@@ -371,15 +372,15 @@ other ten scenarios are authored but not yet runnable as meaningful checks:
 |---|---|---|
 | `queue-baton-survives-restart` | Runs in CI: healthy / seeded `baton-drop` / healthy | Extend it to handoff, block, resolve and unclaim |
 | `clean-lifecycle-no-residue` | The post-`down` "nothing left over" assertion is commented out, because the format has no way to say "empty" | Add a real absence assertion |
-| `ps-scope-honesty` | The second `up` reuses the first topology, and the expected match tolerates the other rig | Make `up` honour the per-step topology, then assert the exclusion |
+| `ps-scope-honesty` | The per-step `up` now brings up the second rig (workspaces-o9o.132); the expected match still tolerates the other rig | Assert the exclusion (R-16, a `ps` scope selector) |
 | `send-verify-means-rendered` | The `send` step drops `verify`, and the stub has no input loop | Build the input-consuming stub and assert a response derived from the nonce |
-| `home-divergence-preseed-visible` | The pipeline ignores `env.pre_existing_tmux`, and the default script never prints the expected `trust reached` | Recreate the real HOME split and whatever consumes it |
+| `home-divergence-preseed-visible` | Its tmux fixture is obsolete: seats run on hc, and a seat takes the daemon's HOME even on an hc core started with another HOME, which is every scenario scaffold's shape (measured, workspaces-o9o.136). Until o9o.136 lands, a scenario declaring `env.pre_existing_tmux` is reported NOT RUN (R-14) | workspaces-o9o.136: the stub reports whether the daemon's preseed reached its HOME, and #5 asserts that line on the scaffold's own core |
 | `compaction-restore-resumes-role` | Step-time `emit` is unbound | Input-triggered hooks plus evidence specific to one seat |
 | `stream-emit-durable-replay-live` | Step-time `emit` is unbound | Assert the actual stream contract |
 | `policy-posture-survives-structural-edit` | `policy` and `mutate` are unbound | Rewrite around current per-seat permission selection and an observed launch |
 | `locked-restore-never-permissive` | `policy` and `restore` are unbound | Keep the invariant (the selection survives a restore) and use current modes |
-| `one-view-state-after-mutation-storm` | The validator rejects its bare-list `equals` (`EQUALS_NOT_DECLARATIVE`), and `mutate` is unbound | Declare the comparable fields and real mutations |
-| `kill-daemon-mid-handoff` | A pane `send` doesn't create the queue item the next assertion expects, and later assertions use a shape the queue reader doesn't return | Rebuild the setup before treating a red result as meaningful |
+| `one-view-state-after-mutation-storm` | Converted to the declarative `equals` (workspaces-o9o.132); `mutate` is unbound, so host mode reports it NOT RUN | Bind `mutate` |
+| `kill-daemon-mid-handoff` | Its handoff now comes from a claimed `env.queue` item (R-17 setup, workspaces-o9o.132), so step 2 holds; its post-restart legs need the 51-06 closure reconcile (workspaces-o9o.135) | Build 51-06 |
 
 In most of these files, `seed_regression` steps that come *after* the assertions are
 historical markers, not executable fault injections.

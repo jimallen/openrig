@@ -270,8 +270,10 @@ and no model cost.
    `node --import tsx packages/daemon/scripts/run-scenarios.mjs <file.yaml>`. It uses a private
    daemon and a private tmux server, and builds its environment from `HOME`, `PATH` and `TERM`
    only, so your session's `TMUX` and daemon variables are dropped and it is safe to run from
-   inside tmux, including an agent's pane. It supplies no fault controller, so a
-   `seed_regression` step fails there; the seeded pair runs in the container path.
+   inside tmux, including an agent's pane. It supplies no fault controller, so a scenario whose
+   only unbound step is its `seed_regression` is reported HEALTHY-ONLY (its healthy leg ran, its
+   seeded leg did not; never counted as passed), and one that reaches `restore`, `emit`, `mutate` or
+   `policy` is reported NOT RUN (workspaces-o9o.132); the seeded pair runs in the container path.
 6. **CI.** The `installed-scenario` job runs `scripts/run-pr-scenarios.sh` in disposable,
    network-less containers built from the packed package. It runs seven cases: `fixture` and `library`
    (`queue-baton-survives-restart.yaml`), each with a healthy run and a seeded lost-baton run, plus

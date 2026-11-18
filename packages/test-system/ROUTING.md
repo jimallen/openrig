@@ -51,12 +51,17 @@ against the locked/ruled shape so it drops in when the dependency lands.
   `equals: {<surface>: {pluck, path, rig}}` (`scenario-normalizer.ts`), and it is the only
   form the validator accepts. #10 compares `ps` and `queue` by the rig set each names, with one
   `env.queue` item, and asserts `tui_socket` on its own (its socket carries UI state, not daemon
-  truth). Its storm uses `mutate`, which is unbound, so host mode reports it NOT RUN.
-- **R-14. `env.pre_existing_tmux` hermetic fixture (#5) — OPEN (workspaces-o9o.136).** The hardest
-  env fixture (a pre-existing tmux server inside a scratch scaffold). No runner code provides it,
-  so a scenario declaring `env.pre_existing_tmux` is reported NOT RUN, naming R-14, before any
-  daemon starts (workspaces-o9o.132). #5 also needs the stub's preseed outcome (its expected
-  `trust reached` line): nothing in the stub prints it.
+  truth; R-21). Its seed is armed before the equality and is a class the equality catches. Its storm
+  uses `mutate`, which is unbound, so host mode reports it NOT RUN.
+- **R-14. `env.pre_existing_tmux` hermetic fixture (#5) — OBSOLETE as written; replaced in
+  workspaces-o9o.136.** Measured 2026-11-18 (release-7): seats run on hc, not tmux, so a
+  pre-existing TMUX server is no longer anywhere a seat starts. The hc-era shape of GAP-7 (a seat
+  host started with another HOME) is every scenario's: the scaffold starts its private hc core
+  before the daemon, with its own HOME, and the seat still gets the daemon's HOME, because every
+  seat's env is built by `seatEnvironment` (hc-seat.ts) from the daemon's. workspaces-o9o.136 drops
+  the key from #5 and makes it assert the stub's preseed line. Until that lands, no runner code
+  provides the fixture, so a scenario declaring `env.pre_existing_tmux` is reported NOT RUN, naming
+  R-14, before any daemon starts (workspaces-o9o.132).
 - **R-15. Disjunctive expect `any_of` (#5) — RESOLVED: not adopted.** #5's binding
   acceptance was "lands on ONE of two honest outcomes" (preseed reaches the seat OR the
   failure is visible on stream). The locked `expect` is a single match, and an `any_of`
@@ -74,6 +79,14 @@ against the locked/ruled shape so it drops in when the dependency lands.
   from an `env.queue` precondition, applied after the first `up`. #11 now declares a claimed
   `env.queue` handoff (workspaces-o9o.132), so its first `expect queue` holds; its post-restart
   legs wait on R-20.
+
+- **R-21. The TUI's view on the control socket (#10) — OPEN (workspaces-o9o.172).** Measured
+  2026-11-18: the TUI socket's `state` returns its navigation address (screen, drill, section; a rig
+  only once navigated) and `commands` its command registry; neither returns the rows it renders, and
+  no step drives the TUI. So #10 cannot compare the TUI with `ps` and `queue`, and a TUI lagging the
+  daemon is NOT COVERED: #10's equality is `ps` vs `queue`, its seed (`queue-rig-divergence`) is one
+  that equality catches (pinned by `test/scenario-one-view-state-library.test.ts`), and its TUI leg
+  asserts only the TUI's own state. Needs a read-only socket verb returning what the TUI shows.
 
 ## → 51-06 (transactional execution-closure) — #11 GREEN gate
 - **R-20. #11 GREEN gate = the 51-06 transactional-closure reconcile (POOLED, NOT in

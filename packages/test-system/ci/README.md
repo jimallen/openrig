@@ -94,10 +94,13 @@ runner's ERROR line), kept as per-PR evidence. The daemon test
 
 The other library scenarios are **unadmitted**. Several need step-time `emit`,
 `policy`, `mutate`, or `restore`. Others have incomplete assertions or setup:
-clean-lifecycle has no post-down residue assertion, ps-scope neither brings up its
-second topology nor excludes extra rows, and the home/preseed and send/render
-scenarios need input behavior from the stub. `kill-daemon-mid-handoff` still has
-its documented setup/observable gaps. A callback binding does not fix these gaps.
+clean-lifecycle has no post-down residue assertion, ps-scope brings up its second
+topology (workspaces-o9o.132) but does not yet exclude extra rows, and the
+send/render scenario needs input behavior from the stub. `kill-daemon-mid-handoff`
+has its setup (a claimed `env.queue` handoff) and waits on the 51-06 closure
+reconcile for its post-restart legs (workspaces-o9o.135). In host mode the runner
+reports a scenario stopped by an unbound step as NOT RUN, and one whose only unbound
+step is its seed as HEALTHY-ONLY; neither counts as passed. A callback binding does not fix these gaps.
 Do not count this increment as eleven passing scenarios or native seat-resume
 coverage. Container evidence for each selected case is required for admission.
 

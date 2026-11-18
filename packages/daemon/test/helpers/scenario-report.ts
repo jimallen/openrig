@@ -17,22 +17,29 @@ export type ScenarioOutcome =
 /** The ledger lines for one scenario. */
 export function outcomeLines(outcome: ScenarioOutcome): string[] {
   if (outcome.kind === "error") {
+    // workspaces-o9o.132 review: a teardown failure after a run that returned keeps that run's whole result (its details, one level in).
     const r = outcome.ran;
-    const ran = r ? [`  the run itself: ${r.verdict}${r.verdict === "FAIL" ? ` at step ${r.failedStep}: ${r.diff}` : ""}`] : [];
+    const ran = r ? [`  the run itself: ${r.verdict}`, ...resultDetail(r).map((line) => `  ${line}`)] : [];
     return [`[ERROR] ${outcome.file}`, `  ${outcome.message}`, ...ran];
   }
   const r = outcome.result;
+  const tag = r.verdict === "HEALTHY_ONLY" ? "HEALTHY-ONLY" : r.verdict === "NOT_RUN" ? "NOT RUN" : r.verdict;
+  return [`[${tag}] ${r.scenario}`, ...resultDetail(r)];
+}
+
+/** What a result says beyond its verdict: the seed that did not run, what stopped it, or the failing step. Nothing for a PASS. */
+function resultDetail(r: RunScenarioResult): string[] {
   switch (r.verdict) {
     case "PASS":
-      return [`[PASS] ${r.scenario}`];
+      return [];
     case "HEALTHY_ONLY":
-      return [`[HEALTHY-ONLY] ${r.scenario}`, `  seed NOT RUN at step ${r.seedNotRun?.step} (class ${r.seedNotRun?.class}): ${r.seedNotRun?.reason}`];
+      return [`  seed NOT RUN at step ${r.seedNotRun?.step} (class ${r.seedNotRun?.class}): ${r.seedNotRun?.reason}`];
     case "NOT_RUN": {
       const where = r.notRun?.step === null || r.notRun?.step === undefined ? r.notRun?.verb : `step ${r.notRun.step} (${r.notRun.verb})`;
-      return [`[NOT RUN] ${r.scenario}`, `  ${where}: ${r.notRun?.reason}`];
+      return [`  ${where}: ${r.notRun?.reason}`];
     }
     default:
-      return [`[FAIL] ${r.scenario}`, `  step ${r.failedStep}: ${r.diff}`];
+      return [`  step ${r.failedStep}: ${r.diff}`];
   }
 }
 

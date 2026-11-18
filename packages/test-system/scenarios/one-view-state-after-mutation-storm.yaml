@@ -1,18 +1,24 @@
-# Defect class: the one-view-state invariant (PIN-1) as a standing machine-checked
-#   assertion — tui_socket == ps == queue must express the SAME truth.
-# Marathon origin: the TUI socket state, `rig ps`, and `rig queue` drifted out of sync
-#   after a burst of activity, so three surfaces told three stories of one system.
-# SEED (class: view-state-divergence): the seeded regression makes one surface
-#   (tui_socket) lag/omit after the storm. The `equals` cross-surface leg MUST catch it
-#   — the diff shows the normalized surfaces disagreeing.
+# Defect class: the one-view-state invariant (PIN-1): after a burst of activity, the daemon-truth surfaces
+#   `ps` and `queue` must name the same world.
+# Marathon origin: the TUI socket state, `rig ps`, and `rig queue` drifted out of sync after a burst of
+#   activity, so three surfaces told three stories of one system.
 #
-# workspaces-o9o.132 (ROUTING R-13, converted): `equals` is the DECLARATIVE mapping of surface -> projection,
-# the only form the validator accepts, as in test/fixtures/scenarios/scenario-10-one-view-state.yaml. `ps` and
-# `queue` are the daemon-truth surfaces, compared by the rig set each names; the queue gets one real item
-# (env.queue) so that comparison cannot pass empty. tui_socket is asserted on its own: its OBSERVE verbs
-# return UI/registry state, not daemon truth, so folding it into the equality could only pass trivially.
-# Storm = an explicit bounded sequence (no loop verb). Its `mutate` steps have no host binding at v1, so in
-# host mode the scenario is reported NOT RUN at step 3 until they are bound.
+# WHAT THIS PROVES (workspaces-o9o.132, CoS decision A): after the storm, `ps` and `queue` name the same rig
+#   set (the declarative `equals`, ROUTING R-13), with one real queue item (env.queue) so the comparison
+#   cannot pass empty. The TUI leg asserts only what its socket reports: it is live on the topology screen.
+#
+# NOT COVERED: the TUI lagging the daemon. Measured (2026-11-18, a scenario TUI provisioned as here): the
+#   socket's `state` returns the TUI's navigation address (screen, drill, section; no rig until navigated)
+#   and never the rows it renders, and no scenario step drives the TUI. So a TUI showing a stale view cannot
+#   be compared with `ps` or `queue`; ROUTING R-21 routes the TUI OBSERVE verb that would allow it.
+#
+# SEED (class: queue-rig-divergence): the seeded run plants, AFTER the storm and BEFORE the assertions, a
+#   queue item addressed to a rig `ps` does not run (the queue telling a story `ps` cannot see). The `equals`
+#   leg MUST then fail: the normalized rig sets differ. Pinned with this file's own steps and the real runner
+#   core and normalizer by test/scenario-one-view-state-library.test.ts (healthy PASS, seeded FAIL at the
+#   equality, a lagging TUI not caught). Host mode arms no seed and does not bind `mutate`, so here the
+#   scenario is reported NOT RUN at its first `mutate`.
+#
 scenario: one-view-state-after-mutation-storm
 topology: ./mutation-pod-stub.yaml
 env:
@@ -36,12 +42,19 @@ steps:
   - send: {to: swarm-c@mutation-pod-stub, text: "task 3"}
   - mutate: {op: rename_member, pod: swarm, from: d, to: e}
   - send: {to: swarm-e@mutation-pod-stub, text: "task 4"}
-  # After the storm the TUI is live and coherent (its own state)...
+  # The seed is armed BEFORE the assertion it must break (workspaces-o9o.132 review): a seeded run plants the
+  # queue-rig divergence here, after the storm, and the `equals` leg below must catch it.
+  - seed_regression: {class: queue-rig-divergence}
+  # The TUI is live on the topology screen (its own state; it is not part of the equality, see NOT COVERED).
   - expect:
       surface: tui_socket
       within: 30s
       match:
         ok: true
+        state:
+          screen: topology
+          address:
+            section: topology
   # ...and ps and queue name the same rig set (normalized cross-surface equality).
   - expect:
       surface: ps
@@ -49,5 +62,4 @@ steps:
       equals:
         ps: { pluck: name }
         queue: { pluck: destinationSession, rig: true }
-  - seed_regression: {class: view-state-divergence}
   - down: {}
