@@ -104,6 +104,10 @@ const DENY: Array<{ note: string; code: string; kind: RegExp }> = [
   // Scope boundaries (make the var-hoist precise, not a blanket allow): a `var`/`let` named like a global binds only where the language says.
   { note: "a var Function inside a NESTED function does not shadow an outer global Function reference", code: `function inner() { var Function; } Function("return 1")()`, kind: /^repl-api$/ },
   { note: "a let process in a sibling block does not shadow a later global process reference", code: `{ let process = { pid: 1 }; } process.binding("x")`, kind: /^repl-api$/ },
+  // workspaces-o9o.131 round-4 nit (verify-sec): a switch block is one lexical scope for its cases, but the discriminant and anything
+  // after the switch are outside it. These two refuse; the two ALLOW rows below are the over-refusals they pin against.
+  { note: "a switch-scoped `let process` does not leak: a global process reference after the switch refuses", code: `switch (1) { case 1: let process = {}; } process.binding("x")`, kind: /^repl-api$/ },
+  { note: "the switch discriminant is evaluated outside the case scope: switch (process) is a global reference", code: `switch (process) { case 1: 1; }`, kind: /^repl-api$/ },
 ];
 
 const ALLOW: Array<{ note: string; code: string }> = [
@@ -149,6 +153,10 @@ const ALLOW: Array<{ note: string; code: string }> = [
   { note: "a param named process is local", code: `((process) => process.pid)({ pid: 1 })` },
   { note: "a local const named self shadows the global", code: `const self = { x: 2 }; self.x` },
   { note: "a statement label named like a global is a label, not a value reference", code: `process: for (const x of [1]) { if (x) break process; }` },
+  // workspaces-o9o.131 round-4 nit (verify-sec over-refusal): a switch block is one lexical scope shared by its cases, so a case-level
+  // `let`/`const`/`function` binding of a dangerous name shadows the global within the switch.
+  { note: "a let in a switch case shadows the global within the switch block", code: `switch (1) { case 1: let process = {}; process.x; }` },
+  { note: "a case-level function declaration is in scope across the switch's cases", code: `switch (1) { case 1: function process() {} break; default: process(); }` },
 ];
 
 describe("o9o.131: the seat guard reads REPL code", () => {

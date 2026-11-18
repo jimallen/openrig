@@ -1298,6 +1298,22 @@ function findReplApiViolation(ast) {
       if (typeof spec === "string" && /(^|[:/])child_process$/.test(spec)) { found = { kind: "repl-api", command: "child_process" }; return; }
     }
 
+    // A switch block is ONE lexical scope shared by every case (its let/const/class/function bindings), but the discriminant is evaluated
+    // OUTSIDE it (round-4 nit, verify-sec): without this a `case 1: let process = {}; process.x;` or a case-level `function process(){}` was
+    // refused, while `switch (process) {}` and a global reference after the switch must still refuse. acorn gives no BlockStatement for the
+    // cases, so pushScope cannot see them — handle the node here and skip the generic descent.
+    if (node.type === "SwitchStatement") {
+      const caseNames = new Set();
+      for (const c of node.cases) hoistBlockBindings(c.consequent, caseNames);
+      const inner = [...scopes, caseNames];
+      visit(node.discriminant, scopes, "ref");
+      for (const c of node.cases) {
+        if (c.test) visit(c.test, inner, "ref");
+        for (const s of c.consequent) visit(s, inner, "ref");
+      }
+      return;
+    }
+
     // Generic descent with scope pushes and role-aware slots. A non-computed member property / object key is a NAME, not a reference (skip).
     const childScopes = pushScope(node, scopes);
     for (const key of Object.keys(node)) {
