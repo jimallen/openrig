@@ -68,8 +68,8 @@ in a report; otherwise follow the accompanying diagnostic. If the only remaining
 
 If the daemon will not start and its log says `refusing the hc core: the core answering at this instance's socket is …`,
 another state dir's core holds this instance's socket. That is a core started with another HOME or XDG_STATE_HOME in the same
-runtime dir, and it has another registry of terminals. `rig doctor` names both core ids and this instance's `core.json`. Stop
-that core (`hc server stop`, run with the env that started it), or run the daemon with the HOME it was started with.
+runtime dir, and it has another registry of terminals. `rig doctor` names both core ids and this instance's `core.json`. Have the
+operator stop that core, or run the daemon with the HOME it was started with. A seat does neither; it reports it to the operator.
 
 ### Installation finished, but there is nobody to talk to
 

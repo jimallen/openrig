@@ -133,12 +133,12 @@ export function notThisInstanceCore(expected: ThisInstanceCore, answeringId: str
   if (expected.kind === "none") return null;
   if (expected.kind === "unreadable") {
     return `refusing the hc core: this instance's core identity file ${expected.file} cannot be read as one (${expected.detail}), so the core at its socket `
-      + "cannot be shown to be this instance's. hc writes that file when it starts a core with this state dir; repair it, or stop the core and start again.";
+      + "cannot be shown to be this instance's. hc writes that file when it starts a core with this state dir; have the operator repair it, or stop the core and start again.";
   }
   if (expected.id === answeringId) return null;
   return `refusing the hc core: the core answering at this instance's socket is ${answeringId}, but this instance's state dir names core ${expected.id} `
     + `(${expected.file}). It is the core of another state dir (another HOME or XDG_STATE_HOME in the same runtime dir), with another registry of terminals. `
-    + "Stop that core, or start the daemon with the HOME it was started with.";
+    + "Have the operator stop that core, or start the daemon with the HOME that core was started with.";
 }
 
 /** The account the process runs as: its uid names the host's runtime dir (`/run/user/<uid>`), its home the host's state dir. */

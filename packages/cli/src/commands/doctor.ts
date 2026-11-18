@@ -267,7 +267,7 @@ async function buildHcCoreCheck(deps: DoctorDeps): Promise<DoctorCheck> {
         name: "hc_core", status: "fail",
         message: "The hc core at this instance's socket is not this instance's core; the daemon refuses it and does not start.",
         reason: notMine,
-        fix: "Stop the core that is there (hc server stop, run with the env that started it), or run the daemon with the HOME that core was started with; then rerun 'rig doctor'.",
+        fix: "Have the operator stop the core that is there, or run the daemon with the HOME that core was started with; then rerun 'rig doctor'. A seat does neither: it reports this to the operator.",
       };
     }
     return core.warning
