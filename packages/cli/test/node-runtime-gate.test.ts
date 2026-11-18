@@ -3,11 +3,11 @@
 // (src/index.ts under tsx) with process.version spoofed by a preload, or with better-sqlite3 made to fail by NODE_OPTIONS.
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { nodeRuntimeGate, RUNTIME_CHECK_RECORD, type NodeRuntimeGateDeps } from "../src/node-runtime-gate.js";
+import { nodeRuntimeGate, readRuntimeRecord, RUNTIME_CHECK_RECORD, writeRuntimeRecord, type NodeRuntimeGateDeps } from "../src/node-runtime-gate.js";
 
 function deps(over: Partial<NodeRuntimeGateDeps> = {}) {
   const calls = { load: 0, open: 0, written: [] as string[], errors: [] as string[] };
@@ -80,6 +80,67 @@ describe("nodeRuntimeGate", () => {
     const garbage = deps({ readRecord: () => "{not json" });
     expect(nodeRuntimeGate(garbage.d)).toEqual({ proceed: true });
     expect(garbage.calls.open).toBe(1);
+  });
+});
+
+// verify-sec2 review of o9o.180: the record is this user's own file, read under the credential-file rule (o9o.151: ours, not a link,
+// no group or other access, a size cap; anything unsafe is a cache miss, so the native check runs again) and written 0600 without
+// ever following a link (a link at the path means nothing is recorded).
+describe("the runtime check record is read and written as this user's own file", () => {
+  let root = "";
+  afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
+  const dir = () => { root = mkdtempSync(join(tmpdir(), "o9o180-record-")); return root; };
+  const valid = `${JSON.stringify({ passed: "9.9.9 v22.1.0" })}\n`;
+  const gateWith = (file: string) => deps({ readRecord: () => readRuntimeRecord(file), writeRecord: (t) => writeRuntimeRecord(file, t) });
+
+  it("a symlink to a valid record is not trusted: the native check runs, and nothing is written through the link", () => {
+    const d = dir();
+    const elsewhere = join(d, "elsewhere.json");
+    writeFileSync(elsewhere, valid, { mode: 0o600 });
+    const file = join(d, RUNTIME_CHECK_RECORD);
+    symlinkSync(elsewhere, file);
+    expect(readRuntimeRecord(file)).toBeNull();
+    const run = gateWith(file);
+    expect(nodeRuntimeGate(run.d)).toEqual({ proceed: true });
+    expect(run.calls.open).toBe(1);
+    expect(lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(readFileSync(elsewhere, "utf8")).toBe(valid);
+  });
+
+  it("a dangling symlink at the path is not written through: its target is never created", () => {
+    const d = dir();
+    const target = join(d, "planted.json");
+    const file = join(d, RUNTIME_CHECK_RECORD);
+    symlinkSync(target, file);
+    writeRuntimeRecord(file, valid);
+    expect(existsSync(target)).toBe(false);
+    expect(lstatSync(file).isSymbolicLink()).toBe(true);
+  });
+
+  it("a record others can read or write is a cache miss; an oversized one too", () => {
+    const d = dir();
+    const file = join(d, RUNTIME_CHECK_RECORD);
+    writeFileSync(file, valid);
+    chmodSync(file, 0o664);
+    expect(readRuntimeRecord(file)).toBeNull();
+    writeFileSync(file, `${valid}${" ".repeat(8192)}`);
+    chmodSync(file, 0o600);
+    expect(readRuntimeRecord(file)).toBeNull();
+  });
+
+  it("positive control: the record is written 0600, replacing an older 0664 one, and is read back", () => {
+    const d = dir();
+    const file = join(d, "home", RUNTIME_CHECK_RECORD);
+    mkdirSync(join(d, "home"));
+    writeFileSync(file, "old", { mode: 0o664 });
+    chmodSync(file, 0o664);
+    writeRuntimeRecord(file, valid);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readRuntimeRecord(file)).toBe(valid);
+    expect(readdirSync(join(d, "home"))).toEqual([RUNTIME_CHECK_RECORD]);  // no temporary file left behind
+    const run = gateWith(file);
+    expect(nodeRuntimeGate(run.d)).toEqual({ proceed: true });
+    expect(run.calls.open).toBe(0);
   });
 });
 
