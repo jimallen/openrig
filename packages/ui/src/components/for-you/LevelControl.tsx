@@ -28,21 +28,21 @@ function Readout({ level }: { level: DerivedLevel }) {
   if (level === "needs-you") {
     return (
       <>
-        <b className="text-on-surface">Just what needs you</b> · <span className="text-amber-700">action items</span> only
+        <b className="text-on-surface">Just what needs you</b> · <span className="text-warning-ink">action items</span> only
       </>
     );
   }
   if (level === "all-activity") {
     return (
       <>
-        <b className="text-on-surface">All activity</b> · <span className="text-amber-700">what needs you</span> + everything, incl. audit log
+        <b className="text-on-surface">All activity</b> · <span className="text-warning-ink">what needs you</span> + everything, incl. audit log
       </>
     );
   }
   if (level === "highlights") {
     return (
       <>
-        <b className="text-on-surface">Highlights</b> · <span className="text-amber-700">what needs you</span> + approvals + ships + progress · <span className="text-on-surface-variant">audit hidden</span>
+        <b className="text-on-surface">Highlights</b> · <span className="text-warning-ink">what needs you</span> + approvals + ships + progress · <span className="text-on-surface-variant">audit hidden</span>
       </>
     );
   }
@@ -63,7 +63,7 @@ export function LevelControl() {
       {/* SHOW ME header — the floor is non-negotiable. */}
       <div className="flex items-center justify-between bg-inverse-surface text-background font-mono text-[8px] tracking-[0.16em] uppercase px-2.5 py-1.5">
         <span>Show me</span>
-        <span className="text-on-surface-variant">action items always on</span>
+        <span className="text-background/70">action items always on</span>
       </div>
 
       {/* The segmented level picker. */}

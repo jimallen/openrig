@@ -10,6 +10,11 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Low-contrast text found by the accessibility scan is readable in both themes (workspaces-o9o.155)
+
+- Symptom: the twin accessibility scan (workspaces-o9o.130) found 15 elements on 6 surfaces below WCAG AA, measured by axe in Chromium: the For You level control's header note (3.04:1 light, 1.93:1 dark) and its amber highlights (3.72:1 dark); the compaction policy form's fields and the audit history filters, browser-white with light text in dark (1.23:1, 1.07:1); the restore dialog's unselected policy option, a fixed white in dark (3.27:1); and the Open-in-terminal group labels (3.1:1 light, 4.45:1 dark).
+- Now each uses the theme's colours (the inverse foreground, the warning ink, the surface and text tokens, the full muted colour), and the scan finds no color-contrast violation on those surfaces in either theme.
+
 ### The Settings page shows a setting the daemon does not report, instead of crashing (workspaces-o9o.159)
 
 - Symptom: the web UI's Settings page crashed ("Cannot read properties of undefined (reading 'value')") when the daemon's `/api/config` answer lacked a key the page lists. The UI twin sent 3 of the 13 and crashed; a daemon of another version can omit a key too, and the daemon leaves `ui.terminal.max_live_terminals` unset.

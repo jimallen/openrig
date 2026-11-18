@@ -73,13 +73,13 @@ export function AuditHistoryView() {
           placeholder="qitem_id (exact)"
           value={qitemId}
           onChange={(e) => setQitemId(e.target.value)}
-          className="border border-outline-variant px-2 py-1 font-mono text-xs"
+          className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-xs"
         />
         <select
           data-testid="mc-audit-filter-action-verb"
           value={actionVerb}
           onChange={(e) => setActionVerb(e.target.value)}
-          className="border border-outline-variant px-2 py-1 font-mono text-xs"
+          className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-xs"
         >
           <option value="">all verbs</option>
           {MISSION_CONTROL_VERBS.map((v) => (
@@ -94,7 +94,7 @@ export function AuditHistoryView() {
           placeholder="actor_session (e.g., operator-alex@kernel)"
           value={actorSession}
           onChange={(e) => setActorSession(e.target.value)}
-          className="border border-outline-variant px-2 py-1 font-mono text-xs"
+          className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-xs"
         />
         <div className="flex items-center gap-1">
           <input
@@ -102,7 +102,7 @@ export function AuditHistoryView() {
             data-testid="mc-audit-filter-since"
             value={since}
             onChange={(e) => setSince(e.target.value)}
-            className="flex-1 border border-outline-variant px-2 py-1 font-mono text-[11px]"
+            className="flex-1 border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-[11px]"
             title="since"
           />
           <input
@@ -110,7 +110,7 @@ export function AuditHistoryView() {
             data-testid="mc-audit-filter-until"
             value={until}
             onChange={(e) => setUntil(e.target.value)}
-            className="flex-1 border border-outline-variant px-2 py-1 font-mono text-[11px]"
+            className="flex-1 border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-[11px]"
             title="until"
           />
         </div>

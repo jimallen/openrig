@@ -184,7 +184,7 @@ function PolicyFormBody({ data, setSetting }: PolicyFormBodyProps) {
             pattern="[0-9]*"
             value={form.thresholdPercent}
             onChange={(e) => setForm((s) => ({ ...s, thresholdPercent: e.target.value }))}
-            className="border border-outline-variant px-2 py-1 w-32 font-mono text-sm"
+            className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 w-32 font-mono text-sm"
             aria-describedby="claude-compaction-threshold-hint"
           />
           <span className="text-xs text-on-surface-variant">
@@ -208,7 +208,7 @@ function PolicyFormBody({ data, setSetting }: PolicyFormBodyProps) {
             value={form.preCompactInstruction}
             onChange={(e) => setForm((s) => ({ ...s, preCompactInstruction: e.target.value }))}
             placeholder="Read the claude-compaction-restore skill and prepare for compaction."
-            className="border border-outline-variant px-2 py-1 font-mono text-sm"
+            className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-sm"
           />
           <span className="text-xs text-on-surface-variant">
             OpenRig wraps this with the current context usage, threshold, and
@@ -227,7 +227,7 @@ function PolicyFormBody({ data, setSetting }: PolicyFormBodyProps) {
             value={form.compactInstruction}
             onChange={(e) => setForm((s) => ({ ...s, compactInstruction: e.target.value }))}
             placeholder="Optional. Sent as /compact <instruction> when OpenRig triggers compaction."
-            className="border border-outline-variant px-2 py-1 font-mono text-sm"
+            className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-sm"
           />
           <span className="text-xs text-on-surface-variant">
             Optional advanced override. Leave blank to rely on Claude's native
@@ -246,7 +246,7 @@ function PolicyFormBody({ data, setSetting }: PolicyFormBodyProps) {
             value={form.messageInline}
             onChange={(e) => setForm((s) => ({ ...s, messageInline: e.target.value }))}
             placeholder="Optional override. Leave blank to use the instruction file path below."
-            className="border border-outline-variant px-2 py-1 font-mono text-sm"
+            className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-sm"
           />
           <span className="text-xs text-on-surface-variant">
             Default asks Claude to read the claude-compaction-restore skill.
@@ -266,7 +266,7 @@ function PolicyFormBody({ data, setSetting }: PolicyFormBodyProps) {
             value={form.messageFilePath}
             onChange={(e) => setForm((s) => ({ ...s, messageFilePath: e.target.value }))}
             placeholder="Path read at hook-fire time for extra restore instructions."
-            className="border border-outline-variant px-2 py-1 font-mono text-sm"
+            className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-sm"
           />
           <span className="text-xs text-on-surface-variant">
             Default points at a user-owned placeholder file. Put
@@ -286,7 +286,7 @@ function PolicyFormBody({ data, setSetting }: PolicyFormBodyProps) {
             value={form.postRestoreAuditInstruction}
             onChange={(e) => setForm((s) => ({ ...s, postRestoreAuditInstruction: e.target.value }))}
             placeholder="Read the claude-compaction-restore skill and audit restore read depth."
-            className="border border-outline-variant px-2 py-1 font-mono text-sm"
+            className="border border-outline-variant bg-surface-lowest text-on-surface px-2 py-1 font-mono text-sm"
           />
           <span className="text-xs text-on-surface-variant">
             OpenRig wraps this with the required FULL/PARTIAL/NOT_READ table

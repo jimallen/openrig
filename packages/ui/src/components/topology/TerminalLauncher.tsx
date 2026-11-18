@@ -370,7 +370,7 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                   if (groupViews.length === 0) return null;
                   return (
                     <div key={group.heading}>
-                      <div className="px-3 pt-2 pb-1 font-mono text-[8px] uppercase tracking-[0.2em] text-on-surface-variant/70 bg-surface-low">
+                      <div className="px-3 pt-2 pb-1 font-mono text-[8px] uppercase tracking-[0.2em] text-on-surface-variant bg-surface-low">
                         {group.heading}
                       </div>
                       {groupViews.map((v) => {

@@ -78,7 +78,7 @@ function PolicyOption({
       onClick={onSelect}
       className={cn(
         "flex-1 border px-3 py-2 text-left",
-        selected ? "border-stone-900 bg-stone-900 text-white" : "border-outline bg-white text-stone-700",
+        selected ? "border-stone-900 bg-stone-900 text-white" : "border-outline bg-surface-lowest text-on-surface",
         warn && !selected && "border-tertiary/50",
       )}
     >
