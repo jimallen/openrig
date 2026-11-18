@@ -3588,7 +3588,8 @@ describe("RestoreOrchestrator", () => {
   it("a restore whose services fail to boot records the regrown seat in its roster by the live node id", async () => {
     const { rig, snap, newNode } = snapshotThenRegrow("regrown-services-rig");
     rigRepo.setServicesRecord(rig.id, { kind: "compose", specJson: "{}", rigRoot: "/rig-root", composeFile: "compose.yaml" });
-    const serviceOrchestrator = { boot: vi.fn(async () => ({ ok: false as const, error: "boom" })) } as unknown as import("../src/domain/service-orchestrator.js").ServiceOrchestrator;
+    // workspaces-o9o.162: a real boot failure carries a code (wait_timeout: the services did not come up), typed against ServiceBootResult.
+    const serviceOrchestrator = stubOf<ServiceOrchestrator>({ boot: vi.fn(async () => ({ ok: false as const, code: "wait_timeout", error: "boom" })) });
 
     const result = await createOrchestrator({ serviceOrchestrator }).restore(snap.id, { fsOps: { exists: () => true } });
 
@@ -4464,7 +4465,7 @@ describe("RestoreOrchestrator", () => {
       restorePolicy: "resume_if_possible",
     });
 
-    const claudeResume = mockClaudeResume({ ok: false as const, error: "Session not found" } as never);
+    const claudeResume = mockClaudeResume({ ok: false, code: "resume_failed", message: "Session not found" });   // a real ResumeResult failure (o9o.162)
     const orchestrator = createOrchestrator({ claude: claudeResume });
     const result = await orchestrator.restore(snapshot.id);
 
@@ -4515,14 +4516,14 @@ describe("RestoreOrchestrator", () => {
 
     // Claude resume succeeds for first call, fails for second
     let callCount = 0;
-    const claudeResume = {
+    const claudeResume = stubOf<ClaudeResumeAdapter>({
       canResume: vi.fn((type: string | null) => type === "claude_name"),
-      resume: vi.fn(async () => {
+      resume: vi.fn(async (): Promise<ResumeResult> => {
         callCount++;
-        if (callCount === 1) return { ok: true as const };
-        return { ok: false as const, error: "Session expired" };
+        if (callCount === 1) return { ok: true };
+        return { ok: false, code: "resume_failed", message: "Session expired" };   // a real ResumeResult failure (o9o.162)
       }),
-    } as unknown as ClaudeResumeAdapter;
+    });
 
     const orchestrator = createOrchestrator({ claude: claudeResume });
     const result = await orchestrator.restore(snapshot.id);
@@ -4544,7 +4545,7 @@ describe("RestoreOrchestrator", () => {
       restorePolicy: "resume_if_possible",
     });
 
-    const claudeResume = mockClaudeResume({ ok: false as const, error: "All expired" } as never);
+    const claudeResume = mockClaudeResume({ ok: false, code: "resume_failed", message: "All expired" });   // a real ResumeResult failure (o9o.162)
     const orchestrator = createOrchestrator({ claude: claudeResume });
     const result = await orchestrator.restore(snapshot.id);
 
