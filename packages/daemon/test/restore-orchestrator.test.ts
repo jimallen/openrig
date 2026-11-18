@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from "vitest";
 import { ProcessTableUnavailableError } from "../src/domain/native-process-lineage.js";
 import { mkTemp } from "./helpers/temp-roots.js";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
@@ -6150,7 +6150,7 @@ describe("RestoreOrchestrator", () => {
   // A throw out of one seat's restore (a launcher, adapter or database error, not a failed launch RESULT) must not
   // abort the whole attempt: the seat is compensated like a failed launch, reported failed, and the rest go on.
   describe("per-seat isolation of a thrown error", () => {
-    let consoleError: ReturnType<typeof vi.spyOn>;
+    let consoleError: MockInstance<typeof console.error>;
     beforeEach(() => { consoleError = vi.spyOn(console, "error").mockImplementation(() => {}); });
     afterEach(() => { consoleError.mockRestore(); });
 

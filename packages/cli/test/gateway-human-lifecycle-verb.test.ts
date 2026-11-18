@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from "vitest";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -62,8 +62,8 @@ function stubQueueDaemon(total: number): Promise<{ server: Server; url: string }
 describe("rig gateway human lifecycle verbs (S12)", () => {
   let home: string;
   let prevHome: string | undefined;
-  let logSpy: ReturnType<typeof vi.spyOn>;
-  let errSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: MockInstance<typeof console.log>;
+  let errSpy: MockInstance<typeof console.error>;
   beforeEach(async () => {
     home = mkdtempSync(join(tmpdir(), "s12-verb-"));
     prevHome = process.env.OPENRIG_HOME;

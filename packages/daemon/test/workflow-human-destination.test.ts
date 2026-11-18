@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,8 @@ import { resolveWorkflowHumanDestination } from "../src/domain/workflow-human-de
 import { addHumanFragment, writeProjection, projectionPath, type HumanFragment } from "../src/domain/gateway/human-registry.js";
 import { makeEnsureStuckExceptionItem } from "../src/domain/workflow-exception-escalation.js";
 import { workflowRoutes } from "../src/routes/workflow.js";
+/** The send QueueRepository takes in its transport option: the slot `terminal` below fills. */
+type TransportSend = NonNullable<NonNullable<ConstructorParameters<typeof QueueRepository>[2]>["transport"]>["send"];
 
 // SettingsStore captures its default path at import time. Keep real setting
 // resolution, but bind each caller to this test's registry/config directory.
@@ -48,7 +50,7 @@ describe.each(["serial", "dependency"])("workflow registered-human selection at 
   let queue: QueueRepository;
   let bus: EventBus;
   let specPath: string;
-  let terminal: ReturnType<typeof vi.fn>;
+  let terminal: Mock<TransportSend>;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "workflow-human-selection-"));
     vi.stubEnv("OPENRIG_HOME", dir);
@@ -58,7 +60,7 @@ describe.each(["serial", "dependency"])("workflow registered-human selection at 
     migrate(db, ALL_MIGRATIONS);
     db.prepare("INSERT INTO rigs(id,name) VALUES ('r','rig')").run();
     bus = new EventBus(db);
-    terminal = vi.fn(async () => ({ success: true }));
+    terminal = vi.fn<TransportSend>(async () => ({ ok: true })); // the transport's own result shape; every row asserts it is never called
     queue = new QueueRepository(db, bus, { validateRig: () => true, transport: { send: terminal } });
     queue.attachOutbox(new OutboxHandler(db));
     runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue });

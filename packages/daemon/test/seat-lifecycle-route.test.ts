@@ -1,7 +1,7 @@
 // S5 (OPR.0.5.4.7) — the three seat-lifecycle routes: HTTP status mapping per the
 // PRD (400 required-input, 404 not-found, 409 state conflicts, 502 tmux-layer) and
 // the pass-through of the service's named refusals (message + guidance + matches).
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
@@ -32,7 +32,7 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
   }
 
   function tmux() {
-    const t = setup.tmuxAdapter as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    const t = setup.tmuxAdapter as unknown as Record<string, Mock>;
     // Fix r1 (row 9baac99f): the service consumes the CLASSIFIED probeSession.
     // The shared test-app mock predates it; derive a positive-evidence probe
     // from the test's hasSession mock (present/absent — the blip class is

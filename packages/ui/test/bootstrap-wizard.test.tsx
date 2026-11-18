@@ -9,7 +9,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   fetchMock = vi.fn();
-  globalThis.fetch = fetchMock;
+  vi.stubGlobal("fetch", fetchMock);
 });
 
 afterEach(() => {

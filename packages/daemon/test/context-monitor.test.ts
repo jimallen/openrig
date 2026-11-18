@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import BetterSqlite3, { type Database } from "better-sqlite3";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -16,6 +16,8 @@ import type { SessionTransport } from "../src/domain/session-transport.js";
 import type { ReadinessResult } from "../src/domain/runtime-adapter.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+/** The provisioner ContextMonitor takes as its third parameter: the slots the spies below fill. */
+type ContextProvisioner = NonNullable<ConstructorParameters<typeof ContextMonitor>[2]>;
 
 
 describe("ContextMonitor", () => {
@@ -24,8 +26,8 @@ describe("ContextMonitor", () => {
   let sessionRegistry: SessionRegistry;
   let store: ContextUsageStore;
   let monitor: ContextMonitor;
-  let ensureContextCollectorSpy: ReturnType<typeof vi.fn>;
-  let checkReadySpy: ReturnType<typeof vi.fn>;
+  let ensureContextCollectorSpy: Mock<ContextProvisioner["ensureContextCollector"]>;
+  let checkReadySpy: Mock<NonNullable<ContextProvisioner["checkReady"]>>;
   let tmpDir: string;
   let codexHomeDir: string;
 

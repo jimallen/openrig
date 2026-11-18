@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from "vitest";
 import { createServer, type Server } from "node:http";
 import { createProgram } from "../src/index.js";
 
@@ -42,8 +42,8 @@ const SEAT_DIAG = {
 };
 
 describe("rig parked (S19 A7)", () => {
-  let logSpy: ReturnType<typeof vi.spyOn>;
-  let errSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: MockInstance<typeof console.log>;
+  let errSpy: MockInstance<typeof console.error>;
   let prevUrl: string | undefined;
   beforeEach(() => {
     logSpy = vi.spyOn(console, "log");

@@ -1,7 +1,7 @@
 // SWEEP-c (shape f2576102) — persist-WITHOUT-reconcile honesty floor: setting a
 // BOOT-ONLY key while the daemon runs prints the restart-required notice (silent
 // stale -> loud honest). Live-reload (ii) routed as its own arch item, not built here.
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,7 +16,7 @@ function runSet(key: string, value: string, daemonRunning: boolean) {
 }
 
 describe("SWEEP-c — boot-only config keys warn while the daemon runs", () => {
-  let errSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: MockInstance<typeof console.error>;
   beforeEach(() => { errSpy = vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "log").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 

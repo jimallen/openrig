@@ -33,8 +33,9 @@ else if (process.argv[2] === 'up') {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^(OPENRIG_|RIGGED_)/.test(key)) delete env[key];
   Object.assign(env, { HOME: root, OPENRIG_HOME: root, OPENRIG_TUI_CLI_ENTRY: cli, OPENRIG_TUI_SOCKET: path.join(root, "t.sock") });
+  // workspaces-o9o.150: vitest 4 no longer ships vite-node; tsx runs the TypeScript entry in this one process (no child of its own).
   const child = spawn(process.execPath, [
-    fileURLToPath(new URL("../../../node_modules/vite-node/vite-node.mjs", import.meta.url)), "--script",
+    "--import", "tsx",
     fileURLToPath(new URL("../src/main.ts", import.meta.url)), "--instance", "launch-signal", "--no-color",
     "--url", `http://127.0.0.1:${address.port}`,
   ], { env, detached: true, stdio: ["pipe", "pipe", "pipe"] });

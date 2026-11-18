@@ -10,6 +10,13 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The test suites run on vitest 4 and vite 7 (workspaces-o9o.150)
+
+- vitest 3.2.4 becomes 4.1.12 in every workspace, and the UI's vite 6.4.1 becomes 7.3.8. tinypool and vite-node leave the tree. The lock is written with npm 11, because npm 10 cannot resolve it, and kept in npm 10's form; CONTRIBUTING says how.
+- The hc scratch tripwire still fails a run. vitest 4 prints an error thrown in a global teardown but exits 0, so a leaked private hc core root no longer failed daemon, cli or tui runs. The teardown now also sets the exit code.
+- vitest 4 caps workers with `VITEST_MAX_WORKERS` and ignores `VITEST_MAX_FORKS`; `--maxWorkers` works on both versions.
+- Tests changed with it: two tui tests run their entry with tsx instead of vite-node; proof-policy-reuse takes the real `readFileSync` from `vi.importActual` and resets its `fs` mock after each test; and mocks declared as `ReturnType<typeof vi.fn>` or `vi.spyOn` are typed by the slot they fill, which turned up a transport fake returning the wrong result shape (never reached by its rows; now the transport's own).
+
 ### The detail drawer adds no second banner landmark (workspaces-o9o.175)
 
 - Symptom: the shared detail drawer's viewers (queue item, file, sub-spec) head their content with a `<header>`. Inside the drawer, which is a dialog over the page, that `<header>` was a second banner landmark: axe reported `landmark-banner-is-top-level`, `landmark-no-duplicate-banner` and `landmark-unique` on both drawers in both themes.

@@ -1,11 +1,11 @@
 // B8 PROBE-HONESTY (shape 73ee4b25, floor-A ruled) — the CLI tells the truth about what
 // it KNOWS vs what it INFERS. RED-first against current main.
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import { statusGuardMessage, daemonStatusGuard } from "../src/daemon-lifecycle.js";
 import type { DaemonStatus } from "../src/daemon-lifecycle.js";
 
 describe("B8-1b — epistemic-matched precheck language (the ONE helper)", () => {
-  let errSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: MockInstance<typeof console.error>;
   beforeEach(() => { errSpy = vi.spyOn(console, "error").mockImplementation(() => {}); process.exitCode = undefined; });
   afterEach(() => { errSpy.mockRestore(); process.exitCode = undefined; });
 
@@ -68,7 +68,7 @@ import { printTransportFailureForTest } from "../src/commands/send.js";
 import { DaemonTimeoutError, DaemonConnectionError } from "../src/client.js";
 
 describe("B8-2 — send transport honesty (indeterminate ≠ failed)", () => {
-  let errSpy2: ReturnType<typeof vi.spyOn>;
+  let errSpy2: MockInstance<typeof console.error>;
   beforeEach(() => { errSpy2 = vi.spyOn(console, "error").mockImplementation(() => {}); });
   afterEach(() => errSpy2.mockRestore());
 

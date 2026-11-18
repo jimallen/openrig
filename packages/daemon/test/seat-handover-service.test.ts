@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import type Database from "better-sqlite3";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,8 +49,8 @@ describe("SeatHandoverService", () => {
   let readSidecar: ReturnType<typeof vi.fn>;
   let captureCodexThreadId: ReturnType<typeof vi.fn>;
   let claudeProcessStartedAt: ((sessionName: string) => Promise<string | null>) | undefined;
-  let invalidateRetiringOccupant: ReturnType<typeof vi.fn>;
-  let declareOccupantSwap: ReturnType<typeof vi.fn>;
+  let invalidateRetiringOccupant: Mock<OccupantInvalidator["invalidateRetiringOccupant"]>;
+  let declareOccupantSwap: Mock<NonNullable<ConstructorParameters<typeof SeatHandoverService>[0]["activityOracle"]>["declareOccupantSwap"]>;
   let resolvePredecessorRecap: ReturnType<typeof vi.fn>;
   let getDefaultShell: ReturnType<typeof vi.fn>;
   let getPaneCommand: ReturnType<typeof vi.fn>;

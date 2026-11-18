@@ -13,8 +13,12 @@ vi.mock("node:fs", async importOriginal => {
   return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
 });
 
+// workspaces-o9o.150 (vitest 4): fs.readFileSync above is a mock, and vi.spyOn on a mock returns that same mock, so a value read from
+// fs.readFileSync is the mock, not the real function, and restoreAllMocks no longer resets it between tests. The real function comes
+// from importActual; mockReset after each test puts back the real implementation and clears the calls.
+const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
 const roots: string[] = [];
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.mocked(fs.readFileSync).mockReset(); vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 function fixture() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "policy-reuse-"))); roots.push(root);
   const missions = path.join(root, "missions"), mission = path.join(missions, "trial");
@@ -48,6 +52,7 @@ describe("request-local proof-policy reuse", () => {
     expect(mission.issues).toEqual([]);
     expect(mission.slices).toHaveLength(8);
     const read = vi.spyOn(fs, "readFileSync");
+    read.mockClear(); // the spy is the module's mock: count only the reads of the GET below
     const parse = vi.spyOn(YAML, "parse");
     const result = await f.get();
     expect(result.slices.map((s: any) => s.readiness)).toEqual(expected);
@@ -85,7 +90,7 @@ describe("request-local proof-policy reuse", () => {
 
   it("preserves scopes' null-on-read-failure versus proofFs' thrown error and recovers on the next GET", async () => {
     const f = fixture(), before = await f.get();
-    const original = fs.readFileSync, read = vi.spyOn(fs, "readFileSync");
+    const original = actualFs.readFileSync, read = vi.spyOn(fs, "readFileSync");
     read.mockImplementation(((file: fs.PathOrFileDescriptor, ...args: any[]) => {
       if (file === f.projectFile) throw Object.assign(new Error(`EACCES: ${f.projectFile}`), { code: "EACCES" });
       return (original as any)(file, ...args);

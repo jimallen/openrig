@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import type { ProjectionPlan } from "../src/domain/projection-planner.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -147,7 +147,7 @@ let hostCodex: string;
 let hostConfig: string;
 let relay: string;
 let fragment: string;
-let warn: ReturnType<typeof vi.spyOn>;
+let warn: MockInstance<typeof console.warn>;
 
 const realFs: CodexAdapterFsOps = {
   readFile: (p) => fs.readFileSync(p, "utf-8"),

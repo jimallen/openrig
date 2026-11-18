@@ -59,7 +59,12 @@ export function teardown(): void {
   } finally {
     try { fs.rmSync(hcRegistry, { recursive: true, force: true }); } catch { /* best effort */ }
   }
-  if (leaked.length > 0) throw new Error(describeLeak(leaked));
+  if (leaked.length > 0) {
+    // workspaces-o9o.150: vitest 4 prints an error a global teardown throws ("error during close") but no longer fails the run for
+    // it, so the exit code is set here; the throw still prints which roots were left and which test asked for them.
+    process.exitCode = 1;
+    throw new Error(describeLeak(leaked));
+  }
 }
 
 function removeFixtureHomes(): void {

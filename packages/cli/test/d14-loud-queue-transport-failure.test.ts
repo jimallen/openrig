@@ -1,7 +1,7 @@
 // D14 (INTAKE 5674431c; accept-and-drop family #6) — a queue write whose transport
 // THROWS must fail LOUD (classified stderr + nonzero exit), never exit 1 silently.
 // Live specimen: `rig queue create --host <down-host>` exited 1 with ZERO output.
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import { queueCommand, type QueueDeps } from "../src/commands/queue.js";
 import { DaemonTimeoutError } from "../src/client.js";
 
@@ -15,7 +15,7 @@ function lifecycleStub(): QueueDeps["lifecycleDeps"] {
 }
 
 describe("D14 — queue transport failures are LOUD", () => {
-  let errSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: MockInstance<typeof console.error>;
   beforeEach(() => {
     // P21 HERMETIC: the queue verb under test derives the actor from the seat env; stub a deterministic
     // seat so an env-less harness reaches the transport-failure path instead of aborting pre-POST.

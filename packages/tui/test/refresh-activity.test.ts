@@ -69,12 +69,12 @@ esac
 `);
     await chmod(rigStub, 0o755);
 
-    const viteNode = fileURLToPath(new URL("../../../node_modules/vite-node/vite-node.mjs", import.meta.url));
     const entry = fileURLToPath(new URL("../src/main.ts", import.meta.url));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("test server did not bind TCP");
 
-    const child = spawn(process.execPath, [viteNode, "--script", entry, "--instance", "refresh-policy-test", "--no-color", "--url", `http://127.0.0.1:${address.port}`], {
+    // workspaces-o9o.150: vitest 4 no longer ships vite-node; tsx runs the TypeScript entry, as the daemon's child-process tests do.
+    const child = spawn(process.execPath, ["--import", "tsx", entry, "--instance", "refresh-policy-test", "--no-color", "--url", `http://127.0.0.1:${address.port}`], {
       env: {
         ...process.env,
         OPENRIG_HOME: root,

@@ -55,6 +55,12 @@ npm run lint           # typecheck every package
 runs too. Use `npm install <package>` only when you're adding or changing a dependency, and commit
 the lockfile change with it.
 
+npm 10 (10.9.11 and earlier) cannot resolve this tree's dev dependencies since vitest 4: Arborist stops with
+"Cannot read properties of null (reading 'edgesOut')". Write a dependency change with npm 11 or later (for example
+`npx npm@11 install <package>`), then run `npm install` once with the npm 10 your Node ships, so the lock keeps npm 10's
+form (npm 11 drops the `"dev": true` flag from the `@esbuild/*` platform entries and npm 10 adds it back). npm 10 then reads
+the lock unchanged with both `npm ci` and `npm install` (workspaces-o9o.150).
+
 `npm test` builds the daemon and runs repository checks before the package suites. Read the
 specific failure. A shipped skill may exist in more than one copy (see ARCHITECTURE.md): edit every copy, then run
 `node scripts/regen-edge-digests.mjs` and commit the digest file it changes (the full

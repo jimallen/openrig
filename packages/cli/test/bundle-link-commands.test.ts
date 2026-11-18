@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { Command } from "commander";
 import path from "node:path";
 import { bundleCommand } from "../src/commands/bundle.js";
@@ -12,7 +12,7 @@ const identity = { source: { resolvedCommit: "a".repeat(40), canonicalUrl: link 
 
 describe("bundle link command dispatch", () => {
   const deps = { lifecycleDeps: {}, clientFactory: vi.fn(() => { throw new Error("unexpected second client"); }) } as unknown as StatusDeps;
-  let log: ReturnType<typeof vi.spyOn>;
+  let log: MockInstance<typeof console.log>;
   let oldExit: typeof process.exitCode;
   beforeEach(() => {
     oldExit = process.exitCode; process.exitCode = undefined;

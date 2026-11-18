@@ -9,7 +9,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { hcAttachCommand, setDaemonTmuxServer, tmuxAttachCommand } from "../src/adapters/tmux-server.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
@@ -230,7 +230,7 @@ describe("ContextMonitor polls hc seats", () => {
   let sessionRegistry: SessionRegistry;
   let store: ContextUsageStore;
   let monitor: ContextMonitor;
-  let checkReady: ReturnType<typeof vi.fn>;
+  let checkReady: Mock<NonNullable<NonNullable<ConstructorParameters<typeof ContextMonitor>[2]>["checkReady"]>>;
   let dir: string;
 
   beforeEach(() => {

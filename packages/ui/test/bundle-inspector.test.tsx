@@ -6,7 +6,7 @@ import { eventColor, eventSummary, type ActivityEvent } from "../src/hooks/useAc
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
-beforeEach(() => { fetchMock = vi.fn(); globalThis.fetch = fetchMock; });
+beforeEach(() => { fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const INSPECT_RESPONSE = {

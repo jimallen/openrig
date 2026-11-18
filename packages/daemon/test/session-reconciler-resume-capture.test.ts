@@ -6,7 +6,7 @@
 // suite proves the wiring, provenance, honest-skip, best-effort, terminal-skip,
 // idempotency, and secret-free-event invariants.
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -18,6 +18,8 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
+/** What SessionReconciler takes: the slots the mocks below fill. */
+type ReconcilerDeps = ConstructorParameters<typeof SessionReconciler>[0];
 
 
 type SidecarResult = { ok: true; data: { session_id?: string; sampled_at?: string } } | { ok: false; reason: string };
@@ -36,8 +38,8 @@ describe("SessionReconciler FR-3 — adoption-boundary resume-token capture", ()
   let sessionRegistry: SessionRegistry;
   let eventBus: EventBus;
   let mockTmux: TmuxAdapter;
-  let readSidecar: ReturnType<typeof vi.fn>;
-  let captureCodexThreadId: ReturnType<typeof vi.fn>;
+  let readSidecar: Mock<NonNullable<ReconcilerDeps["contextUsageStore"]>["readSidecar"]>;
+  let captureCodexThreadId: Mock<NonNullable<ReconcilerDeps["resumeTokenCapturer"]>["captureCodexThreadId"]>;
   let claudeProcessStartedAt: ((sessionName: string) => Promise<string | null>) | undefined;
 
   beforeEach(() => {
