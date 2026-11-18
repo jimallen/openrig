@@ -4,7 +4,6 @@
 // and its real target is judged and narrowed. Every fixture sets its own mode.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { DaemonClient } from "../src/client.js";
@@ -14,6 +13,7 @@ import { realDeps } from "../src/commands/daemon.js";
 import Database from "better-sqlite3";
 import { readLocalOrigin } from "../src/local-origin.js";
 import { crashCartCommand } from "../src/commands/crash-cart.js";
+import { claimTestPort } from "../../daemon/test/helpers/test-ports.js";
 
 let dir: string;
 beforeEach(() => {
@@ -158,16 +158,10 @@ describe("the local origin's launch record is a daemon.json that passes the rule
 });
 
 describe("crash-cart's discovery reads a daemon.json that passes the rule (o9o.160 review)", () => {
-  // The daemon is down: OPENRIG_URL and the record name a port this test bound and closed (refused, never the live daemon's).
+  // The daemon is down: OPENRIG_URL and the record name a claimed free port (refused, never the live daemon's).
   // The record names this test's own live pid, so a record that is used refuses the direct read on that pid.
-  const deadPort = async (): Promise<number> => {
-    const server = net.createServer();
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (address === null || typeof address === "string") throw new Error("no port");
-    return address.port;
-  };
+  // A free port claimed for this test process (workspaces-o9o.81): nothing listens on it, so the probe is refused.
+  const deadPort = async (): Promise<number> => await claimTestPort();
   const record = (port: number) => JSON.stringify({ pid: process.pid, port, host: "127.0.0.1", db: path.join(dir, "missing.sqlite") });
   const runCart = async (port: number): Promise<{ state: string; refusal?: string; discovery?: unknown }> => {
     vi.stubEnv("OPENRIG_URL", `http://127.0.0.1:${port}`);
