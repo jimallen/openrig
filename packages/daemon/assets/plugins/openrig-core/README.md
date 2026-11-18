@@ -19,6 +19,7 @@ group or session selector, `killall`, `kill` of a negative pid, `-1` or `0`, and
 `pgrep -f x | xargs kill`), through the same wrappers and shell forms the rig rule reads. Every seat on a host is the same user, so these reach other
 seats' processes. `kill <pid>`, `kill %job`, `kill -l`, `pkill -F <pidfile>`, `pkill -P <pid>` and help or listing stay allowed; the refusal says to
 find the pid with `pgrep -af '<exact path>'`, confirm it is yours, and `kill <pid>`.
+In Claude Code's Code Mode the hook also runs on the `REPL` tool (workspaces-o9o.131): it judges every string and template literal in the code by the same rules, and refuses code that names `child_process`, `process.binding`, `process.dlopen` or a Function-constructor chain. That is defence in depth over Claude Code's own refusal of module loading in REPL code, not a sandbox.
 On Claude Code only, the same hook also refuses a Bash call that is not `run_in_background: true` and starts a shell background job (a top-level `&` with no later
 `wait`, or `nohup`, `disown` or `setsid` as a command word): nothing wakes the seat when such a job ends. The refusal points at `run_in_background: true` or Monitor.
 

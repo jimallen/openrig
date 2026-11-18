@@ -103,7 +103,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|REPL",
         "hooks": [
           {
             "type": "command",

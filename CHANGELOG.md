@@ -10,6 +10,14 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### The seat guard reads Code Mode's REPL code (workspaces-o9o.131)
+
+- Symptom (verify-sec2, from o9o.122): in Claude Code's Code Mode each piece of code reaches `PreToolUse` as tool `REPL` with the JavaScript in `tool_input.code`, but `rig-body-guard` was installed on `Bash` only and read only `tool_input.command`. The shell calls inside the code arrive as `Bash` and were checked; the code itself was not. Measured on Claude Code 2.1.327: in Code Mode every shell call goes through REPL code (a direct `Bash` call is refused with "Bash is only available inside REPL").
+- Now the guard is installed on `Bash|REPL`, both in the launch `--settings` every managed Claude seat carries and in the openrig-core plugin's `hooks/claude.json`, and it reads REPL code. Every string and template literal in the code is judged by the same rules as a Bash command (a `rig send` body with a command substitution, a broad kill); a `${...}` reads as an unknown value. Code that names `child_process`, `process.binding`, `process.dlopen` or a Function-constructor chain (`.constructor(`, `.constructor.constructor`, `new Function`, `Function(`) is refused. Code the guard cannot read (an unterminated string, template or comment) is refused when it names a rig command, a kill or one of those APIs. Measured end to end: a REPL call running `` $`false && pkill -f ...` `` was refused at `PreToolUse:REPL` before the code ran.
+- This is defence in depth over Claude Code's own refusal, not a sandbox. Claude Code refuses module loading in REPL code itself (measured: "Module loading (require) is not available in REPL — the vm context is sealed"); whether that refusal is a boundary is verify-sec2's question in review. A name assembled at run time (`globalThis["child_" + "process"]`) is not seen by this check.
+- When the guard cannot run, its shell fallback reads a REPL call's code from the `"code"` key, so a template literal in ordinary code is not refused because the seat's folder name contains "rig".
+- Residual: a string in the code that only mentions a broad kill or a `rig send` with a substitution (a log message, say) is refused like the command it spells: the guard cannot tell a command string from prose.
+
 ### Section headings no longer skip a level (workspaces-o9o.158)
 
 - Symptom: the For You feed's cards, the slice and mission review bands and the lab preview's cards sat two levels below their page title (an h3 straight under the h1), so a screen reader's heading outline had a gap; the accessibility scan flagged the first gap on each page.

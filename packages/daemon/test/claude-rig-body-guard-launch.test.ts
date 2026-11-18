@@ -25,8 +25,8 @@ describe("withRigBodyGuard", () => {
   it("no --settings in: adds one holding only the guard group", () => {
     expect(withRigBodyGuard(["--x"])).toEqual(["--x", "--settings", GUARD_JSON]);
   });
-  it("the guard group is a blocking Bash PreToolUse hook on the shipped rig-body-guard.cjs", () => {
-    expect(GUARD_GROUP.matcher).toBe("Bash");
+  it("the guard group is a blocking Bash and REPL (Code Mode, o9o.131) PreToolUse hook on the shipped rig-body-guard.cjs", () => {
+    expect(GUARD_GROUP.matcher).toBe("Bash|REPL");
     // OF-253: an inline sh wrapper; the interpreter is the daemon's own node by absolute path (OF-250 F-1), never a bare `node`; the watchdog is 3 s, under the 5 s hook timeout.
     expect(GUARD_GROUP.hooks[0]!.command.startsWith("/bin/sh -c '")).toBe(true);
     expect(GUARD_GROUP.hooks[0]!.command.endsWith(` sh '${process.execPath}' '${GUARD_SCRIPT}' 3`)).toBe(true);
@@ -158,6 +158,17 @@ describe("OF-253: the hook command runs the guard through an inline sh wrapper t
       expect(hook(HEREDOC, options)).toMatchObject(REFUSED);
     });
   }
+
+  // workspaces-o9o.131: a Code Mode REPL call carries its JavaScript as "code", after a cwd that may hold "rig" ("openrig"). The degraded check
+  // reads the value from the "code" key on, so a template literal (a backtick) in ordinary code is not refused for the folder's name.
+  it("guard unavailable, a REPL call: the degraded check reads the code, not the cwd before it", () => {
+    const repl = (code: string) => JSON.stringify({ hook_event_name: "PreToolUse", cwd: "/home/u/Work/openrig/.workspaces/build-impl", tool_name: "REPL", tool_input: { code } });
+    const gone = { script: "/nonexistent/rig-body-guard.cjs" };
+    expect(hook("", { ...gone, raw: repl("const s = `value ${1}`; s") })).toMatchObject(ALLOWED);
+    expect(hook("", { ...gone, raw: repl('await $`rig send x@y "hi $(date)"`') })).toMatchObject(REFUSED);
+    // Control: the same cwd on a Bash call with a backtick and no rig in its command is allowed too (the command key was always used).
+    expect(hook("", { ...gone, raw: JSON.stringify({ cwd: "/home/u/Work/openrig", tool_name: "Bash", tool_input: { command: "echo `date`" } }) })).toMatchObject(ALLOWED);
+  });
 
   for (const [label, script] of [["crashes", "crash.cjs"], ["exits 1", "exit1.cjs"]] as const) {
     it(`the guard ${label}: the same degraded check, not a blanket refusal and not a blanket allow`, () => {

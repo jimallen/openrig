@@ -52,6 +52,7 @@ deg() {
   # Nothing in the hook text can be a risk (no backtick, no "$(", no JSON u00xx escape that could spell one): done.
   case $in in *"$bt"*|*'$('*|*'\u00'*) ;; *) exit 0 ;; esac
   k='"command":'
+  case $in in *"$k"*) ;; *) k='"code":' ;; esac   # workspaces-o9o.131: a REPL call carries its JavaScript as "code"
   s=@@{in#*"$k"}          # the command's value onward: cwd and transcript path come before it and may hold "rig" ("openrig")
   if [ "@@{#s}" -gt 16384 ]; then
     : # too long to decode in plain sh in time: with a risk signal in it, refuse
@@ -110,7 +111,8 @@ deg "the guard failed or timed out, exit $rc"`.split("@@{").join("${").split("SU
 export function claudeRigBodyGuardGroup(scriptPath: string, options: { nodePath?: string; watchdogSeconds?: number } = {}): { matcher: string; hooks: Array<{ type: string; command: string; timeout: number; onFailure: "block" }> } {
   const node = options.nodePath ?? process.execPath;
   const watchdog = options.watchdogSeconds ?? RIG_BODY_GUARD_WATCHDOG_SECONDS;
-  return { matcher: "Bash", hooks: [{ type: "command", command: `/bin/sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(node)} ${shellQuote(scriptPath)} ${watchdog}`, timeout: HOOK_TIMEOUT_SECONDS, onFailure: "block" }] };
+  // workspaces-o9o.131: Code Mode's REPL tool as well as Bash (the guard reads tool_input.code for it).
+  return { matcher: "Bash|REPL", hooks: [{ type: "command", command: `/bin/sh -c ${shellQuote(RIG_BODY_GUARD_WRAPPER)} sh ${shellQuote(node)} ${shellQuote(scriptPath)} ${watchdog}`, timeout: HOOK_TIMEOUT_SECONDS, onFailure: "block" }] };
 }
 
 const SETTINGS_FLAG = "--settings";

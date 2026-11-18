@@ -6,7 +6,8 @@
 // here-document with $(...) in it). The shell executes a substitution before `rig` starts, so nothing
 // inside rig can stop it: the only place to stop it is the agent harness, before the shell sees the
 // command. Two harnesses use this one file:
-//   - Claude Code: a PreToolUse hook on Bash (hooks/claude.json runs this file; main() below).
+//   - Claude Code: a PreToolUse hook on Bash (hooks/claude.json runs this file; main() below), and on Code Mode's REPL tool, whose
+//     JavaScript it reads (workspaces-o9o.131, "REPL code" below).
 //     The Claude hook (hookDecision) also runs the background-job guard (checkBackground); Pi does not.
 //   - Pi: pi/rig-body-guard.cjs (a Pi extension) requires this file and refuses on its tool_call event.
 //
@@ -1177,9 +1178,166 @@ function backgroundRefusal(kind) {
 // ---------------------------------------------------------------------------------------------
 // Claude Code PreToolUse hook entry: JSON event on stdin, JSON decision on stdout.
 
+// ---------------------------------------------------------------------------------------------
+// REPL code (workspaces-o9o.131)
+//
+// In Claude Code's Code Mode each piece of code reaches PreToolUse as tool_name "REPL" with the JavaScript in tool_input.code (measured on
+// Claude Code 2.1.327). Its shell calls arrive separately as Bash and are checked as before; the code is checked here:
+//   - every string and template literal in it is judged by the Bash rules above (rig send bodies, broad kills): code builds the commands
+//     it hands to the shell tool as strings. A `${...}` in a template reads as an unknown value ($OPENRIG_JS_EXPR), as a shell variable would;
+//   - code that names child_process, process.binding, process.dlopen or a Function-constructor chain is refused: those reach the host
+//     outside the tool calls this guard checks.
+// Claude Code itself refuses module loading in REPL code (measured: "the vm context is sealed"). This is defence in depth over that
+// refusal, NOT a sandbox: a name assembled at run time (globalThis["child_" + "process"]) is not seen here. Comments are skipped. Code this
+// reader cannot follow (an unterminated literal) is refused when it carries a risk signal, and allowed otherwise, like check()'s rule.
+
+const REPL_API_RULES = [
+  { re: /child_process/, name: "child_process" },
+  { re: /\bprocess\s*\.\s*binding\b/, name: "process.binding" },
+  { re: /\bprocess\s*\.\s*dlopen\b/, name: "process.dlopen" },
+  { re: /\bconstructor\s*(?:\.\s*constructor\b|\(|\[)|\[\s*["'`]constructor["'`]\s*\]/, name: "a Function-constructor chain (.constructor)" },
+  { re: /\bnew\s+Function\b|(?<![\w$.])Function\s*\(/, name: "the Function constructor" },
+];
+const REPL_RISK_RE = /\b(?:rig|pkill|killall|kill)\b|child_process|constructor|\bFunction\b|\bprocess\s*\./;
+const JS_EXPR = "$OPENRIG_JS_EXPR";
+
+/** The string and template literals of a piece of JavaScript, and the code with its comments and literals blanked (for the API scan).
+ *  `ok: false` when a literal or comment does not end. A `/` starts a regular expression where a value cannot stand before it. */
+function jsLiterals(code) {
+  const literals = [];
+  let bare = "";
+  let i = 0;
+  let prev = "";                     // the last significant character outside literals and comments
+  const regexAfter = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "<", ">", "~", "^"]);
+  while (i < code.length) {
+    tick();
+    const c = code[i];
+    if (c === "/" && code[i + 1] === "/") { const e = code.indexOf("\n", i); i = e < 0 ? code.length : e; continue; }
+    if (c === "/" && code[i + 1] === "*") { const e = code.indexOf("*/", i + 2); if (e < 0) return { ok: false, literals, bare }; i = e + 2; continue; }
+    if (c === "/" && (regexAfter.has(prev) || /\b(?:return|typeof|case|in|of)$/.test(bare.trimEnd()))) {
+      let j = i + 1; let cls = false;
+      for (; j < code.length; j++) {
+        if (code[j] === "\\") { j++; continue; }
+        if (code[j] === "\n") return { ok: false, literals, bare };
+        if (code[j] === "[") cls = true; else if (code[j] === "]") cls = false;
+        else if (code[j] === "/" && !cls) break;
+      }
+      if (j >= code.length) return { ok: false, literals, bare };
+      i = j + 1; while (i < code.length && /[a-z]/i.test(code[i])) i++;
+      bare += " "; prev = "x"; continue;
+    }
+    if (c === "'" || c === '"') {
+      let text = ""; let j = i + 1;
+      for (; j < code.length && code[j] !== c; j++) {
+        if (code[j] === "\n") return { ok: false, literals, bare };
+        if (code[j] === "\\") { j++; text += jsEscape(code[j]); continue; }
+        text += code[j];
+      }
+      if (j >= code.length) return { ok: false, literals, bare };
+      literals.push(text); bare += ` ${c}${text}${c} `; i = j + 1; prev = "x"; continue;
+    }
+    if (c === "`") {
+      const t = jsTemplate(code, i + 1);
+      if (!t) return { ok: false, literals, bare };
+      for (const inner of t.inner) {
+        const sub = jsLiterals(inner);
+        if (!sub.ok) return { ok: false, literals, bare };
+        literals.push(...sub.literals); bare += ` ${sub.bare} `;
+      }
+      literals.push(t.text); bare += ` \`${t.text}\` `; i = t.end; prev = "x"; continue;
+    }
+    bare += c;
+    if (!/\s/.test(c)) prev = /[\w$)\]]/.test(c) ? "x" : c;
+    i++;
+  }
+  return { ok: true, literals, bare };
+}
+
+function jsEscape(ch) {
+  return ch === "n" ? "\n" : ch === "t" ? "\t" : ch === undefined ? "" : ch;
+}
+
+/** A template literal from just after its opening backtick: its text with each ${...} as JS_EXPR, the expressions' source, and where it ends. */
+function jsTemplate(code, start) {
+  let text = ""; const inner = [];
+  for (let j = start; j < code.length; j++) {
+    tick();
+    const ch = code[j];
+    if (ch === "\\") { j++; text += jsEscape(code[j]); continue; }
+    if (ch === "`") return { text, inner, end: j + 1 };
+    if (ch === "$" && code[j + 1] === "{") {
+      let depth = 1; let k = j + 2;
+      for (; k < code.length && depth > 0; k++) {
+        if (code[k] === "{") depth++;
+        else if (code[k] === "}") depth--;
+        else if (code[k] === "`" || code[k] === "'" || code[k] === '"') {
+          const q = code[k];
+          if (q === "`") { const t = jsTemplate(code, k + 1); if (!t) return null; k = t.end - 1; continue; }
+          let m = k + 1; for (; m < code.length && code[m] !== q; m++) if (code[m] === "\\") m++;
+          if (m >= code.length) return null; k = m;
+        }
+      }
+      if (depth > 0) return null;
+      inner.push(code.slice(j + 2, k - 1));
+      text += JS_EXPR; j = k - 1; continue;
+    }
+    text += ch;
+  }
+  return null;
+}
+
+/** checkReplCode(code[, { budgetMs }]) -> { block, violations, reason }. Never throws. */
+function checkReplCode(code, options) {
+  if (typeof code !== "string" || code.length === 0) return { block: false, violations: [], reason: "" };
+  const budget = options && typeof options.budgetMs === "number" ? options.budgetMs : DEFAULT_BUDGET_MS;
+  let parsed;
+  try {
+    deadline = Date.now() + budget;
+    parsed = jsLiterals(code);
+  } catch {
+    parsed = { ok: false, literals: [], bare: code };
+  }
+  if (!parsed.ok) {
+    if (!REPL_RISK_RE.test(code)) return { block: false, violations: [], reason: "" };
+    const violations = [{ kind: "unparseable-repl", command: null }];
+    return { block: true, violations, reason: replRefusal(violations) };
+  }
+  for (const rule of REPL_API_RULES) {
+    if (rule.re.test(parsed.bare)) {
+      const violations = [{ kind: "repl-api", command: rule.name }];
+      return { block: true, violations, reason: replRefusal(violations) };
+    }
+  }
+  for (const literal of parsed.literals) {
+    const verdict = check(literal, options);
+    if (verdict.block) return verdict;
+  }
+  return { block: false, violations: [], reason: "" };
+}
+
+function replRefusal(violations) {
+  const v = violations[0];
+  const why = v.kind === "repl-api"
+    ? `this code names ${v.command}, which reaches the host outside the tool calls this guard checks`
+    : "the guard could not read this code (a string, template or comment that does not end), and it names a rig command, a kill or a host API";
+  return [
+    "rig-body-guard BLOCKED this code before it ran. Nothing was executed.",
+    `Why: ${why}. This check is defence in depth over Claude Code's own refusal of module loading in REPL code, not a sandbox.`,
+    "Fix: run commands through the shell tool from code (await Bash({ command: \"...\" }) or the $ tag), whose commands this guard checks, and read files with the tool globals (Read, Glob, Grep). Do not reach for child_process, process.binding, process.dlopen or the Function constructor.",
+  ].join("\n");
+}
+
 function hookDecision(rawInput) {
   let event;
   try { event = JSON.parse(rawInput); } catch { return { output: null, note: "rig-body-guard: hook input is not JSON; allowed" }; }
+  // workspaces-o9o.131: Code Mode's REPL tool carries JavaScript in tool_input.code.
+  if (event && typeof event === "object" && event.tool_name === "REPL") {
+    const code = event.tool_input && typeof event.tool_input.code === "string" ? event.tool_input.code : null;
+    if (code === null) return { output: null, note: "rig-body-guard: no REPL code in the hook input; allowed" };
+    const verdict = checkReplCode(code);
+    if (!verdict.block) return { output: null, note: null };
+    return { output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: verdict.reason } }, note: null };
+  }
   const command = event && typeof event === "object" && event.tool_input && typeof event.tool_input.command === "string" ? event.tool_input.command : null;
   if (command === null) return { output: null, note: "rig-body-guard: no Bash command in the hook input; allowed" };
   const verdict = check(command);
@@ -1210,4 +1368,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { check, checkBackground, hookDecision, refusal, lex, bodyExpands, maskPieces, DEFAULT_BUDGET_MS, MESSAGE_COMMANDS, FLAG_COMMANDS };
+module.exports = { check, checkBackground, checkReplCode, hookDecision, refusal, lex, bodyExpands, maskPieces, DEFAULT_BUDGET_MS, MESSAGE_COMMANDS, FLAG_COMMANDS };

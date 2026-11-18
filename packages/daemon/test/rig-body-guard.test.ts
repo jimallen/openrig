@@ -625,11 +625,11 @@ describe("wiring", () => {
     hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string; timeout?: number; async?: boolean }> }>>;
   };
 
-  it("claude.json runs the guard as a blocking PreToolUse hook on Bash only", () => {
+  it("claude.json runs the guard as a blocking PreToolUse hook on Bash and Code Mode's REPL tool only (o9o.131)", () => {
     const groups = claudeHooks.hooks["PreToolUse"] ?? [];
     const mine = groups.filter((g) => g.hooks.some((h) => h.command.includes("rig-body-guard.cjs")));
     expect(mine).toHaveLength(1);
-    expect(mine[0]!.matcher).toBe("Bash");
+    expect(mine[0]!.matcher).toBe("Bash|REPL");
     expect(mine[0]!.hooks).toHaveLength(1);
     const h = mine[0]!.hooks[0]!;
     expect(h.type).toBe("command");
