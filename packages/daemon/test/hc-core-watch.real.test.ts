@@ -101,7 +101,10 @@ describe.skipIf(!HC)("HcCoreWatch against a private hc core", () => {
     expect((await probeCore(core.socketPath)).state).toBe("stale_socket");  // nothing restarted it
     await startCoreWithCli({ env: core.env })();
     const after = await probeCore(core.socketPath);
-    expect(after).toMatchObject({ state: "present", hello: { generation: 1, core: { id: before.state === "present" ? before.hello.core.id : "?" } } });
+    // The real hc names its core; an id-less answer would make this comparison say nothing, so it fails here instead.
+    const beforeId = before.state === "present" ? before.hello.core?.id : undefined;
+    expect(beforeId).toEqual(expect.any(String));
+    expect(after).toMatchObject({ state: "present", hello: { generation: 1, core: { id: beforeId } } });
     const terminal = await core.client.call<HcTerminal>("terminal.get", { terminal: seat.address });
     expect(terminal).toMatchObject({ state: "live", pid: seat.pid, screen: "inexact" });
   });

@@ -38,7 +38,9 @@ export class HcError extends Error {
 export interface HcHello {
   generation: number;
   version: string;
-  core: { id: string; name: string };
+  /** Which core answered. An older hc leaves out the id, or the whole object (o9o.165 verify-sec F4; workspaces-87f): every reader
+   *  handles both, and a pin on the id cannot be judged without one. */
+  core?: { id?: string; name?: string };
   framed: boolean;
   methods: string[];
   features: string[];

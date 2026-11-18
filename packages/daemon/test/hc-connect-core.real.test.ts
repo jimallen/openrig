@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type { HcHello } from "../src/adapters/hc-client.js";
 import { HcCoreRefusedError, connectHcCore } from "../src/adapters/hc-core-watch.js";
 import { HC, PrivateCore } from "./helpers/hc-private-core.js";
 import { hcServerUntilUp } from "./helpers/hc-scratch.js";
@@ -51,16 +52,22 @@ describe.skipIf(!HC)("connectHcCore judges the core by this instance's state dir
     for (const d of ["h", "s"]) mkdirSync(join(core.root, name, d), { recursive: true, mode: 0o700 });
     return { ...core.env, HOME: join(core.root, name, "h"), XDG_STATE_HOME: join(core.root, name, "s") };
   };
+  /** The real hc names its core; these rows compare ids, so a core that sends none fails here rather than comparing nothing. */
+  const idOf = (hello: HcHello): string => {
+    const id = hello.core?.id;
+    if (id === undefined) throw new Error("the real hc core sent no core id; these rows need one");
+    return id;
+  };
   let ownId = "";
   let foreignId = "";
   let foreignEnv: NodeJS.ProcessEnv = {};
   beforeAll(async () => {
     core.start();
-    ownId = (await core.client.hello()).core.id;  // this instance's state dir now names ownId
+    ownId = idOf(await core.client.hello());  // this instance's state dir now names ownId
     spawnSync(HC, ["server", "stop"], { env: core.env, stdio: "ignore" });
     foreignEnv = other("foreign");  // another HOME and state dir, the same runtime dir and session: the same socket
     hcServerUntilUp(HC, foreignEnv, "start");
-    foreignId = (await core.client.hello()).core.id;
+    foreignId = idOf(await core.client.hello());
   });
   afterAll(() => core.stop());
 
