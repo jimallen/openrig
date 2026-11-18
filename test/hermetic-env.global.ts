@@ -40,7 +40,21 @@ export function setup(): void {
   createHcScratchRegistry(process.env, os.tmpdir());
 }
 
+/**
+ * workspaces-o9o.150: vitest 4 prints an error a global teardown throws ("error during close") but no longer fails the run for
+ * it. So ANY failure here sets the exit code before it is rethrown: a leaked root, and equally a registry the scan cannot read
+ * or parse (fail closed, as the tripwire itself does). The throw still prints what failed.
+ */
 export function teardown(): void {
+  try {
+    teardownOnce();
+  } catch (error) {
+    process.exitCode = 1;
+    throw error;
+  }
+}
+
+function teardownOnce(): void {
   // Read what the hc part needs first: the fixture part below may return early or clear the shared variables.
   const hcRegistry = ownsHcScratchRegistry() ? process.env[HC_SCRATCH_REGISTRY_ENV]! : null;
   try {
@@ -59,12 +73,8 @@ export function teardown(): void {
   } finally {
     try { fs.rmSync(hcRegistry, { recursive: true, force: true }); } catch { /* best effort */ }
   }
-  if (leaked.length > 0) {
-    // workspaces-o9o.150: vitest 4 prints an error a global teardown throws ("error during close") but no longer fails the run for
-    // it, so the exit code is set here; the throw still prints which roots were left and which test asked for them.
-    process.exitCode = 1;
-    throw new Error(describeLeak(leaked));
-  }
+  // teardown() sets the exit code for this throw; the message names which roots were left and which test asked for them.
+  if (leaked.length > 0) throw new Error(describeLeak(leaked));
 }
 
 function removeFixtureHomes(): void {

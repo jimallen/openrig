@@ -242,6 +242,21 @@ describe("hc scratch tripwire: the run fails (real vitest)", () => {
     expect(child.status, output).not.toBe(0);
   }, 180_000);
 
+  // workspaces-o9o.150 (verify-qa2 review): a run whose own registry cannot be read is not a clean run. The scan throws
+  // (ENOENT); vitest 4 only logs a teardown throw, so the teardown must set the exit code for that failure too (fail closed).
+  it("a run whose own hc registry cannot be read fails closed, naming the error", () => {
+    const base = mkdtempSync(join(tmpdir(), "tripwire-run-"));
+    try {
+      const child = childVitest(null, {
+        OPENRIG_HC_TRIPWIRE_PROBE_BASE: base, OPENRIG_HC_TRIPWIRE_PROBE_CLEANS: "1", OPENRIG_HC_TRIPWIRE_PROBE_BREAK_REGISTRY: "1",
+      });
+      const output = `${child.stdout}\n${child.stderr}`;
+      expect(output).toMatch(/1 passed/); // the probe itself ran green: only the teardown can fail this run
+      expect(output).toContain("ENOENT");
+      expect(child.status, output).not.toBe(0);
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  }, 180_000);
+
   it("the same probe that cleans up after itself leaves the run green", () => {
     const { child, output, left } = run(true);
     expect(left).toBe(false);

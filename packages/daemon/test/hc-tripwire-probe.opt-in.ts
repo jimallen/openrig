@@ -6,7 +6,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { it } from "vitest";
-import { registerHcScratchRoot } from "../../../test/hc-scratch-tripwire.js";
+import { HC_SCRATCH_REGISTRY_ENV, registerHcScratchRoot } from "../../../test/hc-scratch-tripwire.js";
 
 it("hc tripwire probe: leaves a scratch root behind unless told to clean it", () => {
   const base = process.env.OPENRIG_HC_TRIPWIRE_PROBE_BASE;
@@ -15,4 +15,10 @@ it("hc tripwire probe: leaves a scratch root behind unless told to clean it", ()
   mkdirSync(root);
   registerHcScratchRoot(root, "hc-tripwire-probe.opt-in.ts probe");
   if (process.env.OPENRIG_HC_TRIPWIRE_PROBE_CLEANS === "1") rmSync(root, { recursive: true, force: true });
+  // workspaces-o9o.150 (verify-qa2): remove the run's own registry, so the end-of-run scan cannot read it.
+  if (process.env.OPENRIG_HC_TRIPWIRE_PROBE_BREAK_REGISTRY === "1") {
+    const registry = process.env[HC_SCRATCH_REGISTRY_ENV];
+    if (!registry) throw new Error("hc tripwire probe: the child run has no hc scratch registry to remove");
+    rmSync(registry, { recursive: true, force: true });
+  }
 });
