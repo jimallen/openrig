@@ -7,6 +7,9 @@
 //
 // Usage: tsx twin/capture/a11y-scan.ts --out <dir> [--chrome <binary>] [--no-sandbox] [--only <surface id>[,<id>...]]
 //   [--start-timeout-ms <ms>]  how long Chrome has to start and answer the DevTools protocol (default 20000).
+//   [--surface-timeout-ms <ms>]  how long one surface's scan in one theme may take (default 120000); past it, that scan is a
+//   named failure and the run goes on (workspaces-o9o.184: a hang now names its surface instead of stalling the run).
+//   [--build-timeout-ms <ms>]  how long one twin:build may take (default 600000), the same way.
 //   --no-sandbox: pass it where Chrome cannot use its sandbox (a host with unprivileged user namespaces disabled, e.g.
 //   Ubuntu 23.10+). The page is the twin's own file:// build.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -39,9 +42,15 @@ function parseArgs(argv: string[]) {
     if (next !== undefined && !next.startsWith("--")) { out[a.slice(2)] = next; i++; } else { out[a.slice(2)] = ""; }
   }
   if (!out["out"]) fail("missing required flag --out <dir>");
-  const startTimeoutMs = out["start-timeout-ms"] ? Number(out["start-timeout-ms"]) : 20_000;
-  if (!Number.isInteger(startTimeoutMs) || startTimeoutMs <= 0) fail("--start-timeout-ms must be a positive integer");
-  return { out: path.resolve(out["out"]), chrome: out["chrome"] || undefined, noSandbox: "no-sandbox" in out, only: out["only"] ? out["only"].split(",") : null, startTimeoutMs };
+  const ms = (flag: string, fallback: number): number => {
+    const v = out[flag] ? Number(out[flag]) : fallback;
+    if (!Number.isInteger(v) || v <= 0) fail(`--${flag} must be a positive integer`);
+    return v;
+  };
+  return {
+    out: path.resolve(out["out"]), chrome: out["chrome"] || undefined, noSandbox: "no-sandbox" in out, only: out["only"] ? out["only"].split(",") : null,
+    startTimeoutMs: ms("start-timeout-ms", 20_000), surfaceTimeoutMs: ms("surface-timeout-ms", 120_000), buildTimeoutMs: ms("build-timeout-ms", 600_000),
+  };
 }
 
 /** The same lookup as twin-capture.ts: --chrome, CHROME_BIN, the macOS apps, then PATH. */
@@ -93,7 +102,35 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
 }
 
 /** What the scan created outside itself: filled in as each is created, so cleanup sees it even when start-up fails. */
-interface Held { proc?: ChildProcess; profile?: string }
+interface Held { proc?: ChildProcess; profile?: string; reaper?: ChildProcess }
+
+/**
+ * workspaces-o9o.184: the owner-death reaper. A detached shell that outlives this scanner (its own session, so a stop of the
+ * scanner's process tree does not take it), watches the scanner's pid AND start time (a reused pid is not the scanner), and
+ * when the scanner is gone stops Chrome itself (its pid and start time, recorded at launch) and every process whose arguments
+ * hold the profile path (Chrome's helpers), TERM then KILL, and removes the profile. The path is a fresh mkdtemp, so it names this scan's Chrome only; it reaches the watchdog through
+ * its environment, so the watchdog's own arguments never match it. ps and kill only: Linux and macOS alike.
+ */
+const REAPER = String.raw`owner=$1; chrome=$2; start=$(ps -o lstart= -p "$owner" 2>/dev/null); cstart=$(ps -o lstart= -p "$chrome" 2>/dev/null)
+[ -n "$start" ] || exit 0
+while [ "$(ps -o lstart= -p "$owner" 2>/dev/null)" = "$start" ]; do sleep 1; done
+for sig in TERM KILL; do
+  pids=$(ps -axo pid=,args= | while read -r pid args; do case $args in *"$TWIN_A11Y_PROFILE"*) echo "$pid" ;; esac; done)
+  if [ -n "$cstart" ] && [ "$(ps -o lstart= -p "$chrome" 2>/dev/null)" = "$cstart" ]; then pids="$pids $chrome"; fi
+  [ -n "$pids" ] || break
+  kill -$sig $pids 2>/dev/null
+  sleep 2
+done
+rm -rf "$TWIN_A11Y_PROFILE"`;
+
+/** The pids of processes whose arguments hold `profile` (this scan's Chrome and its helpers), from ps. */
+function holdersOf(profile: string): number[] {
+  const out = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).stdout ?? "";
+  return out.split("\n").flatMap((line) => {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    return m && m[2]!.includes(profile) && Number(m[1]) !== process.pid ? [Number(m[1])] : [];
+  });
+}
 
 /** Start Chrome and return its DevTools URL. The profile and the process are recorded in `held` the moment they exist. */
 async function launch(chrome: string, noSandbox: boolean, timeoutMs: number, held: Held): Promise<string> {
@@ -101,6 +138,13 @@ async function launch(chrome: string, noSandbox: boolean, timeoutMs: number, hel
   const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${held.profile}`, "--no-first-run", ...(noSandbox ? ["--no-sandbox"] : []), "about:blank"];
   const proc = spawn(chrome, args, { stdio: ["ignore", "ignore", "pipe"] });
   held.proc = proc;
+  // Armed in the same tick Chrome is spawned (nothing awaited in between), with Chrome's own pid: from here on, this scanner
+  // dying cannot leave Chrome, its helpers or the profile behind, even a Chrome whose arguments no longer show the profile.
+  const reaper = spawn("/bin/sh", ["-c", REAPER, "twin-a11y-reaper", String(process.pid), String(proc.pid ?? 0)], {
+    detached: true, stdio: "ignore", env: { ...process.env, TWIN_A11Y_PROFILE: held.profile },
+  });
+  reaper.unref();
+  held.reaper = reaper;
   return withTimeout(new Promise<string>((resolve, reject) => {
     let buf = "";
     proc.stderr!.on("data", (d: Buffer) => { buf += d.toString(); const m = /DevTools listening on (ws:\/\/\S+)/.exec(buf); if (m) resolve(m[1]!); });
@@ -109,7 +153,11 @@ async function launch(chrome: string, noSandbox: boolean, timeoutMs: number, hel
   }), timeoutMs, `chrome did not start within ${timeoutMs} ms`);
 }
 
-/** Stop Chrome (TERM, then KILL after 5 s) and only then remove its profile: Chrome writes to the profile until it exits. */
+/**
+ * Stop Chrome (TERM, then KILL after 5 s), then any helper still holding the profile (o9o.184: a helper can outlive the main
+ * process and keep writing), and only then remove the profile. A profile that still cannot be removed is a warning naming
+ * it, not a failure: the scan's result stands. Last, the reaper is stopped: nothing is left for it to do.
+ */
 async function release(held: Held): Promise<void> {
   const proc = held.proc;
   if (proc && proc.exitCode === null && proc.signalCode === null) {
@@ -119,7 +167,20 @@ async function release(held: Held): Promise<void> {
       proc.kill("SIGTERM");
     });
   }
-  if (held.profile) rmSync(held.profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  if (held.profile) {
+    for (const sig of ["SIGTERM", "SIGKILL"] as const) {
+      const pids = holdersOf(held.profile);
+      if (pids.length === 0) break;
+      for (const pid of pids) { try { process.kill(pid, sig); } catch { /* gone */ } }
+      await sleep(1000);
+    }
+    try {
+      rmSync(held.profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (e) {
+      process.stderr.write(`twin:a11y warning — could not remove the Chrome profile ${held.profile}: ${(e as Error).message}\n`);
+    }
+  }
+  if (held.reaper && held.reaper.exitCode === null) { try { held.reaper.kill("SIGKILL"); } catch { /* gone */ } }
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -201,12 +262,21 @@ async function main() {
     let built = "";
     for (const surface of surfaces) {
       if (surface.route !== built) {
-        const b = spawnSync("npm", ["run", "twin:build"], { cwd: UI_DIR, env: { ...process.env, TWIN_ROUTE: surface.route }, encoding: "utf8" });
-        if (b.status !== 0) { for (const theme of THEMES) records.push({ surface: surface.id, theme, ok: false, error: `twin:build failed (${b.status})` }); built = ""; continue; }
+        const b = spawnSync("npm", ["run", "twin:build"], { cwd: UI_DIR, env: { ...process.env, TWIN_ROUTE: surface.route }, encoding: "utf8", timeout: args.buildTimeoutMs, killSignal: "SIGKILL" });
+        if (b.status !== 0) {
+          const why = (b.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ? `twin:build timed out after ${args.buildTimeoutMs} ms` : `twin:build failed (${b.status})`;
+          for (const theme of THEMES) {
+            records.push({ surface: surface.id, theme, ok: false, error: why });
+            process.stdout.write(`FAILED: ${why}  ${surface.id} [${theme}]\n`);
+          }
+          built = "";
+          continue;
+        }
         built = surface.route;
       }
       for (const theme of THEMES) {
-        const r = await scanOne(cdp, surface, theme, axeSource);
+        const r = await withTimeout(scanOne(cdp, surface, theme, axeSource), args.surfaceTimeoutMs, `timed out after ${args.surfaceTimeoutMs} ms`)
+          .catch((e: Error): ScanRecord => ({ surface: surface.id, theme, ok: false, error: e.message }));
         records.push(r);
         process.stdout.write(`${r.ok ? `${r.violations.length} rule(s)` : `FAILED: ${r.error}`}  ${surface.id} [${theme}]\n`);
       }
@@ -223,4 +293,6 @@ async function main() {
   }
 }
 
-main().catch((e: unknown) => fail((e as Error).message));
+// workspaces-o9o.184: exit once main is done (the report written, cleanup awaited). A DevTools peer that never completes the
+// WebSocket close, or a scan still pending past its timeout, must not keep the scanner alive after its work.
+main().then(() => process.exit(process.exitCode ?? 0), (e: unknown) => fail((e as Error).message));
