@@ -9,27 +9,35 @@ import path from "node:path";
 import { createControlSocket, describeState } from "../src/socket-server.js";
 import { createViewState } from "../src/state.js";
 import { demoSnapshot } from "../src/demo-data.js";
+import { describeView, utf8Bytes, VIEW_DIGEST_LIMITS, VIEW_REPLY_MAX_BYTES } from "../src/observe/view-digest.js";
 import type { FleetSnapshot, LoadState } from "../src/types.js";
 
-async function query(sockPath: string, line: string): Promise<Record<string, unknown>> {
+/** The reply line exactly as the socket wrote it, newline included, as bytes (never re-encoded through a JS string). */
+async function queryBytes(sockPath: string, line: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const conn = net.createConnection(sockPath, () => conn.write(line + "\n"));
-    let buf = "";
-    conn.on("data", (d) => {
-      buf += d.toString();
-      if (buf.includes("\n")) { conn.end(); resolve(JSON.parse(buf.slice(0, buf.indexOf("\n"))) as Record<string, unknown>); }
+    const chunks: Buffer[] = [];
+    conn.on("data", (d: Buffer) => {
+      chunks.push(d);
+      const all = Buffer.concat(chunks);
+      const nl = all.indexOf(0x0a);
+      if (nl >= 0) { conn.end(); resolve(all.subarray(0, nl + 1)); }
     });
     conn.on("error", reject);
   });
 }
 
+async function query(sockPath: string, line: string): Promise<Record<string, unknown>> {
+  return JSON.parse((await queryBytes(sockPath, line)).toString("utf8")) as Record<string, unknown>;
+}
+
 let n = 0;
-async function withSocket(snapshot: FleetSnapshot, load: LoadState | null, run: (q: (line: string) => Promise<Record<string, unknown>>, mutations: () => number, view: ReturnType<typeof createViewState>) => Promise<void>) {
-  const view = createViewState({ instanceId: "o9o172", getSnapshot: () => snapshot });
+async function withSocket(snapshot: FleetSnapshot, load: LoadState | null, run: (q: (line: string) => Promise<Record<string, unknown>>, mutations: () => number, view: ReturnType<typeof createViewState>, qBytes: (line: string) => Promise<Buffer>) => Promise<void>, instanceId = "o9o172") {
+  const view = createViewState({ instanceId, getSnapshot: () => snapshot });
   const sockPath = path.join(os.tmpdir(), `t-o9o172-${process.pid}-${n++}.sock`);
   let mutated = 0;
   const sock = await createControlSocket({ socketPath: sockPath, view, onMutation: () => { mutated++; }, observeView: () => ({ snapshot, load }) } as Parameters<typeof createControlSocket>[0]);
-  try { await run((line) => query(sockPath, line), () => mutated, view); } finally { await sock.close(); }
+  try { await run((line) => query(sockPath, line), () => mutated, view, (line) => queryBytes(sockPath, line)); } finally { await sock.close(); }
 }
 
 const rigCount = (s: FleetSnapshot) => s.hosts.reduce((total, h) => total + h.rigs.length, 0);
@@ -133,17 +141,94 @@ describe("the socket 'view' query (o9o.172)", () => {
     });
   });
 
-  it("the largest possible digest (every list full, every string at its cap) is under 1 MB", async () => {
+  // verify-qa2's second review: the bound is on the ENCODED reply. Measured on the bytes the socket wrote, at the maximum counts
+  // (600 rigs x 300 agents, 500 down hosts, every string far past its cap), with each worst-case filler: ASCII; CJK (3 bytes
+  // a character); NUL and a lone surrogate (JSON writes each as a 6-byte escape); an emoji (a surrogate pair, 4 bytes).
+  /** The stated bound, written out here so these rows measure bytes against it whatever the module exports. */
+  const REPLY_BOUND = 1_000_000;
+  const fillers: Array<[string, string]> = [["ASCII", "x"], ["CJK", "\u6f22"], ["NUL", "\u0000"], ["lone surrogate", "\ud800"], ["surrogate pair", "\ud83d\ude00"]];
+  it.each(fillers)("at the maximum counts with %s text, the whole reply line is at most 1,000,000 bytes and says truncated", async (_name, unit) => {
     const snapshot = demoSnapshot();
-    const s100 = "x".repeat(5000);
-    const agent = { ...snapshot.hosts[0]!.rigs[0]!.pods[0]!.agents[0]!, name: s100, session: s100, status: s100 };
-    snapshot.hosts = [{ ...snapshot.hosts[0]!, name: s100, rigs: Array.from({ length: 600 }, (_v, i) => ({ ...snapshot.hosts[0]!.rigs[0]!, id: s100, name: `${i}${s100}`,
+    const big = unit.repeat(5000);
+    const agent = { ...snapshot.hosts[0]!.rigs[0]!.pods[0]!.agents[0]!, name: big, session: big, status: big };
+    snapshot.hosts = [{ ...snapshot.hosts[0]!, name: big, rigs: Array.from({ length: 600 }, (_v, i) => ({ ...snapshot.hosts[0]!.rigs[0]!, id: big, name: `${i}${big}`,
+      inventoryNotLoaded: false, inventoryUnavailable: false,
       pods: [{ ...snapshot.hosts[0]!.rigs[0]!.pods[0]!, agents: Array.from({ length: 300 }, () => agent) }] })) }];
-    snapshot.hostsDown = Array.from({ length: 500 }, () => ({ hostId: s100, status: "unreachable" }));
-    await withSocket(snapshot, null, async (q) => {
-      const raw = JSON.stringify(await q("view"));
-      expect(raw.length).toBeLessThan(1_000_000);
+    snapshot.hostsDown = Array.from({ length: 500 }, () => ({ hostId: big, status: "unreachable" }));
+    await withSocket(snapshot, null, async (_q, _m, _v, qBytes) => {
+      const line = await qBytes("view");
+      expect(line.length).toBeLessThanOrEqual(REPLY_BOUND);
+      const view = (JSON.parse(line.toString("utf8")) as { view: { rigs: unknown[]; truncated: boolean; counts: { rigs: number } } }).view;
+      expect(view.truncated).toBe(true);
+      expect(view.rigs.length).toBeGreaterThan(0);
+      expect(view.counts.rigs).toBe(600);
     });
+  });
+
+  it("the bound covers the envelope too: with a 100,000-character instance id the whole line still fits", async () => {
+    const snapshot = demoSnapshot();
+    const big = "\u6f22".repeat(5000);
+    const agent = { ...snapshot.hosts[0]!.rigs[0]!.pods[0]!.agents[0]!, name: big, session: big, status: big };
+    snapshot.hosts = [{ ...snapshot.hosts[0]!, name: big, rigs: Array.from({ length: 600 }, (_v, i) => ({ ...snapshot.hosts[0]!.rigs[0]!, id: big, name: `${i}${big}`,
+      inventoryNotLoaded: false, inventoryUnavailable: false,
+      pods: [{ ...snapshot.hosts[0]!.rigs[0]!.pods[0]!, agents: Array.from({ length: 300 }, () => agent) }] })) }];
+    const instanceId = "i".repeat(100_000);
+    await withSocket(snapshot, null, async (_q, _m, _v, qBytes) => {
+      const line = await qBytes("view");
+      expect(line.length).toBeLessThanOrEqual(REPLY_BOUND);
+      expect((JSON.parse(line.toString("utf8")) as { instanceId: string }).instanceId).toBe(instanceId);
+    }, instanceId);
+  });
+
+  it("CONTROL: a reply that fits is not cut: the demo snapshot's digest is whole, untruncated, and far under the bound", async () => {
+    await withSocket(demoSnapshot(), null, async (_q, _m, _v, qBytes) => {
+      const line = await qBytes("view");
+      const view = (JSON.parse(line.toString("utf8")) as { view: { rigs: unknown[]; truncated: boolean; counts: { rigs: number } } }).view;
+      expect(view.truncated).toBe(false);
+      expect(view.rigs).toHaveLength(view.counts.rigs);
+      expect(line.length).toBeLessThan(REPLY_BOUND / 10);
+    });
+  });
+
+  it("agent detail goes before rig rows: every rig keeps its row and its whole agentCount while agent lists are cut", async () => {
+    const snapshot = demoSnapshot();
+    const cjk = "\u6f22".repeat(5000);
+    const template = snapshot.hosts[0]!.rigs[0]!;
+    const agent = { ...template.pods[0]!.agents[0]!, name: cjk, session: cjk, status: cjk };
+    snapshot.hosts = [{ ...snapshot.hosts[0]!, rigs: Array.from({ length: 40 }, (_v, i) => ({ ...template, name: `rig-${i}`, inventoryNotLoaded: false, inventoryUnavailable: false,
+      pods: [{ ...template.pods[0]!, agents: Array.from({ length: 50 }, () => agent) }] })) }];
+    snapshot.hostsDown = [];
+    await withSocket(snapshot, null, async (_q, _m, _v, qBytes) => {
+      const line = await qBytes("view");
+      expect(line.length).toBeLessThanOrEqual(REPLY_BOUND);
+      const view = (JSON.parse(line.toString("utf8")) as { view: { rigs: Array<{ name: string; agentCount: number; agents: unknown[] }>; truncated: boolean } }).view;
+      expect(view.truncated).toBe(true);
+      expect(view.rigs.map((r) => r.name)).toEqual(Array.from({ length: 40 }, (_v, i) => `rig-${i}`));
+      expect(view.rigs.every((r) => r.agentCount === 50)).toBe(true);
+      expect(view.rigs.reduce((n, r) => n + r.agents.length, 0)).toBeLessThan(2000);
+      // Cut from the last rig back: the first rig keeps its whole capped list.
+      expect(view.rigs[0]!.agents).toHaveLength(50);
+    });
+  });
+
+  it("a cap never splits a surrogate pair (a lone half is a 6-byte escape and not text)", () => {
+    const snapshot = demoSnapshot();
+    snapshot.hosts[0]!.rigs[0]!.name = "a".repeat(99) + "\ud83d\ude00".repeat(10);
+    const name = describeView({ snapshot, load: null }).rigs[0]!.name;
+    expect(name).toBe("a".repeat(99));
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(name)).toBe(false);
+  });
+
+  it("utf8Bytes counts what the socket writes, and describeView honours a byte budget it is handed", () => {
+    expect(VIEW_REPLY_MAX_BYTES).toBe(REPLY_BOUND);
+    for (const text of ["", "x", "\u00e9", "\u6f22", "\ud83d\ude00", "\ud800", "a\udc00b", JSON.stringify("\u0000\ud800\u6f22")]) {
+      expect(utf8Bytes(text), JSON.stringify(text)).toBe(Buffer.byteLength(text, "utf8"));
+    }
+    const full = Buffer.byteLength(JSON.stringify(describeView({ snapshot: demoSnapshot(), load: null })), "utf8");
+    const budget = Math.floor(full / 2);
+    const small = describeView({ snapshot: demoSnapshot(), load: null }, VIEW_DIGEST_LIMITS, budget);
+    expect(Buffer.byteLength(JSON.stringify(small), "utf8")).toBeLessThanOrEqual(budget);
+    expect(small.truncated).toBe(true);
   });
 
   it("is bounded: past 500 rigs the digest stops and says truncated", async () => {

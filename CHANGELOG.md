@@ -13,7 +13,7 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 ### The TUI says what world it is showing (workspaces-o9o.172)
 
 - Symptom: the TUI's control socket could say where the screen is (`state`) and which commands exist (`commands`), but not what it shows, so nothing could check that the TUI agrees with `rig ps` and `rig queue`.
-- Now a third read-only query, `view`, returns a digest of the world the TUI renders: every rig it holds, with its host and its agents (name, session, status), the hosts it could not read, and `readAt`, when it last confirmed its read. It carries names and status only (no pane text, paths or credentials), is bounded (500 rigs, 5000 agents, `truncated` past that), and never changes the view. Scenarios read it as the `tui_view` surface.
+- Now a third read-only query, `view`, returns a digest of the world the TUI renders: every rig it holds, with its host and its agents (name, session, status), the hosts it could not read, and `readAt`, when it last confirmed its read. It carries names and status only (no pane text, paths or credentials), is bounded (500 rigs, 200 agents a rig, 2000 agents, 100 down hosts, 100 characters a string, and the whole reply at 1,000,000 UTF-8 bytes, `truncated` when anything is cut), and never changes the view. Scenarios read it as the `tui_view` surface.
 
 ### A seat whose guard cannot run refuses kill commands, and `rig doctor` names it (workspaces-o9o.173)
 

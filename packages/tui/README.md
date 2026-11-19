@@ -77,8 +77,9 @@ reply per line, plus three read-only queries: `state` (where the screen is),
 `commands` (the command registry with live availability) and `view` (a digest of
 the world the TUI renders: every rig it holds with its host and agents, the hosts it
 could not read, and `readAt`, when it last confirmed its read; names and status
-only, no pane text, paths or credentials; bounded at 500 rigs and 5000 agents, with
-`truncated` past that). The read-only queries never change the view:
+only, no pane text, paths or credentials; capped at 500 rigs, 200 agents a rig, 2000
+agents, 100 down hosts and 100 characters a string, and the whole reply line at
+1,000,000 UTF-8 bytes, with `truncated` when anything is cut). The read-only queries never change the view:
 
     printf 'agent dev.impl\n' | nc -U ~/.openrig/run/tui-tui-1.sock
 

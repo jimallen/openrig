@@ -10,7 +10,7 @@
 //      ACT/PRODUCE verb lands here because the socket is an API. Any extension
 //      crossing either line routes to arch-lead BEFORE building.
 // The only non-grammar verb is "state" — a read-only state query (OBSERVE).
-import { describeView } from "./observe/view-digest.js";
+import { describeView, utf8Bytes, VIEW_DIGEST_LIMITS, VIEW_REPLY_MAX_BYTES } from "./observe/view-digest.js";
 import type { FleetSnapshot, LoadState } from "./types.js";
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
@@ -220,9 +220,11 @@ async function createReservedControlSocket(options: ControlSocketOptions): Promi
         // it never reaches the dispatch below and never calls onMutation. A TUI started without the port answers ok:false, not a view.
         if (line === "view") {
           const observed = options.observeView?.();
+          // The bound is on the whole encoded line (verify-qa2): the digest gets VIEW_REPLY_MAX_BYTES less this envelope's own bytes.
+          const envelopeBytes = utf8Bytes(JSON.stringify({ ok: true, instanceId: view.instanceId, view: null })) - "null".length + "\n".length;
           conn.write(
             JSON.stringify(observed
-              ? { ok: true, instanceId: view.instanceId, view: describeView(observed) }
+              ? { ok: true, instanceId: view.instanceId, view: describeView(observed, VIEW_DIGEST_LIMITS, VIEW_REPLY_MAX_BYTES - envelopeBytes) }
               : { ok: false, instanceId: view.instanceId, error: "this TUI does not observe a snapshot" }) + "\n",
           );
           continue;
