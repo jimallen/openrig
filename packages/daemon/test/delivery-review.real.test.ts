@@ -531,6 +531,21 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   });
 
   describe("a long message: a short paste, and the gate hook adds its text", () => {
+    // workspaces-9hy: hc's send watches for the turn a prompt starts. A stub that never reports one makes every send in this file wait out hc's
+    // start window after the agent already has the text, which took ~5 s of an 8 s wait for a long message's second part. The start comes only
+    // once the stub has logged the copy, so when the send returns the log already holds it: the rows that count copies once a message is received rely on that.
+    for (const [runtime, flags] of [["codex", []], ["claude-code", []], ["codex", ["hook-crash"]]] as const) {
+      it(`${runtime}${flags.length ? ` (${flags.join(", ")})` : ""}: the stub agent starts a turn on the prompt it takes, after logging it, so hc's send sees it start`, async () => {
+        const s = fixture([...flags], runtime); await s.launch();
+        const sent = await core.client.call<{ started?: boolean | null }>("terminal.send", { terminal: s.address, text: `hello\n[openrig-msg p1:${"a".repeat(16)}]` });
+        expect(sent.started).toBe(true);
+        expect(agent(s, "p1")).toHaveLength(1);
+        // and the agent's own record of the turn: the rollout's user message, or the transcript's taken record (its queue record comes earlier)
+        const [file, taken] = runtime === "codex" ? ["rollout.jsonl", '"role": "user"'] : ["transcript.jsonl", '"type": "user"'];
+        expect(readFileSync(join(s.dir, file), "utf8")).toContain(taken);
+      }, 40_000);
+    }
+
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
     const context = (s: F, id: string) => s.log().filter((l) => l.startsWith(`context ${id} `));
     const spoolFiles = (s: F) => (existsSync(join(s.gateDir, "spool")) ? readdirSync(join(s.gateDir, "spool")) : []);

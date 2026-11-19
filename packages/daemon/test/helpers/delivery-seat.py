@@ -98,6 +98,7 @@ def submit():
                 f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}}) + "\n")
         else:
             taken(prompt)
+        status(b"working")
         composer = b""
         return
     pause_shim = None
@@ -135,6 +136,11 @@ def submit():
             f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": composer.decode()}]}}) + "\n")
     else:
         taken(prompt)
+    # The agent's turn starts, as a real agent's does when it takes a prompt: hc's send watches for that start, and a stub that never reports it
+    # makes every send wait out hc's start window (~5 s, measured) after the agent already has the text (workspaces-9hy). Reported only once
+    # everything the agent got is recorded (seat.log, rollout, transcript), so a send returns only after that: rows that read those once a message
+    # is received rely on it.
+    status(b"working")
     composer = b""
 hook({"hook_event_name": "SessionStart", "source": "startup", "session_id": "s-1", "transcript_path": transcript})
 status(b"idle")
