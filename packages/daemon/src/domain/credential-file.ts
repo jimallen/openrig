@@ -34,9 +34,7 @@ export type CredentialFileProblem =
   | "group_or_other_write" | "too_large" | "unreadable";
 
 export type CredentialFileRead =
-  /** `mode`: the permission bits of the file judged and read, from its own descriptor (o9o.182, verify-sec2: the write half keeps it;
-   *  re-stating the path instead would read a link swapped in after the read). Set by the procedure; a test double may leave it out. */
-  | { ok: true; content: string; mode?: number }
+  | { ok: true; content: string }
   | { ok: false; problem: CredentialFileProblem; message: string };
 
 /** The outbound port: read one credential file under a policy, or judge it without reading it. Never throws for a file problem;
@@ -247,6 +245,13 @@ function resolveLinkedTarget(ops: CredentialFileOps, path: string, policy: Crede
 
 /** Read `path` under `policy` with `ops`. Never throws for a file problem: a refusal names the file and the fix. */
 export function readCredentialFileWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): CredentialFileRead {
+  const read = readJudgedWith(ops, path, policy);
+  return read.ok ? { ok: true, content: read.content } : read;
+}
+
+/** readCredentialFileWith, also giving the permission bits of the file judged and read, from its own descriptor (o9o.182, verify-sec2:
+ *  the write half keeps them; re-stating the path instead would read a link swapped in after the read). Internal to this rule. */
+function readJudgedWith(ops: CredentialFileOps, path: string, policy: CredentialFilePolicy): { ok: true; content: string; mode: number } | Refusal {
   const resolved = resolveLinkedTarget(ops, path, policy);
   if ("problem" in resolved) return refusal(path, policy, resolved.problem);
   let fd: number;
@@ -415,12 +420,12 @@ export function rewriteGuardedFileWith(
       const narrowed = narrowOwnFileWith(ops, target, judged);
       if (narrowed) return relabel(narrowed);
     }
-    const read = readCredentialFileWith(ops, target, judged);
+    const read = readJudgedWith(ops, target, judged);
     if (!read.ok) return relabel(read);
     current = read.content;
     // The mode of the file judged and read, from its own descriptor: the path is never asked again (verify-sec2, o9o.182: a link swapped
     // in after the read made a re-stat of the path publish the replacement at the link's 0777).
-    mode = (read.mode ?? before.mode) & 0o7777;
+    mode = read.mode;
   }
   const next = mutate(current);
   if (next === null || (next === current && !options.rewriteUnchanged)) return { ok: true, written: false, path: target };
