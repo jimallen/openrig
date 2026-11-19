@@ -461,3 +461,31 @@ describe("placement: deny checks hold under any spelling of the path (re-check R
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 });
+
+// workspaces-o9o.182 (from o9o.160's classification, row 435): codexConfigServerNames reports a config.toml that will not parse by the
+// FIRST line of smol-toml's message only. smol-toml's full message quotes the offending line of the file (a value there could be anything
+// the operator keeps in it), and its first line is the summary. Pinned here, so a change in smol-toml's layout, or a cut that keeps more,
+// fails instead of carrying file text into an error that reaches a log.
+describe("codexConfigServerNames reports a config it cannot parse without the file's text", () => {
+  it("keeps the file and the parse summary, never the offending line's text", async () => {
+    const { codexConfigServerNames } = await import("../src/domain/codex-mcp-servers.js");
+    const dir = mkdtempSync(join(tmpdir(), "o182-mcp-names-"));
+    try {
+      const file = join(dir, "config.toml");
+      const marker = "o182-file-text-marker";
+      writeFileSync(file, `[mcp_servers.exa]\nurl = "https://example.invalid"\nbroken = ${marker} ${marker}\n`);
+      // Positive control: smol-toml's own full message does carry the file's text, so the assertion below can fail.
+      let raw = "";
+      try { parseToml(readFileSync(file, "utf-8")); } catch (err) { raw = (err as Error).message; }
+      expect(raw).toContain(marker);
+      const result = codexConfigServerNames([file]);
+      expect(result.ok).toBe(false);
+      const error = result.ok ? "" : result.error;
+      expect(error).toContain(file);
+      expect(error).not.toContain(marker);
+      expect(error).not.toContain("\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

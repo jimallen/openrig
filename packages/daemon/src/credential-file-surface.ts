@@ -2,9 +2,11 @@
 // or hosts registry file, for the CLI. Every module reached from here imports only Node builtins and each other;
 // credential-file-surface.test.ts pins that.
 export { inspectCredentialFile, readCredentialFile, readOwnFile, nodeCredentialFileReader, type CredentialFileReadOptions } from "./adapters/node-credential-file-reader.js";
+// workspaces-o9o.182: and the rule's write half, for a read-modify-write of a credential-adjacent file.
+export { rewriteGuardedFile, type GuardedRewriteOptions, type GuardedRewriteResult } from "./adapters/guarded-rewrite.js";
 export {
   ACTIVITY_ENDPOINT_POLICY, ACTIVITY_HOOK_TOKEN_POLICY, BEARER_FILE_POLICY, CODEX_AUTH_POLICY, CODEX_CONFIG_POLICY, DAEMON_STATE_POLICY,
-  HOSTS_REGISTRY_POLICY, OPENRIG_CONFIG_POLICY, PI_AUTH_POLICY, SLACK_CONNECTOR_POLICY,
+  CLAUDE_MCP_POLICY, CLAUDE_SETTINGS_POLICY, CLAUDE_STATE_POLICY, CODEX_PROFILE_POLICY, CODEX_SEAT_REGISTRY_POLICY, HOST_BINDINGS_POLICY, HOSTS_REGISTRY_POLICY, OPENRIG_CONFIG_POLICY, PI_AUTH_POLICY, SLACK_CONNECTOR_POLICY,
   PI_MODELS_POLICY, SEAT_CREDENTIAL_LINKS, SLACK_SECRETS_POLICY, TERMINAL_TOKEN_POLICY, credentialFileRefusal, judgeOpenedCredentialFile,
   seatCredentialLinkPolicy, type SeatCredentialLink, type CredentialFileKind, type CredentialFilePolicy, type CredentialFileProblem, type CredentialFileRead, type CredentialFileReader,
 } from "./domain/credential-file.js";

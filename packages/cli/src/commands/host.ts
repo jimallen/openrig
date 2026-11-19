@@ -257,7 +257,14 @@ export async function doctorLegs(host: HostEntry, deps: DoctorDeps): Promise<Che
         const parsed = JSON.parse(health.body) as { selfHostId?: unknown };
         if (typeof parsed.selfHostId === "string" && parsed.selfHostId.length > 0) {
           const obs = deps.learnHostBinding(host.id, parsed.selfHostId);
-          rows.push(obs.outcome === "conflict"
+          rows.push(obs.outcome === "refused"
+            ? {
+                step: "host-identity-binding",
+                status: "fail",
+                detail: `host identity '${parsed.selfHostId}' was not recorded: ${obs.message}`,
+                fix: `fix ${defaultHostBindingsPath()} as the message says (or delete it to re-learn), then re-run doctor`,
+              }
+            : obs.outcome === "conflict"
             ? {
                 step: "host-identity-binding",
                 status: "fail",

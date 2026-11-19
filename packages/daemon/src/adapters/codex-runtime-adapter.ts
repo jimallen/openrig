@@ -34,6 +34,7 @@ import { codexHcPreflight, type CodexVersionDetector } from "./hc-runtime-requir
 import { CODEX_NETWORK_DEFAULT_OVERRIDE, codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
+import { CODEX_CONFIG_POLICY, type CredentialFilePolicy, type GuardedRewriteResult } from "../domain/credential-file.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexTeamWorkspace } from "../domain/codex-team-workspace.js";
 import { shellQuote } from "./shell-quote.js";
@@ -97,6 +98,10 @@ export interface CodexAdapterFsOps {
   /** workspaces-o9o.76: write `content` to `path` atomically (a sibling temp file renamed over it) with permission bits `mode`. Absent: the
    *  record of the relay path is not written, and the openrig-core plugin's own relay keeps running beside OpenRig's (fails open). */
   writeFileAtomic?(path: string, content: string, mode: number): void;
+  /** workspaces-o9o.182: read-modify-write a credential-adjacent file under the credential rule (adapters/guarded-rewrite.ts): the file is
+   *  judged before it is changed, a refused one is left as it is, and the write never goes through a link. The daemon wires it
+   *  (startup.ts, pinned by a census row); an in-memory fixture without it keeps the plain read and write. */
+  rewriteGuarded?(path: string, policy: CredentialFilePolicy, mutate: (current: string | null) => string | null, options?: { rewriteUnchanged?: boolean }): GuardedRewriteResult;
 }
 
 /** workspaces-o9o.76: under OPENRIG_HOME, the exact relay path OpenRig wrote into a Codex config.toml's managed block. The openrig-core
@@ -243,12 +248,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (isCodex013xOrLater(opts.codexVersion)) return;
     const configPath = this.resolveCodexConfigPath();
     if (!this.mayChangeConfig(configPath)) return;
-    const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
-    const updated = upsertCodexHooksFeature(existing);
-    if (updated !== existing) {
-      this.fs.mkdirp(nodePath.dirname(configPath));
-      this.fs.writeFile(configPath, updated);
-    }
+    this.rewriteConfig(configPath, (existing) => upsertCodexHooksFeature(existing ?? ""));
   }
 
   /**
@@ -282,12 +282,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
     const configPath = this.resolveCodexConfigPath();
     if (!this.mayChangeConfig(configPath)) return;
-    const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
-    const withHooks = upsertCodexActivityHooks(existing, relay, this.recordedManagedRelay());
-    if (withHooks !== existing) {
-      this.fs.mkdirp(nodePath.dirname(configPath));
-      this.fs.writeFile(configPath, withHooks);
-    }
+    const recorded = this.recordedManagedRelay();
+    // A config the credential rule refuses is left as it is, and so is the trust below: nothing is written, nothing is recorded.
+    if (!this.rewriteConfig(configPath, (existing) => upsertCodexActivityHooks(existing ?? "", relay, recorded))) return;
     // OPR.0.4.3.33 hook-trust-autoclear — pre-write Codex's OWN hook trust record
     // ([hooks.state."<key>"] trusted_hash) for exactly our 4 authored hooks, on the SAME
     // seam that provisions them, so the daemon's unmanaged inline hooks are trusted from
@@ -295,11 +292,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // — without a blanket native trust keystroke. If native identity/hash semantics
     // change, the remaining review is surfaced for a decision. Idempotent
     // + non-clobbering; only touches our 4 keys. See applyCodexActivityHookTrust for the RTFM.
-    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath);
-    if (trusted !== withHooks) {
-      this.fs.mkdirp(nodePath.dirname(configPath));
-      this.fs.writeFile(configPath, trusted);
-    }
+    if (!this.rewriteConfig(configPath, (withHooks) => this.applyCodexActivityHookTrust(withHooks ?? "", configPath))) return;
     this.recordManagedRelay(relay);
   }
 
@@ -371,12 +364,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   removeCodexActivityHooks(): void {
     const configPath = this.resolveCodexConfigPath();
     if (!this.mayChangeConfig(configPath)) return;
-    if (!this.fs.exists(configPath)) return;
-    const existing = this.fs.readFile(configPath);
-    const updated = stripCodexActivityHooks(existing, this.activityRelayPath ?? null, this.recordedManagedRelay());
-    if (updated !== existing) {
-      this.fs.writeFile(configPath, updated);
-    }
+    const recorded = this.recordedManagedRelay();
+    // Nothing to strip from a config that is not there (null: no file is created).
+    if (!this.rewriteConfig(configPath, (existing) => (existing === null ? null : stripCodexActivityHooks(existing, this.activityRelayPath ?? null, recorded)))) return;
     this.recordManagedRelay(null);
   }
 
@@ -918,9 +908,6 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       this.logRefusedConfigWrite(configPath, decision.reason);
       return "refused";
     }
-    this.fs.mkdirp(nodePath.dirname(configPath));
-
-    const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
     const fragment = this.fs.readFile(entry.absolutePath);
     // Before anything is dropped: a fragment that is invalid on its own must
     // fail loudly, never be "resolved" by the collision filter deleting it.
@@ -928,9 +915,16 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // Ordered after the parse: an unparseable fragment gets the TOML error that
     // names its line and column, not a root-scope complaint about wreckage.
     assertFragmentOpensWithTable(fragment, entry.absolutePath, entry.effectiveId);
-    const rendered = upsertManagedCodexConfigFragment(existing, entry.effectiveId, fragment);
-    assertRendersAsLoadableToml(rendered, configPath, entry.effectiveId);
-    this.fs.writeFile(configPath, rendered);
+    const refusal: string[] = [];
+    const written = this.rewriteConfig(configPath, (existing) => {
+      const rendered = upsertManagedCodexConfigFragment(existing ?? "", entry.effectiveId, fragment);
+      assertRendersAsLoadableToml(rendered, configPath, entry.effectiveId);
+      return rendered;
+    }, refusal);
+    if (!written) {
+      warnings.push(`codex config fragment ${entry.effectiveId} not applied: ${refusal.join("; ")}`);
+      return "refused";
+    }
     return "applied";
   }
 
@@ -967,20 +961,38 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!cwd) return;
     const configPath = this.resolveCodexConfigPath();
     if (!this.mayChangeConfig(configPath)) return;
-    this.fs.mkdirp(nodePath.dirname(configPath));
+    // workspaces-o9o.182: a config that cannot be read or that the credential rule refuses is left as it is. (It used to be treated as
+    // empty and REPLACED by the trust entries alone, losing the operator's whole config.)
+    this.rewriteConfig(configPath, (existing) => {
+      let content = existing ?? "";
+      for (const trustKey of this.workspaceTrustKeys(cwd)) content = upsertCodexProjectTrust(content, trustKey);
+      return content;
+    }, undefined, { rewriteUnchanged: true });  // it has always rewritten the config on every bootstrap, changed or not
+  }
 
-    let content = "";
-    try {
-      if (this.fs.exists(configPath)) content = this.fs.readFile(configPath);
-    } catch {
-      content = "";
+  /** workspaces-o9o.182: read-modify-write the Codex config under CODEX_CONFIG_POLICY (its link followed to the judged real file, never
+   *  chmod-ed, never written through a link). `mutate` gets the content, or null when there is no file, and returns the new text or
+   *  null for no change. False when the rule refused the file (said once per file, and pushed onto `refusal` when given). Without the
+   *  guarded op (an in-memory fixture), the plain read and write. */
+  private rewriteConfig(configPath: string, mutate: (existing: string | null) => string | null, refusal?: string[], options: { rewriteUnchanged?: boolean } = {}): boolean {
+    const writes = (next: string | null, existing: string | null): next is string => next !== null && (next !== existing || options.rewriteUnchanged === true);
+    // The directory is made only for a write: a pass that changes nothing creates nothing.
+    const change = (existing: string | null): string | null => {
+      const next = mutate(existing);
+      if (writes(next, existing)) this.fs.mkdirp(nodePath.dirname(configPath));
+      return next;
+    };
+    if (this.fs.rewriteGuarded) {
+      const result = this.fs.rewriteGuarded(configPath, CODEX_CONFIG_POLICY, change, options);
+      if (result.ok) return true;
+      refusal?.push(result.message);
+      this.logRefusedConfigWrite(configPath, result.message);
+      return false;
     }
-
-    for (const trustKey of this.workspaceTrustKeys(cwd)) {
-      content = upsertCodexProjectTrust(content, trustKey);
-    }
-
-    this.fs.writeFile(configPath, content);
+    const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : null;
+    const next = change(existing);
+    if (writes(next, existing)) this.fs.writeFile(configPath, next);
+    return true;
   }
 
   /** OF-183: false (and said once per file) when this daemon must leave the Codex config at `configPath` unchanged. */

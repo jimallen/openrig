@@ -478,19 +478,32 @@ describe("OF-183 census of Codex config.toml writers (instrument: a text scan of
       .map((f) => path.relative(srcRoot, f)).sort();
     // Guarded writers of a Codex config.toml: the adapter (5 upserts) and the seat-home trust mirror.
     // Not Codex-config writers: startup.ts (hands fs ops to the adapter; names a profile file), codex-mcp-servers.ts
-    // (a prose "rename"), settings-store.ts (writes OpenRig's own settings; a comment names config.toml).
+    // (a prose "rename"), settings-store.ts (writes OpenRig's own settings; a comment names config.toml),
+    // credential-file.ts (workspaces-o9o.182: the credential rule's write half, which writes whatever judged file a caller names;
+    // config.toml appears in its comments).
     expect(hits).toEqual([
       "adapters/codex-runtime-adapter.ts",
       "domain/codex-mcp-servers.ts",
       "domain/codex-seat-home.ts",
+      "domain/credential-file.ts",
       "domain/user-settings/settings-store.ts",
       "startup.ts",
     ]);
   });
 
-  it("every `this.fs.writeFile(configPath` in the adapter is reached only after the policy check in the same method", () => {
+  it("every config write in the adapter is reached only after the policy check in the same method", () => {
     const text = fs.readFileSync(path.join(srcRoot, "adapters/codex-runtime-adapter.ts"), "utf-8").split("\n");
-    const sites = text.flatMap((line, i) => (line.includes("this.fs.writeFile(configPath") ? [i] : []));
+    // workspaces-o9o.182: the writers go through one read-modify-write, rewriteConfig (the credential rule's guarded rewrite, or the
+    // plain write for an in-memory fixture), and it is the only place either write happens.
+    const methodOf = (i: number): string => {
+      let start = i;
+      while (start > 0 && !/^  (private |async )?[A-Za-z]+\(.*\{$/.test(text[start]!)) start--;
+      return text[start]!;
+    };
+    const writes = text.flatMap((line, i) => (/this\.fs\.(writeFile|rewriteGuarded)\(configPath/.test(line) ? [i] : []));
+    expect(writes.length).toBe(2);
+    for (const i of writes) expect(methodOf(i), `write at line ${i + 1}`).toMatch(/^  private rewriteConfig\(/);
+    const sites = text.flatMap((line, i) => (line.includes("this.rewriteConfig(configPath") ? [i] : []));
     expect(sites.length).toBe(6); // feature flag, hooks, hook trust, remove, fragment, workspace trust
     for (const i of sites) {
       let start = i;
@@ -504,7 +517,9 @@ describe("OF-183 census of Codex config.toml writers (instrument: a text scan of
     const text = fs.readFileSync(path.join(srcRoot, "domain/codex-seat-home.ts"), "utf-8");
     const fn = text.slice(text.indexOf("async function syncSeatHookTrust"), text.indexOf("async function linkIfMissing"));
     expect(fn.indexOf("policy.decide(sharedKeySource)")).toBeGreaterThan(-1);
-    expect(fn.indexOf("policy.decide(sharedKeySource)")).toBeLessThan(fn.indexOf("fs.writeFile(tmp"));
+    // workspaces-o9o.182: the write is the credential rule's guarded rewrite of the shared file.
+    expect(fn.indexOf("rewriteGuardedFileWith(guardedFiles, sharedKeySource")).toBeGreaterThan(-1);
+    expect(fn.indexOf("policy.decide(sharedKeySource)")).toBeLessThan(fn.indexOf("rewriteGuardedFileWith(guardedFiles, sharedKeySource"));
   });
 
   it("the handover route and service forward the policy to the successor launcher (text pin: no behavioural fixture reaches the route)", () => {

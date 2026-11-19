@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
 import { getDefaultOpenRigPath } from "../openrig-compat.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
-import { nodeCredentialFileReader } from "./node-credential-file-reader.js";
+import { nodeCredentialFileReader, readOwnFile } from "./node-credential-file-reader.js";
+import { HOST_BINDINGS_POLICY } from "../domain/credential-file.js";
 import type { HostDirectory } from "../domain/seat-messaging/reply-path.js";
 
 /**
@@ -25,9 +25,13 @@ export class RegistryHostDirectory implements HostDirectory {
 
 /** The CLI's learned sidecar, read only: each registry alias with the self-id it was learned to have. The CLI owns the file and its writes. */
 function learnedSelfIds(path: string): Record<string, string> {
-  if (!existsSync(path)) return {};
+  // workspaces-o9o.182: read under the credential rule for a file OpenRig owns (HOST_BINDINGS_POLICY): a link, another user's file or an
+  // oversized one is not trusted to name a host, and a file of ours others could change is narrowed (go-w) first, as the CLI does, so a
+  // host whose sidecar was written 0664 (sparky's live one) keeps its reply paths.
+  const read = readOwnFile(path, HOST_BINDINGS_POLICY);
+  if (!read.ok) return {};
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; bindings?: unknown } | null;
+    const parsed = JSON.parse(read.content) as { version?: unknown; bindings?: unknown } | null;
     if (!parsed || typeof parsed !== "object" || (parsed.version !== undefined && parsed.version !== 1)) return {};
     if (!parsed.bindings || typeof parsed.bindings !== "object") return {};
     const out: Record<string, string> = {};

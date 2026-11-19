@@ -42,6 +42,7 @@ import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
 import { registeredPaneOf } from "../domain/binding-pane.js";
 import { contextUsageDirectory, providerUsageDirectory } from "../domain/telemetry-state-paths.js";
 import { joinedPaneEvidence } from "../domain/pane-evidence.js";
+import { CLAUDE_MCP_POLICY, CLAUDE_SETTINGS_POLICY, type CredentialFilePolicy, type GuardedRewriteResult } from "../domain/credential-file.js";
 
 export interface ClaudeAdapterFsOps {
   readFile(path: string): string;
@@ -65,10 +66,25 @@ export interface ClaudeAdapterFsOps {
   /** Write a file without following a symbolic link at its final component (O_NOFOLLOW; a new file is created 0600). A link there
    *  makes it throw. workspaces-o9o.123: Code Mode's answer is written only this way. Absent: that write is refused. */
   writeFileNoFollow?(path: string, content: string): void;
+  /** workspaces-o9o.182: read-modify-write one of Claude's files under the credential rule (adapters/guarded-rewrite.ts): the file is
+   *  judged before it is changed, a refused one is left as it is, and the write never goes through a link. The daemon wires it
+   *  (startup.ts, pinned by a census row); an in-memory fixture without it keeps the plain read and write. */
+  rewriteGuarded?(path: string, policy: CredentialFilePolicy, mutate: (current: string | null) => string | null, options?: { rewriteUnchanged?: boolean }): GuardedRewriteResult;
 }
 
 /** A launch result's warnings field, present only when there is one (an undeclared seat's result is unchanged). */
 const withWarnings = (warnings: readonly string[]): { warnings?: string[] } => (warnings.length > 0 ? { warnings: [...warnings] } : {});
+
+/** A JSON object's text as an object; anything else (absent, unparseable, not an object) is {}. */
+function jsonObjectOrEmpty(text: string | null): Record<string, unknown> {
+  if (text === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
 
@@ -720,10 +736,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   private applyRuntimeResource(entry: ProjectionEntry, cwd: string): boolean {
     switch (entry.resourceType) {
       case "claude_settings_fragment":
-        this.mergeJsonFragment(entry.absolutePath, nodePath.join(cwd, ".claude", "settings.local.json"));
+        this.mergeJsonFragment(entry.absolutePath, nodePath.join(cwd, ".claude", "settings.local.json"), CLAUDE_SETTINGS_POLICY);
         return true;
       case "claude_mcp_fragment":
-        this.mergeJsonFragment(entry.absolutePath, nodePath.join(cwd, ".mcp.json"));
+        this.mergeJsonFragment(entry.absolutePath, nodePath.join(cwd, ".mcp.json"), CLAUDE_MCP_POLICY);
         return true;
       case "claude_activity_hooks":
         // Handled (no generic .claude/extensions copy): the relay asset is
@@ -735,12 +751,35 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
   }
 
-  private mergeJsonFragment(sourcePath: string, targetPath: string): void {
+  private mergeJsonFragment(sourcePath: string, targetPath: string, policy: CredentialFilePolicy): void {
     const fragment = this.readJsonObjectStrict(sourcePath);
-    const existing = this.readJsonObject(targetPath);
-    const merged = mergeJsonObjects(existing, fragment);
-    this.fs.mkdirp(nodePath.dirname(targetPath));
-    this.fs.writeFile(targetPath, JSON.stringify(merged, null, 2));
+    // workspaces-o9o.182: judged first and never written through a link. (An existing target that does not parse is still merged as
+    // empty, as before.)
+    // It has always rewritten the target, changed or not (rewriteUnchanged keeps that).
+    this.rewriteClaudeFile(targetPath, policy, (text) => JSON.stringify(mergeJsonObjects(jsonObjectOrEmpty(text), fragment), null, 2), { rewriteUnchanged: true });
+  }
+
+  /** workspaces-o9o.182 (CoS ruling (A)): read-modify-write one of Claude's files under its policy (CLAUDE_*_POLICY: a link, a
+   *  non-regular file, a second name, another user's file or an oversized one is refused; group/other write is neither refused nor
+   *  changed). It is written as a fresh file with its own mode, renamed into place, never through a link. A refusal is THROWN, naming
+   *  the file and the fix: every caller already reports a throw (a projection failure, a bootstrap or collector warning). `mutate` gets
+   *  the text (null when absent) and returns the new text, or null for no change; the directory is made only for a write. Without the
+   *  guarded op (an in-memory fixture), the plain read and write. */
+  private rewriteClaudeFile(path: string, policy: CredentialFilePolicy, mutate: (current: string | null) => string | null, options: { rewriteUnchanged?: boolean } = {}): void {
+    const writes = (next: string | null, current: string | null): next is string => next !== null && (next !== current || options.rewriteUnchanged === true);
+    const change = (current: string | null): string | null => {
+      const next = mutate(current);
+      if (writes(next, current)) this.fs.mkdirp(nodePath.dirname(path));
+      return next;
+    };
+    if (this.fs.rewriteGuarded) {
+      const result = this.fs.rewriteGuarded(path, policy, change, options);
+      if (!result.ok) throw new Error(`${result.message}; OpenRig left it as it is`);
+      return;
+    }
+    const current = this.fs.exists(path) ? this.fs.readFile(path) : null;
+    const next = change(current);
+    if (writes(next, current)) this.fs.writeFile(path, next);
   }
 
   /**
@@ -985,27 +1024,25 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // Like the activity hooks, never clobber text we cannot parse. An empty file holds no settings
     // and is treated as `{}`. Valid JSON that is not an object (for example `[]`) is still
     // replaced, as before.
-    let existing: Record<string, unknown> = {};
-    if (this.fs.exists(settingsPath)) {
-      const text = this.fs.readFile(settingsPath);
-      if (text.trim() !== "") {
+    // workspaces-o9o.182: judged first (CLAUDE_SETTINGS_POLICY) and never written through a link.
+    const collectorCmd = `node ${shellQuote(collectorDest)} ${shellQuote(contextDir)} ${shellQuote(providerUsageDir)}`;
+    this.rewriteClaudeFile(settingsPath, CLAUDE_SETTINGS_POLICY, (text) => {
+      let existing: Record<string, unknown> = {};
+      if (text !== null && text.trim() !== "") {
         let parsed: unknown;
-        try { parsed = JSON.parse(text); } catch { return; }
+        try { parsed = JSON.parse(text); } catch { return null; }
         if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) existing = parsed as Record<string, unknown>;
       }
-    }
-    const statusLine = typeof existing["statusLine"] === "object" && existing["statusLine"] !== null
-      ? existing["statusLine"] as Record<string, unknown> : {};
-    // A user's own status line command wins; only OpenRig's collector command is installed or refreshed.
-    // If this command's shape changes, keep the old shape recognised in isOwnedCollectorCommand, or
-    // seats holding it will never be refreshed.
-    const collectorCmd = `node ${shellQuote(collectorDest)} ${shellQuote(contextDir)} ${shellQuote(providerUsageDir)}`;
-    const current = statusLine["command"];
-    if (typeof current === "string" && current.trim() !== "" && current !== collectorCmd && !isOwnedCollectorCommand(current)) return;
-
-    existing["statusLine"] = { ...statusLine, type: "command", command: collectorCmd };
-
-    this.fs.writeFile(settingsPath, JSON.stringify(existing, null, 2));
+      const statusLine = typeof existing["statusLine"] === "object" && existing["statusLine"] !== null
+        ? existing["statusLine"] as Record<string, unknown> : {};
+      // A user's own status line command wins; only OpenRig's collector command is installed or refreshed.
+      // If this command's shape changes, keep the old shape recognised in isOwnedCollectorCommand, or
+      // seats holding it will never be refreshed.
+      const current = statusLine["command"];
+      if (typeof current === "string" && current.trim() !== "" && current !== collectorCmd && !isOwnedCollectorCommand(current)) return null;
+      existing["statusLine"] = { ...statusLine, type: "command", command: collectorCmd };
+      return JSON.stringify(existing, null, 2);
+    }, { rewriteUnchanged: true });  // it has always rewritten the file on every provision, changed or not
   }
 
   /**
@@ -1050,67 +1087,74 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       };
     }
 
-    const settingsExisted = this.fs.exists(settingsPath);
-    // Fail closed: never clobber a settings file we cannot parse — preserve its bytes.
-    let settings: Record<string, unknown>;
-    if (settingsExisted) {
-      try { settings = this.readJsonObjectStrict(settingsPath); }
-      catch { return { changed: false, delivered: false, sourceMissing: false, manifestUnavailable: false, settingsUnparseable: true }; }
-    } else {
-      settings = {};
-    }
-
-    const hooks = this.readJsonObjectField(settings, "hooks");
-
-    // 1. Strip OpenRig-owned relay entries (EXACT node-command shape) from all events;
-    //    prune emptied groups + events. User-authored hooks are untouched.
+    // workspaces-o9o.182: the settings file is judged first (CLAUDE_SETTINGS_POLICY) and never written through a link; a refusal is
+    // thrown, naming the file and the fix, and project() reports it and claims nothing delivered.
+    let unparseable = false;
     let changed = false;
-    for (const event of Object.keys(hooks)) {
-      const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : null;
-      if (!groups) continue;
-      const keptGroups: unknown[] = [];
-      for (const group of groups) {
-        if (!isPlainObject(group) || !Array.isArray(group["hooks"])) { keptGroups.push(group); continue; }
-        const groupHooks = group["hooks"] as unknown[];
-        const keptHooks = groupHooks.filter((h) => !isOwnedRelayCommand(hookCommand(h)));
-        if (keptHooks.length !== groupHooks.length) changed = true;
-        if (keptHooks.length === 0) continue; // prune emptied group
-        keptGroups.push({ ...group, hooks: keptHooks });
+    this.rewriteClaudeFile(settingsPath, CLAUDE_SETTINGS_POLICY, (text) => {
+      // Fail closed: never clobber a settings file we cannot parse — preserve its bytes.
+      let settings: Record<string, unknown>;
+      if (text !== null) {
+        try {
+          const parsed: unknown = JSON.parse(text);
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error(`${settingsPath} must be a JSON object`);
+          settings = parsed as Record<string, unknown>;
+        } catch { unparseable = true; return null; }
+      } else {
+        settings = {};
       }
-      if (keptGroups.length === 0) delete hooks[event]; // prune emptied event
-      else hooks[event] = keptGroups;
-    }
 
-    // 2. Deliverable enable: copy the relay asset + upsert the owned entry for each
-    //    PREVALIDATED relay event (derived from the canonical manifest above).
-    if (deliverable) {
-      this.fs.mkdirp(nodePath.dirname(relayDest));
-      // Sibling seats share these scripts. Do not truncate identical bytes while a hook reads one.
-      for (const script of CLAUDE_MANAGED_HOOK_SCRIPTS) {
-        const source = scriptSource(script);
-        if (source === null || !derivedEvents.some((e) => (e.script ?? "activity-relay.cjs") === script)) continue;
-        const dest = claudeManagedHookPath(script, this.stateDir ?? undefined);
-        if (!this.fs.exists(dest) || this.fs.readFile(dest) !== this.fs.readFile(source)) this.fs.copyFile(source, dest);
-        this.preserveMode(source, dest);
-      }
-      for (const { event, timeout, async: background, matcher, script } of derivedEvents) {
-        const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
-        const hook: Record<string, unknown> = { type: "command", command: `node ${shellQuote(claudeManagedHookPath(script ?? "activity-relay.cjs", this.stateDir ?? undefined))}` };
-        if (typeof timeout === "number") hook["timeout"] = timeout;
-        if (background) hook["async"] = true;
-        groups.push(matcher ? { matcher, hooks: [hook] } : { hooks: [hook] });
-        hooks[event] = groups;
-        changed = true;
-      }
-    }
+      const hooks = this.readJsonObjectField(settings, "hooks");
 
-    // 3. Persist only when something changed (never touch an unchanged / never-managed file).
-    if (!changed) return { changed: false, delivered: deliverable, sourceMissing: false, manifestUnavailable: false, settingsUnparseable: false };
-    if (Object.keys(hooks).length > 0) settings["hooks"] = hooks;
-    else delete settings["hooks"];
-    this.fs.mkdirp(nodePath.dirname(settingsPath));
-    this.fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
-    return { changed: true, delivered: deliverable, sourceMissing: false, manifestUnavailable: false, settingsUnparseable: false };
+      // 1. Strip OpenRig-owned relay entries (EXACT node-command shape) from all events;
+      //    prune emptied groups + events. User-authored hooks are untouched.
+      for (const event of Object.keys(hooks)) {
+        const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : null;
+        if (!groups) continue;
+        const keptGroups: unknown[] = [];
+        for (const group of groups) {
+          if (!isPlainObject(group) || !Array.isArray(group["hooks"])) { keptGroups.push(group); continue; }
+          const groupHooks = group["hooks"] as unknown[];
+          const keptHooks = groupHooks.filter((h) => !isOwnedRelayCommand(hookCommand(h)));
+          if (keptHooks.length !== groupHooks.length) changed = true;
+          if (keptHooks.length === 0) continue; // prune emptied group
+          keptGroups.push({ ...group, hooks: keptHooks });
+        }
+        if (keptGroups.length === 0) delete hooks[event]; // prune emptied event
+        else hooks[event] = keptGroups;
+      }
+
+      // 2. Deliverable enable: copy the relay asset + upsert the owned entry for each
+      //    PREVALIDATED relay event (derived from the canonical manifest above).
+      if (deliverable) {
+        this.fs.mkdirp(nodePath.dirname(relayDest));
+        // Sibling seats share these scripts. Do not truncate identical bytes while a hook reads one.
+        for (const script of CLAUDE_MANAGED_HOOK_SCRIPTS) {
+          const source = scriptSource(script);
+          if (source === null || !derivedEvents.some((e) => (e.script ?? "activity-relay.cjs") === script)) continue;
+          const dest = claudeManagedHookPath(script, this.stateDir ?? undefined);
+          if (!this.fs.exists(dest) || this.fs.readFile(dest) !== this.fs.readFile(source)) this.fs.copyFile(source, dest);
+          this.preserveMode(source, dest);
+        }
+        for (const { event, timeout, async: background, matcher, script } of derivedEvents) {
+          const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
+          const hook: Record<string, unknown> = { type: "command", command: `node ${shellQuote(claudeManagedHookPath(script ?? "activity-relay.cjs", this.stateDir ?? undefined))}` };
+          if (typeof timeout === "number") hook["timeout"] = timeout;
+          if (background) hook["async"] = true;
+          groups.push(matcher ? { matcher, hooks: [hook] } : { hooks: [hook] });
+          hooks[event] = groups;
+          changed = true;
+        }
+      }
+
+      // 3. Persist only when something changed (never touch an unchanged / never-managed file).
+      if (!changed) return null;
+      if (Object.keys(hooks).length > 0) settings["hooks"] = hooks;
+      else delete settings["hooks"];
+      return JSON.stringify(settings, null, 2);
+    });
+    if (unparseable) return { changed: false, delivered: false, sourceMissing: false, manifestUnavailable: false, settingsUnparseable: true };
+    return { changed, delivered: deliverable, sourceMissing: false, manifestUnavailable: false, settingsUnparseable: false };
   }
 
 }

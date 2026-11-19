@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, rmdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, rmdirSync, statSync } from "node:fs";
+import { HOST_BINDINGS_POLICY, readOwnFile, rewriteGuardedFile } from "@openrig/daemon/credential-file";
 import { dirname } from "node:path";
 import { getDefaultOpenRigPath } from "./openrig-compat.js";
 
@@ -38,12 +39,24 @@ export function defaultHostBindingsPath(): string {
 }
 
 /** Load the sidecar. Fail-open by contract: missing, unreadable, or corrupt → empty bindings
- *  (a broken sidecar must never break resolution; delete it to re-learn). */
+ *  (a broken sidecar must never break resolution; delete it to re-learn). workspaces-o9o.182: it is read under the credential rule
+ *  for a file OpenRig owns (HOST_BINDINGS_POLICY), so a link, another user's file or an oversized one is not trusted (empty), and a
+ *  file of ours others could change is narrowed first. */
 export function loadHostBindings(path: string = defaultHostBindingsPath()): HostBindingsFile {
+  if (!existsSync(path) && !isLink(path)) return { version: 1, bindings: {} };
+  const read = readOwnFile(path, HOST_BINDINGS_POLICY);
+  return read.ok ? parseHostBindings(read.content) : { version: 1, bindings: {} };
+}
+
+function isLink(path: string): boolean {
+  try { return lstatSync(path).isSymbolicLink(); } catch { return false; }
+}
+
+/** The sidecar's text as bindings; anything unparseable is empty (fail-open). */
+function parseHostBindings(text: string): HostBindingsFile {
   const empty: HostBindingsFile = { version: 1, bindings: {} };
-  if (!existsSync(path)) return empty;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    const parsed = JSON.parse(text) as unknown;
     if (!parsed || typeof parsed !== "object") return empty;
     // A declared version other than 1 is a FUTURE sidecar shape — treat it as unreadable (empty,
     // fail-open) rather than mis-parsing v2 fields through v1 eyes. Absent version reads as v1
@@ -123,7 +136,10 @@ export type HostObservationOutcome =
   | { outcome: "bound"; binding: HostBinding }
   | { outcome: "confirmed"; binding: HostBinding }
   /** The stored binding was NOT changed; the contradiction was recorded on it. */
-  | { outcome: "conflict"; binding: HostBinding };
+  | { outcome: "conflict"; binding: HostBinding }
+  /** workspaces-o9o.182: the file failed the credential rule (a link, another user's file, oversized), so nothing was recorded and
+   *  the file was left as it is; `message` names the file and the fix. */
+  | { outcome: "refused"; message: string };
 
 /**
  * Record one observation of `observedHostId` for registry alias `alias` (TOFU + loud-conflict).
@@ -148,7 +164,20 @@ export function recordHostObservation(args: {
 }
 
 function recordUnderLock(alias: string, observedHostId: string, at: string, path: string): HostObservationOutcome {
-  const file = loadHostBindings(path);
+  // workspaces-o9o.182: judged, read, changed and replaced under the credential rule (rewriteGuardedFile): never through a link at the
+  // file or at a temp name, a file of ours others could change narrowed first, and a refused file left exactly as it is.
+  let result: HostObservationOutcome | undefined;
+  const rewrite = rewriteGuardedFile(path, HOST_BINDINGS_POLICY, (current) => {
+    const file = current === null ? { version: 1 as const, bindings: {} } : parseHostBindings(current);
+    result = observe(file, alias, observedHostId, at);
+    return JSON.stringify(file, null, 2) + "\n";
+  }, { own: true, createMode: 0o644 });
+  if (!rewrite.ok) return { outcome: "refused", message: rewrite.message };
+  return result!;
+}
+
+/** Apply one observation to `file` in place (TOFU + loud-conflict) and say what it did. */
+function observe(file: HostBindingsFile, alias: string, observedHostId: string, at: string): HostObservationOutcome {
   const existing = file.bindings[alias];
 
   let result: HostObservationOutcome;
@@ -167,10 +196,6 @@ function recordUnderLock(alias: string, observedHostId: string, at: string, path
     file.bindings[alias] = binding;
     result = { outcome: "conflict", binding };
   }
-
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n", "utf-8");
-  renameSync(tmp, path);
   return result;
 }
 

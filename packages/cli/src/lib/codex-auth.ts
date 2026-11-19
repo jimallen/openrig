@@ -12,7 +12,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
-import { CODEX_AUTH_POLICY, inspectCredentialFile, judgeOpenedCredentialFile, readCredentialFile } from "@openrig/daemon/credential-file";
+import { CODEX_AUTH_POLICY, CODEX_SEAT_REGISTRY_POLICY, inspectCredentialFile, judgeOpenedCredentialFile, readCredentialFile, readOwnFile, rewriteGuardedFile } from "@openrig/daemon/credential-file";
 
 /** Strict profile-name whitelist: alnum-led, then [A-Za-z0-9._-], 1..64 chars. Excludes /, \, ~,
  *  leading dot, whitespace, control, and shell metacharacters. Fail closed. */
@@ -425,13 +425,15 @@ function validRegistryField(v: string): boolean {
   return v.length > 0 && !hasControlChar(v);
 }
 
+/** workspaces-o9o.182 (CoS 11-19 00:48Z): the seat registry names the auth profile each seat uses, so it is read under the credential
+ *  rule for a secret OpenRig owns (CODEX_SEAT_REGISTRY_POLICY): a link, another user's file or an oversized one has no rows, and a file
+ *  of ours others could read is narrowed to 0600 first. */
 function rawRegistryLines(registryPath: string): string[] {
-  let text: string;
-  try {
-    text = fs.readFileSync(registryPath, "utf8");
-  } catch {
-    return [];
-  }
+  const read = readOwnFile(registryPath, CODEX_SEAT_REGISTRY_POLICY);
+  return read.ok ? registryLinesOf(read.content) : [];
+}
+
+function registryLinesOf(text: string): string[] {
   const out: string[] = [];
   let first = true;
   for (const line of text.split("\n")) {
@@ -486,25 +488,19 @@ export function authSeatSet(
   if (lstatSafe(paths.registryPath) !== null && !isSafeRegistryFile(paths.registryPath)) {
     return { ok: false, reason: "unsafe_path" };
   }
-  const kept = rawRegistryLines(paths.registryPath)
-    .filter((l) => !rowMalformed(l))
-    .filter((l) => l.split("\t")[0] !== fields.seat);
   const newRow = [fields.seat, fields.rig, "codex", cwd, profile, now()].join("\t");
-  const body = [SEAT_HEADER, ...kept, newRow].join("\n") + "\n";
-
-  const tmp = `${paths.registryPath}.${process.pid}.tmp`;
+  // workspaces-o9o.182: judged (a link, another user's file or a second name refused; ours narrowed to 0600), read, changed and written
+  // 0600 as a fresh file renamed into place: never through a link at the registry or at a temp name.
   try {
     fs.mkdirSync(path.dirname(paths.registryPath), { recursive: true });
-    fs.writeFileSync(tmp, body, { mode: 0o600 });
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, paths.registryPath);
-    fs.chmodSync(paths.registryPath, 0o600);
+    const written = rewriteGuardedFile(paths.registryPath, CODEX_SEAT_REGISTRY_POLICY, (current) => {
+      const kept = (current === null ? [] : registryLinesOf(current))
+        .filter((l) => !rowMalformed(l))
+        .filter((l) => l.split("\t")[0] !== fields.seat);
+      return [SEAT_HEADER, ...kept, newRow].join("\n") + "\n";
+    }, { own: true, createMode: 0o600 });
+    if (!written.ok) return { ok: false, reason: "unsafe_path" };
   } catch {
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {
-      /* ignore */
-    }
     return { ok: false, reason: "io_error" };
   }
   return { ok: true, seat: fields.seat, registryPath: paths.registryPath, mode: "600", disclaimer: SEAT_REGISTRY_DISCLAIMER };

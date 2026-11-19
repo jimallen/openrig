@@ -8,9 +8,12 @@
 // user, check its mode by the file's kind, cap the size, and read from that same descriptor.
 //  - secret:   no group or other bits at all (a token, an auth file, a secrets env file, the endpoint snapshot);
 //  - registry: no group or other WRITE bits (it names where secrets go, so nobody else may change it; reading it is fine).
+//  - user-config: no mode rule (o9o.182, CoS ruling (A) 11-19 00:48Z): another program's file OpenRig only merges into (Claude's settings,
+//    .mcp.json and .claude.json), written under the user's own umask (every live one on sparky was 0664, user-private group). The link,
+//    regular-file, one-name, owner and size rules still hold, and OpenRig never chmods it.
 // A refusal names the file and the fix; the content of a refused file is never returned.
 
-export type CredentialFileKind = "secret" | "registry";
+export type CredentialFileKind = "secret" | "registry" | "user-config";
 
 export interface CredentialFilePolicy {
   /** The noun a refusal starts with: "the terminal token", "the hosts registry". */
@@ -129,6 +132,10 @@ export const DAEMON_STATE_POLICY: CredentialFilePolicy = { label: "the daemon st
 /** config.json may be a link (its writer follows one by design); daemon.json may not (its writer renames over the name). */
 export const OPENRIG_CONFIG_POLICY: CredentialFilePolicy = { label: "the OpenRig config file", kind: "registry", maxBytes: 1024 * 1024, followLinks: true };
 export const SLACK_CONNECTOR_POLICY: CredentialFilePolicy = { label: "the Slack connector config", kind: "registry", maxBytes: 256 * 1024 };
+/** o9o.182: the CLI's learned host-identity sidecar picks which hosts.yaml entry (url + bearer) a reply hint resolves to. OpenRig
+ *  writes it (rig host doctor), so a file of ours others can change is narrowed, never refused; a link or another user's file is
+ *  refused (sparky's live one was 0664, user-private group: o9o.182 census). */
+export const HOST_BINDINGS_POLICY: CredentialFilePolicy = { label: "the host bindings file", kind: "registry", maxBytes: 1024 * 1024 };
 /** o9o.160: Codex's config.toml chooses the provider credential. It is Codex's (or the operator's) file and OpenRig never chmods it:
  *  another user's file, or one others can change, is refused (CoS 11-18 13:51Z, from verify-ops' census: every live one, sparky and
  *  stu, has no group/other write; mbp unverified).
@@ -137,6 +144,18 @@ export const SLACK_CONNECTOR_POLICY: CredentialFilePolicy = { label: "the Slack 
  *  The shared auth.json is a login: a link at it refuses (Jim, 17:47Z; CODEX_AUTH_POLICY has no followLinks). A seat's own
  *  config.toml is still followed only to the exact shared path (SEAT_CREDENTIAL_LINKS codex-config: its linkTarget wins). */
 export const CODEX_CONFIG_POLICY: CredentialFilePolicy = { label: "the Codex config", kind: "registry", maxBytes: 1024 * 1024, followLinks: true };
+/** o9o.182: a shared Codex profile file (<CODEX_HOME>/<profile>.config.toml) copied into a seat home. The copy is a plain file read
+ *  as itself (a link is refused), held to the Codex config's rule otherwise. */
+export const CODEX_PROFILE_POLICY: CredentialFilePolicy = { label: "the Codex profile file", kind: "registry", maxBytes: 1024 * 1024 };
+/** o9o.182 (CoS 11-19 00:48Z): `rig auth`'s seat registry names the Codex auth profile each seat uses, so it chooses a credential. OpenRig
+ *  writes it 0600. */
+export const CODEX_SEAT_REGISTRY_POLICY: CredentialFilePolicy = { label: "the Codex seat registry", kind: "secret", maxBytes: 1024 * 1024 };
+/** o9o.182, CoS ruling (A) 11-19 00:48Z: Claude's own files OpenRig merges into. user-config: a link, a non-regular file, a hard link,
+ *  another user's file or an oversized one is refused; group/other write is neither refused nor changed (every live one on sparky was
+ *  0664 under a user-private group). The caps sit far above any real file (sparky's ~/.claude.json was 220 KB). */
+export const CLAUDE_SETTINGS_POLICY: CredentialFilePolicy = { label: "the Claude settings file", kind: "user-config", maxBytes: 4 * 1024 * 1024 };
+export const CLAUDE_MCP_POLICY: CredentialFilePolicy = { label: "the Claude MCP config", kind: "user-config", maxBytes: 4 * 1024 * 1024 };
+export const CLAUDE_STATE_POLICY: CredentialFilePolicy = { label: "the Claude state file", kind: "user-config", maxBytes: 64 * 1024 * 1024 };
 
 /**
  * The seat credential links OpenRig itself makes, and the only links the credential rule follows (o9o.151; CoS 11-18 11:34Z, from
@@ -320,5 +339,156 @@ export function credentialFileOpsFrom(fs: NodeFsLike, currentUid: () => number):
     isSymbolicLink: (path) => fs.lstatSync(path).isSymbolicLink(),
     realpath: (path) => fs.realpathSync(path),
     currentUid,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The write half (workspaces-o9o.182): a read-modify-write of a credential-adjacent file (Claude's settings and state, Codex's
+// config.toml and profile files, OpenRig's host-bindings.json and seat registry, the Slack connector config), as one procedure over
+// injected file ops, so the fs adapter and the domain modules that already do their own file I/O run the same rule.
+//  - The file is judged before it is changed: read under its policy. A refused file is left exactly as it is and the refusal (naming
+//    the file and the fix) is returned. A file OpenRig owns (`own`) is narrowed first, as readOwnFileWith does.
+//  - A policy that follows links (Codex's config.toml, OF-42's dotfiles layout) is followed to its REAL path, and that path is what is
+//    judged and replaced, so the operator's link survives the write. Any other link is refused, a dangling one included.
+//  - The new content goes to a fresh temp file beside the target (O_CREAT|O_EXCL|O_NOFOLLOW: never a link and never an existing
+//    file), with the target's own mode (or `createMode` for a new file) pinned on the descriptor, fsynced, then renamed over the
+//    target. A link swapped in at the target after the check is replaced, never written through; a reader never sees a torn file.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+/** The file operations the write half needs, beyond the read half's. Errors carry the errno `code`. */
+export interface GuardedFileOps extends CredentialFileOps {
+  /** lstat(path): its permission bits, or null when absent (ENOENT); other errors throw. Never follows a link. */
+  lstatMode(path: string): { mode: number; isSymbolicLink: boolean } | null;
+  /** Create a NEW file for writing: O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW at `mode`. */
+  createExclusive(path: string, mode: number): number;
+  writeAll(fd: number, content: string): void;
+  fsync(fd: number): void;
+  rename(from: string, to: string): void;
+  /** Remove a file, ignoring a missing one. */
+  removeQuiet(path: string): void;
+  /** A short random suffix for a temp name (hex). */
+  randomSuffix(): string;
+  /** This process's id, for the temp name. */
+  pid(): number;
+}
+
+export type GuardedRewriteResult =
+  /** `path` is the file actually judged and replaced (the real path when the policy follows a link). */
+  | { ok: true; written: boolean; path: string }
+  | Refusal;
+
+export interface GuardedRewriteOptions {
+  /** OpenRig's own file: narrowed (readOwnFile) before it is read, instead of refused for group/other bits. */
+  own?: boolean;
+  /** Mode for a file that does not exist yet (default 0600). An existing file keeps its own mode. */
+  createMode?: number;
+  /** Write even when `mutate` returns the text unchanged (a writer that has always rewritten its file keeps doing so); null from
+   *  `mutate` still writes nothing. */
+  rewriteUnchanged?: boolean;
+}
+
+/**
+ * Read `path` under `policy`, give its content (null when absent) to `mutate`, and write what `mutate` returns. `mutate` returning
+ * null, or the same text, writes nothing. Never throws for a file the rule refuses (that is returned); `mutate` throwing, or a failed
+ * write, throws (the temp file removed).
+ */
+export function rewriteGuardedFileWith(
+  ops: GuardedFileOps,
+  path: string,
+  policy: CredentialFilePolicy,
+  mutate: (current: string | null) => string | null,
+  options: GuardedRewriteOptions = {},
+): GuardedRewriteResult {
+  const target = rewriteTarget(ops, path, policy);
+  if (typeof target !== "string") return target;
+  // The real path is judged as itself: a link appearing there now is refused by the open.
+  const judged: CredentialFilePolicy = { label: policy.label, kind: policy.kind, maxBytes: policy.maxBytes };
+  const relabel = (r: Refusal): Refusal => (target === path ? r : { ...r, message: `${r.message} (the real file behind ${path})` });
+  let current: string | null = null;
+  let mode = options.createMode ?? 0o600;
+  const before = ops.lstatMode(target);
+  if (before !== null) {
+    if (options.own) {
+      const narrowed = narrowOwnFileWith(ops, target, judged);
+      if (narrowed) return relabel(narrowed);
+    }
+    const read = readCredentialFileWith(ops, target, judged);
+    if (!read.ok) return relabel(read);
+    current = read.content;
+    mode = (ops.lstatMode(target)?.mode ?? before.mode) & 0o7777;
+  }
+  const next = mutate(current);
+  if (next === null || (next === current && !options.rewriteUnchanged)) return { ok: true, written: false, path: target };
+  writeReplacingWith(ops, target, next, mode);
+  return { ok: true, written: true, path: target };
+}
+
+/** Write `content` to `target` as a fresh file renamed over it: never through a link at the target or at the temp name. */
+export function writeReplacingWith(ops: GuardedFileOps, target: string, content: string, mode: number): void {
+  const slash = target.lastIndexOf("/");
+  const dir = slash >= 0 ? target.slice(0, slash + 1) : "";
+  const temp = `${dir}.${target.slice(slash + 1)}.openrig-${ops.pid()}-${ops.randomSuffix()}.tmp`;
+  const fd = ops.createExclusive(temp, mode);
+  try {
+    try {
+      ops.fchmod(fd, mode); // the umask never widens or narrows it
+      ops.writeAll(fd, content);
+      ops.fsync(fd);
+    } finally {
+      ops.close(fd);
+    }
+    ops.rename(temp, target);
+  } catch (err) {
+    ops.removeQuiet(temp);
+    throw err;
+  }
+}
+
+/** The path to judge and replace: the path itself, or for a policy that follows links, the link's real path. */
+function rewriteTarget(ops: GuardedFileOps, path: string, policy: CredentialFilePolicy): string | Refusal {
+  if (!policy.followLinks) return path;
+  let at: { mode: number; isSymbolicLink: boolean } | null;
+  try { at = ops.lstatMode(path); } catch { return refusal(path, policy, "unreadable"); }
+  if (at === null || !at.isSymbolicLink) return path;
+  try {
+    return ops.realpath(path);
+  } catch {
+    // A dangling link: OpenRig does not create a file at the far end of someone's link.
+    return refusal(path, policy, "missing");
+  }
+}
+
+/** The node:fs surface guardedFileOpsFrom uses, typed structurally so this module imports nothing. */
+export interface NodeFsWriteLike extends NodeFsLike {
+  constants: NodeFsLike["constants"] & { O_WRONLY: number; O_CREAT: number; O_EXCL: number };
+  openSync(path: string, flags: number, mode?: number): number;
+  lstatSync(path: string): { isSymbolicLink(): boolean; mode: number };
+  writeFileSync(fd: number, data: string, encoding: "utf-8"): void;
+  fsyncSync(fd: number): void;
+  renameSync(from: string, to: string): void;
+  rmSync(path: string, options: { force: true }): void;
+}
+
+/** GuardedFileOps over a node:fs-shaped module (see credentialFileOpsFrom). */
+export function guardedFileOpsFrom(fs: NodeFsWriteLike, currentUid: () => number, randomSuffix: () => string, pid: () => number): GuardedFileOps {
+  const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
+  return {
+    ...credentialFileOpsFrom(fs, currentUid),
+    lstatMode: (path) => {
+      try {
+        const st = fs.lstatSync(path);
+        return { mode: st.mode, isSymbolicLink: st.isSymbolicLink() };
+      } catch (err) {
+        if (errnoCode(err) === "ENOENT") return null;
+        throw err;
+      }
+    },
+    createExclusive: (path, mode) => fs.openSync(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode),
+    writeAll: (fd, content) => fs.writeFileSync(fd, content, "utf-8"),
+    fsync: (fd) => fs.fsyncSync(fd),
+    rename: (from, to) => fs.renameSync(from, to),
+    removeQuiet: (path) => fs.rmSync(path, { force: true }),
+    randomSuffix,
+    pid,
   };
 }

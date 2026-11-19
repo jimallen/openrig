@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import fsSync, { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { unrestrictedCodexConfigWrites, type CodexConfigWritePolicy } from "./codex-config-write-policy.js";
-import { CredentialFileRefusedError, SEAT_CREDENTIAL_LINKS, seatCredentialLinkPolicy, type CredentialFileReader, type SeatCredentialLink } from "./credential-file.js";
+import { CODEX_CONFIG_POLICY, CODEX_PROFILE_POLICY, CredentialFileRefusedError, SEAT_CREDENTIAL_LINKS, guardedFileOpsFrom, rewriteGuardedFileWith, seatCredentialLinkPolicy, writeReplacingWith, type CredentialFileReader, type SeatCredentialLink } from "./credential-file.js";
 import { codexActivityHookTrustRecords, computeCodexHandlerHash, findTomlTable, lineStartsAtDocumentLevel, upsertCodexHookTrust, upsertVerifiedCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
@@ -320,6 +320,11 @@ export function mirrorCodexHookTrust(content: string, sharedKeySource: string, s
 // starting in another seat never reads a truncated file.
 const configWrites = new Map<string, Promise<unknown>>();
 
+/** workspaces-o9o.182: the credential rule's write half over this module's node:fs (it does its own file I/O under the hexagonal
+ *  baseline), so the shared config's hook-trust mirror and the profile copy judge the file before changing it and never write through
+ *  a link. */
+const guardedFiles = guardedFileOpsFrom(fsSync, () => (typeof process.getuid === "function" ? process.getuid() : -1), () => randomBytes(6).toString("hex"), () => process.pid);
+
 async function syncSeatHookTrust(home: string, log: (message: string) => void, policy: CodexConfigWritePolicy): Promise<boolean> {
   const seatConfig = path.join(home, "config.toml");
   const stat = await fs.lstat(seatConfig).catch(() => null);
@@ -334,13 +339,20 @@ async function syncSeatHookTrust(home: string, log: (message: string) => void, p
     return false;
   }
   const run = (configWrites.get(sharedKeySource) ?? Promise.resolve()).catch(() => undefined).then(async () => {
-    const content = await fs.readFile(sharedKeySource, "utf-8");
-    const { content: next, copies } = planCodexHookTrustMirror(content, sharedKeySource, seatKeySource);
-    if (next === content) return false;
-    const { mode } = await fs.stat(sharedKeySource);
-    const tmp = `${sharedKeySource}.openrig-${process.pid}-${createHash("sha256").update(seatKeySource).digest("hex").slice(0, 8)}`;
-    await fs.writeFile(tmp, next, { mode });
-    await fs.rename(tmp, sharedKeySource);
+    // workspaces-o9o.182: the shared config is judged by its rule (CODEX_CONFIG_POLICY: this user's plain file, one name, no group/other
+    // write, capped) before it is changed, keeps its own mode, and is replaced by a fresh file, never written through a link.
+    let copies: ReturnType<typeof planCodexHookTrustMirror>["copies"] = [];
+    const result = rewriteGuardedFileWith(guardedFiles, sharedKeySource, CODEX_CONFIG_POLICY, (content) => {
+      if (content === null) return null;
+      const plan = planCodexHookTrustMirror(content, sharedKeySource, seatKeySource);
+      copies = plan.copies;
+      return plan.content;
+    });
+    if (!result.ok) {
+      log(`[openrig] codex seat hook trust not mirrored: ${result.message}`);
+      return false;
+    }
+    if (!result.written) return false;
     // Logged after the rename, so a line never names trust that was not written.
     for (const c of copies) log(`[openrig] codex seat hook trust ${c.action}: ${c.key} ${c.hash} (from ${sharedKeySource})`);
     return true;
@@ -520,7 +532,11 @@ export async function ensureCodexSeatHome(
   // codex seat whatever its profile (OF-115). It is the operator's own file and carries the trust and settings every
   // seat needs, so it is reported, not withheld.
   const sharedConfigPath = path.join(shared, "config.toml");
-  const sharedConfig = await fs.readFile(sharedConfigPath, "utf8").catch(() => null);
+  // workspaces-o9o.182: read under its rule through the port (a FIFO cannot hang the launch; a file another user wrote is not scanned
+  // as if it were the operator's). A missing one is silent; a refused one is said.
+  const sharedRead = opts.credentialFiles.read(sharedConfigPath, CODEX_CONFIG_POLICY);
+  if (!sharedRead.ok && sharedRead.problem !== "missing") say(`codex seat home ${home}: the shared config was not scanned for identity variables: ${sharedRead.message}`);
+  const sharedConfig = sharedRead.ok ? sharedRead.content : null;
   const sharedConfigVars = sharedConfig === null ? [] : codexProfileIdentityVars(sharedConfig);
   if (sharedConfigVars.length > 0) {
     say(`codex seat home ${home}: the shared ${sharedConfigPath} sets ${sharedConfigVars.join(", ")}, which every codex seat reads; remove it from that file`);
@@ -546,21 +562,36 @@ export async function ensureCodexSeatHome(
       // file that carries identity is moved aside as the link, never followed or rewritten.
       const symlink = existing.isSymbolicLink();
       if (!existing.isFile() && !symlink) continue;
-      const text = await fs.readFile(dest, "utf8").catch(() => null);
-      const vars = text === null ? [] : codexProfileIdentityVars(text);
+      // workspaces-o9o.182: read through the port, a link followed to its judged real file (OF-115 reads through one), so a FIFO cannot
+      // hang the launch and another user's file is not taken for the seat's. One the rule refuses is kept as it is, and that is said.
+      const destRead = opts.credentialFiles.read(dest, { ...CODEX_PROFILE_POLICY, followLinks: true });
+      if (!destRead.ok) {
+        if (destRead.problem !== "missing") say(`codex seat home ${home}: profile ${entry} was not checked for identity variables: ${destRead.message}`);
+        continue;
+      }
+      const vars = codexProfileIdentityVars(destRead.content);
       if (vars.length === 0) continue;
       await moveAsideUnique(dest, symlink);
       refusedProfiles.push(entry);
       say(`codex seat home ${home}: moved profile ${entry} aside; it sets ${vars.join(", ")}, which would give the seat another identity`);
     }
-    const sourceText = await fs.readFile(source, "utf8").catch(() => null);
-    const vars = sourceText === null ? [] : codexProfileIdentityVars(sourceText);
+    // workspaces-o9o.182: the shared profile is read under its rule through the port (a plain file of this user's, one name, no group/other
+    // write, capped); one it refuses is not copied, and that is said.
+    const sourceRead = opts.credentialFiles.read(source, CODEX_PROFILE_POLICY);
+    if (!sourceRead.ok) {
+      say(`codex seat home ${home}: did not copy profile ${entry}: ${sourceRead.message}`);
+      continue;
+    }
+    const sourceText = sourceRead.content;
+    const vars = codexProfileIdentityVars(sourceText);
     if (vars.length > 0) {
       if (!refusedProfiles.includes(entry)) refusedProfiles.push(entry);
       say(`codex seat home ${home}: did not copy profile ${entry}; it sets ${vars.join(", ")}, which would give the seat another identity, so a launch with -p ${entry.replace(/\.config\.toml$/, "")} finds no profile file`);
       continue;
     }
-    await fs.copyFile(source, dest);
+    // The copy is the text judged above, written 0600 as a fresh file renamed into place: never through a link planted at dest after the
+    // check above, and never wider than the operator's own login files.
+    writeReplacingWith(guardedFiles, dest, sourceText, 0o600);
     copiedProfiles.push(entry);
   }
 

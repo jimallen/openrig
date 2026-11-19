@@ -11,10 +11,13 @@ import { getOpenRigHome } from "../../../openrig-compat.js";
 import { OWNER_NOTIFICATION_LEVELS, type OwnerNotificationLevel } from "../../queue-transition-log.js";
 import { BASELINE_REQUIRED_SCOPES } from "./capabilities.js";
 import { unsupportedChannelMapFields, validateChannelMap, type ChannelMapEntry } from "./channel-map.js";
-import { credentialFileOpsFrom, readOwnFileWith, SLACK_CONNECTOR_POLICY } from "../../credential-file.js";
+import { credentialFileOpsFrom, guardedFileOpsFrom, readOwnFileWith, rewriteGuardedFileWith, SLACK_CONNECTOR_POLICY } from "../../credential-file.js";
+import { randomBytes } from "node:crypto";
 
 /** workspaces-o9o.160: slack-connector.json under the credential rule's procedure, with the node:fs this module already imports. */
 const connectorFileOps = credentialFileOpsFrom(fs, () => (typeof process.getuid === "function" ? process.getuid() : -1));
+/** workspaces-o9o.182: and its write half, so saveConfig never writes through a link. */
+const connectorWriteOps = guardedFileOpsFrom(fs, () => (typeof process.getuid === "function" ? process.getuid() : -1), () => randomBytes(6).toString("hex"), () => process.pid);
 
 export interface SlackConnectorConfig {
   enabled: boolean;
@@ -100,7 +103,12 @@ export function saveConfig(cfg: SlackConnectorConfig, home?: string): string {
   validateConfig(cfg);
   const p = configPathFor(home);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o644 }); // o9o.160: created so nobody else may change it
+  // workspaces-o9o.182: judged as OpenRig's own file before it is replaced (a link or another user's file refused, ours narrowed), and
+  // written as a fresh file renamed over it, so a link at the path is never written through (o9o.160's review: the target was overwritten).
+  // A new file is created 0644, so nobody else may change it (o9o.160).
+  const text = JSON.stringify(cfg, null, 2) + "\n";
+  const written = rewriteGuardedFileWith(connectorWriteOps, p, SLACK_CONNECTOR_POLICY, () => text, { own: true, createMode: 0o644 });
+  if (!written.ok) throw new Error(`the Slack connector config was not saved: ${written.message}`);
   return p;
 }
 
