@@ -19,7 +19,8 @@ beforeAll(async () => {
     argv: ["/bin/sh", "-c", "exec sleep 601"], name: "ri-env", env: { PATH: "/usr/bin:/bin", HOME: core.env.HOME },
     no_parent: true, no_notify: true, outlive_parent: true,
   });
-  say({ type: "ready", core: await core.corePid(), holder: await core.holderPid() });
+  // RI_NO_READY=1: the run comes up whole but never reports ready, so the outer test's readiness wait gives up.
+  if (process.env.RI_NO_READY !== "1") say({ type: "ready", core: await core.corePid(), holder: await core.holderPid() });
 });
 
 afterAll(() => core.stop());
