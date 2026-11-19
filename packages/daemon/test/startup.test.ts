@@ -153,8 +153,12 @@ describe("createDaemon startup composition", () => {
       adapter.ensureContextCollector({ cwd });
       adapter.ensureContextCollector({ cwd });
       const dest = path.join(cwd, ".openrig/context-collector.cjs");
-      expect(rename).toHaveBeenCalledTimes(2);
+      expect(rename.mock.calls.filter((call) => call[1] === dest)).toHaveLength(2);
       expect(rename).toHaveBeenCalledWith(expect.any(String), dest);
+      // workspaces-o9o.182: the settings.local.json write is a staged replacement too (rewriteGuardedFile), once per provision (that
+      // writer has always rewritten its file): those are the only other renames.
+      const settings = path.join(cwd, ".claude", "settings.local.json");
+      expect(rename.mock.calls.filter((call) => call[1] !== dest).map((call) => call[1])).toEqual([settings, settings]);
       expect(copy).toHaveBeenCalledTimes(2);
       expect(copy.mock.calls.every(call => call[1] !== dest && call[2] === fs.constants.COPYFILE_EXCL)).toBe(true);
       expect(fs.readFileSync(dest, "utf8")).toBe(fs.readFileSync(copy.mock.calls[0]![0], "utf8"));
