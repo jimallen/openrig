@@ -68,11 +68,11 @@ describe("buildOutboundMessage — attribution header + loudness rule", () => {
 });
 
 describe("customize ABSENCE — posted bytes carry the app identity ONLY", () => {
-  function capture(): { fetchImpl: SlackTransport; bodies: Record<string, unknown>[] } {
+  function capture(): { transport: SlackTransport; bodies: Record<string, unknown>[] } {
     const bodies: Record<string, unknown>[] = [];
     return {
       bodies,
-      fetchImpl: async (_url, init) => {
+      transport: async (_url, init) => {
         bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
         return new Response(JSON.stringify({ ok: true, ts: "1.1" }), { status: 200, headers: { "content-type": "application/json" } });
       },
@@ -84,12 +84,12 @@ describe("customize ABSENCE — posted bytes carry the app identity ONLY", () =>
 
   it("a full delivery (escalation, attribution, image) posts ZERO username/icon_url/icon_emoji keys", async () => {
     const fsx = memFs();
-    const { fetchImpl, bodies } = capture();
+    const { transport, bodies } = capture();
     const deliver = subsystemSlackDeliver({
       botToken: "xox" + "b-EXAMPLE-fake",
       channel: "C1",
       sourceLabel: "vm",
-      fetchImpl,
+      transport,
       delivered: new SeenStore("/del.jsonl", fsx, clock),
       attempted: new SeenStore("/att.jsonl", fsx, clock),
       outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),

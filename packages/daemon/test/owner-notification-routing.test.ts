@@ -276,7 +276,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl: async (_url, init) => {
+      transport: async (_url, init) => {
         posts.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
         return new Response(JSON.stringify({ ok: true, ts: `1724.000${posts.length}` }), {
           status: 200,
@@ -346,7 +346,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     let postCalls = 0;
-    const fetchImpl = async (url: string | URL) => {
+    const transport = async (url: string | URL) => {
       if (String(url).includes("conversations.history")) {
         return new Response(JSON.stringify({ ok: true, messages: [] }), {
           status: 200,
@@ -365,7 +365,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl,
+      transport,
     });
     try {
       expect(firstWire.dispatcher.dispatch(OUTBOUND_OP, alert!.destinationSession!, alert)).toMatchObject({ ok: true });
@@ -384,7 +384,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl,
+      transport,
     });
     try {
       replayWire.startServices?.();
@@ -424,7 +424,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OWNER", secretsEnvFile: secrets }, home);
     let postCalls = 0;
     let landedText = "";
-    const fetchImpl = async (url: string | URL, init?: RequestInit) => {
+    const transport = async (url: string | URL, init?: RequestInit) => {
       if (String(url).includes("conversations.history")) {
         return new Response(JSON.stringify({
           ok: true,
@@ -447,7 +447,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl,
+      transport,
     });
     try {
       expect(firstWire.dispatcher.dispatch(OUTBOUND_OP, alert!.destinationSession!, alert)).toMatchObject({ ok: true });
@@ -463,7 +463,7 @@ describe("S14 owner notifications — system notices, not remembered tags", () =
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl,
+      transport,
     });
     try {
       replayWire.startServices?.();

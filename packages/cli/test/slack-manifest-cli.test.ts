@@ -21,7 +21,7 @@ function offline(overrides: Partial<SlackDeps> = {}): { deps: SlackDeps; logs: s
       home,
       log: (m) => logs.push(m),
       clientFactory: () => { throw new Error("manifest must not contact the daemon"); },
-      fetchImpl: async () => { throw new Error("manifest must not use the network"); },
+      transport: async () => { throw new Error("manifest must not use the network"); },
       ...overrides,
     },
   };

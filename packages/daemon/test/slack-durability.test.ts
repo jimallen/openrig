@@ -36,7 +36,7 @@ const activeCount = (s: string, form: string): number => s.split(form).length - 
 function slackDouble(opts: { timeoutFirstPost: boolean; timeoutLanded: boolean; historyReadable?: boolean; extraHistory?: string[] }) {
   const posted: string[] = []; // texts that actually LANDED on "Slack"
   let postCalls = 0;
-  const fetchImpl: SlackTransport = async (url, init) => {
+  const transport: SlackTransport = async (url, init) => {
     if (url.endsWith("chat.postMessage")) {
       postCalls++;
       const text = String((JSON.parse(String(init?.body ?? "{}")) as { text?: string }).text ?? "");
@@ -57,17 +57,17 @@ function slackDouble(opts: { timeoutFirstPost: boolean; timeoutLanded: boolean; 
     }
     return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
   };
-  return { fetchImpl, posted, postCount: () => postCalls };
+  return { transport, posted, postCount: () => postCalls };
 }
 
-function harness(fetchImpl: SlackTransport) {
+function harness(transport: SlackTransport) {
   const fsx = memFs();
   const outboundSeen = new SeenStore("/seen.jsonl", fsx, clock);
   const deliver = subsystemSlackDeliver({
     botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C1",
     sourceLabel: "vm",
-    fetchImpl,
+    transport,
     delivered: new SeenStore("/del.jsonl", fsx, clock),
     attempted: new SeenStore("/att.jsonl", fsx, clock),
     outboundSeen,
@@ -80,7 +80,7 @@ const decision: OutboundDecision = { kind: "outbound_decision", decisionId: "d-d
 describe("H1 — induced timeout → reconcile-by-marker, never a blind repost", () => {
   it("timeout that LANDED: the retry finds the qitem marker and ACKS WITHOUT reposting — exactly ONE human notification", async () => {
     const slack = slackDouble({ timeoutFirstPost: true, timeoutLanded: true });
-    const { deliver, outboundSeen } = harness(slack.fetchImpl);
+    const { deliver, outboundSeen } = harness(slack.transport);
     const first = await deliver(decision);
     expect(first.ok).toBe(false); // ambiguous outcome surfaces as a failure class → retained
     expect(slack.posted).toHaveLength(1); // …but it LANDED on Slack
@@ -93,7 +93,7 @@ describe("H1 — induced timeout → reconcile-by-marker, never a blind repost",
 
   it("timeout that did NOT land: the retry finds no marker and sends ONCE", async () => {
     const slack = slackDouble({ timeoutFirstPost: true, timeoutLanded: false });
-    const { deliver } = harness(slack.fetchImpl);
+    const { deliver } = harness(slack.transport);
     expect((await deliver(decision)).ok).toBe(false);
     expect(slack.posted).toHaveLength(0); // genuinely lost
     const retry = await deliver(decision);
@@ -107,7 +107,7 @@ describe("H1 — induced timeout → reconcile-by-marker, never a blind repost",
     // would be missed and REPOSTED (a duplicate human notification — the H red). For minted
     // ids escaped == raw, so behavior is unchanged.
     const slack = slackDouble({ timeoutFirstPost: true, timeoutLanded: true });
-    const { deliver, outboundSeen } = harness(slack.fetchImpl);
+    const { deliver, outboundSeen } = harness(slack.transport);
     const hostile: OutboundDecision = {
       kind: "outbound_decision", decisionId: "d-hostile-marker", op: OUTBOUND_OP, entityBindingRef: "mike#slack",
       payload: { ...payload, qitemId: "<!channel>" },
@@ -124,7 +124,7 @@ describe("H1 — induced timeout → reconcile-by-marker, never a blind repost",
 
   it("reconcile scan UNREADABLE: retained (a delay), NEVER a blind repost", async () => {
     const slack = slackDouble({ timeoutFirstPost: true, timeoutLanded: true, historyReadable: false });
-    const { deliver } = harness(slack.fetchImpl);
+    const { deliver } = harness(slack.transport);
     await deliver(decision);
     const retry = await deliver(decision);
     expect(retry.ok).toBe(false);
@@ -136,7 +136,7 @@ describe("H1 — induced timeout → reconcile-by-marker, never a blind repost",
 describe("R2 round-3 — reconciliation identity is STRUCTURAL: guaranteed in the scanned surface, scoped to the target message (ordinary data only)", () => {
   it("EFFECT A: a valid LONG routine summary (2900 units) + timeout-that-landed → exactly ONE landed copy, zero repost (the identity fits the complete fallback)", async () => {
     const slack = slackDouble({ timeoutFirstPost: true, timeoutLanded: true });
-    const { deliver } = harness(slack.fetchImpl);
+    const { deliver } = harness(slack.transport);
     const longRow: OutboundDecision = {
       kind: "outbound_decision", decisionId: "d-long-summary", op: OUTBOUND_OP, entityBindingRef: "mike#slack",
       payload: { ...payload, qitemId: "qitem-routine-long-summary", summary: "s".repeat(2900), body: "ordinary body" },
@@ -155,7 +155,7 @@ describe("R2 round-3 — reconciliation identity is STRUCTURAL: guaranteed in th
       timeoutLanded: false,
       extraHistory: ["status: qitem-routine-target is waiting on another lane"], // ordinary coordination prose
     });
-    const { deliver } = harness(slack.fetchImpl);
+    const { deliver } = harness(slack.transport);
     const target: OutboundDecision = {
       kind: "outbound_decision", decisionId: "d-target", op: OUTBOUND_OP, entityBindingRef: "mike#slack",
       payload: { ...payload, qitemId: "qitem-routine-target", summary: "short summary", body: "b" },
@@ -178,7 +178,7 @@ describe("R2 round-3 — reconciliation identity is STRUCTURAL: guaranteed in th
         "even a lookalike (or-mark:qitem-routine-scope) built from the QITEM id must not match",
       ],
     });
-    const { deliver } = harness(slack.fetchImpl);
+    const { deliver } = harness(slack.transport);
     const scoped: OutboundDecision = {
       kind: "outbound_decision", decisionId: "d-scope-check", op: OUTBOUND_OP, entityBindingRef: "mike#slack",
       payload: { ...payload, qitemId: "qitem-routine-scope", summary: "x".repeat(900), body: "y".repeat(2900) },
@@ -202,7 +202,7 @@ describe("H2 — crash between persist and dispatch → replay delivers EXACTLY 
     // CRASH WINDOW: the decision reached the durable buffer, the process died before send.
     new DispatchBuffer(home).enqueue(decision);
     const slack = slackDouble({ timeoutFirstPost: false, timeoutLanded: false });
-    const { deliver } = harness(slack.fetchImpl);
+    const { deliver } = harness(slack.transport);
     // Activation 1: replay delivers it.
     const w1 = buildInProcessWire({ home, ops: [OUTBOUND_OP], deliver });
     w1.startServices?.();
@@ -218,7 +218,7 @@ describe("H2 — crash between persist and dispatch → replay delivers EXACTLY 
 
   it("crash AFTER delivery but BEFORE the ack drained the buffer: replay re-acks via the delivered-store, no double post", async () => {
     const slack = slackDouble({ timeoutFirstPost: false, timeoutLanded: false });
-    const { deliver } = harness(slack.fetchImpl);
+    const { deliver } = harness(slack.transport);
     // Persist + deliver via replay (pins the decisionId to d-dur-1).
     new DispatchBuffer(home).enqueue(decision);
     const w1 = buildInProcessWire({ home, ops: [OUTBOUND_OP], deliver });

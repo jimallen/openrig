@@ -41,8 +41,8 @@ describe("a retained Slack post replayed after its row closed", () => {
   });
   afterEach(() => { for (const stop of stops.splice(0)) stop(); db.close(); rmSync(home, { recursive: true, force: true }); });
 
-  const wire = (fetchImpl: SlackTransport) => {
-    const w = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
+  const wire = (transport: SlackTransport) => {
+    const w = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport });
     stops.push(() => w.stop());
     return w;
   };

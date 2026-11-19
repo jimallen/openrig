@@ -42,7 +42,7 @@ export interface SubsystemSlackDeliveryOpts {
   sourceLabel: string; // host/box/rig — from config, never hardcoded (item 7)
   bodyExcerpt?: number;
   /** HTTP to Slack (o9o.183: required; the domain holds no default; production wires src/adapters/slack-http-transport.ts). */
-  fetchImpl: SlackTransport;
+  transport: SlackTransport;
   /** The owning gateway run's stop signal. When the wire stops (restart, disable,
    *  shutdown) a rate-limit wait inside postChatMessage rejects instead of sleeping
    *  on: a stale retry must never post after a replay already owns the decision. */
@@ -286,7 +286,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
     // identity, same bytes, both sides.
     const marker = reconcileToken(decision.decisionId);
     if (attempted.has(decision.decisionId)) {
-      const scan = await fetchRecentMessageTexts(opts.botToken, channel, threadTs, opts.fetchImpl, undefined, undefined, marker);
+      const scan = await fetchRecentMessageTexts(opts.botToken, channel, threadTs, opts.transport, undefined, undefined, marker);
       if (!scan.ok) {
         log(`reconcile scan failed for ${decision.decisionId} (${scan.error}) — retained, no blind repost`);
         return { ok: false, class: "reconcile-unreadable", detail: scan.error };
@@ -372,7 +372,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
     const res = await postChatMessage(
       opts.botToken,
       { channel, text: payload.text, blocks: payload.blocks, thread_ts: threadTs },
-      opts.fetchImpl,
+      opts.transport,
       undefined,
       stopSignal ? (ms: number) => abortableSleep(ms, stopSignal) : undefined,
     );
@@ -449,15 +449,15 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
       log(`ATTACHMENT skipped for ${q.qitemId ?? decision.decisionId}: ${path.basename(String(q.evidenceRef))} ${local.skipped} (text delivered; attachment missing)`);
     } else if (local) {
       const intoThread = threadTs ?? res.ts;
-      const up = await getUploadURLExternal(opts.botToken, local.filename, local.bytes.length, opts.fetchImpl);
+      const up = await getUploadURLExternal(opts.botToken, local.filename, local.bytes.length, opts.transport);
       if (up.ok && up.uploadUrl && up.fileId) {
-        const put = await uploadBytesExternal(up.uploadUrl, local.bytes, opts.fetchImpl);
+        const put = await uploadBytesExternal(up.uploadUrl, local.bytes, opts.transport);
         if (put.ok) {
           const done = await completeUploadExternal(
             opts.botToken,
             // #300: the title is shown in Slack like the text, so it gets the same secret redaction.
             { files: [{ id: up.fileId, title: redactSecrets(q.summary ?? local.filename) }], channelId: channel, threadTs: intoThread },
-            opts.fetchImpl,
+            opts.transport,
           );
           if (done.ok) log(`uploaded ${local.filename} into thread ${intoThread ?? "(root)"} for ${q.qitemId ?? decision.decisionId}`);
           else log(`ATTACHMENT upload complete FAILED for ${q.qitemId ?? decision.decisionId}: ${done.error} (text delivered; attachment missing)`);
@@ -510,7 +510,7 @@ async function firstMessageMayHaveLanded(
   // a supplemental part uses (recorded, else this ask's channel, else the default), and that
   // channel's thread. With no map this is the default channel, as before.
   const channel = firstAttemptChannel(opts, attempted, firstId) ?? opts.resolveChannel?.(q) ?? opts.channel;
-  const scan = await fetchRecentMessageTexts(opts.botToken, channel, opts.resolveThreadTs?.(q, channel), opts.fetchImpl, undefined, undefined, marker);
+  const scan = await fetchRecentMessageTexts(opts.botToken, channel, opts.resolveThreadTs?.(q, channel), opts.transport, undefined, undefined, marker);
   if (!scan.ok) return { unreadable: scan.error ?? "reconcile scan failed" };
   if (scan.messages.some((m) => m.text.includes(marker))) return "found";
   return scan.incomplete ? "maybe" : "absent";

@@ -30,7 +30,7 @@ it.each([undefined,"thread_broadcast"])("wires %s recovery after bind and serves
   const ws:WsLike={send:()=>{},close:()=>{},onopen:null,onclose:null,onmessage:null,onerror:null};
   const subsystem=new GatewaySubsystem({home,wire:()=>buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,home,queueRepo,
     registry:{loadHumanRegistry:()=>({ok:true,entities:[]}),resolveSlackHandle:()=>({kind:"registered",address:"human-fixture@external",entityId:"fixture"})} as never,
-    fetchImpl:async url=>{calls.push(url);return Response.json(url.includes("connections.open")?{ok:true,url:"wss://fixture"}:{ok:true,messages:[{type:"message",user:"U1",text:"retained",ts:"1001.000001",subtype,...(subtype?{thread_ts:"900.1"}:{})}],has_more:false});},
+    transport:async url=>{calls.push(url);return Response.json(url.includes("connections.open")?{ok:true,url:"wss://fixture"}:{ok:true,messages:[{type:"message",user:"U1",text:"retained",ts:"1001.000001",subtype,...(subtype?{thread_ts:"900.1"}:{})}],has_more:false});},
     wsFactory:()=>{opened();return ws;}})});
   cleanup.unshift(()=>subsystem.stop());subsystem.start();expect(calls).toHaveLength(0);
   subsystem.startServices();await ready;ws.onopen?.();

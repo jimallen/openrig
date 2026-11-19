@@ -57,7 +57,7 @@ describe("prompt-blocked outstanding work reaches the configured route", () => {
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "CFIXTURE", secretsEnvFile: secrets }, home);
     const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo,
       registry: { loadHumanRegistry: load, resolveSlackHandle },
-      fetchImpl: async (url, init) => {
+      transport: async (url, init) => {
         expect(String(url)).toBe("https://slack.com/api/chat.postMessage");
         // Re-open the on-disk buffer at the real HTTP boundary. Acceptance is
         // persistence-before-send, not a stub's ok=true response.

@@ -65,7 +65,7 @@ export interface SlackWireOpts {
   credentialFiles: CredentialFileReader;
   log?: (msg: string) => void;
   /** HTTP to Slack (o9o.183: required; startup.ts wires src/adapters/slack-http-transport.ts, tests a fake). */
-  fetchImpl: SlackTransport;
+  transport: SlackTransport;
   /** Injectable seams (tests): websocket factory, sweep cadence, registry surface. */
   wsFactory?: (url: string) => WsLike;
   outboundIntervalMs?: number;
@@ -128,7 +128,7 @@ export function makeHumanReplyResolver(
 export function makeInboundFilePort(opts: {
   token: string;
   mediaDir: string;
-  fetchImpl: SlackTransport;
+  transport: SlackTransport;
   mkdirp?: (dir: string) => void;
   writeFile?: (p: string, bytes: Uint8Array) => void;
   log?: (msg: string) => void;
@@ -153,7 +153,7 @@ export function makeInboundFilePort(opts: {
           failed.push({ name, error: "missing or non-Slack url_private" });
           continue;
         }
-        const dl = await downloadPrivateFile(url, opts.token, opts.fetchImpl, 30_000, opts.maxBytes);
+        const dl = await downloadPrivateFile(url, opts.token, opts.transport, 30_000, opts.maxBytes);
         if (!dl.ok) {
           log(`inbound file transfer FAILED name=${name} ts=${eventTs}: ${dl.error}`);
           failed.push({ name, error: dl.error });
@@ -403,7 +403,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         },
         pinChannel: Boolean(cfg.channelMap?.length),
         sourceLabel: cfg.sourceLabel,
-        fetchImpl: opts.fetchImpl,
+        transport: opts.transport,
         stopSignal: runCtl.signal,
         delivered,
         attempted,
@@ -725,7 +725,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         acknowledgeAnswer: async ({ channel, threadTs, text }: { channel?: string; threadTs: string; text: string }) => {
           const target = channel ?? cfg.channel;
           if (!target || runCtl.signal.aborted) return false;
-          const r = await postChatMessage(bot, { channel: target, thread_ts: threadTs, text }, opts.fetchImpl, undefined,
+          const r = await postChatMessage(bot, { channel: target, thread_ts: threadTs, text }, opts.transport, undefined,
             (ms) => abortableSleep(ms, runCtl.signal));
           if (!r.ok) log(`answer acknowledgement not posted thread=${threadTs}: ${r.error}`);
           return r.ok;
@@ -739,17 +739,17 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         files: makeInboundFilePort({
           token: bot,
           mediaDir: path.join(stateDir(opts.home), "slack-inbound-media"),
-          fetchImpl: opts.fetchImpl,
+          transport: opts.transport,
           log,
         }),
       } : {}),
       log,
     });
-    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl });
+    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, transport: opts.transport });
     starts.push(() => {
       recovery!.initialize(); // persist the once-only floor before any live events
       inboundHandle = startSocketInbound(app!, router, {
-        fetchImpl: opts.fetchImpl,
+        transport: opts.transport,
         wsFactory: opts.wsFactory,
         retryIntervalMs: opts.inboundRetryIntervalMs,
         inboundMaxConnects: opts.inboundMaxConnects,

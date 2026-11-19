@@ -19,12 +19,12 @@ function memFs(): StateFsOps {
 }
 
 /** Every Slack call's URL and raw body; JSON and form bodies are both kept as text. */
-function slack(): { fetchImpl: SlackTransport; calls: { url: string; body: string }[] } {
+function slack(): { transport: SlackTransport; calls: { url: string; body: string }[] } {
   const calls: { url: string; body: string }[] = [];
   const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
   return {
     calls,
-    fetchImpl: async (url, init) => {
+    transport: async (url, init) => {
       calls.push({ url, body: init?.body instanceof Uint8Array ? "<bytes>" : String(init?.body ?? "") });
       if (url.endsWith("files.getUploadURLExternal")) return json({ ok: true, upload_url: "https://files.slack.invalid/put/abc", file_id: "F-ID-1" });
       if (url === "https://files.slack.invalid/put/abc") return new Response("ok", { status: 200 });
@@ -46,9 +46,9 @@ describe("#300 Slack file-upload title", () => {
   it("redacts a secret in the summary used as the uploaded file's title", async () => {
     const fsx = memFs();
     const clock = () => new Date("2026-10-01T00:00:00.000Z");
-    const { fetchImpl, calls } = slack();
+    const { transport, calls } = slack();
     const deliver = subsystemSlackDeliver({
-      botToken: "xox" + "b-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", fetchImpl,
+      botToken: "xox" + "b-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", transport,
       delivered: new SeenStore("/del.jsonl", fsx, clock), attempted: new SeenStore("/att.jsonl", fsx, clock),
       outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),
       readLocalImage: (p) => (p === "/tmp/shot.png" ? { bytes: new Uint8Array(16), filename: "shot.png" } : null),

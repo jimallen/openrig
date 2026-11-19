@@ -46,12 +46,12 @@ async function withTimeout<T>(timeoutMs: number, run: (signal: AbortSignal) => P
 export async function postWebhook(
   url: string,
   payload: unknown,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<HttpResult> {
   try {
     return await withTimeout(timeoutMs, async (signal) => {
-      const res = await fetchImpl(url, {
+      const res = await transport(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
@@ -93,7 +93,7 @@ export async function callWebApi(
   method: string,
   token: string,
   body: Record<string, unknown>,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   shape: WebApiRequestShape = "json-post",
 ): Promise<WebApiResult> {
@@ -107,7 +107,7 @@ export async function callWebApi(
         for (const [k, v] of Object.entries(body)) {
           if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
         }
-        res = await fetchImpl(url.toString(), {
+        res = await transport(url.toString(), {
           method: "GET",
           headers: { authorization: `Bearer ${token}` },
           signal,
@@ -117,14 +117,14 @@ export async function callWebApi(
         for (const [k, v] of Object.entries(body)) {
           if (v !== undefined && v !== null) form.set(k, typeof v === "object" ? JSON.stringify(v) : String(v));
         }
-        res = await fetchImpl(`https://slack.com/api/${method}`, {
+        res = await transport(`https://slack.com/api/${method}`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
           body: form.toString(),
           signal,
         });
       } else {
-        res = await fetchImpl(`https://slack.com/api/${method}`, {
+        res = await transport(`https://slack.com/api/${method}`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" },
           body: JSON.stringify(body),
@@ -155,10 +155,10 @@ export async function callWebApi(
 /** Item 5: read the ACTUAL granted scopes from the response header (configured != granted). */
 export async function getGrantedScopes(
   token: string,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; granted: string[]; error?: string }> {
-  const r = await callWebApi("auth.test", token, {}, fetchImpl, timeoutMs);
+  const r = await callWebApi("auth.test", token, {}, transport, timeoutMs);
   return { ok: r.ok, granted: r.grantedScopes, error: r.error };
 }
 
@@ -187,7 +187,7 @@ export function isSlackHost(url: string): boolean {
 export async function downloadPrivateFile(
   url: string,
   token: string,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = 30_000,
   maxBytes = INBOUND_FILE_MAX_BYTES,
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; error: string }> {
@@ -198,7 +198,7 @@ export async function downloadPrivateFile(
   }
   try {
     return await withTimeout(timeoutMs, async (signal) => {
-      const res = await fetchImpl(url, { headers: { authorization: `Bearer ${token}` }, signal } as RequestInit);
+      const res = await transport(url, { headers: { authorization: `Bearer ${token}` }, signal } as RequestInit);
       if (!res.ok) return { ok: false as const, error: `http ${res.status}` };
       const contentType = res.headers.get("content-type") ?? "";
       if (contentType.includes("text/html")) {
@@ -249,10 +249,10 @@ export interface ScopeVerdict {
 export async function verifyScopes(
   token: string,
   required: string[],
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<ScopeVerdict> {
-  const g = await getGrantedScopes(token, fetchImpl, timeoutMs);
+  const g = await getGrantedScopes(token, transport, timeoutMs);
   if (!g.ok) return { ok: false, granted: g.granted, missing: required, error: g.error };
   const grantedSet = new Set(g.granted);
   const missing = required.filter((s) => !grantedSet.has(s));
@@ -263,10 +263,10 @@ export async function verifyScopes(
 export async function verifyChannelMembership(
   token: string,
   channel: string,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; isMember: boolean; name?: string; error?: string }> {
-  const r = await callWebApi("conversations.info", token, { channel }, fetchImpl, timeoutMs, "get-query");
+  const r = await callWebApi("conversations.info", token, { channel }, transport, timeoutMs, "get-query");
   if (!r.ok) return { ok: false, isMember: false, error: r.error };
   const ch = (r.json.channel ?? {}) as { is_member?: boolean; name?: string };
   return { ok: true, isMember: ch.is_member === true, name: ch.name };
@@ -275,10 +275,10 @@ export async function verifyChannelMembership(
 /** Inbound Socket Mode: open a WebSocket URL via apps.connections.open (app-level xapp token). */
 export async function openSocketConnection(
   appToken: string,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; url?: string; error?: string }> {
-  const r = await callWebApi("apps.connections.open", appToken, {}, fetchImpl, timeoutMs);
+  const r = await callWebApi("apps.connections.open", appToken, {}, transport, timeoutMs);
   if (!r.ok) return { ok: false, error: r.error };
   return { ok: true, url: r.json.url as string };
 }
@@ -294,10 +294,10 @@ export async function getUploadURLExternal(
   token: string,
   filename: string,
   length: number,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; uploadUrl?: string; fileId?: string; error?: string }> {
-  const r = await callWebApi("files.getUploadURLExternal", token, { filename, length }, fetchImpl, timeoutMs, "form-post");
+  const r = await callWebApi("files.getUploadURLExternal", token, { filename, length }, transport, timeoutMs, "form-post");
   if (!r.ok) return { ok: false, error: r.error };
   return { ok: true, uploadUrl: r.json.upload_url as string, fileId: r.json.file_id as string };
 }
@@ -307,12 +307,12 @@ export async function getUploadURLExternal(
 export async function uploadBytesExternal(
   uploadUrl: string,
   bytes: Uint8Array,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS + Math.ceil(bytes.length / 524_288) * 1000,
 ): Promise<HttpResult> {
   try {
     return await withTimeout(timeoutMs, async (signal) => {
-      const res = await fetchImpl(uploadUrl, {
+      const res = await transport(uploadUrl, {
         method: "POST",
         headers: { "content-type": "application/octet-stream" },
         body: bytes as unknown as RequestInit["body"],
@@ -329,13 +329,13 @@ export async function uploadBytesExternal(
 export async function completeUploadExternal(
   token: string,
   input: { files: { id: string; title?: string }[]; channelId: string; threadTs?: string; initialComment?: string },
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; error?: string }> {
   const body: Record<string, unknown> = { files: input.files, channel_id: input.channelId };
   if (input.threadTs) body.thread_ts = input.threadTs;
   if (input.initialComment) body.initial_comment = input.initialComment;
-  const r = await callWebApi("files.completeUploadExternal", token, body, fetchImpl, timeoutMs, "form-post");
+  const r = await callWebApi("files.completeUploadExternal", token, body, transport, timeoutMs, "form-post");
   return { ok: r.ok, error: r.error };
 }
 
@@ -347,7 +347,7 @@ export async function fetchRecentMessageTexts(
   token: string,
   channel: string,
   threadTs: string | undefined,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   limit = 100,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   reconcileMarker?: string,
@@ -369,7 +369,7 @@ export async function fetchRecentMessageTexts(
     const remainingMs = deadline - performance.now();
     if (remainingMs <= 0) return incomplete("reconcile pagination exceeded its total timeout");
     const body: Record<string, unknown> = { channel, limit, ...(threadTs ? { ts: threadTs } : {}), ...(cursor ? { cursor } : {}) };
-    const response = await callWebApi(method, token, body, fetchImpl, remainingMs, "get-query");
+    const response = await callWebApi(method, token, body, transport, remainingMs, "get-query");
     if (!response.ok) return incomplete(response.error ?? "reconcile request failed");
     usablePages++;
     const pageMessages = (response.json.messages ?? []) as { text?: string; ts?: string }[];
@@ -414,19 +414,19 @@ const MAX_POST_RATE_LIMIT_WAIT_MS = 10_000;
 export async function postChatMessage(
   token: string,
   input: PostChatMessageInput,
-  fetchImpl: SlackTransport,
+  transport: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<PostChatMessageResult> {
   const body: Record<string, unknown> = { channel: input.channel, text: input.text };
   if (input.blocks?.length) body.blocks = input.blocks;
   if (input.thread_ts) body.thread_ts = input.thread_ts;
-  let r = await callWebApi("chat.postMessage", token, body, fetchImpl, timeoutMs);
+  let r = await callWebApi("chat.postMessage", token, body, transport, timeoutMs);
   if (!r.ok && r.status === 429) {
     const waitMs = (r.retryAfterSeconds ?? 0) * 1000;
     if (waitMs > 0 && waitMs <= MAX_POST_RATE_LIMIT_WAIT_MS) {
       await sleep(waitMs);
-      r = await callWebApi("chat.postMessage", token, body, fetchImpl, timeoutMs);
+      r = await callWebApi("chat.postMessage", token, body, transport, timeoutMs);
     }
   }
   if (!r.ok) return { ok: false, status: r.status, error: r.error };

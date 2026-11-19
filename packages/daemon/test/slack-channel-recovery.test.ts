@@ -37,7 +37,7 @@ function fixture() {
   const queries: URL[] = [];
   let pageSize = 25;
   let response: ((url: URL) => Response | Promise<Response>) | undefined;
-  const fetchImpl: SlackTransport = async (url) => {
+  const transport: SlackTransport = async (url) => {
     const u = new URL(url);
     if (u.pathname.endsWith("apps.connections.open")) return Response.json({ ok: true, url: "wss://fixture" });
     queries.push(u);
@@ -49,10 +49,10 @@ function fixture() {
     return Response.json({ ok: true, messages, has_more: matches.length > messages.length });
   };
   const recovery = (token: string | null = "fixture-token", channel = "C1") => {
-    const r = new ChannelRecovery({ token, channel, stateDir: "/s", store, router, fetchImpl, now: () => now });
+    const r = new ChannelRecovery({ token, channel, stateDir: "/s", store, router, transport, now: () => now });
     r.initialize(); closes.push(() => r.stop()); return r;
   };
-  return { db, repo, files, fsops, seen, receipts, dead, store, router, deps, queries, fetchImpl, recovery, history,
+  return { db, repo, files, fsops, seen, receipts, dead, store, router, deps, queries, transport, recovery, history,
     time: (t: number) => { now = t; },
     settledThrough: (t: number) => { now = t + 5000; }, page: (n: number) => { pageSize = n; },
     respond: (fn?: typeof response) => { response = fn; }, down: (v: boolean) => { queueDown = v; } };
@@ -61,7 +61,7 @@ function fixture() {
 it.each([undefined, "thread_broadcast"])("recovers %s messages on connect, repeated wakes and periodic retry through the real queue", async subtype => {
   vi.useFakeTimers(); const f = fixture(); const recovery = f.recovery();
   const sockets: WsLike[] = [];
-  const h = startSocketInbound("fixture-app", f.router, { fetchImpl: f.fetchImpl, recovery, retryIntervalMs: 100,
+  const h = startSocketInbound("fixture-app", f.router, { transport: f.transport, recovery, retryIntervalMs: 100,
     wsFactory: () => { const ws: WsLike = { send: vi.fn(), close: () => {}, onopen: null, onclose: null, onmessage: null, onerror: null }; sockets.push(ws); return ws; } });
   closes.unshift(() => h.stop());
   for (let wake = 1; wake <= 4; wake++) {

@@ -92,7 +92,7 @@ describe("complete human notifications", () => {
   it.each([false, true])("resumes only a missing/ambiguous supplemental part across reconstruction (landed=%s)", async (landed) => {
     const posted: Array<{ text: string; ts: string; thread_ts?: string }> = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       const content = JSON.parse(String(init?.body)); calls++;
       const msg = { ...content, ts: `${100 + calls}.1` };
@@ -104,7 +104,7 @@ describe("complete human notifications", () => {
     const attempted = new SeenStore(join(home, "attempted"));
     const outboundSeen = new SeenStore(join(home, "seen"));
     const onPosted = vi.fn();
-    const opts = { botToken: "synthetic", channel: "C-TEST", sourceLabel: "fixture", fetchImpl, delivered, attempted, outboundSeen, onPosted };
+    const opts = { botToken: "synthetic", channel: "C-TEST", sourceLabel: "fixture", transport, delivered, attempted, outboundSeen, onPosted };
     const decision: OutboundDecision = { kind: "outbound_decision", decisionId: "stable", op: "post_message", entityBindingRef: request.destinationSession, payload: { ...request, qitemId: "q", humanDetail: "Supplemental context only." } };
     expect((await subsystemSlackDeliver(opts)(decision)).ok).toBe(false);
     expect(onPosted).not.toHaveBeenCalled();
@@ -122,11 +122,11 @@ describe("complete human notifications", () => {
 
   it("preflights every part: content that can't be posted causes zero posts and a visible correction", async () => {
     // A long detail is now split into thread replies (#897); an oversized subject still can't be posted.
-    const fetchImpl = vi.fn(); const failed = vi.fn();
-    const deliver = subsystemSlackDeliver({ botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl, delivered: new SeenStore(join(home, "d")), attempted: new SeenStore(join(home, "a")), outboundSeen: new SeenStore(join(home, "s")), onTransportFailed: failed });
+    const transport = vi.fn(); const failed = vi.fn();
+    const deliver = subsystemSlackDeliver({ botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport, delivered: new SeenStore(join(home, "d")), attempted: new SeenStore(join(home, "a")), outboundSeen: new SeenStore(join(home, "s")), onTransportFailed: failed });
     const result = await deliver({ kind: "outbound_decision", decisionId: "d", op: "post_message", entityBindingRef: request.destinationSession, payload: { ...request, qitemId: "q", summary: "x".repeat(3001), humanDetail: "Supplemental context." } });
     expect(result).toMatchObject({ ok: false, class: "human-message-unrenderable" });
-    expect(fetchImpl).not.toHaveBeenCalled(); expect(failed).toHaveBeenCalledOnce();
+    expect(transport).not.toHaveBeenCalled(); expect(failed).toHaveBeenCalledOnce();
   });
 
   it("runs queue→wire→complete quiet multipart delivery→done and bounded Feed history without a human decision", async () => {
@@ -134,7 +134,7 @@ describe("complete human notifications", () => {
     const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
     const posts: Array<Record<string, unknown>> = [];
-    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
     stops.push(() => wire.stop()); wire.startServices?.();
     const [alert] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({});
     expect(wire.dispatcher.dispatch("post_message", request.destinationSession, alert)).toMatchObject({ ok: true });
@@ -158,7 +158,7 @@ describe("complete human notifications", () => {
     let posts = 0;
     const onPosted = vi.fn().mockImplementationOnce(() => { throw new Error("synthetic receipt failure"); });
     const opts = { botToken: "synthetic", channel: "C", sourceLabel: "fixture", delivered: new SeenStore(join(home, "d")), attempted: new SeenStore(join(home, "a")), outboundSeen: new SeenStore(join(home, "s")), onPosted,
-      fetchImpl: async () => reply({ ok: true, ts: `${++posts}.1` }) };
+      transport: async () => reply({ ok: true, ts: `${++posts}.1` }) };
     const decision: OutboundDecision = { kind: "outbound_decision", decisionId: "receipt-repair", op: "post_message", entityBindingRef: request.destinationSession, payload: { ...request, qitemId: "q", humanDetail: "Related context." } };
     expect(await subsystemSlackDeliver(opts)(decision)).toMatchObject({ ok: false, class: "receipt-failed" });
     expect(posts).toBe(2); expect(opts.outboundSeen.load().has("q")).toBe(false);

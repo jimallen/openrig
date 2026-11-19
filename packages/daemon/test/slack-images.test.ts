@@ -25,11 +25,11 @@ function memFs(): StateFsOps {
 const clock = () => new Date("2026-08-27T00:00:00.000Z");
 
 interface Call { url: string; contentType?: string; body?: unknown }
-function slackFetch(failLeg?: "get-url" | "put" | "complete"): { fetchImpl: SlackTransport; calls: Call[] } {
+function slackFetch(failLeg?: "get-url" | "put" | "complete"): { transport: SlackTransport; calls: Call[] } {
   const calls: Call[] = [];
   return {
     calls,
-    fetchImpl: async (url, init) => {
+    transport: async (url, init) => {
       const headers = (init?.headers ?? {}) as Record<string, string>;
       const contentType = headers["content-type"];
       const isBytes = contentType === "application/octet-stream";
@@ -57,13 +57,13 @@ function slackFetch(failLeg?: "get-url" | "put" | "complete"): { fetchImpl: Slac
   };
 }
 
-function makeDeliver(fetchImpl: SlackTransport, logs: string[] = []) {
+function makeDeliver(transport: SlackTransport, logs: string[] = []) {
   const fsx = memFs();
   return subsystemSlackDeliver({
     botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C-TEST",
     sourceLabel: "vm",
-    fetchImpl,
+    transport,
     delivered: new SeenStore("/del.jsonl", fsx, clock),
       attempted: new SeenStore("/att.jsonl", fsx, clock),
     outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),
@@ -78,8 +78,8 @@ const decision = (evidenceRef: string): OutboundDecision => ({
 
 describe("S10 outbound images — external-upload flow (founder screenshot class)", () => {
   it("a LOCAL image evidenceRef rides all THREE legs into the thread: get-url → octet-stream bytes → complete(channel, thread_ts)", async () => {
-    const { fetchImpl, calls } = slackFetch();
-    const out = await makeDeliver(fetchImpl)(decision("/tmp/founder-shot.png"));
+    const { transport, calls } = slackFetch();
+    const out = await makeDeliver(transport)(decision("/tmp/founder-shot.png"));
     expect(out.ok).toBe(true);
     const urls = calls.map((c) => c.url);
     expect(urls[0]).toBe("https://slack.com/api/chat.postMessage"); // text first — the thread anchor
@@ -99,24 +99,24 @@ describe("S10 outbound images — external-upload flow (founder screenshot class
   });
 
   it("an https evidenceRef does NOT trigger the upload flow (it rides as a Block Kit image)", async () => {
-    const { fetchImpl, calls } = slackFetch();
-    await makeDeliver(fetchImpl)(decision("https://example.invalid/board.png"));
+    const { transport, calls } = slackFetch();
+    await makeDeliver(transport)(decision("https://example.invalid/board.png"));
     expect(calls.map((c) => c.url)).toEqual(["https://slack.com/api/chat.postMessage"]);
     const blocks = (calls[0]!.body as { blocks: { type: string; image_url?: string }[] }).blocks;
     expect(blocks.filter((b) => b.type === "image")[0]!.image_url).toBe("https://example.invalid/board.png");
   });
 
   it("a non-uploadable local ref (reader returns null) is a clean skip — text only", async () => {
-    const { fetchImpl, calls } = slackFetch();
-    await makeDeliver(fetchImpl)(decision("/tmp/not-an-image.txt"));
+    const { transport, calls } = slackFetch();
+    await makeDeliver(transport)(decision("/tmp/not-an-image.txt"));
     expect(calls.map((c) => c.url)).toEqual(["https://slack.com/api/chat.postMessage"]);
   });
 
   it("upload FAILURE is fail-VISIBLE but does NOT fail the delivery (no duplicate text post on replay)", async () => {
     for (const leg of ["get-url", "put", "complete"] as const) {
       const logs: string[] = [];
-      const { fetchImpl } = slackFetch(leg);
-      const out = await makeDeliver(fetchImpl, logs)(decision("/tmp/founder-shot.png"));
+      const { transport } = slackFetch(leg);
+      const out = await makeDeliver(transport, logs)(decision("/tmp/founder-shot.png"));
       expect(out.ok).toBe(true); // the text delivered; failing the decision would repost it
       expect(logs.join("\n")).toMatch(/ATTACHMENT .* FAILED .*text delivered; attachment missing/);
     }
@@ -128,10 +128,10 @@ describe("local attachments: images, video and PDF from disk, size-capped, misse
   beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "slack-attach-")); });
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = (name: string, bytes = 1) => { const p = path.join(dir, name); fs.writeFileSync(p, Buffer.alloc(bytes, 1)); return p; };
-  function deliverWithDefaultReader(fetchImpl: SlackTransport, logs: string[]) {
+  function deliverWithDefaultReader(transport: SlackTransport, logs: string[]) {
     const fsx = memFs();
     return subsystemSlackDeliver({
-      botToken: "xox" + "b-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", fetchImpl,
+      botToken: "xox" + "b-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", transport,
       delivered: new SeenStore("/del.jsonl", fsx, clock), attempted: new SeenStore("/att.jsonl", fsx, clock),
       outboundSeen: new SeenStore("/seen.jsonl", fsx, clock), log: (m) => logs.push(m),
     });
@@ -175,9 +175,9 @@ describe("local attachments: images, video and PDF from disk, size-capped, misse
   });
 
   it("a local video rides the three legs into the thread", async () => {
-    const { fetchImpl, calls } = slackFetch();
+    const { transport, calls } = slackFetch();
     const logs: string[] = [];
-    const out = await deliverWithDefaultReader(fetchImpl, logs)(decision(file("walkthrough.mp4", 3000)));
+    const out = await deliverWithDefaultReader(transport, logs)(decision(file("walkthrough.mp4", 3000)));
     expect(out.ok).toBe(true);
     expect(calls.map((c) => c.url)).toEqual(["https://slack.com/api/chat.postMessage", "https://slack.com/api/files.getUploadURLExternal",
       "https://files.slack.invalid/put/abc", "https://slack.com/api/files.completeUploadExternal"]);
@@ -187,13 +187,13 @@ describe("local attachments: images, video and PDF from disk, size-capped, misse
   });
 
   it("an attachment that can't be sent still delivers the text and logs why; a PROOF.md ref stays silent", async () => {
-    const { fetchImpl, calls } = slackFetch();
+    const { transport, calls } = slackFetch();
     const logs: string[] = [];
-    expect((await deliverWithDefaultReader(fetchImpl, logs)(decision(path.join(dir, "missing.mov")))).ok).toBe(true);
+    expect((await deliverWithDefaultReader(transport, logs)(decision(path.join(dir, "missing.mov")))).ok).toBe(true);
     expect(calls.map((c) => c.url)).toEqual(["https://slack.com/api/chat.postMessage"]);
     expect(logs).toContain("ATTACHMENT skipped for q-img: missing.mov unreadable (ENOENT) (text delivered; attachment missing)");
     const quiet = slackFetch(); const quietLogs: string[] = [];
-    await deliverWithDefaultReader(quiet.fetchImpl, quietLogs)(decision(file("PROOF.md")));
+    await deliverWithDefaultReader(quiet.transport, quietLogs)(decision(file("PROOF.md")));
     expect(quiet.calls).toHaveLength(1);
     expect(quietLogs.some((l) => l.includes("ATTACHMENT"))).toBe(false);
   });
@@ -244,8 +244,8 @@ describe("#47 — a non-image https evidenceRef never becomes a Block Kit image 
     "https://user:password@example.invalid/shot.png",
     "https://user%3Apassword@example.invalid/shot.png",
   ])("omits URL userinfo before posting evidence: %s", async (url) => {
-    const { fetchImpl, calls } = slackFetch();
-    const out = await makeDeliver(fetchImpl)(decision(url));
+    const { transport, calls } = slackFetch();
+    const out = await makeDeliver(transport)(decision(url));
     expect(out.ok).toBe(true);
     expect(calls.map((call) => call.url)).toEqual(["https://slack.com/api/chat.postMessage"]);
     expect(JSON.stringify(calls[0]!.body)).not.toContain(url);
@@ -260,17 +260,17 @@ describe("#47 — a non-image https evidenceRef never becomes a Block Kit image 
     // fallback budget leaves no room in any part.
     { name: "complete fallback", evidenceRef: "https://example.invalid/" + "a".repeat(1500), summary: "s".repeat(2500), body: "b", error: /complete fallback/ },
   ])("rejects an oversized $name in preflight before any Slack request", async ({ evidenceRef, body, error, ...rest }) => {
-    const { fetchImpl, calls } = slackFetch();
+    const { transport, calls } = slackFetch();
     const outbound = decision(evidenceRef);
     outbound.payload = { ...(outbound.payload as Record<string, unknown>), body, ...("summary" in rest ? { summary: rest.summary } : {}) };
-    const out = await makeDeliver(fetchImpl)(outbound);
+    const out = await makeDeliver(transport)(outbound);
     expect(out).toMatchObject({ ok: false, class: "human-message-unrenderable", detail: expect.stringMatching(error) });
     expect(calls).toHaveLength(0);
   });
 
   it("a GitLab issue-link evidenceRef posts with NO image block and a plain evidence link", async () => {
-    const { fetchImpl, calls } = slackFetch();
-    const out = await makeDeliver(fetchImpl)(decision("https://gitlab.com/acme/team/-/work_items/10"));
+    const { transport, calls } = slackFetch();
+    const out = await makeDeliver(transport)(decision("https://gitlab.com/acme/team/-/work_items/10"));
     expect(out.ok).toBe(true);
     const body = calls[0]!.body as { blocks: { type: string; image_url?: string }[]; text: string };
     expect(body.blocks.filter((b) => b.type === "image")).toHaveLength(0);
@@ -280,8 +280,8 @@ describe("#47 — a non-image https evidenceRef never becomes a Block Kit image 
   });
 
   it("an https image URL with a query string still rides as a Block Kit image (no behavior change)", async () => {
-    const { fetchImpl, calls } = slackFetch();
-    await makeDeliver(fetchImpl)(decision("https://example.invalid/board.png?width=800"));
+    const { transport, calls } = slackFetch();
+    await makeDeliver(transport)(decision("https://example.invalid/board.png?width=800"));
     const blocks = (calls[0]!.body as { blocks: { type: string; image_url?: string }[] }).blocks;
     const images = blocks.filter((b) => b.type === "image");
     expect(images).toHaveLength(1);

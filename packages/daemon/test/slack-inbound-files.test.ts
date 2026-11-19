@@ -39,7 +39,7 @@ const clock = () => new Date("2026-08-30T01:40:00Z");
 /** Stubbed Slack transport: url -> bytes (or an induced failure). */
 function stubFetch(routes: Record<string, Uint8Array | { status: number } | { html: true }>) {
   const seenAuth: string[] = [];
-  const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+  const transport = async (url: string, init?: RequestInit): Promise<Response> => {
     seenAuth.push(String((init?.headers as Record<string, string> | undefined)?.["authorization"] ?? ""));
     const hit = routes[url];
     if (hit === undefined) return new Response("not found", { status: 404 });
@@ -47,7 +47,7 @@ function stubFetch(routes: Record<string, Uint8Array | { status: number } | { ht
     if ("html" in hit) return new Response("<html>login</html>", { status: 200, headers: { "content-type": "text/html" } });
     return new Response("err", { status: hit.status });
   };
-  return { fetchImpl, seenAuth };
+  return { transport, seenAuth };
 }
 
 interface Landed { source: string; destination: string; tags?: string[]; summary: string; body: string }
@@ -60,11 +60,11 @@ function harness(opts?: {
   const rows: Landed[] = [];
   const logs: string[] = [];
   const media = new Map<string, Uint8Array>();
-  const { fetchImpl, seenAuth } = stubFetch(opts?.routes ?? {});
+  const { transport, seenAuth } = stubFetch(opts?.routes ?? {});
   const filePort = makeInboundFilePort({
     token: "xox" + "b-test-token",
     mediaDir: MEDIA_DIR,
-    fetchImpl,
+    transport,
     mkdirp: () => {},
     writeFile: (p: string, bytes: Uint8Array) => { media.set(p, bytes); },
     log: (m: string) => logs.push(m),

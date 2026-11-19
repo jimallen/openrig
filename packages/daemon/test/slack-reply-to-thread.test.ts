@@ -120,7 +120,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
       posts = [];
-      wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+      wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
     });
 
@@ -194,7 +194,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
         resolveHumanReply: makeHumanReplyResolver(repo, contract),
         wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
         inboundMaxConnects: 1,
-        fetchImpl: async (url, init) => {
+        transport: async (url, init) => {
           if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
           posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
         },
@@ -472,7 +472,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       await deliver(first.qitemId);
       wire.stop();
       saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OTHER", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE" }, home);
-      wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+      wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
       const update = await repo.create({ ...request, humanIntent: "update", replyTo: first.qitemId });
       await deliver(update.qitemId);
@@ -525,14 +525,14 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       // The first post times out: its outcome is ambiguous, so the replay must reconcile, not repost blindly.
       const scans: string[] = [];
       let failNext = true;
-      const fetchImpl: SlackTransport = async (url, init) => {
+      const transport: SlackTransport = async (url, init) => {
         if (!url.endsWith("chat.postMessage")) { scans.push(url); return reply({ ok: true, messages: [] }); }
         if (failNext) { failNext = false; throw new Error("synthetic timeout"); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       };
       const rebuild = () => {
         wire.stop();
-        wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
+        wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport });
         stops.push(() => wire.stop()); wire.startServices?.();
       };
       rebuild();

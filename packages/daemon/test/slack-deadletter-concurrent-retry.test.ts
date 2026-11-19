@@ -41,7 +41,7 @@ it("retains new and still-failing events across overlapping retries while succes
     if (!address || typeof address === "string") throw new Error("missing fixture address");
     const files = makeInboundFilePort({
       token: "synthetic-fixture-token", mediaDir: join(home, "media"),
-      fetchImpl: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
+      transport: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
     });
     const router = new InboundRouter({
       queue: makeQueuePorts(repo), seen, deadLetter: dead, files,

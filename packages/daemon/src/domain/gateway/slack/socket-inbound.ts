@@ -37,7 +37,7 @@ export interface PingChannel {
 
 export interface SocketInboundDeps {
   /** HTTP to Slack (o9o.183: required; the domain holds no default; production wires src/adapters/slack-http-transport.ts). */
-  fetchImpl: SlackTransport;
+  transport: SlackTransport;
   /** Open a Socket Mode WebSocket (default: global WebSocket). Injectable for tests. */
   wsFactory?: (url: string) => WsLike;
   /** Test seam: run N reconnect cycles then stop (default: forever, until stop()). */
@@ -288,7 +288,7 @@ export function startSocketInbound(appToken: string, router: InboundRouter, deps
       status.reconnects = Math.max(0, connects - 1);
       if (!oldStillOpen()) status.state = "connecting";
       receipt({ generation: connects, status: "connect-attempt" });
-      const open = await openSocketConnection(appToken, deps.fetchImpl);
+      const open = await openSocketConnection(appToken, deps.transport);
       // Slack may have disabled Socket Mode while the open was in flight.
       if (stopped || disabledBySlack) return resolve();
       if (!open.ok || !open.url) {

@@ -69,8 +69,8 @@ for (const scenario of scenarios) {
     const attempted = new SeenStore(join(home, scenario, "attempted.jsonl"));
     const delivered = new SeenStore(join(home, scenario, "delivered.jsonl"));
     const seen = new SeenStore(join(home, scenario, "seen.jsonl"));
-    const fetchImpl = (url, init) => fetch(`http://127.0.0.1:${server.address().port}${new URL(url).pathname}${new URL(url).search}`, init);
-    const opts = { botToken: "synthetic-bot-token", channel: "C-FIXTURE", sourceLabel: "fixture", fetchImpl, attempted, delivered, outboundSeen: seen,
+    const transport = (url, init) => fetch(`http://127.0.0.1:${server.address().port}${new URL(url).pathname}${new URL(url).search}`, init);
+    const opts = { botToken: "synthetic-bot-token", channel: "C-FIXTURE", sourceLabel: "fixture", transport, attempted, delivered, outboundSeen: seen,
       log: (message) => logs.push(message), onPosted: (_payload, ts, threadTs) => {
         assert.equal(delivered.load().has(decision.decisionId), false, "receipt precedes delivered");
         assert.equal(seen.load().has(decision.payload.qitemId), false, "receipt precedes seen");
@@ -84,7 +84,7 @@ for (const scenario of scenarios) {
     if (scenario === "deadline") {
       // Two real delayed responses would each fit the budget independently, but not
       // the scan's single total budget (2 x 1200 ms > 2000 > 1200 ms). Probe the actual production helper.
-      const scan = await fetchRecentMessageTexts(opts.botToken, opts.channel, undefined, fetchImpl, 100, PROBE_BUDGET_MS, reconcileToken(decision.decisionId));
+      const scan = await fetchRecentMessageTexts(opts.botToken, opts.channel, undefined, transport, 100, PROBE_BUDGET_MS, reconcileToken(decision.decisionId));
       assert.ok(scan.incomplete?.includes("timeout"));
       assert.equal(scan.messages.some((message) => message.text.includes(reconcileToken(decision.decisionId))), false);
       assert.equal(queried.length, 2);

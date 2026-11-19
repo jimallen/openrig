@@ -60,7 +60,7 @@ describe("#192 channel map through the real Slack wire", () => {
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
       inboundMaxConnects: 1,
-      fetchImpl: async (url, init) => {
+      transport: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.includes("conversations.history") || url.includes("conversations.replies")) {
           const raw = String(init?.body ?? "");
@@ -456,7 +456,7 @@ describe("#192 channel map through the real Slack wire", () => {
     writeFileSync(join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, channel: "C0DEFAULT", secretsEnvFile: secrets,
       channelMap: [{ match: "pr@my-rig", channel: "C0EXAMPLE2", inbound: "lead@my-rig" }] }));
     wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, log: (m) => logs.push(m),
-      fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+      transport: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
     stops.push(() => wire.stop()); wire.startServices?.();
     expect(logs.some((l) => l.includes("IGNORING unsupported field(s) channelMap[0].inbound"))).toBe(true);
     const pr = await ask("pr@my-rig");

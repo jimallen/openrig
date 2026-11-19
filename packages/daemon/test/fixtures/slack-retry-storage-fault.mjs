@@ -56,7 +56,7 @@ try {
   handle = startSocketInbound("synthetic-app-token", router, {
     retryIntervalMs: 30,
     receipts: new InboundReceiptStore(join(home, "receipts.jsonl")),
-    fetchImpl: (_url, init) => fetch(`http://127.0.0.1:${server.address().port}`, init),
+    transport: (_url, init) => fetch(`http://127.0.0.1:${server.address().port}`, init),
     log: (message) => {
       if (!message.includes("dead-letter retry failed")) return;
       assert.match(message, /EACCES|EPERM/);

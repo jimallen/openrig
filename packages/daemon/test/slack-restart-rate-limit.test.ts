@@ -64,7 +64,7 @@ describe("restart inside the rate-limit wait", () => {
       return reply({ ok: true, ts: "fresh.1" });
     };
 
-    const wire1 = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: fetch1 });
+    const wire1 = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport: fetch1 });
     stops.push(() => wire1.stop());
     const [alert] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({});
     expect(wire1.dispatcher.dispatch("post_message", request.destinationSession, alert)).toMatchObject({ ok: true });
@@ -73,7 +73,7 @@ describe("restart inside the rate-limit wait", () => {
     // The restart: stop run 1 mid-wait (the wire's stop must cancel the pending retry),
     // then build run 2 and start its services — replayPending re-enters the same decision.
     wire1.stop();
-    const wire2 = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: fetch2 });
+    const wire2 = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport: fetch2 });
     stops.push(() => wire2.stop());
     wire2.startServices?.();
 

@@ -43,9 +43,9 @@ it("settles stopped backoff and immediate-stop loops, and preserves finite-conne
       destination: "operator-agent@kernel",
       resolveSender: () => ({ admitted: true, source: "human-fixture@external" }),
     });
-    const fetchImpl = (_url: string, init?: RequestInit) => fetch(`http://127.0.0.1:${address.port}`, init);
+    const transport = (_url: string, init?: RequestInit) => fetch(`http://127.0.0.1:${address.port}`, init);
     for (const phase of ["backoff", "immediate", "finite"]) {
-      handle = startSocketInbound("synthetic-app-token", router, { fetchImpl, ...(phase === "finite" ? { inboundMaxConnects: 1 } : {}) });
+      handle = startSocketInbound("synthetic-app-token", router, { transport, ...(phase === "finite" ? { inboundMaxConnects: 1 } : {}) });
       if (phase !== "immediate") {
         await expect.poll(() => handle!.status().state).toBe("disconnected");
       }
@@ -96,7 +96,7 @@ it("settles an already connected native WebSocket loop on repeated stop", async 
       resolveSender: () => ({ admitted: true, source: "human-fixture@external" }),
     });
     handle = startSocketInbound("synthetic-app-token", router, {
-      fetchImpl: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
+      transport: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
     });
     await expect.poll(() => handle!.status().state).toBe("connected");
     handle.stop();
@@ -141,7 +141,7 @@ it("abandons a native WebSocket whose upgrade never answers and opens a new one"
       resolveSender: () => ({ admitted: true, source: "human-fixture@external" }),
     });
     handle = startSocketInbound("synthetic-app-token", router, {
-      fetchImpl: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
+      transport: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
       openTimeoutMs: 200,
       inboundMaxConnects: 2,
     });
@@ -182,7 +182,7 @@ it("retries when a native WebSocket handshake is refused, though Node fires no c
       resolveSender: () => ({ admitted: true, source: "human-fixture@external" }),
     });
     handle = startSocketInbound("synthetic-app-token", router, {
-      fetchImpl: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
+      transport: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
       openTimeoutMs: 60_000, // far beyond the test: the refusal alone must end the attempt
       inboundMaxConnects: 2,
     });

@@ -10,7 +10,7 @@ interface RecoveryOptions {
   stateDir: string;
   router: InboundRouter;
   /** HTTP to Slack (o9o.183: required; the domain holds no default; production wires src/adapters/slack-http-transport.ts). */
-  fetchImpl: SlackTransport;
+  transport: SlackTransport;
   store?: ChannelCoverageStore;
   now?: () => number;
 }
@@ -94,7 +94,7 @@ export class ChannelRecovery {
       const r = await callWebApi("conversations.history", this.opts.token!, {
         channel: this.opts.channel, oldest: slackTimestamp(lower > 0n ? lower - 1n : 0n),
         latest: c.pending!.nextLatest, inclusive: false, limit: Math.min(25, 100 - entries),
-      }, this.opts.fetchImpl, Math.min(5000, deadline - this.now()), "get-query");
+      }, this.opts.transport, Math.min(5000, deadline - this.now()), "get-query");
       if (this.stopped) return;
       if (!r.ok) {
         const known = ["missing_scope", "not_in_channel", "channel_not_found", "invalid_auth", "token_revoked"];

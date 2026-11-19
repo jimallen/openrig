@@ -209,11 +209,11 @@ describe("outbound threading through the REAL delivery path (one reply root per 
   beforeEach(() => { home = mkdtempSync(join(tmpdir(), "s10-thr-")); });
   afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
-  function capturing(rootTs: string): { fetchImpl: SlackTransport; bodies: Record<string, unknown>[] } {
+  function capturing(rootTs: string): { transport: SlackTransport; bodies: Record<string, unknown>[] } {
     const bodies: Record<string, unknown>[] = [];
     return {
       bodies,
-      fetchImpl: async (_url, init) => {
+      transport: async (_url, init) => {
         bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
         return new Response(JSON.stringify({ ok: true, ts: `${rootTs}.${bodies.length}` }), { status: 200, headers: { "content-type": "application/json" } });
       },
@@ -223,13 +223,13 @@ describe("outbound threading through the REAL delivery path (one reply root per 
   it("two qitems to the same pair get distinct roots; another episode of one qitem reuses only its own root", async () => {
     const map = new ThreadSeatMap(mapDb(), clock);
     const fsx = memFs();
-    const { fetchImpl, bodies } = capturing("1724");
+    const { transport, bodies } = capturing("1724");
     const stamps: string[] = [];
     const deliver = subsystemSlackDeliver({
       botToken: "xox" + "b-EXAMPLE-fake",
       channel: "C1",
       sourceLabel: "vm",
-      fetchImpl,
+      transport,
       delivered: new SeenStore("/del.jsonl", fsx, clock),
       attempted: new SeenStore("/att.jsonl", fsx, clock),
       outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),
@@ -267,7 +267,7 @@ describe("#192 channel map — one resolved channel per post (post, reconcile sc
   it("posts, reconciles an ambiguous earlier attempt and uploads in the payload's channel, never the default", async () => {
     const fsx = memFs();
     const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       const method = new URL(url).pathname.split("/").pop() ?? "";
       const raw = String(init?.body ?? "");
       const body: Record<string, unknown> = raw.startsWith("{") ? JSON.parse(raw) as Record<string, unknown>
@@ -282,7 +282,7 @@ describe("#192 channel map — one resolved channel per post (post, reconcile sc
     attempted.mark("d-1", "attempted"); // an earlier attempt with an unknown outcome
     const roots: string[] = [];
     const deliver = subsystemSlackDeliver({
-      botToken: "xox" + "b-EXAMPLE-fake", channel: "C0DEFAULT", sourceLabel: "vm", fetchImpl,
+      botToken: "xox" + "b-EXAMPLE-fake", channel: "C0DEFAULT", sourceLabel: "vm", transport,
       resolveChannel: (p) => (p.sourceSession === "pr@my-rig" ? "C0EXAMPLE2" : "C0DEFAULT"),
       delivered: new SeenStore("/del.jsonl", fsx, clock), attempted, outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),
       readLocalImage: () => ({ bytes: new Uint8Array([1, 2, 3]), filename: "shot.png" }),

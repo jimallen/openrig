@@ -44,7 +44,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
   const writeActionBacklog = (entries: number) => writeRecords("slack-inbound-action-deadletter.jsonl", entries);
   const build = () => {
     const repo = new QueueRepository(db, new EventBus(db));
-    return buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, fetchImpl: noSlackHttp });
+    return buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, transport: noSlackHttp });
   };
 
   it("reports the retained dead-letter records awaiting retry on an enabled connector", () => {

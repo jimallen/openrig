@@ -43,7 +43,7 @@ describe("echo registration for every post", () => {
     let posts = 0;
     const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES,
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
-      fetchImpl: async (url) => {
+      transport: async (url) => {
         if (String(url).endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://example.invalid/socket" });
         if (String(url).endsWith("chat.postMessage")) { posts += 1; return reply({ ok: true, ts: `${posts}.000001` }); }
         return reply({ ok: true, messages: [] });

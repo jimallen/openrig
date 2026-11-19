@@ -220,7 +220,7 @@ describe("S22 OpenRig skill router coverage", () => {
         queueRepo: repo,
         registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
         outboundIntervalMs: 60_000,
-        fetchImpl: async (_url, init) => {
+        transport: async (_url, init) => {
           posts.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
           return new Response(JSON.stringify({ ok: true, ts: "1724.0001" }), {
             status: 200,

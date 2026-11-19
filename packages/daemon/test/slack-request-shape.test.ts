@@ -22,12 +22,12 @@ interface Captured { url: string; method: string; headers: Record<string, string
 
 /** A fake Slack that enforces the MEASURED live contract for read methods: JSON POST →
  *  invalid_arguments; GET + query → ok. JSON-POST family methods accept POST as before. */
-function shapeEnforcingSlack(): { fetchImpl: SlackTransport; calls: Captured[] } {
+function shapeEnforcingSlack(): { transport: SlackTransport; calls: Captured[] } {
   const calls: Captured[] = [];
   const READ_METHODS = ["conversations.info", "conversations.history", "conversations.replies"];
   return {
     calls,
-    fetchImpl: async (url, init) => {
+    transport: async (url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v]));
       const body = init?.body === undefined ? undefined : String(init.body);
@@ -54,8 +54,8 @@ function shapeEnforcingSlack(): { fetchImpl: SlackTransport; calls: Captured[] }
 
 describe("request shape — READ methods use GET + URL query (the supported live shape)", () => {
   it("conversations.info: GET, channel in the QUERY, Authorization header, NO body, NO json content-type — and the correct is_member comes back", async () => {
-    const { fetchImpl, calls } = shapeEnforcingSlack();
-    const r = await verifyChannelMembership("xox" + "b-EXAMPLE-fake", "C-MEMBER", fetchImpl);
+    const { transport, calls } = shapeEnforcingSlack();
+    const r = await verifyChannelMembership("xox" + "b-EXAMPLE-fake", "C-MEMBER", transport);
     expect(r.ok, "the supported shape must not false-fail").toBe(true);
     expect(r.isMember).toBe(true);
     const c = calls[0]!;
@@ -68,18 +68,18 @@ describe("request shape — READ methods use GET + URL query (the supported live
   });
 
   it("conversations.info: a genuine non-member reads FALSE (honest result, not a shape artifact)", async () => {
-    const { fetchImpl } = shapeEnforcingSlack();
-    const r = await verifyChannelMembership("xox" + "b-EXAMPLE-fake", "C-OTHER", fetchImpl);
+    const { transport } = shapeEnforcingSlack();
+    const r = await verifyChannelMembership("xox" + "b-EXAMPLE-fake", "C-OTHER", transport);
     expect(r.ok).toBe(true);
     expect(r.isMember).toBe(false);
   });
 
   it("conversations.history and conversations.replies ride the same read shape (the reconcile door's scan)", async () => {
-    const { fetchImpl, calls } = shapeEnforcingSlack();
-    const hist = await fetchRecentMessageTexts("xox" + "b-EXAMPLE-fake", "C-MEMBER", undefined, fetchImpl);
+    const { transport, calls } = shapeEnforcingSlack();
+    const hist = await fetchRecentMessageTexts("xox" + "b-EXAMPLE-fake", "C-MEMBER", undefined, transport);
     expect(hist.ok).toBe(true);
     expect(hist.texts[0]).toContain("or-mark:d-shape");
-    const replies = await fetchRecentMessageTexts("xox" + "b-EXAMPLE-fake", "C-MEMBER", "1724.1", fetchImpl);
+    const replies = await fetchRecentMessageTexts("xox" + "b-EXAMPLE-fake", "C-MEMBER", "1724.1", transport);
     expect(replies.ok).toBe(true);
     for (const c of calls) {
       expect(c.method).toBe("GET");
@@ -92,8 +92,8 @@ describe("request shape — READ methods use GET + URL query (the supported live
 
 describe("request shape — the JSON-POST family is UNDISTURBED", () => {
   it("auth.test stays a JSON POST and the scope header still parses", async () => {
-    const { fetchImpl, calls } = shapeEnforcingSlack();
-    const g = await getGrantedScopes("xox" + "b-EXAMPLE-fake", fetchImpl);
+    const { transport, calls } = shapeEnforcingSlack();
+    const g = await getGrantedScopes("xox" + "b-EXAMPLE-fake", transport);
     expect(g.ok).toBe(true);
     expect(g.granted).toContain("chat:write");
     expect(calls[0]!.method).toBe("POST");
@@ -101,8 +101,8 @@ describe("request shape — the JSON-POST family is UNDISTURBED", () => {
   });
 
   it("chat.postMessage stays a JSON POST with the body intact", async () => {
-    const { fetchImpl, calls } = shapeEnforcingSlack();
-    const r = await postChatMessage("xox" + "b-EXAMPLE-fake", { channel: "C-MEMBER", text: "t" }, fetchImpl);
+    const { transport, calls } = shapeEnforcingSlack();
+    const r = await postChatMessage("xox" + "b-EXAMPLE-fake", { channel: "C-MEMBER", text: "t" }, transport);
     expect(r.ok).toBe(true);
     expect(calls[0]!.method).toBe("POST");
     expect(JSON.parse(calls[0]!.body ?? "{}").channel).toBe("C-MEMBER");
@@ -110,11 +110,11 @@ describe("request shape — the JSON-POST family is UNDISTURBED", () => {
 });
 
 describe("external-upload methods are form-encoded POSTs (files.getUploadURLExternal rejects JSON)", () => {
-  function capture(): { fetchImpl: SlackTransport; calls: Captured[] } {
+  function capture(): { transport: SlackTransport; calls: Captured[] } {
     const calls: Captured[] = [];
     return {
       calls,
-      fetchImpl: async (url, init) => {
+      transport: async (url, init) => {
         const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v]));
         calls.push({ url, method: (init?.method ?? "GET").toUpperCase(), headers, body: init?.body === undefined ? undefined : String(init.body) });
         const form = headers["content-type"]?.startsWith("application/x-www-form-urlencoded");
@@ -126,8 +126,8 @@ describe("external-upload methods are form-encoded POSTs (files.getUploadURLExte
   }
 
   it("getUploadURLExternal: POST, url-encoded filename and length, bearer token", async () => {
-    const { fetchImpl, calls } = capture();
-    expect(await getUploadURLExternal("xoxb-T", "clip.mp4", 4096, fetchImpl)).toEqual({ ok: true, uploadUrl: "https://files.slack.invalid/u", fileId: "F1" });
+    const { transport, calls } = capture();
+    expect(await getUploadURLExternal("xoxb-T", "clip.mp4", 4096, transport)).toEqual({ ok: true, uploadUrl: "https://files.slack.invalid/u", fileId: "F1" });
     expect(calls[0]!.method).toBe("POST");
     expect(calls[0]!.url).toBe("https://slack.com/api/files.getUploadURLExternal");
     expect(calls[0]!.headers["content-type"]).toBe("application/x-www-form-urlencoded; charset=utf-8");
@@ -136,9 +136,9 @@ describe("external-upload methods are form-encoded POSTs (files.getUploadURLExte
   });
 
   it("completeUploadExternal: url-encoded, files as a JSON string, channel and thread", async () => {
-    const { fetchImpl, calls } = capture();
+    const { transport, calls } = capture();
     const files = [{ id: "F1", title: "proof" }];
-    expect((await completeUploadExternal("xoxb-T", { files, channelId: "C1", threadTs: "1.2", initialComment: "see" }, fetchImpl)).ok).toBe(true);
+    expect((await completeUploadExternal("xoxb-T", { files, channelId: "C1", threadTs: "1.2", initialComment: "see" }, transport)).ok).toBe(true);
     expect(calls[0]!.headers["content-type"]).toBe("application/x-www-form-urlencoded; charset=utf-8");
     expect(Object.fromEntries(new URLSearchParams(calls[0]!.body))).toEqual({ files: JSON.stringify(files), channel_id: "C1", thread_ts: "1.2", initial_comment: "see" });
   });

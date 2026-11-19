@@ -23,13 +23,13 @@ it("authenticates with unquoted, single-quoted and double-quoted file secrets", 
     if (!address || typeof address === "string") throw new Error("missing fixture address");
     // Only the transport destination is redirected: native fetch still carries
     // the production client's actual Authorization header to a local server.
-    const fetchImpl: SlackTransport = (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init);
+    const transport: SlackTransport = (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init);
     const envFile = join(scratch, "secret.env");
     for (const quote of ["", "'", '"']) {
       writeFileSync(envFile, `SLACK_BOT_TOKEN=${quote}${token}${quote}\n`, { mode: 0o600 });
       const resolved = resolveSecret("SLACK_BOT_TOKEN", { credentialFiles: nodeCredentialFileReader, env: {}, envFile });
       expect(resolved).toBe(token);
-      expect((await callWebApi("auth.test", resolved!, {}, fetchImpl, 1000)).ok).toBe(true);
+      expect((await callWebApi("auth.test", resolved!, {}, transport, 1000)).ok).toBe(true);
       expect(resolveSecret("SLACK_BOT_TOKEN", { credentialFiles: nodeCredentialFileReader, env: { SLACK_BOT_TOKEN: "env-wins" }, envFile })).toBe("env-wins");
     }
   } finally {

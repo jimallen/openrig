@@ -56,11 +56,11 @@ function fakePort(items: QueueItem[]): OutboundQueuePort & { listCalls: number }
 }
 
 /** Capture every outbound HTTP call: url + parsed JSON body. 2xx by default. */
-function capturingFetch(status = 200): { fetchImpl: SlackTransport; calls: { url: string; body: Record<string, unknown> }[] } {
+function capturingFetch(status = 200): { transport: SlackTransport; calls: { url: string; body: Record<string, unknown> }[] } {
   const calls: { url: string; body: Record<string, unknown> }[] = [];
   return {
     calls,
-    fetchImpl: async (url: string, init?: RequestInit) => {
+    transport: async (url: string, init?: RequestInit) => {
       calls.push({ url, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
       return new Response(JSON.stringify({ ok: status === 200, ts: "1724.0001", error: status === 200 ? undefined : "posting_failed" }), {
         status,
@@ -71,7 +71,7 @@ function capturingFetch(status = 200): { fetchImpl: SlackTransport; calls: { url
 }
 
 /** Compose the REAL subsystem outbound path over a temp home: driver → wire → delivery. */
-function composeOutbound(home: string, port: OutboundQueuePort, fetchImpl: SlackTransport, fsx = memFs()) {
+function composeOutbound(home: string, port: OutboundQueuePort, transport: SlackTransport, fsx = memFs()) {
   const outboundSeen = new SeenStore("/s/outbound-seen.jsonl", fsx, clock);
   const delivered = new SeenStore("/s/delivered.jsonl", fsx, clock);
   const attempted = new SeenStore("/s/attempted.jsonl", fsx, clock);
@@ -80,7 +80,7 @@ function composeOutbound(home: string, port: OutboundQueuePort, fetchImpl: Slack
     botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C-TEST",
     sourceLabel: "vm",
-    fetchImpl,
+    transport,
     delivered,
     attempted,
     outboundSeen,
@@ -104,8 +104,8 @@ describe("S10 cutover — outbound classes ride the SUBSYSTEM path (slice-11 ite
   afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
   it("outbound TEXT: fresh alert → chat.postMessage (NEVER a webhook); seen marked AFTER the 2xx", async () => {
-    const { fetchImpl, calls } = capturingFetch(200);
-    const { driver, outboundSeen } = composeOutbound(home, fakePort([ALERT]), fetchImpl);
+    const { transport, calls } = capturingFetch(200);
+    const { driver, outboundSeen } = composeOutbound(home, fakePort([ALERT]), transport);
     const sweep = await driver.sweepOnce();
     await flush();
     expect(sweep.dispatched).toEqual(["qitem-a1"]);
@@ -118,8 +118,8 @@ describe("S10 cutover — outbound classes ride the SUBSYSTEM path (slice-11 ite
   });
 
   it("item 2 idempotent: a second sweep posts nothing", async () => {
-    const { fetchImpl, calls } = capturingFetch(200);
-    const { driver } = composeOutbound(home, fakePort([ALERT]), fetchImpl);
+    const { transport, calls } = capturingFetch(200);
+    const { driver } = composeOutbound(home, fakePort([ALERT]), transport);
     await driver.sweepOnce();
     await flush();
     const s2 = await driver.sweepOnce();
@@ -130,7 +130,7 @@ describe("S10 cutover — outbound classes ride the SUBSYSTEM path (slice-11 ite
 
   it("item 3 fail-visible: a failed post is retained (durable buffer), NOT seen; recovery replays exactly it", async () => {
     const bad = capturingFetch(500);
-    const { driver, outboundSeen } = composeOutbound(home, fakePort([ALERT]), bad.fetchImpl);
+    const { driver, outboundSeen } = composeOutbound(home, fakePort([ALERT]), bad.transport);
     await driver.sweepOnce();
     await flush();
     expect(outboundSeen.load().has("qitem-a1")).toBe(false); // not dropped, not lied about
@@ -144,7 +144,7 @@ describe("S10 cutover — outbound classes ride the SUBSYSTEM path (slice-11 ite
     // Replay is a network action, so it rides startServices() — the post-bind half.
     const good = capturingFetch(200);
     const fsx2 = memFs();
-    const next = composeOutbound(home, fakePort([]), good.fetchImpl, fsx2);
+    const next = composeOutbound(home, fakePort([]), good.transport, fsx2);
     next.wire.startServices?.();
     await flush();
     expect(good.calls).toHaveLength(1);
@@ -153,8 +153,8 @@ describe("S10 cutover — outbound classes ride the SUBSYSTEM path (slice-11 ite
 
   it("outbound IMAGE: an https evidenceRef rides as a Block Kit image on the SAME single path (A5b)", async () => {
     const IMG = "https://example.invalid/PROGRAM-BOARD-row.png";
-    const { fetchImpl, calls } = capturingFetch(200);
-    const { driver } = composeOutbound(home, fakePort([{ ...ALERT, qitemId: "qitem-img", evidenceRef: IMG }]), fetchImpl);
+    const { transport, calls } = capturingFetch(200);
+    const { driver } = composeOutbound(home, fakePort([{ ...ALERT, qitemId: "qitem-img", evidenceRef: IMG }]), transport);
     await driver.sweepOnce();
     await flush();
     const blocks = (calls[0]!.body.blocks ?? []) as { type?: string; image_url?: string }[];
@@ -164,8 +164,8 @@ describe("S10 cutover — outbound classes ride the SUBSYSTEM path (slice-11 ite
   });
 
   it("A5b NEGATIVE CONTROL: a non-https evidenceRef emits NO image block (hygiene rail intact)", async () => {
-    const { fetchImpl, calls } = capturingFetch(200);
-    const { driver } = composeOutbound(home, fakePort([{ ...ALERT, qitemId: "qitem-local", evidenceRef: "/tmp/local-only.png" }]), fetchImpl);
+    const { transport, calls } = capturingFetch(200);
+    const { driver } = composeOutbound(home, fakePort([{ ...ALERT, qitemId: "qitem-local", evidenceRef: "/tmp/local-only.png" }]), transport);
     await driver.sweepOnce();
     await flush();
     const blocks = (calls[0]!.body.blocks ?? []) as { type?: string }[];
@@ -178,8 +178,8 @@ describe("S10 cutover — outbound classes ride the SUBSYSTEM path (slice-11 ite
     const seed = await seedBacklogAsHistory({ queue: fakePort([ALERT]), seen, filter: { minimumLevel: "NOTICE" } });
     expect(seed.seeded).toBe(1);
     expect(seed.onlineStatus).toMatch(/ENABLED/);
-    const { fetchImpl, calls } = capturingFetch(200);
-    const { driver } = composeOutbound(home, fakePort([ALERT]), fetchImpl, fsx);
+    const { transport, calls } = capturingFetch(200);
+    const { driver } = composeOutbound(home, fakePort([ALERT]), transport, fsx);
     const sweep = await driver.sweepOnce();
     expect(sweep.fresh).toBe(0);
     expect(calls).toHaveLength(0);

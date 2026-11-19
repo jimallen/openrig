@@ -20,7 +20,7 @@ function setup(injected?: SlackTransport) {
   const deps: SlackDeps = {
     home,
     log: () => {},
-    ...(injected ? { fetchImpl: injected } : {}),
+    ...(injected ? { transport: injected } : {}),
     surface: async () => slackSurfaceStub({
       loadConfig: () => ({
         enabled: false, inboundDestination: "operator-agent@kernel", outboundDestinations: [], sourceLabel: "vm", channel: "C1",

@@ -54,7 +54,7 @@ describe("long human asks (#897)", () => {
     const posts: Post[] = [];
     const onPosted = vi.fn();
     const questions = [{ id: "go", question: "Roll out?", options: [{ id: "yes", label: "Yes" }, { id: "hold", label: "Hold" }] }];
-    const deliver = subsystemSlackDeliver({ ...stores("long"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts), onPosted });
+    const deliver = subsystemSlackDeliver({ ...stores("long"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts), onPosted });
     expect(await deliver(decision("long", { body: longBody, humanQuestions: questions }))).toEqual({ ok: true });
 
     expect(posts.length).toBeGreaterThan(3);
@@ -78,7 +78,7 @@ describe("long human asks (#897)", () => {
 
   it("leaves a brief that fits exactly as before: one message, no thread", async () => {
     const posts: Post[] = [];
-    const deliver = subsystemSlackDeliver({ ...stores("short"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts) });
+    const deliver = subsystemSlackDeliver({ ...stores("short"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts) });
     expect(await deliver(decision("short", { body: "Why: restores status. Approve or hold?" }))).toEqual({ ok: true });
     expect(posts).toHaveLength(1);
     expect(posts[0]!.thread_ts).toBeUndefined();
@@ -87,7 +87,7 @@ describe("long human asks (#897)", () => {
 
   it("splits a long supplemental detail the same way after the brief", async () => {
     const posts: Post[] = [];
-    const deliver = subsystemSlackDeliver({ ...stores("detail"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts) });
+    const deliver = subsystemSlackDeliver({ ...stores("detail"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts) });
     const detail = "Background line with <context> & numbers.\n".repeat(150);
     expect(await deliver(decision("detail", { body: "Approve or hold?", humanDetail: detail }))).toEqual({ ok: true });
     expect(posts.length).toBeGreaterThan(2);
@@ -101,7 +101,7 @@ describe("long human asks (#897)", () => {
   it("resumes an interrupted delivery without posting any part twice", async () => {
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       calls++;
       if (calls === 3) throw new Error("synthetic timeout");
@@ -109,7 +109,7 @@ describe("long human asks (#897)", () => {
       posted.push(msg);
       return reply({ ok: true, ts: msg.ts });
     };
-    const opts = { ...stores("resume"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl };
+    const opts = { ...stores("resume"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport };
     expect((await subsystemSlackDeliver(opts)(decision("resume", { body: longBody }))).ok).toBe(false);
     expect(await subsystemSlackDeliver(opts)(decision("resume", { body: longBody }))).toEqual({ ok: true });
     const markers = posted.map((p) => p.text.match(/\(or-mark:[^)]+\)/)![0]);
@@ -120,7 +120,7 @@ describe("long human asks (#897)", () => {
   it("keeps the same cuts when the mention changes between an interrupted attempt and its retry", async () => {
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       calls++;
       if (calls === 3) throw new Error("synthetic 429");
@@ -130,7 +130,7 @@ describe("long human asks (#897)", () => {
     };
     // A long subject makes the complete-fallback budget, not the section cap, set the primary's room.
     let mention: string | undefined;
-    const opts = { ...stores("mention"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl, resolveMentionUserId: () => mention };
+    const opts = { ...stores("mention"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport, resolveMentionUserId: () => mention };
     const ask = decision("mention", { body: longBody, summary: "Approve the plan? ".repeat(62) });
     expect((await subsystemSlackDeliver(opts)(ask)).ok).toBe(false);
     mention = "U0123456789";
@@ -148,7 +148,7 @@ describe("long human asks (#897)", () => {
   const briefPastMention = async (id: string) => {
     const fitsBesideMention = async (length: number) => {
       const posts: Post[] = [];
-      await subsystemSlackDeliver({ ...stores(`probe-${length}`), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts), resolveMentionUserId: () => "U0123456789" })(decision(id, { body: "a".repeat(length), summary: nearLimitSummary }));
+      await subsystemSlackDeliver({ ...stores(`probe-${length}`), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts), resolveMentionUserId: () => "U0123456789" })(decision(id, { body: "a".repeat(length), summary: nearLimitSummary }));
       return posts.length === 1;
     };
     let fits = 0, splits = 6000;
@@ -164,7 +164,7 @@ describe("long human asks (#897)", () => {
     const body = await briefPastMention("shape");
 
     const posted: Post[] = [];
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       const msg = { ...JSON.parse(String(init?.body)), ts: `${posted.length + 1}.1` };
       posted.push(msg);
@@ -174,7 +174,7 @@ describe("long human asks (#897)", () => {
     let receiptFails = true;
     const onPosted = () => { if (receiptFails) { receiptFails = false; throw new Error("synthetic receipt failure"); } };
     let mention = before;
-    const opts = { ...stores("shape"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl, onPosted, resolveMentionUserId: () => mention };
+    const opts = { ...stores("shape"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport, onPosted, resolveMentionUserId: () => mention };
     const ask = decision("shape", { body, summary });
     expect((await subsystemSlackDeliver(opts)(ask)).ok).toBe(false);
     mention = after;
@@ -189,7 +189,7 @@ describe("long human asks (#897)", () => {
     const body = await briefPastMention("planned");
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 1) throw new Error("synthetic timeout before the post landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };
@@ -197,7 +197,7 @@ describe("long human asks (#897)", () => {
       return reply({ ok: true, ts: msg.ts });
     };
     let mention: string | undefined;
-    const opts = { ...stores("planned"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl, resolveMentionUserId: () => mention };
+    const opts = { ...stores("planned"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport, resolveMentionUserId: () => mention };
     const ask = decision("planned", { body, summary: nearLimitSummary });
     // Without a mention the brief fits in one message, and the first attempt never lands.
     expect((await subsystemSlackDeliver(opts)(ask)).ok).toBe(false);
@@ -215,7 +215,7 @@ describe("long human asks (#897)", () => {
     const ask = (body: string) => decision(id, { sourceSession: undefined, body, summary: nearLimitSummary });
     const fitsWithLabel = async (length: number) => {
       const posts: Post[] = [];
-      await subsystemSlackDeliver({ ...stores(`label-probe-${length}`), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts) })(ask("a".repeat(length)));
+      await subsystemSlackDeliver({ ...stores(`label-probe-${length}`), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts) })(ask("a".repeat(length)));
       return posts.length === 1;
     };
     let fits = 0, splits = 6000;
@@ -228,14 +228,14 @@ describe("long human asks (#897)", () => {
 
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 1) throw new Error("synthetic timeout before the post landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };
       posted.push(msg);
       return reply({ ok: true, ts: msg.ts });
     };
-    const base = { ...stores("replan"), botToken: "synthetic", channel: "C", fetchImpl };
+    const base = { ...stores("replan"), botToken: "synthetic", channel: "C", transport };
     // The first attempt plans one message, and it never lands.
     expect((await subsystemSlackDeliver({ ...base, sourceLabel: "fixture" })(ask(body))).ok).toBe(false);
     // The label grows by more than ten characters before the retry.
@@ -250,7 +250,7 @@ describe("long human asks (#897)", () => {
     const { ask, body } = await askAtLabelLimit("landed");
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       const msg = { ...JSON.parse(String(init?.body)), ts: `${++calls}.1` };
       posted.push(msg);
@@ -259,7 +259,7 @@ describe("long human asks (#897)", () => {
     };
     const failed = vi.fn();
     const onPosted = vi.fn();
-    const base = { ...stores("landed"), botToken: "synthetic", channel: "C", fetchImpl, onTransportFailed: failed, onPosted };
+    const base = { ...stores("landed"), botToken: "synthetic", channel: "C", transport, onTransportFailed: failed, onPosted };
     // The first attempt's one message lands, but its response is lost.
     expect((await subsystemSlackDeliver({ ...base, sourceLabel: "fixture" })(ask(body))).ok).toBe(false);
     // A longer label before the retry: the recorded one message no longer renders, but it is the whole
@@ -292,7 +292,7 @@ describe("long human asks (#897)", () => {
     const scanned: string[] = [];
     const lost = channelAware(posted, scanned, (n) => { if (n === 1) throw new Error("synthetic timeout after the post landed"); });
     const onPosted = vi.fn();
-    const base = { ...stores("mapped-landed"), botToken: "synthetic", channel: "C0DEFAULT", resolveChannel: () => "C0EXAMPLE2", pinChannel: true, fetchImpl: lost, onPosted };
+    const base = { ...stores("mapped-landed"), botToken: "synthetic", channel: "C0DEFAULT", resolveChannel: () => "C0EXAMPLE2", pinChannel: true, transport: lost, onPosted };
     // The first attempt's one message lands in the mapped channel, but its response is lost.
     expect((await subsystemSlackDeliver({ ...base, sourceLabel: "fixture" })(ask(body))).ok).toBe(false);
     expect(posted.map((p) => p.channel)).toEqual(["C0EXAMPLE2"]);
@@ -307,7 +307,7 @@ describe("long human asks (#897)", () => {
   it("with a channel map, every part of a long ask goes to the mapped channel and is reported with it", async () => {
     const posted: Array<Post & { channel: string; ts: string }> = [];
     const onPostedPart = vi.fn();
-    const deliver = subsystemSlackDeliver({ ...stores("mapped-long"), botToken: "synthetic", channel: "C0DEFAULT", resolveChannel: () => "C0EXAMPLE2", pinChannel: true, sourceLabel: "fixture", fetchImpl: channelAware(posted, []), onPostedPart });
+    const deliver = subsystemSlackDeliver({ ...stores("mapped-long"), botToken: "synthetic", channel: "C0DEFAULT", resolveChannel: () => "C0EXAMPLE2", pinChannel: true, sourceLabel: "fixture", transport: channelAware(posted, []), onPostedPart });
     expect(await deliver(decision("mapped-long", { body: longBody }))).toEqual({ ok: true });
     expect(posted.length).toBeGreaterThan(2);
     expect(new Set(posted.map((p) => p.channel))).toEqual(new Set(["C0EXAMPLE2"]));
@@ -320,7 +320,7 @@ describe("long human asks (#897)", () => {
     const posted: Array<Post & { channel: string; ts: string }> = [];
     const scanned: string[] = [];
     const lost = channelAware(posted, scanned, (n) => { if (n === 1) throw new Error("synthetic timeout after the post landed"); });
-    const base = { ...stores("unmapped-landed"), botToken: "synthetic", channel: "C0DEFAULT", fetchImpl: lost };
+    const base = { ...stores("unmapped-landed"), botToken: "synthetic", channel: "C0DEFAULT", transport: lost };
     expect((await subsystemSlackDeliver({ ...base, sourceLabel: "fixture" })(ask(body))).ok).toBe(false);
     expect(await subsystemSlackDeliver({ ...base, sourceLabel: "fixture-0123456789" })(ask(body))).toEqual({ ok: true });
     expect(posted).toHaveLength(1);
@@ -331,7 +331,7 @@ describe("long human asks (#897)", () => {
     const { ask, body } = await askAtLabelLimit("unverified");
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       // One readable page that says there is more, with no cursor: the scan can't rule the message in or out.
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: [], has_more: true });
       if (++calls === 1) throw new Error("synthetic timeout; the post may or may not have landed");
@@ -341,7 +341,7 @@ describe("long human asks (#897)", () => {
     };
     const failed = vi.fn();
     const onPosted = vi.fn();
-    const base = { ...stores("unverified"), botToken: "synthetic", channel: "C", fetchImpl, onTransportFailed: failed, onPosted };
+    const base = { ...stores("unverified"), botToken: "synthetic", channel: "C", transport, onTransportFailed: failed, onPosted };
     expect((await subsystemSlackDeliver({ ...base, sourceLabel: "fixture" })(ask(body))).ok).toBe(false);
     const retry = await subsystemSlackDeliver({ ...base, sourceLabel: "fixture-0123456789" })(ask(body));
     expect(retry).toMatchObject({ ok: false, class: "human-message-unrenderable" });
@@ -354,7 +354,7 @@ describe("long human asks (#897)", () => {
     const ask = decision("partial", { sourceSession: undefined, body: "a".repeat(4000), summary: nearLimitSummary });
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 2) throw new Error("synthetic timeout before the reply landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };
@@ -362,7 +362,7 @@ describe("long human asks (#897)", () => {
       return reply({ ok: true, ts: msg.ts });
     };
     const failed = vi.fn();
-    const base = { ...stores("partial"), botToken: "synthetic", channel: "C", fetchImpl, onTransportFailed: failed };
+    const base = { ...stores("partial"), botToken: "synthetic", channel: "C", transport, onTransportFailed: failed };
     expect((await subsystemSlackDeliver({ ...base, sourceLabel: "fixture" })(ask)).ok).toBe(false);
     expect(posted).toHaveLength(1);
     // A sender label past its 2,000-unit limit renders no part at all, and the first part is already posted.
@@ -375,7 +375,7 @@ describe("long human asks (#897)", () => {
   it("reports each reply part with its ask's root, so a reaction on it can find the ask (#899)", async () => {
     const posts: Post[] = [];
     const onPostedPart = vi.fn();
-    const deliver = subsystemSlackDeliver({ ...stores("parts"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts), onPostedPart });
+    const deliver = subsystemSlackDeliver({ ...stores("parts"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts), onPostedPart });
     expect(await deliver(decision("parts", { body: longBody }))).toEqual({ ok: true });
     expect(posts.length).toBeGreaterThan(2);
     expect(onPostedPart.mock.calls.map((call) => [call[1], call[2]])).toEqual(posts.slice(1).map((_, i) => [`${i + 2}.1`, "1.1"]));
@@ -386,7 +386,7 @@ describe("long human asks (#897)", () => {
     const shortPosts: Post[] = [];
     const shortParts = vi.fn();
     const onPostedRoot = vi.fn();
-    const short = subsystemSlackDeliver({ ...stores("threaded"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(shortPosts), resolveThreadTs: () => "9.9", onPostedPart: shortParts, onPostedRoot });
+    const short = subsystemSlackDeliver({ ...stores("threaded"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(shortPosts), resolveThreadTs: () => "9.9", onPostedPart: shortParts, onPostedRoot });
     expect(await short(decision("threaded", { body: "Why: restores status. Approve or hold?" }))).toEqual({ ok: true });
     expect(shortPosts.map((p) => p.thread_ts)).toEqual(["9.9"]);
     expect(onPostedRoot).not.toHaveBeenCalled();
@@ -394,7 +394,7 @@ describe("long human asks (#897)", () => {
 
     const longPosts: Post[] = [];
     const longParts = vi.fn();
-    const long = subsystemSlackDeliver({ ...stores("threaded-long"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(longPosts), resolveThreadTs: () => "9.9", onPostedPart: longParts });
+    const long = subsystemSlackDeliver({ ...stores("threaded-long"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(longPosts), resolveThreadTs: () => "9.9", onPostedPart: longParts });
     expect(await long(decision("threaded-long", { body: longBody }))).toEqual({ ok: true });
     expect(longPosts.length).toBeGreaterThan(2);
     expect(longParts.mock.calls.map((call) => [call[0].qitemId, call[1], call[2]])).toEqual(longPosts.map((_, i) => ["q-threaded-long", `${i + 1}.1`, "9.9"]));
@@ -410,7 +410,7 @@ describe("long human asks (#897)", () => {
       return reply({ ok: true, ts: msg.ts });
     };
     const reconciledParts = vi.fn();
-    const base = { ...stores("threaded-landed"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: lostResponse, resolveThreadTs: () => "9.9", onPostedPart: reconciledParts, onPostedRoot };
+    const base = { ...stores("threaded-landed"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: lostResponse, resolveThreadTs: () => "9.9", onPostedPart: reconciledParts, onPostedRoot };
     const ask = decision("threaded-landed", { body: "Why: restores status. Approve or hold?" });
     expect((await subsystemSlackDeliver(base)(ask)).ok).toBe(false);
     expect(reconciledParts).not.toHaveBeenCalled();
@@ -426,14 +426,14 @@ describe("long human asks (#897)", () => {
     const ask = decision("rest", { sourceSession: undefined, body: brief, summary: nearLimitSummary });
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: SlackTransport = async (url, init) => {
+    const transport: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 2) throw new Error("synthetic timeout before the reply landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };
       posted.push(msg);
       return reply({ ok: true, ts: msg.ts });
     };
-    const base = { ...stores("rest"), botToken: "synthetic", channel: "C", fetchImpl };
+    const base = { ...stores("rest"), botToken: "synthetic", channel: "C", transport };
     expect((await subsystemSlackDeliver({ ...base, sourceLabel: "fixture" })(ask)).ok).toBe(false);
     expect(posted).toHaveLength(1);
     expect(await subsystemSlackDeliver({ ...base, sourceLabel: "fixture-0123456789" })(ask)).toEqual({ ok: true });
@@ -446,7 +446,7 @@ describe("long human asks (#897)", () => {
 
   it("redacts secrets before cutting, so no part carries a piece of one", async () => {
     const posts: Post[] = [];
-    const deliver = subsystemSlackDeliver({ ...stores("secret"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts) });
+    const deliver = subsystemSlackDeliver({ ...stores("secret"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts) });
     // Assembled at run time so the fixture isn't flagged as a real token.
     const token = ["xoxb", "1234567890", "ABCDEFGHIJKLMNOP"].join("-");
     const body = Array.from({ length: 40 }, (_, i) => `${"a".repeat(140 + i)} ${token}`).join(" ");
@@ -459,12 +459,12 @@ describe("long human asks (#897)", () => {
   });
 
   it("still refuses what can't fit, with no post and a visible reason", async () => {
-    const fetchImpl = vi.fn();
+    const transport = vi.fn();
     const failed = vi.fn();
-    const deliver = subsystemSlackDeliver({ ...stores("huge"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl, onTransportFailed: failed });
+    const deliver = subsystemSlackDeliver({ ...stores("huge"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport, onTransportFailed: failed });
     const huge = "word ".repeat((SLACK_SECTION_CAP * MAX_HUMAN_MESSAGE_PARTS) / 5 + 1000);
     expect(await deliver(decision("huge", { body: huge }))).toMatchObject({ ok: false, class: "human-message-unrenderable" });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
     expect(failed).toHaveBeenCalledOnce();
     expect(failed.mock.calls[0]![2]).toMatch(/Slack messages \(maximum 20\)/);
   });
@@ -489,8 +489,8 @@ describe("long human asks (#897)", () => {
     const item = await repo.create({ ...request, body: huge });
     const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xox" + "b-EXAMPLE-fake\n", { mode: 0o600 });
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets }, home);
-    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => reply({ ok: true, ts: "1.1" }));
-    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
+    const transport = vi.fn(async (_url: string, _init?: RequestInit) => reply({ ok: true, ts: "1.1" }));
+    const wire = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, transport });
     try {
       wire.startServices?.();
       const [alert] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({});
@@ -503,7 +503,7 @@ describe("long human asks (#897)", () => {
       expect(notice.body).toContain(item.qitemId);
       expect(notice.body).toMatch(/maximum 20/);
       expect(repo.list({ destinationSession: "author@rig" }).filter((q) => q.qitemId.endsWith("-undeliverable"))).toHaveLength(1);
-      expect(fetchImpl.mock.calls.filter(([url]) => url.endsWith("chat.postMessage"))).toHaveLength(0);
+      expect(transport.mock.calls.filter(([url]) => url.endsWith("chat.postMessage"))).toHaveLength(0);
     } finally {
       wire.stop();
       db.close();
@@ -512,7 +512,7 @@ describe("long human asks (#897)", () => {
 
   it("#1013 — a parked workflow gate's supplemental detail posts in full; only the agent packet is replaced", async () => {
     const posts: Post[] = [];
-    const deliver = subsystemSlackDeliver({ ...stores("gate-detail"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", fetchImpl: recorder(posts) });
+    const deliver = subsystemSlackDeliver({ ...stores("gate-detail"), botToken: "synthetic", channel: "C", sourceLabel: "fixture", transport: recorder(posts) });
     expect(await deliver(decision("gate-detail", {
       summary: "Approve the plan at https://example.invalid/plan.md",
       body: "### Workflow gate: mission@1 step plan_signoff\n\nWorkflow instance: 01M4EXAMPLE\nContinuation: rig workflow project --instance 01M4EXAMPLE",

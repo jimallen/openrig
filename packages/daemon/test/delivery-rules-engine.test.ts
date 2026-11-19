@@ -319,7 +319,7 @@ describe("OPR.0.5.6.1 §3 — the gateway consults the engine before dispatch", 
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl: async (_url, init) => {
+      transport: async (_url, init) => {
         posts.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
         return new Response(JSON.stringify({ ok: true, ts: `1724.000${posts.length}` }), {
           status: 200,
@@ -461,7 +461,7 @@ describe("OPR.0.5.6.1 §4 — the C/D digest flush (v3: transport truth first, r
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl: async (url, init) => {
+      transport: async (url, init) => {
         if (opts?.failFetch) {
           return new Response(JSON.stringify({ ok: false, error: "fatal_error" }), { status: 500, headers: { "content-type": "application/json" } });
         }
@@ -932,7 +932,7 @@ describe("OPR.0.5.6.1 §8 — the production composition is live (R2 B-1/B-2/B-3
       queueRepo: repo,
       registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       outboundIntervalMs: 60_000,
-      fetchImpl: async (_url, init) => {
+      transport: async (_url, init) => {
         posts.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
         return new Response(JSON.stringify({ ok: true, ts: `1724.100${posts.length}` }), {
           status: 200,

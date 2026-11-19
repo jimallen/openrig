@@ -55,23 +55,23 @@ describe("Slice-11 slack-api — GRANTED-scope-from-headers (item 5, the setup t
 
   it("THE TRAP: configured != granted — webhook-only install is caught as missing bot scopes", async () => {
     // Simulates Add-New-Webhook: only incoming-webhook granted, no reinstall yet.
-    const fetchImpl = fakeSlack({ scopesHeader: "incoming-webhook", methods: { "auth.test": { json: { ok: true } } } });
-    const v = await verifyScopes("xoxb-t", ["chat:write", "channels:read"], fetchImpl);
+    const transport = fakeSlack({ scopesHeader: "incoming-webhook", methods: { "auth.test": { json: { ok: true } } } });
+    const v = await verifyScopes("xoxb-t", ["chat:write", "channels:read"], transport);
     expect(v.ok).toBe(false);
     expect(v.missing.sort()).toEqual(["channels:read", "chat:write"]);
     expect(v.granted).toEqual(["incoming-webhook"]);
   });
 
   it("all required scopes present → ok", async () => {
-    const fetchImpl = fakeSlack({ scopesHeader: "chat:write,channels:read,channels:history", methods: { "auth.test": { json: { ok: true } } } });
-    const v = await verifyScopes("xoxb-t", ["chat:write", "channels:read"], fetchImpl);
+    const transport = fakeSlack({ scopesHeader: "chat:write,channels:read,channels:history", methods: { "auth.test": { json: { ok: true } } } });
+    const v = await verifyScopes("xoxb-t", ["chat:write", "channels:read"], transport);
     expect(v.ok).toBe(true);
     expect(v.missing).toEqual([]);
   });
 
   it("invalid token → verdict not-ok with error, never a false pass", async () => {
-    const fetchImpl = fakeSlack({ scopesHeader: "", methods: { "auth.test": { status: 200, json: { ok: false, error: "invalid_auth" } } } });
-    const v = await verifyScopes("bad", ["chat:write"], fetchImpl);
+    const transport = fakeSlack({ scopesHeader: "", methods: { "auth.test": { status: 200, json: { ok: false, error: "invalid_auth" } } } });
+    const v = await verifyScopes("bad", ["chat:write"], transport);
     expect(v.ok).toBe(false);
     expect(v.error).toBe("invalid_auth");
   });
@@ -88,14 +88,14 @@ describe("Slice-11 slack-api — channel membership + socket (item 5, inbound)",
   });
 
   it("openSocketConnection returns the ws url", async () => {
-    const fetchImpl = fakeSlack({ methods: { "apps.connections.open": { json: { ok: true, url: "wss://slack/ws" } } } });
-    const r = await openSocketConnection("xapp-t", fetchImpl);
+    const transport = fakeSlack({ methods: { "apps.connections.open": { json: { ok: true, url: "wss://slack/ws" } } } });
+    const r = await openSocketConnection("xapp-t", transport);
     expect(r).toMatchObject({ ok: true, url: "wss://slack/ws" });
   });
 
   it("openSocketConnection surfaces an error verdict", async () => {
-    const fetchImpl = fakeSlack({ methods: { "apps.connections.open": { json: { ok: false, error: "not_allowed_token_type" } } } });
-    const r = await openSocketConnection("xoxb-wrong", fetchImpl);
+    const transport = fakeSlack({ methods: { "apps.connections.open": { json: { ok: false, error: "not_allowed_token_type" } } } });
+    const r = await openSocketConnection("xoxb-wrong", transport);
     expect(r.ok).toBe(false);
     expect(r.error).toBe("not_allowed_token_type");
   });

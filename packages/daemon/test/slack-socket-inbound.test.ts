@@ -32,7 +32,7 @@ function makeFakeWs() {
   const ws: WsLike = { send: (d) => sent.push(d), close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null };
   return { ws, sent };
 }
-// fetchImpl that answers apps.connections.open with a ws url.
+// transport that answers apps.connections.open with a ws url.
 const openFetch: SlackTransport = async () =>
   new Response(JSON.stringify({ ok: true, url: "wss://fake-slack/ws" }), { status: 200, headers: { "content-type": "application/json" } });
 
@@ -50,7 +50,7 @@ describe("Slice-11 INBOUND transport — real runInboundLoop / open / message / 
       resolveSender: () => ({ admitted: true, source: "human-founder@external" }),
     });
     const handle = startSocketInbound("xapp-EXAMPLE-fake", router, {
-      fetchImpl: async () => new Response(JSON.stringify({ ok: false, error: "temporary outage" }), { status: 200 }),
+      transport: async () => new Response(JSON.stringify({ ok: false, error: "temporary outage" }), { status: 200 }),
       inboundMaxConnects: 1,
       receipts,
     });
@@ -83,7 +83,7 @@ describe("Slice-11 INBOUND transport — real runInboundLoop / open / message / 
     const sockets = [hung.ws, healthy.ws];
     let opened = false;
     const handle = startSocketInbound("xapp-EXAMPLE-fake", router, {
-      fetchImpl: openFetch,
+      transport: openFetch,
       wsFactory: () => {
         const ws = sockets.shift()!;
         if (ws === healthy.ws) queueMicrotask(() => { opened = true; ws.onopen!(); });
@@ -129,7 +129,7 @@ describe("Slice-11 INBOUND transport — real runInboundLoop / open / message / 
     });
     const failing = makeFakeWs();
     const handle = startSocketInbound("xapp-EXAMPLE-fake", router, {
-      fetchImpl: openFetch,
+      transport: openFetch,
       wsFactory: () => {
         queueMicrotask(() => failing.ws.onerror!()); // refused: onerror, and never onclose
         return failing.ws;
@@ -168,7 +168,7 @@ describe("Slice-11 INBOUND transport — real runInboundLoop / open / message / 
     let resolveWsCreated: () => void;
     const wsCreated = new Promise<void>((r) => (resolveWsCreated = r));
     const deps: SocketInboundDeps = {
-      fetchImpl: openFetch,
+      transport: openFetch,
       wsFactory: () => {
         resolveWsCreated();
         return fake.ws;

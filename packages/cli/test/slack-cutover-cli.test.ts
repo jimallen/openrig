@@ -170,7 +170,7 @@ describe("Slack verify reports optional capabilities from granted scopes", () =>
       const logs: string[] = [];
       process.exitCode = 0;
       try {
-        await run(slackCommand({ home, log: message => logs.push(message), fetchImpl: (url, init) => {
+        await run(slackCommand({ home, log: message => logs.push(message), transport: (url, init) => {
           const target = new URL(url);
           expect(target.hostname).toBe("slack.com");
           return fetch(`http://127.0.0.1:${port}${target.pathname}${target.search}`, init);
@@ -204,12 +204,12 @@ describe("Slack status separates local configuration from bounded daemon observa
       expect(path).toBe("/api/gateway/slack/status");expect(opts).toEqual({timeoutMs:900});
       return {status:200,data:{state:"active",connector:{configurationDigest:"observed-digest",inbound:{state:"connected",generation:2},recovery:{state:"incomplete",reason:"pass-budget"}}} as T};
     });
-    const fetchImpl=vi.fn(async()=>{throw new Error("no Slack call");});
-    const {deps,logs,posts}=makeDeps({fetchImpl,clientFactory:()=>asDaemonClient({get,post:vi.fn()})});
+    const transport=vi.fn(async()=>{throw new Error("no Slack call");});
+    const {deps,logs,posts}=makeDeps({transport,clientFactory:()=>asDaemonClient({get,post:vi.fn()})});
     await run(slackCommand(deps),["status","--json"]);
     expect(JSON.parse(logs[0]!)).toMatchObject({config:{enabled:false},readiness:[],permWarning:null,next:null,
       observation:{state:"active",connector:{configurationDigest:"observed-digest",recovery:{state:"incomplete"}}}});
-    expect(posts).toEqual([]);expect(fetchImpl).not.toHaveBeenCalled();
+    expect(posts).toEqual([]);expect(transport).not.toHaveBeenCalled();
   });
   it.each(["offline","malformed","slow"])("keeps configuration and labels live state unknown when %s",async mode=>{
     vi.useFakeTimers();

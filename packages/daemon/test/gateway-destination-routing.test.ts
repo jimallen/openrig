@@ -372,7 +372,7 @@ describe("OPR.0.5.6.14 — the delivery ledger is universal and consulted", () =
     const logs: string[] = [];
     const postedTexts: Array<{ text: string; ts: string }> = [];
     const postStatuses = [...(opts?.postStatuses ?? [])];
-    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+    const transport = async (url: string, init?: RequestInit): Promise<Response> => {
       if (url.includes("chat.postMessage")) {
         posts.push(url);
         const postStatus = postStatuses.shift() ?? opts?.postStatus ?? 200;
@@ -398,7 +398,7 @@ describe("OPR.0.5.6.14 — the delivery ledger is universal and consulted", () =
       attempted,
       delivered,
       outboundSeen,
-      fetchImpl,
+      transport,
       log: (message) => logs.push(message),
       onPosted: opts?.onPostedImpl ?? (() => {}),
       // OPR.0.5.6.14: the transport-failure receipt callback (RED: does not exist).

@@ -94,13 +94,13 @@ interface SlackSurface {
   removeChannelMapEntry: typeof RemoveChannelMapEntryFn;
   FEATURE_SCOPES: typeof FeatureScopes;
   BASELINE_REQUIRED_SCOPES: typeof BaselineScopes;
-  /** The production HTTP to Slack (workspaces-o9o.183): used by `verify` unless `deps.fetchImpl` is injected. */
+  /** The production HTTP to Slack (workspaces-o9o.183): used by `verify` unless `deps.transport` is injected. */
   slackHttpTransport: SlackTransport;
 }
 
 export interface SlackDeps {
   home?: string;
-  fetchImpl?: SlackTransport;
+  transport?: SlackTransport;
   log?: (msg: string) => void;
   /** Injectable daemon-surface loader (tests). Default: lazy import of the narrow subpath. */
   surface?: () => Promise<SlackSurface>;
@@ -294,7 +294,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         actor: resolveSenderSession() ?? opts.actor ?? SENDER_FALLBACK, provenance: "claimed:v1",
         reason: opts.reason, action: "verify", subject: "slack", before: { digest: channelStateDigest(cfg) },
         run: async () => {
-          const transport = deps.fetchImpl ?? surface.slackHttpTransport;
+          const transport = deps.transport ?? surface.slackHttpTransport;
           const scope = s.bot ? await surface.verifyScopes(s.bot, cfg.requiredScopes, transport) : null;
           // #192: membership in every channel the connector uses — the default and each mapped one.
           const channels = [];

@@ -61,7 +61,7 @@ describe("Socket Mode liveness", () => {
       log: () => {},
     });
     handle = startSocketInbound("xapp-EXAMPLE-fake", router, {
-      fetchImpl: async (...args) => {
+      transport: async (...args) => {
         openCalls += 1;
         if (openGate) await openGate;
         return openFails ? new Response(JSON.stringify({ ok: false, error: "temporary outage" }), { status: 200 }) : openFetch(...args);

@@ -15,8 +15,8 @@ function setup(channelMap?: Array<{ match: string; channel: string }>) {
   homes.push(home);
   saveConfig({ ...DEFAULT_CONFIG, channel: "C0DEFAULT", ...(channelMap ? { channelMap } : {}) }, home);
   const logs: string[] = [];
-  const run = (argv: string[], fetchImpl?: SlackDeps["fetchImpl"]) =>
-    slackCommand({ home, log: (m) => logs.push(m), fetchImpl }).parseAsync(["node", "slack", ...argv]);
+  const run = (argv: string[], transport?: SlackDeps["transport"]) =>
+    slackCommand({ home, log: (m) => logs.push(m), transport }).parseAsync(["node", "slack", ...argv]);
   return { home, logs, run };
 }
 

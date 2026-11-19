@@ -3020,7 +3020,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       home: OPENRIG_HOME,
       queueRepo: queueRepoInstance,
       credentialFiles: nodeCredentialFileReader,
-      fetchImpl: slackHttpTransport,
+      transport: slackHttpTransport,
       resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract),
       log: (m) => console.log(`[gateway] ${m}`),
     }),

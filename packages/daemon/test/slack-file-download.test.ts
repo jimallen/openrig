@@ -64,7 +64,7 @@ describe("Slack private-file download size bound", () => {
     });
     await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    // Slack-shaped URL for the host gate; the injected fetchImpl is the seam
+    // Slack-shaped URL for the host gate; the injected transport is the seam
     // that forwards to the local fixture server, keeping the real streaming
     // boundary under test.
     const toLocalFixture = ((input: RequestInfo | URL, init?: RequestInit) => {

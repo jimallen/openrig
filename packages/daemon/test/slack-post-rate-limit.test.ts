@@ -7,14 +7,14 @@
 import { describe, it, expect, vi } from "vitest";
 import { postChatMessage, type SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
-function scriptedSlack(responses: Response[]): { fetchImpl: SlackTransport; calls: () => number } {
+function scriptedSlack(responses: Response[]): { transport: SlackTransport; calls: () => number } {
   let i = 0;
-  const fetchImpl = (async () => {
+  const transport = (async () => {
     const res = responses[Math.min(i, responses.length - 1)]!;
     i += 1;
     return res;
   }) as SlackTransport;
-  return { fetchImpl, calls: () => i };
+  return { transport, calls: () => i };
 }
 
 const rateLimited = (retryAfter?: string) =>
@@ -26,9 +26,9 @@ const posted = () => Response.json({ ok: true, ts: "1728400000.000100" }, { stat
 
 describe("postChatMessage rate limit (Retry-After)", () => {
   it("waits out a short Retry-After once and retries, then reports the posted ts", async () => {
-    const { fetchImpl, calls } = scriptedSlack([rateLimited("2"), posted()]);
+    const { transport, calls } = scriptedSlack([rateLimited("2"), posted()]);
     const sleep = vi.fn(async () => {});
-    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, fetchImpl, 5_000, sleep);
+    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, transport, 5_000, sleep);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error(r.error ?? "post failed");
     expect(r.ts).toBe("1728400000.000100");
@@ -38,9 +38,9 @@ describe("postChatMessage rate limit (Retry-After)", () => {
   });
 
   it("fails fast when the requested Retry-After is beyond the cap, exactly as today", async () => {
-    const { fetchImpl, calls } = scriptedSlack([rateLimited("60")]);
+    const { transport, calls } = scriptedSlack([rateLimited("60")]);
     const sleep = vi.fn(async () => {});
-    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, fetchImpl, 5_000, sleep);
+    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, transport, 5_000, sleep);
     expect(r.ok).toBe(false);
     expect(r.status).toBe(429);
     expect(sleep, "a long platform pause is not absorbed inline").not.toHaveBeenCalled();
@@ -48,18 +48,18 @@ describe("postChatMessage rate limit (Retry-After)", () => {
   });
 
   it("fails fast on a 429 without a Retry-After header", async () => {
-    const { fetchImpl, calls } = scriptedSlack([rateLimited()]);
+    const { transport, calls } = scriptedSlack([rateLimited()]);
     const sleep = vi.fn(async () => {});
-    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, fetchImpl, 5_000, sleep);
+    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, transport, 5_000, sleep);
     expect(r.ok).toBe(false);
     expect(sleep).not.toHaveBeenCalled();
     expect(calls()).toBe(1);
   });
 
   it("never sleeps for a non-429 failure", async () => {
-    const { fetchImpl, calls } = scriptedSlack([Response.json({ ok: false, error: "invalid_auth" }, { status: 401 })]);
+    const { transport, calls } = scriptedSlack([Response.json({ ok: false, error: "invalid_auth" }, { status: 401 })]);
     const sleep = vi.fn(async () => {});
-    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, fetchImpl, 5_000, sleep);
+    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, transport, 5_000, sleep);
     expect(r.ok).toBe(false);
     expect(r.status).toBe(401);
     expect(sleep).not.toHaveBeenCalled();
@@ -67,9 +67,9 @@ describe("postChatMessage rate limit (Retry-After)", () => {
   });
 
   it("returns the second attempt's failure when the retry is also rate limited", async () => {
-    const { fetchImpl, calls } = scriptedSlack([rateLimited("1"), rateLimited("1")]);
+    const { transport, calls } = scriptedSlack([rateLimited("1"), rateLimited("1")]);
     const sleep = vi.fn(async () => {});
-    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, fetchImpl, 5_000, sleep);
+    const r = await postChatMessage("xoxb-fake", { channel: "C1", text: "hello" }, transport, 5_000, sleep);
     expect(r.ok).toBe(false);
     expect(r.status).toBe(429);
     expect(sleep).toHaveBeenCalledTimes(1);

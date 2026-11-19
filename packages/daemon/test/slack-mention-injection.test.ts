@@ -31,24 +31,24 @@ const clock = () => new Date("2026-08-27T02:00:00.000Z");
 const ACTIVE_FORMS = ["<@U012AB3CD>", "<!here>", "<!channel>", "<!subteam^S012AB3CD>"];
 const INJECTED = `mentioning <@U012AB3CD> then <!here> then <!channel> then <!subteam^S012AB3CD> end`;
 
-function capture(): { fetchImpl: SlackTransport; bodies: Record<string, unknown>[] } {
+function capture(): { transport: SlackTransport; bodies: Record<string, unknown>[] } {
   const bodies: Record<string, unknown>[] = [];
   return {
     bodies,
-    fetchImpl: async (_url, init) => {
+    transport: async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
       return new Response(JSON.stringify({ ok: true, ts: "2.2" }), { status: 200, headers: { "content-type": "application/json" } });
     },
   };
 }
 
-function makeDeliver(fetchImpl: SlackTransport, mention?: string) {
+function makeDeliver(transport: SlackTransport, mention?: string) {
   const fsx = memFs();
   return subsystemSlackDeliver({
     botToken: "xox" + "b-EXAMPLE-fake",
     channel: "C1",
     sourceLabel: "vm",
-    fetchImpl,
+    transport,
     delivered: new SeenStore("/del.jsonl", fsx, clock),
     attempted: new SeenStore("/att.jsonl", fsx, clock),
     outboundSeen: new SeenStore("/seen.jsonl", fsx, clock),
@@ -70,8 +70,8 @@ function activeCount(surfaces: string, form: string): number {
 
 describe("R2 B1 — queue-controlled content must be structurally INERT in posted bytes", () => {
   it("NEGATIVE: a ROUTINE row carrying all four control forms in summary+body emits ZERO active control syntax on any posted surface — and the content stays honestly visible, not dropped", async () => {
-    const { fetchImpl, bodies } = capture();
-    const out = await makeDeliver(fetchImpl /* routine: no mention resolved */)(decision({
+    const { transport, bodies } = capture();
+    const out = await makeDeliver(transport /* routine: no mention resolved */)(decision({
       qitemId: "q-inj-neg",
       summary: `routine ${INJECTED}`,
       body: `please check ${INJECTED}`,
@@ -92,8 +92,8 @@ describe("R2 B1 — queue-controlled content must be structurally INERT in poste
   });
 
   it("POSITIVE: a true ESCALATION emits EXACTLY ONE deliberately composed mention while the same four quoted forms stay inert", async () => {
-    const { fetchImpl, bodies } = capture();
-    const out = await makeDeliver(fetchImpl, "U012AB3CD" /* the registry-resolved escalation mention */)(decision({
+    const { transport, bodies } = capture();
+    const out = await makeDeliver(transport, "U012AB3CD" /* the registry-resolved escalation mention */)(decision({
       qitemId: "q-inj-pos",
       summary: `URGENT ${INJECTED}`,
       body: `decide now ${INJECTED}`,
@@ -120,8 +120,8 @@ describe("R2 B1 — queue-controlled content must be structurally INERT in poste
     // R1 fix-round-1 measured: the create route accepts a caller-supplied qitemId with no
     // charset validation, so "daemon-minted, no specials" is a premise, not a construction.
     // The uniform rule: the footer id passes the SAME escape as every other row field.
-    const { fetchImpl, bodies } = capture();
-    const out = await makeDeliver(fetchImpl)(decision({
+    const { transport, bodies } = capture();
+    const out = await makeDeliver(transport)(decision({
       qitemId: "<!channel>",
       summary: "routine summary",
       body: "routine body",
@@ -136,8 +136,8 @@ describe("R2 B1 — queue-controlled content must be structurally INERT in poste
   });
 
   it("SANITY: ordinary formatting in queue content survives (no over-neutralization of plain text)", async () => {
-    const { fetchImpl, bodies } = capture();
-    await makeDeliver(fetchImpl)(decision({
+    const { transport, bodies } = capture();
+    await makeDeliver(transport)(decision({
       qitemId: "q-inj-plain",
       summary: "plain *bold* _italic_ summary",
       body: "a normal body with a URL https://example.invalid/x and 5 > 3 comparisons",

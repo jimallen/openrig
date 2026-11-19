@@ -206,7 +206,7 @@ describe("structured human questions (#193)", () => {
         wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
         inboundMaxConnects: 1,
         inboundRetryIntervalMs: 50, // dead-lettered clicks retry promptly
-        fetchImpl: async (url, init) => {
+        transport: async (url, init) => {
           if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
           const body = JSON.parse(String(init?.body));
           if (body.thread_ts && failThreadPosts > 0) { failThreadPosts -= 1; return reply({ ok: false, error: "internal_error" }); }
