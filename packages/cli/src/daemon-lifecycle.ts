@@ -910,7 +910,7 @@ function removeMatchingState(deps: LifecycleDeps, stateFile: string, state: Daem
 /**
  * `endpoint`: workspaces-o9o.181 (verify-sec, third review): rig destroy passes the one endpoint it planned. Then OPENRIG_URL is
  * ignored (destroy works on local state only) and that endpoint is the only address checked; a recorded state at another
- * origin is refused with no signal. Without it (`rig daemon stop`) nothing changes.
+ * origin is refused with no signal. Without it (the daemon verb's own stop) nothing changes.
  */
 export async function stopDaemon(deps: LifecycleDeps, opts: { endpoint?: string } = {}): Promise<"stopped" | "no-target"> {
   // Every stop path comes through here (the daemon verb `stop`, and `rig destroy`): a seat stops none (seat-daemon-guard.ts).

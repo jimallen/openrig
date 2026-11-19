@@ -108,6 +108,10 @@ const BUILT_IN = { port: 7433, host: "127.0.0.1" };
  *  or the config file, or (for a store that cannot say where a value came from) a value other than the built-in default.
  *  Unreadable means no. */
 function configNames(store: ConfigLike, which: "port" | "either"): boolean {
+  // The environment names a value without the config file (env wins over file in the store), so it counts even when the
+  // home's config cannot be read (a 0600 home, or a config.json the credential rule refuses).
+  if (readOpenRigEnv("OPENRIG_PORT", "RIGGED_PORT")) return true;
+  if (which === "either" && readOpenRigEnv("OPENRIG_HOST", "RIGGED_HOST")) return true;
   try {
     if (store.resolveWithSource) {
       const port = store.resolveWithSource("daemon.port").source !== "default";

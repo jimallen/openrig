@@ -69,6 +69,14 @@ describe("o9o.181: the one resolver", () => {
     expect(resolveHomeDaemon({ configStore: halfBroken }).kind).toBe("none");
   });
 
+  it("an env port counts even when the config cannot be read at all (a 0600 home); reaching a daemon there is still none", () => {
+    const unreadable = { resolve: (): never => { throw new Error("config.json refused"); }, resolveWithSource: (_key: string): never => { throw new Error("config.json refused"); } };
+    expect(homeBindRefusal({ configStore: unreadable })).not.toBeNull();
+    vi.stubEnv("OPENRIG_PORT", "28214");
+    expect(homeBindRefusal({ configStore: unreadable })).toBeNull();
+    expect(resolveHomeDaemon({ configStore: unreadable }).kind).toBe("none");
+  });
+
   it("start: a non-default home needs a port of its own; a configured port or an explicit --port is enough; a host is not", () => {
     expect(homeBindRefusal()).toMatch(/names no daemon port of its own.*never starts a daemon on, or probes, the default port/);
     expect(homeBindRefusal({ explicitPort: true })).toBeNull();
