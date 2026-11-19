@@ -31,6 +31,7 @@ describe("workspaces-o9o.174 part 3: a test wait's bound scales with the measure
     t = 251; expect(bound.expired()).toBe(true);
     expect(bound.attempts(400)).toBe(1000);
     expect(waitBound(100, reading(1), () => 0).attempts(400)).toBe(400);
+    expect(waitBound(100, reading(21), () => 0).attempts(10)).toBe(11);   // 10 x 1.05 rounds up: a scaled budget never shrinks below n x scale
   });
 
   it("the timeout message keeps the lead and prints the waited time, both bounds, the scale and both numbers", () => {
