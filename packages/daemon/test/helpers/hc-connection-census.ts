@@ -55,11 +55,29 @@ function resolvedDeclaration(checker: ts.TypeChecker, node: ts.CallExpression | 
   return sym?.valueDeclaration ?? sym?.declarations?.[0];
 }
 
-/** A socketPath the argument's type only allows (an optional property of a declared options type, as http's RequestOptions has) is not
- *  one the call carries: only a literal or inferred object that HAS socketPath counts. */
-function isOptionalOnly(checker: ts.TypeChecker, arg: ts.Expression): boolean {
-  const prop = checker.getTypeAtLocation(arg).getProperty("socketPath");
-  return !!prop && (prop.flags & ts.SymbolFlags.Optional) !== 0;
+/**
+ * Does the object that reaches the call carry a socketPath? (rt2 round 3, verify-sec: a literal that SETS socketPath was suppressed when
+ * its variable was declared with a type whose socketPath is optional.) The OBJECT is judged, not the declared type: the argument is
+ * followed through parentheses, casts and `satisfies`, and through a variable (or an alias of one) to its initializer, and an object
+ * literal's own properties are read (a spread is followed too). Only when no object is in view (a parameter, a call's result) does the
+ * type decide, and then a socketPath counts only if the type requires it: the stated limit is a declared type that merely allows one.
+ */
+function carriesSocketPath(checker: ts.TypeChecker, arg: ts.Expression, depth = 0): boolean {
+  if (depth > 20) return false;
+  let e: ts.Expression = arg;
+  while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+  if (ts.isObjectLiteralExpression(e)) {
+    return e.properties.some((p) => (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) || ts.isMethodDeclaration(p)) && p.name.getText().replace(/^["']|["']$/g, "") === "socketPath"
+      || (ts.isSpreadAssignment(p) && carriesSocketPath(checker, p.expression, depth + 1)));
+  }
+  if (ts.isIdentifier(e)) {
+    let sym = checker.getSymbolAtLocation(e);
+    if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+    const decl = sym?.valueDeclaration;
+    if (decl && ts.isVariableDeclaration(decl) && decl.initializer) return carriesSocketPath(checker, decl.initializer, depth + 1);
+  }
+  const prop = checker.getTypeAtLocation(e).getProperty("socketPath");
+  return !!prop && (prop.flags & ts.SymbolFlags.Optional) === 0;
 }
 
 /** True when `type` is HcClient's class (`typeof HcClient`) or a class deriving from it. */
@@ -149,7 +167,7 @@ export function censusHcConnections(program: ts.Program, srcRoot: string, propag
           out.push({ site: siteOf(node), kind: "require", detail: node.arguments[0]?.getText() ?? "" });
         } else {
           const decl = resolvedDeclaration(checker, node);
-          const socketPath = node.arguments.some((a) => !!checker.getTypeAtLocation(a).getProperty("socketPath") && !isOptionalOnly(checker, a));
+          const socketPath = node.arguments.some((a) => carriesSocketPath(checker, a));
           if (isNetOpening(decl, socketPath)) out.push({ site: siteOf(node), kind: "opening", detail: (decl as { name?: ts.Node }).name?.getText() ?? "connect" });
           // rt2 round 2: reflective construction is a site outright: Reflect.construct anywhere, and .bind/.call/.apply on HcClient's class,
           // or any call handed HcClient's class itself (Function.prototype.bind.call(HcClient, ...)).

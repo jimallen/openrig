@@ -16,8 +16,9 @@
 //
 // THE LIMIT, in words. This census reads source through the type checker; it does not run it. Out of scope: eval and the Function
 // constructor (code built from strings at run time); property names computed at run time (`net[name](...)`, `obj[key]` holding the class);
-// a socketPath an http request only MAY carry because its options are typed as a declared options type (RequestOptions) whose socketPath
-// is optional, with no literal or inferred object that has one; wrappers inside third-party packages (their calls resolve to their own
+// options that reach an http request with no object setting socketPath in view (a parameter, or a call's result, typed with a declared
+// options type such as RequestOptions whose socketPath is optional): the object that reaches the call is judged, a variable followed to
+// its initializer, and only an object nowhere in view is left to its type (round 3); wrappers inside third-party packages (their calls resolve to their own
 // .d.ts); and the CLI, which installs no pin. It catches the honest mistake of reaching the core without the check, not an adversary.
 import fs from "node:fs";
 import nodePath from "node:path";
@@ -185,6 +186,17 @@ describe("the checker finder catches every bypass of the spelling finder (in-mem
   });
   it("node:https get({ socketPath }) is an opening, including options held in a variable", () => {
     caught(run({ "x.ts": `import * as https from "node:https";\nexport function r(p: string) { const options = { socketPath: p, path: "/" }; return https.get(options); }\n` }), "x.ts:r", "opening");
+  });
+  // verify-sec, rt2 round 2 FAIL: a literal that SETS socketPath was suppressed when the variable holding it was declared with a type
+  // whose socketPath is optional. The object that reaches the call is judged (a variable followed to its initializer), not the type.
+  it("http.request(o) where o is declared RequestOptions and its literal sets socketPath is an opening", () => {
+    caught(run({ "x.ts": `import http from "node:http";\nexport function q2() { const o: http.RequestOptions = { socketPath: "/s", path: "/" }; return http.request(o); }\n` }), "x.ts:q2", "opening");
+  });
+  it("a local type with an optional socketPath, and a literal that sets it, is an opening", () => {
+    caught(run({ "x.ts": `import http from "node:http";\ninterface Opts { socketPath?: string; path: string }\nexport function q3(p: string) { const o: Opts = { socketPath: p, path: "/" }; const same = o; return http.get(same); }\n` }), "x.ts:q3", "opening");
+  });
+  it("the stated limit: options that only reach the call as a declared-type parameter, with no object setting socketPath in view, are not a site", () => {
+    expect(run({ "x.ts": `import http from "node:http";\nexport function q4(o: http.RequestOptions) { return http.request(o); }\n` }).filter((s) => s.site.startsWith("x.ts"))).toEqual([]);
   });
   it("an http Agent's createConnection is an opening", () => {
     caught(run({ "x.ts": `import http from "node:http";\nexport function s(p: string) { return new http.Agent().createConnection({ path: p }); }\n` }), "x.ts:s", "opening");
