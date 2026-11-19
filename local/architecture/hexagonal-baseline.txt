@@ -126,7 +126,6 @@ src/domain/health-policy.ts node:fs value upstream
 src/domain/history-query.ts node:fs value upstream
 src/domain/history-query.ts node:os value upstream
 src/domain/hosts/hosts-registry-writer.ts node:fs value upstream
-src/domain/hosts/remote-daemon-http.ts global:fetch value upstream
 src/domain/inbox-handler.ts better-sqlite3 type upstream
 src/domain/install-repository.ts better-sqlite3 type upstream
 src/domain/kernel-boot.ts node:child_process value upstream

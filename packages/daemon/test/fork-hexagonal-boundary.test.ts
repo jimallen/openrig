@@ -332,11 +332,15 @@ function relativeFrom(file: string, target: string): string {
 describe("the global fetch: HTTP from the domain is a violation like an infrastructure import", () => {
   const fetchLines = (source: string) => scanGlobalFetch("src/domain/x.ts", source);
 
-  it("positive control: the domain's one remaining global fetch (remote-daemon-http, o9o.161) is found where it is", () => {
-    const v = scan.violations.find((x) => x.file === "src/domain/hosts/remote-daemon-http.ts" && x.target === GLOBAL_FETCH);
-    expect(v?.kind).toBe("value");
-    expect(v?.rule).toBe("domain-uses-global-fetch");
-    expect(scan.violations.filter((x) => x.target === GLOBAL_FETCH).map((x) => x.file)).toEqual(["src/domain/hosts/remote-daemon-http.ts"]);
+  it("the domain holds no global fetch (o9o.161 and o9o.183 moved the last ones), and the scan finds one added to a real domain file", () => {
+    expect(scan.violations.filter((x) => x.target === GLOBAL_FETCH).map(violationKey)).toEqual([]);
+    expect(baseline.filter((e) => e.target === GLOBAL_FETCH).map(violationKey)).toEqual([]);
+    // Positive control on the real rows: the Slack client, as it is in the tree, plus one global call.
+    const file = "src/domain/gateway/slack/slack-api.ts";
+    const source = readFileSync(path.join(DAEMON_ROOT, file), "utf8");
+    expect(violationsInSource(file, source).violations.filter((x) => x.target === GLOBAL_FETCH)).toEqual([]);
+    const planted = violationsInSource(file, `${source}\nexport const planted = () => fetch("https://slack.com/api/auth.test");\n`).violations;
+    expect(planted.filter((x) => x.target === GLOBAL_FETCH).map((x) => `${violationKey(x)} ${x.rule}`)).toEqual([`${file} global:fetch value domain-uses-global-fetch`]);
   });
 
   it("counts a call, passing or storing the global, a shorthand property, and globalThis/global/self/window access", () => {
